@@ -1,0 +1,13 @@
+@PACKAGE_INIT@
+
+set(CPPYYJSON_VERSION @PROJECT_VERSION@)
+
+include(CMakeFindDependencyMacro)
+find_dependency(yyjson CONFIG REQUIRED)
+find_dependency(visit_struct CONFIG REQUIRED)
+find_dependency(magic_enum CONFIG REQUIRED)
+find_dependency(fmt CONFIG REQUIRED)
+find_dependency(nameof CONFIG REQUIRED)
+
+include("${CMAKE_CURRENT_LIST_DIR}/@PROJECT_NAME@Targets.cmake")
+check_required_components("@PROJECT_NAME@")
