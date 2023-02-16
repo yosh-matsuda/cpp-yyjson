@@ -66,8 +66,8 @@ namespace yyjson
         using base::base;
 
     public:
-        key_string(const std::string_view& v) : std::string_view(v) {}        // NOLINT
-        key_string(std::string_view&& v) : std::string_view(std::move(v)) {}  // NOLINT
+        key_string(const std::string_view& v) noexcept : std::string_view(v) {}        // NOLINT
+        key_string(std::string_view&& v) noexcept : std::string_view(std::move(v)) {}  // NOLINT
         key_string(std::string&&) = delete;
         explicit operator const char*() { return base::data(); }
     };
@@ -89,13 +89,6 @@ namespace yyjson
                 } cap{std::forward<T>(value)};
                 return cap;
             };
-
-            template <typename T, std::size_t N>  // clang-format off
-            concept has_tuple_element = requires(T t)
-            {
-                typename std::tuple_element_t<N, std::remove_const_t<T>>;
-                {std::get<N>(t)} -> std::convertible_to<const std::tuple_element_t<N, T>&>;
-            };  // clang-format on
 
             // The following tuple_like concept is imported from P2165R4
             // https://github.com/cor3ntin/gcc/tree/tuple_pair2
@@ -1378,8 +1371,8 @@ namespace yyjson
                     // without checking overflow
                     [[nodiscard]] std::optional<std::int64_t> as_int() const noexcept
                     {
-                        if (is_sint()) return yyjson_mut_get_sint(base::val_);
-                        if (is_uint()) return yyjson_mut_get_uint(base::val_);
+                        if (is_int()) [[likely]]
+                            return yyjson_mut_get_sint(base::val_);
                         return std::nullopt;
                     }
                     [[nodiscard]] std::optional<double> as_real() const noexcept
@@ -1391,15 +1384,14 @@ namespace yyjson
                     [[nodiscard]] std::optional<double> as_num() const noexcept
                     {
                         if (is_real()) return yyjson_mut_get_real(base::val_);
-                        if (is_sint()) return yyjson_mut_get_sint(base::val_);
-                        if (is_uint()) [[likely]]
-                            return yyjson_mut_get_uint(base::val_);
+                        if (is_int()) [[likely]]
+                            return yyjson_mut_get_sint(base::val_);
                         return std::nullopt;
                     }
                     [[nodiscard]] std::optional<std::string_view> as_string() const noexcept
                     {
                         if (is_string()) [[likely]]
-                            return yyjson_mut_get_str(base::val_);
+                            return std::string_view(yyjson_mut_get_str(base::val_), yyjson_mut_get_len(base::val_));
                         return std::nullopt;
                     }
                     [[nodiscard]] std::optional<const_array_ref> as_array() const noexcept;
@@ -2248,7 +2240,7 @@ namespace yyjson
                         auto key = iter_.cur->next->next;
                         assert(yyjson_mut_is_str(key));
                         return const_key_value_ref_pair(
-                            std::string_view(yyjson_mut_get_str(key)),
+                            std::string_view(yyjson_mut_get_str(key), yyjson_mut_get_len(key)),
                             const_value_ref(parent_->doc_, yyjson_mut_obj_iter_get_val(key)));
                     }
                     auto operator->() const noexcept { return proxy(**this); }
@@ -2841,8 +2833,8 @@ namespace yyjson
             // without checking overflow
             [[nodiscard]] std::optional<std::int64_t> as_int() const noexcept
             {
-                if (is_sint()) return yyjson_get_sint(val_);
-                if (is_uint()) return yyjson_get_uint(val_);
+                if (is_int()) [[likely]]
+                    return yyjson_get_sint(val_);
                 return std::nullopt;
             }
             [[nodiscard]] std::optional<double> as_real() const noexcept
@@ -2854,15 +2846,14 @@ namespace yyjson
             [[nodiscard]] std::optional<double> as_num() const noexcept
             {
                 if (is_real()) return yyjson_get_real(val_);
-                if (is_sint()) return yyjson_get_sint(val_);
-                if (is_uint()) [[likely]]
-                    return yyjson_get_uint(val_);
+                if (is_int()) [[likely]]
+                    return yyjson_get_sint(val_);
                 return std::nullopt;
             }
             [[nodiscard]] std::optional<std::string_view> as_string() const noexcept
             {
                 if (is_string()) [[likely]]
-                    return yyjson_get_str(val_);
+                    return std::string_view(yyjson_get_str(val_), yyjson_get_len(val_));
                 return std::nullopt;
             }
 
@@ -3329,7 +3320,7 @@ namespace yyjson
             }
             auto operator*() const noexcept
             {
-                return const_key_value_ref_pair(std::string_view(yyjson_get_str(iter_.cur)),
+                return const_key_value_ref_pair(std::string_view(yyjson_get_str(iter_.cur), yyjson_get_len(iter_.cur)),
                                                 const_value_ref(yyjson_obj_iter_get_val(iter_.cur)));
             }
             auto operator->() const noexcept { return detail::proxy(**this); }
@@ -3472,6 +3463,7 @@ namespace yyjson
         {
             using ValueType = std::remove_cvref_t<std::tuple_element_t<1, std::ranges::range_value_t<T>>>;
             auto result = T();
+            // TODO: reserve
             for (auto&& kv : obj)
             {
                 result.emplace(kv.first, cast<ValueType>(kv.second));
@@ -3494,6 +3486,7 @@ namespace yyjson
         {
             using ValueType = std::remove_cvref_t<std::tuple_element_t<1, std::ranges::range_value_t<T>>>;
             auto result = T();
+            // TODO: use back_insertable
             for (auto&& kv : obj)
             {
                 result.emplace_back(kv.first, cast<ValueType>(kv.second));
@@ -3513,6 +3506,10 @@ namespace yyjson
 
             if constexpr (back_insertable<T>)
             {
+                if constexpr (requires(T & t) { t.reserve(std::declval<std::size_t>()); })
+                {
+                    result.reserve(arr.size());
+                }
                 std::ranges::transform(arr, std::back_inserter(result),
                                        [](const auto& e) { return cast<std::ranges::range_value_t<T>>(e); });
             }
@@ -3757,9 +3754,10 @@ namespace yyjson
         static Tuple<Ts...> from_json(const Json& json)
         {
             if constexpr ((detail::key_value_like<Ts> && ...) &&
-                          requires(const Json& j) {
-                              (static_cast<std::tuple_element_t<0, Ts>>(std::get<0>(*(j.as_object()->begin()))), ...);
-                              (cast<std::tuple_element_t<1, Ts>>(std::get<1>(*(j.as_object()->begin()))), ...);
+                          requires {
+                              (static_cast<std::tuple_element_t<0, Ts>>(std::get<0>(*(json.as_object()->begin()))),
+                               ...);
+                              (cast<std::tuple_element_t<1, Ts>>(std::get<1>(*(json.as_object()->begin()))), ...);
                           })
             {
                 if (const auto obj = json.as_object(); obj.has_value())
@@ -3785,7 +3783,7 @@ namespace yyjson
                     return result;
                 }
             }
-            if constexpr (requires(const Json& j) { (cast<Ts>(j), ...); })
+            if constexpr (requires { (cast<Ts>(json), ...); })
             {
                 if (const auto arr = json.as_array(); arr.has_value())
                 {
