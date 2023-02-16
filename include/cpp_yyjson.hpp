@@ -1,3 +1,14 @@
+/*===================================================*
+|  cpp-yyjson version v0.0.1                         |
+|  https://github.com/yosh-matsuda/cpp-yyjson        |
+|                                                    |
+|  Copyright (c) 2023 Yoshiki Matsuda @yosh-matsuda  |
+|                                                    |
+|  This software is released under the MIT License.  |
+|  https://opensource.org/license/mit/               |
+====================================================*/
+
+#pragma once
 #include <fmt/format.h>
 #include <yyjson.h>
 #include <magic_enum.hpp>
@@ -965,16 +976,15 @@ namespace yyjson
                                 arr->tag = (static_cast<std::uint64_t>(count) << YYJSON_TAG_BIT) | YYJSON_TYPE_ARR;
                                 if (count > 0)
                                 {
-                                    for (size_t i = 0; auto&& v : std::forward<Range>(range))
+                                    for (auto* val = arr + 1; auto&& v : range)
                                     {
-                                        auto* val = arr + i + 1;
                                         auto result = set_value(
                                             val, forward_element<Range&&>(std::forward<decltype(v)>(v)), ts...);
                                         if (yyjson_unlikely(!result)) [[unlikely]]
                                             return nullptr;
 
                                         val->next = val + 1;
-                                        ++i;
+                                        ++val;
                                     }
                                     arr[count].next = arr + 1;
                                     arr->uni.ptr = arr + count;
@@ -2911,7 +2921,7 @@ namespace yyjson
             allocator() = default;
             allocator(const allocator&) = default;
             allocator(allocator&&) noexcept = default;
-            explicit allocator(std::size_t size) : buf_(size) {}
+            explicit allocator(std::size_t size_byte) : buf_(size_byte) {}
             explicit allocator(std::string_view json, ReadFlag flag = ReadFlag::NoFlag)
                 : buf_(yyjson_read_max_memory_usage(json.size(), magic_enum::enum_integer(flag)))
             {
@@ -2925,9 +2935,9 @@ namespace yyjson
                 buf_.resize(req);
                 alc_ = init_allocator();
             }
-            void allocate(std::size_t req)
+            void allocate(std::size_t req_size_byte)
             {
-                if (req > size()) resize(req);
+                if (req_size_byte > size()) resize(req_size_byte);
             }
             void allocate(std::string_view json, ReadFlag flag = ReadFlag::NoFlag)
             {
@@ -2950,10 +2960,10 @@ namespace yyjson
             }
         };
 
-        template <std::size_t N>
+        template <std::size_t Byte>
         class stack_allocator
         {
-            std::array<allocator::char_like, N> buf_;
+            std::array<allocator::char_like, Byte> buf_;
             yyjson_alc alc_ = init();
             yyjson_alc init()
             {
@@ -3057,8 +3067,6 @@ namespace yyjson
                 if (str.size() < len + YYJSON_PADDING_SIZE)
                     throw std::invalid_argument(
                         "The specified JSON length is greater than the string size with ReadInsitu flag");
-                std::ranges::fill_n(str.begin() + static_cast<std::make_signed_t<decltype(len)>>(len),
-                                    YYJSON_PADDING_SIZE, '\0');
             }
             else if (str.size() < len)
                 throw std::invalid_argument("The specified JSON length is greater than the string size");
@@ -3127,8 +3135,6 @@ namespace yyjson
                 if (str.size() < len + YYJSON_PADDING_SIZE)
                     throw std::invalid_argument(
                         "The specified JSON length is greater than the string size with ReadInsitu flag");
-                std::ranges::fill_n(str.begin() + static_cast<std::make_signed_t<decltype(len)>>(len),
-                                    YYJSON_PADDING_SIZE, '\0');
             }
             else if (str.size() < len)
                 throw std::invalid_argument("The specified JSON length is greater than the string size");

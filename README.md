@@ -10,15 +10,16 @@ Ultra-fast and intuitive C++ JSON reader/writer with yyjson backend.
    3. [Serialization and Deserialization](#serialization-and-deserialization)
 4. [Installation](#installation)
    1. [Using CMake](#using-cmake)
-5. [Reference](#reference)
+5. [Benchmark](#benchmark)
+   1. [Read performance](#read-performance)
+   2. [Write performance](#write-performance)
+6. [Reference](#reference)
    1. [Namespaces](#namespaces)
    2. [Immutable JSON classes](#immutable-json-classes)
    3. [Mutable JSON classes](#mutable-json-classes)
    4. [Serialize and deserialize JSON](#serialize-and-deserialize-json)
-   5. [Misc](#misc)
-6. [Performance](#performance)
-   1. [Comparison to C-style yyjson](#comparison-to-c-style-yyjson)
-   2. [Performance best practices](#performance-best-practices)
+   5. [Performance best practices](#performance-best-practices)
+   6. [Misc](#misc)
 7. [Author](#author)
 
 ## Features
@@ -28,7 +29,7 @@ Ultra-fast and intuitive C++ JSON reader/writer with yyjson backend.
 -   STL-like accessors
 -   Intuitive JSON construction
 -   Serialization and deserialization of instances of C++ classes
--   Minimum overhead against C-style coding with yyjson
+-   The minimum overhead compared to yyjson
 -   Object lifetime safety
 
 ## Requirements
@@ -146,7 +147,7 @@ object init_obj = {{"id", 1},
 
 ### Serialization and Deserialization
 
-As shown above, cpp-yyjson provides conversion between JSON value/array/object classes and C++ ranges and container types recursively. In addition to that, conversions to/from `std::optional`, `std::variant` and `std::tuple` ([C++23 tuple-like](https://wg21.link/P2165R4)) are pre-defined. If a user-defined class is registered as [`VISITABLE_STRUCT`](https://github.com/cbeck88/visit_struct), casting to/from JSON object class is supported. Type casters can also be defined by users themselves (see the [reference](#serialize-and-deserialize-json) in detail).
+As shown above, cpp-yyjson provides conversion between JSON value/array/object classes and C++ ranges and container types recursively. In addition to that, conversions to/from `std::optional`, `std::variant`, and `std::tuple` ([C++23 tuple-like](https://wg21.link/P2165R4)) are pre-defined. If a user-defined class is registered as [`VISITABLE_STRUCT`](https://github.com/cbeck88/visit_struct), casting to/from the JSON object class is supported. Type casters can also be defined by users themselves (see the [reference](#serialize-and-deserialize-json) in detail).
 
 ```cpp
 #include "cpp_yyjson.hpp"
@@ -193,7 +194,7 @@ Then add the path `include/cpp_yyjson.hpp` to the include directory of your proj
 
 ### Using CMake
 
-To integrate cpp-yyjson to your CMake project, simply add the following:
+To integrate cpp-yyjson into your CMake project, simply add the following:
 
 ```cmake
 add_subdirectory(<PATH_TO_CLONE_DIR>/cpp-yyjson ${CMAKE_CURRENT_BINARY_DIR}/cpp-yyjson)
@@ -207,15 +208,73 @@ find_package(cpp_yyjson CONFIG REQUIRED)
 target_link_libraries(${PROJECT_NAME} PRIVATE cpp_yyjson::cpp_yyjson)
 ```
 
+## Benchmark
+
+Benchmark results are described to compare the cpp-yyjson with other prominent fast C/C++ JSON libraries: [yyjson](https://github.com/ibireme/yyjson) v0.6.0, [simdjson](https://github.com/simdjson/simdjson) v3.0.1, [rapidjson](https://github.com/Tencent/rapidjson/) #232389d, and [nlohmann-json](https://github.com/nlohmann/json) v3.9.1.
+
+The results are obtained on Ubuntu 22.04, INTEL Core i9-12900K with all E cores and HTT disabled, compiled with GCC 12.1.0. The benchmark programs are in the [`test`](https://github.com/yosh-matsuda/cpp-yyjson/tree/main/test) directory.
+
+### Read performance
+
+In each library, the following options are there for reading JSON. By using the appropriate options for your use case, the best performance can be achieved.
+
+*In-situ parsing*
+: Modify the input JSON string during parsing. This can be used if the string is writable (and/or padded at the end) and can be discarded after parsing. Therefore, this method cannot be used for a given fixed-length read-only JSON string. Alternatively, you can copy the input string once and use in-situ parsing.  
+The [yyjson](https://github.com/ibireme/yyjson) and [simdjson](https://github.com/simdjson/simdjson) require some padding at the end of the JSON string for in-situ parsing but the [rapidjson](https://github.com/Tencent/rapidjson/) does not. For the former libraries, the JSON string must be copied even if it is writable but has a fixed length. The [simdjson](https://github.com/simdjson/simdjson) has two methods for parsing, which are "DOM" and "On Demand". The "On Demand" approach seems to be faster than "DOM" but less flexible because it behaves as a forward iterator like a stream and can only receive padded JSON strings.
+
+*Single buffer*
+: Reuse a single pre-allocated buffer or a parser object for multiple parsing. This is suitable for tasks that repeatedly read multiple JSON strings, e.g. API servers.  
+The [yyjson](https://github.com/ibireme/yyjson) can prepare a pre-allocated buffer and the maximum required size of the buffer can be estimated from the length of the JSON string. The allocator can be given in the same way for the [rapidjson](https://github.com/Tencent/rapidjson/), but we need to clear it explicitly after parsing because the buffer will probably not be released automatically (please let me know if I make a wrong manner). For the [simdjson](https://github.com/simdjson/simdjson), the parser object is reusable to minimize the new allocation cost. Reusing string objects when copying JSON strings for in-situ and padding can also be considered a single buffer.
+
+The benchmarks were performed on each JSON library with all possible patterns with the above options. Classified by the following keywords.
+
+`(no mark)`
+: No option.
+
+`insitu`, `pad`
+: In-situ parsing is used/a padded string is an input.
+
+`dom`, `ond_pad`
+: "DOM" and "On Demand" parsing for the [simdjson](https://github.com/simdjson/simdjson), respectively.
+
+`single`
+: Reuse the parsing and temporal object as much as possible.
+
+`copy`
+: Create a copy of the input string for in-situ parsing or padded string input.
+
+The JSON datasets are from [yyjson_benchmark](https://github.com/ibireme/yyjson_benchmark#json-datasets). Measurements are the median time to parse and iterate all elements with 100 repetitions on [google benchmark](https://github.com/google/benchmark). The time unit is `ms` and the raw logs are available [here](https://github.com/yosh-matsuda/cpp-yyjson/blob/main/test/bench_read.log).
+
+<img src="https://user-images.githubusercontent.com/59041398/219852521-532d17b8-3411-4a7d-99fb-54d50a15b399.png" width="18%"></img>
+<img src="https://user-images.githubusercontent.com/59041398/219852539-1dbca4e7-51f1-40d6-b7d1-ae913f9483c3.png" width="18%"></img>
+<img src="https://user-images.githubusercontent.com/59041398/219852536-3316b5d2-bd31-49d8-b890-398125afcb0f.png" width="18%"></img>
+<img src="https://user-images.githubusercontent.com/59041398/219852533-a1e658a9-6b1c-45fc-a5dd-2491e965b438.png" width="18%"></img>
+<img src="https://user-images.githubusercontent.com/59041398/219852532-39389e3b-356a-4c0a-a657-3951bf1a711a.png" width="18%"></img>
+<img src="https://user-images.githubusercontent.com/59041398/219852531-9d90e661-b08a-4da0-affe-2731edcd7a36.png" width="18%"></img>
+<img src="https://user-images.githubusercontent.com/59041398/219852530-ba2f9c68-90c9-4574-904d-42c0557b81ca.png" width="18%"></img>
+<img src="https://user-images.githubusercontent.com/59041398/219852529-08832280-4f53-4171-a190-8a585c318347.png" width="18%"></img>
+<img src="https://user-images.githubusercontent.com/59041398/219852527-5576b3b2-0ef8-4f59-896f-1d9ddda24fdc.png" width="18%"></img>
+<img src="https://user-images.githubusercontent.com/59041398/219852525-cf3f8021-5e77-4725-b648-ca52b469c178.png" width="18%"></img>
+
+The cpp-yyjson shows a very good read performance, as same as the original [yyjson](https://github.com/ibireme/yyjson). A small overhead of cpp-yyjson compared to the [yyjson](https://github.com/ibireme/yyjson) may be from the pointer wrapped by `std::shared_ptr`.
+
+### Write performance
+
+The write performance is measured by the time it takes to create a large array or object and output it as a JSON string. One option when creating a JSON is to make a copy of the string or not. The [yyjson](https://github.com/ibireme/yyjson) and the [rapidjson](https://github.com/Tencent/rapidjson/) have such as option and make a small difference in speed. The results are obtained by the size of 1,000,000 elements with 100 repetitions on [google benchmark](https://github.com/google/benchmark). The time unit is `ms` and the raw logs are available [here](https://github.com/yosh-matsuda/cpp-yyjson/blob/main/test/bench_write.log).
+
+<img src="https://user-images.githubusercontent.com/59041398/219929351-7b2c6b68-041c-4884-86c6-d1ec58a766d8.png" width="23%"></img> <img src="https://user-images.githubusercontent.com/59041398/219929387-cbdcf5c8-2339-4056-85a5-2ed7df3a0727.png" width="23%"></img> <img src="https://user-images.githubusercontent.com/59041398/219929384-26614557-045d-4263-9904-d4954e0667f5.png" width="23%"></img> <img src="https://user-images.githubusercontent.com/59041398/219929381-64d0b420-7fee-406f-adc8-0a7b07610ec6.png" width="23%"></img> <img src="https://user-images.githubusercontent.com/59041398/219929378-3b6b1435-6a3a-42c1-bf22-b9868b599a48.png" width="23%"></img> <img src="https://user-images.githubusercontent.com/59041398/219929375-a884d380-528e-42f0-ae3f-3021f9515227.png" width="23%"></img> <img src="https://user-images.githubusercontent.com/59041398/219929371-e4565d38-74d3-4a27-8129-1084e4d5b33c.png" width="23%"></img> <img src="https://user-images.githubusercontent.com/59041398/219929368-254705e9-e8ba-43eb-ae39-2caed4a9a357.png" width="23%"></img> <img src="https://user-images.githubusercontent.com/59041398/219929364-aa311520-6e99-48b6-b0bc-fb59893362a6.png" width="23%"></img> <img src="https://user-images.githubusercontent.com/59041398/219929361-4ea4c363-abd9-4538-afa0-b809f68ef23d.png" width="23%"></img> <img src="https://user-images.githubusercontent.com/59041398/219929358-7630c554-9062-455f-a857-bdf7a99e6d39.png" width="23%"></img>
+
+The cpp-yyjson and [yyjson](https://github.com/ibireme/yyjson) show excellent write performance. In some cases, the cpp-yyjson performs slightly better than the original [yyjson](https://github.com/ibireme/yyjson) because it implements an additional *range*-based conversion to a JSON array and object.
+
 ## Reference
 
 ### Namespaces
 
 The `yyjson` namespace includes the following function and classes. Typically, you will start with them for reading and writing JSON.
 
-| Function       |                                                                                                         |
-| -------------- | ------------------------------------------------------------------------------------------------------- |
-| `yyjson::read` | Read a JSON string and return *immutable* JSON document class which is alias of `yyjson::reader::value` |
+|    Function    |                                                                                                            |
+| -------------- | ---------------------------------------------------------------------------------------------------------- |
+| `yyjson::read` | Read a JSON string and return an *immutable* JSON document class which is alias of `yyjson::reader::value` |
 
 | Type             |                                                                |
 | ---------------- | -------------------------------------------------------------- |
@@ -223,7 +282,7 @@ The `yyjson` namespace includes the following function and classes. Typically, y
 | `yyjson::array`  | *Mutable* JSON array class; alias of `yyjson::writer::array`   |
 | `yyjson::object` | *Mutable* JSON object class; alias of `yyjson::writer::object` |
 
-In internal namespaces, the cpp-yyjson provides several JSON value, array, object, reference, and  iterator classes. Each internal `yyjson::reader` and `yyjson::writer` namespace defines *immutable* and *mutable* JSON classes, respectively. Although you rarely need to be aware of the classes provided in the internal namespaces, the *reference* classes are noted here.
+In internal namespaces, the cpp-yyjson provides JSON value, array, object, reference, and  iterator classes. Each internal `yyjson::reader` and `yyjson::writer` namespace defines *immutable* and *mutable* JSON classes, respectively. Although you rarely need to be aware of the classes provided in the internal namespaces, the *reference* classes are noted here.
 
 The JSON value, array, and object classes have the corresponding *reference* (only for *mutable* classes) and *const reference* versions of them as shown later, such as `value_ref`, `const_value_ref`, `array_ref`, `const_array_ref` and so on. The *reference* classes have member functions with almost the same signature as the normal versions. The difference between a normal `value` class and a `[const_]value_ref` class is whether they have their data ownership or not. The *(const) reference* JSON classes appear in return types of member functions of the JSON classes. This is to maximize performance by avoiding copying.
 
@@ -236,7 +295,7 @@ Immutable JSON classes defined in `yyjson::reader` namespace are derived from th
 
 #### `yyjson::read`
 
-Read a JSON string and return *immutable* JSON value. See the reference of yyjson for the information of [reader flags](https://ibireme.github.io/yyjson/doc/doxygen/html/md_doc__a_p_i.html#autotoc_md34).
+Read a JSON string and return an *immutable* JSON value. See the reference of yyjson for the information on [reader flags](https://ibireme.github.io/yyjson/doc/doxygen/html/md_doc__a_p_i.html#autotoc_md34).
 
 ```cpp
 yyjson::reader::value read(std::string_view json_string, [std::size_t len,] [Allocator alc,] ReadFlag = ReadFlag::NoFlag);
@@ -276,7 +335,7 @@ allocator(const allocator&) = default;
 allocator(allocator&&) noexcept = default;
 
 // Allocate specified bytes of buffer
-explicit allocator(std::size_t size);
+explicit allocator(std::size_t size_byte);
 // Allocate a buffer large enough to read the specified JSON string with read flags
 explicit allocator(std::string_view json, ReadFlag flag = ReadFlag::NoFlag);
 ```
@@ -300,7 +359,7 @@ void shrink_to_fit();
 bool check_capacity(std::string_view json, ReadFlag = ReadFlag::NoFlag) const;
 ```
 
-##### `yyjson::reader::stack_allocator<std::size_t N>`
+##### `yyjson::reader::stack_allocator<std::size_t Byte>`
 
 This allocator is based on `std::array` and has a fixed buffer on the stack. The `check_capacity` function should be called to check if the buffer size is sufficient before using it because the `read` function cannot increase the size of the `stack_alloctor` buffer.
 
@@ -460,7 +519,7 @@ std::cout << *val.write(WriteFlag::Prety) << std::endl;
 
 #### `yyjson::reader::const_array_ref`
 
-The immutable JSON array class created by the `value::as_array` member function. This class adapts `std::ranges::input_range` concept.
+The immutable JSON array class is created by the `value::as_array` member function. This class adapts `std::ranges::input_range` concept.
 
 **Construtor**
 
@@ -473,7 +532,7 @@ yyjson::reader::const_array_ref(yyjson::reader::const_array_ref&&) = default;
 **Member function**
 
 ```cpp
-// STL like functions
+// STL-like functions
 yyjson::reader::const_array_iter cbegin() const;
 yyjson::reader::const_array_iter begin() const;
 yyjson::reader::const_array_iter cend() const;
@@ -523,7 +582,7 @@ for (const auto arr = *val.as_array(); const auto& v : arr)  // ✅ OK
 
 #### `yyjson::reader::const_object_ref`
 
-The immutable JSON object class created by the `value::as_object` member function. This class adapts `std::ranges::input_range` concept.
+The immutable JSON object class is created by the `value::as_object` member function. This class adapts `std::ranges::input_range` concept.
 
 **Construtor**
 
@@ -536,7 +595,7 @@ yyjson::reader::const_object_ref(yyjson::reader::const_object_ref&&) = default;
 **Member function**
 
 ```cpp
-// STL like functions
+// STL-like functions
 yyjson::reader::const_object_iter cbegin() const;
 yyjson::reader::const_object_iter begin() const;
 yyjson::reader::const_object_iter cend() const;
@@ -582,7 +641,7 @@ std::cout << *obj["GBP"].as_real() << std::endl;
 
 ### Mutable JSON classes
 
-Mutable JSON classes are defined in `yyjson::writer` namespace. The following user constructible classes are exported in the top `yyjson` namespace as,
+Mutable JSON classes are defined in `yyjson::writer` namespace. The following user-constructible classes are exported in the top `yyjson` namespace as,
 
 ```cpp
 using yyjson::value = yyjson::writer::value;
@@ -743,7 +802,7 @@ auto v_str_cp = value(std::move(stdstr));
 
 #### `yyjson::array`
 
-The mutable JSON array class created by the *range of JSON value constructible* or the `yyjson::value::as_array` member function. This class adapts `std::ranges::input_range` concept.
+The mutable JSON array class is created by the *range of JSON value constructible* or the `yyjson::value::as_array` member function. This class adapts `std::ranges::input_range` concept.
 
 **Constructor**
 
@@ -773,7 +832,7 @@ yyjson::array(yyjson::array&&) = default;
 **Member function**
 
 ```cpp
-// STL like functions
+// STL-like functions
 const_array_iter cbegin() const;
 const_array_iter cend() const;
 const_array_iter begin() const;
@@ -867,7 +926,7 @@ std::cout << *arr.write() << std::endl;
 
 #### `yyjson::object`
 
-The mutable JSON object class created by the *key-value range of JSON value constructible* or the `yyjson::value::as_object` member function. This class adapts `std::ranges::input_range` concept.
+The mutable JSON object class is created by the *key-value range of JSON value constructible* or the `yyjson::value::as_object` member function. This class adapts `std::ranges::input_range` concept.
 
 **Constructor**
 
@@ -897,7 +956,7 @@ yyjson::object(yyjson::object&&) = default;
 **Member function**
 
 ```cpp
-// STL like functions
+// STL-like functions
 const_object_iter cbegin() const;
 const_object_iter cend() const;
 const_object_iter begin() const;
@@ -912,9 +971,9 @@ void clear();
 // Insert value_constructible
 template <value_constructible ValueType>
 object_iter emplace(KeyType&&, ValueType&&, [yyjson::copy_string_t]);
-// Note: O(N), throw std::out_of_range if key is not found
+// Note: O(N), throw std::out_of_range if a key is not found
 yyjson::writer::const_value_ref operator[](std::string_view) const;
-// Note: O(N), construct default value if key is not found
+// Note: O(N), construct default value if a key is not found
 yyjson::writer::value_ref operator[](std::string_view);
 
 // Insert empty array/object
@@ -959,7 +1018,7 @@ See also [Overview](#json-writer).
 ```cpp
 using namespace yyjson;
 
-// Create a new mutable JSON object from key-value-like range
+// Create a new mutable JSON object from a key-value-like range
 auto obj = object(std::map<std::string, std::map<std::string, int>>{{"key0", {{"a", 0}, {"b", 1}}},
                                                                     {"key1", {{"c", 2}, {"d", 3}}}});
 
@@ -1153,6 +1212,8 @@ The first argument type is a target JSON class to create. There are 3 options, `
 
 The casters are applied recursively to convert from/to JSON classes including custom casters. It is not necessary to implement both `from_json` and `to_json` functions, and the two conversions do not have to be symmetric.
 
+### Performance best practices
+
 ### Misc
 
 #### Support for {fmt} format
@@ -1189,12 +1250,6 @@ for (auto&& v : src_vec)
 ```
 
 #### Conversion from immutable to mutable
-
-## Performance
-
-### Comparison to C-style yyjson
-
-### Performance best practices
 
 ## Author
 

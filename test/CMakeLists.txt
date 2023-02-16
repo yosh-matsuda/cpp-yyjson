@@ -32,6 +32,12 @@ else() # WIN32
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
 
+# O3 optimization
+if(NOT MSVC)
+    string(REPLACE "-O2" "-O3" CMAKE_CXX_FLAGS_RELWITHDEBINFO ${CMAKE_CXX_FLAGS_RELWITHDEBINFO})
+    string(REPLACE "-O2" "-O3" CMAKE_CXX_FLAGS_RELEASE ${CMAKE_CXX_FLAGS_RELEASE})
+endif()
+
 # GTest
 find_package(GTest REQUIRED)
 include_directories(${GTEST_INCLUDE_DIRS})
@@ -49,9 +55,16 @@ if(CPPYYJSON_BUILD_BENCH)
     # Google benchmark
     find_package(benchmark REQUIRED)
 
+    # JSON libraries
+    find_package(simdjson CONFIG REQUIRED)
+    find_package(RapidJSON CONFIG REQUIRED)
+    find_package(nlohmann_json CONFIG REQUIRED)
+
     # executables
-    add_executable("${PROJECT_NAME}_bench" bench.cpp)
-    target_link_libraries("${PROJECT_NAME}_bench" PRIVATE ${PROJECT_NAME} benchmark::benchmark)
+    add_executable("${PROJECT_NAME}_bench_read" bench_read.cpp)
+    target_link_libraries("${PROJECT_NAME}_bench_read" PRIVATE ${PROJECT_NAME} benchmark::benchmark simdjson::simdjson rapidjson)
+    add_executable("${PROJECT_NAME}_bench_write" bench_write.cpp)
+    target_link_libraries("${PROJECT_NAME}_bench_write" PRIVATE ${PROJECT_NAME} benchmark::benchmark rapidjson nlohmann_json nlohmann_json::nlohmann_json)
 endif()
 
 # compile commands
