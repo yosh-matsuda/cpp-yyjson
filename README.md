@@ -2,28 +2,47 @@
 
 Ultra-fast and intuitive C++ JSON reader/writer with yyjson backend.
 
+1. [Features](#features)
+2. [Requirements](#requirements)
+3. [Overview](#overview)
+   1. [JSON Reader](#json-reader)
+   2. [JSON Writer](#json-writer)
+   3. [Serialization and Deserialization](#serialization-and-deserialization)
+4. [Installation](#installation)
+   1. [Using CMake](#using-cmake)
+5. [Reference](#reference)
+   1. [Namespaces](#namespaces)
+   2. [Immutable JSON classes](#immutable-json-classes)
+   3. [Mutable JSON classes](#mutable-json-classes)
+   4. [Serialize and deserialize JSON](#serialize-and-deserialize-json)
+   5. [Misc](#misc)
+6. [Performance](#performance)
+   1. [Comparison to C-style yyjson](#comparison-to-c-style-yyjson)
+   2. [Performance best practices](#performance-best-practices)
+7. [Author](#author)
+
 ## Features
 
-*   Header-only
-*   C++20 range adaption
-*   STL-like accessors
-*   Intuitive JSON construction
-*   Serialization and deserialization of instances of C++ classes
-*   Minimum overhead against C-style coding with yyjson
-*   Object lifetime safety
+-   Header-only
+-   C++20 range adaption
+-   STL-like accessors
+-   Intuitive JSON construction
+-   Serialization and deserialization of instances of C++ classes
+-   Minimum overhead against C-style coding with yyjson
+-   Object lifetime safety
 
 ## Requirements
 
-*   C++20 compiler with range supports
-    *   LLVM >= 15.0 (full supports after 16.0)
-    *   GCC >= 12
-*   [yyjson](https://github.com/ibireme/yyjson)
-*   [visit_struct](https://github.com/cbeck88/visit_struct)
-*   [{fmt}](https://github.com/fmtlib/fmt)
-*   [Nameof C++](https://github.com/Neargye/nameof)
-*   [Magic Enum C++](https://github.com/Neargye/magic_enum)
+-   C++20 compiler with range supports
+    -   LLVM >= 15.0 (full supports after 16.0)
+    -   GCC >= 12
+-   [yyjson](https://github.com/ibireme/yyjson)
+-   [visit_struct](https://github.com/cbeck88/visit_struct)
+-   [{fmt}](https://github.com/fmtlib/fmt)
+-   [Nameof C++](https://github.com/Neargye/nameof)
+-   [Magic Enum C++](https://github.com/Neargye/magic_enum)
 
-## Examples
+## Overview
 
 The following is an overview of reading and writing JSON using cpp-yyjson. See the [reference](#reference) for details.
 
@@ -127,7 +146,7 @@ object init_obj = {{"id", 1},
 
 ### Serialization and Deserialization
 
-As shown above, cpp-yyjson provides conversion between JSON value/array/object classes and C++ ranges and container types recursively. In addition to that, conversions to/from `std::optional`, `std::variant` and `std::tuple` ([C++23 tuple-like](https://wg21.link/P2165R4)) are pre-defined. If a user-defined class is registered as [`VISITABLE_STRUCT`](https://github.com/cbeck88/visit_struct), casting to/from JSON object class is supported. Type casters can also be defined by users themselves (see the [reference](#json-serialize-and-deserialize) in detail).
+As shown above, cpp-yyjson provides conversion between JSON value/array/object classes and C++ ranges and container types recursively. In addition to that, conversions to/from `std::optional`, `std::variant` and `std::tuple` ([C++23 tuple-like](https://wg21.link/P2165R4)) are pre-defined. If a user-defined class is registered as [`VISITABLE_STRUCT`](https://github.com/cbeck88/visit_struct), casting to/from JSON object class is supported. Type casters can also be defined by users themselves (see the [reference](#serialize-and-deserialize-json) in detail).
 
 ```cpp
 #include "cpp_yyjson.hpp"
@@ -194,11 +213,11 @@ target_link_libraries(${PROJECT_NAME} PRIVATE cpp_yyjson::cpp_yyjson)
 
 The `yyjson` namespace includes the following function and classes. Typically, you will start with them for reading and writing JSON.
 
-|    Function    |                                                                                                         |
+| Function       |                                                                                                         |
 | -------------- | ------------------------------------------------------------------------------------------------------- |
 | `yyjson::read` | Read a JSON string and return *immutable* JSON document class which is alias of `yyjson::reader::value` |
 
-|       Type       |                                                                |
+| Type             |                                                                |
 | ---------------- | -------------------------------------------------------------- |
 | `yyjson::value`  | *Mutable* JSON value class; alias of `yyjson::writer::value`   |
 | `yyjson::array`  | *Mutable* JSON array class; alias of `yyjson::writer::array`   |
@@ -240,7 +259,7 @@ enum class yyjson::ReadFlag : yyjson_read_flag
 
 The `read` function takes a JSON string and returns an immutable JSON value. The function argument may optionally specify a string length and an allocator to be described later. Otherwise, the length of the JSON string is determined and the yyjson default allocator is used.
 
-If the read option has the [`ReadInsitu`](https://ibireme.github.io/yyjson/doc/doxygen/html/md_doc__a_p_i.html#autotoc_md34) flag, You must specify the JSON string as writable (`std::string&` or `char*`) and its length. This writable string must be padded at least [`YYYYJSON_PADDING_SIZE`](https://ibireme.github.io/yyjson/doc/doxygen/html/yyjson_8h.html#abbe8e69f634b1a5a78c1dae08b88e0ef) bytes to the end. The length of the JSON string should be unpadded.
+If the read option has the [`ReadInsitu`](https://ibireme.github.io/yyjson/doc/doxygen/html/md_doc__a_p_i.html#autotoc_md34) flag, You must specify the JSON string as writable (`std::string&` or `char*`) and its length. This writable string must be padded at least [`YYJSON_PADDING_SIZE`](https://ibireme.github.io/yyjson/doc/doxygen/html/yyjson_8h.html#abbe8e69f634b1a5a78c1dae08b88e0ef) bytes to the end. The length of the JSON string should be unpadded.
 
 This library provides the following two special allocators. Both are pool allocators and are useful for tasks that parse multiple JSON strings with a single buffer. You must be careful not to destroy the allocator or perform any modification operations on the allocator buffer while an instance of the JSON class is in use.
 
@@ -305,7 +324,7 @@ bool check_capacity(std::string_view json, ReadFlag = ReadFlag::NoFlag) const
 
 **Example**
 
-See also [Examples](#json-reader).
+See also [Overview](#json-reader).
 
 ```cpp
 using namespace yyjson;
@@ -376,9 +395,9 @@ std::optional<yyjson::reader::const_array_ref> as_array() const;
 std::optional<yyjson::reader::const_object_ref> as_object() const;
 
 // Cast
-template<tyoename T>
+template<typename T>
 T cast<T>() const;
-template<tyoename T>
+template<typename T>
 explicit operator T() const;
 
 // Output JSON string
@@ -398,7 +417,7 @@ enum class yyjson::WriteFlag : yyjson_write_flag
 
 **Example**
 
-See also [Examples](#json-reader).
+See also [Overview](#json-reader).
 
 ```cpp
 using namespace yyjson;
@@ -466,9 +485,9 @@ std::size_t size() const;
 bool empty() const;
 
 // Cast
-template<tyoename T>
+template<typename T>
 T cast<T>() const;
-template<tyoename T>
+template<typename T>
 explicit operator T() const;
 
 // Output JSON string (inherited)
@@ -481,7 +500,7 @@ std::ranges::range_value_t<yyjson::reader::const_array_ref> -> yyjson::reader::c
 
 **Example**
 
-See also [Examples](#json-reader).
+See also [Overview](#json-reader).
 
 ```cpp
 using namespace yyjson;
@@ -527,9 +546,9 @@ std::size_t size() const;
 bool empty() const;
 
 // Cast
-template<tyoename T>
+template<typename T>
 T cast<T>() const;
-template<tyoename T>
+template<typename T>
 explicit operator T() const;
 
 // Output JSON string (inherited)
@@ -543,7 +562,7 @@ std::ranges::range_value_t<yyjson::reader::const_object_ref> -> yyjson::reader::
 
 **Example**
 
-See also [Examples](#json-reader).
+See also [Overview](#json-reader).
 
 ```cpp
 using namespace yyjson;
@@ -666,9 +685,9 @@ template <value_constructible T>
 yyjson::value& yyjson::value::operator=(pair_like<T, yyjson::copy_string_t>);
 
 // Cast
-template<tyoename T>
+template<typename T>
 T cast<T>() const;
-template<tyoename T>
+template<typename T>
 explicit operator T() const;
 
 // Output JSON string
@@ -683,7 +702,7 @@ JSON arrays and objects are constructed recursively from ranges as long as the *
 
 **Example**
 
-See also [Examples](#json-writer).
+See also [Overview](#json-writer).
 
 ```cpp
 using namespace yyjson;
@@ -778,7 +797,7 @@ array_iter emplace_back(T&&, [yyjson::copy_string_t]);
 template <value_constructible T>
 array_iter emplace_front(T&&, [yyjson::copy_string_t]);
 template <value_constructible T>
-array_iter emplace(std::size_t, T&&, [yyjson::copy_string_t]);
+array_iter emplace(std::size_t, T&&, [yyjson::copy_string_t]);  // Note: O(N)
 
 // Insert empty array/object
 yyjson::writer::array_ref  emplace_back(yyjson::empty_array_t);
@@ -797,9 +816,9 @@ template <array_constructible T>
 yyjson::array& operator=(pair_like<T, yyjson::copy_string_t>);
 
 // Cast
-template<tyoename T>
+template<typename T>
 T cast<T>() const;
-template<tyoename T>
+template<typename T>
 explicit operator T() const;
 
 // Output JSON string
@@ -816,7 +835,7 @@ Iterator classes are not exposed. They are tentatively described as `array_iter`
 
 **Example**
 
-See also [Examples](#json-writer).
+See also [Overview](#json-writer).
 
 ```cpp
 using namespace yyjson;
@@ -893,8 +912,10 @@ void clear();
 // Insert value_constructible
 template <value_constructible ValueType>
 object_iter emplace(KeyType&&, ValueType&&, [yyjson::copy_string_t]);
-yyjson::writer::const_value_ref operator[](std::string_view) const;  // Note: O(N), throw std::out_of_range if key is not found
-yyjson::writer::value_ref operator[](std::string_view);              // Note: O(N), construct default value if key is not found
+// Note: O(N), throw std::out_of_range if key is not found
+yyjson::writer::const_value_ref operator[](std::string_view) const;
+// Note: O(N), construct default value if key is not found
+yyjson::writer::value_ref operator[](std::string_view);
 
 // Insert empty array/object
 yyjson::writer::array_ref  emplace(KeyType&&, yyjson::empty_array_t,  [yyjson::copy_string_t]);
@@ -909,9 +930,9 @@ template <object_constructible T>
 yyjson::object& operator=(pair_like<T, yyjson::copy_string_t>);
 
 // Cast
-template<tyoename T>
+template<typename T>
 T cast<T>() const;
-template<tyoename T>
+template<typename T>
 explicit operator T() const;
 
 // Output JSON string
@@ -933,7 +954,7 @@ Iterator classes are not exposed. They are tentatively described as `obejct_iter
 
 **Example**
 
-See also [Examples](#json-writer).
+See also [Overview](#json-writer).
 
 ```cpp
 using namespace yyjson;
@@ -960,7 +981,7 @@ std::cout << *obj.write() << std::endl;
 // {"key0":{"a":0,"b":1},"key1":{"c":2,"d":3},"key2":{"e":4,"f":5},"key3":{"e":6,"f":7}}
 ```
 
-### JSON serialize and deserialize
+### Serialize and deserialize JSON
 
 #### Pre-defined casters
 
@@ -991,9 +1012,9 @@ Note that the `cast` function and `static_cast` may give a different result. The
 
 In addition, the following STL casters are pre-defined.
 
-*   `std::optional`
-*   `std::variant`
-*   `std::tuple` (and tuple-like classes)
+-   `std::optional`
+-   `std::variant`
+-   `std::tuple` (and tuple-like classes)
 
 If you receive elements of multiple types, casts from/to `std::optional` or `std::variant` are useful.
 
@@ -1065,7 +1086,7 @@ auto x2 = cast<X>(obj1);    // deserialize
 // x2   -> {.a = 1, .b = nullopt, .c = "x"}
 ```
 
-The other way is to specialize the `yyjson::caster<X>` struct template and implement template functions `from_json` and `to_json` for conversion from/to JSON, respectively. Custom conversions always have the highest priority.
+The other way is to specialize the `yyjson::caster` struct template and implement template functions `from_json` and `to_json` for conversion from/to JSON, respectively. Custom conversions always have the highest priority.
 
 The example implementation of the `from_json` template function is as follows. The `from_json` template function has a JSON value as an argument template and must return type `X`.
 
@@ -1134,6 +1155,8 @@ The casters are applied recursively to convert from/to JSON classes including cu
 
 ### Misc
 
+#### Support for {fmt} format
+
 The cpp-yyjson defines a specialization of `fmt::formatter` of the [{fmt}](https://github.com/fmtlib/fmt) library. The JSON classes are formattable as follows:
 
 ```cpp
@@ -1143,6 +1166,8 @@ auto obj = object(...);
 auto json_str = fmt::format("{}", obj);
 fmt::print("{}", obj);
 ```
+
+#### Object dependence safety
 
 Unlike the original yyjson, cpp-yyjson can safely add the same JSON value/array/object to the container multiple times.
 
@@ -1162,6 +1187,8 @@ for (auto&& v : src_vec)
     arr.emplace_back(v);
 }
 ```
+
+#### Conversion from immutable to mutable
 
 ## Performance
 
