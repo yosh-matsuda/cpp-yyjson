@@ -2465,6 +2465,8 @@ TEST(Reader, Constructor)
     static_assert(!std::default_initializable<const_array_ref>);
     static_assert(!std::default_initializable<const_object_ref>);
     static_assert(!std::default_initializable<value>);
+    static_assert(!std::default_initializable<array>);
+    static_assert(!std::default_initializable<object>);
 
     // copy constructor
     static_assert(std::constructible_from<const_value_ref, const const_value_ref&>);
@@ -2479,12 +2481,24 @@ TEST(Reader, Constructor)
     static_assert(std::constructible_from<const_array_ref, const_array_ref&&>);
     static_assert(std::constructible_from<const_array_ref, const const_value_ref&>);
     static_assert(std::constructible_from<const_array_ref, const_value_ref&&>);
+    static_assert(std::constructible_from<const_array_ref, const value&>);
+    static_assert(std::constructible_from<const_array_ref, const array&>);
     static_assert(std::constructible_from<const_object_ref, const const_object_ref&>);
     static_assert(std::constructible_from<const_object_ref, const_object_ref&&>);
     static_assert(std::constructible_from<const_object_ref, const const_value_ref&>);
     static_assert(std::constructible_from<const_object_ref, const_value_ref&&>);
+    static_assert(std::constructible_from<const_object_ref, const value&>);
+    static_assert(std::constructible_from<const_object_ref, const object&>);
     static_assert(std::constructible_from<value, const value&>);
     static_assert(std::constructible_from<value, value&&>);
+    static_assert(std::constructible_from<array, const array&>);
+    static_assert(std::constructible_from<array, array&&>);
+    static_assert(std::constructible_from<array, const value&>);
+    static_assert(std::constructible_from<array, value&&>);
+    static_assert(std::constructible_from<object, const object&>);
+    static_assert(std::constructible_from<object, object&&>);
+    static_assert(std::constructible_from<object, const value&>);
+    static_assert(std::constructible_from<object, value&&>);
 
     // unsupported copy constructor
     static_assert(!std::constructible_from<const_array_ref, const const_object_ref&>);
@@ -2497,6 +2511,18 @@ TEST(Reader, Constructor)
     static_assert(!std::constructible_from<value, const_array_ref&&>);
     static_assert(!std::constructible_from<value, const const_object_ref&>);
     static_assert(!std::constructible_from<value, const_object_ref&&>);
+    static_assert(!std::constructible_from<array, const const_value_ref&>);
+    static_assert(!std::constructible_from<array, const_value_ref&&>);
+    static_assert(!std::constructible_from<array, const const_array_ref&>);
+    static_assert(!std::constructible_from<array, const_array_ref&&>);
+    static_assert(!std::constructible_from<array, const const_object_ref&>);
+    static_assert(!std::constructible_from<array, const_object_ref&&>);
+    static_assert(!std::constructible_from<object, const const_value_ref&>);
+    static_assert(!std::constructible_from<object, const_value_ref&&>);
+    static_assert(!std::constructible_from<object, const const_array_ref&>);
+    static_assert(!std::constructible_from<object, const_array_ref&&>);
+    static_assert(!std::constructible_from<object, const const_object_ref&>);
+    static_assert(!std::constructible_from<object, const_object_ref&&>);
 
     // assign
     static_assert(!std::is_assignable_v<const_value_ref, const const_value_ref&>);
@@ -2505,8 +2531,12 @@ TEST(Reader, Constructor)
     static_assert(!std::is_assignable_v<const_array_ref, const_array_ref&&>);
     static_assert(!std::is_assignable_v<const_object_ref, const const_object_ref&>);
     static_assert(!std::is_assignable_v<const_object_ref, const_object_ref&&>);
-    static_assert(!std::is_assignable_v<value, const value&>);
-    static_assert(!std::is_assignable_v<value, value&&>);
+    static_assert(std::is_assignable_v<value, const value&>);
+    static_assert(std::is_assignable_v<value, value&&>);
+    static_assert(std::is_assignable_v<array, const array&>);
+    static_assert(std::is_assignable_v<array, array&&>);
+    static_assert(std::is_assignable_v<object, const object&>);
+    static_assert(std::is_assignable_v<object, object&&>);
 }
 
 TEST(Reader, ValueConversion)

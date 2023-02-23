@@ -449,9 +449,12 @@ std::optional<std::int64_t> as_sint() const;
 std::optional<std::int64_t> as_int() const;
 std::optional<double> as_real() const;
 std::optional<double> as_num() const;
-std::optional<std::string_view> as_string() const;
-std::optional<yyjson::reader::const_array_ref> as_array() const;
-std::optional<yyjson::reader::const_object_ref> as_object() const;
+std::optional<std::string_view> as_string() const&;
+std::optional<std::string> as_string() &&;
+std::optional<yyjson::reader::const_array_ref> as_array() const&;
+std::optional<yyjson::reader::array> as_array() &&;
+std::optional<yyjson::reader::const_object_ref> as_object() const&;
+std::optional<yyjson::reader::object> as_object() &&;
 
 // Cast
 template<typename T>
@@ -517,13 +520,19 @@ std::cout << *val.write(WriteFlag::Prety) << std::endl;
 // }
 ```
 
-#### `yyjson::reader::const_array_ref`
+#### `yyjson::reader::array`, `yyjson::reader::const_array_ref`
 
 The immutable JSON array class is created by the `value::as_array` member function. This class adapts `std::ranges::input_range` concept.
 
 **Construtor**
 
 ```cpp
+yyjson::reader::array() = delete;
+yyjson::reader::array(const yyjson::reader::array&) = default;
+yyjson::reader::array(yyjson::reader::array&&) = default;
+yyjson::reader::array(const yyjson::reader::value&);
+yyjson::reader::array(yyjson::reader::value&&);
+
 yyjson::reader::const_array_ref() = delete;
 yyjson::reader::const_array_ref(const yyjson::reader::const_array_ref&) = default;
 yyjson::reader::const_array_ref(yyjson::reader::const_array_ref&&) = default;
@@ -580,13 +589,19 @@ for (const auto arr = *val.as_array(); const auto& v : arr)  // ✅ OK
 // 2.0
 ```
 
-#### `yyjson::reader::const_object_ref`
+#### `yyjson::reader::object`, `yyjson::reader::const_object_ref`
 
 The immutable JSON object class is created by the `value::as_object` member function. This class adapts `std::ranges::input_range` concept.
 
 **Construtor**
 
 ```cpp
+yyjson::reader::object() = delete;
+yyjson::reader::object(const yyjson::reader::object&) = default;
+yyjson::reader::object(yyjson::reader::object&&) = default;
+yyjson::reader::object(const yyjson::reader::value&);
+yyjson::reader::object(yyjson::reader::value&&);
+
 yyjson::reader::const_object_ref() = delete;
 yyjson::reader::const_object_ref(const yyjson::reader::const_object_ref&) = default;
 yyjson::reader::const_object_ref(yyjson::reader::const_object_ref&&) = default;

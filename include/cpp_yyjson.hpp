@@ -164,6 +164,8 @@ namespace yyjson
         class const_object_iter;
         class const_object_ref;
         class value;
+        class array;
+        class object;
         using const_key_value_ref_pair = std::pair<key_string, const_value_ref>;
 
         namespace  // NOLINT
@@ -2744,6 +2746,8 @@ namespace yyjson
         class abstract_value_ref
         {
             friend struct writer::detail::mutable_document;
+            friend class array;
+            friend class object;
 
         protected:
             yyjson_val* val_;
@@ -2785,13 +2789,14 @@ namespace yyjson
             friend class const_object_iter;
             friend class const_object_ref;
 
+        protected:
+            const_value_ref& operator=(const const_value_ref&) = default;
+            const_value_ref& operator=(const_value_ref&&) = default;
+
         public:
             const_value_ref() = delete;
             const_value_ref(const const_value_ref&) = default;
             const_value_ref(const_value_ref&&) = default;
-
-            const_value_ref& operator=(const const_value_ref&) = delete;
-            const_value_ref& operator=(const_value_ref&&) = delete;
 
             [[nodiscard]] auto is_null() const noexcept { return yyjson_is_null(val_); }
             [[nodiscard]] auto is_true() const noexcept { return yyjson_is_true(val_); }
@@ -2889,6 +2894,252 @@ namespace yyjson
                 return cast<T>();
             }
         };
+
+        class const_array_iter
+        {
+            friend class const_array_ref;
+
+            yyjson_arr_iter iter_;
+
+            explicit const_array_iter(const yyjson_arr_iter& iter) : iter_(iter) {}
+            explicit const_array_iter(yyjson_arr_iter&& iter) : iter_(std::move(iter)) {}
+
+        public:
+            const_array_iter() = default;
+            using difference_type = std::make_signed_t<std::size_t>;
+            using value_type = const_value_ref;
+            using iterator_concept = std::forward_iterator_tag;
+
+            bool operator==(const const_array_iter& right) const
+            {
+                return std::tie(iter_.idx, iter_.max, iter_.cur) ==
+                       std::tie(right.iter_.idx, right.iter_.max, right.iter_.cur);
+            }
+            bool operator!=(const const_array_iter& right) const { return !(*this == right); }
+
+            const_array_iter& operator++();
+            const_array_iter operator++(int)
+            {
+                auto result = *this;
+                ++*this;
+                return result;
+            }
+            auto operator*() const noexcept { return const_value_ref(iter_.cur); }
+            auto operator->() const noexcept { return detail::proxy(**this); }
+        };
+
+        class const_array_ref : public abstract_value_ref
+        {
+            using base = abstract_value_ref;
+            friend class const_value_ref;
+            friend class const_array_iter;
+
+        protected:
+            [[nodiscard]] static auto array_iter_end() noexcept { return yyjson_arr_iter{0, 0, nullptr}; }
+            [[nodiscard]] auto array_iter_begin() const noexcept
+            {
+                if (yyjson_arr_size(base::val_) == 0) return array_iter_end();
+                auto iter = yyjson_arr_iter();
+                [[maybe_unused]] auto success = yyjson_arr_iter_init(base::val_, &iter);
+                assert(success);
+                return iter;
+            }
+            static void array_iter_next(yyjson_arr_iter& iter) noexcept
+            {
+                if (iter.idx + 1 < iter.max)
+                {
+                    yyjson_arr_iter_next(&iter);
+                }
+                else
+                {
+                    iter = array_iter_end();
+                }
+            }
+            [[nodiscard]] auto array_size() const noexcept { return yyjson_arr_size(base::val_); }
+            [[nodiscard]] auto array_empty() const noexcept { return yyjson_arr_size(base::val_) == 0; }
+            [[nodiscard]] auto array_front() const noexcept { return yyjson_arr_get_first(base::val_); }
+            [[nodiscard]] auto array_back() const noexcept { return yyjson_arr_get_last(base::val_); }
+            [[nodiscard]] auto array_get(std::size_t idx) const noexcept { return yyjson_arr_get(base::val_, idx); }
+
+            explicit const_array_ref(yyjson_val* val) : base(val) {}
+
+            const_array_ref& operator=(const const_array_ref&) = default;
+            const_array_ref& operator=(const_array_ref&&) = default;
+
+        public:
+            const_array_ref(const const_array_ref&) = default;
+            const_array_ref(const_array_ref&&) noexcept = default;
+            explicit const_array_ref(const const_value_ref v) : base(v)
+            {
+                if (!v.is_array()) [[unlikely]]
+                    throw bad_cast("Could not cast to JSON array");
+            }
+
+            [[nodiscard]] auto cbegin() const noexcept { return const_array_iter(array_iter_begin()); }
+            [[nodiscard]] auto cend() const noexcept { return const_array_iter(array_iter_end()); }  // NOLINT
+            [[nodiscard]] auto begin() const noexcept { return cbegin(); }
+            [[nodiscard]] auto end() const noexcept { return cend(); }
+            [[nodiscard]] auto size() const noexcept { return array_size(); }
+            [[nodiscard]] auto empty() const noexcept { return array_empty(); }
+            [[nodiscard]] auto front() const noexcept { return const_value_ref(array_front()); }
+            [[nodiscard]] auto back() const noexcept { return const_value_ref(array_back()); }
+            auto operator[](std::size_t idx) const noexcept { return const_value_ref(array_get(idx)); }
+
+            template <detail::from_json_usr_defined T, typename U = std::remove_cvref_t<T>>
+            U cast() const
+            {
+                return caster<U>::from_json(const_value_ref(base::val_));
+            }
+            template <typename T, typename U = std::remove_cvref_t<T>>
+            requires(!detail::from_json_usr_defined<T>)
+            U cast() const
+            {
+                return detail::default_caster<U>::from_json(*this);
+            }
+            template <typename T>
+            requires(!detail::base_of_value_ref<T>)
+            explicit operator T() const
+            {
+                return cast<T>();
+            }
+        };
+        [[nodiscard]] inline std::optional<const_array_ref> const_value_ref::as_array() const noexcept
+        {
+            if (is_array()) [[likely]]
+                return const_array_ref(base::val_);
+            return std::nullopt;
+        }
+        inline const_array_iter& const_array_iter::operator++()
+        {
+            const_array_ref::array_iter_next(iter_);
+            return *this;
+        }
+
+        class const_object_iter
+        {
+            friend class const_object_ref;
+
+            yyjson_obj_iter iter_;
+
+            explicit const_object_iter(const yyjson_obj_iter& iter) : iter_(iter) {}
+            explicit const_object_iter(yyjson_obj_iter&& iter) : iter_(std::move(iter)) {}
+
+        public:
+            const_object_iter() = default;
+            using difference_type = std::make_signed_t<std::size_t>;
+            using value_type = const_key_value_ref_pair;
+            using iterator_concept = std::forward_iterator_tag;
+
+            bool operator==(const const_object_iter& right) const
+            {
+                return std::tie(iter_.idx, iter_.max, iter_.cur, iter_.obj) ==
+                       std::tie(right.iter_.idx, right.iter_.max, right.iter_.cur, right.iter_.obj);
+            }
+            bool operator!=(const const_object_iter& right) const { return !(*this == right); }
+
+            const_object_iter& operator++();
+            const_object_iter operator++(int)
+            {
+                auto result = *this;
+                ++*this;
+                return result;
+            }
+            auto operator*() const noexcept
+            {
+                return const_key_value_ref_pair(std::string_view(yyjson_get_str(iter_.cur), yyjson_get_len(iter_.cur)),
+                                                const_value_ref(yyjson_obj_iter_get_val(iter_.cur)));
+            }
+            auto operator->() const noexcept { return detail::proxy(**this); }
+        };
+
+        class const_object_ref : public abstract_value_ref
+        {
+            using base = abstract_value_ref;
+            friend class const_value_ref;
+            friend class const_object_iter;
+
+        protected:
+            [[nodiscard]] static auto object_iter_end() noexcept { return yyjson_obj_iter{0, 0, nullptr, nullptr}; }
+            [[nodiscard]] auto object_iter_begin() const noexcept
+            {
+                if (yyjson_obj_size(base::val_) == 0) return object_iter_end();
+                auto iter = yyjson_obj_iter();
+                [[maybe_unused]] auto success = yyjson_obj_iter_init(base::val_, &iter);
+                assert(success);
+                return iter;
+            }
+            static void object_iter_next(yyjson_obj_iter& iter) noexcept
+            {
+                if (iter.idx + 1 < iter.max)
+                {
+                    yyjson_obj_iter_next(&iter);
+                }
+                else
+                {
+                    iter = object_iter_end();
+                }
+            }
+            [[nodiscard]] auto object_size() const noexcept { return yyjson_obj_size(base::val_); }
+            [[nodiscard]] auto object_empty() const noexcept { return yyjson_obj_size(base::val_) == 0; }
+            [[nodiscard]] auto object_get(std::string_view key) const
+            {
+                auto result = yyjson_obj_getn(base::val_, key.data(), key.size());
+                if (result == nullptr) [[unlikely]]
+                    throw std::out_of_range(fmt::format("JSON object key not found: {}", key));
+                return result;
+            }
+
+            explicit const_object_ref(yyjson_val* val) : base(val) {}
+
+            const_object_ref& operator=(const const_object_ref&) = default;
+            const_object_ref& operator=(const_object_ref&&) = default;
+
+        public:
+            const_object_ref(const const_object_ref&) = default;
+            const_object_ref(const_object_ref&&) noexcept = default;
+            explicit const_object_ref(const const_value_ref v) : base(v)
+            {
+                if (!v.is_object()) [[unlikely]]
+                    throw bad_cast("Could not cast to JSON object");
+            }
+
+            [[nodiscard]] auto cbegin() const noexcept { return const_object_iter(object_iter_begin()); }
+            [[nodiscard]] auto cend() const noexcept { return const_object_iter(object_iter_end()); }  // NOLINT
+            [[nodiscard]] auto begin() const noexcept { return cbegin(); }
+            [[nodiscard]] auto end() const noexcept { return cend(); }
+            [[nodiscard]] auto size() const noexcept { return object_size(); }
+            [[nodiscard]] auto empty() const noexcept { return object_empty(); }
+            auto operator[](std::string_view key) const { return const_value_ref(object_get(key)); }
+
+            template <detail::from_json_usr_defined T, typename U = std::remove_cvref_t<T>>
+            U cast() const
+            {
+                return caster<U>::from_json(const_value_ref(base::val_));
+            }
+            template <typename T, typename U = std::remove_cvref_t<T>>
+            requires(!detail::from_json_usr_defined<T>)
+            U cast() const
+            {
+                return detail::default_caster<U>::from_json(*this);
+            }
+            template <typename T>
+            requires(!detail::base_of_value_ref<T>)
+            explicit operator T() const
+            {
+                return cast<T>();
+            }
+        };
+        [[nodiscard]] inline std::optional<const_object_ref> const_value_ref::as_object() const noexcept
+        {
+            if (is_object()) [[likely]]
+                return const_object_ref(base::val_);
+            return std::nullopt;
+        }
+        inline const_object_iter& const_object_iter::operator++()
+        {
+            const_object_ref::object_iter_next(iter_);
+            return *this;
+        }
 
         template <typename T>
         concept yyjson_allocator = (std::same_as<yyjson_alc, std::remove_cvref_t<decltype(std::declval<T>().get())>>) ||
@@ -2998,6 +3249,11 @@ namespace yyjson
             }
 
         public:
+            value(const value&) = default;
+            value(value&&) noexcept = default;
+            value& operator=(const value&) = default;
+            value& operator=(value&&) = default;
+
             [[nodiscard]] auto write(const WriteFlag write_flag = WriteFlag::NoFlag) const
             {
                 auto err = yyjson_write_err();
@@ -3019,7 +3275,69 @@ namespace yyjson
             template <yyjson_allocator Alloc>
             friend value read(char*, std::size_t, Alloc&, ReadFlag);
             friend value read(char* str, std::size_t len, ReadFlag);
+            friend class array;
+            friend class object;
+
+            std::optional<std::string> as_string() && noexcept
+            {
+                if (is_string()) [[likely]]
+                    return std::string(yyjson_get_str(val_), yyjson_get_len(val_));
+                return std::nullopt;
+            };
+            [[nodiscard]] auto as_string() const& noexcept { return base::as_string(); }
+            std::optional<array> as_array() &&;
+            [[nodiscard]] auto as_array() const& noexcept { return base::as_array(); }
+            std::optional<object> as_object() &&;
+            [[nodiscard]] auto as_object() const& noexcept { return base::as_object(); }
         };
+
+        class array final : public const_array_ref
+        {
+            using base = const_array_ref;
+            std::shared_ptr<yyjson_doc> doc_;
+
+        public:
+            array(const array&) = default;
+            array(array&&) noexcept = default;
+            explicit array(const value& v) : base(v.val_), doc_(v.doc_)
+            {
+                if (!v.is_array()) [[unlikely]]
+                    throw bad_cast("Could not cast to JSON array");
+            }
+            explicit array(value&& v) : base(v.val_), doc_(std::move(v.doc_))
+            {
+                if (!v.is_array()) [[unlikely]]
+                    throw bad_cast("Could not cast to JSON array");
+            }
+
+            array& operator=(const array&) = default;
+            array& operator=(array&&) = default;
+        };
+        std::optional<array> value::as_array() && { return array(std::move(*this)); }
+
+        class object final : public const_object_ref
+        {
+            using base = const_object_ref;
+            std::shared_ptr<yyjson_doc> doc_;
+
+        public:
+            object(const object&) = default;
+            object(object&&) noexcept = default;
+            explicit object(const value& v) : base(v.val_), doc_(v.doc_)
+            {
+                if (!v.is_object()) [[unlikely]]
+                    throw bad_cast("Could not cast to JSON object");
+            }
+            explicit object(value&& v) : base(v.val_), doc_(std::move(v.doc_))
+            {
+                if (!v.is_object()) [[unlikely]]
+                    throw bad_cast("Could not cast to JSON object");
+            }
+
+            object& operator=(const object&) = default;
+            object& operator=(object&&) = default;
+        };
+        std::optional<object> value::as_object() && { return object(std::move(*this)); }
 
 #pragma region read
         template <yyjson_allocator Alloc>
@@ -3174,252 +3492,6 @@ namespace yyjson
             return read(std::string_view{str}, read_flag);
         }
 #pragma endregion read
-
-        class const_array_iter
-        {
-            friend class const_array_ref;
-
-            yyjson_arr_iter iter_;
-
-            explicit const_array_iter(const yyjson_arr_iter& iter) : iter_(iter) {}
-            explicit const_array_iter(yyjson_arr_iter&& iter) : iter_(std::move(iter)) {}
-
-        public:
-            const_array_iter() = default;
-            using difference_type = std::make_signed_t<std::size_t>;
-            using value_type = const_value_ref;
-            using iterator_concept = std::forward_iterator_tag;
-
-            bool operator==(const const_array_iter& right) const
-            {
-                return std::tie(iter_.idx, iter_.max, iter_.cur) ==
-                       std::tie(right.iter_.idx, right.iter_.max, right.iter_.cur);
-            }
-            bool operator!=(const const_array_iter& right) const { return !(*this == right); }
-
-            const_array_iter& operator++();
-            const_array_iter operator++(int)
-            {
-                auto result = *this;
-                ++*this;
-                return result;
-            }
-            auto operator*() const noexcept { return const_value_ref(iter_.cur); }
-            auto operator->() const noexcept { return detail::proxy(**this); }
-        };
-
-        class const_array_ref final : public abstract_value_ref
-        {
-            using base = abstract_value_ref;
-            friend class const_value_ref;
-            friend class const_array_iter;
-
-        private:
-            [[nodiscard]] static auto array_iter_end() noexcept { return yyjson_arr_iter{0, 0, nullptr}; }
-            [[nodiscard]] auto array_iter_begin() const noexcept
-            {
-                if (yyjson_arr_size(base::val_) == 0) return array_iter_end();
-                auto iter = yyjson_arr_iter();
-                [[maybe_unused]] auto success = yyjson_arr_iter_init(base::val_, &iter);
-                assert(success);
-                return iter;
-            }
-            static void array_iter_next(yyjson_arr_iter& iter) noexcept
-            {
-                if (iter.idx + 1 < iter.max)
-                {
-                    yyjson_arr_iter_next(&iter);
-                }
-                else
-                {
-                    iter = array_iter_end();
-                }
-            }
-            [[nodiscard]] auto array_size() const noexcept { return yyjson_arr_size(base::val_); }
-            [[nodiscard]] auto array_empty() const noexcept { return yyjson_arr_size(base::val_) == 0; }
-            [[nodiscard]] auto array_front() const noexcept { return yyjson_arr_get_first(base::val_); }
-            [[nodiscard]] auto array_back() const noexcept { return yyjson_arr_get_last(base::val_); }
-            [[nodiscard]] auto array_get(std::size_t idx) const noexcept { return yyjson_arr_get(base::val_, idx); }
-
-            explicit const_array_ref(yyjson_val* val) : base(val) {}
-
-        public:
-            const_array_ref(const const_array_ref&) = default;
-            const_array_ref(const_array_ref&&) noexcept = default;
-            explicit const_array_ref(const const_value_ref v) : base(v)
-            {
-                if (!v.is_array()) [[unlikely]]
-                    throw bad_cast("Could not cast to JSON array");
-            }
-
-            const_array_ref& operator=(const const_array_ref&) = delete;
-            const_array_ref& operator=(const_array_ref&&) = delete;
-
-            [[nodiscard]] auto cbegin() const noexcept { return const_array_iter(array_iter_begin()); }
-            [[nodiscard]] auto cend() const noexcept { return const_array_iter(array_iter_end()); }  // NOLINT
-            [[nodiscard]] auto begin() const noexcept { return cbegin(); }
-            [[nodiscard]] auto end() const noexcept { return cend(); }
-            [[nodiscard]] auto size() const noexcept { return array_size(); }
-            [[nodiscard]] auto empty() const noexcept { return array_empty(); }
-            [[nodiscard]] auto front() const noexcept { return const_value_ref(array_front()); }
-            [[nodiscard]] auto back() const noexcept { return const_value_ref(array_back()); }
-            auto operator[](std::size_t idx) const noexcept { return const_value_ref(array_get(idx)); }
-
-            template <detail::from_json_usr_defined T, typename U = std::remove_cvref_t<T>>
-            U cast() const
-            {
-                return caster<U>::from_json(const_value_ref(base::val_));
-            }
-            template <typename T, typename U = std::remove_cvref_t<T>>
-            requires(!detail::from_json_usr_defined<T>)
-            U cast() const
-            {
-                return detail::default_caster<U>::from_json(*this);
-            }
-            template <typename T>
-            requires(!detail::base_of_value_ref<T>)
-            explicit operator T() const
-            {
-                return cast<T>();
-            }
-        };
-        [[nodiscard]] inline std::optional<const_array_ref> const_value_ref::as_array() const noexcept
-        {
-            if (is_array()) [[likely]]
-                return const_array_ref(base::val_);
-            return std::nullopt;
-        }
-        inline const_array_iter& const_array_iter::operator++()
-        {
-            const_array_ref::array_iter_next(iter_);
-            return *this;
-        }
-
-        class const_object_iter
-        {
-            friend class const_object_ref;
-
-            yyjson_obj_iter iter_;
-
-            explicit const_object_iter(const yyjson_obj_iter& iter) : iter_(iter) {}
-            explicit const_object_iter(yyjson_obj_iter&& iter) : iter_(std::move(iter)) {}
-
-        public:
-            const_object_iter() = default;
-            using difference_type = std::make_signed_t<std::size_t>;
-            using value_type = const_key_value_ref_pair;
-            using iterator_concept = std::forward_iterator_tag;
-
-            bool operator==(const const_object_iter& right) const
-            {
-                return std::tie(iter_.idx, iter_.max, iter_.cur, iter_.obj) ==
-                       std::tie(right.iter_.idx, right.iter_.max, right.iter_.cur, right.iter_.obj);
-            }
-            bool operator!=(const const_object_iter& right) const { return !(*this == right); }
-
-            const_object_iter& operator++();
-            const_object_iter operator++(int)
-            {
-                auto result = *this;
-                ++*this;
-                return result;
-            }
-            auto operator*() const noexcept
-            {
-                return const_key_value_ref_pair(std::string_view(yyjson_get_str(iter_.cur), yyjson_get_len(iter_.cur)),
-                                                const_value_ref(yyjson_obj_iter_get_val(iter_.cur)));
-            }
-            auto operator->() const noexcept { return detail::proxy(**this); }
-        };
-
-        class const_object_ref final : public abstract_value_ref
-        {
-            using base = abstract_value_ref;
-            friend class const_value_ref;
-            friend class const_object_iter;
-
-        protected:
-            [[nodiscard]] static auto object_iter_end() noexcept { return yyjson_obj_iter{0, 0, nullptr, nullptr}; }
-            [[nodiscard]] auto object_iter_begin() const noexcept
-            {
-                if (yyjson_obj_size(base::val_) == 0) return object_iter_end();
-                auto iter = yyjson_obj_iter();
-                [[maybe_unused]] auto success = yyjson_obj_iter_init(base::val_, &iter);
-                assert(success);
-                return iter;
-            }
-            static void object_iter_next(yyjson_obj_iter& iter) noexcept
-            {
-                if (iter.idx + 1 < iter.max)
-                {
-                    yyjson_obj_iter_next(&iter);
-                }
-                else
-                {
-                    iter = object_iter_end();
-                }
-            }
-            [[nodiscard]] auto object_size() const noexcept { return yyjson_obj_size(base::val_); }
-            [[nodiscard]] auto object_empty() const noexcept { return yyjson_obj_size(base::val_) == 0; }
-            [[nodiscard]] auto object_get(std::string_view key) const
-            {
-                auto result = yyjson_obj_getn(base::val_, key.data(), key.size());
-                if (result == nullptr) [[unlikely]]
-                    throw std::out_of_range(fmt::format("JSON object key not found: {}", key));
-                return result;
-            }
-
-            explicit const_object_ref(yyjson_val* val) : base(val) {}
-
-        public:
-            const_object_ref(const const_object_ref&) = default;
-            const_object_ref(const_object_ref&&) noexcept = default;
-            explicit const_object_ref(const const_value_ref v) : base(v)
-            {
-                if (!v.is_object()) [[unlikely]]
-                    throw bad_cast("Could not cast to JSON object");
-            }
-
-            const_object_ref& operator=(const const_object_ref&) = delete;
-            const_object_ref& operator=(const_object_ref&&) = delete;
-
-            [[nodiscard]] auto cbegin() const noexcept { return const_object_iter(object_iter_begin()); }
-            [[nodiscard]] auto cend() const noexcept { return const_object_iter(object_iter_end()); }  // NOLINT
-            [[nodiscard]] auto begin() const noexcept { return cbegin(); }
-            [[nodiscard]] auto end() const noexcept { return cend(); }
-            [[nodiscard]] auto size() const noexcept { return object_size(); }
-            [[nodiscard]] auto empty() const noexcept { return object_empty(); }
-            auto operator[](std::string_view key) const { return const_value_ref(object_get(key)); }
-
-            template <detail::from_json_usr_defined T, typename U = std::remove_cvref_t<T>>
-            U cast() const
-            {
-                return caster<U>::from_json(const_value_ref(base::val_));
-            }
-            template <typename T, typename U = std::remove_cvref_t<T>>
-            requires(!detail::from_json_usr_defined<T>)
-            U cast() const
-            {
-                return detail::default_caster<U>::from_json(*this);
-            }
-            template <typename T>
-            requires(!detail::base_of_value_ref<T>)
-            explicit operator T() const
-            {
-                return cast<T>();
-            }
-        };
-        [[nodiscard]] inline std::optional<const_object_ref> const_value_ref::as_object() const noexcept
-        {
-            if (is_object()) [[likely]]
-                return const_object_ref(base::val_);
-            return std::nullopt;
-        }
-        inline const_object_iter& const_object_iter::operator++()
-        {
-            const_object_ref::object_iter_next(iter_);
-            return *this;
-        }
 
     }  // namespace reader
 
