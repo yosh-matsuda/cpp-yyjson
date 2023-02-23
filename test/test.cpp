@@ -846,24 +846,24 @@ TEST(Writer, ValueExamples)
 
     // nested array with copy_string
     auto str_vector = std::vector{std::string("aaa"), std::string("bbb"), std::string("ccc")};
-    constexpr auto to_str_vec_nocopy = [](auto& vec)
     {
-        auto v = std::vector<std::vector<std::string>>{std::vector<std::string>{}};
-        std::ranges::transform(vec, std::back_inserter(v.front()), [](const auto i) { return fmt::format("{}", i); });
-        auto result = value(v);
-        std::ranges::fill(v.front(), "BAD");
-        return result;
-    };
-    EXPECT_EQ(R"([["BAD","BAD","BAD"]])", fmt::format("{}", to_str_vec_nocopy(str_vector)));
-    constexpr auto to_str_vec_good_copy = [](auto& vec)
+        auto v_temp = std::vector<std::vector<std::string>>{str_vector};
+        auto result = value(v_temp);
+        std::ranges::fill(v_temp.front(), "BAD");
+        EXPECT_EQ(R"([["BAD","BAD","BAD"]])", fmt::format("{}", result));
+    }
     {
-        auto v = std::vector<std::vector<std::string>>{std::vector<std::string>{}};
-        std::ranges::transform(vec, std::back_inserter(v.front()), [](const auto i) { return fmt::format("{}", i); });
-        auto result = value(std::vector<std::vector<std::string>>(v));
-        std::ranges::fill(v.front(), "BAD");
-        return result;
-    };
-    EXPECT_EQ(R"([["aaa","bbb","ccc"]])", fmt::format("{}", to_str_vec_good_copy(str_vector)));
+        auto v_temp = std::vector<std::vector<std::string>>{str_vector};
+        auto result = value(std::vector<std::vector<std::string>>(v_temp));
+        std::ranges::fill(v_temp.front(), "BAD");
+        EXPECT_EQ(R"([["aaa","bbb","ccc"]])", fmt::format("{}", result));
+    }
+    {
+        auto v_temp = std::vector<std::vector<std::string>>{str_vector};
+        auto result = value(v_temp, copy_string);
+        std::ranges::fill(v_temp.front(), "BAD");
+        EXPECT_EQ(R"([["aaa","bbb","ccc"]])", fmt::format("{}", result));
+    }
 
 #if (!defined(__clang__) || __clang_major__ >= 16) || (__GNUC__ >= 12)
     // transform view
@@ -1200,7 +1200,7 @@ TEST(Writer, ArrayConversion)
 
 TEST(Writer, ArrayConstructorExample)
 {
-    using yyjson::copy_string_t;
+    using yyjson::copy_string;
     using namespace yyjson::writer;  // NOLINT
 
     // array
@@ -1234,24 +1234,24 @@ TEST(Writer, ArrayConstructorExample)
 
     // nested array with copy_string
     auto str_vector = std::vector{std::string("aaa"), std::string("bbb"), std::string("ccc")};
-    constexpr auto to_str_vec_nocopy = [](auto& vec)
     {
-        auto v = std::vector<std::vector<std::string>>{std::vector<std::string>{}};
-        std::ranges::transform(vec, std::back_inserter(v.front()), [](const auto i) { return fmt::format("{}", i); });
-        auto result = array(v);
-        std::ranges::fill(v.front(), "BAD");
-        return result;
-    };
-    EXPECT_EQ(R"([["BAD","BAD","BAD"]])", fmt::format("{}", to_str_vec_nocopy(str_vector)));
-    constexpr auto to_str_vec_good_copy = [](auto& vec)
+        auto v_temp = std::vector<std::vector<std::string>>{str_vector};
+        auto result = array(v_temp);
+        std::ranges::fill(v_temp.front(), "BAD");
+        EXPECT_EQ(R"([["BAD","BAD","BAD"]])", fmt::format("{}", result));
+    }
     {
-        auto v = std::vector<std::vector<std::string>>{std::vector<std::string>{}};
-        std::ranges::transform(vec, std::back_inserter(v.front()), [](const auto i) { return fmt::format("{}", i); });
-        auto result = array(std::vector<std::vector<std::string>>(v));
-        std::ranges::fill(v.front(), "BAD");
-        return result;
-    };
-    EXPECT_EQ(R"([["aaa","bbb","ccc"]])", fmt::format("{}", to_str_vec_good_copy(str_vector)));
+        auto v_temp = std::vector<std::vector<std::string>>{str_vector};
+        auto result = array(std::vector<std::vector<std::string>>(v_temp));
+        std::ranges::fill(v_temp.front(), "BAD");
+        EXPECT_EQ(R"([["aaa","bbb","ccc"]])", fmt::format("{}", result));
+    }
+    {
+        auto v_temp = std::vector<std::vector<std::string>>{str_vector};
+        auto result = array(v_temp, copy_string);
+        std::ranges::fill(v_temp.front(), "BAD");
+        EXPECT_EQ(R"([["aaa","bbb","ccc"]])", fmt::format("{}", result));
+    }
 
 #if (!defined(__clang__) || __clang_major__ >= 16) || (__GNUC__ >= 12)
     // transform view
