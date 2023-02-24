@@ -2,25 +2,25 @@
 
 Ultra-fast and intuitive C++ JSON reader/writer with yyjson backend.
 
-1. [Features](#features)
-2. [Requirements](#requirements)
-3. [Overview](#overview)
-   1. [JSON Reader](#json-reader)
-   2. [JSON Writer](#json-writer)
-   3. [Serialization and Deserialization](#serialization-and-deserialization)
-4. [Installation](#installation)
-   1. [Using CMake](#using-cmake)
-5. [Benchmark](#benchmark)
-   1. [Read performance](#read-performance)
-   2. [Write performance](#write-performance)
-6. [Reference](#reference)
-   1. [Namespaces](#namespaces)
-   2. [Immutable JSON classes](#immutable-json-classes)
-   3. [Mutable JSON classes](#mutable-json-classes)
-   4. [Serialize and deserialize JSON](#serialize-and-deserialize-json)
-   5. [Performance best practices](#performance-best-practices)
-   6. [Misc](#misc)
-7. [Author](#author)
+1.  [Features](#features)
+2.  [Requirements](#requirements)
+3.  [Overview](#overview)
+1.  [JSON Reader](#json-reader)
+2.  [JSON Writer](#json-writer)
+3.  [Serialization and Deserialization](#serialization-and-deserialization)
+4.  [Installation](#installation)
+1.  [Using CMake](#using-cmake)
+5.  [Benchmark](#benchmark)
+1.  [Read performance](#read-performance)
+2.  [Write performance](#write-performance)
+6.  [Reference](#reference)
+1.  [Namespaces](#namespaces)
+2.  [Immutable JSON classes](#immutable-json-classes)
+3.  [Mutable JSON classes](#mutable-json-classes)
+4.  [Serialize and deserialize JSON](#serialize-and-deserialize-json)
+5.  [Performance best practices](#performance-best-practices)
+6.  [Misc](#misc)
+7.  [Author](#author)
 
 ## Features
 
@@ -274,7 +274,8 @@ The `yyjson` namespace includes the following function and classes. Typically, y
 
 |    Function    |                                                                                                            |
 | -------------- | ---------------------------------------------------------------------------------------------------------- |
-| `yyjson::read` | Read a JSON string and return an *immutable* JSON document class which is alias of `yyjson::reader::value` |
+| `yyjson::read` | Read a JSON s
+tring and return an *immutable* JSON document class which is alias of `yyjson::reader::value` |
 
 | Type             |                                                                |
 | ---------------- | -------------------------------------------------------------- |
@@ -322,22 +323,22 @@ If the read option has the [`ReadInsitu`](https://ibireme.github.io/yyjson/doc/d
 
 This library provides the following two special allocators. Both are pool allocators and are useful for tasks that parse multiple JSON strings with a single buffer. You must be careful not to destroy the allocator or perform any modification operations on the allocator buffer while an instance of the JSON class is in use.
 
-##### `yyjson::reader::allocator`
+##### `yyjson::reader::pool_allocator`
 
-This allocator is based on `std::vector` and has a buffer on the heap. The `read` function will reallocate the buffer if it is not large enough for the given JSON string.
+This pool_allocator is based on `std::vector` and has a buffer on the heap. The `read` function will reallocate the buffer if it is not large enough for the given JSON string.
 
 **Constructor**
 
 ```cpp
 // Default constructors
-allocator() = default;
-allocator(const allocator&) = default;
-allocator(allocator&&) noexcept = default;
+pool_allocator() = default;
+pool_allocator(const pool_allocator&) = default;
+pool_allocator(pool_allocator&&) noexcept = default;
 
 // Allocate specified bytes of buffer
-explicit allocator(std::size_t size_byte);
+explicit pool_allocator(std::size_t size_byte);
 // Allocate a buffer large enough to read the specified JSON string with read flags
-explicit allocator(std::string_view json, ReadFlag flag = ReadFlag::NoFlag);
+explicit pool_allocator(std::string_view json, ReadFlag flag = ReadFlag::NoFlag);
 ```
 
 **Member function**
@@ -359,7 +360,7 @@ void shrink_to_fit();
 bool check_capacity(std::string_view json, ReadFlag = ReadFlag::NoFlag) const;
 ```
 
-##### `yyjson::reader::stack_allocator<std::size_t Byte>`
+##### `yyjson::reader::stack_pool_allocator<std::size_t Byte>`
 
 This allocator is based on `std::array` and has a fixed buffer on the stack. The `check_capacity` function should be called to check if the buffer size is sufficient before using it because the `read` function cannot increase the size of the `stack_alloctor` buffer.
 
@@ -367,9 +368,9 @@ This allocator is based on `std::array` and has a fixed buffer on the stack. The
 
 ```cpp
 // Default constructors
-stack_allocator() = default;
-stack_allocator(const stack_allocator&) = default;
-stack_allocator(stack_allocator&&) noexcept = default;
+stack_pool_allocator() = default;
+stack_pool_allocator(const stack_pool_allocator&) = default;
+stack_pool_allocator(stack_pool_allocator&&) noexcept = default;
 ```
 
 **Member function**
@@ -407,7 +408,7 @@ auto val = read(json_str, ReadFlag::AllowTrailingCommas);
 
 // Read JSON string with heap allocator and ReadInsitu flag
 auto json_str_insitu = fmt::format("{}{}", json_obj_str, std::string(YYJSON_PADDING_SIZE, '\0'));   // Padded
-auto heap_alloc = reader::allocator();  // Heap allocator can automatically expand the buffer
+auto heap_alloc = reader::pool_allocator();  // Heap allocator can automatically expand the buffer
 auto val = read(json_str_insitu, json_str.size(), heap_alloc, ReadFlag::ReadInsitu);
 ```
 

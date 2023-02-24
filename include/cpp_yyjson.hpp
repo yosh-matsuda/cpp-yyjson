@@ -3148,10 +3148,10 @@ namespace yyjson
         template <yyjson_allocator Alloc>
         value read(char*, std::size_t, Alloc&, ReadFlag = ReadFlag::NoFlag);
 
-        class allocator
+        class pool_allocator
         {
             template <std::size_t N>
-            friend class stack_allocator;
+            friend class stack_pool_allocator;
 
             struct alignas(alignof(char)) char_like
             {
@@ -3169,11 +3169,11 @@ namespace yyjson
             yyjson_alc alc_ = init_allocator();
 
         public:
-            allocator() = default;
-            allocator(const allocator&) = default;
-            allocator(allocator&&) noexcept = default;
-            explicit allocator(std::size_t size_byte) : buf_(size_byte) {}
-            explicit allocator(std::string_view json, ReadFlag flag = ReadFlag::NoFlag)
+            pool_allocator() = default;
+            pool_allocator(const pool_allocator&) = default;
+            pool_allocator(pool_allocator&&) noexcept = default;
+            explicit pool_allocator(std::size_t size_byte) : buf_(size_byte) {}
+            explicit pool_allocator(std::string_view json, ReadFlag flag = ReadFlag::NoFlag)
                 : buf_(yyjson_read_max_memory_usage(json.size(), magic_enum::enum_integer(flag)))
             {
             }
@@ -3212,9 +3212,9 @@ namespace yyjson
         };
 
         template <std::size_t Byte>
-        class stack_allocator
+        class stack_pool_allocator
         {
-            std::array<allocator::char_like, Byte> buf_;
+            std::array<pool_allocator::char_like, Byte> buf_;
             yyjson_alc alc_ = init();
             yyjson_alc init()
             {
@@ -3227,9 +3227,9 @@ namespace yyjson
             auto& get() & { return alc_; }
             const auto& get() const& { return alc_; }
             auto get() && { return std::move(alc_); }
-            stack_allocator() = default;
-            stack_allocator(const stack_allocator&) = default;
-            stack_allocator(stack_allocator&&) noexcept = default;
+            stack_pool_allocator() = default;
+            stack_pool_allocator(const stack_pool_allocator&) = default;
+            stack_pool_allocator(stack_pool_allocator&&) noexcept = default;
             [[nodiscard]] constexpr auto size() const { return buf_.size(); }
             [[nodiscard]] bool check_capacity(std::string_view json, ReadFlag flag = ReadFlag::NoFlag) const
             {
@@ -3360,7 +3360,7 @@ namespace yyjson
                     if (!alc.check_capacity({str, len}, read_flag))
                     {
                         throw std::runtime_error(
-                            fmt::format("Insufficient capacity in the allocator pool for {}", NAMEOF_TYPE(Alloc)));
+                            fmt::format("Insufficient capacity in the pool allocator for {}", NAMEOF_TYPE(Alloc)));
                     }
                 }
                 result = yyjson_read_opts(str, len, magic_enum::enum_integer(read_flag), &alc.get(), &err);

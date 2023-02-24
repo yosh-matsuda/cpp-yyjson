@@ -622,7 +622,7 @@ void read_cpp_yyjson_single(benchmark::State& state)
 {
     using namespace yyjson;
     const auto json = read_file(std::get<0>(json_files[state.range(0)]));
-    auto alloc = reader::allocator(json);
+    auto alloc = reader::pool_allocator(json);
     for (auto _ : state)
     {
         auto counter = json_count();
@@ -648,7 +648,7 @@ void read_cpp_yyjson_insitu_single(benchmark::State& state)
 {
     using namespace yyjson;
     const auto json = read_file(std::get<0>(json_files[state.range(0)]));
-    auto alloc = reader::allocator(json, ReadFlag::ReadInsitu);
+    auto alloc = reader::pool_allocator(json, ReadFlag::ReadInsitu);
     for (auto _ : state)
     {
         auto counter = json_count();
@@ -675,7 +675,7 @@ void read_cpp_yyjson_insitu_single_copy(benchmark::State& state)
 {
     using namespace yyjson;
     const auto json = read_file(std::get<0>(json_files[state.range(0)]));
-    auto alloc = reader::allocator(json, ReadFlag::ReadInsitu);
+    auto alloc = reader::pool_allocator(json, ReadFlag::ReadInsitu);
     for (auto _ : state)
     {
         auto counter = json_count();

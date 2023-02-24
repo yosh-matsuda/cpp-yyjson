@@ -2415,9 +2415,9 @@ TEST(Reader, Allocator)
     using namespace std::literals::string_literals;
     using namespace std::string_view_literals;
 
-    auto h_alloc = reader::allocator();
-    auto s_alloc_s = reader::stack_allocator<10>();
-    auto s_alloc_l = reader::stack_allocator<512>();
+    auto h_alloc = reader::pool_allocator();
+    auto s_alloc_s = reader::stack_pool_allocator<10>();
+    auto s_alloc_l = reader::stack_pool_allocator<512>();
     auto result = std::string();
 
     auto json_str = "[1,2,3,4,5]"sv;
