@@ -2471,7 +2471,7 @@ namespace yyjson
                     auto object_append(Key&& key, T&& json_value, Ts... ts) noexcept
                     {
                         auto prev = static_cast<yyjson_mut_val*>(base::val_->uni.ptr);
-                        const auto add_key = create_primitive(std::forward<Key>(key), ts...);
+                        const auto add_key = base::doc_.create_primitive(std::forward<Key>(key), ts...);
 
                         if constexpr (!std::is_assignable_v<decltype(json_value.get_has_parent()), bool>)
                         {
@@ -2524,7 +2524,7 @@ namespace yyjson
                     auto object_append(Key&& key, T&& json_value, Ts... ts) noexcept
                     {
                         auto prev = static_cast<yyjson_mut_val*>(base::val_->uni.ptr);
-                        const auto add_key = create_primitive(std::forward<Key>(key), ts...);
+                        const auto add_key = base::doc_.create_primitive(std::forward<Key>(key), ts...);
                         auto val_copy = base::doc_.copy_value(json_value);
                         [[maybe_unused]] auto success = yyjson_mut_obj_add(base::val_, add_key, val_copy);
                         assert(success);
