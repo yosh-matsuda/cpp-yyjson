@@ -2,25 +2,25 @@
 
 Ultra-fast and intuitive C++ JSON reader/writer with yyjson backend.
 
-1.  [Features](#features)
-2.  [Requirements](#requirements)
-3.  [Overview](#overview)
-1.  [JSON Reader](#json-reader)
-2.  [JSON Writer](#json-writer)
-3.  [Serialization and Deserialization](#serialization-and-deserialization)
-4.  [Installation](#installation)
-1.  [Using CMake](#using-cmake)
-5.  [Benchmark](#benchmark)
-1.  [Read performance](#read-performance)
-2.  [Write performance](#write-performance)
-6.  [Reference](#reference)
-1.  [Namespaces](#namespaces)
-2.  [Immutable JSON classes](#immutable-json-classes)
-3.  [Mutable JSON classes](#mutable-json-classes)
-4.  [Serialize and deserialize JSON](#serialize-and-deserialize-json)
-5.  [Performance best practices](#performance-best-practices)
-6.  [Misc](#misc)
-7.  [Author](#author)
+1. [Features](#features)
+2. [Requirements](#requirements)
+3. [Overview](#overview)
+   1. [JSON Reader](#json-reader)
+   2. [JSON Writer](#json-writer)
+   3. [Serialization and Deserialization](#serialization-and-deserialization)
+4. [Installation](#installation)
+   1. [Using CMake](#using-cmake)
+5. [Benchmark](#benchmark)
+   1. [Read performance](#read-performance)
+   2. [Write performance](#write-performance)
+6. [Reference](#reference)
+   1. [Namespaces](#namespaces)
+   2. [Immutable JSON classes](#immutable-json-classes)
+   3. [Mutable JSON classes](#mutable-json-classes)
+   4. [Serialize and deserialize JSON](#serialize-and-deserialize-json)
+   5. [Performance best practices](#performance-best-practices)
+   6. [Misc](#misc)
+7. [Author](#author)
 
 ## Features
 
@@ -1230,6 +1230,85 @@ The casters are applied recursively to convert from/to JSON classes including cu
 
 ### Performance best practices
 
+Creating a new `yyjson::value`, `yyjson::array`, or `yyjson::object` is expensive. This is one point we should be aware of when building JSON to maximize performance.
+
+#### (1) JSON array/object construction
+
+Although JSON arrays and objects can be constructed from `std::initializer_list<value>`, which is useful and intuitive, using `std::tuple` and `std::pair` is more efficient as it avoids the construction of `yyjson::value`. The drawback is that you have to write the type in every bracket.
+
+```cpp
+using namespace yyjson;
+
+// 🙁 Construction from std::initializer_list is costly
+object json = {{"id", 1},
+               {"pi", 3.141592},
+               {"name", "example"},
+               {"array", {0, 1, 2, 3, 4}},
+               {"currency", {{"USD", 129.66}, {"EUR", 140.35}, {"GBP", 158.72}}},
+               {"success", true}};
+
+// 🙄 Construction from std::tuple is efficient, but it seems tedious to have to write the type every time.
+object json = std::tuple{std::pair{"id", 1},
+                         std::pair{"pi", 3.141592},
+                         std::pair{"name", "example"},
+                         std::pair{"array", std::tuple{0, 1, 2, 3, 4}},
+                         std::pair{"currency", std::tuple{std::pair{"USD", 129.66}, std::pair{"EUR", 140.35},
+                                                          std::pair{"GBP", 158.72}}},
+                         std::pair{"success", true}};
+```
+
+#### (2) JSON array/object insertion
+
+When creating a nested JSON array or object, it is more efficient to insert an empty array/object rather than to construct a new array/object.
+
+```cpp
+using namespace yyjson;
+
+auto obj = object();
+
+// 🙁 Create a new object and insert it
+auto nested = object();
+obj.emplace("currency", nested);
+
+// 😀 Insert an empty object and use returned object reference
+auto nested = obj.emplace("currency", empty_object);
+
+nested.emplace("USD", 129.66);
+nested.emplace("EUR", 140.35);
+nested.emplace("GBP", 158.72);
+```
+
+#### (3) Multi-threaded JSON construction
+
+On the other hand, creating a new array/object may be useful for the multi-threaded construction of large JSON. The following example creates a 1000x1000000 JSON array with 4-thread using [`BS::thread_pool`](https://github.com/bshoshany/thread-pool). In this example, a speedup of about 3x compared to single threading was measured.
+
+```cpp
+#include "BS_thread_pool.hpp"
+
+using namespace yyjson;
+
+auto nums = std::vector<double>(1000000);
+std::iota(nums.begin(), nums.end(), 0);
+
+// Multi-threaded construction of 1000x1000000 JSON array
+auto tp = BS::thread_pool(4);
+auto parallel_results = tp.parallelize_loop(0, 1000,
+                                            [&nums](const int a, const int b)
+                                            {
+                                                auto result = std::vector<array>();
+                                                result.reserve(b - a);
+                                                for (int i = a; i < b; ++i) result.emplace_back(nums);
+                                                return result;
+                                            }).get();
+auto arr = yyjson::array();
+for (auto&& vec : parallel_results)
+    for (auto&& a : vec) arr.emplace_back(std::move(a));
+
+// Single-threaded version equivalent to the above
+auto arr = yyjson::array();
+for (auto i = 0; i < 1000; ++i) arr.emplace_back(nums);
+```
+
 ### Misc
 
 #### Support for {fmt} format
@@ -1266,6 +1345,30 @@ for (auto&& v : src_vec)
 ```
 
 #### Conversion from immutable to mutable
+
+If you want to make an immutable JSON instance writable, convert it to a mutable type.
+
+```cpp
+using namespace yyjson;
+
+std::string_view json_str = R"(
+{
+    "id": 1,
+    "pi": 3.141592,
+    "name": "🫠",
+    "array": [0, 1, 2, 3, 4],
+    "currency": {
+        "USD": 129.66,
+        "EUR": 140.35,
+        "GBP": 158.72
+    },
+    "success": true
+})";
+
+// Read JSON string and make mutable
+auto obj = object(read(json_str));
+obj["name"] = "❤️";
+```
 
 ## Author
 
