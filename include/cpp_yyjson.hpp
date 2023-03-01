@@ -2304,7 +2304,7 @@ namespace yyjson
                     {
                         auto key = iter_.cur->next->next;
                         assert(yyjson_mut_is_str(key));
-                        return key_value_ref_pair(std::string_view(yyjson_mut_get_str(key)),
+                        return key_value_ref_pair(std::string_view(yyjson_mut_get_str(key), yyjson_mut_get_len(key)),
                                                   value_ref(parent_->doc_, yyjson_mut_obj_iter_get_val(key)));
                     }
                     auto operator->() const noexcept { return proxy(**this); }
@@ -3153,16 +3153,11 @@ namespace yyjson
             template <std::size_t N>
             friend class stack_pool_allocator;
 
-            struct alignas(alignof(char)) char_like
-            {
-                char _;
-                char_like() noexcept { static_assert(sizeof *this == sizeof _, "invalid size"); }
-            };
-
+            using char_like = char;
             yyjson_alc init_allocator()
             {
                 yyjson_alc alc;
-                yyjson_alc_pool_init(&alc, static_cast<void*>(buf_.data()), buf_.size());
+                yyjson_alc_pool_init(&alc, buf_.data(), buf_.size());
                 return alc;
             }
             std::vector<char_like> buf_;
@@ -3219,7 +3214,7 @@ namespace yyjson
             yyjson_alc init()
             {
                 yyjson_alc alc;
-                yyjson_alc_pool_init(&alc, static_cast<void*>(buf_.data()), buf_.size());
+                yyjson_alc_pool_init(&alc, buf_.data(), buf_.size());
                 return alc;
             }
 
@@ -3347,7 +3342,7 @@ namespace yyjson
             yyjson_doc* result;
             if constexpr (std::same_as<yyjson_alc, Alloc>)
             {
-                result = result = yyjson_read_opts(str, len, magic_enum::enum_integer(read_flag), &alc, &err);
+                result = yyjson_read_opts(str, len, magic_enum::enum_integer(read_flag), &alc, &err);
             }
             else
             {

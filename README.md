@@ -74,7 +74,7 @@ auto obj = *read(json_str).as_object();
 // Key access to the JSON object class
 auto id = *obj["id"].as_int();
 auto pi = *obj["pi"].as_real();
-auto name = *obj["pi"].as_string();
+auto name = *obj["name"].as_string();
 auto success = *obj["success"].as_bool();
 
 // JSON array/object classes adapt the range concept
@@ -245,16 +245,16 @@ The benchmarks were performed on each JSON library with all possible patterns wi
 
 The JSON datasets are from [yyjson_benchmark](https://github.com/ibireme/yyjson_benchmark#json-datasets). Measurements are the median time to parse and iterate all elements with 100 repetitions on [google benchmark](https://github.com/google/benchmark). The time unit is `ms` and the raw logs are available [here](https://github.com/yosh-matsuda/cpp-yyjson/blob/main/test/bench_read.log).
 
-<img src="https://user-images.githubusercontent.com/59041398/219852521-532d17b8-3411-4a7d-99fb-54d50a15b399.png" width="18%"></img>
-<img src="https://user-images.githubusercontent.com/59041398/219852539-1dbca4e7-51f1-40d6-b7d1-ae913f9483c3.png" width="18%"></img>
-<img src="https://user-images.githubusercontent.com/59041398/219852536-3316b5d2-bd31-49d8-b890-398125afcb0f.png" width="18%"></img>
-<img src="https://user-images.githubusercontent.com/59041398/219852533-a1e658a9-6b1c-45fc-a5dd-2491e965b438.png" width="18%"></img>
-<img src="https://user-images.githubusercontent.com/59041398/219852532-39389e3b-356a-4c0a-a657-3951bf1a711a.png" width="18%"></img>
-<img src="https://user-images.githubusercontent.com/59041398/219852531-9d90e661-b08a-4da0-affe-2731edcd7a36.png" width="18%"></img>
-<img src="https://user-images.githubusercontent.com/59041398/219852530-ba2f9c68-90c9-4574-904d-42c0557b81ca.png" width="18%"></img>
-<img src="https://user-images.githubusercontent.com/59041398/219852529-08832280-4f53-4171-a190-8a585c318347.png" width="18%"></img>
-<img src="https://user-images.githubusercontent.com/59041398/219852527-5576b3b2-0ef8-4f59-896f-1d9ddda24fdc.png" width="18%"></img>
-<img src="https://user-images.githubusercontent.com/59041398/219852525-cf3f8021-5e77-4725-b648-ca52b469c178.png" width="18%"></img>
+<img src="https://user-images.githubusercontent.com/59041398/222045668-9c2d0d89-d204-4b72-aca0-0e48fe3b0675.png" width="18%"></img>
+<img src="https://user-images.githubusercontent.com/59041398/222045694-d44e9bdd-b275-4ed5-83a3-7a3bd9b89da1.png" width="18%"></img>
+<img src="https://user-images.githubusercontent.com/59041398/222045693-16288a45-2a4c-4fec-9e98-1dcb1290494f.png" width="18%"></img>
+<img src="https://user-images.githubusercontent.com/59041398/222045689-d375a98a-9d7c-4803-951e-968c60005568.png" width="18%"></img>
+<img src="https://user-images.githubusercontent.com/59041398/222045685-bb79ba1f-7dbe-4880-9a90-6048638c09ca.png" width="18%"></img>
+<img src="https://user-images.githubusercontent.com/59041398/222045684-fdc40c6f-6cca-4b65-b1ee-24d2e0e1bd2d.png" width="18%"></img>
+<img src="https://user-images.githubusercontent.com/59041398/222045682-e20e95e8-ed44-4bbe-a54b-c7cffdf4ba61.png" width="18%"></img>
+<img src="https://user-images.githubusercontent.com/59041398/222045678-9183e40b-77ea-467b-9692-6d8025781be0.png" width="18%"></img>
+<img src="https://user-images.githubusercontent.com/59041398/222045676-55fc581e-0471-4bfa-b1fd-b41fe38e2250.png" width="18%"></img>
+<img src="https://user-images.githubusercontent.com/59041398/222045674-87c6f9db-1723-41ac-a57f-165d0e1b3068.png" width="18%"></img>
 
 The cpp-yyjson shows a very good read performance, as same as the original [yyjson](https://github.com/ibireme/yyjson). A small overhead of cpp-yyjson compared to the [yyjson](https://github.com/ibireme/yyjson) may be from the pointer wrapped by `std::shared_ptr`.
 
