@@ -16,7 +16,6 @@
 #include <ranges>
 #include <unordered_map>
 #include <vector>
-#include <visit_struct/visit_struct.hpp>
 
 namespace yyjson
 {
@@ -59,6 +58,11 @@ namespace yyjson
     struct empty_object_t
     {
     } inline constexpr empty_object;
+
+    template <typename...>
+    class visit_struct : public std::false_type
+    {
+    };
 
     template <typename T>
     struct caster
@@ -131,7 +135,7 @@ namespace yyjson
             concept is_initializer_list = requires(T d) { []<typename X>(const std::initializer_list<X>&) {}(d); };
 
             template <typename T>
-            concept visitable = visit_struct::traits::is_visitable<T>::value;
+            concept visitable = visit_struct<T>::value;
 
             template <typename T>
             concept back_insertable =
@@ -3503,21 +3507,7 @@ namespace yyjson
                  (std::same_as<reader::const_object_ref, Json> || writer::detail::base_of_object<Json>)
         static auto from_json(const Json& obj)
         {
-            auto kv_map =
-                std::unordered_map<std::string_view, typename std::ranges::range_value_t<decltype(obj)>::second_type>(
-                    obj.size());
-            for (auto&& kv : obj) kv_map.emplace(std::move(kv));
-
-            auto result = T();
-            visit_struct::for_each(result,
-                                   [&kv_map]<typename V>(std::string_view name, V& value)
-                                   {
-                                       if (const auto it = kv_map.find(name); it != kv_map.end())
-                                       {
-                                           value = cast<V>(it->second);
-                                       }
-                                   });
-            return result;
+            return visit_struct<T>::from_json(obj);
         }
         template <typename Json>
         requires std::default_initializable<T> && (!visitable<T>) && std::ranges::input_range<T> &&
@@ -3678,15 +3668,13 @@ namespace yyjson
         requires visitable<T>
         static auto to_json(writer::object_ref& obj, const T& t, Ts... ts)
         {
-            visit_struct::for_each(t, [&obj, ts...]<typename V>(std::string_view name, const V& value)
-                                   { obj.emplace(std::move(name), value, ts...); });
+            visit_struct<T>::to_json(obj, t, ts...);
         }
         template <copy_string_args... Ts>
         requires visitable<T>
         static auto to_json(writer::object_ref& obj, T&& t, Ts... ts)
         {
-            visit_struct::for_each(t, [&obj, ts...]<typename V>(std::string_view name, V&& value)
-                                   { obj.emplace(std::move(name), std::move(value), ts...); });
+            visit_struct<T>::to_json(obj, std::move(t), ts...);
         }
     };
 
@@ -3940,3 +3928,81 @@ public:
         return fmt::format_to(ctx.out(), "{}", *t.write());
     }
 };
+
+#define CPPYYJSON_STRIGIFY_IMPL(x) #x
+#define STRIGIFY(x) CPPYYJSON_STRIGIFY_IMPL(x)
+#define CPPYYJSON_CONCAT_IMPL(x, y) x##y
+#define CPPYYJSON_CONCAT(x, y) CPPYYJSON_CONCAT_IMPL(x, y)
+#define CPPYYJSON_INDEX_SEQ()                                                                                        \
+    32, 31, 30, 29, 28, 27, 26, 25, 24, 23, 22, 21, 20, 19, 18, 17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, \
+        2, 1, 0
+#define CPPYYJSON_VA_ARGS_SIZE_IMPL_(_1, _2, _3, _4, _5, _6, _7, _8, _9, _10, _11, _12, _13, _14, _15, _16, _17, _18, \
+                                     _19, _20, _21, _22, _23, _24, _25, _26, _27, _28, _29, _30, _31, _32, N, ...)    \
+    N
+#define CPPYYJSON_VA_ARGS_SIZE_IMPL(...) CPPYYJSON_VA_ARGS_SIZE_IMPL_(__VA_ARGS__)
+#define CPPYYJSON_VA_ARGS_SIZE(...) CPPYYJSON_VA_ARGS_SIZE_IMPL(__VA_ARGS__, CPPYYJSON_INDEX_SEQ())
+#define CPPYYJSON_FOR_EACH_IMPL_1(FUNC, _1) FUNC(_1)
+#define CPPYYJSON_FOR_EACH_IMPL_2(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_1(FUNC, __VA_ARGS__)
+#define CPPYYJSON_FOR_EACH_IMPL_3(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_2(FUNC, __VA_ARGS__)
+#define CPPYYJSON_FOR_EACH_IMPL_4(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_3(FUNC, __VA_ARGS__)
+#define CPPYYJSON_FOR_EACH_IMPL_5(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_4(FUNC, __VA_ARGS__)
+#define CPPYYJSON_FOR_EACH_IMPL_6(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_5(FUNC, __VA_ARGS__)
+#define CPPYYJSON_FOR_EACH_IMPL_7(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_6(FUNC, __VA_ARGS__)
+#define CPPYYJSON_FOR_EACH_IMPL_8(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_7(FUNC, __VA_ARGS__)
+#define CPPYYJSON_FOR_EACH_IMPL_9(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_8(FUNC, __VA_ARGS__)
+#define CPPYYJSON_FOR_EACH_IMPL_10(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_9(FUNC, __VA_ARGS__)
+#define CPPYYJSON_FOR_EACH_IMPL_11(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_10(FUNC, __VA_ARGS__)
+#define CPPYYJSON_FOR_EACH_IMPL_12(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_11(FUNC, __VA_ARGS__)
+#define CPPYYJSON_FOR_EACH_IMPL_13(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_12(FUNC, __VA_ARGS__)
+#define CPPYYJSON_FOR_EACH_IMPL_14(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_13(FUNC, __VA_ARGS__)
+#define CPPYYJSON_FOR_EACH_IMPL_15(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_14(FUNC, __VA_ARGS__)
+#define CPPYYJSON_FOR_EACH_IMPL_16(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_15(FUNC, __VA_ARGS__)
+#define CPPYYJSON_FOR_EACH_IMPL_17(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_16(FUNC, __VA_ARGS__)
+#define CPPYYJSON_FOR_EACH_IMPL_18(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_17(FUNC, __VA_ARGS__)
+#define CPPYYJSON_FOR_EACH_IMPL_19(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_18(FUNC, __VA_ARGS__)
+#define CPPYYJSON_FOR_EACH_IMPL_20(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_19(FUNC, __VA_ARGS__)
+#define CPPYYJSON_FOR_EACH_IMPL_21(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_20(FUNC, __VA_ARGS__)
+#define CPPYYJSON_FOR_EACH_IMPL_22(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_21(FUNC, __VA_ARGS__)
+#define CPPYYJSON_FOR_EACH_IMPL_23(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_22(FUNC, __VA_ARGS__)
+#define CPPYYJSON_FOR_EACH_IMPL_24(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_23(FUNC, __VA_ARGS__)
+#define CPPYYJSON_FOR_EACH_IMPL_25(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_24(FUNC, __VA_ARGS__)
+#define CPPYYJSON_FOR_EACH_IMPL_26(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_25(FUNC, __VA_ARGS__)
+#define CPPYYJSON_FOR_EACH_IMPL_27(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_26(FUNC, __VA_ARGS__)
+#define CPPYYJSON_FOR_EACH_IMPL_29(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_28(FUNC, __VA_ARGS__)
+#define CPPYYJSON_FOR_EACH_IMPL_31(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_30(FUNC, __VA_ARGS__)
+#define CPPYYJSON_FOR_EACH_IMPL_32(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_31(FUNC, __VA_ARGS__)
+#define CPPYYJSON_FOR_EACH(FUNC, ...) \
+    CPPYYJSON_CONCAT(CPPYYJSON_FOR_EACH_IMPL_, CPPYYJSON_VA_ARGS_SIZE(__VA_ARGS__))(FUNC, __VA_ARGS__)
+
+#define VISITABLE_STRUCT_IMPL1(X)                           \
+    if (key == #X)                                          \
+        result.X = yyjson::cast<decltype(result.X)>(value); \
+    else
+#define VISITABLE_STRUCT_IMPL2(X) obj.emplace(std::string_view(#X), t.X, ts...);
+#define VISITABLE_STRUCT_IMPL3(X) obj.emplace(std::string_view(#X), std::move(t.X), ts...);
+#define VISITABLE_STRUCT(CLASS, ...)                                                          \
+    static_assert(std::default_initializable<CLASS>, #CLASS " is not default initializable"); \
+    template <>                                                                               \
+    struct yyjson::visit_struct<CLASS> : public std::true_type                                \
+    {                                                                                         \
+        template <typename Json>                                                              \
+        static auto from_json(const Json& obj)                                                \
+        {                                                                                     \
+            auto result = CLASS();                                                            \
+            for (auto&& [key, value] : obj)                                                   \
+            {                                                                                 \
+                CPPYYJSON_FOR_EACH(VISITABLE_STRUCT_IMPL1, __VA_ARGS__) {}                    \
+            }                                                                                 \
+            return result;                                                                    \
+        }                                                                                     \
+        template <typename... Ts>                                                             \
+        static auto to_json(writer::object_ref& obj, const CLASS& t, Ts... ts)                \
+        {                                                                                     \
+            CPPYYJSON_FOR_EACH(VISITABLE_STRUCT_IMPL2, __VA_ARGS__)                           \
+        }                                                                                     \
+        template <typename... Ts>                                                             \
+        static auto to_json(writer::object_ref& obj, CLASS&& t, Ts... ts)                     \
+        {                                                                                     \
+            CPPYYJSON_FOR_EACH(VISITABLE_STRUCT_IMPL3, __VA_ARGS__)                           \
+        }                                                                                     \
+    }

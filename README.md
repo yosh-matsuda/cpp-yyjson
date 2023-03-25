@@ -38,7 +38,6 @@ Ultra-fast and intuitive C++ JSON reader/writer with yyjson backend.
     -   LLVM >= 15.0 (full supports after 16.0)
     -   GCC >= 12
 -   [yyjson](https://github.com/ibireme/yyjson)
--   [visit_struct](https://github.com/cbeck88/visit_struct)
 -   [{fmt}](https://github.com/fmtlib/fmt)
 -   [Nameof C++](https://github.com/Neargye/nameof)
 -   [Magic Enum C++](https://github.com/Neargye/magic_enum)
@@ -147,7 +146,7 @@ object init_obj = {{"id", 1},
 
 ### Serialization and Deserialization
 
-As shown above, cpp-yyjson provides conversion between JSON value/array/object classes and C++ ranges and container types recursively. In addition to that, conversions to/from `std::optional`, `std::variant`, and `std::tuple` ([C++23 tuple-like](https://wg21.link/P2165R4)) are pre-defined. If a user-defined class is registered as [`VISITABLE_STRUCT`](https://github.com/cbeck88/visit_struct), casting to/from the JSON object class is supported. Type casters can also be defined by users themselves (see the [reference](#serialize-and-deserialize-json) in detail).
+As shown above, cpp-yyjson provides conversion between JSON value/array/object classes and C++ ranges and container types recursively. In addition to that, conversions to/from `std::optional`, `std::variant`, and `std::tuple` ([C++23 tuple-like](https://wg21.link/P2165R4)) are pre-defined. If a user-defined class is registered to `VISITABLE_STRUCT` macro, casting to/from the JSON object class is supported. Type casters can also be defined by users themselves (see the [reference](#serialize-and-deserialize-json) in detail).
 
 ```cpp
 #include "cpp_yyjson.hpp"
@@ -187,7 +186,7 @@ auto deserialized = cast<X>(serialized);    // deserialize JSON object into stru
 To use cpp-yyjson, the dependent packages are required to be installed. It is convenient to use [vcpkg](https://github.com/microsoft/vcpkg) to install the packages:
 
 ```bash
-$ ./vcpkg install yyjson visit-struct fmt nameof magic-enum
+$ ./vcpkg install yyjson fmt nameof magic-enum
 ```
 
 Then add the path `include/cpp_yyjson.hpp` to the include directory of your project.
@@ -1152,7 +1151,7 @@ auto tpl_obj2 = cast<decltype(tpl_obj)>(json_obj);          // deserialize
 
 #### User-defined casters
 
-If you want to perform a custom conversion from/to your specified types, there are two methods. The first way is to register your type as `VISITABLE_STRUCT` provided by [visit_struct](https://github.com/cbeck88/visit_struct). See the documentation of [visit_struct](https://github.com/cbeck88/visit_struct) for details on making your struct *visitable*. This allows the field names in the struct to match the key names in the JSON object.
+If you want to perform a custom conversion from/to your specified types, there are two methods. The first way is to register your type to `VISITABLE_STRUCT` macro. This allows the field names in the struct to match the key names in the JSON object.
 
 ```cpp
 struct X
