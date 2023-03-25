@@ -105,18 +105,18 @@ namespace yyjson
             // https://github.com/cor3ntin/gcc/tree/tuple_pair2
             template <typename T, std::size_t N>  // clang-format off
             constexpr bool is_tuple_element = requires(T t) {
-                                                    typename std::tuple_element_t<N - 1, std::remove_const_t<T>>;
-                                                    {std::get<N - 1>(t)} -> std::convertible_to<std::tuple_element_t<N - 1, T>&>;
-                                                } && is_tuple_element<T, N - 1>;  // clang-format on
+                typename std::tuple_element_t<N - 1, std::remove_const_t<T>>;
+                {std::get<N - 1>(t)} -> std::convertible_to<std::tuple_element_t<N - 1, T>&>;
+            } && is_tuple_element<T, N - 1>;  // clang-format on
 
             template <typename T>
             constexpr bool is_tuple_element<T, 0> = true;
 
             template <typename T, typename U = std::remove_cvref_t<T>>
             concept tuple_like = requires {
-                                     typename std::tuple_size<U>::value_type;
-                                     requires std::same_as<typename std::tuple_size<U>::value_type, std::size_t>;
-                                 } && is_tuple_element<U, std::tuple_size_v<U>>;
+                typename std::tuple_size<U>::value_type;
+                requires std::same_as<typename std::tuple_size<U>::value_type, std::size_t>;
+            } && is_tuple_element<U, std::tuple_size_v<U>>;
 
             template <typename T>
             concept pair_like = tuple_like<T> && std::tuple_size_v<std::remove_cvref_t<T>> == 2;
@@ -138,8 +138,8 @@ namespace yyjson
                 std::ranges::range<T> && requires(T& t, std::ranges::range_value_t<T> v) { t.push_back(v); };
 
             template <typename... Args>
-            concept copy_string_args = ((sizeof...(Args) == 1 && (std::same_as<Args, copy_string_t> && ...)) ||
-                                        sizeof...(Args) == 0);
+            concept copy_string_args =
+                ((sizeof...(Args) == 1 && (std::same_as<Args, copy_string_t> && ...)) || sizeof...(Args) == 0);
 
             template <std::ranges::range R, typename T>
             using forward_element_type =
@@ -176,13 +176,19 @@ namespace yyjson
 
                 template <typename T>
                 concept from_json_usr_defined =  // clang-format off
-                    requires(const const_value_ref& v) { {caster<T>::from_json(v)} -> std::same_as<T>; };  // clang-format on
+                    requires(const const_value_ref& v) {
+                        {caster<T>::from_json(v)} -> std::same_as<T>;
+                    };  // clang-format on
                 template <typename T>
                 concept from_json_def_obj_defined =  // clang-format off
-                    requires(const const_object_ref& v) { {default_caster<T>::from_json(v)} -> std::same_as<T>; };  // clang-format on
+                    requires(const const_object_ref& v) {
+                        {default_caster<T>::from_json(v)} -> std::same_as<T>;
+                    };  // clang-format on
                 template <typename T>
                 concept from_json_def_arr_defined =  // clang-format off
-                    requires(const const_array_ref& v) { {default_caster<T>::from_json(v)} -> std::same_as<T>; };  // clang-format on
+                    requires(const const_array_ref& v) {
+                        {default_caster<T>::from_json(v)} -> std::same_as<T>;
+                    };  // clang-format on
 
                 template <class Derived>
                 concept base_of_value_ref = requires(Derived d) { [](const abstract_value_ref&) {}(d); };
@@ -268,25 +274,22 @@ namespace yyjson
                 concept to_json_usr_noext =
                     requires(T&& t) { caster<std::remove_cvref_t<T>>::to_json(std::forward<T>(t)); };
                 template <typename T>
-                concept to_json_usr_only_ext =
-                    requires(T&& t) {
-                        caster<std::remove_cvref_t<T>>::to_json(std::forward<T>(t), copy_string);
-                    };  // clang-format on
+                concept to_json_usr_only_ext = requires(T&& t) {
+                    caster<std::remove_cvref_t<T>>::to_json(std::forward<T>(t), copy_string);
+                };  // clang-format on
                 template <typename T>
                 concept to_json_usr_ext = to_json_usr_noext<T> && to_json_usr_only_ext<T>;
                 template <typename T>
                 concept to_json_usr = to_json_usr_ext<T> || to_json_usr_noext<T> || to_json_usr_only_ext<T>;
 
                 template <typename V, typename T>
-                concept to_json_inp_usr_noext =
-                    requires(V& v, T&& t) {  // clang-format off
-                        caster<std::remove_cvref_t<T>>::to_json(v, std::forward<T>(t));
-                    } && (std::same_as<V, value_ref> || std::same_as<V, array_ref> || std::same_as<V, object_ref>);  // clang-format on
+                concept to_json_inp_usr_noext = requires(V& v, T&& t) {
+                    caster<std::remove_cvref_t<T>>::to_json(v, std::forward<T>(t));
+                } && (std::same_as<V, value_ref> || std::same_as<V, array_ref> || std::same_as<V, object_ref>);
                 template <typename V, typename T>
-                concept to_json_inp_usr_only_ext =
-                    requires(V& v, T&& t) {
-                        caster<std::remove_cvref_t<T>>::to_json(v, std::forward<T>(t), copy_string);
-                    } && (std::same_as<V, value_ref> || std::same_as<V, array_ref> || std::same_as<V, object_ref>);
+                concept to_json_inp_usr_only_ext = requires(V& v, T&& t) {
+                    caster<std::remove_cvref_t<T>>::to_json(v, std::forward<T>(t), copy_string);
+                } && (std::same_as<V, value_ref> || std::same_as<V, array_ref> || std::same_as<V, object_ref>);
                 template <typename V, typename T>
                 concept to_json_inp_usr_ext = to_json_inp_usr_noext<V, T> && to_json_inp_usr_only_ext<V, T>;
                 template <typename V, typename T>
@@ -302,18 +305,18 @@ namespace yyjson
                 concept to_json_inp_usr_defined = to_json_val_usr<T> || to_json_arr_usr<T> || to_json_obj_usr<T>;
 
                 template <typename T>
-                concept to_json_def = requires(T&& t) {  // clang-format off
+                concept to_json_def = requires(T&& t) {
                     default_caster<std::remove_cvref_t<T>>::to_json(std::forward<T>(t), copy_string);
                     default_caster<std::remove_cvref_t<T>>::to_json(std::forward<T>(t));
-                } && (!to_json_usr<T>);  // clang-format on
+                } && (!to_json_usr<T>);
 
                 template <typename V, typename T>
                 concept to_json_inp_def =
                     requires(V& v, T&& t) {
                         default_caster<std::remove_cvref_t<T>>::to_json(v, std::forward<T>(t), copy_string);
                         default_caster<std::remove_cvref_t<T>>::to_json(v, std::forward<T>(t));
-                    } && (!to_json_inp_usr<V, T>) &&
-                    (std::same_as<V, value_ref> || std::same_as<V, array_ref> || std::same_as<V, object_ref>);
+                    } && (!to_json_inp_usr<V, T>)&&(std::same_as<V, value_ref> || std::same_as<V, array_ref> ||
+                                                    std::same_as<V, object_ref>);
                 template <typename T>
                 concept to_json_val_def = to_json_inp_def<value_ref, T>;
                 template <typename T>
@@ -346,17 +349,17 @@ namespace yyjson
                     return caster<std::remove_cvref_t<T>>::to_json(std::forward<T>(t), ts...);
                 }
                 template <to_json_usr_noext T, copy_string_args... Ts>
-                requires(!to_json_usr_ext<T>)  // clang-format off
+                requires (!to_json_usr_ext<T>)
                 auto to_json_wrapper(T&& t, Ts...)
                 {
                     return caster<std::remove_cvref_t<T>>::to_json(std::forward<T>(t));
-                }  // clang-format on
+                }
                 template <to_json_usr_only_ext T, copy_string_args... Ts>
-                requires(!to_json_usr_ext<T>)  // clang-format off
+                requires (!to_json_usr_ext<T>)
                 auto to_json_wrapper(T&& t, Ts...)
                 {
                     return caster<std::remove_cvref_t<T>>::to_json(std::forward<T>(t), copy_string);
-                }  // clang-format on
+                }
 
                 template <typename V, typename T, copy_string_args... Ts>
                 requires to_json_inp_def<V, T>
@@ -409,23 +412,23 @@ namespace yyjson
 #pragma endregion caster
 
                 template <typename T, typename DocType = mutable_document>
-                concept create_primitive_callable = (!base_of_value<T>) && (!reader::detail::base_of_value_ref<T>) &&
-                                                    requires(T&& t, DocType doc) {
-                                                        doc.create_primitive(std::forward<T>(t));
-                                                        doc.create_primitive(std::forward<T>(t), copy_string);
-                                                    };
+                concept create_primitive_callable =
+                    (!base_of_value<T>)&&(!reader::detail::base_of_value_ref<T>)&&requires(T&& t, DocType doc) {
+                        doc.create_primitive(std::forward<T>(t));
+                        doc.create_primitive(std::forward<T>(t), copy_string);
+                    };
                 template <typename T, typename DocType = mutable_document>
-                concept create_array_callable = (!base_of_value<T>) && (!reader::detail::base_of_value_ref<T>) &&
-                                                requires(T&& t, DocType doc) {
-                                                    doc.create_array(std::forward<T>(t));
-                                                    doc.create_array(std::forward<T>(t), copy_string);
-                                                };
+                concept create_array_callable =
+                    (!base_of_value<T>)&&(!reader::detail::base_of_value_ref<T>)&&requires(T&& t, DocType doc) {
+                        doc.create_array(std::forward<T>(t));
+                        doc.create_array(std::forward<T>(t), copy_string);
+                    };
                 template <typename T, typename DocType = mutable_document>
-                concept create_object_callable = (!base_of_value<T>) && (!reader::detail::base_of_value_ref<T>) &&
-                                                 requires(T&& t, DocType doc) {
-                                                     doc.create_object(std::forward<T>(t));
-                                                     doc.create_object(std::forward<T>(t), copy_string);
-                                                 };
+                concept create_object_callable =
+                    (!base_of_value<T>)&&(!reader::detail::base_of_value_ref<T>)&&requires(T&& t, DocType doc) {
+                        doc.create_object(std::forward<T>(t));
+                        doc.create_object(std::forward<T>(t), copy_string);
+                    };
 
                 template <typename T>
                 concept create_value_callable =
@@ -433,8 +436,8 @@ namespace yyjson
 
                 template <typename T>
                 concept convertible_to_create_primitive_callable = requires(T&& t) {  // clang-format off
-                    { convert(std::forward<T>(t)) } -> create_primitive_callable;
-                    { convert(std::forward<T>(t), copy_string) } -> create_primitive_callable;
+                    {convert(std::forward<T>(t))} -> create_primitive_callable;
+                    {convert(std::forward<T>(t), copy_string)} -> create_primitive_callable;
                 };  // clang-format on
                 template <typename T>
                 concept convertible_to_create_array_callable = requires(T&& t) {  // clang-format off
@@ -459,13 +462,11 @@ namespace yyjson
 
                 struct mutable_document
                 {
-                    std::shared_ptr<mutable_document_ptrs> ptrs =
-                        std::shared_ptr<mutable_document_ptrs>(new mutable_document_ptrs(),
-                                                               [](mutable_document_ptrs* raw_ptr)
-                                                               {
-                                                                   yyjson_mut_doc_free(raw_ptr->self);
-                                                                   delete raw_ptr;
-                                                               });
+                    std::shared_ptr<mutable_document_ptrs> ptrs = std::shared_ptr<mutable_document_ptrs>(
+                        new mutable_document_ptrs(), [](mutable_document_ptrs* raw_ptr) {
+                            yyjson_mut_doc_free(raw_ptr->self);
+                            delete raw_ptr;
+                        });
 
                     template <base_of_object V>
                     requires V::is_mutable_reference
@@ -506,7 +507,7 @@ namespace yyjson
                         return yyjson_mut_bool(ptrs->self, v);
                     }
                     template <std::unsigned_integral T, copy_string_args... Ts>
-                    requires(!std::same_as<T, bool>)
+                    requires (!std::same_as<T, bool>)
                     auto create_primitive(T v, Ts...) noexcept
                     {
                         return yyjson_mut_uint(ptrs->self, v);
@@ -562,7 +563,7 @@ namespace yyjson
                         return vr.val_;
                     }
                     template <typename T, copy_string_args... Ts>
-                    requires(!to_json_inp_defined<T>) && convertible_to_create_primitive_callable<T>
+                    requires (!to_json_inp_defined<T>) && convertible_to_create_primitive_callable<T>
                     auto create_primitive(T&& t, Ts... ts) noexcept
                     {
                         // T -(convert)-> value
@@ -580,7 +581,7 @@ namespace yyjson
                         return yyjson_mut_arr(ptrs->self);
                     }
                     template <typename T, copy_string_args... Ts>
-                    requires(!to_json_arr_defined<T>) && convertible_to_create_array_callable<T>
+                    requires (!to_json_arr_defined<T>) && convertible_to_create_array_callable<T>
                     auto create_array(T&& t, Ts... ts) noexcept
                     {
                         // T -(convert)-> array
@@ -710,7 +711,7 @@ namespace yyjson
                         return yyjson_mut_obj(ptrs->self);
                     }
                     template <typename T, copy_string_args... Ts>
-                    requires(!to_json_obj_defined<T>) && convertible_to_create_object_callable<T>
+                    requires (!to_json_obj_defined<T>) && convertible_to_create_object_callable<T>
                     auto create_object(T&& t, Ts... ts) noexcept
                     {
                         // T -(convert)-> object
@@ -833,13 +834,13 @@ namespace yyjson
                         return create_primitive(std::forward<T>(t), ts...);
                     }
                     template <create_array_callable T, copy_string_args... Ts>
-                    requires(!create_primitive_callable<T>) && (!create_object_callable<T>)
+                    requires (!create_primitive_callable<T>) && (!create_object_callable<T>)
                     auto create_value(T&& t, Ts... ts) noexcept
                     {
                         return create_array(std::forward<T>(t), ts...);
                     }
                     template <create_object_callable T, copy_string_args... Ts>
-                    requires(!create_primitive_callable<T>)
+                    requires (!create_primitive_callable<T>)
                     auto create_value(T&& t, Ts... ts) noexcept
                     {
                         return create_object(std::forward<T>(t), ts...);
@@ -1269,13 +1270,13 @@ namespace yyjson
                         return caster<U>::from_json(const_value_ref(doc_, val_));
                     }
                     template <typename T, typename U = std::remove_cvref_t<T>>
-                    requires(!from_json_usr_defined<T>)
+                    requires (!from_json_usr_defined<T>)
                     U cast() const
                     {
                         return default_caster<U>::from_json(const_value_ref(doc_, val_));
                     }
                     template <typename T>
-                    requires(!base_of_value<T>)
+                    requires (!base_of_value<T>)
                     explicit operator T() const
                     {
                         return cast<T>();
@@ -1283,8 +1284,7 @@ namespace yyjson
 
                     [[nodiscard]] auto write(WriteFlag write_flag = WriteFlag::NoFlag) const
                     {
-                        const auto write_func = [this]<typename... Args>(Args&&... args)
-                        {
+                        const auto write_func = [this]<typename... Args>(Args&&... args) {
                             const auto write_doc =
                                 doc_.ptrs->self != nullptr && val_ == yyjson_mut_doc_get_root(doc_.ptrs->self);
                             return write_doc ? yyjson_mut_write_opts(doc_.ptrs->self, std::forward<Args>(args)...)
@@ -1297,12 +1297,10 @@ namespace yyjson
                         if (result != nullptr) [[likely]]
                         {
                             auto sv_ptr = new std::string_view(result, len);
-                            return std::shared_ptr<std::string_view>(sv_ptr,
-                                                                     [result](auto* ptr)
-                                                                     {
-                                                                         delete ptr;
-                                                                         std::free(result);
-                                                                     });
+                            return std::shared_ptr<std::string_view>(sv_ptr, [result](auto* ptr) {
+                                delete ptr;
+                                std::free(result);
+                            });
                         }
                         throw std::runtime_error(fmt::format("write JSON error: {}", err.msg));
                     }
@@ -1435,7 +1433,7 @@ namespace yyjson
                         return *this;
                     }
                     template <create_value_callable T>
-                    requires(!base_of_value<T>) && (!reader::detail::base_of_value_ref<T>)
+                    requires (!base_of_value<T>) && (!reader::detail::base_of_value_ref<T>)
                     mutable_value_base& operator=(T&& t)
                     {
                         [[maybe_unused]] auto result = base::doc_.set_value(base::val_, std::forward<T>(t));
@@ -1554,12 +1552,12 @@ namespace yyjson
                     yyjson_mut_arr_iter iter_;
 
                     explicit array_iter(mutable_array_base<DocType>& parent, const yyjson_mut_arr_iter& iter)
-                    requires(!std::is_const_v<std::remove_reference_t<DocType>>)
+                    requires (!std::is_const_v<std::remove_reference_t<DocType>>)
                         : parent_(&parent), iter_(iter)
                     {
                     }
                     explicit array_iter(mutable_array_base<DocType>& parent, yyjson_mut_arr_iter&& iter)
-                    requires(!std::is_const_v<std::remove_reference_t<DocType>>)
+                    requires (!std::is_const_v<std::remove_reference_t<DocType>>)
                         : parent_(&parent), iter_(std::move(iter))
                     {
                     }
@@ -1715,7 +1713,7 @@ namespace yyjson
                         return default_caster<U>::from_json(const_array_ref(*this));
                     }
                     template <typename T>
-                    requires(!base_of_value<T>)
+                    requires (!base_of_value<T>)
                     explicit operator T() const
                     {
                         return cast<T>();
@@ -2027,7 +2025,7 @@ namespace yyjson
                         return result;
                     }
                     template <create_value_callable T, copy_string_args... Ts>
-                    requires(!base_of_value<T>) && (!reader::detail::base_of_value_ref<T>)
+                    requires (!base_of_value<T>) && (!reader::detail::base_of_value_ref<T>)
                     auto emplace_back(T&& t, Ts... ts) noexcept
                     {
                         return array_iter<DocType>(*this, array_append(std::forward<T>(t), ts...));
@@ -2075,7 +2073,7 @@ namespace yyjson
                         return result;
                     }
                     template <create_value_callable T, copy_string_args... Ts>
-                    requires(!base_of_value<T>) && (!reader::detail::base_of_value_ref<T>)
+                    requires (!base_of_value<T>) && (!reader::detail::base_of_value_ref<T>)
                     auto emplace_front(T&& t, Ts... ts) noexcept
                     {
                         return array_iter<DocType>(*this, array_prepend(std::forward<T>(t), ts...));
@@ -2123,7 +2121,7 @@ namespace yyjson
                         return result;
                     }
                     template <create_value_callable T, copy_string_args... Ts>
-                    requires(!base_of_value<T>) && (!reader::detail::base_of_value_ref<T>)
+                    requires (!base_of_value<T>) && (!reader::detail::base_of_value_ref<T>)
                     auto emplace(const std::size_t idx, T&& t, Ts... ts) noexcept
                     {
                         return array_iter<DocType>(*this, array_insert(idx, std::forward<T>(t), ts...));
@@ -2160,12 +2158,12 @@ namespace yyjson
                     auto erase(const std::size_t idx) noexcept { array_erase(idx); }
                     void clear() noexcept { array_clear(); }
                     [[nodiscard]] auto begin() noexcept
-                    requires(!std::is_const_v<std::remove_reference_t<DocType>>)
+                    requires (!std::is_const_v<std::remove_reference_t<DocType>>)
                     {
                         return array_iter<DocType>(*this, base::array_iter_begin());
                     }
                     [[nodiscard]] auto end() noexcept
-                    requires(!std::is_const_v<std::remove_reference_t<DocType>>)
+                    requires (!std::is_const_v<std::remove_reference_t<DocType>>)
                     {
                         return array_iter<DocType>(*this, base::array_iter_end());
                     }
@@ -2433,7 +2431,7 @@ namespace yyjson
                         return default_caster<U>::from_json(const_object_ref(*this));
                     }
                     template <typename T>
-                    requires(!base_of_value<T>)
+                    requires (!base_of_value<T>)
                     explicit operator T() const
                     {
                         return cast<T>();
@@ -2633,7 +2631,7 @@ namespace yyjson
                         return result;
                     }
                     template <key_type KeyType, create_value_callable T, copy_string_args... Ts>
-                    requires(!base_of_value<T>) && (!reader::detail::base_of_value_ref<T>)
+                    requires (!base_of_value<T>) && (!reader::detail::base_of_value_ref<T>)
                     auto emplace(KeyType&& key, T&& t, Ts... ts) noexcept
                     {
                         return object_iter<DocType>(
@@ -2676,12 +2674,12 @@ namespace yyjson
                     auto erase(const std::string_view key) noexcept { object_erase(key); }
                     void clear() noexcept { object_clear(); }
                     [[nodiscard]] auto begin() noexcept
-                    requires(!std::is_const_v<std::remove_reference_t<DocType>>)
+                    requires (!std::is_const_v<std::remove_reference_t<DocType>>)
                     {
                         return object_iter<DocType>(*this, base::object_iter_begin());
                     }
                     [[nodiscard]] auto end() noexcept
-                    requires(!std::is_const_v<std::remove_reference_t<DocType>>)
+                    requires (!std::is_const_v<std::remove_reference_t<DocType>>)
                     {
                         return object_iter<DocType>(*this, base::object_iter_end());
                     }
@@ -2769,12 +2767,10 @@ namespace yyjson
                 if (result != nullptr)
                 {
                     auto sv_ptr = new std::string_view(result, len);
-                    return std::shared_ptr<std::string_view>(sv_ptr,
-                                                             [result](auto* ptr)
-                                                             {
-                                                                 delete ptr;
-                                                                 std::free(result);
-                                                             });
+                    return std::shared_ptr<std::string_view>(sv_ptr, [result](auto* ptr) {
+                        delete ptr;
+                        std::free(result);
+                    });
                 }
                 throw std::runtime_error(fmt::format("write JSON error: {}", err.msg));
             }
@@ -2881,14 +2877,14 @@ namespace yyjson
                 return caster<U>::from_json(*this);
             }
             template <typename T, typename U = std::remove_cvref_t<T>>
-            requires(!detail::from_json_usr_defined<T>)
+            requires (!detail::from_json_usr_defined<T>)
             U cast() const
             {
                 return detail::default_caster<U>::from_json(*this);
             }
 
             template <typename T>
-            requires(!detail::base_of_value_ref<T>)
+            requires (!detail::base_of_value_ref<T>)
             explicit operator T() const
             {
                 return cast<T>();
@@ -2991,13 +2987,13 @@ namespace yyjson
                 return caster<U>::from_json(const_value_ref(base::val_));
             }
             template <typename T, typename U = std::remove_cvref_t<T>>
-            requires(!detail::from_json_usr_defined<T>)
+            requires (!detail::from_json_usr_defined<T>)
             U cast() const
             {
                 return detail::default_caster<U>::from_json(*this);
             }
             template <typename T>
-            requires(!detail::base_of_value_ref<T>)
+            requires (!detail::base_of_value_ref<T>)
             explicit operator T() const
             {
                 return cast<T>();
@@ -3117,13 +3113,13 @@ namespace yyjson
                 return caster<U>::from_json(const_value_ref(base::val_));
             }
             template <typename T, typename U = std::remove_cvref_t<T>>
-            requires(!detail::from_json_usr_defined<T>)
+            requires (!detail::from_json_usr_defined<T>)
             U cast() const
             {
                 return detail::default_caster<U>::from_json(*this);
             }
             template <typename T>
-            requires(!detail::base_of_value_ref<T>)
+            requires (!detail::base_of_value_ref<T>)
             explicit operator T() const
             {
                 return cast<T>();
@@ -3257,12 +3253,10 @@ namespace yyjson
                 if (result != nullptr)
                 {
                     auto sv_ptr = new std::string_view(result, len);
-                    return std::shared_ptr<std::string_view>(sv_ptr,
-                                                             [result](auto* ptr)
-                                                             {
-                                                                 delete ptr;
-                                                                 std::free(result);
-                                                             });
+                    return std::shared_ptr<std::string_view>(sv_ptr, [result](auto* ptr) {
+                        delete ptr;
+                        std::free(result);
+                    });
                 }
                 throw std::runtime_error(fmt::format("write JSON error: {}", err.msg));
             }
@@ -3549,11 +3543,11 @@ namespace yyjson
                      typename std::ranges::range_value_t<T>;
                      requires pair_like<std::ranges::range_value_t<T>>;
                      requires requires(T t, Json obj) {
-                                  t.emplace_back(
-                                      obj.begin()->first,
-                                      cast<std::remove_cvref_t<std::tuple_element_t<1, std::ranges::range_value_t<T>>>>(
-                                          obj.begin()->second));
-                              };
+                         t.emplace_back(
+                             obj.begin()->first,
+                             cast<std::remove_cvref_t<std::tuple_element_t<1, std::ranges::range_value_t<T>>>>(
+                                 obj.begin()->second));
+                     };
                  } && (std::same_as<reader::const_object_ref, Json> || writer::detail::base_of_object<Json>)
         static auto from_json(const Json& obj)
         {
@@ -3579,14 +3573,14 @@ namespace yyjson
 
             if constexpr (back_insertable<T>)
             {
-                if constexpr (requires(T & t) { t.reserve(std::declval<std::size_t>()); })
+                if constexpr (requires(T& t) { t.reserve(std::declval<std::size_t>()); })
                 {
                     result.reserve(arr.size());
                 }
                 std::ranges::transform(arr, std::back_inserter(result),
                                        [](const auto& e) { return cast<std::ranges::range_value_t<T>>(e); });
             }
-            else
+            else  // TODO: fixed size range concept
             {
                 if (arr.size() > std::ranges::size(result))
                     throw bad_cast(
@@ -3606,7 +3600,7 @@ namespace yyjson
 #pragma GCC diagnostic ignored "-Wmissing-field-initializers"
 #pragma GCC diagnostic ignored "-Wshorten-64-to-32"
         template <typename Json>
-        requires(std::same_as<reader::const_value_ref, Json> || writer::detail::base_of_const_value<Json>)
+        requires (std::same_as<reader::const_value_ref, Json> || writer::detail::base_of_const_value<Json>)
         static auto from_json(const Json& json)
         {
             if (const auto obj = json.as_object(); obj.has_value())
@@ -3700,10 +3694,10 @@ namespace yyjson
     struct caster<std::optional<T>>
     {
         template <detail::copy_string_args... Ts>
-        requires requires(writer::value_ref& v, T t) {  // clang-format off
-                     v = t;
-                     v = std::pair(t, copy_string);
-        }  // clang-format on
+        requires requires(writer::value_ref& v, T t) {
+            v = t;
+            v = std::pair(t, copy_string);
+        }
         static auto to_json(writer::value_ref& v, const std::optional<T>& t, Ts...)
         {
             constexpr auto copy = (sizeof...(Ts) != 0);
@@ -3717,10 +3711,10 @@ namespace yyjson
             }
         }
         template <detail::copy_string_args... Ts>
-        requires requires(writer::value_ref& v, T t) {  // clang-format off
-                     v = t;
-                     v = std::pair(t, copy_string);
-        }  // clang-format on
+        requires requires(writer::value_ref& v, T t) {
+            v = t;
+            v = std::pair(t, copy_string);
+        }
         static auto to_json(writer::value_ref& v, std::optional<T>&& t, Ts...)
         {
             constexpr auto copy = (sizeof...(Ts) != 0);
@@ -3763,16 +3757,11 @@ namespace yyjson
         {
             constexpr auto copy = (sizeof...(Args) != 0);
             std::visit(
-                [&val](const auto& v)
-                {
+                [&val](const auto& v) {
                     if constexpr (copy)
-                    {
                         val = std::make_tuple(v, copy_string);
-                    }
                     else
-                    {
                         val = v;
-                    }
                 },
                 t);
         }
@@ -3783,16 +3772,11 @@ namespace yyjson
         {
             constexpr auto copy = (sizeof...(Args) != 0);
             std::visit(
-                [&val](auto&& v)
-                {
+                [&val](auto&& v) {
                     if constexpr (copy)
-                    {
                         val = std::make_tuple(std::move(v), copy_string);
-                    }
                     else
-                    {
                         val = std::move(v);
-                    }
                 },
                 std::move(t));
         }
@@ -3826,8 +3810,7 @@ namespace yyjson
                    }))
         static Tuple<Ts...> from_json(const Json& json)
         {
-            if constexpr ((detail::key_value_like<Ts> && ...) &&
-                          requires {
+            if constexpr ((detail::key_value_like<Ts> && ...) && requires {
                               (static_cast<std::tuple_element_t<0, Ts>>(std::get<0>(*(json.as_object()->begin()))),
                                ...);
                               (cast<std::tuple_element_t<1, Ts>>(std::get<1>(*(json.as_object()->begin()))), ...);
@@ -3843,15 +3826,13 @@ namespace yyjson
 
                     using Indices = std::make_index_sequence<std::tuple_size_v<Tuple<Ts...>>>;
                     auto it = obj->begin();
-                    [&result, &it ]<std::size_t... N>(std::index_sequence<N...>)
-                    {
+                    [&result, &it]<std::size_t... N>(std::index_sequence<N...>) {
                         (((std::get<N>(result) = std::tuple_element_t<N, Tuple<Ts...>>(
                                static_cast<std::tuple_element_t<0, Ts>>(std::get<0>(*it)),
                                cast<std::tuple_element_t<1, Ts>>(std::get<1>(*it)))),
                           ++it),
                          ...);
-                    }
-                    (Indices{});
+                    }(Indices{});
 
                     return result;
                 }
@@ -3868,11 +3849,9 @@ namespace yyjson
 
                     using Indices = std::make_index_sequence<std::tuple_size_v<Tuple<Ts...>>>;
                     auto it = arr->begin();
-                    [&result, &it ]<std::size_t... N>(std::index_sequence<N...>)
-                    {
+                    [&result, &it]<std::size_t... N>(std::index_sequence<N...>) {
                         ((std::get<N>(result) = cast<std::tuple_element_t<N, Tuple<Ts...>>>(*(it++))), ...);
-                    }
-                    (Indices{});
+                    }(Indices{});
 
                     return result;
                 }
@@ -3886,52 +3865,42 @@ namespace yyjson
         static auto to_json(writer::array_ref& arr, const Tuple<Ts...>& t, Args... args)
         {
             using Indices = std::make_index_sequence<std::tuple_size_v<Tuple<Ts...>>>;
-            [&arr, &t, args... ]<std::size_t... N>(std::index_sequence<N...>)
-            {
+            [&arr, &t, args...]<std::size_t... N>(std::index_sequence<N...>) {
                 (arr.emplace_back(std::get<N>(t), args...), ...);
-            }
-            (Indices{});
+            }(Indices{});
         }
         template <detail::copy_string_args... Args>
         requires requires(writer::array_ref& arr) { (arr.emplace_back(std::declval<Ts>()), ...); }
         static auto to_json(writer::array_ref& arr, Tuple<Ts...>&& t, Args... args)
         {
             using Indices = std::make_index_sequence<std::tuple_size_v<Tuple<Ts...>>>;
-            [&arr, t = std::move(t), args... ]<std::size_t... N>(std::index_sequence<N...>) mutable
-            {
+            [&arr, t = std::move(t), args...]<std::size_t... N>(std::index_sequence<N...>) mutable {
                 (arr.emplace_back(std::get<N>(std::move(t)), args...), ...);
-            }
-            (Indices{});
+            }(Indices{});
         }
 
         template <detail::copy_string_args... Args>
-        requires(detail::key_value_like<Ts> && ...) &&
-                requires(writer::object_ref& obj) {
-                    (obj.emplace(std::get<0>(std::declval<Ts>()), std::get<1>(std::declval<Ts>())), ...);
-                }
+        requires (detail::key_value_like<Ts> && ...) && requires(writer::object_ref& obj) {
+            (obj.emplace(std::get<0>(std::declval<Ts>()), std::get<1>(std::declval<Ts>())), ...);
+        }
         static auto to_json(writer::object_ref& obj, const Tuple<Ts...>& t, Args... args)
         {
             using Indices = std::make_index_sequence<std::tuple_size_v<Tuple<Ts...>>>;
-            [&obj, &t, args... ]<std::size_t... N>(std::index_sequence<N...>)
-            {
+            [&obj, &t, args...]<std::size_t... N>(std::index_sequence<N...>) {
                 (obj.emplace(std::get<0>(std::get<N>(t)), std::get<1>(std::get<N>(t)), args...), ...);
-            }
-            (Indices{});
+            }(Indices{});
         }
         template <detail::copy_string_args... Args>
-        requires(detail::key_value_like<Ts> && ...) &&
-                requires(writer::object_ref& obj) {
-                    (obj.emplace(std::get<0>(std::declval<Ts>()), std::get<1>(std::declval<Ts>())), ...);
-                }
+        requires (detail::key_value_like<Ts> && ...) && requires(writer::object_ref& obj) {
+            (obj.emplace(std::get<0>(std::declval<Ts>()), std::get<1>(std::declval<Ts>())), ...);
+        }
         static auto to_json(writer::object_ref& obj, Tuple<Ts...>&& t, Args... args)
         {
             using Indices = std::make_index_sequence<std::tuple_size_v<Tuple<Ts...>>>;
-            [&obj, t = std::move(t), args... ]<std::size_t... N>(std::index_sequence<N...>) mutable
-            {
+            [&obj, t = std::move(t), args...]<std::size_t... N>(std::index_sequence<N...>) mutable {
                 (obj.emplace(std::get<0>(std::get<N>(std::move(t))), std::get<1>(std::get<N>(std::move(t))), args...),
                  ...);
-            }
-            (Indices{});
+            }(Indices{});
         }
     };
 
@@ -3949,7 +3918,9 @@ namespace yyjson
 }  // namespace yyjson
 
 template <typename T>  // clang-format off
-requires requires(const T& t) { {t.write()} -> std::same_as<std::shared_ptr<std::string_view>>; }
+requires requires(const T& t) {
+    {t.write()} -> std::same_as<std::shared_ptr<std::string_view>>;
+}
 class fmt::formatter<T>  // clang-format on
 {
 public:
