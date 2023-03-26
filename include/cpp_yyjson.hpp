@@ -445,13 +445,13 @@ namespace yyjson
                 };  // clang-format on
                 template <typename T>
                 concept convertible_to_create_array_callable = requires(T&& t) {  // clang-format off
-                    { convert(std::forward<T>(t)) } -> create_array_callable;
-                    { convert(std::forward<T>(t), copy_string) } -> create_array_callable;
+                    {convert(std::forward<T>(t))} -> create_array_callable;
+                    {convert(std::forward<T>(t), copy_string)} -> create_array_callable;
                 };  // clang-format on
                 template <typename T>
                 concept convertible_to_create_object_callable = requires(T&& t) {  // clang-format off
-                    { convert(std::forward<T>(t)) } -> create_object_callable;
-                    { convert(std::forward<T>(t), copy_string) } -> create_object_callable;
+                    {convert(std::forward<T>(t))} -> create_object_callable;
+                    {convert(std::forward<T>(t), copy_string)} -> create_object_callable;
                 };  // clang-format on
 
                 template <typename Pair>
