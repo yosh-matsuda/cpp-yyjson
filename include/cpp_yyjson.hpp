@@ -75,6 +75,17 @@ namespace yyjson
         return json.template cast<T>();
     }
 
+    class json_string : public std::string_view
+    {
+        std::shared_ptr<char> str_ptr_;
+
+    public:
+        json_string(char* ptr, std::size_t len)
+            : std::string_view(ptr, len), str_ptr_(std::shared_ptr<char>(ptr, [](auto* ptr) { std::free(ptr); }))
+        {
+        }
+    };
+
     class key_string : public std::string_view
     {
         using base = std::string_view;
@@ -1300,11 +1311,7 @@ namespace yyjson
                         auto result = write_func(magic_enum::enum_integer(write_flag), nullptr, &len, &err);
                         if (result != nullptr) [[likely]]
                         {
-                            auto sv_ptr = new std::string_view(result, len);
-                            return std::shared_ptr<std::string_view>(sv_ptr, [result](auto* ptr) {
-                                delete ptr;
-                                std::free(result);
-                            });
+                            return json_string(result, len);
                         }
                         throw std::runtime_error(fmt::format("write JSON error: {}", err.msg));
                     }
@@ -2770,11 +2777,7 @@ namespace yyjson
                 auto result = yyjson_val_write_opts(val_, magic_enum::enum_integer(write_flag), nullptr, &len, &err);
                 if (result != nullptr)
                 {
-                    auto sv_ptr = new std::string_view(result, len);
-                    return std::shared_ptr<std::string_view>(sv_ptr, [result](auto* ptr) {
-                        delete ptr;
-                        std::free(result);
-                    });
+                    return json_string(result, len);
                 }
                 throw std::runtime_error(fmt::format("write JSON error: {}", err.msg));
             }
@@ -3256,11 +3259,7 @@ namespace yyjson
                 auto result = yyjson_write_opts(doc_.get(), magic_enum::enum_integer(write_flag), nullptr, &len, &err);
                 if (result != nullptr)
                 {
-                    auto sv_ptr = new std::string_view(result, len);
-                    return std::shared_ptr<std::string_view>(sv_ptr, [result](auto* ptr) {
-                        delete ptr;
-                        std::free(result);
-                    });
+                    return json_string(result, len);
                 }
                 throw std::runtime_error(fmt::format("write JSON error: {}", err.msg));
             }
@@ -3907,7 +3906,7 @@ namespace yyjson
 
 template <typename T>  // clang-format off
 requires requires(const T& t) {
-    {t.write()} -> std::same_as<std::shared_ptr<std::string_view>>;
+    {t.write()} -> std::same_as<yyjson::json_string>;
 }
 class fmt::formatter<T>  // clang-format on
 {
@@ -3925,7 +3924,7 @@ public:
     template <typename FmtContext>
     auto format(const T& t, FmtContext& ctx) const -> decltype(ctx.out())
     {
-        return fmt::format_to(ctx.out(), "{}", *t.write());
+        return fmt::format_to(ctx.out(), "{}", t.write());
     }
 };
 

@@ -34,7 +34,7 @@ struct json_count
 
 VISITABLE_STRUCT(json_count, cnt_array, cnt_object, cnt_string, cnt_int, cnt_real, cnt_null, cnt_bool);
 
-auto json_count::str() { return fmt::format("{}", *yyjson::object(*this).write()); }
+auto json_count::str() { return fmt::format("{}", yyjson::object(*this).write()); }
 
 struct json_stats
 {
@@ -58,7 +58,7 @@ struct json_stats
 VISITABLE_STRUCT(json_stats, total_arr_elm_cnt, total_obj_elm_cnt, total_str_len, total_int, total_real, total_true_cnt,
                  total_false_cnt);
 
-auto json_stats::str() { return fmt::format("{}", *yyjson::object(*this).write()); }
+auto json_stats::str() { return fmt::format("{}", yyjson::object(*this).write()); }
 
 auto json_files = std::array{
     std::tuple<std::string, json_count, json_stats>{"./external/yyjson_benchmark/data/json/canada.json",

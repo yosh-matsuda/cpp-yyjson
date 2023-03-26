@@ -80,23 +80,23 @@ auto success = *obj["success"].as_bool();
 auto list = *obj["array"].as_array();
 for (const auto& v : list)
 {
-    // `write` returns JSON string as shared_ptr<std::string_view>
-    std::cout << *v.write() << std::endl;
+    // `write` returns JSON read-only string
+    std::cout << v.write() << std::endl;
 }
 
 // The range value type of object class is a key-value pair
 auto dict = *obj["currency"].as_object();
 for (const auto& [k, v] : dict)
 {
-    std::cout << "{" << k << ": " << *v.write() << "}" << std::endl;
+    std::cout << "{" << k << ": " << v.write() << "}" << std::endl;
 }
 
 // JSON array/object to container conversion
 auto numbers = cast<std::vector<int>>(list);
 auto currency = cast<std::map<std::string_view, double>>(dict);
 
-// Stringify as shared_ptr<std::string_view>
-std::cout << *obj.write() << std::endl;
+// Stringify rea-only string
+std::cout << obj.write() << std::endl;
 // -> {"id":1,"pi":3.141592,"name":"example","array":[0,1,2,3,4],
 //     "currency":{"USD":129.66,"EUR":140.35,"GBP":158.72},"success":true}
 ```
@@ -423,7 +423,7 @@ auto val = read(json_str_insitu, json_str.size(), heap_alloc, ReadFlag::ReadInsi
 
 #### `yyjson::reader::value`
 
-The immutable JSON value class is returned from `yyjson::read` function. See the reference of yyjson for the information of [writer flags](https://ibireme.github.io/yyjson/doc/doxygen/html/md_doc__a_p_i.html#autotoc_md40).
+The immutable JSON value class is returned from `yyjson::read` function.
 
 **Construtor**
 
@@ -473,7 +473,7 @@ template<typename T>
 explicit operator T() const;
 
 // Output JSON string
-std::shared_ptr<std::string_view> write(WriteFlag write_flag = WriteFlag::NoFlag) const;
+yyjson::json_string write(WriteFlag write_flag = WriteFlag::NoFlag) const;
 
 enum class yyjson::WriteFlag : yyjson_write_flag
 {
@@ -486,6 +486,8 @@ enum class yyjson::WriteFlag : yyjson_write_flag
     AllowInvalidUnicode = YYJSON_WRITE_ALLOW_INVALID_UNICODE
 };
 ```
+
+The `write` function returns a read-only string which is wrapped by and inherited from `std::string_view`. See the reference of yyjson for the information of [writer flags](https://ibireme.github.io/yyjson/doc/doxygen/html/md_doc__a_p_i.html#autotoc_md40).
 
 **Example**
 
@@ -509,7 +511,7 @@ std::string_view json_str = R"(
 })";
 
 auto val = read(json_str);
-std::cout << *val.write(WriteFlag::Prety) << std::endl;
+std::cout << val.write(WriteFlag::Prety) << std::endl;
 // {
 //     "id": 1,
 //     "pi": 3.141592,
@@ -569,7 +571,7 @@ template<typename T>
 explicit operator T() const;
 
 // Output JSON string (inherited)
-std::shared_ptr<std::string_view> write(WriteFlag write_flag = WriteFlag::NoFlag) const;
+yyjson::json_string write(WriteFlag write_flag = WriteFlag::NoFlag) const;
 
 // Range concept
 std::ranges::iterator_t<yyjson::reader::const_array_ref> -> yyjson::reader::const_array_iter
@@ -592,7 +594,7 @@ assert(val.is_array());
 // for (const auto& v : *val.as_array()) { ... }             // 💀 UB
 for (const auto arr = *val.as_array(); const auto& v : arr)  // ✅ OK
 {
-    std::cout << *v.write() << std::endl;
+    std::cout << v.write() << std::endl;
 }
 // 0
 // "1"
@@ -636,7 +638,7 @@ template<typename T>
 explicit operator T() const;
 
 // Output JSON string (inherited)
-std::shared_ptr<std::string_view> write(WriteFlag write_flag = WriteFlag::NoFlag) const;
+yyjson::json_string write(WriteFlag write_flag = WriteFlag::NoFlag) const;
 
 // Range concept
 using yyjson::reader::const_key_value_ref_pair = std::pair<std::string_view, yyjson::reader::const_value_ref>;
@@ -775,7 +777,7 @@ template<typename T>
 explicit operator T() const;
 
 // Output JSON string
-std::shared_ptr<std::string_view> write(WriteFlag write_flag = WriteFlag::NoFlag) const;
+yyjson::json_string write(WriteFlag write_flag = WriteFlag::NoFlag) const;
 ```
 
 Concepts `value_constructible`, `array_constructible`, and `object_constructible` are **NOT** defined in the library but described in the above for explanation hereafter.
@@ -816,9 +818,9 @@ auto v_viw = value(strviw);
 // If the original string is modified, the uncopied JSON string seems to be also modified.
 // (but string length is not changed; it may occur memory access violation)
 stdstr = "modified string";
-std::cout << *v_str_cp.write() << std::endl;
+std::cout << v_str_cp.write() << std::endl;
 // "string example"
-std::cout << *v_str.write() << std::endl;
+std::cout << v_str.write() << std::endl;
 // "modified strin"
 
 // Implicitly copy string if the argument type is `std::string&&` for safety
@@ -906,7 +908,7 @@ template<typename T>
 explicit operator T() const;
 
 // Output JSON string
-std::shared_ptr<std::string_view> write(WriteFlag write_flag = WriteFlag::NoFlag) const;
+yyjson::json_string write(WriteFlag write_flag = WriteFlag::NoFlag) const;
 
 // Range concept
 std::ranges::range_value_t<yyjson::array&>       -> yyjson::writer::value_ref
@@ -936,7 +938,7 @@ nested.emplace_back(5.0);
 nested.emplace_back("6");
 nested.emplace_back(7);
 
-std::cout << *arr.write() << std::endl;
+std::cout << arr.write() << std::endl;
 // [1,2,3,"4",[5.0,"6",7]]
 
 // Range-based for loop
@@ -945,7 +947,7 @@ for (auto&& v : arr)
     if (v.is_int()) v = *v.as_int() * 2;
 }
 
-std::cout << *arr.write() << std::endl;
+std::cout << arr.write() << std::endl;
 // [2,4,6,"4",[5.0,"6",7]]
 ```
 
@@ -1020,7 +1022,7 @@ template<typename T>
 explicit operator T() const;
 
 // Output JSON string
-std::shared_ptr<std::string_view> write(WriteFlag write_flag = WriteFlag::NoFlag) const;
+yyjson::json_string write(WriteFlag write_flag = WriteFlag::NoFlag) const;
 
 // Range concept
 using yyjson::writer::key_value_ref_pair = std::pair<std::string_view, yyjson::reader::value_ref>;
@@ -1055,13 +1057,13 @@ auto nested = obj.emplace("key3", empty_object);
 nested.emplace("g", 6);
 nested.emplace("h", 7);
 
-std::cout << *obj.write() << std::endl;
+std::cout << obj.write() << std::endl;
 // {"key0":{"a":0,"b":1},"key1":{"c":2,"d":3},"key2":[4,5],"key3":{"g":6,"h":7}}
 
 // Key access and modify
 obj["key2"] = std::map<std::string, int>{{"e", 4}, {"f", 5}};
 
-std::cout << *obj.write() << std::endl;
+std::cout << obj.write() << std::endl;
 // {"key0":{"a":0,"b":1},"key1":{"c":2,"d":3},"key2":{"e":4,"f":5},"key3":{"e":6,"f":7}}
 ```
 

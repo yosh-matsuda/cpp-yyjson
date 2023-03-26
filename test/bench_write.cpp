@@ -41,7 +41,7 @@ void write_cpp_yyjson_array_int64(benchmark::State& state)
     for (auto _ : state)
     {
         auto array = yyjson::array(vec_int64);
-        auto result = *array.write();
+        auto result = array.write();
         if (result.size() != json_size_arr_int64)
         {
             state.SkipWithError("Invalid JSON string");
@@ -135,7 +135,7 @@ void write_cpp_yyjson_array_double(benchmark::State& state)
     for (auto _ : state)
     {
         auto array = yyjson::array(vec_double);
-        auto result = *array.write();
+        auto result = array.write();
         if (result.size() != json_size_arr_double)
         {
             state.SkipWithError("Invalid JSON string");
@@ -213,7 +213,7 @@ void write_cpp_yyjson_array_string(benchmark::State& state)
     for (auto _ : state)
     {
         auto array = yyjson::array(vec_string);
-        auto result = *array.write();
+        auto result = array.write();
         if (result.size() != json_size_arr_string)
         {
             state.SkipWithError("Invalid JSON string");
@@ -276,7 +276,7 @@ void write_cpp_yyjson_array_string_copy(benchmark::State& state)
     for (auto _ : state)
     {
         auto array = yyjson::array(vec_string, copy_string);
-        auto result = *array.write();
+        auto result = array.write();
         if (result.size() != json_size_arr_string)
         {
             state.SkipWithError("Invalid JSON string");
@@ -376,7 +376,7 @@ void write_cpp_yyjson_array_tuple(benchmark::State& state)
     for (auto _ : state)
     {
         auto array = yyjson::array(vec_tuple);
-        auto result = *array.write();
+        auto result = array.write();
         if (result.size() != json_size_arr_tuple)
         {
             state.SkipWithError("Invalid JSON string");
@@ -490,7 +490,7 @@ void write_cpp_yyjson_array_object(benchmark::State& state)
     for (auto _ : state)
     {
         auto array = yyjson::array(vec_object);
-        auto result = *array.write();
+        auto result = array.write();
         if (result.size() != json_size_arr_object)
         {
             state.SkipWithError("Invalid JSON string");
@@ -593,7 +593,7 @@ void write_cpp_yyjson_array_double_append_range(benchmark::State& state)
     for (auto _ : state)
     {
         auto array = yyjson::array(vec_double | std::ranges::views::transform([](const auto n) { return 1.5 * n; }));
-        auto result = *array.write();
+        auto result = array.write();
         if (result.size() != json_size_arr_double_append)
         {
             state.SkipWithError("Invalid JSON string");
@@ -610,7 +610,7 @@ void write_cpp_yyjson_array_double_append(benchmark::State& state)
     {
         auto array = yyjson::array();
         for (const auto n : vec_double) array.emplace_back(1.5 * n);
-        auto result = *array.write();
+        auto result = array.write();
         if (result.size() != json_size_arr_double_append)
         {
             state.SkipWithError("Invalid JSON string");
@@ -692,7 +692,7 @@ void write_cpp_yyjson_object_int64(benchmark::State& state)
     {
         auto object = yyjson::object();
         for (auto n : vec_int64) object.emplace(fmt::format("{}", n), n);
-        auto result = *object.write();
+        auto result = object.write();
         if (result.size() != json_size_obj_int64)
         {
             state.SkipWithError("Invalid JSON string");
@@ -777,7 +777,7 @@ void write_cpp_yyjson_object_double(benchmark::State& state)
     {
         auto object = yyjson::object();
         for (auto n : vec_double) object.emplace(fmt::format("{}", n), n);
-        auto result = *object.write();
+        auto result = object.write();
         if (result.size() != json_size_obj_double)
         {
             state.SkipWithError("Invalid JSON string");
@@ -866,7 +866,7 @@ void write_cpp_yyjson_object_string(benchmark::State& state)
         {
             object.emplace(n, n);
         }
-        auto result = *object.write();
+        auto result = object.write();
         if (result.size() != json_size_obj_string)
         {
             state.SkipWithError("Invalid JSON string");
@@ -941,7 +941,7 @@ void write_cpp_yyjson_object_string_copy(benchmark::State& state)
         {
             object.emplace(n, n, copy_string);
         }
-        auto result = *object.write();
+        auto result = object.write();
         if (result.size() != json_size_obj_string)
         {
             state.SkipWithError("Invalid JSON string");

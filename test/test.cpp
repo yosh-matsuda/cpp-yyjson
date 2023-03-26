@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <list>
 #include <map>
+#include <numeric>
 #include "cpp_yyjson.hpp"
 
 #pragma GCC diagnostic push
@@ -749,13 +750,13 @@ TEST(Writer, ValueExamples)
         auto n = nullptr;
         auto i = -1;
         auto d = 3.14;
-        EXPECT_EQ(fmt::format("{}", b), *value(b).write());
-        EXPECT_EQ("null", *value(n).write());
-        EXPECT_EQ(fmt::format("{}", i), *value(static_cast<std::int8_t>(i)).write());
-        EXPECT_EQ(fmt::format("{}", i), *value(static_cast<std::int16_t>(i)).write());
-        EXPECT_EQ(fmt::format("{}", i), *value(static_cast<std::int32_t>(i)).write());
-        EXPECT_EQ(fmt::format("{}", i), *value(static_cast<std::int64_t>(i)).write());
-        EXPECT_EQ(fmt::format("{}", d), *value(d).write());
+        EXPECT_EQ(fmt::format("{}", b), value(b).write());
+        EXPECT_EQ("null", value(n).write());
+        EXPECT_EQ(fmt::format("{}", i), value(static_cast<std::int8_t>(i)).write());
+        EXPECT_EQ(fmt::format("{}", i), value(static_cast<std::int16_t>(i)).write());
+        EXPECT_EQ(fmt::format("{}", i), value(static_cast<std::int32_t>(i)).write());
+        EXPECT_EQ(fmt::format("{}", i), value(static_cast<std::int64_t>(i)).write());
+        EXPECT_EQ(fmt::format("{}", d), value(d).write());
     }
 
     // string
@@ -763,45 +764,45 @@ TEST(Writer, ValueExamples)
     auto str2 = "ghijkl";
     auto cp_value = value(str1);
     auto sv_value = value(std::string_view(str1));
-    EXPECT_EQ(fmt::format(R"("{}")", str1), *cp_value.write());
-    EXPECT_EQ(fmt::format(R"("{}")", str1), *sv_value.write());
+    EXPECT_EQ(fmt::format(R"("{}")", str1), cp_value.write());
+    EXPECT_EQ(fmt::format(R"("{}")", str1), sv_value.write());
 
     // check life time
     auto std_str = std::string(str1);
     auto str_value = value(std_str);
-    EXPECT_EQ(fmt::format(R"("{}")", str1), *str_value.write());
+    EXPECT_EQ(fmt::format(R"("{}")", str1), str_value.write());
     std_str = std::string(str2);
-    EXPECT_EQ(fmt::format(R"("{}")", str2), *str_value.write());
+    EXPECT_EQ(fmt::format(R"("{}")", str2), str_value.write());
     str_value = value(std_str, copy_string);
-    EXPECT_EQ(fmt::format(R"("{}")", str2), *str_value.write());
+    EXPECT_EQ(fmt::format(R"("{}")", str2), str_value.write());
     std_str = std::string(str1);
-    EXPECT_EQ(fmt::format(R"("{}")", str2), *str_value.write());
+    EXPECT_EQ(fmt::format(R"("{}")", str2), str_value.write());
 
     // array
-    EXPECT_EQ("[1,2,3]", *value(std::vector{1, 2, 3}).write());
-    EXPECT_EQ(R"(["a","b","c"])", *value(std::vector{"a", "b", "c"}).write());
-    EXPECT_EQ("[true,false,true]", *value(std::list{true, false, true}).write());
-    EXPECT_EQ("[2.74,3.14]", *value(std::list{2.74, 3.14}).write());
-    EXPECT_EQ(R"([1,"2",3.0])", *value(std::list{value(1), value("2"), value(3.0)}).write());
+    EXPECT_EQ("[1,2,3]", value(std::vector{1, 2, 3}).write());
+    EXPECT_EQ(R"(["a","b","c"])", value(std::vector{"a", "b", "c"}).write());
+    EXPECT_EQ("[true,false,true]", value(std::list{true, false, true}).write());
+    EXPECT_EQ("[2.74,3.14]", value(std::list{2.74, 3.14}).write());
+    EXPECT_EQ(R"([1,"2",3.0])", value(std::list{value(1), value("2"), value(3.0)}).write());
 
     // nested array
-    EXPECT_EQ("[[1,2],[3,4]]", *value(std::list<std::vector<int>>{{1, 2}, {3, 4}}).write());
-    EXPECT_EQ(R"([["a","b"],["c","d"]])", *value(std::list<std::vector<std::string>>{{"a", "b"}, {"c", "d"}}).write());
+    EXPECT_EQ("[[1,2],[3,4]]", value(std::list<std::vector<int>>{{1, 2}, {3, 4}}).write());
+    EXPECT_EQ(R"([["a","b"],["c","d"]])", value(std::list<std::vector<std::string>>{{"a", "b"}, {"c", "d"}}).write());
     EXPECT_EQ(R"([{"0":0,"1":1},{"2":2,"3":3}])",
-              *value(std::vector<std::map<std::string, int>>{{{"0", 0}, {"1", 1}}, {{"2", 2}, {"3", 3}}}).write());
+              value(std::vector<std::map<std::string, int>>{{{"0", 0}, {"1", 1}}, {{"2", 2}, {"3", 3}}}).write());
 
     // key-value container
     EXPECT_EQ(R"({"number":1.5,"error":null,"text":"abc"})",
-              *value(std::vector<key_value_pair>{{"number", 1.5}, {"error", nullptr}, {"text", "abc"}}).write());
+              value(std::vector<key_value_pair>{{"number", 1.5}, {"error", nullptr}, {"text", "abc"}}).write());
 
     // conversion from map
     EXPECT_EQ(R"({"first":1.5,"second":2.5,"third":3.5})",
-              *value(std::map<std::string_view, double>{{"first", 1.5}, {"second", 2.5}, {"third", 3.5}}).write());
+              value(std::map<std::string_view, double>{{"first", 1.5}, {"second", 2.5}, {"third", 3.5}}).write());
 
     // nested map
     auto&& nested_map_num = std::map<std::string, std::map<std::string, int>>{{"key0", {{"a", 0}, {"b", 1}}},
                                                                               {"key1", {{"a", 2}, {"b", 3}}}};
-    EXPECT_EQ(R"({"key0":{"a":0,"b":1},"key1":{"a":2,"b":3}})", *value(std::move(nested_map_num)).write());
+    EXPECT_EQ(R"({"key0":{"a":0,"b":1},"key1":{"a":2,"b":3}})", value(std::move(nested_map_num)).write());
 
     // initializer list
     value initlist_arr = {nullptr, true, "2", 3.0, {4.0, "5", false}, {{"7", 8}, {"9", {0}}}};
@@ -872,10 +873,9 @@ TEST(Writer, ValueExamples)
     EXPECT_EQ(
         R"({"first":1.0,"second":2.0,"third":3.0})",
         fmt::format("{}", value(std::map<std::string_view, double>{{"first", 1.5}, {"second", 2.5}, {"third", 3.5}} |
-                                std::ranges::views::transform(
-                                    [](auto x) {
-                                        return decltype(x){x.first, x.second - 0.5};
-                                    }))));
+                                std::ranges::views::transform([](auto x) {
+                                    return decltype(x){x.first, x.second - 0.5};
+                                }))));
 #endif
 
     // copy assign
@@ -1204,17 +1204,17 @@ TEST(Writer, ArrayConstructorExample)
     using namespace yyjson::writer;  // NOLINT
 
     // array
-    EXPECT_EQ("[1,2,3]", *array(std::vector{1, 2, 3}).write());
-    EXPECT_EQ(R"(["a","b","c"])", *array(std::vector{"a", "b", "c"}).write());
-    EXPECT_EQ("[true,false,true]", *array(std::list{true, false, true}).write());
-    EXPECT_EQ("[2.74,3.14]", *array(std::list{2.74, 3.14}).write());
-    EXPECT_EQ(R"([1,"2",3.0])", *array(std::list{value(1), value("2"), value(3.0)}).write());
+    EXPECT_EQ("[1,2,3]", array(std::vector{1, 2, 3}).write());
+    EXPECT_EQ(R"(["a","b","c"])", array(std::vector{"a", "b", "c"}).write());
+    EXPECT_EQ("[true,false,true]", array(std::list{true, false, true}).write());
+    EXPECT_EQ("[2.74,3.14]", array(std::list{2.74, 3.14}).write());
+    EXPECT_EQ(R"([1,"2",3.0])", array(std::list{value(1), value("2"), value(3.0)}).write());
 
     // nested array
-    EXPECT_EQ("[[1,2],[3,4]]", *array(std::list<std::vector<int>>{{1, 2}, {3, 4}}).write());
-    EXPECT_EQ(R"([["a","b"],["c","d"]])", *array(std::list<std::vector<std::string>>{{"a", "b"}, {"c", "d"}}).write());
+    EXPECT_EQ("[[1,2],[3,4]]", array(std::list<std::vector<int>>{{1, 2}, {3, 4}}).write());
+    EXPECT_EQ(R"([["a","b"],["c","d"]])", array(std::list<std::vector<std::string>>{{"a", "b"}, {"c", "d"}}).write());
     EXPECT_EQ(R"([{"0":0,"1":1},{"2":2,"3":3}])",
-              *array(std::vector<std::map<std::string, int>>{{{"0", 0}, {"1", 1}}, {{"2", 2}, {"3", 3}}}).write());
+              array(std::vector<std::map<std::string, int>>{{{"0", 0}, {"1", 1}}, {{"2", 2}, {"3", 3}}}).write());
 
     // initializer list
     array initlist_arr = {nullptr, true, "2", 3.0, {4.0, "5", false}, {{"7", 8}, {"9", {0}}}};
@@ -1598,7 +1598,7 @@ TEST(Writer, ArrayMethodExample)
     {
         using namespace yyjson;
         auto arr = array(num_vector);
-        auto immut_array = *read(*arr.write()).as_array();
+        auto immut_array = *read(arr.write()).as_array();
 
         // emplace (immutable value)
         empty_arr = array();
@@ -2002,16 +2002,16 @@ TEST(Writer, ObjectConstructorExample)
 
     // key-value container
     EXPECT_EQ(R"({"number":1.5,"error":null,"text":"abc"})",
-              *object(std::vector<key_value_pair>{{"number", 1.5}, {"error", nullptr}, {"text", "abc"}}).write());
+              object(std::vector<key_value_pair>{{"number", 1.5}, {"error", nullptr}, {"text", "abc"}}).write());
 
     // conversion from map
     EXPECT_EQ(R"({"first":1.5,"second":2.5,"third":3.5})",
-              *object(std::map<std::string_view, double>{{"first", 1.5}, {"second", 2.5}, {"third", 3.5}}).write());
+              object(std::map<std::string_view, double>{{"first", 1.5}, {"second", 2.5}, {"third", 3.5}}).write());
 
     // nested map
     auto&& nested_map_num = std::map<std::string, std::map<std::string, int>>{{"key0", {{"a", 0}, {"b", 1}}},
                                                                               {"key1", {{"a", 2}, {"b", 3}}}};
-    EXPECT_EQ(R"({"key0":{"a":0,"b":1},"key1":{"a":2,"b":3}})", *object(std::move(nested_map_num)).write());
+    EXPECT_EQ(R"({"key0":{"a":0,"b":1},"key1":{"a":2,"b":3}})", object(std::move(nested_map_num)).write());
 
     object initlist_obj = {{"pi", 3.141},
                            {"happy", true},
@@ -2027,12 +2027,11 @@ TEST(Writer, ObjectConstructorExample)
 #if (!defined(__clang__) || __clang_major__ >= 16) || (__GNUC__ >= 12)
     // transform view
     EXPECT_EQ(R"({"first":1.0,"second":2.0,"third":3.0})",
-              *value(std::map<std::string_view, double>{{"first", 1.5}, {"second", 2.5}, {"third", 3.5}} |
-                     std::ranges::views::transform(
-                         [](auto x) {
-                             return decltype(x){x.first, x.second - 0.5};
-                         }))
-                   .write());
+              value(std::map<std::string_view, double>{{"first", 1.5}, {"second", 2.5}, {"third", 3.5}} |
+                    std::ranges::views::transform([](auto x) {
+                        return decltype(x){x.first, x.second - 0.5};
+                    }))
+                  .write());
 #endif
 
     // copy assign
@@ -2082,9 +2081,9 @@ TEST(Writer, ObjectMethodExample)
         EXPECT_EQ(2 * it->second, *kv.second.as_int());
         ++it;
     }
-    EXPECT_TRUE(std::ranges::equal(num_obj, num_map,
-                                   [](const auto& left, const auto& right)
-                                   { return *left.second.as_int() == 2 * right.second; }));
+    EXPECT_TRUE(std::ranges::equal(num_obj, num_map, [](const auto& left, const auto& right) {
+        return *left.second.as_int() == 2 * right.second;
+    }));
 
     // const iteration
     for (auto it = num_map.begin(); auto&& kv : num_obj_const)
@@ -2421,14 +2420,14 @@ TEST(Reader, Allocator)
     auto result = std::string();
 
     auto json_str = "[1,2,3,4,5]"sv;
-    EXPECT_NO_THROW(result = *read(json_str, h_alloc).write());
-    EXPECT_THROW(result = *read(json_str, s_alloc_s).write(), std::runtime_error);
+    EXPECT_NO_THROW(result = read(json_str, h_alloc).write());
+    EXPECT_THROW(result = read(json_str, s_alloc_s).write(), std::runtime_error);
     EXPECT_EQ(json_str, result);
-    EXPECT_NO_THROW(result = *read(json_str, s_alloc_l).write());
+    EXPECT_NO_THROW(result = read(json_str, s_alloc_l).write());
     EXPECT_EQ(json_str, result);
 
     auto str_insitu = std::string(json_str) + "    "s;
-    EXPECT_NO_THROW(result = *read(str_insitu, json_str.size(), h_alloc, yyjson::ReadFlag::ReadInsitu).write());
+    EXPECT_NO_THROW(result = read(str_insitu, json_str.size(), h_alloc, yyjson::ReadFlag::ReadInsitu).write());
     EXPECT_EQ(json_str, result);
 
     auto json_obj_str = R"(
@@ -2572,7 +2571,7 @@ TEST(Reader, ValueExamples)
         auto doc = read(json);
         EXPECT_EQ(nullptr, doc.as_null().value());
         EXPECT_EQ(nullptr, cast<std::nullptr_t>(doc));
-        EXPECT_EQ(json, *doc.write());
+        EXPECT_EQ(json, doc.write());
     }
     {
         auto json = "true";
@@ -2580,34 +2579,34 @@ TEST(Reader, ValueExamples)
         EXPECT_EQ(true, doc.as_bool().value());
         EXPECT_EQ(true, cast<bool>(doc));
         EXPECT_THROW(cast<std::nullptr_t>(doc), bad_cast);
-        EXPECT_EQ(json, *doc.write());
+        EXPECT_EQ(json, doc.write());
     }
     {
         auto val = 4567890000LL;
         auto doc = read(fmt::format("{}", val));
         EXPECT_EQ(val, doc.as_uint().value());
         EXPECT_EQ(val, cast<std::uint64_t>(doc));
-        EXPECT_EQ(fmt::format("{}", val), *doc.write());
+        EXPECT_EQ(fmt::format("{}", val), doc.write());
     }
     {
         auto val = -4567890000LL;
         auto doc = read(fmt::format("{}", val));
         EXPECT_FALSE(doc.as_uint().has_value());
-        EXPECT_EQ(fmt::format("{}", val), *doc.write());
+        EXPECT_EQ(fmt::format("{}", val), doc.write());
     }
     {
         auto val = -4567890000LL;
         auto doc = read(fmt::format("{}", val));
         EXPECT_EQ(val, doc.as_sint().value());
         EXPECT_EQ(val, cast<std::int64_t>(doc));
-        EXPECT_EQ(fmt::format("{}", val), *doc.write());
+        EXPECT_EQ(fmt::format("{}", val), doc.write());
     }
     {
         auto val = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) + 1;
         auto doc = read(fmt::format("{}", val));
         EXPECT_TRUE(doc.as_int().has_value());
         EXPECT_EQ(static_cast<std::int64_t>(val), cast<std::int64_t>(doc));
-        EXPECT_EQ(fmt::format("{}", val), *doc.write());
+        EXPECT_EQ(fmt::format("{}", val), doc.write());
     }
     {
         auto val = 3.141592;
@@ -2615,7 +2614,7 @@ TEST(Reader, ValueExamples)
         EXPECT_EQ(val, doc.as_real().value());
         EXPECT_EQ(val, doc.as_num().value());
         EXPECT_EQ(val, cast<double>(doc));
-        EXPECT_EQ(fmt::format("{}", val), *doc.write());
+        EXPECT_EQ(fmt::format("{}", val), doc.write());
     }
     {
         auto val = 3;
@@ -2623,7 +2622,7 @@ TEST(Reader, ValueExamples)
         EXPECT_FALSE(doc.as_real().has_value());
         EXPECT_EQ(val, doc.as_num().value());
         EXPECT_EQ(val, cast<double>(doc));
-        EXPECT_EQ(fmt::format("{}", val), *doc.write());
+        EXPECT_EQ(fmt::format("{}", val), doc.write());
     }
     {
         auto val = "aiueo";
@@ -2631,7 +2630,7 @@ TEST(Reader, ValueExamples)
         EXPECT_EQ(val, doc.as_string().value());
         EXPECT_EQ(val, cast<std::string>(doc));
         EXPECT_EQ(val, cast<std::string_view>(doc));
-        EXPECT_EQ(fmt::format(R"("{}")", val), *doc.write());
+        EXPECT_EQ(fmt::format(R"("{}")", val), doc.write());
     }
 }
 
@@ -2664,7 +2663,7 @@ TEST(Reader, ArrayExamples)
 
     const auto json = R"([1,"a",1.5,true,null])";
     auto doc = read(json);
-    EXPECT_EQ(json, *doc.write());
+    EXPECT_EQ(json, doc.write());
 
     EXPECT_TRUE(doc.is_array());
     EXPECT_EQ(5, doc.as_array()->size());
@@ -2714,7 +2713,7 @@ TEST(Reader, ObjectExamples)
 
     const auto json = R"({"first_key":[1,"a",1.5,true,null],"second_key":[2,"b",2.5,false,null]})";
     auto doc = read(json);
-    EXPECT_EQ(json, *doc.write());
+    EXPECT_EQ(json, doc.write());
 
     EXPECT_TRUE(doc.is_object());
     EXPECT_EQ(2, doc.as_object()->size());
@@ -2752,8 +2751,8 @@ TEST(Writer, CopyFromReaderValue)
         auto doc = read(json);
         EXPECT_EQ(nullptr, doc.as_null().value());
         EXPECT_EQ(nullptr, value(doc).as_null().value());
-        EXPECT_EQ(json, *doc.write());
-        EXPECT_EQ(json, *value(doc).write());
+        EXPECT_EQ(json, doc.write());
+        EXPECT_EQ(json, value(doc).write());
     }
     {
         auto v = value(true);
@@ -2771,7 +2770,7 @@ TEST(Reader, PredefinedCaster)
         using namespace yyjson::reader;
         using yyjson::cast;  // NOLINT
 
-        // from json
+                             // from json
         // clang-format off
         static_assert(!std::same_as<void, decltype(cast<std::int64_t>(std::declval<const_value_ref>()))>);
         static_assert(!std::same_as<void, decltype(cast<std::uint64_t>(std::declval<const_value_ref>()))>);
@@ -2825,76 +2824,76 @@ TEST(Reader, PredefinedCaster)
     {
         auto src = 3;
         auto val_w = value(src);
-        EXPECT_EQ(src, cast<decltype(src)>(read(*val_w.write())));
+        EXPECT_EQ(src, cast<decltype(src)>(read(val_w.write())));
     }
     {
         auto src = std::vector<std::vector<int>>{{1, 2}, {3, 4}};
         auto val_w = array(src);
-        EXPECT_EQ(src, cast<decltype(src)>(read(*val_w.write())));
+        EXPECT_EQ(src, cast<decltype(src)>(read(val_w.write())));
     }
     {
         auto src = std::unordered_map<std::string, double>{{"first", 1.5}, {"second", 2.5}, {"third", 3.5}};
         auto val_w = object(src);
-        EXPECT_EQ(src, cast<decltype(src)>(read(*val_w.write())));
+        EXPECT_EQ(src, cast<decltype(src)>(read(val_w.write())));
     }
     {
         auto src = std::optional<int>(3);
         auto val_w = value(src);
-        EXPECT_EQ(src, cast<decltype(src)>(read(*val_w.write())));
+        EXPECT_EQ(src, cast<decltype(src)>(read(val_w.write())));
     }
     {
         auto src = std::optional<int>(std::nullopt);
         auto val_w = value(src);
-        EXPECT_EQ(src, cast<decltype(src)>(read(*val_w.write())));
+        EXPECT_EQ(src, cast<decltype(src)>(read(val_w.write())));
     }
     {
         auto src = std::variant<std::monostate, int, std::string>();
         auto val_w = value(src);
-        EXPECT_EQ(src, cast<decltype(src)>(read(*val_w.write())));
+        EXPECT_EQ(src, cast<decltype(src)>(read(val_w.write())));
     }
     {
         auto src = std::variant<std::monostate, int, std::string>(1);
         auto val_w = value(src);
-        EXPECT_EQ(src, cast<decltype(src)>(read(*val_w.write())));
+        EXPECT_EQ(src, cast<decltype(src)>(read(val_w.write())));
     }
     {
         auto src = std::variant<std::monostate, int, std::string>("a");
         auto val_w = value(src);
-        EXPECT_EQ(src, cast<decltype(src)>(read(*val_w.write())));
+        EXPECT_EQ(src, cast<decltype(src)>(read(val_w.write())));
     }
     {
         auto src = std::tuple(1, "2"sv, 3.0);
         auto val_w = value(src);
         EXPECT_TRUE(val_w.is_array());
-        EXPECT_EQ(src, cast<decltype(src)>(read(*val_w.write())));
+        EXPECT_EQ(src, cast<decltype(src)>(read(val_w.write())));
     }
     {
         auto src = std::tuple(std::pair("1"sv, 1), std::tuple("2"sv, "2"sv), std::pair("3.0"sv, 3.0));
         auto val_w = value(src);
         EXPECT_TRUE(val_w.is_object());
-        EXPECT_EQ(src, cast<decltype(src)>(read(*val_w.write())));
+        EXPECT_EQ(src, cast<decltype(src)>(read(val_w.write())));
     }
     {
         auto src = std::tuple(std::pair("1"sv, "1"sv), std::tuple("2"sv, "2"sv), std::pair("3"sv, "3"sv));
         auto val_w = value(src);
         EXPECT_TRUE(val_w.is_object());
-        EXPECT_EQ(src, cast<decltype(src)>(read(*val_w.write())));
+        EXPECT_EQ(src, cast<decltype(src)>(read(val_w.write())));
     }
     {
         auto src = X{.a = 1, .b = std::nullopt, .c = "x"};
         auto val_w = value(src);
-        EXPECT_EQ(src, cast<decltype(src)>(read(*val_w.write())));
+        EXPECT_EQ(src, cast<decltype(src)>(read(val_w.write())));
     }
     {
         auto src = Y{1, std::nullopt, "x"};
         auto val_w = value(src);
         EXPECT_EQ(fmt::format("{} {} {}", src.a, (src.b ? fmt::format("{}", *src.b) : "null"), src.c),
-                  cast<std::string>(read(*val_w.write())));
+                  cast<std::string>(read(val_w.write())));
     }
     {
         auto src = std::vector<X>{{1, 2.0, "3"}, {4, std::nullopt, "6"}, {7, 8.0, "9"}};
         auto val_w = value(src);
-        EXPECT_EQ(src, cast<std::vector<X>>(read(*val_w.write())));
+        EXPECT_EQ(src, cast<std::vector<X>>(read(val_w.write())));
     }
 }
 
@@ -2930,14 +2929,14 @@ TEST(Readme, Example)
         for (const auto& v : list)
         {
             // write memner function returns serialized string as shared_ptr<std::string_view>
-            std::cout << *v.write() << std::endl;
+            std::cout << v.write() << std::endl;
         }
 
         // The value type of object class is a key-value pair
         auto dict = *obj["currency"].as_object();
         for (const auto& [k, v] : dict)
         {
-            std::cout << "{" << k << ": " << *v.write() << "}" << std::endl;
+            std::cout << "{" << k << ": " << v.write() << "}" << std::endl;
         }
 
         // JSON array/object to container conversion
@@ -3028,7 +3027,7 @@ TEST(Readme, Example)
         })";
 
         auto val = read(json_str);
-        std::cout << *val.write(WriteFlag::Prety) << std::endl;
+        std::cout << val.write(WriteFlag::Prety) << std::endl;
         // {
         //     "id": 1,
         //     "pi": 3.141592,
@@ -3060,7 +3059,7 @@ TEST(Readme, Example)
         // for (const auto& v : *val.as_array())                     // 💀 UB
         for (const auto arr = *val.as_array(); const auto& v : arr)  // ✅ OK
         {
-            std::cout << *v.write() << std::endl;
+            std::cout << v.write() << std::endl;
         }
     }
     {
@@ -3102,8 +3101,8 @@ TEST(Readme, Example)
         // If the original string is modified, the uncopied JSON string is also modified.
         // (but string length is not)
         stdstr = "modified string";
-        EXPECT_EQ("\"string example\"", *v_str_cp.write());
-        EXPECT_EQ("\"modified strin\"", *v_str.write());
+        EXPECT_EQ("\"string example\"", v_str_cp.write());
+        EXPECT_EQ("\"modified strin\"", v_str.write());
 
         // Implicitly copy string if the argument type is `std::string&&`
         auto v_str_cp2 = value(std::move(stdstr));
@@ -3138,11 +3137,11 @@ TEST(Readme, Example)
         nested.emplace("e", 6);
         nested.emplace("f", 7);
 
-        std::cout << *obj.write() << std::endl;
+        std::cout << obj.write() << std::endl;
 
         obj["key2"] = std::map<std::string, int>{{"e", 4}, {"f", 5}};
 
-        std::cout << *obj.write() << std::endl;
+        std::cout << obj.write() << std::endl;
     }
     {
         using namespace yyjson;
@@ -3150,7 +3149,7 @@ TEST(Readme, Example)
         std::tuple tpl_arr = {nullptr, true, "2", 3.0, std::tuple{4.0, "5", false}};
         auto json_arr = array(tpl_arr);
         auto tpl_arr2 = cast<decltype(tpl_arr)>(json_arr);
-        std::cout << *json_arr.write() << std::endl;
+        std::cout << json_arr.write() << std::endl;
     }
     {
         using namespace yyjson;
@@ -3158,7 +3157,7 @@ TEST(Readme, Example)
         std::tuple tpl_obj = {std::pair{"number", 1.5}, std::pair{"error", nullptr}, std::pair{"text", "abc"}};
         auto json_obj = object(tpl_obj);
         auto tpl_obj2 = cast<decltype(tpl_obj)>(json_obj);
-        std::cout << *json_obj.write() << std::endl;
+        std::cout << json_obj.write() << std::endl;
     }
 }
 
