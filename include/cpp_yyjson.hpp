@@ -190,7 +190,7 @@ namespace yyjson
                 using namespace yyjson::detail;  // NOLINT
 
                 template <typename T>
-                concept from_json_usr_defined =  // clang-format off
+                concept from_json_val_usr_defined =  // clang-format off
                     requires(const const_value_ref& v) {
                         {caster<T>::from_json(v)} -> std::same_as<T>;
                     };  // clang-format on
@@ -416,7 +416,7 @@ namespace yyjson
                 }
 
                 template <typename T>
-                concept from_json_usr_defined =  // clang-format off
+                concept from_json_val_usr_defined =  // clang-format off
                     requires(const const_value_ref& v) { {caster<T>::from_json(v)} -> std::same_as<T>; };  // clang-format on
                 template <typename T>
                 concept from_json_def_obj_defined =  // clang-format off
@@ -1279,13 +1279,14 @@ namespace yyjson
                     {
                     }
 
-                    template <from_json_usr_defined T, typename U = std::remove_cvref_t<T>>
+                    template <typename T, typename U = std::remove_cvref_t<T>>
+                    requires from_json_val_usr_defined<U>
                     U cast() const
                     {
                         return caster<U>::from_json(const_value_ref(doc_, val_));
                     }
                     template <typename T, typename U = std::remove_cvref_t<T>>
-                    requires (!from_json_usr_defined<T>)
+                    requires (!from_json_val_usr_defined<U>)
                     U cast() const
                     {
                         return default_caster<U>::from_json(const_value_ref(doc_, val_));
@@ -1712,13 +1713,14 @@ namespace yyjson
                         return const_value_ref(base::doc_, array_get(idx));
                     }
 
-                    template <from_json_usr_defined T, typename U = std::remove_cvref_t<T>>
+                    template <typename T, typename U = std::remove_cvref_t<T>>
+                    requires from_json_val_usr_defined<U>
                     U cast() const
                     {
                         return caster<U>::from_json(const_value_ref(*this));
                     }
                     template <typename T, typename U = std::remove_cvref_t<T>>
-                    requires from_json_def_arr_defined<T> && (!from_json_usr_defined<T>)
+                    requires from_json_def_arr_defined<U> && (!from_json_val_usr_defined<U>)
                     U cast() const
                     {
                         return default_caster<U>::from_json(const_array_ref(*this));
@@ -2430,13 +2432,14 @@ namespace yyjson
                     [[nodiscard]] auto empty() const noexcept { return object_empty(); }
                     auto operator[](std::string_view key) const { return const_value_ref(base::doc_, object_get(key)); }
 
-                    template <from_json_usr_defined T, typename U = std::remove_cvref_t<T>>
+                    template <typename T, typename U = std::remove_cvref_t<T>>
+                    requires from_json_val_usr_defined<U>
                     U cast() const
                     {
                         return caster<U>::from_json(const_value_ref(*this));
                     }
                     template <typename T, typename U = std::remove_cvref_t<T>>
-                    requires from_json_def_obj_defined<T> && (!from_json_usr_defined<T>)
+                    requires from_json_def_obj_defined<U> && (!from_json_val_usr_defined<U>)
                     U cast() const
                     {
                         return default_caster<U>::from_json(const_object_ref(*this));
@@ -2878,13 +2881,14 @@ namespace yyjson
             [[nodiscard]] std::optional<const_array_ref> as_array() const noexcept;
             [[nodiscard]] std::optional<const_object_ref> as_object() const noexcept;
 
-            template <detail::from_json_usr_defined T, typename U = std::remove_cvref_t<T>>
+            template <typename T, typename U = std::remove_cvref_t<T>>
+            requires detail::from_json_val_usr_defined<U>
             U cast() const
             {
                 return caster<U>::from_json(*this);
             }
             template <typename T, typename U = std::remove_cvref_t<T>>
-            requires (!detail::from_json_usr_defined<T>)
+            requires (!detail::from_json_val_usr_defined<U>)
             U cast() const
             {
                 return detail::default_caster<U>::from_json(*this);
@@ -2988,13 +2992,14 @@ namespace yyjson
             [[nodiscard]] auto back() const noexcept { return const_value_ref(array_back()); }
             auto operator[](std::size_t idx) const noexcept { return const_value_ref(array_get(idx)); }
 
-            template <detail::from_json_usr_defined T, typename U = std::remove_cvref_t<T>>
+            template <typename T, typename U = std::remove_cvref_t<T>>
+            requires detail::from_json_val_usr_defined<U>
             U cast() const
             {
                 return caster<U>::from_json(const_value_ref(base::val_));
             }
             template <typename T, typename U = std::remove_cvref_t<T>>
-            requires (!detail::from_json_usr_defined<T>)
+            requires detail::from_json_def_arr_defined<U> && (!detail::from_json_val_usr_defined<U>)
             U cast() const
             {
                 return detail::default_caster<U>::from_json(*this);
@@ -3114,13 +3119,14 @@ namespace yyjson
             [[nodiscard]] auto empty() const noexcept { return object_empty(); }
             auto operator[](std::string_view key) const { return const_value_ref(object_get(key)); }
 
-            template <detail::from_json_usr_defined T, typename U = std::remove_cvref_t<T>>
+            template <typename T, typename U = std::remove_cvref_t<T>>
+            requires detail::from_json_val_usr_defined<U>
             U cast() const
             {
                 return caster<U>::from_json(const_value_ref(base::val_));
             }
             template <typename T, typename U = std::remove_cvref_t<T>>
-            requires (!detail::from_json_usr_defined<T>)
+            requires detail::from_json_def_obj_defined<U> && (!detail::from_json_val_usr_defined<U>)
             U cast() const
             {
                 return detail::default_caster<U>::from_json(*this);
@@ -3428,7 +3434,7 @@ namespace yyjson
             auto err = yyjson_read_err();
             auto* result = yyjson_read_opts(str, len, magic_enum::enum_integer(read_flag), nullptr, &err);
             if (result != nullptr) return value(result);
-            throw std::runtime_error(fmt::format("read JSON error: {} at position: {}", err.msg, err.pos));
+            throw std::runtime_error(fmt::format("Read JSON error: {} at position: {}", err.msg, err.pos));
         }
         value read(const char* str, std::size_t len, const ReadFlag read_flag = ReadFlag::NoFlag)
         {
@@ -3493,6 +3499,19 @@ namespace yyjson
         return reader::read(std::forward<Ts>(ts)...);
     }
 
+    namespace  // NOLINT
+    {
+        namespace detail
+        {
+            template <typename Json>
+            concept json_value = reader::detail::base_of_value_ref<Json> || writer::detail::base_of_value<Json>;
+            template <typename Json>
+            concept json_object = std::same_as<reader::const_object_ref, Json> || writer::detail::base_of_object<Json>;
+            template <typename Json>
+            concept json_array = std::same_as<reader::const_array_ref, Json> || writer::detail::base_of_array<Json>;
+        }  // namespace detail
+    }      // namespace
+
     using value = writer::value;
     using array = writer::array;
     using object = writer::object;
@@ -3501,20 +3520,18 @@ namespace yyjson
     template <typename T>
     struct detail::default_caster
     {
-        template <typename Json>
-        requires visitable<T> && std::default_initializable<T> &&
-                 (std::same_as<reader::const_object_ref, Json> || writer::detail::base_of_object<Json>)
+        template <json_object Json>
+        requires visitable<T> && std::default_initializable<T>
         static auto from_json(const Json& obj)
         {
-            return visit_struct<T>::from_json(obj);
+            return visit_struct<T>::from_json_impl(obj);
         }
-        template <typename Json>
-        requires std::default_initializable<T> && (!visitable<T>) && std::ranges::input_range<T> &&
-                 requires {
-                     typename std::ranges::range_value_t<T>;
-                     requires key_value_like<std::ranges::range_value_t<T>>;
-                     requires requires(T t, Json obj) { t.emplace(obj.begin()->first, obj.begin()->second); };
-                 } && (std::same_as<reader::const_object_ref, Json> || writer::detail::base_of_object<Json>)
+        template <json_object Json>
+        requires std::default_initializable<T> && (!visitable<T>) && std::ranges::input_range<T> && requires {
+            typename std::ranges::range_value_t<T>;
+            requires key_value_like<std::ranges::range_value_t<T>>;
+            requires requires(T t, Json obj) { t.emplace(obj.begin()->first, obj.begin()->second); };
+        }
         static auto from_json(const Json& obj)
         {
             using ValueType = std::remove_cvref_t<std::tuple_element_t<1, std::ranges::range_value_t<T>>>;
@@ -3526,18 +3543,16 @@ namespace yyjson
             }
             return result;
         }
-        template <typename Json>
-        requires std::default_initializable<T> && (!visitable<T>) && std::ranges::input_range<T> &&
-                 requires {
-                     typename std::ranges::range_value_t<T>;
-                     requires pair_like<std::ranges::range_value_t<T>>;
-                     requires requires(T t, Json obj) {
-                         t.emplace_back(
-                             obj.begin()->first,
-                             cast<std::remove_cvref_t<std::tuple_element_t<1, std::ranges::range_value_t<T>>>>(
-                                 obj.begin()->second));
-                     };
-                 } && (std::same_as<reader::const_object_ref, Json> || writer::detail::base_of_object<Json>)
+        template <json_object Json>
+        requires std::default_initializable<T> && (!visitable<T>) && std::ranges::input_range<T> && requires {
+            typename std::ranges::range_value_t<T>;
+            requires pair_like<std::ranges::range_value_t<T>>;
+            requires requires(T t, Json obj) {
+                t.emplace_back(obj.begin()->first,
+                               cast<std::remove_cvref_t<std::tuple_element_t<1, std::ranges::range_value_t<T>>>>(
+                                   obj.begin()->second));
+            };
+        }
         static auto from_json(const Json& obj)
         {
             using ValueType = std::remove_cvref_t<std::tuple_element_t<1, std::ranges::range_value_t<T>>>;
@@ -3549,13 +3564,12 @@ namespace yyjson
             }
             return result;
         }
-        template <typename Json>
-        requires std::ranges::range<T> && std::default_initializable<T> &&
-                 requires {
-                     typename std::ranges::range_value_t<T>;
-                     requires std::ranges::output_range<T, std::ranges::range_value_t<T>>;
-                     requires requires(const Json& arr) { cast<std::ranges::range_value_t<T>>(arr.front()); };
-                 } && (std::same_as<reader::const_array_ref, Json> || writer::detail::base_of_array<Json>)
+        template <json_array Json>
+        requires std::ranges::range<T> && std::default_initializable<T> && requires {
+            typename std::ranges::range_value_t<T>;
+            requires std::ranges::output_range<T, std::ranges::range_value_t<T>>;
+            requires requires(const Json& arr) { cast<std::ranges::range_value_t<T>>(arr.front()); };
+        }
         static auto from_json(const Json& arr)
         {
             auto result = T();
@@ -3667,13 +3681,13 @@ namespace yyjson
         requires visitable<T>
         static auto to_json(writer::object_ref& obj, const T& t, Ts... ts)
         {
-            visit_struct<T>::to_json(obj, t, ts...);
+            visit_struct<T>::to_json_impl(obj, t, ts...);
         }
         template <copy_string_args... Ts>
         requires visitable<T>
         static auto to_json(writer::object_ref& obj, T&& t, Ts... ts)
         {
-            visit_struct<T>::to_json(obj, std::move(t), ts...);
+            visit_struct<T>::to_json_impl(obj, std::move(t), ts...);
         }
     };
 
@@ -3984,8 +3998,8 @@ public:
     template <>                                                                               \
     struct yyjson::visit_struct<CLASS> : public std::true_type                                \
     {                                                                                         \
-        template <typename Json>                                                              \
-        static auto from_json(const Json& obj)                                                \
+        template <typename Object>                                                            \
+        static auto from_json_impl(const Object& obj)                                         \
         {                                                                                     \
             auto result = CLASS();                                                            \
             for (auto&& [key, value] : obj)                                                   \
@@ -3995,12 +4009,12 @@ public:
             return result;                                                                    \
         }                                                                                     \
         template <typename... Ts>                                                             \
-        static auto to_json(writer::object_ref& obj, const CLASS& t, Ts... ts)                \
+        static auto to_json_impl(writer::object_ref& obj, const CLASS& t, Ts... ts)           \
         {                                                                                     \
             CPPYYJSON_FOR_EACH(VISITABLE_STRUCT_IMPL2, __VA_ARGS__)                           \
         }                                                                                     \
         template <typename... Ts>                                                             \
-        static auto to_json(writer::object_ref& obj, CLASS&& t, Ts... ts)                     \
+        static auto to_json_impl(writer::object_ref& obj, CLASS&& t, Ts... ts)                \
         {                                                                                     \
             CPPYYJSON_FOR_EACH(VISITABLE_STRUCT_IMPL3, __VA_ARGS__)                           \
         }                                                                                     \
