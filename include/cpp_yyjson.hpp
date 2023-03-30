@@ -16,6 +16,7 @@
 #include <ranges>
 #include <unordered_map>
 #include <vector>
+#include <variant>
 
 namespace yyjson
 {
