@@ -3290,7 +3290,7 @@ namespace yyjson
             array& operator=(const array&) = default;
             array& operator=(array&&) = default;
         };
-        std::optional<array> value::as_array() && { return array(std::move(*this)); }
+        inline std::optional<array> value::as_array() && { return array(std::move(*this)); }
 
         class object final : public const_object_ref
         {
@@ -3314,7 +3314,7 @@ namespace yyjson
             object& operator=(const object&) = default;
             object& operator=(object&&) = default;
         };
-        std::optional<object> value::as_object() && { return object(std::move(*this)); }
+        inline std::optional<object> value::as_object() && { return object(std::move(*this)); }
 
 #pragma region read
         template <yyjson_allocator Alloc>
@@ -3408,14 +3408,14 @@ namespace yyjson
             return read(std::string_view{str}, alc, read_flag);
         }
 
-        value read(char* str, std::size_t len, ReadFlag read_flag = ReadFlag::NoFlag)
+        inline value read(char* str, std::size_t len, ReadFlag read_flag = ReadFlag::NoFlag)
         {
             auto err = yyjson_read_err();
             auto* result = yyjson_read_opts(str, len, magic_enum::enum_integer(read_flag), nullptr, &err);
             if (result != nullptr) return value(result);
             throw std::runtime_error(fmt::format("Read JSON error: {} at position: {}", err.msg, err.pos));
         }
-        value read(const char* str, std::size_t len, const ReadFlag read_flag = ReadFlag::NoFlag)
+        inline value read(const char* str, std::size_t len, const ReadFlag read_flag = ReadFlag::NoFlag)
         {
             if ((read_flag & ReadFlag::ReadInsitu) != ReadFlag::NoFlag)
             {
@@ -3423,7 +3423,7 @@ namespace yyjson
             }
             return read(const_cast<char*>(str), len, read_flag);
         }
-        value read(std::string& str, std::size_t len, const ReadFlag read_flag = ReadFlag::NoFlag)
+        inline value read(std::string& str, std::size_t len, const ReadFlag read_flag = ReadFlag::NoFlag)
         {
             if ((read_flag & ReadFlag::ReadInsitu) != ReadFlag::NoFlag)
             {
@@ -3435,36 +3435,36 @@ namespace yyjson
                 throw std::invalid_argument("The specified JSON length is greater than the string size");
             return read(str.data(), len, read_flag);
         }
-        value read(const std::string& str, std::size_t len, const ReadFlag read_flag = ReadFlag::NoFlag)
+        inline value read(const std::string& str, std::size_t len, const ReadFlag read_flag = ReadFlag::NoFlag)
         {
             if (str.size() < len)
                 throw std::invalid_argument("The specified JSON length is greater than the string size");
             return read(str.c_str(), str.size(), read_flag);
         }
-        value read(std::string_view str, std::size_t len, const ReadFlag read_flag = ReadFlag::NoFlag)
+        inline value read(std::string_view str, std::size_t len, const ReadFlag read_flag = ReadFlag::NoFlag)
         {
             if (str.size() < len)
                 throw std::invalid_argument("The specified JSON length is greater than the string size");
             return read(str.data(), str.size(), read_flag);
         }
 
-        value read(char* str, const ReadFlag read_flag = ReadFlag::NoFlag)
+        inline value read(char* str, const ReadFlag read_flag = ReadFlag::NoFlag)
         {
             return read(str, std::strlen(str), read_flag);
         }
-        value read(std::string& str, const ReadFlag read_flag = ReadFlag::NoFlag)
+        inline value read(std::string& str, const ReadFlag read_flag = ReadFlag::NoFlag)
         {
             return read(str.data(), str.size(), read_flag);
         }
-        value read(const std::string& str, const ReadFlag read_flag = ReadFlag::NoFlag)
+        inline value read(const std::string& str, const ReadFlag read_flag = ReadFlag::NoFlag)
         {
             return read(str.c_str(), str.size(), read_flag);
         }
-        value read(std::string_view str, const ReadFlag read_flag = ReadFlag::NoFlag)
+        inline value read(std::string_view str, const ReadFlag read_flag = ReadFlag::NoFlag)
         {
             return read(str.data(), str.size(), read_flag);
         }
-        value read(const char* str, const ReadFlag read_flag = ReadFlag::NoFlag)
+        inline value read(const char* str, const ReadFlag read_flag = ReadFlag::NoFlag)
         {
             return read(std::string_view{str}, read_flag);
         }
