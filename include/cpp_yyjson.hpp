@@ -40,13 +40,23 @@ namespace yyjson
     enum class WriteFlag : yyjson_write_flag
     {
         NoFlag = YYJSON_WRITE_NOFLAG,
-        Prety = YYJSON_WRITE_PRETTY,
+        Pretty = YYJSON_WRITE_PRETTY,
         EscapeUnicode = YYJSON_WRITE_ESCAPE_UNICODE,
         EscapeSlashes = YYJSON_WRITE_ESCAPE_SLASHES,
         AllowInfAndNan = YYJSON_WRITE_ALLOW_INF_AND_NAN,
         InfAndNanAsNull = YYJSON_WRITE_INF_AND_NAN_AS_NULL,
         AllowInvalidUnicode = YYJSON_WRITE_ALLOW_INVALID_UNICODE
     };
+
+    inline constexpr yyjson::WriteFlag operator|(yyjson::WriteFlag lhs, yyjson::WriteFlag rhs)
+    {
+        return static_cast<yyjson::WriteFlag>(static_cast<yyjson_write_flag>(lhs) | static_cast<yyjson_write_flag>(rhs));
+    }
+
+    inline constexpr yyjson::ReadFlag operator|(yyjson::ReadFlag lhs, yyjson::ReadFlag rhs)
+    {
+        return static_cast<yyjson::ReadFlag>(static_cast<yyjson_write_flag>(lhs) | static_cast<yyjson_write_flag>(rhs));
+    }
 
     struct copy_string_t
     {

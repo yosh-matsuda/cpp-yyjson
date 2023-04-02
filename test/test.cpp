@@ -3027,7 +3027,7 @@ TEST(Readme, Example)
         })";
 
         auto val = read(json_str);
-        std::cout << val.write(WriteFlag::Prety) << std::endl;
+        std::cout << val.write(WriteFlag::Pretty) << std::endl;
         // {
         //     "id": 1,
         //     "pi": 3.141592,
