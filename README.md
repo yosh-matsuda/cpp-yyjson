@@ -478,7 +478,7 @@ yyjson::json_string write(WriteFlag write_flag = WriteFlag::NoFlag) const;
 enum class yyjson::WriteFlag : yyjson_write_flag
 {
     NoFlag = YYJSON_WRITE_NOFLAG,
-    Prety = YYJSON_WRITE_PRETTY,
+    Pretty = YYJSON_WRITE_PRETTY,
     EscapeUnicode = YYJSON_WRITE_ESCAPE_UNICODE,
     EscapeSlashes = YYJSON_WRITE_ESCAPE_SLASHES,
     AllowInfAndNan = YYJSON_WRITE_ALLOW_INF_AND_NAN,
@@ -511,7 +511,7 @@ std::string_view json_str = R"(
 })";
 
 auto val = read(json_str);
-std::cout << val.write(WriteFlag::Prety) << std::endl;
+std::cout << val.write(WriteFlag::Pretty) << std::endl;
 // {
 //     "id": 1,
 //     "pi": 3.141592,
