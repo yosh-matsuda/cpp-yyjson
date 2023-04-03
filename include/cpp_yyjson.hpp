@@ -55,7 +55,7 @@ namespace yyjson
 
     inline constexpr yyjson::ReadFlag operator|(yyjson::ReadFlag lhs, yyjson::ReadFlag rhs)
     {
-        return static_cast<yyjson::ReadFlag>(static_cast<yyjson_write_flag>(lhs) | static_cast<yyjson_write_flag>(rhs));
+        return static_cast<yyjson::ReadFlag>(static_cast<yyjson_read_flag>(lhs) | static_cast<yyjson_read_flag>(rhs));
     }
 
     struct copy_string_t
