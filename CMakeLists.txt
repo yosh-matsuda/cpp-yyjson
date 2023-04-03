@@ -31,8 +31,6 @@ endif()
 # dependencies
 find_package(yyjson CONFIG REQUIRED)
 target_link_libraries(${PROJECT_NAME} INTERFACE yyjson::yyjson)
-find_package(magic_enum CONFIG REQUIRED)
-target_link_libraries(${PROJECT_NAME} INTERFACE magic_enum::magic_enum)
 find_package(fmt CONFIG REQUIRED)
 target_link_libraries(${PROJECT_NAME} INTERFACE fmt::fmt-header-only)
 find_package(nameof CONFIG REQUIRED)

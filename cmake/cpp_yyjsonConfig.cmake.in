@@ -4,7 +4,6 @@ set(CPPYYJSON_VERSION @PROJECT_VERSION@)
 
 include(CMakeFindDependencyMacro)
 find_dependency(yyjson CONFIG REQUIRED)
-find_dependency(magic_enum CONFIG REQUIRED)
 find_dependency(fmt CONFIG REQUIRED)
 find_dependency(nameof CONFIG REQUIRED)
 
