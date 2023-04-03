@@ -11,12 +11,11 @@
 #pragma once
 #include <fmt/format.h>
 #include <yyjson.h>
-#include <magic_enum.hpp>
 #include <nameof.hpp>
 #include <ranges>
 #include <unordered_map>
-#include <vector>
 #include <variant>
+#include <vector>
 
 namespace yyjson
 {
@@ -24,7 +23,6 @@ namespace yyjson
     static_assert(YYJSON_VERSION_HEX >= yyjson_required_version, "Minimum required yyjson version is 0.6.0");
 
     using bad_cast = std::runtime_error;
-    using namespace magic_enum::bitwise_operators;  // NOLINT
 
     enum class ReadFlag : yyjson_read_flag
     {
@@ -48,14 +46,30 @@ namespace yyjson
         AllowInvalidUnicode = YYJSON_WRITE_ALLOW_INVALID_UNICODE
     };
 
+    // equivalent to C++23 std::to_underlying
+    template <class T>
+    constexpr std::underlying_type_t<T> to_underlying(T value) noexcept
+    {
+        return static_cast<std::underlying_type_t<T>>(value);
+    }
+
     inline constexpr yyjson::WriteFlag operator|(yyjson::WriteFlag lhs, yyjson::WriteFlag rhs)
     {
-        return static_cast<yyjson::WriteFlag>(static_cast<yyjson_write_flag>(lhs) | static_cast<yyjson_write_flag>(rhs));
+        return static_cast<yyjson::WriteFlag>(to_underlying(lhs) | to_underlying(rhs));
     }
 
     inline constexpr yyjson::ReadFlag operator|(yyjson::ReadFlag lhs, yyjson::ReadFlag rhs)
     {
-        return static_cast<yyjson::ReadFlag>(static_cast<yyjson_read_flag>(lhs) | static_cast<yyjson_read_flag>(rhs));
+        return static_cast<yyjson::ReadFlag>(to_underlying(lhs) | to_underlying(rhs));
+    }
+    inline constexpr yyjson::WriteFlag operator&(yyjson::WriteFlag lhs, yyjson::WriteFlag rhs)
+    {
+        return static_cast<yyjson::WriteFlag>(to_underlying(lhs) & to_underlying(rhs));
+    }
+
+    inline constexpr yyjson::ReadFlag operator&(yyjson::ReadFlag lhs, yyjson::ReadFlag rhs)
+    {
+        return static_cast<yyjson::ReadFlag>(to_underlying(lhs) & to_underlying(rhs));
     }
 
     struct copy_string_t
@@ -1313,7 +1327,7 @@ namespace yyjson
 
                     auto err = yyjson_write_err();
                     auto len = static_cast<std::size_t>(0);
-                    auto result = write_func(magic_enum::enum_integer(write_flag), nullptr, &len, &err);
+                    auto result = write_func(to_underlying(write_flag), nullptr, &len, &err);
                     if (result != nullptr) [[likely]]
                     {
                         return json_string(result, len);
@@ -2766,7 +2780,7 @@ namespace yyjson
             {
                 auto err = yyjson_write_err();
                 auto len = static_cast<std::size_t>(0);
-                auto result = yyjson_val_write_opts(val_, magic_enum::enum_integer(write_flag), nullptr, &len, &err);
+                auto result = yyjson_val_write_opts(val_, to_underlying(write_flag), nullptr, &len, &err);
                 if (result != nullptr)
                 {
                     return json_string(result, len);
@@ -3167,7 +3181,7 @@ namespace yyjson
             pool_allocator(pool_allocator&&) noexcept = default;
             explicit pool_allocator(std::size_t size_byte) : buf_(size_byte) {}
             explicit pool_allocator(std::string_view json, ReadFlag flag = ReadFlag::NoFlag)
-                : buf_(yyjson_read_max_memory_usage(json.size(), magic_enum::enum_integer(flag)))
+                : buf_(yyjson_read_max_memory_usage(json.size(), to_underlying(flag)))
             {
             }
             auto& get() & { return alc_; }
@@ -3185,7 +3199,7 @@ namespace yyjson
             }
             void allocate(std::string_view json, ReadFlag flag = ReadFlag::NoFlag)
             {
-                allocate(yyjson_read_max_memory_usage(json.size(), magic_enum::enum_integer(flag)));
+                allocate(yyjson_read_max_memory_usage(json.size(), to_underlying(flag)));
             }
             void deallocate()
             {
@@ -3200,7 +3214,7 @@ namespace yyjson
             }
             [[nodiscard]] bool check_capacity(std::string_view json, ReadFlag flag = ReadFlag::NoFlag) const
             {
-                return size() >= yyjson_read_max_memory_usage(json.size(), magic_enum::enum_integer(flag));
+                return size() >= yyjson_read_max_memory_usage(json.size(), to_underlying(flag));
             }
         };
 
@@ -3226,7 +3240,7 @@ namespace yyjson
             [[nodiscard]] constexpr auto size() const { return buf_.size(); }
             [[nodiscard]] bool check_capacity(std::string_view json, ReadFlag flag = ReadFlag::NoFlag) const
             {
-                return size() >= yyjson_read_max_memory_usage(json.size(), magic_enum::enum_integer(flag));
+                return size() >= yyjson_read_max_memory_usage(json.size(), to_underlying(flag));
             }
         };
 
@@ -3251,7 +3265,7 @@ namespace yyjson
             {
                 auto err = yyjson_write_err();
                 auto len = static_cast<std::size_t>(0);
-                auto result = yyjson_write_opts(doc_.get(), magic_enum::enum_integer(write_flag), nullptr, &len, &err);
+                auto result = yyjson_write_opts(doc_.get(), to_underlying(write_flag), nullptr, &len, &err);
                 if (result != nullptr)
                 {
                     return json_string(result, len);
@@ -3334,7 +3348,7 @@ namespace yyjson
             yyjson_doc* result;
             if constexpr (std::same_as<yyjson_alc, Alloc>)
             {
-                result = yyjson_read_opts(str, len, magic_enum::enum_integer(read_flag), &alc, &err);
+                result = yyjson_read_opts(str, len, to_underlying(read_flag), &alc, &err);
             }
             else
             {
@@ -3350,7 +3364,7 @@ namespace yyjson
                             fmt::format("Insufficient capacity in the pool allocator for {}", NAMEOF_TYPE(Alloc)));
                     }
                 }
-                result = yyjson_read_opts(str, len, magic_enum::enum_integer(read_flag), &alc.get(), &err);
+                result = yyjson_read_opts(str, len, to_underlying(read_flag), &alc.get(), &err);
             }
             if (result != nullptr) return value(result);
             throw std::runtime_error(fmt::format("read JSON error: {} at position: {}", err.msg, err.pos));
@@ -3421,7 +3435,7 @@ namespace yyjson
         inline value read(char* str, std::size_t len, ReadFlag read_flag = ReadFlag::NoFlag)
         {
             auto err = yyjson_read_err();
-            auto* result = yyjson_read_opts(str, len, magic_enum::enum_integer(read_flag), nullptr, &err);
+            auto* result = yyjson_read_opts(str, len, to_underlying(read_flag), nullptr, &err);
             if (result != nullptr) return value(result);
             throw std::runtime_error(fmt::format("Read JSON error: {} at position: {}", err.msg, err.pos));
         }

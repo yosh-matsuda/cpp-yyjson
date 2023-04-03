@@ -40,7 +40,6 @@ Ultra-fast and intuitive C++ JSON reader/writer with yyjson backend.
 -   [yyjson](https://github.com/ibireme/yyjson)
 -   [{fmt}](https://github.com/fmtlib/fmt)
 -   [Nameof C++](https://github.com/Neargye/nameof)
--   [Magic Enum C++](https://github.com/Neargye/magic_enum)
 
 ## Overview
 
@@ -95,7 +94,7 @@ for (const auto& [k, v] : dict)
 auto numbers = cast<std::vector<int>>(list);
 auto currency = cast<std::map<std::string_view, double>>(dict);
 
-// Stringify rea-only string
+// Stringify read-only string
 std::cout << obj.write() << std::endl;
 // -> {"id":1,"pi":3.141592,"name":"example","array":[0,1,2,3,4],
 //     "currency":{"USD":129.66,"EUR":140.35,"GBP":158.72},"success":true}
@@ -186,7 +185,7 @@ auto deserialized = cast<X>(serialized);    // deserialize JSON object into stru
 To use cpp-yyjson, the dependent packages are required to be installed. It is convenient to use [vcpkg](https://github.com/microsoft/vcpkg) to install the packages:
 
 ```bash
-$ ./vcpkg install yyjson fmt nameof magic-enum
+$ ./vcpkg install yyjson fmt nameof
 ```
 
 Then add the path `include/cpp_yyjson.hpp` to the include directory of your project.
