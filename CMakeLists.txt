@@ -28,6 +28,11 @@ if(APPLE AND "${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang" AND ${CMAKE_CXX_COMPILE
     target_compile_definitions(${PROJECT_NAME} INTERFACE _LIBCPP_ENABLE_EXPERIMENTAL)
 endif()
 
+# for MSVC
+if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "MSVC")
+    target_compile_options(${PROJECT_NAME} INTERFACE /Zc:preprocessor)
+endif()
+
 # dependencies
 find_package(yyjson CONFIG REQUIRED)
 target_link_libraries(${PROJECT_NAME} INTERFACE yyjson::yyjson)

@@ -12,10 +12,10 @@
 #include <fmt/format.h>
 #include <yyjson.h>
 #include <nameof.hpp>
+#include <optional>
 #include <ranges>
 #include <unordered_map>
 #include <variant>
-#include <optional>
 #include <vector>
 
 namespace yyjson
@@ -1444,6 +1444,8 @@ namespace yyjson
             {
                 using base = const_value_base<DocType>;
                 using base::base;
+                using as_array_type = std::conditional_t<base::is_value_type, array, array_ref>;
+                using as_object_type = std::conditional_t<base::is_value_type, object, object_ref>;
 
             public:
                 mutable_value_base()
@@ -1519,11 +1521,9 @@ namespace yyjson
                 };
 
                 [[nodiscard]] std::optional<array_ref> as_array() & noexcept;
-                [[nodiscard]] std::optional<std::conditional_t<base::is_value_type, array, array_ref>>
-                as_array() && noexcept;
+                [[nodiscard]] std::optional<as_array_type> as_array() && noexcept;
                 [[nodiscard]] std::optional<object_ref> as_object() & noexcept;
-                [[nodiscard]] std::optional<std::conditional_t<base::is_value_type, object, object_ref>>
-                as_object() && noexcept;
+                [[nodiscard]] std::optional<as_object_type> as_object() && noexcept;
                 [[nodiscard]] auto as_array() const& noexcept { return base::as_array(); }
                 [[nodiscard]] auto as_object() const& noexcept { return base::as_object(); }
             };
@@ -2218,12 +2218,11 @@ namespace yyjson
                 return std::nullopt;
             }
             template <typename DocType>
-            std::optional<std::conditional_t<mutable_value_base<DocType>::base::is_value_type, array, array_ref>>
+            std::optional<typename mutable_value_base<DocType>::as_array_type>
             mutable_value_base<DocType>::as_array() && noexcept
             {
-                using result_type = std::conditional_t<base::is_value_type, array, array_ref>;
                 if (base::is_array()) [[likely]]
-                    return result_type(std::move(*this));
+                    return as_array_type(std::move(*this));
                 return std::nullopt;
             }
 
@@ -2729,13 +2728,11 @@ namespace yyjson
                 return std::nullopt;
             }
             template <typename DocType>
-            std::optional<std::conditional_t<mutable_value_base<DocType>::base::is_value_type, object, object_ref>>
+            std::optional<typename mutable_value_base<DocType>::as_object_type>
             mutable_value_base<DocType>::as_object() && noexcept
             {
-                using result_type =
-                    std::conditional_t<mutable_value_base<DocType>::base::is_value_type, object, object_ref>;
                 if (base::is_object()) [[likely]]
-                    return result_type(std::move(*this));
+                    return as_object_type(std::move(*this));
                 return std::nullopt;
             }
         }  // namespace detail
@@ -3637,14 +3634,22 @@ namespace yyjson
             }
             else if (json.is_bool())
             {
+#ifdef _MSC_VER
+                if constexpr (requires { T(std::declval<bool>()); })
+#else
                 if constexpr (std::constructible_from<T, bool>)
+#endif
                     return T(*json.as_bool());
                 else
                     throw bad_cast(fmt::format("{} is not constructible from JSON bool", NAMEOF_TYPE(T)));
             }
             else if (json.is_real())
             {
+#ifdef _MSC_VER
+                if constexpr (requires { T(std::declval<double>()); })
+#else
                 if constexpr (std::constructible_from<T, double>)
+#endif
                 {
                     return T(*json.as_real());
                 }
@@ -3664,7 +3669,11 @@ namespace yyjson
             }
             else if (const auto vi = json.as_int(); vi.has_value())
             {
+#ifdef _MSC_VER
+                if constexpr (requires { T(std::declval<std::int64_t>()); })
+#else
                 if constexpr (std::constructible_from<T, std::int64_t>)
+#endif
                 {
                     return T(*vi);
                 }

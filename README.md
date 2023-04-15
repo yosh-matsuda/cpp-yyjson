@@ -37,6 +37,8 @@ Ultra-fast and intuitive C++ JSON reader/writer with yyjson backend.
 -   C++20 compiler with range supports
     -   LLVM >= 15.0 (full supports after 16.0)
     -   GCC >= 12
+    -   clang-cl >= 15 (MSVC/Windows)
+    -   Visual Studio >= 2022 version 17.5 (experimental)
 -   [yyjson](https://github.com/ibireme/yyjson)
 -   [{fmt}](https://github.com/fmtlib/fmt)
 -   [Nameof C++](https://github.com/Neargye/nameof)
