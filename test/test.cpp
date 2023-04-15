@@ -2921,7 +2921,7 @@ TEST(Readme, Example)
         // Key access to the JSON object class and cast
         auto id = *obj["id"].as_int();
         auto pi = *obj["pi"].as_real();
-        auto name = *obj["pi"].as_string();
+        auto name = *obj["name"].as_string();
         auto success = *obj["success"].as_bool();
 
         // JSON array/object classes adapt the range concept
