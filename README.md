@@ -2,6 +2,8 @@
 
 Ultra-fast and intuitive C++ JSON reader/writer with yyjson backend.
 
+[![CI](https://github.com/yosh-matsuda/cpp-yyjson/actions/workflows/tests.yml/badge.svg)](https://github.com/yosh-matsuda/cpp-yyjson/actions/workflows/tests.yml)
+
 1. [Features](#features)
 2. [Requirements](#requirements)
 3. [Overview](#overview)
