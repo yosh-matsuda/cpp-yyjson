@@ -107,7 +107,7 @@ namespace yyjson
 
     public:
         json_string(char* ptr, std::size_t len)
-            : std::string_view(ptr, len), str_ptr_(std::shared_ptr<char>(ptr, [](auto* ptr) { std::free(ptr); }))
+            : std::string_view(ptr, len), str_ptr_(std::shared_ptr<char>(ptr, [](auto* p) { std::free(p); }))
         {
         }
     };
@@ -2848,7 +2848,7 @@ namespace yyjson
                 if (is_uint()) [[likely]]
                 {
                     auto ret = yyjson_get_uint(val_);
-                    if (ret <= std::numeric_limits<std::int64_t>::max()) return ret;
+                    if (ret <= static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) return ret;
                 }
                 return std::nullopt;
             }
