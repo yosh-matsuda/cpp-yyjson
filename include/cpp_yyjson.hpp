@@ -3913,25 +3913,25 @@ namespace yyjson
     };
 }  // namespace yyjson
 
-template <typename T>  // clang-format off
+template <typename T>
 requires requires(const T& t) {
+    // clang-format off
     {t.write()} -> std::same_as<yyjson::json_string>;
+    // clang-format on
 }
-class fmt::formatter<T>  // clang-format on
+struct fmt::formatter<T>
 {
-public:
-    constexpr auto parse(format_parse_context& ctx) const -> decltype(ctx.begin())
+    constexpr auto parse(fmt::format_parse_context& ctx) -> fmt::format_parse_context::iterator
     {
         const auto i = ctx.begin();
         if (i != ctx.end() && *i != '}')
         {
-            throw format_error("invalid format");
+            throw fmt::format_error("invalid format");
         }
         return i;
     }
 
-    template <typename FmtContext>
-    auto format(const T& t, FmtContext& ctx) const -> decltype(ctx.out())
+    auto format(const T& t, fmt::format_context& ctx) const -> fmt::format_context::iterator
     {
         return fmt::format_to(ctx.out(), "{}", t.write());
     }

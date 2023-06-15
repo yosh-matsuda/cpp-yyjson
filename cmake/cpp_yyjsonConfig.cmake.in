@@ -4,7 +4,7 @@ set(CPPYYJSON_VERSION @PROJECT_VERSION@)
 
 include(CMakeFindDependencyMacro)
 find_dependency(yyjson CONFIG REQUIRED)
-find_dependency(fmt CONFIG REQUIRED)
+find_dependency(fmt 10.0.0 CONFIG REQUIRED)
 find_dependency(nameof CONFIG REQUIRED)
 
 include("${CMAKE_CURRENT_LIST_DIR}/@PROJECT_NAME@Targets.cmake")

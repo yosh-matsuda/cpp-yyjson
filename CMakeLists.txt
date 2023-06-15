@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(cpp_yyjson VERSION 0.0.1 LANGUAGES CXX)
+project(cpp_yyjson VERSION 0.2.0 LANGUAGES CXX)
 
 # check if the project is top-level
 if(CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME)
@@ -36,7 +36,7 @@ endif()
 # dependencies
 find_package(yyjson CONFIG REQUIRED)
 target_link_libraries(${PROJECT_NAME} INTERFACE yyjson::yyjson)
-find_package(fmt CONFIG REQUIRED)
+find_package(fmt 10.0.0 CONFIG REQUIRED)
 target_link_libraries(${PROJECT_NAME} INTERFACE fmt::fmt-header-only)
 find_package(nameof CONFIG REQUIRED)
 target_link_libraries(${PROJECT_NAME} INTERFACE nameof::nameof)
