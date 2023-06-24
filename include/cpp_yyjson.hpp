@@ -1,5 +1,5 @@
 /*===================================================*
-|  cpp-yyjson version v0.0.1                         |
+|  cpp-yyjson version v0.2.0                         |
 |  https://github.com/yosh-matsuda/cpp-yyjson        |
 |                                                    |
 |  Copyright (c) 2023 Yoshiki Matsuda @yosh-matsuda  |
