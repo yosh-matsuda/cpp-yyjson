@@ -284,10 +284,9 @@ The cpp-yyjson and [yyjson](https://github.com/ibireme/yyjson) show excellent wr
 
 The `yyjson` namespace includes the following function and classes. Typically, you will start with them for reading and writing JSON.
 
-|    Function    |                                                                                                            |
+| Function       |                                                                                                            |
 | -------------- | ---------------------------------------------------------------------------------------------------------- |
-| `yyjson::read` | Read a JSON s
-tring and return an *immutable* JSON document class which is alias of `yyjson::reader::value` |
+| `yyjson::read` | Read a JSON string and return an *immutable* JSON document class which is alias of `yyjson::reader::value` |
 
 | Type             |                                                                |
 | ---------------- | -------------------------------------------------------------- |
@@ -295,9 +294,9 @@ tring and return an *immutable* JSON document class which is alias of `yyjson::r
 | `yyjson::array`  | *Mutable* JSON array class; alias of `yyjson::writer::array`   |
 | `yyjson::object` | *Mutable* JSON object class; alias of `yyjson::writer::object` |
 
-In internal namespaces, the cpp-yyjson provides JSON value, array, object, reference, and  iterator classes. Each internal `yyjson::reader` and `yyjson::writer` namespace defines *immutable* and *mutable* JSON classes, respectively. Although you rarely need to be aware of the classes provided in the internal namespaces, the *reference* classes are noted here.
+In internal namespaces, the cpp-yyjson provides JSON value, array, object, reference, and iterator classes. Each internal `yyjson::reader` and `yyjson::writer` namespace defines *immutable* and *mutable* JSON classes, respectively. Although you rarely need to be aware of the classes provided in the internal namespaces, the *reference* classes are noted here.
 
-The JSON value, array, and object classes have the corresponding *reference* (only for *mutable* classes) and *const reference* versions of them as shown later, such as `value_ref`, `const_value_ref`, `array_ref`, `const_array_ref` and so on. The *reference* classes have member functions with almost the same signature as the normal versions. The difference between a normal `value` class and a `[const_]value_ref` class is whether they have their data ownership or not. The *(const) reference* JSON classes appear in return types of member functions of the JSON classes. This is to maximize performance by avoiding copying.
+The JSON value, array, and object classes have the corresponding *reference* (only for *mutable* classes) and *const reference* versions of them as shown later, such as `value_ref`, `const_value_ref`, `array_ref`, `const_array_ref`, and so on. The *reference* classes have member functions with almost the same signature as the normal versions. The difference between a normal `value` class and a `[const_]value_ref` class is whether they have their data ownership or not. The *(const) reference* JSON classes appear in return types of member functions of the JSON classes. This is to maximize performance by avoiding copying.
 
 > **Note**  
 > The *reference* class refers to data in the owner, so its lifetime should be noted.
@@ -428,7 +427,7 @@ auto val = read(json_str_insitu, json_str.size(), heap_alloc, ReadFlag::ReadInsi
 
 The immutable JSON value class is returned from `yyjson::read` function.
 
-**Construtor**
+**Constructor**
 
 ```cpp
 yyjson::reader::value() = delete;
@@ -490,7 +489,7 @@ enum class yyjson::WriteFlag : yyjson_write_flag
 };
 ```
 
-The `write` function returns a read-only string which is wrapped by and inherited from `std::string_view`. See the reference of yyjson for the information of [writer flags](https://ibireme.github.io/yyjson/doc/doxygen/html/md_doc__a_p_i.html#autotoc_md40).
+The `write` function returns a read-only string which is wrapped by and inherited from `std::string_view`. See the reference of yyjson for the information on [writer flags](https://ibireme.github.io/yyjson/doc/doxygen/html/md_doc__a_p_i.html#autotoc_md40).
 
 **Example**
 
@@ -539,7 +538,7 @@ std::cout << val.write(WriteFlag::Pretty) << std::endl;
 
 The immutable JSON array class is created by the `value::as_array` member function. This class adapts `std::ranges::input_range` concept.
 
-**Construtor**
+**Constructor**
 
 ```cpp
 yyjson::reader::array() = delete;
@@ -608,7 +607,7 @@ for (const auto arr = *val.as_array(); const auto& v : arr)  // ✅ OK
 
 The immutable JSON object class is created by the `value::as_object` member function. This class adapts `std::ranges::input_range` concept.
 
-**Construtor**
+**Constructor**
 
 ```cpp
 yyjson::reader::object() = delete;
@@ -783,7 +782,7 @@ explicit operator T() const;
 yyjson::json_string write(WriteFlag write_flag = WriteFlag::NoFlag) const;
 ```
 
-Concepts `value_constructible`, `array_constructible`, and `object_constructible` are **NOT** defined in the library but described in the above for explanation hereafter.
+Concepts `value_constructible`, `array_constructible`, and `object_constructible` are **NOT** defined in the library but are described in the above for explanation hereafter.
 
 Since yyjson does not copy (but refer) strings to JSON documents by default, it is possible to explicitly specify that strings will be copied to JSON by giving the tag type value `yyjson::copy_string` as the second argument to the constructor. For safety, the implicit copy occurs when `std::string&&` is converted to the JSON string without specifying `yyjson::copy_string`.
 
@@ -1211,7 +1210,7 @@ On the other hand, the `to_json` function is a bit complicated and there are two
 template <>
 struct yyjson::caster<X>
 {
-    template <typename Ts...>
+    template <typename... Ts>
     static auto to_json(const X& x, Ts...)
     {
         // Convert X object to JSON string
@@ -1228,7 +1227,7 @@ The second way is to create a JSON value/array/object directly in the `to_json` 
 template <>
 struct yyjson::caster<X>
 {
-    template <typename Ts...>
+    template <typename... Ts>
     static void to_json(writer::object_ref& obj, const X& x, Ts... ts)
     {
         obj.emplace("a", x.a, ts...);
