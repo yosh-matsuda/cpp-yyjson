@@ -44,7 +44,7 @@ target_link_libraries("${PROJECT_NAME}_test" PRIVATE ${PROJECT_NAME} GTest::gtes
 
 # add google test
 include(GoogleTest)
-gtest_discover_tests("${PROJECT_NAME}_test")
+gtest_discover_tests("${PROJECT_NAME}_test" DISCOVERY_MODE PRE_TEST)
 
 # benchmark
 if(CPPYYJSON_BUILD_BENCH)
