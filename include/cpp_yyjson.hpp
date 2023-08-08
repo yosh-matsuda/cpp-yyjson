@@ -3185,7 +3185,9 @@ namespace yyjson
             auto& get() & { return alc_; }
             [[nodiscard]] const auto& get() const& { return alc_; }
             auto get() && { return std::move(alc_); }
-            [[nodiscard]] auto size() const { return buf_.size(); }
+            [[nodiscard]] constexpr auto begin() noexcept { return buf_.begin(); }
+            [[nodiscard]] constexpr auto end() noexcept { return buf_.end(); }
+            [[nodiscard]] constexpr auto size() const noexcept { return buf_.size(); }
             void resize(std::size_t req)
             {
                 buf_.resize(req);
@@ -3235,7 +3237,9 @@ namespace yyjson
             stack_pool_allocator() = default;
             stack_pool_allocator(const stack_pool_allocator&) = default;
             stack_pool_allocator(stack_pool_allocator&&) noexcept = default;
-            [[nodiscard]] constexpr auto size() const { return buf_.size(); }
+            [[nodiscard]] constexpr auto begin() noexcept { return buf_.begin(); }
+            [[nodiscard]] constexpr auto end() noexcept { return buf_.end(); }
+            [[nodiscard]] constexpr auto size() const noexcept { return buf_.size(); }
             [[nodiscard]] bool check_capacity(std::string_view json, ReadFlag flag = ReadFlag::NoFlag) const
             {
                 return size() >= yyjson_read_max_memory_usage(json.size(), to_underlying(flag));
