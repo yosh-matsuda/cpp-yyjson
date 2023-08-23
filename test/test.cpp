@@ -2173,6 +2173,10 @@ TEST(Writer, PredefinedCaster)
     static_assert(std::constructible_from<array, std::tuple<int, std::string, double>&&>);
     static_assert(std::constructible_from<array, std::tuple<int, std::string, double>&>);
     static_assert(std::constructible_from<array, const std::tuple<int, std::string, double>&>);
+    static_assert(std::constructible_from<array, std::vector<bool>&&>);
+    static_assert(std::constructible_from<array, std::vector<bool>&>);
+    static_assert(std::constructible_from<array, const std::vector<bool>&>);
+    static_assert(std::constructible_from<value, const std::vector<bool>::reference&>);
     static_assert(
         std::constructible_from<object,
                                 std::tuple<std::tuple<std::string_view, int>, std::tuple<std::string_view, std::string>,
@@ -2288,6 +2292,12 @@ TEST(Writer, PredefinedCaster)
     EXPECT_EQ(*org_arr2[1].as_array()->back().as_string(), std::get<1>(std::get<1>(tpl_amb)));
     EXPECT_EQ(*org_arr2[2].as_array()->front().as_string(), std::get<0>(std::get<2>(tpl_amb)));
     EXPECT_EQ(*org_arr2[2].as_array()->back().as_string(), std::get<1>(std::get<2>(tpl_amb)));
+    auto vec_bool = std::vector<bool>{false, true};
+    auto org_arr3 = array(vec_bool);
+    EXPECT_EQ(*org_arr3[0].as_bool(), vec_bool[0]);
+    EXPECT_EQ(*org_arr3[1].as_bool(), vec_bool[1]);
+    EXPECT_EQ(*value(vec_bool[0]).as_bool(), vec_bool[0]);
+    EXPECT_EQ(*value(vec_bool[1]).as_bool(), vec_bool[1]);
 
     // assign
     static_assert(std::is_assignable_v<value, std::optional<int>>);

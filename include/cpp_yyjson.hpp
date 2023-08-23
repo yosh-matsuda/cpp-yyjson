@@ -3915,6 +3915,26 @@ namespace yyjson
             }(Indices{});
         }
     };
+
+    // specialized casters for std::vector<bool>
+    template <>
+    struct caster<std::vector<bool>>
+    {
+        template <detail::copy_string_args... Ts>
+        static auto to_json(writer::array_ref& arr, const std::vector<bool>& bv, Ts...)
+        {
+            for (bool v : bv) arr.emplace_back(v);
+        }
+    };
+    template <>
+    struct caster<std::vector<bool>::reference>
+    {
+        template <detail::copy_string_args... Ts>
+        static auto to_json(const std::vector<bool>::reference& v, Ts...)
+        {
+            return static_cast<bool>(v);
+        }
+    };
 }  // namespace yyjson
 
 template <typename T>
