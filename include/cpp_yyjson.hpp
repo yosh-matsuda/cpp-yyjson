@@ -3327,7 +3327,12 @@ namespace yyjson
             array& operator=(const array&) = default;
             array& operator=(array&&) = default;
         };
-        inline std::optional<array> value::as_array() && { return array(std::move(*this)); }
+        inline std::optional<array> value::as_array() &&
+        {
+            if (is_array()) [[likely]]
+                return array(std::move(*this));
+            return std::nullopt;
+        }
 
         class object final : public const_object_ref
         {
@@ -3351,7 +3356,12 @@ namespace yyjson
             object& operator=(const object&) = default;
             object& operator=(object&&) = default;
         };
-        inline std::optional<object> value::as_object() && { return object(std::move(*this)); }
+        inline std::optional<object> value::as_object() &&
+        {
+            if (is_object()) [[likely]]
+                return object(std::move(*this));
+            return std::nullopt;
+        }
 
 #pragma region read
         template <yyjson_allocator Alloc>
