@@ -23,7 +23,18 @@ namespace yyjson
     inline constexpr auto yyjson_required_version = 0x000600;
     static_assert(YYJSON_VERSION_HEX >= yyjson_required_version, "Minimum required yyjson version is 0.6.0");
 
-    using bad_cast = std::runtime_error;
+    class bad_cast : public std::runtime_error
+    {
+        using std::runtime_error::runtime_error;
+    };
+    class read_error : public std::runtime_error
+    {
+        using std::runtime_error::runtime_error;
+    };
+    class write_error : public std::runtime_error
+    {
+        using std::runtime_error::runtime_error;
+    };
 
     enum class ReadFlag : yyjson_read_flag
     {
@@ -1333,7 +1344,7 @@ namespace yyjson
                     {
                         return json_string(result, len);
                     }
-                    throw std::runtime_error(fmt::format("write JSON error: {}", err.msg));
+                    throw write_error(fmt::format("write JSON error: {}", err.msg));
                 }
             };
 
@@ -2783,7 +2794,7 @@ namespace yyjson
                 {
                     return json_string(result, len);
                 }
-                throw std::runtime_error(fmt::format("write JSON error: {}", err.msg));
+                throw write_error(fmt::format("write JSON error: {}", err.msg));
             }
         };
 
@@ -3272,7 +3283,7 @@ namespace yyjson
                 {
                     return json_string(result, len);
                 }
-                throw std::runtime_error(fmt::format("write JSON error: {}", err.msg));
+                throw write_error(fmt::format("write JSON error: {}", err.msg));
             }
 
             template <yyjson_allocator Alloc>
@@ -3369,14 +3380,14 @@ namespace yyjson
                 result = yyjson_read_opts(str, len, to_underlying(read_flag), &alc.get(), &err);
             }
             if (result != nullptr) return value(result);
-            throw std::runtime_error(fmt::format("read JSON error: {} at position: {}", err.msg, err.pos));
+            throw read_error(fmt::format("read JSON error: {} at position: {}", err.msg, err.pos));
         }
         template <yyjson_allocator Alloc>
         value read(const char* str, std::size_t len, Alloc& alc, const ReadFlag read_flag = ReadFlag::NoFlag)
         {
             if ((read_flag & ReadFlag::ReadInsitu) != ReadFlag::NoFlag)
             {
-                throw std::runtime_error("ReadInsitu flag cannot be specified with const string");
+                throw std::invalid_argument("ReadInsitu flag cannot be specified with const string");
             }
             return read(const_cast<char*>(str), len, alc, read_flag);
         }
@@ -3439,13 +3450,13 @@ namespace yyjson
             auto err = yyjson_read_err();
             auto* result = yyjson_read_opts(str, len, to_underlying(read_flag), nullptr, &err);
             if (result != nullptr) return value(result);
-            throw std::runtime_error(fmt::format("Read JSON error: {} at position: {}", err.msg, err.pos));
+            throw read_error(fmt::format("Read JSON error: {} at position: {}", err.msg, err.pos));
         }
         inline value read(const char* str, std::size_t len, const ReadFlag read_flag = ReadFlag::NoFlag)
         {
             if ((read_flag & ReadFlag::ReadInsitu) != ReadFlag::NoFlag)
             {
-                throw std::runtime_error("ReadInsitu flag cannot be specified with const string");
+                throw std::invalid_argument("ReadInsitu flag cannot be specified with const string");
             }
             return read(const_cast<char*>(str), len, read_flag);
         }
