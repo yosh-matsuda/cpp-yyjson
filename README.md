@@ -30,8 +30,11 @@ Ultra-fast and intuitive C++ JSON reader/writer with yyjson backend.
 -   C++20 range adaption
 -   STL-like accessors
 -   Intuitive JSON construction
--   Serialization and deserialization of instances of C++ classes
--   The minimum overhead compared to yyjson
+-   Mutual transformation of JSON and C++ classes with
+    -   compile-time reflection of struct/class field name
+    -   pre-defined STL casters
+    -   user-defined casters in two ways
+-   Minimum overhead compared to yyjson
 -   Object lifetime safety
 
 ## Requirements
@@ -39,8 +42,8 @@ Ultra-fast and intuitive C++ JSON reader/writer with yyjson backend.
 -   C++20 compiler with range supports
     -   LLVM >= 15.0 (full supports after 16.0)
     -   GCC >= 12
-    -   clang-cl >= 15 (MSVC/Windows)
-    -   Visual Studio >= 2022 version 17.5 (experimental)
+    -   clang-cl >= 17 (Windows)
+    -   Visual Studio >= 2022 version 17.5
 -   [yyjson](https://github.com/ibireme/yyjson)
 -   [{fmt}](https://github.com/fmtlib/fmt)
 -   [Nameof C++](https://github.com/Neargye/nameof)
@@ -70,8 +73,11 @@ auto json_str = R"(
     "success": true
 })";
 
-// Read JSON string and cast as an object class
-auto obj = *read(json_str).as_object();
+// Read JSON string
+auto val = read(json_str);
+
+// as_xxx methods return std::optional<T>
+auto obj = *val.as_object();
 
 // Key access to the JSON object class
 auto id = *obj["id"].as_int();
@@ -128,61 +134,122 @@ obj.emplace("USD", 129.66);
 obj.emplace("date", "Wed Feb 1 2023");
 
 // Conversion from range to JSON array class
-array arr_vec = std::vector{1, 2, 3};  // -> [1,2,3]
-array arr_nst = std::vector<std::vector<int>>{{1, 2}, {3, 4}};  // -> [[1,2],[3,4]]
-array arr_rng =          // transformation via range adaptors
-    std::vector{1, 2, 3} | std::ranges::views::transform([](auto x) { return x * x; });  // -> [1,4,9]
+auto vec = std::vector{1, 2, 3};
+auto vec_nst = std::vector<std::vector<int>>{{1, 2}, {3, 4}};
+auto arr_vec = array(vec);      // -> [1,2,3]
+auto arr_nst = array(vec_nst);  // -> [[1,2],[3,4]]
+array arr_rng =     // transformation via range adaptors
+    std::vector{1, 2, 3} | std::ranges::views::transform([](auto x) { return x * x; });
+    // -> [1,4,9]
 
 // Conversion from key-value-like range to JSON object class
-object obj_map = std::map<std::string_view, double>{{"first", 1.0}, {"second", 2.0}, {"third", 3.0}};
-object obj_kv  = std::map<std::string_view, value>{{"number", 1.5}, {"error", nullptr}, {"text", "abc"}};
+auto kv_map =
+    std::map<std::string_view, double>{{"first", 1.0}, {"second", 2.0}, {"third", 3.0}};
+auto val_map =
+    std::map<std::string_view, value>{{"number", 1.5}, {"error", nullptr}, {"text", "abc"}};
+auto obj_map = object(kv_map);
+auto obj_kv  = object(val_map);
 
 // Construction by std::initializer_list
-array init_arr = {nullptr, true, "2", 3.0, {4.0, "5", false}, {{"7", 8}, {"9", {0}}}};
-object init_obj = {{"id", 1},
-                   {"pi", 3.141592},
-                   {"name", "example"},
-                   {"array", {0, 1, 2, 3, 4}},
-                   {"currency", {{"USD", 129.66}, {"EUR", 140.35}, {"GBP", 158.72}}},
-                   {"success", true}};
+auto init_arr = array{nullptr, true, "2", 3.0, {4.0, "5", false}, {{"7", 8}, {"9", {0}}}};
+auto init_obj = object{{"id", 1},
+                       {"pi", 3.141592},
+                       {"name", "example"},
+                       {"array", {0, 1, 2, 3, 4}},
+                       {"currency", {{"USD", 129.66}, {"EUR", 140.35}, {"GBP", 158.72}}},
+                       {"success", true}};
 ```
 
 ### Serialization and Deserialization
 
-As shown above, cpp-yyjson provides conversion between JSON value/array/object classes and C++ ranges and container types recursively. In addition to that, conversions to/from `std::optional`, `std::variant`, and `std::tuple` ([C++23 tuple-like](https://wg21.link/P2165R4)) are pre-defined. If a user-defined class is registered to `VISITABLE_STRUCT` macro, casting to/from the JSON object class is supported. Type casters can also be defined by users themselves (see the [reference](#serialize-and-deserialize-json) in detail).
+As shown above, cpp-yyjson provides conversion between JSON value/array/object classes and C++ ranges and container types recursively. In addition to that, the following additional JSON casters are available (see the [reference](#serialize-and-deserialize-json) in detail):
+
+* Pre-defined STL casters (e.g., `std::optional`, `std::variant`, `std::tuple` ([C++23 tuple-like](https://wg21.link/P2165R4))).
+* Conversion using compile-time reflection of struct/class if it is available.
+* Registration of field names with `VISITABLE_STRUCT` macro.
+* User-defined casters.
+
+#### Pre-defined STL casters
 
 ```cpp
-#include "cpp_yyjson.hpp"
-
-using namespace yyjson;
-
-// Cast JSON value from/to std::optional
+// cast JSON value from/to std::optional
 auto nullable = std::optional<int>(3);
-auto serialized = value(nullable);                          // serialize std::optional to JSON value
-auto deserialized = cast<decltype(nullable)>(serialized);   // deserialize JSON value into std::optional
+auto serialized = value(nullable);                        // serialize std::optional to JSON value
+auto deserialized = cast<decltype(nullable)>(serialized); // deserialize JSON value into std::optional
 
-// Cast JSON value from/to std::variant
+// cast JSON value from/to std::variant
 auto variant = std::variant<std::monostate, int, std::string>("example");
-auto serialized = value(variant);                           // serialize std::variant to JSON value
-auto deserialized = cast<decltype(variant)>(serialized);    // deserialize JSON value into std::variant
+auto serialized = value(variant);                         // serialize std::variant to JSON value
+auto deserialized = cast<decltype(variant)>(serialized);  // deserialize JSON value into std::variant
 
-// Cast JSON array class from/to tuple-like array type
-std::tuple tpl_arr = {nullptr, true, "2", 3.0, std::tuple{4.0, "5", false}};
-auto serialized = array(tpl_arr);                           // serialize tuple-like array to JSON array
-auto deserialized = cast<decltype(tpl_arr)>(serialized);    // deserialize JSON array into tuple-like
+// cast JSON array class from/to tuple-like array type
+auto tpl_arr = std::tuple{nullptr, true, "2", 3.0, std::tuple{4.0, "5", false}};
+auto serialized = array(tpl_arr);                         // serialize tuple-like array to JSON array
+auto deserialized = cast<decltype(tpl_arr)>(serialized);  // deserialize JSON array into tuple-like
 
-// Cast JSON object class from/to tuple-like object type
+// cast JSON object class from/to tuple-like object type
 std::tuple tpl_obj = {std::pair{"number", 1.5}, std::pair{"error", nullptr}, std::pair{"text", "abc"}};
-auto serialized = object(tpl_obj);                          // serialize tuple-like object to JSON object
-auto deserialized = cast<decltype(tpl_obj)>(serialized);    // deserialize JSON object into tuple-like
-
-// Cast JSON object from/to visitable struct
-struct X { int a; std::optional<double> b; std::string c; };
-VISITABLE_STRUCT(X, a, b, c);
-auto visitable = X{.a = 1, .b = std::nullopt, .c = "x"};
-auto serialized = object(visitable);        // serialize visitable struxt X to JSON object
-auto deserialized = cast<X>(serialized);    // deserialize JSON object into struct X
+auto serialized = object(tpl_obj);                        // serialize tuple-like object to JSON object
+auto deserialized = cast<decltype(tpl_obj)>(serialized);  // deserialize JSON object into tuple-like
 ```
+
+#### Automatic casting from/to JSON object with compile-time reflection
+
+(see the [reference](#serialize-and-deserialize-json) about available conditions)
+
+```cpp
+struct X
+{
+    int a;
+    std::optional<double> b;
+    std::string c = "default";
+};
+
+// serialize struxt X to JSON object with field-name reflection
+auto reflectable = X{.a = 1, .b = std::nullopt, .c = "x"};
+auto serialized = object(visitable);
+// -> {"a":1,"b":null,"c":"x"}
+
+// deserialize JSON object into struct X with field-name reflection
+auto deserialized = cast<X>(serialized);
+// -> X{.a = 1, .b = std::nullopt, .c = "x"}
+```
+
+Field name registration with `VISITABLE_STRUCT` macro:
+
+```cpp
+// register fields except `c` on purpose
+VISITABLE_STRUCT(X, a, b);
+
+// serialize visitable struxt X to JSON object
+auto visitable = X{.a = 1, .b = std::nullopt, .c = "x"};
+auto serialized = object(visitable);
+// -> {"a":1,"b":null}
+
+// deserialize JSON object into struct X
+auto deserialized = cast<X>(serialized);
+// -> X{.a = 1, .b = std::nullopt, .c = "default"}
+```
+
+#### User-define caster (see the [reference](#serialize-and-deserialize-json) in detail):
+
+```cpp
+template <>
+struct yyjson::caster<X>
+{
+    // convert X to string (serialize)
+    inline static auto to_json(const X& x)
+    {
+        return fmt::format("{} {} {}", x.a, (x.b ? fmt::format("{}", *y.b) : "null"), x.c);
+    }
+};
+
+// convert struxt X to JSON string with user-defined caster
+auto  = X{.a = 1, .b = std::nullopt, .c = "x"};
+auto serialized = value(visitable);
+// -> "1 null x"
+```
+
 
 ## Installation
 
@@ -234,7 +301,7 @@ The benchmarks were performed on each JSON library with all possible patterns wi
 : No option.
 
 `insitu`, `pad`
-: In-situ parsing is used/a padded string is an input.
+: In-situ parsing is used/a padded string is input.
 
 `dom`, `ond_pad`
 : "DOM" and "On Demand" parsing for the [simdjson](https://github.com/simdjson/simdjson), respectively.
@@ -670,7 +737,7 @@ std::cout << *obj["GBP"].as_real() << std::endl;
 
 ### Mutable JSON classes
 
-Mutable JSON classes are defined in `yyjson::writer` namespace. The following user-constructible classes are exported in the top `yyjson` namespace as,
+Mutable JSON classes are defined in `yyjson::writer` namespace. The following user-constructible classes are exported in the top `yyjson` namespace,
 
 ```cpp
 using yyjson::value = yyjson::writer::value;
@@ -917,7 +984,7 @@ std::ranges::range_value_t<yyjson::array&>       -> yyjson::writer::value_ref
 std::ranges::range_value_t<const yyjson::array&> -> yyjson::writer::const_value_ref
 ```
 
-The `yyjson::array` is designed to be implemented like STL containers, but extended to allow easy insertion of an empty array and object with `yyjson::empty_array` and `yyjson::empty_object` tag type values, respectively. These special modifiers also have a different return type, which is not an array iterator but a reference to a newly inserted empty array/object of type `yyjson::writer::array_ref` or `yyjson::writer::object_ref`. These are introduced to optimize the performance by not creating a new JSON array/object; see also the [performance best practices](#performance-best-practices) section.
+The `yyjson::array` is designed to be implemented like STL containers but extended to allow easy insertion of an empty array and object with `yyjson::empty_array` and `yyjson::empty_object` tag type values, respectively. These special modifiers also have a different return type, which is not an array iterator but a reference to a newly inserted empty array/object of type `yyjson::writer::array_ref` or `yyjson::writer::object_ref`. These are introduced to optimize the performance by not creating a new JSON array/object; see also the [performance best practices](#performance-best-practices) section.
 
 Iterator classes are not exposed. They are tentatively described as `array_iter` and `const_array_iter` in the above.
 
@@ -1071,112 +1138,156 @@ std::cout << obj.write() << std::endl;
 
 ### Serialize and deserialize JSON
 
-#### Pre-defined casters
+In the cpp-yyjson, conversion from C++ objects to JSON values is very flexible and vice versa.
 
-Conversion from C++ object to JSON value is very flexible and vice versa. Conversion to JSON value, array, and object is provided by their constructors as shown above. Conversely, to convert from a JSON value, call the `yyjson::cast` function or `static_cast`.
+Conversion to JSON values, arrays, and objects is provided by their respective constructors. Conversely, to convert from a JSON value, call the `yyjson::cast` function or `static_cast`.
 
 ```cpp
 using namespace yyjson;
 
 auto val = value(3);
+// -> 3
 auto num = cast<int>(val);
-// val -> 3
-// num -> 3
+// -> 3
 
 auto arr = array(std::vector<std::vector<int>>{{1, 2}, {3, 4}});
+// -> [[1, 2], [3, 4]]
 auto vec = cast<std::vector<std::vector<int>>>(arr);
-// arr -> [[1, 2], [3, 4]]
-// vec -> {{1, 2}, {3, 4}}
+// -> {{1, 2}, {3, 4}}
 
 auto obj = object(std::unordered_map<std::string, double>{{"first", 1.5}, {"second", 2.5}, {"third", 3.5}});
+// -> {"first": 1.5, "second": 2.5, "third": 3.5}
 auto map = cast<std::unordered_map<std::string, double>>(obj);
-// obj -> {"first": 1.5, "second": 2.5, "third": 3.5}
-// vec -> {{"first", 1.5}, {"second", 2.5}, {"third", 3.5}}
+// -> {{"first", 1.5}, {"second", 2.5}, {"third", 3.5}}
 ```
 
 If the conversion fails, the `yyjson::bad_cast` exception is thrown or a compile error occurs.
 
 Note that the `cast` function and `static_cast` may give a different result. The `cast` function tries to convert JSON directly to a given type, while `static_cast` follows the C++ conversion rules. For example, `cast<std::optional<int>>(value(nullptr))` succeeds but `static_cast<std::optional<int>>(value(nullptr))` does not. This is because `std::optional<int>` has a conversion constructor from `int`, but `value(nullptr)` cannot be converted to `int`.
 
-In addition, the following STL casters are pre-defined.
+In addition to the above, the following four methods are provided for converting *arbitrary* C++ types from/to JSON value, array and object:
+
+1.  Pre-defined STL casters.
+2.  Conversion using compile-time reflection.
+3.  Registration of field names with `VISITABLE_STRUCT` macro.
+4.  User-defined casters.
+
+#### Pre-defined STL casters
+
+Several casters from/to STL classes to JSON are pre-defined in the library for convenience. Currently, available STL types are as follows:
 
 -   `std::optional`
 -   `std::variant`
--   `std::tuple` (and tuple-like classes)
+-   `std::tuple`-like
+-   `std::vector<bool>` (specialized)
 
-If you receive elements of multiple types, casts from/to `std::optional` or `std::variant` are useful.
+For example, if you receive elements of multiple types, casts from/to `std::optional` or `std::variant` are useful.
 
 ```cpp
 using namespace yyjson;
 
 auto val = value(std::optional<int>(3));    // serialize
+// -> 3
 auto num = cast<std::optional<int>>(val);   // deserialize
-// val -> 3
-// num -> 3
+// -> 3
 
 auto val = value(std::optional<int>(std::nullopt)); // serialize
+// -> null
 auto num = cast<std::optional<int>>(val);           // deserialize
-// val -> null
-// num -> std::nullopt
+// -> std::nullopt
 
 auto val = value(std::variant<std::monostate, int, std::string>());     // serialize
+// -> null
 auto var = cast<std::variant<std::monostate, int, std::string>>(val);   // deserialize
-// val -> null
-// var -> std::monostate()
+// -> std::monostate()
 
 auto val = value(std::variant<std::monostate, int, std::string>(1));    // serialize
+// -> 1
 auto var = cast<std::variant<std::monostate, int, std::string>>(val);   // deserialize
-// val -> 1
-// var -> 1
+// -> 1
 
 auto val = value(std::variant<std::monostate, int, std::string>("a"));  // serialize
+// -> "a"
 auto var = cast<std::variant<std::monostate, int, std::string>>(val);   // deserialize
-// val -> "a"
-// var -> "a"
+// -> "a"
 ```
 
-For a multi-type JSON array or object, using casting from/to `std::tuple` is valuable and efficient.
+For a multi-type JSON array or object, using the caster for `std::tuple` is valuable and efficient.
 
 ```cpp
 using namespace yyjson;
 
-std::tuple tpl_arr = {nullptr, true, "2", 3.0, std::tuple{4.0, "5", false}};
+auto tpl_arr = std::tuple{nullptr, true, "2", 3.0, std::tuple{4.0, "5", false}};
 auto json_arr = array(tpl_arr);                             // serialize
+// -> [null, true, "2", 3.0, [4.0, "5", false]]
 auto tpl_arr2 = cast<decltype(tpl_arr)>(arr);               // deserialize
-// json_arr -> [null, true, "2", 3.0, [4.0, "5", false]]
-// tpl_arr2 -> {nullptr, true, "2", 3.0, {4.0, "5", false}}
+// -> {nullptr, true, "2", 3.0, {4.0, "5", false}}
 
-std::tuple tpl_obj = {std::pair{"number", 1.5}, std::pair{"error", nullptr}, std::pair{"text", "abc"}};
+auto tpl_obj = std::tuple{std::pair{"number", 1.5}, std::pair{"error", nullptr}, std::pair{"text", "abc"}};
 auto json_obj = object(tpl_obj);                            // serialize
+// -> {"number": 1.5, "error": null, "text": "abc"}
 auto tpl_obj2 = cast<decltype(tpl_obj)>(json_obj);          // deserialize
-// json_obj -> {"number": 1.5, "error": null, "text": "abc"}
-// tpl_obj2 -> {{"number", 1.5}, {"error", nullptr}, {"text", "abc"}}
+// -> {{"number", 1.5}, {"error", nullptr}, {"text", "abc"}}
 ```
 
-#### User-defined casters
+#### Automatic casting with compile-time reflection
 
-If you want to perform a custom conversion from/to your specified types, there are two methods. The first way is to register your type to `VISITABLE_STRUCT` macro. This allows the field names in the struct to match the key names in the JSON object.
+The compile-time reflection is supported to automatically convert C++ struct/class to JSON object and vice versa. This feature is provided by using [field-reflection](https://https://github.com/yosh-matsuda/field-reflection) and is included in this library.
+
+If a C++ struct/class satisfies the `field_reflection::field_namable` concept (see [field-reflection](https://https://github.com/yosh-matsuda/field-reflection)), it is possible to automatically convert from/to JSON objects with its field names and no need to write a caster definition or registration of field names with macros explained later.
+
+In practice, the following conditions are required for C++ types for automatic conversion:
+
+*   default initializable
+*   [aggregate type](https://en.cppreference.com/w/cpp/types/is_aggregate)
+*   not a derived class
+*   no reference member
+
+Example:
 
 ```cpp
+using namespace yyjson;
+
 struct X
 {
     int a;
     std::optional<double> b;
-    std::string c;
+    std::string c = "default";
 };
 
-VISITABLE_STRUCT(X, a, b, c);
+// serialize struxt X to JSON object with field-name reflection
+auto reflectable = X{.a = 1, .b = std::nullopt, .c = "x"};
+auto serialized = object(visitable);
+// -> {"a":1,"b":null,"c":"x"}
 
-auto x1 = X{.a = 1, .b = std::nullopt, .c = "x"};
-auto obj1 = object(x1);     // serialize
-auto x2 = cast<X>(obj1);    // deserialize
-// obj1 -> {"a": 1, "b": null, "c": "x"}
-// x2   -> {.a = 1, .b = nullopt, .c = "x"}
+// deserialize JSON object into struct X with field-name reflection
+auto deserialized = cast<X>(serialized);
+// -> X{.a = 1, .b = std::nullopt, .c = "x"}
 ```
 
-The other way is to specialize the `yyjson::caster` struct template and implement template functions `from_json` and `to_json` for conversion from/to JSON, respectively. Custom conversions always have the highest priority.
+#### Registration of field names of struct/class
 
-The example implementation of the `from_json` template function is as follows. The `from_json` template function has a JSON value as an argument template and must return type `X`.
+Even if the compile-time reflection is *NOT* available for a C++ type or you want to partially select the fields to be converted, it is possible to register the field names of the C++ type with the `VISITABLE_STRUCT` macro:
+
+```cpp
+// register fields except `c` on purpose
+VISITABLE_STRUCT(X, a, b);
+
+// serialize visitable struxt X to JSON object
+auto visitable = X{.a = 1, .b = std::nullopt, .c = "x"};
+auto serialized = object(visitable);
+// -> {"a":1,"b":null}
+
+// deserialize JSON object into struct X
+auto deserialized = cast<X>(serialized);
+// -> X{.a = 1, .b = std::nullopt, .c = "default"}
+```
+
+#### User-defined casters
+
+The most flexible way to convert C++ types to/from JSON is to define custom casters. The custom conversion always has the highest priority among the other conversions. To define a custom caster, specialize the `yyjson::caster` struct template and implement the `from_json` and/or `to_json` template functions.
+
+The example implementation of the `from_json` template function is as follows:
 
 ```cpp
 template <>
@@ -1204,7 +1315,9 @@ struct yyjson::caster<X>
 };
 ```
 
-On the other hand, the `to_json` function is a bit complicated and there are two ways. The first way is to define a *translator* for a *value_constructible* type and return it. The return type must be `value_constructible`. The example of this type of `to_json` function for the class `X` is as follows.
+The `from_json` template function has a JSON value as an argument template and must return type `X`. 
+
+For the `to_json` function, there are two ways. The first way is to define a *translator* for a *value_constructible* type and return it. The return type must be `value_constructible`:
 
 ```cpp
 template <>
@@ -1221,7 +1334,7 @@ struct yyjson::caster<X>
 
 The `to_json` function takes a `copy_string` in the last argument, but this can be ignored if not needed.
 
-The second way is to create a JSON value/array/object directly in the `to_json` function. The example for the class `X` equivalent to `VISITABLE_STRUCT` is as follows.
+The second way is to create a JSON value/array/object directly in the `to_json` function. The example for the class `X` equivalent to automatic casting or `VISITABLE_STRUCT` registration is as follows.
 
 ```cpp
 template <>
@@ -1239,7 +1352,7 @@ struct yyjson::caster<X>
 
 The first argument type is a target JSON class to create. There are 3 options, `writer::object_ref&`, `writer::array_ref&` and `writer::value_ref&`; if you want to convert the class `X` to JSON array, the first argument should be `writer::array_ref&`.
 
-The casters are applied recursively to convert from/to JSON classes including custom casters. It is not necessary to implement both `from_json` and `to_json` functions, and the two conversions do not have to be symmetric.
+The casters are applied recursively to convert from/to JSON classes including custom casters. It is not always necessary to implement both `from_json` and `to_json` functions, and the two conversions do not have to be symmetric.
 
 ### Performance best practices
 
@@ -1293,7 +1406,7 @@ nested.emplace("GBP", 158.72);
 
 #### (3) Multi-threaded JSON construction
 
-On the other hand, creating a new array/object may be useful for the multi-threaded construction of large JSON. The following example creates a 1000x1000000 JSON array with 4-thread using [`BS::thread_pool`](https://github.com/bshoshany/thread-pool). In this example, a speedup of about 3x compared to single threading was measured.
+On the other hand, creating a new array/object may be useful for the multi-threaded construction of large JSON. The following example creates a 1000x1000000 JSON array with 4 threads using [`BS::thread_pool`](https://github.com/bshoshany/thread-pool). In this example, a speedup of about 3x compared to single threading was measured.
 
 ```cpp
 #include "BS_thread_pool.hpp"

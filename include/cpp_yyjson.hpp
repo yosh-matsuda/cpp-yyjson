@@ -2,7 +2,7 @@
 |  cpp-yyjson version v0.2.0                         |
 |  https://github.com/yosh-matsuda/cpp-yyjson        |
 |                                                    |
-|  Copyright (c) 2023 Yoshiki Matsuda @yosh-matsuda  |
+|  Copyright (c) 2024 Yoshiki Matsuda @yosh-matsuda  |
 |                                                    |
 |  This software is released under the MIT License.  |
 |  https://opensource.org/license/mit/               |
@@ -18,6 +18,7 @@
 
 #include <fmt/format.h>
 #include <yyjson.h>
+#include "field_reflection.hpp"
 
 namespace yyjson
 {
@@ -2747,6 +2748,16 @@ namespace yyjson
                     return as_object_type(std::move(*this));
                 return std::nullopt;
             }
+
+            template <typename T>
+            concept to_json_with_reflection = []<std::size_t... Is>(std::index_sequence<Is...>) {
+                return field_reflection::field_namable<T> && requires(const T& t) {
+                    (std::declval<object_ref&>().emplace(field_reflection::field_name<T, Is>,
+                                                         field_reflection::get_field<Is>(t)),
+                     ...);
+                };
+            }(std::make_index_sequence<field_reflection::field_count<T>>());
+
         }  // namespace detail
 
         using value = detail::value;
@@ -3542,7 +3553,7 @@ namespace yyjson
     struct detail::default_caster
     {
         template <json_object Json>
-        requires visitable<T> && std::default_initializable<T>
+        requires std::default_initializable<T> && visitable<T>
         static auto from_json(const Json& obj)
         {
             return visit_struct<T>::from_json_impl(obj);
@@ -3585,6 +3596,25 @@ namespace yyjson
             }
             return result;
         }
+        template <json_object Json>
+        requires std::default_initializable<T> && (!visitable<T>) &&
+                 (!std::ranges::input_range<T>) && field_reflection::field_namable<T>
+        static auto from_json(const Json& obj)
+        {
+            auto result = T();
+            for (auto&& [key, value] : obj)
+            {
+                field_reflection::any_of_field(result, [&](auto field_name, auto& field_value) {
+                    if (key == field_name)
+                    {
+                        field_value = cast<std::remove_cvref_t<decltype(field_value)>>(value);
+                        return true;
+                    }
+                    return false;
+                });
+            }
+            return result;
+        }
         template <json_array Json>
         requires std::ranges::range<T> && std::default_initializable<T> && requires {
             typename std::ranges::range_value_t<T>;
@@ -3615,6 +3645,7 @@ namespace yyjson
 
             return result;
         }
+#if defined(__GNUC__)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wnonnull"
 #pragma GCC diagnostic ignored "-Wconversion"
@@ -3623,6 +3654,7 @@ namespace yyjson
 #pragma GCC diagnostic ignored "-Wfloat-equal"
 #pragma GCC diagnostic ignored "-Wmissing-field-initializers"
 #pragma GCC diagnostic ignored "-Wshorten-64-to-32"
+#endif
         template <typename Json>
         requires (std::same_as<reader::const_value_ref, Json> || writer::detail::base_of_const_value<Json>)
         static auto from_json(const Json& json)
@@ -3708,7 +3740,9 @@ namespace yyjson
             }
             throw bad_cast(fmt::format("{} is not constructible from raw json", NAMEOF_TYPE(T)));
         }
+#if defined(__GNUC__)
 #pragma GCC diagnostic pop
+#endif
 
         template <copy_string_args... Ts>
         requires visitable<T>
@@ -3721,6 +3755,23 @@ namespace yyjson
         static auto to_json(writer::object_ref& obj, T&& t, Ts... ts)
         {
             visit_struct<T>::to_json_impl(obj, std::move(t), ts...);
+        }
+
+        template <copy_string_args... Ts>
+        requires writer::detail::to_json_with_reflection<T> && (!visitable<T>)
+        static auto to_json(writer::object_ref& obj, const T& t, Ts... ts)
+        {
+            field_reflection::for_each_field(t, [&](std::string_view field_name, const auto& field_value) {
+                obj.emplace(field_name, field_value, ts...);
+            });
+        }
+        template <copy_string_args... Ts>
+        requires writer::detail::to_json_with_reflection<T> && (!visitable<T>)
+        static auto to_json(writer::object_ref& obj, T&& t, Ts... ts)
+        {
+            field_reflection::for_each_field(t, [&](std::string_view field_name, auto& field_value) {
+                obj.emplace(field_name, std::move(field_value), ts...);
+            });
         }
     };
 

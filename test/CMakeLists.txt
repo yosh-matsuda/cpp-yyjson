@@ -8,7 +8,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(ENV{CMAKE_EXPORT_COMPILE_COMMANDS} ON)
 
-if(UNIX)
+if(NOT MSVC)
     # Warnings
     set(CMAKE_CXX_FLAGS
         "${CMAKE_CXX_FLAGS} -Wall -Wextra -Wcast-align -Wcast-qual -Wdelete-non-virtual-dtor -Wold-style-cast -Woverloaded-virtual -Wpointer-arith -Wfloat-equal -Winit-self -Wredundant-decls -Wsign-promo -Wswitch-default -Wswitch-enum -Wvariadic-macros -Wwrite-strings -Wno-unknown-pragmas"
@@ -23,8 +23,8 @@ if(UNIX)
             "${CMAKE_CXX_FLAGS} -Wshadow=local -Wno-pragmas"
         )
     endif()
-else() # WIN32
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /W4")
+else() # MSVC including clang-cl
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /W4 /utf-8")
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
 

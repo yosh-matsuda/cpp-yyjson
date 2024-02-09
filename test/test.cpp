@@ -4,10 +4,13 @@
 #include <numeric>
 #include "cpp_yyjson.hpp"
 
+#if defined(__GNUC__)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #pragma GCC diagnostic ignored "-Wunused-variable"
 #pragma GCC diagnostic ignored "-Wunused-but-set-variable"
+#endif
+
 // NOLINTBEGIN
 TEST(Writer, Constructor)
 {
@@ -2121,11 +2124,9 @@ struct X
 {
     int a;
     std::optional<double> b;
-    std::string c;
+    std::string c = "x";
     bool operator==(const X&) const = default;
 };
-
-VISITABLE_STRUCT(X, a, b, c);
 
 struct Y : public X
 {
@@ -2139,6 +2140,12 @@ struct yyjson::caster<Y>
         return fmt::format("{} {} {}", y.a, (y.b ? fmt::format("{}", *y.b) : "null"), y.c);
     }
 };
+
+struct Z : public X
+{
+};
+
+VISITABLE_STRUCT(Z, a, b, c);
 
 TEST(Writer, PredefinedCaster)
 {
@@ -2205,6 +2212,12 @@ TEST(Writer, PredefinedCaster)
     static_assert(std::constructible_from<object, X&&>);
     static_assert(std::constructible_from<object, X&>);
     static_assert(std::constructible_from<object, const X&>);
+    static_assert(std::constructible_from<value, Z&&>);
+    static_assert(std::constructible_from<value, Z&>);
+    static_assert(std::constructible_from<value, const Z&>);
+    static_assert(std::constructible_from<object, Z&&>);
+    static_assert(std::constructible_from<object, Z&>);
+    static_assert(std::constructible_from<object, const Z&>);
 
     // from json
     // clang-format off
@@ -2244,6 +2257,7 @@ TEST(Writer, PredefinedCaster)
     static_assert(!std::same_as<void, decltype(cast<std::map<std::string, int>>(std::declval<object>()))>);
     static_assert(!std::same_as<void, decltype(cast<std::vector<std::pair<std::string, int>>>(std::declval<object>()))>);
     static_assert(!std::same_as<void, decltype(cast<X>(std::declval<object>()))>);
+    static_assert(!std::same_as<void, decltype(cast<Z>(std::declval<object>()))>);
     static_assert(!std::same_as<void, decltype(cast<std::array<int, 5>>(std::declval<value>()))>);
     static_assert(!std::same_as<void, decltype(cast<std::array<int, 5>>(std::declval<array>()))>);
     static_assert(!std::same_as<void, decltype(cast<std::tuple<int, std::string>>(std::declval<value>()))>);
@@ -2321,6 +2335,12 @@ TEST(Writer, PredefinedCaster)
     static_assert(std::is_assignable_v<object, X&&>);
     static_assert(std::is_assignable_v<object, X&>);
     static_assert(std::is_assignable_v<object, const X&>);
+    static_assert(std::is_assignable_v<value, Z&&>);
+    static_assert(std::is_assignable_v<value, Z&>);
+    static_assert(std::is_assignable_v<value, const Z&>);
+    static_assert(std::is_assignable_v<object, Z&&>);
+    static_assert(std::is_assignable_v<object, Z&>);
+    static_assert(std::is_assignable_v<object, const Z&>);
 
     // assign + type checks
     auto v = value();
@@ -2408,14 +2428,26 @@ TEST(Writer, PredefinedCaster)
     EXPECT_EQ(x1.b, x2.b);
     EXPECT_EQ(x1.c, x2.c);
 
-    auto y1 = Y{1, std::nullopt, "x"};
+    auto y1 = Y{1, std::nullopt, "y"};
     auto obj3 = value(y1);
     EXPECT_EQ(fmt::format("{} {} {}", y1.a, (y1.b ? fmt::format("{}", *y1.b) : "null"), y1.c), *obj3.as_string());
+
+    auto z1 = Z{1, 2.5, "z"};
+    auto obj_z1 = object(z1);
+    auto z2 = cast<Z>(obj_z1);
+    EXPECT_EQ(z1.a, z2.a);
+    EXPECT_EQ(z1.b, z2.b);
+    EXPECT_EQ(z1.c, z2.c);
 
     auto x_vec1 = std::vector<X>{{1, 2.0, "3"}, {4, std::nullopt, "6"}, {7, 8.0, "9"}};
     auto arr3 = array(x_vec1);
     auto x_vec2 = cast<std::vector<X>>(arr3);
     EXPECT_EQ(x_vec1, x_vec2);
+
+    auto z_vec1 = std::vector<Z>{{1, 2.0, "3"}, {4, std::nullopt, "6"}, {7, 8.0, "9"}};
+    auto arr4 = array(z_vec1);
+    auto z_vec2 = cast<std::vector<Z>>(arr4);
+    EXPECT_EQ(z_vec1, z_vec2);
 }
 
 TEST(Reader, Allocator)
@@ -2818,6 +2850,7 @@ TEST(Reader, PredefinedCaster)
         static_assert(!std::same_as<void, decltype(cast<std::map<std::string, int>>(std::declval<const_object_ref>()))>);
         static_assert(!std::same_as<void, decltype(cast<std::vector<std::pair<std::string, int>>>(std::declval<const_object_ref>()))>);
         static_assert(!std::same_as<void, decltype(cast<X>(std::declval<const_object_ref>()))>);
+        static_assert(!std::same_as<void, decltype(cast<Z>(std::declval<const_object_ref>()))>);
         static_assert(!std::same_as<void, decltype(cast<std::array<int, 5>>(std::declval<const_value_ref>()))>);
         static_assert(!std::same_as<void, decltype(cast<std::array<int, 5>>(std::declval<const_array_ref>()))>);
         static_assert(!std::same_as<void, decltype(cast<std::tuple<int, std::string>>(std::declval<const_value_ref>()))>);
@@ -2895,7 +2928,12 @@ TEST(Reader, PredefinedCaster)
         EXPECT_EQ(src, cast<decltype(src)>(read(val_w.write())));
     }
     {
-        auto src = Y{1, std::nullopt, "x"};
+        auto src = Z{1, std::nullopt, "z"};
+        auto val_w = value(src);
+        EXPECT_EQ(src, cast<decltype(src)>(read(val_w.write())));
+    }
+    {
+        auto src = Y{1, std::nullopt, "y"};
         auto val_w = value(src);
         EXPECT_EQ(fmt::format("{} {} {}", src.a, (src.b ? fmt::format("{}", *src.b) : "null"), src.c),
                   cast<std::string>(read(val_w.write())));
@@ -2904,6 +2942,11 @@ TEST(Reader, PredefinedCaster)
         auto src = std::vector<X>{{1, 2.0, "3"}, {4, std::nullopt, "6"}, {7, 8.0, "9"}};
         auto val_w = value(src);
         EXPECT_EQ(src, cast<std::vector<X>>(read(val_w.write())));
+    }
+    {
+        auto src = std::vector<Z>{{1, 2.0, "3"}, {4, std::nullopt, "6"}, {7, 8.0, "9"}};
+        auto val_w = value(src);
+        EXPECT_EQ(src, cast<std::vector<Z>>(read(val_w.write())));
     }
 }
 
@@ -2979,17 +3022,19 @@ TEST(Readme, Example)
             std::vector{1, 2, 3} | std::ranges::views::transform([](auto x) { return x * x; });  // -> [1,4,9]
 #endif
         // Conversion from key-value range to JSON object class
-        object obj_map = std::map<std::string_view, double>{{"first", 1.0}, {"second", 2.0}, {"third", 3.0}};
-        object obj_kv = std::map<std::string_view, value>{{"number", 1.5}, {"error", nullptr}, {"text", "abc"}};
+        auto kv_map = std::map<std::string_view, double>{{"first", 1.0}, {"second", 2.0}, {"third", 3.0}};
+        auto val_map = std::map<std::string_view, value>{{"number", 1.5}, {"error", nullptr}, {"text", "abc"}};
+        auto obj_map = object(kv_map);
+        auto obj_kv = object(val_map);
 
         // Construction by std::initializer_list
-        array init_arr = {nullptr, true, "2", 3.0, {4.0, "5", false}, {{"7", 8}, {"9", {0}}}};
-        object init_obj = {{"id", 1},
-                           {"pi", 3.141592},
-                           {"name", "🫠"},
-                           {"array", {0, 1, 2, 3, 4}},
-                           {"currency", {{"USD", 129.66}, {"EUR", 140.35}, {"GBP", 158.72}}},
-                           {"success", true}};
+        auto init_arr = array{nullptr, true, "2", 3.0, {4.0, "5", false}, {{"7", 8}, {"9", {0}}}};
+        auto init_obj = object{{"id", 1},
+                               {"pi", 3.141592},
+                               {"name", "example"},
+                               {"array", {0, 1, 2, 3, 4}},
+                               {"currency", {{"USD", 129.66}, {"EUR", 140.35}, {"GBP", 158.72}}},
+                               {"success", true}};
     }
     {
         // Cast JSON value from/to std::optional
@@ -3003,7 +3048,7 @@ TEST(Readme, Example)
         auto deserialized2 = cast<decltype(variant)>(serialized2);  // deserialize JSON value into std::variant
 
         // Cast JSON array class from/to tuple-like array type
-        std::tuple tpl_arr = {nullptr, true, "2", 3.0, std::tuple{4.0, "5", false}};
+        auto tpl_arr = std::tuple{nullptr, true, "2", 3.0, std::tuple{4.0, "5", false}};
         auto serialized3 = array(tpl_arr);                          // serialize tuple-like array to JSON array
         auto deserialized3 = cast<decltype(tpl_arr)>(serialized3);  // deserialize JSON array into tuple-like
 
@@ -3012,12 +3057,19 @@ TEST(Readme, Example)
         auto serialized4 = object(tpl_obj);                         // serialize tuple-like object to JSON object
         auto deserialized4 = cast<decltype(tpl_obj)>(serialized4);  // deserialize JSON object into tuple-like
 
-        // Cast JSON object class from/to visitable struct
-        // struct X { int a; std::optional<double> b; std::string c; };
-        // VISITABLE_STRUCT(X, a, b, c);
-        auto visitable = X{.a = 1, .b = std::nullopt, .c = "x"};
-        auto serialized5 = object(visitable);       // serialize visitable struxt X to JSON object
-        auto deserialized5 = cast<X>(serialized5);  // deserialize JSON object into struct X
+        // reflection
+        auto reflectable = X{1, std::nullopt, "x"};
+        auto serialized5 = object(reflectable);
+        auto deserialized5 = cast<X>(serialized);
+
+        // visitable
+        auto visitable = Z{1, std::nullopt, "z"};
+        auto serialized6 = object(visitable);
+        auto deserialized6 = cast<Z>(serialized6);
+
+        // defined caster
+        auto castable = Y{1, std::nullopt, "y"};
+        auto serialized7 = value(castable);
     }
     {
         using namespace yyjson;
@@ -3172,4 +3224,6 @@ TEST(Readme, Example)
 }
 
 // NOLINTEND
+#if defined(__GNUC__)
 #pragma GCC diagnostic pop
+#endif

@@ -15,14 +15,22 @@ concurrency:
 
 jobs:
   windows-build:
-    name: Windows
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler:
+          [
+            # { c: "clang-cl", cxx: "clang-cl" }, # to be enabled with clang-cl 17 and later
+            { c: "cl", cxx: "cl" },
+          ]
+    name: Windows - ${{ matrix.compiler.cxx }}
     runs-on: windows-latest
 
     env:
       triplet: x64-windows
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           submodules: true
 
@@ -32,20 +40,10 @@ jobs:
       - name: Install dependencies
         run: vcpkg install yyjson fmt nameof gtest --triplet ${{ env.triplet }}
 
-      - name: Build and test - clang-cl
+      - name: Build and test
         run: |
           rm -rf "${{ github.workspace }}\build"
-          cmake -B "${{ github.workspace }}\build" -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT\\scripts\\buildsystems\\vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=${{ env.triplet }} -DCMAKE_CXX_COMPILER=clang-cl -G "Ninja Multi-Config"
-          # cmake --build "${{ github.workspace }}\build" --config Debug --clean-first
-          # ctest --test-dir "${{ github.workspace }}\build" -C Debug
-          cmake --build "${{ github.workspace }}\build" --config Release --clean-first
-          ctest --test-dir "${{ github.workspace }}\build" -C Release
-        shell: bash
-
-      - name: Build and test - cl
-        run: |
-          rm -rf "${{ github.workspace }}\build"
-          cmake -B "${{ github.workspace }}\build" -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT\\scripts\\buildsystems\\vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=${{ env.triplet }} -DCMAKE_CXX_COMPILER=cl -G "Ninja Multi-Config"
+          cmake -B "${{ github.workspace }}\build" -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT\\scripts\\buildsystems\\vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=${{ env.triplet }} -DCMAKE_CXX_COMPILER=${{ matrix.compiler.cxx }} -G "Ninja Multi-Config"
           # cmake --build "${{ github.workspace }}\build" --config Debug --clean-first
           # ctest --test-dir "${{ github.workspace }}\build" -C Debug
           cmake --build "${{ github.workspace }}\build" --config Release --clean-first
@@ -53,40 +51,51 @@ jobs:
         shell: bash
 
   ubuntu-build:
-    name: Ubuntu
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler:
+          [
+            { c: "gcc-11", cxx: "g++-11" },
+            { c: "gcc-12", cxx: "g++-12" },
+            { c: "gcc-13", cxx: "g++-13" },
+            {
+              c: "$(brew --prefix llvm@15)/bin/clang",
+              cxx: "$(brew --prefix llvm@15)/bin/clang++",
+            },
+            {
+              c: "$(brew --prefix llvm@16)/bin/clang",
+              cxx: "$(brew --prefix llvm@16)/bin/clang++",
+            },
+            {
+              c: "$(brew --prefix llvm@17)/bin/clang",
+              cxx: "$(brew --prefix llvm@17)/bin/clang++",
+            },
+          ]
+    name: Ubuntu - ${{ matrix.compiler.cxx }}
     runs-on: ubuntu-latest
 
     env:
       triplet: x64-linux
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           submodules: true
 
       - name: Install compilers
         run: |
           eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
-          brew install gcc llvm ninja
+          brew install ninja llvm@12 llvm@13 llvm@14 llvm@15 llvm@16 llvm@17
 
       - name: Install dependencies
-        run: vcpkg install yyjson fmt nameof gtest --triplet ${{ env.triplet }}
+        run: CC=${{ matrix.compiler.c }} CXX=${{ matrix.compiler.cxx }} vcpkg install yyjson fmt nameof gtest --triplet ${{ env.triplet }}
 
-      - name: Build and test - gcc
+      - name: Build and test
         run: |
           eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
           rm -rf ${{ github.workspace }}/build
-          cmake -B ${{ github.workspace }}/build -DCMAKE_TOOLCHAIN_FILE=$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=${{ env.triplet }} -DCMAKE_CXX_COMPILER=g++-12 -G "Ninja Multi-Config"
-          cmake --build ${{ github.workspace }}/build --config Debug --clean-first
-          ctest --test-dir ${{ github.workspace }}/build -C Debug
-          cmake --build ${{ github.workspace }}/build --config Release --clean-first
-          ctest --test-dir ${{ github.workspace }}/build -C Release
-
-      - name: Build and test - clang
-        run: |
-          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
-          rm -rf ${{ github.workspace }}/build
-          cmake -B ${{ github.workspace }}/build -DCMAKE_TOOLCHAIN_FILE=$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=${{ env.triplet }} -DCMAKE_CXX_COMPILER=clang++ -G "Ninja Multi-Config"
+          cmake -B ${{ github.workspace }}/build -DCMAKE_TOOLCHAIN_FILE=$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=${{ env.triplet }} -DCMAKE_CXX_COMPILER=${{ matrix.compiler.cxx }} -G "Ninja Multi-Config"
           cmake --build ${{ github.workspace }}/build --config Debug --clean-first
           ctest --test-dir ${{ github.workspace }}/build -C Debug
           cmake --build ${{ github.workspace }}/build --config Release --clean-first
@@ -96,7 +105,20 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        compiler: [ {c: 'gcc-12', cxx: 'g++-12'}, {c: '$(brew --prefix llvm@15)/bin/clang', cxx: '$(brew --prefix llvm@15)/bin/clang++'} ]
+        compiler:
+          [
+            { c: "gcc-11", cxx: "g++-11" },
+            { c: "gcc-12", cxx: "g++-12" },
+            { c: "gcc-13", cxx: "g++-13" },
+            {
+              c: "$(brew --prefix llvm@16)/bin/clang",
+              cxx: "$(brew --prefix llvm@16)/bin/clang++",
+            },
+            {
+              c: "$(brew --prefix llvm@17)/bin/clang",
+              cxx: "$(brew --prefix llvm@17)/bin/clang++",
+            },
+          ]
     name: MacOS - ${{ matrix.compiler.cxx }}
     runs-on: macos-latest
 
@@ -104,12 +126,12 @@ jobs:
       triplet: x64-osx
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           submodules: true
 
-      - name: Install ninja
-        run: brew install ninja
+      - name: Install compilers
+        run: brew install ninja llvm@12 llvm@13 llvm@14 llvm@15 llvm@16 llvm@17
 
       - name: Install dependencies
         run: CC=${{ matrix.compiler.c }} CXX=${{ matrix.compiler.cxx }} vcpkg install yyjson fmt nameof gtest --triplet ${{ env.triplet }}
@@ -122,5 +144,3 @@ jobs:
           ctest --test-dir ${{ github.workspace }}/build -C Debug
           cmake --build ${{ github.workspace }}/build --config Release --clean-first
           ctest --test-dir ${{ github.workspace }}/build -C Release
-
-
