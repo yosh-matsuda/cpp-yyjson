@@ -1,5 +1,5 @@
 /*===================================================*
-|  field-reflection version v0.2.0                   |
+|  field-reflection version v0.2.1                   |
 |  https://github.com/yosh-matsuda/field-reflection  |
 |                                                    |
 |  Copyright (c) 2024 Yoshiki Matsuda @yosh-matsuda  |
@@ -22,6 +22,11 @@ namespace field_reflection
 {
     namespace detail
     {
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wundefined-inline"
+#endif
         template <typename T, std::size_t = 0>
         struct any_lref
         {
@@ -78,6 +83,9 @@ namespace field_reflection
             requires std::is_base_of_v<U, T>
             constexpr operator U() const&& noexcept;  // NOLINT
         };
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
         template <typename T, std::size_t ArgNum>
         concept constructible = []() {
@@ -123,16 +131,13 @@ namespace field_reflection
             {
                 return std::numeric_limits<std::size_t>::max();
             }
+            else if constexpr (constructible<T, N> && !constructible<T, N + 1>)
+            {
+                return N;
+            }
             else
             {
-                if constexpr (constructible<T, N> && !constructible<T, N + 1>)
-                {
-                    return N;
-                }
-                else
-                {
-                    return field_count_impl<T, N + 1>;
-                }
+                return field_count_impl<T, N + 1>;
             }
         }();
 

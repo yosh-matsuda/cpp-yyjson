@@ -3827,6 +3827,10 @@ namespace yyjson
     template <typename... Ts>
     struct caster<std::variant<Ts...>>
     {
+#if defined(__GNUC__) or defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-value"
+#endif
         template <typename Json>
         static std::variant<Ts...> from_json(const Json& json)
         {
@@ -3835,6 +3839,9 @@ namespace yyjson
             if (result.has_value()) return *result;
             throw bad_cast(fmt::format("{} is not constructible from JSON", NAMEOF_TYPE(std::variant<Ts...>)));
         }
+#if defined(__GNUC__) or defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
         template <detail::copy_string_args... Args>
         requires requires(writer::value_ref& val) { ((val = std::declval<Ts>()), ...); }
