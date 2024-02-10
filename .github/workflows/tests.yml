@@ -56,13 +56,8 @@ jobs:
       matrix:
         compiler:
           [
-            { c: "gcc-11", cxx: "g++-11" },
             { c: "gcc-12", cxx: "g++-12" },
             { c: "gcc-13", cxx: "g++-13" },
-            {
-              c: "$(brew --prefix llvm@15)/bin/clang",
-              cxx: "$(brew --prefix llvm@15)/bin/clang++",
-            },
             {
               c: "$(brew --prefix llvm@16)/bin/clang",
               cxx: "$(brew --prefix llvm@16)/bin/clang++",
@@ -107,7 +102,6 @@ jobs:
       matrix:
         compiler:
           [
-            { c: "gcc-11", cxx: "g++-11" },
             { c: "gcc-12", cxx: "g++-12" },
             { c: "gcc-13", cxx: "g++-13" },
             {

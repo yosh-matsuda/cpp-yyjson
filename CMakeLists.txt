@@ -22,12 +22,6 @@ target_include_directories(${PROJECT_NAME} INTERFACE
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 set_target_properties(${PROJECT_NAME} PROPERTIES VERSION ${PROJECT_VERSION})
 
-# for LLVM 15
-if(APPLE AND "${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang" AND ${CMAKE_CXX_COMPILER_VERSION} VERSION_LESS 16)
-    # "_LIBCPP_ENABLE_EXPERIMENTAL" is a workaround to enable ranges library for LLVM15 (at least 15)
-    target_compile_definitions(${PROJECT_NAME} INTERFACE _LIBCPP_ENABLE_EXPERIMENTAL)
-endif()
-
 # for MSVC
 if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "MSVC")
     target_compile_options(${PROJECT_NAME} INTERFACE /Zc:preprocessor)

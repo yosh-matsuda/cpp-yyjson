@@ -40,7 +40,7 @@ Ultra-fast and intuitive C++ JSON reader/writer with yyjson backend.
 ## Requirements
 
 -   C++20 compiler with range supports
-    -   LLVM >= 15.0 (full supports after 16.0)
+    -   LLVM >= 16
     -   GCC >= 12
     -   clang-cl >= 17 (Windows)
     -   Visual Studio >= 2022 version 17.5
