@@ -1942,6 +1942,12 @@ TEST(Writer, ObjectConversion)
     static_assert(std::same_as<decltype(std::declval<const object_ref&>().empty()), bool>);
     static_assert(std::same_as<decltype(std::declval<const_object_ref&>().empty()), bool>);
     static_assert(std::same_as<decltype(std::declval<const const_object_ref&>().empty()), bool>);
+    static_assert(std::same_as<decltype(std::declval<object&>().contains("")), bool>);
+    static_assert(std::same_as<decltype(std::declval<const object&>().contains("")), bool>);
+    static_assert(std::same_as<decltype(std::declval<object_ref&>().contains("")), bool>);
+    static_assert(std::same_as<decltype(std::declval<const object_ref&>().contains("")), bool>);
+    static_assert(std::same_as<decltype(std::declval<const_object_ref&>().contains("")), bool>);
+    static_assert(std::same_as<decltype(std::declval<const const_object_ref&>().contains("")), bool>);
     static_assert(std::same_as<decltype(*std::declval<object&>().begin()), key_value_ref_pair>);
     static_assert(std::same_as<decltype(*std::declval<const object&>().begin()), const_key_value_ref_pair>);
     static_assert(std::same_as<decltype(*std::declval<object_ref&>().begin()), key_value_ref_pair>);
@@ -2061,6 +2067,8 @@ TEST(Writer, ObjectMethodExample)
     const auto& num_obj_const = num_obj;
     EXPECT_EQ(num_map.size() + 1, num_obj.size());
     EXPECT_FALSE(num_obj.empty());
+    EXPECT_TRUE(num_obj.contains("X"));
+    EXPECT_FALSE(num_obj.contains("Y"));
 
     // concepts
     static_assert(std::ranges::input_range<object&>);
@@ -2739,6 +2747,7 @@ TEST(Reader, ObjectConversion)
     static_assert(std::same_as<decltype(std::declval<const const_object_ref&>().end()), const_object_iter>);
     static_assert(std::same_as<decltype(std::declval<const const_object_ref&>().size()), std::size_t>);
     static_assert(std::same_as<decltype(std::declval<const const_object_ref&>().empty()), bool>);
+    static_assert(std::same_as<decltype(std::declval<const const_object_ref&>().contains("")), bool>);
     static_assert(std::same_as<decltype(std::declval<const const_object_ref&>()[std::declval<std::string_view>()]),
                                const_value_ref>);
     static_assert(std::same_as<decltype(*std::declval<const const_object_iter&>()), const_key_value_ref_pair>);
@@ -2760,6 +2769,9 @@ TEST(Reader, ObjectExamples)
     EXPECT_TRUE(doc.is_object());
     EXPECT_EQ(2, doc.as_object()->size());
     EXPECT_FALSE(doc.as_object()->empty());
+    EXPECT_TRUE(doc.as_object()->contains("first_key"));
+    EXPECT_TRUE(doc.as_object()->contains("second_key"));
+    EXPECT_FALSE(doc.as_object()->contains("third_key"));
 
     auto obj = *doc.as_object();
     auto iter = obj.begin();

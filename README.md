@@ -699,6 +699,7 @@ yyjson::reader::const_object_iter end() const;
 yyjson::reader::const_value_ref operator[](std::string_view key) const;
 std::size_t size() const;
 bool empty() const;
+bool contains(std::string_view key) const;  // Note: O(N)
 
 // Cast
 template<typename T>
@@ -1063,6 +1064,7 @@ std::size_t size() const;
 bool empty() const;
 void erase(std::string_view);
 void clear();
+bool contains(std::string_view key) const;  // Note: O(N)
 
 // Insert value_constructible
 template <value_constructible ValueType>

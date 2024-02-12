@@ -2385,6 +2385,10 @@ namespace yyjson
                         throw std::out_of_range(fmt::format("JSON object key not found: {}", key));
                     return result;
                 }
+                [[nodiscard]] bool object_contains(std::string_view key) const noexcept
+                {
+                    return yyjson_mut_obj_getn(base::val_, key.data(), key.size()) != nullptr;
+                }
 
                 template <typename D>
                 const_object_base(D&& doc, yyjson_mut_val* val) : base(std::forward<D>(doc), val)
@@ -2453,6 +2457,7 @@ namespace yyjson
                 [[nodiscard]] auto end() const noexcept { return cend(); }
                 [[nodiscard]] auto size() const noexcept { return object_size(); }
                 [[nodiscard]] auto empty() const noexcept { return object_empty(); }
+                [[nodiscard]] bool contains(std::string_view key) const noexcept { return object_contains(key); }
                 auto operator[](std::string_view key) const { return const_value_ref(base::doc_, object_get(key)); }
 
                 template <typename T, typename U = std::remove_cvref_t<T>>
@@ -3121,6 +3126,10 @@ namespace yyjson
                     throw std::out_of_range(fmt::format("JSON object key not found: {}", key));
                 return result;
             }
+            [[nodiscard]] bool object_contains(std::string_view key) const noexcept
+            {
+                return yyjson_obj_getn(base::val_, key.data(), key.size()) != nullptr;
+            }
 
             explicit const_object_ref(yyjson_val* val) : base(val) {}
 
@@ -3142,6 +3151,7 @@ namespace yyjson
             [[nodiscard]] auto end() const noexcept { return cend(); }
             [[nodiscard]] auto size() const noexcept { return object_size(); }
             [[nodiscard]] auto empty() const noexcept { return object_empty(); }
+            [[nodiscard]] bool contains(std::string_view key) const noexcept { return object_contains(key); }
             auto operator[](std::string_view key) const { return const_value_ref(object_get(key)); }
 
             template <typename T, typename U = std::remove_cvref_t<T>>
