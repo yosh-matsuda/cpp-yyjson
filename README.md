@@ -696,7 +696,8 @@ yyjson::reader::const_object_iter cbegin() const;
 yyjson::reader::const_object_iter begin() const;
 yyjson::reader::const_object_iter cend() const;
 yyjson::reader::const_object_iter end() const;
-yyjson::reader::const_value_ref operator[](std::string_view key) const;
+yyjson::reader::const_object_iter find(std::string_view key) const;     // Note: O(N)
+yyjson::reader::const_value_ref operator[](std::string_view key) const; // Note: O(N)
 std::size_t size() const;
 bool empty() const;
 bool contains(std::string_view key) const;  // Note: O(N)
@@ -1058,8 +1059,10 @@ const_object_iter cbegin() const;
 const_object_iter cend() const;
 const_object_iter begin() const;
 const_object_iter end() const;
+const_object_iter find(std::string_view key) const; // Note: O(N)
 object_iter begin();
 object_iter end();
+object_iter find(std::string_view key); // Note: O(N)
 std::size_t size() const;
 bool empty() const;
 void erase(std::string_view);

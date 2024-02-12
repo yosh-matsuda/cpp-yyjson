@@ -2457,6 +2457,15 @@ namespace yyjson
                 [[nodiscard]] auto end() const noexcept { return cend(); }
                 [[nodiscard]] auto size() const noexcept { return object_size(); }
                 [[nodiscard]] auto empty() const noexcept { return object_empty(); }
+                [[nodiscard]] auto find(std::string_view key) const noexcept
+                {
+                    auto it = begin();
+                    for (; it != end(); ++it)
+                    {
+                        if (it->first == key) break;
+                    }
+                    return it;
+                }
                 [[nodiscard]] bool contains(std::string_view key) const noexcept { return object_contains(key); }
                 auto operator[](std::string_view key) const { return const_value_ref(base::doc_, object_get(key)); }
 
@@ -2720,6 +2729,16 @@ namespace yyjson
                 {
                     return object_iter<DocType>(*this, base::object_iter_end());
                 }
+                [[nodiscard]] auto find(std::string_view key) noexcept
+                requires (!std::is_const_v<std::remove_reference_t<DocType>>)
+                {
+                    auto it = begin();
+                    for (; it != end(); ++it)
+                    {
+                        if (it->first == key) break;
+                    }
+                    return it;
+                }
                 auto operator[](std::string_view key) noexcept
                 {
                     for (const auto& v : *this)
@@ -2729,6 +2748,7 @@ namespace yyjson
 
                 [[nodiscard]] auto begin() const noexcept { return base::begin(); }
                 [[nodiscard]] auto end() const noexcept { return base::end(); }
+                [[nodiscard]] auto find(std::string_view key) const noexcept { return base::find(key); }
                 auto operator[](std::string_view key) const { return base::operator[](key); }
             };
 
@@ -3151,6 +3171,15 @@ namespace yyjson
             [[nodiscard]] auto end() const noexcept { return cend(); }
             [[nodiscard]] auto size() const noexcept { return object_size(); }
             [[nodiscard]] auto empty() const noexcept { return object_empty(); }
+            [[nodiscard]] auto find(std::string_view key) const noexcept
+            {
+                auto it = begin();
+                for (; it != end(); ++it)
+                {
+                    if (it->first == key) break;
+                }
+                return it;
+            }
             [[nodiscard]] bool contains(std::string_view key) const noexcept { return object_contains(key); }
             auto operator[](std::string_view key) const { return const_value_ref(object_get(key)); }
 
