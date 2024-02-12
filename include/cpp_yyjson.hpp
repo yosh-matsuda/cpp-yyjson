@@ -334,13 +334,13 @@ namespace yyjson
             concept to_json_usr = to_json_usr_ext<T> || to_json_usr_noext<T> || to_json_usr_only_ext<T>;
 
             template <typename V, typename T>
-            concept to_json_inp_usr_noext = requires(V& v, T&& t) {
-                caster<std::remove_cvref_t<T>>::to_json(v, std::forward<T>(t));
-            } && (std::same_as<V, value_ref> || std::same_as<V, array_ref> || std::same_as<V, object_ref>);
+            concept to_json_inp_usr_noext =
+                (std::same_as<V, value_ref> || std::same_as<V, array_ref> || std::same_as<V, object_ref>) && requires(
+                    V& v, T&& t) { caster<std::remove_cvref_t<T>>::to_json(v, std::forward<T>(t)); };
             template <typename V, typename T>
-            concept to_json_inp_usr_only_ext = requires(V& v, T&& t) {
-                caster<std::remove_cvref_t<T>>::to_json(v, std::forward<T>(t), copy_string);
-            } && (std::same_as<V, value_ref> || std::same_as<V, array_ref> || std::same_as<V, object_ref>);
+            concept to_json_inp_usr_only_ext =
+                (std::same_as<V, value_ref> || std::same_as<V, array_ref> || std::same_as<V, object_ref>) && requires(
+                    V& v, T&& t) { caster<std::remove_cvref_t<T>>::to_json(v, std::forward<T>(t), copy_string); };
             template <typename V, typename T>
             concept to_json_inp_usr_ext = to_json_inp_usr_noext<V, T> && to_json_inp_usr_only_ext<V, T>;
             template <typename V, typename T>
@@ -356,18 +356,19 @@ namespace yyjson
             concept to_json_inp_usr_defined = to_json_val_usr<T> || to_json_arr_usr<T> || to_json_obj_usr<T>;
 
             template <typename T>
-            concept to_json_def = requires(T&& t) {
+            concept to_json_def = (!to_json_usr<T>) && requires(T&& t) {
                 default_caster<std::remove_cvref_t<T>>::to_json(std::forward<T>(t), copy_string);
                 default_caster<std::remove_cvref_t<T>>::to_json(std::forward<T>(t));
-            } && (!to_json_usr<T>);
+            };
 
             template <typename V, typename T>
             concept to_json_inp_def =
+                (!to_json_inp_usr<V, T>) &&
+                (std::same_as<V, value_ref> || std::same_as<V, array_ref> || std::same_as<V, object_ref>) &&
                 requires(V& v, T&& t) {
                     default_caster<std::remove_cvref_t<T>>::to_json(v, std::forward<T>(t), copy_string);
                     default_caster<std::remove_cvref_t<T>>::to_json(v, std::forward<T>(t));
-                } && (!to_json_inp_usr<V, T>)&&(std::same_as<V, value_ref> || std::same_as<V, array_ref> ||
-                                                std::same_as<V, object_ref>);
+                };
             template <typename T>
             concept to_json_val_def = to_json_inp_def<value_ref, T>;
             template <typename T>
@@ -378,7 +379,7 @@ namespace yyjson
             concept to_json_inp_def_defined = to_json_val_def<T> || to_json_arr_def<T> || to_json_obj_def<T>;
 
             template <typename T>
-            concept to_json_defined = to_json_def<T> || to_json_usr<T>;
+            concept to_json_defined = to_json_usr<T> || to_json_def<T>;
 
             template <typename T>
             concept to_json_inp_defined = to_json_inp_usr_defined<T> || to_json_inp_def_defined<T>;
