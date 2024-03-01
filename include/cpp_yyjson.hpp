@@ -2661,7 +2661,7 @@ namespace yyjson
                         base::doc_.set_value(base::val_, std::get<0>(std::forward<T>(t)), copy_string);
                     }
                     return *this;
-                };
+                }
                 template <key_type KeyType, copy_string_args... Ts>
                 auto emplace(KeyType&& key, empty_array_t, Ts... ts) noexcept
                 {
@@ -2701,22 +2701,76 @@ namespace yyjson
                 auto emplace(KeyType&& key, std::initializer_list<value> list) noexcept
                 {
                     return object_iter<DocType>(*this, object_append(std::forward<KeyType>(key), list));
-                };
+                }
                 template <key_type KeyType, typename T = void>  // penalize overload priority
                 auto emplace(KeyType&& key, std::initializer_list<value> list, copy_string_t) noexcept
                 {
                     return object_iter<DocType>(*this, object_append(std::forward<KeyType>(key), list, copy_string));
-                };
+                }
                 template <key_type KeyType>
                 auto emplace(KeyType&& key, std::initializer_list<key_value_pair> list) noexcept
                 {
                     return object_iter<DocType>(*this, object_append(std::forward<KeyType>(key), list));
-                };
+                }
                 template <key_type KeyType>
                 auto emplace(KeyType&& key, std::initializer_list<key_value_pair> list, copy_string_t) noexcept
                 {
                     return object_iter<DocType>(*this, object_append(std::forward<KeyType>(key), list, copy_string));
-                };
+                }
+                template <key_type KeyType, typename T, copy_string_args... Ts>
+                auto try_emplace(KeyType&& key, T&& t, Ts... ts) noexcept -> std::pair<object_iter<DocType>, bool>
+                {
+                    auto it = find(key);
+                    if (it == end())
+                    {
+                        return {emplace(std::forward<KeyType>(key), std::forward<T>(t), ts...), true};
+                    }
+                    return {std::move(it), false};
+                }
+                template <key_type KeyType, typename T = void>  // penalize overload priority
+                auto try_emplace(KeyType&& key, std::initializer_list<value> list) noexcept
+                    -> std::pair<object_iter<DocType>, bool>
+                {
+                    auto it = find(key);
+                    if (it == end())
+                    {
+                        return {emplace(std::forward<KeyType>(key), list), true};
+                    }
+                    return {std::move(it), false};
+                }
+                template <key_type KeyType, typename T = void>  // penalize overload priority
+                auto try_emplace(KeyType&& key, std::initializer_list<value> list, copy_string_t) noexcept
+                    -> std::pair<object_iter<DocType>, bool>
+                {
+                    auto it = find(key);
+                    if (it == end())
+                    {
+                        return {emplace(std::forward<KeyType>(key), list, copy_string), true};
+                    }
+                    return {std::move(it), false};
+                }
+                template <key_type KeyType>
+                auto try_emplace(KeyType&& key, std::initializer_list<key_value_pair> list) noexcept
+                    -> std::pair<object_iter<DocType>, bool>
+                {
+                    auto it = find(key);
+                    if (it == end())
+                    {
+                        return {emplace(std::forward<KeyType>(key), list), true};
+                    }
+                    return {std::move(it), false};
+                }
+                template <key_type KeyType>
+                auto try_emplace(KeyType&& key, std::initializer_list<key_value_pair> list, copy_string_t) noexcept
+                    -> std::pair<object_iter<DocType>, bool>
+                {
+                    auto it = find(key);
+                    if (it == end())
+                    {
+                        return {emplace(std::forward<KeyType>(key), list, copy_string), true};
+                    }
+                    return {std::move(it), false};
+                }
                 auto erase(const std::string_view key) noexcept { object_erase(key); }
                 void clear() noexcept { object_clear(); }
                 [[nodiscard]] auto begin() noexcept

@@ -2004,6 +2004,28 @@ TEST(Writer, ObjectConversion)
                                std::ranges::iterator_t<object_ref&>>);
     static_assert(std::same_as<decltype(std::declval<object_ref&>().emplace(std::declval<const std::string&>(), "0")),
                                std::ranges::iterator_t<object_ref&>>);
+    static_assert(std::same_as<decltype(std::declval<object&>().try_emplace(std::declval<std::string>(), "0")),
+                               std::pair<std::ranges::iterator_t<object&>, bool>>);
+    static_assert(std::same_as<decltype(std::declval<object&>().try_emplace(std::declval<std::string_view>(), "0")),
+                               std::pair<std::ranges::iterator_t<object&>, bool>>);
+    static_assert(std::same_as<decltype(std::declval<object&>().try_emplace(std::declval<const char*>(), "0")),
+                               std::pair<std::ranges::iterator_t<object&>, bool>>);
+    static_assert(std::same_as<decltype(std::declval<object&>().try_emplace(std::declval<std::string&>(), "0")),
+                               std::pair<std::ranges::iterator_t<object&>, bool>>);
+    static_assert(std::same_as<decltype(std::declval<object&>().try_emplace(std::declval<std::string_view&>(), "0")),
+                               std::pair<std::ranges::iterator_t<object&>, bool>>);
+    static_assert(std::same_as<decltype(std::declval<object&>().try_emplace(std::declval<const std::string&>(), "0")),
+                               std::pair<std::ranges::iterator_t<object&>, bool>>);
+    static_assert(
+        std::same_as<decltype(std::declval<object&>().try_emplace(std::declval<const std::string_view&>(), "0")),
+                     std::pair<std::ranges::iterator_t<object&>, bool>>);
+    static_assert(std::same_as<decltype(std::declval<object_ref&>().try_emplace(std::declval<std::string>(), "0")),
+                               std::pair<std::ranges::iterator_t<object_ref&>, bool>>);
+    static_assert(std::same_as<decltype(std::declval<object_ref&>().try_emplace(std::declval<std::string&>(), "0")),
+                               std::pair<std::ranges::iterator_t<object_ref&>, bool>>);
+    static_assert(
+        std::same_as<decltype(std::declval<object_ref&>().try_emplace(std::declval<const std::string&>(), "0")),
+                     std::pair<std::ranges::iterator_t<object_ref&>, bool>>);
     static_assert(std::same_as<decltype(std::declval<object&>().erase(std::declval<std::string>())), void>);
     static_assert(std::same_as<decltype(std::declval<object_ref&>().erase(std::declval<std::string_view>())), void>);
     static_assert(std::same_as<decltype(std::declval<object_ref&>().erase(std::declval<const char*>())), void>);
@@ -2114,10 +2136,20 @@ TEST(Writer, ObjectMethodExample)
     }
 
     // emplace
-    num_obj.emplace("4", 4);
+    iter = num_obj.emplace("4", 4);
     num_obj.emplace("5", {"5"}, copy_string);
     EXPECT_EQ(4, *num_obj["4"].as_int());
     EXPECT_EQ("5", *num_obj_const["5"].as_array()->front().as_string());
+
+    // try_emplace
+    auto iter2 = num_obj.try_emplace("4", 4);
+    EXPECT_EQ(iter2.first->first, iter->first);
+    EXPECT_EQ(iter2.first->second.as_int(), iter->second.as_int());
+    EXPECT_FALSE(iter2.second);
+    auto iter3 = num_obj.try_emplace("X", {"-1"}, copy_string);
+    EXPECT_EQ(iter3.first->first, "X");
+    EXPECT_EQ(iter3.first->second.as_array()->front().as_string(), "-1");
+    EXPECT_TRUE(iter3.second);
 
     // key access
     num_obj["5"] = "5";

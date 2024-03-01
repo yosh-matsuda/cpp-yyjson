@@ -1069,7 +1069,7 @@ void erase(std::string_view);
 void clear();
 bool contains(std::string_view key) const;  // Note: O(N)
 
-// Insert value_constructible
+// Insert value_constructible, no duplicate check
 template <value_constructible ValueType>
 object_iter emplace(KeyType&&, ValueType&&, [yyjson::copy_string_t]);
 // Note: O(N), throw std::out_of_range if a key is not found
@@ -1080,6 +1080,10 @@ yyjson::writer::value_ref operator[](std::string_view);
 // Insert empty array/object
 yyjson::writer::array_ref  emplace(KeyType&&, yyjson::empty_array_t,  [yyjson::copy_string_t]);
 yyjson::writer::object_ref emplace(KeyType&&, yyjson::empty_object_t, [yyjson::copy_string_t]);
+
+// Try emplace, O(N) for duplicate check
+template <value_constructible ValueType>
+std::pair<object_iter, bool> try_emplace(KeyType&&, ValueType&&, [yyjson::copy_string_t]);
 
 // operator=
 yyjson::object& operator=(const yyjson::object&);
