@@ -1,5 +1,5 @@
 /*===================================================*
-|  cpp-yyjson version v0.2.0                         |
+|  cpp-yyjson version v0.4.0                         |
 |  https://github.com/yosh-matsuda/cpp-yyjson        |
 |                                                    |
 |  Copyright (c) 2024 Yoshiki Matsuda @yosh-matsuda  |
@@ -335,11 +335,11 @@ namespace yyjson
 
             template <typename V, typename T>
             concept to_json_inp_usr_noext =
-                (std::same_as<V, value_ref> || std::same_as<V, array_ref> || std::same_as<V, object_ref>) && requires(
+                (std::same_as<V, value_ref> || std::same_as<V, array_ref> || std::same_as<V, object_ref>)&&requires(
                     V& v, T&& t) { caster<std::remove_cvref_t<T>>::to_json(v, std::forward<T>(t)); };
             template <typename V, typename T>
             concept to_json_inp_usr_only_ext =
-                (std::same_as<V, value_ref> || std::same_as<V, array_ref> || std::same_as<V, object_ref>) && requires(
+                (std::same_as<V, value_ref> || std::same_as<V, array_ref> || std::same_as<V, object_ref>)&&requires(
                     V& v, T&& t) { caster<std::remove_cvref_t<T>>::to_json(v, std::forward<T>(t), copy_string); };
             template <typename V, typename T>
             concept to_json_inp_usr_ext = to_json_inp_usr_noext<V, T> && to_json_inp_usr_only_ext<V, T>;
@@ -356,16 +356,15 @@ namespace yyjson
             concept to_json_inp_usr_defined = to_json_val_usr<T> || to_json_arr_usr<T> || to_json_obj_usr<T>;
 
             template <typename T>
-            concept to_json_def = (!to_json_usr<T>) && requires(T&& t) {
+            concept to_json_def = (!to_json_usr<T>)&&requires(T&& t) {
                 default_caster<std::remove_cvref_t<T>>::to_json(std::forward<T>(t), copy_string);
                 default_caster<std::remove_cvref_t<T>>::to_json(std::forward<T>(t));
             };
 
             template <typename V, typename T>
             concept to_json_inp_def =
-                (!to_json_inp_usr<V, T>) &&
-                (std::same_as<V, value_ref> || std::same_as<V, array_ref> || std::same_as<V, object_ref>) &&
-                requires(V& v, T&& t) {
+                (!to_json_inp_usr<V, T>)&&(std::same_as<V, value_ref> || std::same_as<V, array_ref> ||
+                                           std::same_as<V, object_ref>)&&requires(V& v, T&& t) {
                     default_caster<std::remove_cvref_t<T>>::to_json(v, std::forward<T>(t), copy_string);
                     default_caster<std::remove_cvref_t<T>>::to_json(v, std::forward<T>(t));
                 };
@@ -1271,7 +1270,7 @@ namespace yyjson
 
                 template <base_of_value T>
                 requires is_value_type && (std::remove_cvref_t<T>::is_const_reference ||
-                                           (std::is_const_v<std::remove_reference_t<T&&>>))
+                                           (std::is_const_v<std::remove_reference_t<T &&>>))
                 abstract_value(T&& t) noexcept  // NOLINT
                     : doc_(std::forward<T>(t).doc_),
                       val_(doc_.copy_value(std::forward<T>(t))),
@@ -1281,7 +1280,7 @@ namespace yyjson
 
                 template <base_of_value T>
                 requires is_value_type && (!std::remove_cvref_t<T>::is_const_reference &&
-                                           !(std::is_const_v<std::remove_reference_t<T&&>>))
+                                           !(std::is_const_v<std::remove_reference_t<T &&>>))
                 abstract_value(T&& t) noexcept  // NOLINT
                     : doc_(std::forward<T>(t).doc_),
                       val_(std::forward<T>(t).val_),
@@ -1298,8 +1297,8 @@ namespace yyjson
                 template <base_of_value T>
                 requires is_reference &&
                          (is_const ||
-                          (!std::remove_cvref_t<T>::is_const && !std::is_const_v<std::remove_reference_t<T&&>>)) &&
-                         (!(std::remove_cvref_t<T>::is_value_type && std::is_rvalue_reference_v<T&&>))
+                          (!std::remove_cvref_t<T>::is_const && !std::is_const_v<std::remove_reference_t<T &&>>)) &&
+                         (!(std::remove_cvref_t<T>::is_value_type && std::is_rvalue_reference_v<T &&>))
                 explicit abstract_value(T&& t) noexcept
                     : abstract_value(std::forward<T>(t).doc_, std::forward<T>(t).val_)
                 {
