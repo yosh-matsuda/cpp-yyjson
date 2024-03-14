@@ -33,12 +33,18 @@ if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "MSVC")
 endif()
 
 # dependencies
-find_package(yyjson CONFIG REQUIRED)
-target_link_libraries(${PROJECT_NAME} INTERFACE yyjson::yyjson)
-find_package(fmt 10.0.0 CONFIG REQUIRED)
-target_link_libraries(${PROJECT_NAME} INTERFACE fmt::fmt-header-only)
-find_package(nameof CONFIG REQUIRED)
-target_link_libraries(${PROJECT_NAME} INTERFACE nameof::nameof)
+function(find_and_link package_name qualified_name)
+  if(NOT TARGET ${package_name})
+    find_package(${package_name} CONFIG REQUIRED)
+    target_link_libraries(${PROJECT_NAME} INTERFACE ${qualified_name})
+  else()
+    target_link_libraries(${PROJECT_NAME} INTERFACE ${package_name})
+  endif()
+endfunction()
+
+find_and_link(yyjson yyjson::yyjson)
+find_and_link(fmt fmt::fmt-header-only)
+find_and_link(nameof nameof::nameof)
 
 # install
 if(CPPYYJSON_IS_TOPLEVEL_PROJECT)
