@@ -34,8 +34,9 @@ endif()
 
 # dependencies
 function(find_and_link package_name qualified_name)
-  if(NOT TARGET ${package_name})
-    find_package(${package_name} CONFIG REQUIRED)
+  cmake_parse_arguments(FIND_AND_LINK "" "VERSION" "" ${ARGN})
+  if(NOT TARGET ${package_name} OR CPPYYJSON_IS_TOPLEVEL_PROJECT)
+    find_package(${package_name} ${FIND_AND_LINK_VERSION} CONFIG REQUIRED)
     target_link_libraries(${PROJECT_NAME} INTERFACE ${qualified_name})
   else()
     target_link_libraries(${PROJECT_NAME} INTERFACE ${package_name})
@@ -43,8 +44,8 @@ function(find_and_link package_name qualified_name)
 endfunction()
 
 find_and_link(yyjson yyjson::yyjson)
-find_and_link(fmt fmt::fmt-header-only)
-find_and_link(nameof nameof::nameof)
+find_and_link(fmt fmt::fmt-header-only VERSION 10.0.0)
+find_and_link(nameof nameof::nameof VERSION 0.10.0)
 
 # install
 if(CPPYYJSON_IS_TOPLEVEL_PROJECT)
