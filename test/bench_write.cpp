@@ -34,22 +34,6 @@ constexpr auto json_size_obj_int64 = 15777781;
 constexpr auto json_size_obj_double = 17777781;
 constexpr auto json_size_obj_string = 17777781;
 
-void write_cpp_yyjson_array_int64(benchmark::State& state)
-{
-    using namespace yyjson;
-    std::iota(vec_int64.begin(), vec_int64.end(), 0);
-    for (auto _ : state)
-    {
-        auto array = yyjson::array(vec_int64);
-        auto result = array.write();
-        if (result.size() != json_size_arr_int64)
-        {
-            state.SkipWithError("Invalid JSON string");
-            break;
-        }
-    }
-}
-
 void write_c_yyjson_array_int64(benchmark::State& state)
 {
     std::iota(vec_int64.begin(), vec_int64.end(), 0);
@@ -67,6 +51,39 @@ void write_c_yyjson_array_int64(benchmark::State& state)
         }
         free(const_cast<void*>(static_cast<const void*>(json)));
         yyjson_mut_doc_free(doc);
+    }
+}
+
+void write_cpp_yyjson_array_int64(benchmark::State& state)
+{
+    using namespace yyjson;
+    std::iota(vec_int64.begin(), vec_int64.end(), 0);
+    for (auto _ : state)
+    {
+        auto array = yyjson::array(vec_int64);
+        auto result = array.write();
+        if (result.size() != json_size_arr_int64)
+        {
+            state.SkipWithError("Invalid JSON string");
+            break;
+        }
+    }
+}
+
+void write_cpp_yyjson_single_array_int64(benchmark::State& state)
+{
+    using namespace yyjson;
+    std::iota(vec_int64.begin(), vec_int64.end(), 0);
+    auto alc = dynamic_allocator();
+    for (auto _ : state)
+    {
+        auto array = yyjson::array(vec_int64);
+        auto result = array.write(alc);
+        if (result.size() != json_size_arr_int64)
+        {
+            state.SkipWithError("Invalid JSON string");
+            break;
+        }
     }
 }
 
@@ -136,6 +153,23 @@ void write_cpp_yyjson_array_double(benchmark::State& state)
     {
         auto array = yyjson::array(vec_double);
         auto result = array.write();
+        if (result.size() != json_size_arr_double)
+        {
+            state.SkipWithError("Invalid JSON string");
+            break;
+        }
+    }
+}
+
+void write_cpp_yyjson_single_array_double(benchmark::State& state)
+{
+    using namespace yyjson;
+    std::iota(vec_double.begin(), vec_double.end(), 0);
+    auto alc = dynamic_allocator();
+    for (auto _ : state)
+    {
+        auto array = yyjson::array(vec_double);
+        auto result = array.write(alc);
         if (result.size() != json_size_arr_double)
         {
             state.SkipWithError("Invalid JSON string");
@@ -214,6 +248,24 @@ void write_cpp_yyjson_array_string(benchmark::State& state)
     {
         auto array = yyjson::array(vec_string);
         auto result = array.write();
+        if (result.size() != json_size_arr_string)
+        {
+            state.SkipWithError("Invalid JSON string");
+            break;
+        }
+    }
+}
+
+void write_cpp_yyjson_single_array_string(benchmark::State& state)
+{
+    using namespace yyjson;
+    std::iota(vec_int64.begin(), vec_int64.end(), 0);
+    auto alc = dynamic_allocator();
+    std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return fmt::format("{}", n); });
+    for (auto _ : state)
+    {
+        auto array = yyjson::array(vec_string);
+        auto result = array.write(alc);
         if (result.size() != json_size_arr_string)
         {
             state.SkipWithError("Invalid JSON string");
@@ -1000,14 +1052,17 @@ void write_nlohmann_object_string_copy(benchmark::State& state)
 }
 
 BENCHMARK(write_cpp_yyjson_array_int64)->Unit(benchmark::kMillisecond);
+BENCHMARK(write_cpp_yyjson_single_array_int64)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_c_yyjson_array_int64)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_rapidjson_array_int64)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_nlohmann_array_int64)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_cpp_yyjson_array_double)->Unit(benchmark::kMillisecond);
+BENCHMARK(write_cpp_yyjson_single_array_double)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_c_yyjson_array_double)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_rapidjson_array_double)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_nlohmann_array_double)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_cpp_yyjson_array_string)->Unit(benchmark::kMillisecond);
+BENCHMARK(write_cpp_yyjson_single_array_string)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_c_yyjson_array_string)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_rapidjson_array_string)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_cpp_yyjson_array_string_copy)->Unit(benchmark::kMillisecond);

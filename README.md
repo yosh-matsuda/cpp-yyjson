@@ -4,49 +4,50 @@ Ultra-fast and intuitive C++ JSON reader/writer with yyjson backend.
 
 [![CI](https://github.com/yosh-matsuda/cpp-yyjson/actions/workflows/tests.yml/badge.svg)](https://github.com/yosh-matsuda/cpp-yyjson/actions/workflows/tests.yml)
 
-1. [Features](#features)
-2. [Requirements](#requirements)
-3. [Overview](#overview)
-   1. [JSON Reader](#json-reader)
-   2. [JSON Writer](#json-writer)
-   3. [Serialization and Deserialization](#serialization-and-deserialization)
-4. [Installation](#installation)
-   1. [Using CMake](#using-cmake)
-5. [Benchmark](#benchmark)
-   1. [Read performance](#read-performance)
-   2. [Write performance](#write-performance)
-6. [Reference](#reference)
-   1. [Namespaces](#namespaces)
-   2. [Immutable JSON classes](#immutable-json-classes)
-   3. [Mutable JSON classes](#mutable-json-classes)
-   4. [Serialize and deserialize JSON](#serialize-and-deserialize-json)
-   5. [Performance best practices](#performance-best-practices)
-   6. [Misc](#misc)
-7. [Author](#author)
+1.  [Features](#features)
+2.  [Requirements](#requirements)
+3.  [Overview](#overview)
+    1.  [JSON Reader](#json-reader)
+    2.  [JSON Writer](#json-writer)
+    3.  [Serialization and Deserialization](#serialization-and-deserialization)
+4.  [Installation](#installation)
+    1.  [Using CMake](#using-cmake)
+5.  [Benchmark](#benchmark)
+    1.  [Read performance](#read-performance)
+    2.  [Write performance](#write-performance)
+6.  [Reference](#reference)
+    1.  [Namespaces](#namespaces)
+    2.  [Immutable JSON classes](#immutable-json-classes)
+    3.  [Mutable JSON classes](#mutable-json-classes)
+    4.  [Allocator classes](#allocator-classes)
+    5.  [Serialize and deserialize JSON](#serialize-and-deserialize-json)
+    6.  [Performance best practices](#performance-best-practices)
+    7.  [Misc](#misc)
+7.  [Author](#author)
 
 ## Features
 
--   Header-only
--   C++20 range adaption
--   STL-like accessors
--   Intuitive JSON construction
--   Mutual transformation of JSON and C++ classes with
-    -   compile-time reflection of struct/class field name
-    -   pre-defined STL casters
-    -   user-defined casters in two ways
--   Minimum overhead compared to yyjson
--   Object lifetime safety
+*   Header-only
+*   C++20 range adaption
+*   STL-like accessors
+*   Intuitive JSON construction
+*   Mutual transformation of JSON and C++ classes with
+    *   compile-time reflection of struct/class field name
+    *   pre-defined STL casters
+    *   user-defined casters in two ways
+*   Minimum overhead compared to yyjson
+*   Object lifetime safety
 
 ## Requirements
 
--   C++20 compiler with range supports
-    -   LLVM >= 16
-    -   GCC >= 12
-    -   clang-cl >= 17 (Windows)
-    -   Visual Studio >= 2022 version 17.5
--   [yyjson](https://github.com/ibireme/yyjson)
--   [{fmt}](https://github.com/fmtlib/fmt)
--   [Nameof C++](https://github.com/Neargye/nameof)
+*   C++20 compiler with range supports
+    *   LLVM >= 16
+    *   GCC >= 12
+    *   clang-cl >= 17 (Windows)
+    *   Visual Studio >= 2022 version 17.5
+*   [yyjson](https://github.com/ibireme/yyjson)
+*   [{fmt}](https://github.com/fmtlib/fmt)
+*   [Nameof C++](https://github.com/Neargye/nameof)
 
 ## Overview
 
@@ -164,10 +165,10 @@ auto init_obj = object{{"id", 1},
 
 As shown above, cpp-yyjson provides conversion between JSON value/array/object classes and C++ ranges and container types recursively. In addition to that, the following additional JSON casters are available (see the [reference](#serialize-and-deserialize-json) in detail):
 
-* Pre-defined STL casters (e.g., `std::optional`, `std::variant`, `std::tuple` ([C++23 tuple-like](https://wg21.link/P2165R4))).
-* Conversion using compile-time reflection of struct/class if it is available.
-* Registration of field names with `VISITABLE_STRUCT` macro.
-* User-defined casters.
+*   Pre-defined STL casters (e.g., `std::optional`, `std::variant`, `std::tuple` ([C++23 tuple-like](https://wg21.link/P2165R4))).
+*   Conversion using compile-time reflection of struct/class if it is available.
+*   Registration of field names with `VISITABLE_STRUCT` macro.
+*   User-defined casters.
 
 #### Pre-defined STL casters
 
@@ -231,7 +232,7 @@ auto deserialized = cast<X>(serialized);
 // -> X{.a = 1, .b = std::nullopt, .c = "default"}
 ```
 
-#### User-define caster (see the [reference](#serialize-and-deserialize-json) in detail):
+#### User-define caster (see the [reference](#serialize-and-deserialize-json) in detail)
 
 ```cpp
 template <>
@@ -249,7 +250,6 @@ auto  = X{.a = 1, .b = std::nullopt, .c = "x"};
 auto serialized = value(visitable);
 // -> "1 null x"
 ```
-
 
 ## Installation
 
@@ -355,17 +355,23 @@ The `yyjson` namespace includes the following function and classes. Typically, y
 | -------------- | ---------------------------------------------------------------------------------------------------------- |
 | `yyjson::read` | Read a JSON string and return an *immutable* JSON document class which is alias of `yyjson::reader::value` |
 
-| Type             |                                                                |
+| JSON Type        |                                                                |
 | ---------------- | -------------------------------------------------------------- |
 | `yyjson::value`  | *Mutable* JSON value class; alias of `yyjson::writer::value`   |
 | `yyjson::array`  | *Mutable* JSON array class; alias of `yyjson::writer::array`   |
 | `yyjson::object` | *Mutable* JSON object class; alias of `yyjson::writer::object` |
 
+| Allocator class                |                                                                    |
+| ------------------------------ | ------------------------------------------------------------------ |
+| `yyjson::dynamic_allocator`    | Dynamic memory allocator wrapper, available for yyjson >= v0.8.0   |
+| `yyjson::pool_allocator`       | Fixed size memory allocator wrapper on the heap                    |
+| `yyjson::stack_pool_allocator` | Fixed size memory allocator wrapper on the stack                   |
+
 In internal namespaces, the cpp-yyjson provides JSON value, array, object, reference, and iterator classes. Each internal `yyjson::reader` and `yyjson::writer` namespace defines *immutable* and *mutable* JSON classes, respectively. Although you rarely need to be aware of the classes provided in the internal namespaces, the *reference* classes are noted here.
 
 The JSON value, array, and object classes have the corresponding *reference* (only for *mutable* classes) and *const reference* versions of them as shown later, such as `value_ref`, `const_value_ref`, `array_ref`, `const_array_ref`, and so on. The *reference* classes have member functions with almost the same signature as the normal versions. The difference between a normal `value` class and a `[const_]value_ref` class is whether they have their data ownership or not. The *(const) reference* JSON classes appear in return types of member functions of the JSON classes. This is to maximize performance by avoiding copying.
 
-> **Note**  
+> [!NOTE]
 > The *reference* class refers to data in the owner, so its lifetime should be noted.
 
 ### Immutable JSON classes
@@ -374,7 +380,9 @@ Immutable JSON classes defined in `yyjson::reader` namespace are derived from th
 
 #### `yyjson::read`
 
-Read a JSON string and return an *immutable* JSON value. See the reference of yyjson for the information on [reader flags](https://ibireme.github.io/yyjson/doc/doxygen/html/md_doc__a_p_i.html#autotoc_md34).
+Read a JSON string and return an *immutable* JSON value.
+
+See the reference of yyjson for the information on [reader flags](https://ibireme.github.io/yyjson/doc/doxygen/html/md_doc__a_p_i.html#autotoc_md34).
 
 ```cpp
 yyjson::reader::value read(std::string_view json_string, [std::size_t len,] [Allocator alc,] ReadFlag = ReadFlag::NoFlag);
@@ -391,104 +399,14 @@ enum class yyjson::ReadFlag : yyjson_read_flag
     AllowComments = YYJSON_READ_ALLOW_COMMENTS,
     AllowInfAndNan = YYJSON_READ_ALLOW_INF_AND_NAN,
     NumberAsRaw = YYJSON_READ_NUMBER_AS_RAW,
-    AllowInvalidUnicode = YYJSON_READ_ALLOW_INVALID_UNICODE
+    AllowInvalidUnicode = YYJSON_READ_ALLOW_INVALID_UNICODE,
+    BignumAsRaw = YYJSON_READ_BIGNUM_AS_RAW // for yyjson >= v0.7.0
 };
 ```
 
-The `read` function takes a JSON string and returns an immutable JSON value. The function argument may optionally specify a string length and an allocator to be described later. Otherwise, the length of the JSON string is determined and the yyjson default allocator is used.
+The `read` function takes a JSON string and returns an immutable JSON value. The function argument may optionally specify a string length and an allocator to be described [later](#allocator-classes). Otherwise, the length of the JSON string is determined and the yyjson default allocator is used.
 
 If the read option has the [`ReadInsitu`](https://ibireme.github.io/yyjson/doc/doxygen/html/md_doc__a_p_i.html#autotoc_md34) flag, You must specify the JSON string as writable (`std::string&` or `char*`) and its length. This writable string must be padded at least [`YYJSON_PADDING_SIZE`](https://ibireme.github.io/yyjson/doc/doxygen/html/yyjson_8h.html#abbe8e69f634b1a5a78c1dae08b88e0ef) bytes to the end. The length of the JSON string should be unpadded.
-
-This library provides the following two special allocators. Both are pool allocators and are useful for tasks that parse multiple JSON strings with a single buffer. You must be careful not to destroy the allocator or perform any modification operations on the allocator buffer while an instance of the JSON class is in use.
-
-##### `yyjson::reader::pool_allocator`
-
-This pool_allocator is based on `std::vector` and has a buffer on the heap. The `read` function will reallocate the buffer if it is not large enough for the given JSON string.
-
-**Constructor**
-
-```cpp
-// Default constructors
-pool_allocator() = default;
-pool_allocator(const pool_allocator&) = default;
-pool_allocator(pool_allocator&&) noexcept = default;
-
-// Allocate specified bytes of buffer
-explicit pool_allocator(std::size_t size_byte);
-// Allocate a buffer large enough to read the specified JSON string with read flags
-explicit pool_allocator(std::string_view json, ReadFlag flag = ReadFlag::NoFlag);
-```
-
-**Member function**
-
-```cpp
-// Return the buffer size
-std::size_t size() const;
-// Resize the buffer to the specified bytes
-void resize(std::size_t);
-// Allocate the specified bytes of buffer if not large enough
-void allocate(std::size_t);
-// Allocate a buffer large enough to read the specified JSON string with read flags
-void allocate(std::string_view json, ReadFlag = ReadFlag::NoFlag);
-// Deallocate the buffer
-void deallocate();
-// Shrink the buffer capacity to the size
-void shrink_to_fit();
-// Check if the buffer is large enough to read the specified JSON string with read flags
-bool check_capacity(std::string_view json, ReadFlag = ReadFlag::NoFlag) const;
-```
-
-##### `yyjson::reader::stack_pool_allocator<std::size_t Byte>`
-
-This allocator is based on `std::array` and has a fixed buffer on the stack. The `check_capacity` function should be called to check if the buffer size is sufficient before using it because the `read` function cannot increase the size of the `stack_alloctor` buffer.
-
-**Constructor**
-
-```cpp
-// Default constructors
-stack_pool_allocator() = default;
-stack_pool_allocator(const stack_pool_allocator&) = default;
-stack_pool_allocator(stack_pool_allocator&&) noexcept = default;
-```
-
-**Member function**
-
-```cpp
-// Return the buffer size
-constexpr std::size_t size() const;
-// Check if the buffer is large enough to read the specified JSON string with read flags
-bool check_capacity(std::string_view json, ReadFlag = ReadFlag::NoFlag) const
-```
-
-**Example**
-
-See also [Overview](#json-reader).
-
-```cpp
-using namespace yyjson;
-
-auto json_str = R"(
-{
-    "id": 1,
-    "pi": 3.141592,
-    "emoji": "🫠",
-    "array": [0, 1, 2, 3, 4,],
-    "currency": {
-        "USD": 129.66,
-        "EUR": 140.35,
-        "GBP": 158.72,
-    },
-    "success": true,
-})";
-
-// Read JSON string with the default allocator
-auto val = read(json_str, ReadFlag::AllowTrailingCommas);
-
-// Read JSON string with heap allocator and ReadInsitu flag
-auto json_str_insitu = fmt::format("{}{}", json_obj_str, std::string(YYJSON_PADDING_SIZE, '\0'));   // Padded
-auto heap_alloc = reader::pool_allocator();  // Heap allocator can automatically expand the buffer
-auto val = read(json_str_insitu, json_str.size(), heap_alloc, ReadFlag::ReadInsitu);
-```
 
 #### `yyjson::reader::value`
 
@@ -543,6 +461,8 @@ explicit operator T() const;
 
 // Output JSON string
 yyjson::json_string write(WriteFlag write_flag = WriteFlag::NoFlag) const;
+template <yyjson_allocator Allocator>
+yyjson::json_string write(Allocator alc, WriteFlag write_flag = WriteFlag::NoFlag) const;
 
 enum class yyjson::WriteFlag : yyjson_write_flag
 {
@@ -552,11 +472,14 @@ enum class yyjson::WriteFlag : yyjson_write_flag
     EscapeSlashes = YYJSON_WRITE_ESCAPE_SLASHES,
     AllowInfAndNan = YYJSON_WRITE_ALLOW_INF_AND_NAN,
     InfAndNanAsNull = YYJSON_WRITE_INF_AND_NAN_AS_NULL,
-    AllowInvalidUnicode = YYJSON_WRITE_ALLOW_INVALID_UNICODE
+    AllowInvalidUnicode = YYJSON_WRITE_ALLOW_INVALID_UNICODE,
+    PrettyTwoSpaces = YYJSON_WRITE_PRETTY_TWO_SPACES    // for yyjson >= v0.7.0
 };
 ```
 
-The `write` function returns a read-only string which is wrapped by and inherited from `std::string_view`. See the reference of yyjson for the information on [writer flags](https://ibireme.github.io/yyjson/doc/doxygen/html/md_doc__a_p_i.html#autotoc_md40).
+The `write` function returns a read-only string which is inherited from `std::string_view`.
+
+See the reference of yyjson for the information on [writer flags](https://ibireme.github.io/yyjson/doc/doxygen/html/md_doc__a_p_i.html#autotoc_md40).
 
 **Example**
 
@@ -641,6 +564,8 @@ explicit operator T() const;
 
 // Output JSON string (inherited)
 yyjson::json_string write(WriteFlag write_flag = WriteFlag::NoFlag) const;
+template <yyjson_allocator Allocator>
+yyjson::json_string write(Allocator alc, WriteFlag write_flag = WriteFlag::NoFlag) const;
 
 // Range concept
 std::ranges::iterator_t<yyjson::reader::const_array_ref> -> yyjson::reader::const_array_iter
@@ -710,6 +635,8 @@ explicit operator T() const;
 
 // Output JSON string (inherited)
 yyjson::json_string write(WriteFlag write_flag = WriteFlag::NoFlag) const;
+template <yyjson_allocator Allocator>
+yyjson::json_string write(Allocator alc, WriteFlag write_flag = WriteFlag::NoFlag) const;
 
 // Range concept
 using yyjson::reader::const_key_value_ref_pair = std::pair<std::string_view, yyjson::reader::const_value_ref>;
@@ -849,6 +776,8 @@ explicit operator T() const;
 
 // Output JSON string
 yyjson::json_string write(WriteFlag write_flag = WriteFlag::NoFlag) const;
+template <yyjson_allocator Allocator>
+yyjson::json_string write(Allocator alc, WriteFlag write_flag = WriteFlag::NoFlag) const;
 ```
 
 Concepts `value_constructible`, `array_constructible`, and `object_constructible` are **NOT** defined in the library but are described in the above for explanation hereafter.
@@ -980,6 +909,8 @@ explicit operator T() const;
 
 // Output JSON string
 yyjson::json_string write(WriteFlag write_flag = WriteFlag::NoFlag) const;
+template <yyjson_allocator Allocator>
+yyjson::json_string write(Allocator alc, WriteFlag write_flag = WriteFlag::NoFlag) const;
 
 // Range concept
 std::ranges::range_value_t<yyjson::array&>       -> yyjson::writer::value_ref
@@ -1101,6 +1032,8 @@ explicit operator T() const;
 
 // Output JSON string
 yyjson::json_string write(WriteFlag write_flag = WriteFlag::NoFlag) const;
+template <yyjson_allocator Allocator>
+yyjson::json_string write(Allocator alc, WriteFlag write_flag = WriteFlag::NoFlag) const;
 
 // Range concept
 using yyjson::writer::key_value_ref_pair = std::pair<std::string_view, yyjson::reader::value_ref>;
@@ -1113,7 +1046,7 @@ The `yyjson::object` is also designed to be implemented like STL map containers 
 
 Iterator classes are not exposed. They are tentatively described as `obejct_iter` and `const_object_iter` in the above.
 
-> **Note**  
+> [!NOTE]
 > The `emplace` member functions do **NOT** check for key duplication.
 
 **Example**
@@ -1143,6 +1076,133 @@ obj["key2"] = std::map<std::string, int>{{"e", 4}, {"f", 5}};
 
 std::cout << obj.write() << std::endl;
 // {"key0":{"a":0,"b":1},"key1":{"c":2,"d":3},"key2":{"e":4,"f":5},"key3":{"e":6,"f":7}}
+```
+
+### Allocator classes
+
+This library provides the following memory allocator wrappers for reading and writing JSON strings. They are useful to improve performance for tasks that parse or stringify multiple JSON strings to avoid multiple memory allocations and deallocations.
+
+#### `yyjson::dynamic_allocator`
+
+This is a smart pointer wrapper for the dynamic allocator of yyjson. The lifetime of the allocator's internal smart pointer will be tied to JSON objects and strings created by `read`/`write` (member) functions, respectively. This allocator is for general purposes since it can automatically expand the buffer.
+
+> [!NOTE]
+> This allocator is only available for yyjson >= v0.8.0.
+
+**Constructor**
+
+```cpp
+// Default constructors
+dynamic_allocator() = default;
+dynamic_allocator(const dynamic_allocator&) = default;
+dynamic_allocator(dynamic_allocator&&) noexcept = default;
+```
+
+**Member function**
+
+```cpp
+// Reset to a new dynamic allocator
+void reset() const;
+```
+
+**Example**
+
+```cpp
+using namespace yyjson;
+
+auto alc = dynamic_allocator();
+
+// Read JSON string using dynamic allocator
+auto read_json(const string& json)
+{
+    return read(json, alc);
+}
+
+// Create JSON string using dynamic allocator
+auto write_json(const auto& json)
+{
+    return json.write(alc);
+}
+```
+
+#### `yyjson::pool_allocator`
+
+This is a smart pointer wrapper for the fixed-size memory allocator of yyjson. The lifetime of the allocator's internal smart pointer will be tied to JSON objects and strings created by `read`/`write` (member) functions, respectively. This allocator is useful when the required memory size is known; for reading JSON strings. Since the buffer size is fixed, the `read` function using the single buffer would be faster than the dynamic allocator.
+
+If the free space of the buffer is not large enough, the `read` or `write` (member) function will throw an exception. The `reset` function re-creates the buffer with the specified size and the `reserve` function can be used to expand the buffer size to be required.
+
+**Constructor**
+
+```cpp
+// Default constructors
+pool_allocator() = default;
+pool_allocator(const pool_allocator&) = default;
+pool_allocator(pool_allocator&&) noexcept = default;
+
+// Allocate specified bytes of buffer
+explicit pool_allocator(std::size_t size_byte);
+// Allocate a buffer large enough to read the specified JSON string with read flags
+explicit pool_allocator(std::string_view json, ReadFlag flag = ReadFlag::NoFlag);
+```
+
+**Member function**
+
+```cpp
+// Return the buffer size
+std::size_t size() const;
+// Reset to a new fixed size allocator
+void reset(std::size_t size_byte = 0);
+void reset(std::string_view json, ReadFlag flag = ReadFlag::NoFlag);
+// Expand the buffer to required size
+void reserve(std::size_t size_byte);
+void reserve(std::string_view json, ReadFlag flag = ReadFlag::NoFlag);
+// Check if the buffer, when empty, is large enough to read the specified JSON string with read flags
+bool check_capacity(std::string_view json, ReadFlag = ReadFlag::NoFlag) const;
+```
+
+**Example**
+
+```cpp
+using namespace yyjson;
+
+// Create a single buffer allocator
+auto alc = pool_allocator();
+
+// Read JSON string using pool allocator multiple times
+for (const auto& json : json_strings)
+{
+    // Expand the buffer required to read JSON string
+    alc.reserve(json);
+    auto val = read(json, alc);
+    // ...
+}
+```
+
+##### `yyjson::stack_pool_allocator<std::size_t Byte>`
+
+This allocator is a fixed-size and stack-allocated buffer. The buffer size is specified by the template parameter and thus the buffer size cannot be changed. The required buffer size must be known in advance.
+
+> [!NOTE]
+> The lifetime of `stack_pool_allocator` is not managed automatically unlike other allocators. Not to destroy the allocator while an instance of the JSON object/string is in use.
+
+**Constructor**
+
+```cpp
+// Default constructors
+stack_pool_allocator() = default;
+stack_pool_allocator(const stack_pool_allocator&) = default;
+stack_pool_allocator(stack_pool_allocator&&) noexcept = default;
+```
+
+**Member function**
+
+```cpp
+// Return the buffer size
+constexpr std::size_t size() const;
+// Reset to a new fixed size allocator
+void reset();
+// Check if the buffer, when empty, is large enough to read the specified JSON string with read flags
+bool check_capacity(std::string_view json, ReadFlag = ReadFlag::NoFlag) const
 ```
 
 ### Serialize and deserialize JSON
@@ -1185,10 +1245,10 @@ In addition to the above, the following four methods are provided for converting
 
 Several casters from/to STL classes to JSON are pre-defined in the library for convenience. Currently, available STL types are as follows:
 
--   `std::optional`
--   `std::variant`
--   `std::tuple`-like
--   `std::vector<bool>` (specialized)
+*   `std::optional`
+*   `std::variant`
+*   `std::tuple`-like
+*   `std::vector<bool>` (specialized)
 
 For example, if you receive elements of multiple types, casts from/to `std::optional` or `std::variant` are useful.
 
@@ -1324,7 +1384,7 @@ struct yyjson::caster<X>
 };
 ```
 
-The `from_json` template function has a JSON value as an argument template and must return type `X`. 
+The `from_json` template function has a JSON value as an argument template and must return type `X`.
 
 For the `to_json` function, there are two ways. The first way is to define a *translator* for a *value_constructible* type and return it. The return type must be `value_constructible`:
 

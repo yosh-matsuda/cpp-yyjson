@@ -46,7 +46,10 @@ namespace yyjson
         AllowComments = YYJSON_READ_ALLOW_COMMENTS,
         AllowInfAndNan = YYJSON_READ_ALLOW_INF_AND_NAN,
         NumberAsRaw = YYJSON_READ_NUMBER_AS_RAW,
-        AllowInvalidUnicode = YYJSON_READ_ALLOW_INVALID_UNICODE
+        AllowInvalidUnicode = YYJSON_READ_ALLOW_INVALID_UNICODE,
+#if YYJSON_VERSION_HEX >= 0x000700
+        BignumAsRaw = YYJSON_READ_BIGNUM_AS_RAW
+#endif
     };
 
     enum class WriteFlag : yyjson_write_flag
@@ -57,7 +60,10 @@ namespace yyjson
         EscapeSlashes = YYJSON_WRITE_ESCAPE_SLASHES,
         AllowInfAndNan = YYJSON_WRITE_ALLOW_INF_AND_NAN,
         InfAndNanAsNull = YYJSON_WRITE_INF_AND_NAN_AS_NULL,
-        AllowInvalidUnicode = YYJSON_WRITE_ALLOW_INVALID_UNICODE
+        AllowInvalidUnicode = YYJSON_WRITE_ALLOW_INVALID_UNICODE,
+#if YYJSON_VERSION_HEX >= 0x000700
+        PrettyTwoSpaces = YYJSON_WRITE_PRETTY_TWO_SPACES
+#endif
     };
 
     // equivalent to C++23 std::to_underlying
@@ -116,11 +122,23 @@ namespace yyjson
 
     class json_string : public std::string_view
     {
-        std::shared_ptr<char> str_ptr_;
+        std::shared_ptr<char> str_ptr_ = {};
 
     public:
         json_string(char* ptr, std::size_t len)
             : std::string_view(ptr, len), str_ptr_(std::shared_ptr<char>(ptr, [](auto* p) { std::free(p); }))
+        {
+        }
+        json_string(char* ptr, std::size_t len, yyjson_alc* alc)
+            : std::string_view(ptr, len),
+              str_ptr_(std::shared_ptr<char>(ptr, [alc = alc](auto* p) mutable { alc->free(alc->ctx, p); }))
+        {
+        }
+        json_string(char* ptr, std::size_t len, const std::shared_ptr<yyjson_alc>& alc)
+            : std::string_view(ptr, len), str_ptr_(std::shared_ptr<char>(ptr, [alc = alc](auto* p) mutable {
+                  alc->free(alc->ctx, p);
+                  alc.reset();
+              }))
         {
         }
     };
@@ -137,10 +155,144 @@ namespace yyjson
         explicit operator const char*() { return base::data(); }
     };
 
+    template <typename T, typename U = std::remove_cv_t<T>>
+    concept yyjson_allocator =
+        (std::same_as<std::shared_ptr<yyjson_alc>, std::remove_cvref_t<decltype(std::declval<U>().ptr())>>) ||
+        (std::same_as<yyjson_alc*, std::remove_const_t<decltype(std::declval<U&>().ptr())>>) ||
+        std::same_as<yyjson_alc, U>;
+
+#if YYJSON_VERSION_HEX >= 0x000800
+    class dynamic_allocator
+    {
+        std::shared_ptr<yyjson_alc> alc_ = {yyjson_alc_dyn_new(), [](auto* ptr) { yyjson_alc_dyn_free(ptr); }};
+
+    public:
+        auto& ptr() & { return alc_; }
+        [[nodiscard]] const auto& ptr() const& { return alc_; }
+        auto ptr() && { return std::move(alc_); }
+        void reset()
+        {
+            alc_ = {yyjson_alc_dyn_new(), [](auto* ptr) { yyjson_alc_dyn_free(ptr); }};
+        }
+    };
+#endif
+
+    class pool_allocator
+    {
+        using char_like = char;
+        auto init()
+        {
+            buf_ = nullptr;
+            size_ = 0;
+            return std::shared_ptr<yyjson_alc>();
+        }
+        auto init(std::size_t size)
+        {
+            if (size == 0) return init();
+            buf_ = std::allocator<char_like>().allocate(size);
+            std::ranges::uninitialized_default_construct(buf_, buf_ + size);
+            size_ = size;
+
+            // allocate memory pool
+            auto alc = new yyjson_alc;
+            yyjson_alc_pool_init(alc, buf_, size);
+            return std::shared_ptr<yyjson_alc>(alc, [b = buf_, s = size_](auto* a) {
+                std::allocator<char_like>().deallocate(b, s);
+                delete a;
+            });
+        }
+        char_like* buf_ = nullptr;
+        std::size_t size_ = 0;
+        std::shared_ptr<yyjson_alc> alc_ = {};
+
+    public:
+        pool_allocator() = default;
+        pool_allocator(const pool_allocator&) = default;
+        pool_allocator(pool_allocator&&) noexcept = default;
+        explicit pool_allocator(std::size_t size_byte) : alc_(init(size_byte)) {}
+        explicit pool_allocator(std::string_view json, ReadFlag flag = ReadFlag::NoFlag)
+            : alc_(init(yyjson_read_max_memory_usage(json.size(), to_underlying(flag))))
+        {
+        }
+        auto& ptr() & { return alc_; }
+        [[nodiscard]] const auto& ptr() const& { return alc_; }
+        auto ptr() && { return std::move(alc_); }
+        [[nodiscard]] constexpr auto size() const noexcept { return size_; }
+        void reset(std::size_t size_byte = 0) { alc_ = init(size_byte); }
+        void reset(std::string_view json, ReadFlag flag = ReadFlag::NoFlag)
+        {
+            alc_ = init(yyjson_read_max_memory_usage(json.size(), to_underlying(flag)));
+        }
+        void reserve(std::size_t size_byte)
+        {
+            if (size_byte > size_) alc_ = init(size_byte);
+        }
+        void reserve(std::string_view json, ReadFlag flag = ReadFlag::NoFlag)
+        {
+            reserve(yyjson_read_max_memory_usage(json.size(), to_underlying(flag)));
+        }
+        [[nodiscard]] bool check_capacity(std::string_view json, ReadFlag flag = ReadFlag::NoFlag) const
+        {
+            return size() >= yyjson_read_max_memory_usage(json.size(), to_underlying(flag));
+        }
+
+        pool_allocator& operator=(const pool_allocator& r) = default;
+        pool_allocator& operator=(pool_allocator&& r) noexcept = default;
+    };
+
+    template <std::size_t Byte>
+    class stack_pool_allocator
+    {
+        using char_like = char;
+        std::array<char_like, Byte> buf_;
+        yyjson_alc alc_ = init();
+        yyjson_alc init()
+        {
+            yyjson_alc alc;
+            yyjson_alc_pool_init(&alc, buf_.data(), buf_.size());
+            return alc;
+        }
+
+    public:
+        auto* ptr() & noexcept { return &alc_; }
+        const auto* ptr() const& noexcept { return &alc_; }
+        stack_pool_allocator() = default;
+        stack_pool_allocator(const stack_pool_allocator&) = default;
+        stack_pool_allocator(stack_pool_allocator&&) noexcept = default;
+        stack_pool_allocator& operator=(const stack_pool_allocator&)
+        {
+            alc_ = init();
+            return *this;
+        }
+        [[nodiscard]] constexpr auto size() const noexcept { return buf_.size(); }
+        void reset() noexcept { alc_ = init(); }
+        [[nodiscard]] bool check_capacity(std::string_view json, ReadFlag flag = ReadFlag::NoFlag) const
+        {
+            return size() >= yyjson_read_max_memory_usage(json.size(), to_underlying(flag));
+        }
+    };
+
     namespace detail
     {
         template <typename...>
         inline constexpr bool false_v = false;
+
+        template <yyjson_allocator Alloc>
+        auto* get_allocator_pointer(Alloc& alc) noexcept
+        {
+            if constexpr (std::same_as<yyjson_alc, Alloc>)
+            {
+                return &alc;
+            }
+            else if constexpr (std::is_pointer_v<decltype(alc.ptr())>)
+            {
+                return alc.ptr();
+            }
+            else
+            {
+                return alc.ptr().get();
+            }
+        }
 
         template <typename T>
         constexpr auto proxy(T&& value)
@@ -218,6 +370,11 @@ namespace yyjson
         class array;
         class object;
         using const_key_value_ref_pair = std::pair<key_string, const_value_ref>;
+
+        // for backward compatibility
+        using pool_allocator = yyjson::pool_allocator;
+        template <std::size_t Byte>
+        using stack_pool_allocator = yyjson::stack_pool_allocator<Byte>;
 
         namespace detail
         {
@@ -1346,6 +1503,33 @@ namespace yyjson
                     {
                         return json_string(result, len);
                     }
+                    throw write_error(fmt::format("write JSON error: {}", err.msg));
+                }
+                template <yyjson_allocator Alloc>
+                [[nodiscard]] auto write(Alloc& alc, WriteFlag write_flag = WriteFlag::NoFlag) const
+                {
+                    const auto write_func = [this]<typename... Args>(Args&&... args) {
+                        const auto write_doc =
+                            doc_.ptrs->self != nullptr && val_ == yyjson_mut_doc_get_root(doc_.ptrs->self);
+                        return write_doc ? yyjson_mut_write_opts(doc_.ptrs->self, std::forward<Args>(args)...)
+                                         : yyjson_mut_val_write_opts(val_, std::forward<Args>(args)...);
+                    };
+
+                    auto err = yyjson_write_err();
+                    auto len = static_cast<std::size_t>(0);
+                    auto result = write_func(to_underlying(write_flag), detail::get_allocator_pointer(alc), &len, &err);
+
+                    if constexpr (std::same_as<std::shared_ptr<yyjson_alc>, std::remove_cvref_t<decltype(alc.ptr())>>)
+                    {
+                        if (result != nullptr) [[likely]]
+                            return json_string(result, len, alc.ptr());
+                    }
+                    else
+                    {
+                        if (result != nullptr) [[likely]]
+                            return json_string(result, len, detail::get_allocator_pointer(alc));
+                    }
+
                     throw write_error(fmt::format("write JSON error: {}", err.msg));
                 }
             };
@@ -2887,6 +3071,25 @@ namespace yyjson
                 }
                 throw write_error(fmt::format("write JSON error: {}", err.msg));
             }
+            template <yyjson_allocator Alloc>
+            [[nodiscard]] auto write(Alloc& alc, const WriteFlag write_flag = WriteFlag::NoFlag) const
+            {
+                auto err = yyjson_write_err();
+                auto len = static_cast<std::size_t>(0);
+                auto result = yyjson_val_write_opts(val_, to_underlying(write_flag), detail::get_allocator_pointer(alc),
+                                                    &len, &err);
+                if constexpr (std::same_as<std::shared_ptr<yyjson_alc>, std::remove_cvref_t<decltype(alc.ptr())>>)
+                {
+                    if (result != nullptr) [[likely]]
+                        return json_string(result, len, alc.ptr());
+                }
+                else
+                {
+                    if (result != nullptr) [[likely]]
+                        return json_string(result, len, detail::get_allocator_pointer(alc));
+                }
+                throw write_error(fmt::format("write JSON error: {}", err.msg));
+            }
         };
 
         class const_value_ref : public abstract_value_ref
@@ -3267,100 +3470,8 @@ namespace yyjson
             return *this;
         }
 
-        template <typename T>
-        concept yyjson_allocator = (std::same_as<yyjson_alc, std::remove_cvref_t<decltype(std::declval<T>().get())>>) ||
-                                   std::same_as<yyjson_alc, T>;
-
         template <yyjson_allocator Alloc>
         value read(char*, std::size_t, Alloc&, ReadFlag = ReadFlag::NoFlag);
-
-        class pool_allocator
-        {
-            template <std::size_t N>
-            friend class stack_pool_allocator;
-
-            using char_like = char;
-            yyjson_alc init_allocator()
-            {
-                yyjson_alc alc;
-                yyjson_alc_pool_init(&alc, buf_.data(), buf_.size());
-                return alc;
-            }
-            std::vector<char_like> buf_;
-            yyjson_alc alc_ = init_allocator();
-
-        public:
-            pool_allocator() = default;
-            pool_allocator(const pool_allocator&) = default;
-            pool_allocator(pool_allocator&&) noexcept = default;
-            explicit pool_allocator(std::size_t size_byte) : buf_(size_byte) {}
-            explicit pool_allocator(std::string_view json, ReadFlag flag = ReadFlag::NoFlag)
-                : buf_(yyjson_read_max_memory_usage(json.size(), to_underlying(flag)))
-            {
-            }
-            auto& get() & { return alc_; }
-            [[nodiscard]] const auto& get() const& { return alc_; }
-            auto get() && { return std::move(alc_); }
-            [[nodiscard]] constexpr auto begin() noexcept { return buf_.begin(); }
-            [[nodiscard]] constexpr auto end() noexcept { return buf_.end(); }
-            [[nodiscard]] constexpr auto size() const noexcept { return buf_.size(); }
-            void resize(std::size_t req)
-            {
-                buf_.resize(req);
-                alc_ = init_allocator();
-            }
-            void allocate(std::size_t req_size_byte)
-            {
-                if (req_size_byte > size()) resize(req_size_byte);
-            }
-            void allocate(std::string_view json, ReadFlag flag = ReadFlag::NoFlag)
-            {
-                allocate(yyjson_read_max_memory_usage(json.size(), to_underlying(flag)));
-            }
-            void deallocate()
-            {
-                buf_.clear();
-                buf_.shrink_to_fit();
-                alc_ = init_allocator();
-            }
-            void shrink_to_fit()
-            {
-                buf_.shrink_to_fit();
-                alc_ = init_allocator();
-            }
-            [[nodiscard]] bool check_capacity(std::string_view json, ReadFlag flag = ReadFlag::NoFlag) const
-            {
-                return size() >= yyjson_read_max_memory_usage(json.size(), to_underlying(flag));
-            }
-        };
-
-        template <std::size_t Byte>
-        class stack_pool_allocator
-        {
-            std::array<pool_allocator::char_like, Byte> buf_;
-            yyjson_alc alc_ = init();
-            yyjson_alc init()
-            {
-                yyjson_alc alc;
-                yyjson_alc_pool_init(&alc, buf_.data(), buf_.size());
-                return alc;
-            }
-
-        public:
-            auto& get() & { return alc_; }
-            const auto& get() const& { return alc_; }
-            auto get() && { return std::move(alc_); }
-            stack_pool_allocator() = default;
-            stack_pool_allocator(const stack_pool_allocator&) = default;
-            stack_pool_allocator(stack_pool_allocator&&) noexcept = default;
-            [[nodiscard]] constexpr auto begin() noexcept { return buf_.begin(); }
-            [[nodiscard]] constexpr auto end() noexcept { return buf_.end(); }
-            [[nodiscard]] constexpr auto size() const noexcept { return buf_.size(); }
-            [[nodiscard]] bool check_capacity(std::string_view json, ReadFlag flag = ReadFlag::NoFlag) const
-            {
-                return size() >= yyjson_read_max_memory_usage(json.size(), to_underlying(flag));
-            }
-        };
 
         class value final : public const_value_ref
         {
@@ -3370,6 +3481,13 @@ namespace yyjson
             explicit value(yyjson_doc* doc)
                 : base(yyjson_doc_get_root(doc)),
                   doc_(std::shared_ptr<yyjson_doc>(doc, [](auto* ptr) { yyjson_doc_free(ptr); }))
+            {
+            }
+            value(yyjson_doc* doc, const std::shared_ptr<yyjson_alc>& alc)
+                : base(yyjson_doc_get_root(doc)), doc_(std::shared_ptr<yyjson_doc>(doc, [alc = alc](auto* ptr) mutable {
+                      yyjson_doc_free(ptr);
+                      alc.reset();
+                  }))
             {
             }
 
@@ -3387,6 +3505,26 @@ namespace yyjson
                 if (result != nullptr)
                 {
                     return json_string(result, len);
+                }
+                throw write_error(fmt::format("write JSON error: {}", err.msg));
+            }
+
+            template <yyjson_allocator Alloc>
+            [[nodiscard]] auto write(Alloc& alc, const WriteFlag write_flag = WriteFlag::NoFlag) const
+            {
+                auto err = yyjson_write_err();
+                auto len = static_cast<std::size_t>(0);
+                auto result = yyjson_write_opts(doc_.get(), to_underlying(write_flag),
+                                                detail::get_allocator_pointer(alc), &len, &err);
+                if constexpr (std::same_as<std::shared_ptr<yyjson_alc>, std::remove_cvref_t<decltype(alc.ptr())>>)
+                {
+                    if (result != nullptr) [[likely]]
+                        return json_string(result, len, alc.ptr());
+                }
+                else
+                {
+                    if (result != nullptr) [[likely]]
+                        return json_string(result, len, detail::get_allocator_pointer(alc));
                 }
                 throw write_error(fmt::format("write JSON error: {}", err.msg));
             }
@@ -3474,27 +3612,29 @@ namespace yyjson
         {
             auto err = yyjson_read_err();
             yyjson_doc* result;
-            if constexpr (std::same_as<yyjson_alc, Alloc>)
+
+            if constexpr (requires { alc.allocate({str, len}, read_flag); })
             {
-                result = yyjson_read_opts(str, len, to_underlying(read_flag), &alc, &err);
+                alc.allocate({str, len}, read_flag);
+            }
+            else if constexpr (requires { alc.check_capacity({str, len}, read_flag); })
+            {
+                if (!alc.check_capacity({str, len}, read_flag))
+                {
+                    throw std::runtime_error(
+                        fmt::format("Insufficient capacity in the pool allocator for {}", NAMEOF_TYPE(Alloc)));
+                }
+            }
+            result = yyjson_read_opts(str, len, to_underlying(read_flag), detail::get_allocator_pointer(alc), &err);
+
+            if constexpr (std::same_as<std::shared_ptr<yyjson_alc>, std::remove_cvref_t<decltype(alc.ptr())>>)
+            {
+                if (result != nullptr) return value(result, alc.ptr());
             }
             else
             {
-                if constexpr (requires { alc.allocate({str, len}, read_flag); })
-                {
-                    alc.allocate({str, len}, read_flag);
-                }
-                else
-                {
-                    if (!alc.check_capacity({str, len}, read_flag))
-                    {
-                        throw std::runtime_error(
-                            fmt::format("Insufficient capacity in the pool allocator for {}", NAMEOF_TYPE(Alloc)));
-                    }
-                }
-                result = yyjson_read_opts(str, len, to_underlying(read_flag), &alc.get(), &err);
+                if (result != nullptr) return value(result);
             }
-            if (result != nullptr) return value(result);
             throw read_error(fmt::format("read JSON error: {} at position: {}", err.msg, err.pos));
         }
         template <yyjson_allocator Alloc>

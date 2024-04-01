@@ -2506,45 +2506,91 @@ TEST(Reader, Allocator)
     using namespace std::literals::string_literals;
     using namespace std::string_view_literals;
 
-    auto h_alloc = reader::pool_allocator();
+    auto json_str = "[1,2,3,4,5]"sv;
+
+    auto h_alloc = reader::pool_allocator(json_str);
+    auto d_alloc = dynamic_allocator();
     auto s_alloc_s = reader::stack_pool_allocator<10>();
     auto s_alloc_l = reader::stack_pool_allocator<512>();
-    auto result = std::string();
 
-    auto json_str = "[1,2,3,4,5]"sv;
-    EXPECT_NO_THROW(result = read(json_str, h_alloc).write());
-    EXPECT_THROW(result = read(json_str, s_alloc_s).write(), std::runtime_error);
-    EXPECT_EQ(json_str, result);
-    EXPECT_NO_THROW(result = read(json_str, s_alloc_l).write());
-    EXPECT_EQ(json_str, result);
+    {
+        auto json = read(json_str, h_alloc);
+        auto result = json.write();
+        EXPECT_EQ(json_str, result);
+        EXPECT_EQ(2, h_alloc.ptr().use_count());
+    }
+    EXPECT_EQ(1, h_alloc.ptr().use_count());
+
+    {
+        auto json = read(json_str, d_alloc);
+        auto result = json.write();
+        EXPECT_EQ(json_str, result);
+        EXPECT_EQ(2, d_alloc.ptr().use_count());
+    }
+    EXPECT_EQ(1, d_alloc.ptr().use_count());
+
+    {
+        EXPECT_THROW(read(json_str, s_alloc_s).write(), std::runtime_error);
+    }
+    {
+        auto json = read(json_str, s_alloc_l);
+        auto result = json.write();
+        EXPECT_EQ(json_str, result);
+    }
+
+    {
+        auto json = read(json_str, h_alloc);
+        EXPECT_EQ(2, h_alloc.ptr().use_count());
+        h_alloc.reset(json_str);
+        EXPECT_EQ(1, h_alloc.ptr().use_count());
+        auto result = json.write(h_alloc);
+        EXPECT_EQ(json_str, result);
+        EXPECT_EQ(2, h_alloc.ptr().use_count());
+    }
+    EXPECT_EQ(1, h_alloc.ptr().use_count());
+
+    {
+        auto json = read(json_str, d_alloc);
+        auto result = json.write(d_alloc);
+        EXPECT_EQ(json_str, result);
+        EXPECT_EQ(3, d_alloc.ptr().use_count());
+    }
+    EXPECT_EQ(1, d_alloc.ptr().use_count());
+
+    {
+        auto json = read(json_str, s_alloc_l);
+        auto result = json.write(s_alloc_l);
+        EXPECT_EQ(json_str, result);
+    }
 
     auto str_insitu = std::string(json_str) + "    "s;
-    EXPECT_NO_THROW(result = read(str_insitu, json_str.size(), h_alloc, yyjson::ReadFlag::ReadInsitu).write());
+    h_alloc.reserve(json_str, ReadFlag::ReadInsitu);
+    auto result = read(str_insitu, json_str.size(), h_alloc, yyjson::ReadFlag::ReadInsitu).write();
     EXPECT_EQ(json_str, result);
 
     auto json_obj_str = R"(
-    {
-        "id": 1,
-        "pi": 3.141592,
-        "emoji": "🫠",
-        "array": [0, 1, 2, 3, 4,],
-        "currency": {
-            "USD": 129.66,
-            "EUR": 140.35,
-            "GBP": 158.72,
-        },
-        "success": true,
-    })"sv;
+            {
+                "id": 1,
+                "pi": 3.141592,
+                "emoji": "🫠",
+                "array": [0, 1, 2, 3, 4,],
+                "currency": {
+                    "USD": 129.66,
+                    "EUR": 140.35,
+                    "GBP": 158.72,
+                },
+                "success": true,
+            })"sv;
 
     {
         auto json_str_insitu = fmt::format("{}{}", json_obj_str, std::string(YYJSON_PADDING_SIZE, '\0'));
         EXPECT_EQ(json_str_insitu.size(), json_obj_str.size() + YYJSON_PADDING_SIZE);
+        h_alloc.reserve(json_obj_str, yyjson::ReadFlag::ReadInsitu | yyjson::ReadFlag::AllowTrailingCommas);
         auto val = read(json_str_insitu, json_obj_str.size(), h_alloc,
                         yyjson::ReadFlag::ReadInsitu | yyjson::ReadFlag::AllowTrailingCommas);
-        EXPECT_TRUE(h_alloc.size() > 0);
-        fmt::print("{}\n", val);
+        EXPECT_EQ(2, h_alloc.ptr().use_count());
     }
-    h_alloc.deallocate();
+    EXPECT_EQ(1, h_alloc.ptr().use_count());
 }
 
 TEST(Reader, Constructor)
