@@ -15,6 +15,7 @@
 #include <ranges>
 #include <variant>
 #include <vector>
+#include <memory>
 
 #include <fmt/format.h>
 #include <yyjson.h>
