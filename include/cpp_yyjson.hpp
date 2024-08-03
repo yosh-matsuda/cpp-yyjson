@@ -49,7 +49,7 @@ namespace yyjson
         NumberAsRaw = YYJSON_READ_NUMBER_AS_RAW,
         AllowInvalidUnicode = YYJSON_READ_ALLOW_INVALID_UNICODE,
 #if YYJSON_VERSION_HEX >= 0x000700
-        BignumAsRaw = YYJSON_READ_BIGNUM_AS_RAW
+        BignumAsRaw = YYJSON_READ_BIGNUM_AS_RAW,
 #endif
     };
 
@@ -63,7 +63,10 @@ namespace yyjson
         InfAndNanAsNull = YYJSON_WRITE_INF_AND_NAN_AS_NULL,
         AllowInvalidUnicode = YYJSON_WRITE_ALLOW_INVALID_UNICODE,
 #if YYJSON_VERSION_HEX >= 0x000700
-        PrettyTwoSpaces = YYJSON_WRITE_PRETTY_TWO_SPACES
+        PrettyTwoSpaces = YYJSON_WRITE_PRETTY_TWO_SPACES,
+#endif
+#if YYJSON_VERSION_HEX >= 0x000900
+        NewlineAtEnd = YYJSON_WRITE_NEWLINE_AT_END,
 #endif
     };
 
@@ -3709,7 +3712,17 @@ namespace yyjson
             auto err = yyjson_read_err();
             auto* result = yyjson_read_opts(str, len, to_underlying(read_flag), nullptr, &err);
             if (result != nullptr) return value(result);
-            throw read_error(fmt::format("Read JSON error: {} at position: {}", err.msg, err.pos));
+
+#if YYJSON_VERSION_HEX >= 0x000A00
+            auto line = std::size_t{0};
+            auto col = std::size_t{0};
+            auto chr = std::size_t{0};
+            auto success = yyjson_locate_pos(str, len, err.pos, &line, &col, &chr);
+            if (success)
+                throw read_error(
+                    fmt::format("Read JSON error: {} at line {}, row {}, pos {}", err.msg, line, col, err.pos));
+#endif
+            throw read_error(fmt::format("Read JSON error: {} at pos {}", err.msg, err.pos));
         }
         inline value read(const char* str, std::size_t len, const ReadFlag read_flag = ReadFlag::NoFlag)
         {
