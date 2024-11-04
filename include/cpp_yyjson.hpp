@@ -3799,6 +3799,25 @@ namespace yyjson
     using object = writer::object;
     using key_value_pair = writer::key_value_pair;
 
+    template <typename Json, typename T>
+    concept castable = requires(Json json) {
+        { yyjson::cast<T>(json) };
+    };
+
+    template <json_object Json, field_reflection::field_referenceable T>
+    constexpr bool all_fields_castable_impl()
+    {
+        return []<std::size_t... I>(std::index_sequence<I...>) {
+            return (
+                castable<typename std::ranges::range_value_t<Json>::second_type, field_reflection::field_type<T, I>> &&
+                ...);
+        }(std::make_index_sequence<field_reflection::field_count<T>>{});
+    }
+
+    template <typename Json, typename T>
+    concept all_fields_castable =
+        json_object<Json> && field_reflection::field_referenceable<T> && all_fields_castable_impl<Json, T>();
+
     template <typename T>
     struct detail::default_caster
     {
@@ -3848,7 +3867,7 @@ namespace yyjson
         }
         template <json_object Json>
         requires std::default_initializable<T> && (!visitable<T>) &&
-                 (!std::ranges::input_range<T>) && field_reflection::field_namable<T>
+                 (!std::ranges::input_range<T>) && all_fields_castable<Json, T>
         static auto from_json(const Json& obj)
         {
             auto result = T();
