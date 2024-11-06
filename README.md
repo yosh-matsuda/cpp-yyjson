@@ -45,6 +45,11 @@ Ultra-fast and intuitive C++ JSON reader/writer with yyjson backend.
     *   GCC >= 12
     *   clang-cl >= 17 (Windows)
     *   Visual Studio >= 2022 version 17.5
+        *   ❌️ MSVC 19.36.32546.0
+        *   ✅ MSVC 19.38.33141.0
+        *   ✅ MSVC 19.39.33523.0
+        *   ✅ MSVC 19.40.33816.0
+        *   ❌️ MSVC 19.41.34123.0
 *   [yyjson](https://github.com/ibireme/yyjson)
 *   [{fmt}](https://github.com/fmtlib/fmt)
 *   [Nameof C++](https://github.com/Neargye/nameof)
