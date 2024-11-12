@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include <cassert>
 #include <climits>  // CHAR_BIT
 #include <limits>
 #include <source_location>
