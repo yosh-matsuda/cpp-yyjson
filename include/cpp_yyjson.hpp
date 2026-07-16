@@ -10,6 +10,7 @@
 
 #pragma once
 #include <algorithm>
+#include <cstring>
 #include <memory>
 #include <nameof.hpp>
 #include <optional>
@@ -19,6 +20,7 @@
 
 #include <fmt/format.h>
 #include <yyjson.h>
+#include <string_view>
 #include "field_reflection.hpp"
 
 namespace yyjson
