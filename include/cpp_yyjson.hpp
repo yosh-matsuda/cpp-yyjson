@@ -2918,8 +2918,8 @@ namespace yyjson
                     return {std::move(it), false};
                 }
                 template <key_type KeyType, typename T = void>  // penalize overload priority
-                auto try_emplace(KeyType&& key,
-                                 std::initializer_list<value> list) noexcept -> std::pair<object_iter<DocType>, bool>
+                auto try_emplace(KeyType&& key, std::initializer_list<value> list) noexcept
+                    -> std::pair<object_iter<DocType>, bool>
                 {
                     auto it = find(key);
                     if (it == end())
@@ -2929,8 +2929,8 @@ namespace yyjson
                     return {std::move(it), false};
                 }
                 template <key_type KeyType, typename T = void>  // penalize overload priority
-                auto try_emplace(KeyType&& key, std::initializer_list<value> list,
-                                 copy_string_t) noexcept -> std::pair<object_iter<DocType>, bool>
+                auto try_emplace(KeyType&& key, std::initializer_list<value> list, copy_string_t) noexcept
+                    -> std::pair<object_iter<DocType>, bool>
                 {
                     auto it = find(key);
                     if (it == end())
@@ -2951,8 +2951,8 @@ namespace yyjson
                     return {std::move(it), false};
                 }
                 template <key_type KeyType>
-                auto try_emplace(KeyType&& key, std::initializer_list<key_value_pair> list,
-                                 copy_string_t) noexcept -> std::pair<object_iter<DocType>, bool>
+                auto try_emplace(KeyType&& key, std::initializer_list<key_value_pair> list, copy_string_t) noexcept
+                    -> std::pair<object_iter<DocType>, bool>
                 {
                     auto it = find(key);
                     if (it == end())
@@ -3021,7 +3021,9 @@ namespace yyjson
 
             template <typename T>
             concept to_json_with_reflection = []<std::size_t... Is>(std::index_sequence<Is...>) {
-                return field_reflection::field_namable<T> && requires(const T& t) {
+                return field_reflection::field_namable<T>&&
+                requires (const T& t)
+                {
                     (std::declval<object_ref&>().emplace(field_reflection::field_name<T, Is>,
                                                          field_reflection::get_field<Is>(t)),
                      ...);
@@ -3866,8 +3868,8 @@ namespace yyjson
             return result;
         }
         template <json_object Json>
-        requires std::default_initializable<T> && (!visitable<T>) &&
-                 (!std::ranges::input_range<T>) && all_fields_castable<Json, T>
+        requires std::default_initializable<T> && (!visitable<T>) && (!std::ranges::input_range<T>) &&
+                 all_fields_castable<Json, T>
         static auto from_json(const Json& obj)
         {
             auto result = T();
