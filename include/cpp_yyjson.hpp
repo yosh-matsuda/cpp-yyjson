@@ -2291,14 +2291,14 @@ namespace yyjson
                 auto emplace_front(empty_array_t) noexcept
                 {
                     auto result = base::doc_.template get_empty_value_ref<array_ref>();
-                    [[maybe_unused]] auto success = yyjson_mut_arr_preppend(base::val_, result.val_);
+                    [[maybe_unused]] auto success = yyjson_mut_arr_prepend(base::val_, result.val_);
                     assert(success);
                     return result;
                 }
                 auto emplace_front(empty_object_t) noexcept
                 {
                     auto result = base::doc_.template get_empty_value_ref<object_ref>();
-                    [[maybe_unused]] auto success = yyjson_mut_arr_preppend(base::val_, result.val_);
+                    [[maybe_unused]] auto success = yyjson_mut_arr_prepend(base::val_, result.val_);
                     assert(success);
                     return result;
                 }
