@@ -3,6 +3,7 @@
 #include <rapidjson/document.h>
 #include <simdjson.h>
 #include <cpp_yyjson.hpp>
+#include <format>
 #include <fstream>
 #include <streambuf>
 #include <string>
@@ -34,7 +35,7 @@ struct json_count
 
 VISITABLE_STRUCT(json_count, cnt_array, cnt_object, cnt_string, cnt_int, cnt_real, cnt_null, cnt_bool);
 
-auto json_count::str() { return fmt::format("{}", yyjson::object(*this).write()); }
+auto json_count::str() { return std::format("{}", yyjson::object(*this).write()); }
 
 struct json_stats
 {
@@ -58,7 +59,7 @@ struct json_stats
 VISITABLE_STRUCT(json_stats, total_arr_elm_cnt, total_obj_elm_cnt, total_str_len, total_int, total_real, total_true_cnt,
                  total_false_cnt);
 
-auto json_stats::str() { return fmt::format("{}", yyjson::object(*this).write()); }
+auto json_stats::str() { return std::format("{}", yyjson::object(*this).write()); }
 
 auto json_files = std::array{
     std::tuple<std::string, json_count, json_stats>{"./external/yyjson_benchmark/data/json/canada.json",
@@ -553,9 +554,9 @@ void read_cpp_yyjson(benchmark::State& state)
             std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON counter mismatch\n{}", counter.str()).c_str());
+            state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
         if (stats != std::get<2>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON stats mismatch\n{}", stats.str()).c_str());
+            state.SkipWithError(std::format("JSON stats mismatch\n{}", stats.str()).c_str());
     }
     state.SetLabel(std::get<0>(json_files[state.range(0)]));
     state.SetBytesProcessed(state.iterations() * json.size());
@@ -579,9 +580,9 @@ void read_cpp_yyjson_insitu(benchmark::State& state)
             std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON counter mismatch\n{}", counter.str()).c_str());
+            state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
         if (stats != std::get<2>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON stats mismatch\n{}", stats.str()).c_str());
+            state.SkipWithError(std::format("JSON stats mismatch\n{}", stats.str()).c_str());
     }
     state.SetLabel(std::get<0>(json_files[state.range(0)]));
     state.SetBytesProcessed(state.iterations() * json.size());
@@ -605,9 +606,9 @@ void read_cpp_yyjson_insitu_copy(benchmark::State& state)
             std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON counter mismatch\n{}", counter.str()).c_str());
+            state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
         if (stats != std::get<2>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON stats mismatch\n{}", stats.str()).c_str());
+            state.SkipWithError(std::format("JSON stats mismatch\n{}", stats.str()).c_str());
     }
     state.SetLabel(std::get<0>(json_files[state.range(0)]));
     state.SetBytesProcessed(state.iterations() * json.size());
@@ -631,9 +632,9 @@ void read_cpp_yyjson_single(benchmark::State& state)
             std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON counter mismatch\n{}", counter.str()).c_str());
+            state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
         if (stats != std::get<2>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON stats mismatch\n{}", stats.str()).c_str());
+            state.SkipWithError(std::format("JSON stats mismatch\n{}", stats.str()).c_str());
     }
     state.SetLabel(std::get<0>(json_files[state.range(0)]));
     state.SetBytesProcessed(state.iterations() * json.size());
@@ -658,9 +659,9 @@ void read_cpp_yyjson_insitu_single(benchmark::State& state)
             std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON counter mismatch\n{}", counter.str()).c_str());
+            state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
         if (stats != std::get<2>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON stats mismatch\n{}", stats.str()).c_str());
+            state.SkipWithError(std::format("JSON stats mismatch\n{}", stats.str()).c_str());
     }
     state.SetLabel(std::get<0>(json_files[state.range(0)]));
     state.SetBytesProcessed(state.iterations() * json.size());
@@ -685,9 +686,9 @@ void read_cpp_yyjson_insitu_single_copy(benchmark::State& state)
             std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON counter mismatch\n{}", counter.str()).c_str());
+            state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
         if (stats != std::get<2>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON stats mismatch\n{}", stats.str()).c_str());
+            state.SkipWithError(std::format("JSON stats mismatch\n{}", stats.str()).c_str());
     }
     state.SetLabel(std::get<0>(json_files[state.range(0)]));
     state.SetBytesProcessed(state.iterations() * json.size());
@@ -711,9 +712,9 @@ void read_c_yyjson(benchmark::State& state)
             std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON counter mismatch\n{}", counter.str()).c_str());
+            state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
         if (stats != std::get<2>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON stats mismatch\n{}", stats.str()).c_str());
+            state.SkipWithError(std::format("JSON stats mismatch\n{}", stats.str()).c_str());
     }
     state.SetLabel(std::get<0>(json_files[state.range(0)]));
     state.SetBytesProcessed(state.iterations() * json.size());
@@ -738,9 +739,9 @@ void read_c_yyjson_insitu(benchmark::State& state)
             std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON counter mismatch\n{}", counter.str()).c_str());
+            state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
         if (stats != std::get<2>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON stats mismatch\n{}", stats.str()).c_str());
+            state.SkipWithError(std::format("JSON stats mismatch\n{}", stats.str()).c_str());
     }
     state.SetLabel(std::get<0>(json_files[state.range(0)]));
     state.SetBytesProcessed(state.iterations() * json.size());
@@ -765,9 +766,9 @@ void read_c_yyjson_insitu_copy(benchmark::State& state)
             std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON counter mismatch\n{}", counter.str()).c_str());
+            state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
         if (stats != std::get<2>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON stats mismatch\n{}", stats.str()).c_str());
+            state.SkipWithError(std::format("JSON stats mismatch\n{}", stats.str()).c_str());
     }
     state.SetLabel(std::get<0>(json_files[state.range(0)]));
     state.SetBytesProcessed(state.iterations() * json.size());
@@ -795,9 +796,9 @@ void read_c_yyjson_single(benchmark::State& state)
             std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON counter mismatch\n{}", counter.str()).c_str());
+            state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
         if (stats != std::get<2>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON stats mismatch\n{}", stats.str()).c_str());
+            state.SkipWithError(std::format("JSON stats mismatch\n{}", stats.str()).c_str());
     }
     state.SetLabel(std::get<0>(json_files[state.range(0)]));
     state.SetBytesProcessed(state.iterations() * json.size());
@@ -825,9 +826,9 @@ void read_c_yyjson_insitu_single(benchmark::State& state)
             std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON counter mismatch\n{}", counter.str()).c_str());
+            state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
         if (stats != std::get<2>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON stats mismatch\n{}", stats.str()).c_str());
+            state.SkipWithError(std::format("JSON stats mismatch\n{}", stats.str()).c_str());
     }
     state.SetLabel(std::get<0>(json_files[state.range(0)]));
     state.SetBytesProcessed(state.iterations() * json.size());
@@ -855,9 +856,9 @@ void read_c_yyjson_insitu_single_copy(benchmark::State& state)
             std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON counter mismatch\n{}", counter.str()).c_str());
+            state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
         if (stats != std::get<2>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON stats mismatch\n{}", stats.str()).c_str());
+            state.SkipWithError(std::format("JSON stats mismatch\n{}", stats.str()).c_str());
     }
     state.SetLabel(std::get<0>(json_files[state.range(0)]));
     state.SetBytesProcessed(state.iterations() * json.size());
@@ -881,9 +882,9 @@ void read_rapidjson(benchmark::State& state)
             std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON counter mismatch\n{}", counter.str()).c_str());
+            state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
         if (stats != std::get<2>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON stats mismatch\n{}", stats.str()).c_str());
+            state.SkipWithError(std::format("JSON stats mismatch\n{}", stats.str()).c_str());
     }
     state.SetLabel(std::get<0>(json_files[state.range(0)]));
     state.SetBytesProcessed(state.iterations() * json.size());
@@ -908,9 +909,9 @@ void read_rapidjson_insitu(benchmark::State& state)
             std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON counter mismatch\n{}", counter.str()).c_str());
+            state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
         if (stats != std::get<2>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON stats mismatch\n{}", stats.str()).c_str());
+            state.SkipWithError(std::format("JSON stats mismatch\n{}", stats.str()).c_str());
     }
     state.SetLabel(std::get<0>(json_files[state.range(0)]));
     state.SetBytesProcessed(state.iterations() * json.size());
@@ -935,9 +936,9 @@ void read_rapidjson_insitu_copy(benchmark::State& state)
             std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON counter mismatch\n{}", counter.str()).c_str());
+            state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
         if (stats != std::get<2>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON stats mismatch\n{}", stats.str()).c_str());
+            state.SkipWithError(std::format("JSON stats mismatch\n{}", stats.str()).c_str());
     }
     state.SetLabel(std::get<0>(json_files[state.range(0)]));
     state.SetBytesProcessed(state.iterations() * json.size());
@@ -972,9 +973,9 @@ void read_rapidjson_single(benchmark::State& state)
             std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON counter mismatch\n{}", counter.str()).c_str());
+            state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
         if (stats != std::get<2>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON stats mismatch\n{}", stats.str()).c_str());
+            state.SkipWithError(std::format("JSON stats mismatch\n{}", stats.str()).c_str());
     }
     state.SetLabel(std::get<0>(json_files[state.range(0)]));
     state.SetBytesProcessed(state.iterations() * json.size());
@@ -1010,9 +1011,9 @@ void read_rapidjson_insitu_single(benchmark::State& state)
             std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON counter mismatch\n{}", counter.str()).c_str());
+            state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
         if (stats != std::get<2>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON stats mismatch\n{}", stats.str()).c_str());
+            state.SkipWithError(std::format("JSON stats mismatch\n{}", stats.str()).c_str());
     }
     state.SetLabel(std::get<0>(json_files[state.range(0)]));
     state.SetBytesProcessed(state.iterations() * json.size());
@@ -1048,9 +1049,9 @@ void read_rapidjson_insitu_single_copy(benchmark::State& state)
             std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON counter mismatch\n{}", counter.str()).c_str());
+            state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
         if (stats != std::get<2>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON stats mismatch\n{}", stats.str()).c_str());
+            state.SkipWithError(std::format("JSON stats mismatch\n{}", stats.str()).c_str());
     }
     state.SetLabel(std::get<0>(json_files[state.range(0)]));
     state.SetBytesProcessed(state.iterations() * json.size());
@@ -1074,9 +1075,9 @@ void read_simdjson_dom(benchmark::State& state)
             std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON counter mismatch\n{}", counter.str()).c_str());
+            state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
         if (stats != std::get<2>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON stats mismatch\n{}", stats.str()).c_str());
+            state.SkipWithError(std::format("JSON stats mismatch\n{}", stats.str()).c_str());
     }
     state.SetLabel(std::get<0>(json_files[state.range(0)]));
     state.SetBytesProcessed(state.iterations() * json.size());
@@ -1101,9 +1102,9 @@ void read_simdjson_dom_pad(benchmark::State& state)
             std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON counter mismatch\n{}", counter.str()).c_str());
+            state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
         if (stats != std::get<2>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON stats mismatch\n{}", stats.str()).c_str());
+            state.SkipWithError(std::format("JSON stats mismatch\n{}", stats.str()).c_str());
     }
     state.SetLabel(std::get<0>(json_files[state.range(0)]));
     state.SetBytesProcessed(state.iterations() * json.size());
@@ -1128,9 +1129,9 @@ void read_simdjson_dom_pad_copy(benchmark::State& state)
             std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON counter mismatch\n{}", counter.str()).c_str());
+            state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
         if (stats != std::get<2>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON stats mismatch\n{}", stats.str()).c_str());
+            state.SkipWithError(std::format("JSON stats mismatch\n{}", stats.str()).c_str());
     }
     state.SetLabel(std::get<0>(json_files[state.range(0)]));
     state.SetBytesProcessed(state.iterations() * json.size());
@@ -1154,9 +1155,9 @@ void read_simdjson_dom_single(benchmark::State& state)
             std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON counter mismatch\n{}", counter.str()).c_str());
+            state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
         if (stats != std::get<2>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON stats mismatch\n{}", stats.str()).c_str());
+            state.SkipWithError(std::format("JSON stats mismatch\n{}", stats.str()).c_str());
     }
     state.SetLabel(std::get<0>(json_files[state.range(0)]));
     state.SetBytesProcessed(state.iterations() * json.size());
@@ -1181,9 +1182,9 @@ void read_simdjson_dom_pad_single(benchmark::State& state)
             std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON counter mismatch\n{}", counter.str()).c_str());
+            state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
         if (stats != std::get<2>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON stats mismatch\n{}", stats.str()).c_str());
+            state.SkipWithError(std::format("JSON stats mismatch\n{}", stats.str()).c_str());
     }
     state.SetLabel(std::get<0>(json_files[state.range(0)]));
     state.SetBytesProcessed(state.iterations() * json.size());
@@ -1209,9 +1210,9 @@ void read_simdjson_dom_pad_single_copy(benchmark::State& state)
             std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON counter mismatch\n{}", counter.str()).c_str());
+            state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
         if (stats != std::get<2>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON stats mismatch\n{}", stats.str()).c_str());
+            state.SkipWithError(std::format("JSON stats mismatch\n{}", stats.str()).c_str());
     }
     state.SetLabel(std::get<0>(json_files[state.range(0)]));
     state.SetBytesProcessed(state.iterations() * json.size());
@@ -1236,9 +1237,9 @@ void read_simdjson_ond_pad(benchmark::State& state)
             std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON counter mismatch\n{}", counter.str()).c_str());
+            state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
         if (stats != std::get<2>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON stats mismatch\n{}", stats.str()).c_str());
+            state.SkipWithError(std::format("JSON stats mismatch\n{}", stats.str()).c_str());
     }
     state.SetLabel(std::get<0>(json_files[state.range(0)]));
     state.SetBytesProcessed(state.iterations() * json.size());
@@ -1263,9 +1264,9 @@ void read_simdjson_ond_pad_copy(benchmark::State& state)
             std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON counter mismatch\n{}", counter.str()).c_str());
+            state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
         if (stats != std::get<2>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON stats mismatch\n{}", stats.str()).c_str());
+            state.SkipWithError(std::format("JSON stats mismatch\n{}", stats.str()).c_str());
     }
     state.SetLabel(std::get<0>(json_files[state.range(0)]));
     state.SetBytesProcessed(state.iterations() * json.size());
@@ -1290,9 +1291,9 @@ void read_simdjson_ond_pad_single(benchmark::State& state)
             std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON counter mismatch\n{}", counter.str()).c_str());
+            state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
         if (stats != std::get<2>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON stats mismatch\n{}", stats.str()).c_str());
+            state.SkipWithError(std::format("JSON stats mismatch\n{}", stats.str()).c_str());
     }
     state.SetLabel(std::get<0>(json_files[state.range(0)]));
     state.SetBytesProcessed(state.iterations() * json.size());
@@ -1318,9 +1319,9 @@ void read_simdjson_ond_pad_single_copy(benchmark::State& state)
             std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON counter mismatch\n{}", counter.str()).c_str());
+            state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
         if (stats != std::get<2>(json_files[state.range(0)]))
-            state.SkipWithError(fmt::format("JSON stats mismatch\n{}", stats.str()).c_str());
+            state.SkipWithError(std::format("JSON stats mismatch\n{}", stats.str()).c_str());
     }
     state.SetLabel(std::get<0>(json_files[state.range(0)]));
     state.SetBytesProcessed(state.iterations() * json.size());

@@ -41,18 +41,16 @@ Ultra-fast and intuitive C++ JSON reader/writer with yyjson backend.
 ## Requirements
 
 *   C++20 compiler with range supports
-    *   LLVM >= 16
-    *   GCC >= 12
+    *   LLVM >= 17
+    *   GCC >= 13
     *   clang-cl >= 17 (Windows)
-    *   Visual Studio >= 2022 version 17.5 (experimental)
-        *   ❌️ MSVC 19.36.32546.0
+    *   Visual Studio >= 2022 version 17.8 (experimental)
         *   ✅ MSVC 19.38.33141.0
         *   ✅ MSVC 19.39.33523.0
         *   ✅ MSVC 19.40.33816.0
         *   ❌️ MSVC 19.41.34123.0
         *   ❌️ MSVC 19.43.34808.0
 *   [yyjson](https://github.com/ibireme/yyjson)
-*   [{fmt}](https://github.com/fmtlib/fmt)
 *   [Nameof C++](https://github.com/Neargye/nameof)
 
 ## Overview
@@ -247,7 +245,7 @@ struct yyjson::caster<X>
     // convert X to string (serialize)
     inline static auto to_json(const X& x)
     {
-        return fmt::format("{} {} {}", x.a, (x.b ? fmt::format("{}", *y.b) : "null"), x.c);
+        return std::format("{} {} {}", x.a, (x.b ? std::format("{}", *y.b) : "null"), x.c);
     }
 };
 
@@ -262,7 +260,7 @@ auto serialized = value(visitable);
 To use cpp-yyjson, the dependent packages are required to be installed. It is convenient to use [vcpkg](https://github.com/microsoft/vcpkg) to install the packages:
 
 ```bash
-$ ./vcpkg install yyjson fmt nameof
+$ ./vcpkg install yyjson nameof
 ```
 
 Then add the path `include/cpp_yyjson.hpp` to the include directory of your project.
@@ -1385,7 +1383,7 @@ struct yyjson::caster<X>
             }
             return result;
         }
-        throw bad_cast(fmt::format("{} is not constructible from JSON", NAMEOF_TYPE(X)));
+        throw bad_cast(std::format("{} is not constructible from JSON", NAMEOF_TYPE(X)));
     }
 };
 ```
@@ -1402,7 +1400,7 @@ struct yyjson::caster<X>
     static auto to_json(const X& x, Ts...)
     {
         // Convert X object to JSON string
-        return fmt::format("{} {} {}", x.a, (x.b ? fmt::format("{}", *x.b) : "null"), x.c);
+        return std::format("{} {} {}", x.a, (x.b ? std::format("{}", *x.b) : "null"), x.c);
     }
 };
 ```
@@ -1512,16 +1510,16 @@ for (auto i = 0; i < 1000; ++i) arr.emplace_back(nums);
 
 ### Misc
 
-#### Support for {fmt} format
+#### Support for std::format
 
-The cpp-yyjson defines a specialization of `fmt::formatter` of the [{fmt}](https://github.com/fmtlib/fmt) library. The JSON classes are formattable as follows:
+The cpp-yyjson defines a specialization of `std::formatter`. The JSON classes are formattable as follows:
 
 ```cpp
 using namespace yyjson;
 
 auto obj = object(...);
-auto json_str = fmt::format("{}", obj);
-fmt::print("{}", obj);
+auto json_str = std::format("{}", obj);
+std::cout << std::format("{}", obj);
 ```
 
 #### Object dependence safety

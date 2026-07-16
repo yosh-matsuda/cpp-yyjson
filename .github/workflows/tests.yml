@@ -38,7 +38,7 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1
 
       - name: Install dependencies
-        run: vcpkg install yyjson fmt nameof gtest --triplet ${{ env.triplet }}
+        run: vcpkg install yyjson nameof gtest --triplet ${{ env.triplet }}
 
       - name: Build and test
         run: |
@@ -56,13 +56,8 @@ jobs:
       matrix:
         compiler:
           [
-            { c: "gcc-12", cxx: "g++-12" },
             { c: "gcc-13", cxx: "g++-13" },
             { c: "gcc-14", cxx: "g++-14" },
-            {
-              c: "clang-16",
-              cxx: "clang++-16",
-            },
             {
               c: "clang-17",
               cxx: "clang++-17",
@@ -89,7 +84,7 @@ jobs:
           brew install ninja
 
       - name: Install dependencies
-        run: CC=${{ matrix.compiler.c }} CXX=${{ matrix.compiler.cxx }} vcpkg install yyjson fmt nameof gtest --triplet ${{ env.triplet }}
+        run: CC=${{ matrix.compiler.c }} CXX=${{ matrix.compiler.cxx }} vcpkg install yyjson nameof gtest --triplet ${{ env.triplet }}
 
       - name: Build and test
         run: |
@@ -107,14 +102,8 @@ jobs:
       matrix:
         compiler:
           [
-            { c: "gcc-12", cxx: "g++-12", brewpkg: "", },
             { c: "gcc-13", cxx: "g++-13", brewpkg: "", },
             { c: "gcc-14", cxx: "g++-14", brewpkg: "", },
-            {
-              c: "$(brew --prefix llvm@16)/bin/clang",
-              cxx: "$(brew --prefix llvm@16)/bin/clang++",
-              brewpkg: "llvm@16",
-            },
             {
               c: "$(brew --prefix llvm@17)/bin/clang",
               cxx: "$(brew --prefix llvm@17)/bin/clang++",
@@ -144,7 +133,7 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/microsoft/vcpkg.git external/vcpkg
           ./external/vcpkg/bootstrap-vcpkg.sh
-          CC=${{ matrix.compiler.c }} CXX=${{ matrix.compiler.cxx }} ./external/vcpkg/vcpkg install yyjson fmt nameof gtest --triplet ${{ env.triplet }}
+          CC=${{ matrix.compiler.c }} CXX=${{ matrix.compiler.cxx }} ./external/vcpkg/vcpkg install yyjson nameof gtest --triplet ${{ env.triplet }}
 
       - name: Build and test
         run: |

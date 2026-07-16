@@ -4,6 +4,8 @@
 #include <rapidjson/stringbuffer.h>
 #include <rapidjson/writer.h>
 #include <cpp_yyjson.hpp>
+#include <format>
+#include <iostream>
 #include <nlohmann/json.hpp>
 #include <numeric>
 #include <ranges>
@@ -220,7 +222,7 @@ void write_nlohmann_array_double(benchmark::State& state)
 void write_c_yyjson_array_string(benchmark::State& state)
 {
     std::iota(vec_int64.begin(), vec_int64.end(), 0);
-    std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return fmt::format("{}", n); });
+    std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return std::format("{}", n); });
     for (auto _ : state)
     {
         yyjson_mut_doc* doc = yyjson_mut_doc_new(NULL);
@@ -243,7 +245,7 @@ void write_cpp_yyjson_array_string(benchmark::State& state)
 {
     using namespace yyjson;
     std::iota(vec_int64.begin(), vec_int64.end(), 0);
-    std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return fmt::format("{}", n); });
+    std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return std::format("{}", n); });
     for (auto _ : state)
     {
         auto array = yyjson::array(vec_string);
@@ -261,7 +263,7 @@ void write_cpp_yyjson_single_array_string(benchmark::State& state)
     using namespace yyjson;
     std::iota(vec_int64.begin(), vec_int64.end(), 0);
     auto alc = dynamic_allocator();
-    std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return fmt::format("{}", n); });
+    std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return std::format("{}", n); });
     for (auto _ : state)
     {
         auto array = yyjson::array(vec_string);
@@ -278,7 +280,7 @@ void write_rapidjson_array_string(benchmark::State& state)
 {
     using namespace rapidjson;
     std::iota(vec_int64.begin(), vec_int64.end(), 0);
-    std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return fmt::format("{}", n); });
+    std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return std::format("{}", n); });
     for (auto _ : state)
     {
         Document doc;
@@ -301,7 +303,7 @@ void write_rapidjson_array_string(benchmark::State& state)
 void write_c_yyjson_array_string_copy(benchmark::State& state)
 {
     std::iota(vec_int64.begin(), vec_int64.end(), 0);
-    std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return fmt::format("{}", n); });
+    std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return std::format("{}", n); });
     for (auto _ : state)
     {
         yyjson_mut_doc* doc = yyjson_mut_doc_new(NULL);
@@ -324,7 +326,7 @@ void write_cpp_yyjson_array_string_copy(benchmark::State& state)
 {
     using namespace yyjson;
     std::iota(vec_int64.begin(), vec_int64.end(), 0);
-    std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return fmt::format("{}", n); });
+    std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return std::format("{}", n); });
     for (auto _ : state)
     {
         auto array = yyjson::array(vec_string, copy_string);
@@ -340,7 +342,7 @@ void write_cpp_yyjson_array_string_copy(benchmark::State& state)
 void write_rapidjson_array_string_copy(benchmark::State& state)
 {
     using namespace rapidjson;
-    std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return fmt::format("{}", n); });
+    std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return std::format("{}", n); });
     for (auto _ : state)
     {
         Document doc;
@@ -369,7 +371,7 @@ void write_nlohmann_array_string_copy(benchmark::State& state)
 {
     using namespace nlohmann;
     std::iota(vec_int64.begin(), vec_int64.end(), 0);
-    std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return fmt::format("{}", n); });
+    std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return std::format("{}", n); });
     for (auto _ : state)
     {
         auto array = json(vec_string);
@@ -388,7 +390,7 @@ void write_c_yyjson_array_tuple(benchmark::State& state)
     {
         std::get<0>(t) = i;
         std::get<1>(t) = i + 1.5;
-        std::get<2>(t) = fmt::format("{}", i + 3.0);
+        std::get<2>(t) = std::format("{}", i + 3.0);
         ++i;
     }
     for (auto _ : state)
@@ -422,7 +424,7 @@ void write_cpp_yyjson_array_tuple(benchmark::State& state)
     {
         std::get<0>(t) = i;
         std::get<1>(t) = i + 1.5;
-        std::get<2>(t) = fmt::format("{}", i + 3.0);
+        std::get<2>(t) = std::format("{}", i + 3.0);
         ++i;
     }
     for (auto _ : state)
@@ -444,7 +446,7 @@ void write_rapidjson_array_tuple(benchmark::State& state)
     {
         std::get<0>(t) = i;
         std::get<1>(t) = i + 1.5;
-        std::get<2>(t) = fmt::format("{}", i + 3.0);
+        std::get<2>(t) = std::format("{}", i + 3.0);
         ++i;
     }
     for (auto _ : state)
@@ -480,7 +482,7 @@ void write_nlohmann_array_tuple(benchmark::State& state)
     {
         std::get<0>(t) = i;
         std::get<1>(t) = i + 1.5;
-        std::get<2>(t) = fmt::format("{}", i + 3.0);
+        std::get<2>(t) = std::format("{}", i + 3.0);
         ++i;
     }
     for (auto _ : state)
@@ -501,7 +503,7 @@ void write_c_yyjson_array_object(benchmark::State& state)
     {
         t.i = i;
         t.j = i + 1.5;
-        t.k = fmt::format("{}", i + 3.0);
+        t.k = std::format("{}", i + 3.0);
         ++i;
     }
     for (auto _ : state)
@@ -520,7 +522,7 @@ void write_c_yyjson_array_object(benchmark::State& state)
         auto result = std::string_view(json);
         if (result.size() != json_size_arr_object)
         {
-            fmt::print("{}\n", result.size());
+            std::cout << std::format("{}\n", result.size());
             state.SkipWithError("Invalid JSON string");
             break;
         }
@@ -536,7 +538,7 @@ void write_cpp_yyjson_array_object(benchmark::State& state)
     {
         t.i = i;
         t.j = i + 1.5;
-        t.k = fmt::format("{}", i + 3.0);
+        t.k = std::format("{}", i + 3.0);
         ++i;
     }
     for (auto _ : state)
@@ -558,7 +560,7 @@ void write_rapidjson_array_object(benchmark::State& state)
     {
         t.i = i;
         t.j = i + 1.5;
-        t.k = fmt::format("{}", i + 3.0);
+        t.k = std::format("{}", i + 3.0);
         ++i;
     }
     for (auto _ : state)
@@ -594,7 +596,7 @@ void write_nlohmann_array_object(benchmark::State& state)
     {
         t.i = i;
         t.j = i + 1.5;
-        t.k = fmt::format("{}", i + 3.0);
+        t.k = std::format("{}", i + 3.0);
         ++i;
     }
     for (auto _ : state)
@@ -718,7 +720,7 @@ void write_c_yyjson_object_int64(benchmark::State& state)
         auto root = yyjson_mut_obj(doc);
         for (auto n : vec_int64)
         {
-            auto key_str = fmt::format("{}", n);
+            auto key_str = std::format("{}", n);
             auto key = yyjson_mut_strncpy(doc, key_str.c_str(), key_str.size());
             auto val = yyjson_mut_sint(doc, n);
             yyjson_mut_obj_add(root, key, val);
@@ -743,7 +745,7 @@ void write_cpp_yyjson_object_int64(benchmark::State& state)
     for (auto _ : state)
     {
         auto object = yyjson::object();
-        for (auto n : vec_int64) object.emplace(fmt::format("{}", n), n);
+        for (auto n : vec_int64) object.emplace(std::format("{}", n), n);
         auto result = object.write();
         if (result.size() != json_size_obj_int64)
         {
@@ -762,7 +764,7 @@ void write_rapidjson_object_int64(benchmark::State& state)
         Document doc;
         doc.SetObject();
         for (auto n : vec_int64)
-            doc.AddMember(Value(fmt::format("{}", n).c_str(), doc.GetAllocator()).Move(), n, doc.GetAllocator());
+            doc.AddMember(Value(std::format("{}", n).c_str(), doc.GetAllocator()).Move(), n, doc.GetAllocator());
 
         StringBuffer buffer;
         Writer<StringBuffer> writer(buffer);
@@ -784,7 +786,7 @@ void write_nlohmann_object_int64(benchmark::State& state)
     for (auto _ : state)
     {
         auto object = json();
-        for (auto n : vec_int64) object[fmt::format("{}", n)] = n;
+        for (auto n : vec_int64) object[std::format("{}", n)] = n;
         auto result = object.dump();
         if (result.size() != json_size_obj_int64)
         {
@@ -803,7 +805,7 @@ void write_c_yyjson_object_double(benchmark::State& state)
         auto root = yyjson_mut_obj(doc);
         for (auto n : vec_double)
         {
-            auto key_str = fmt::format("{}", n);
+            auto key_str = std::format("{}", n);
             auto key = yyjson_mut_strncpy(doc, key_str.c_str(), key_str.size());
             auto val = yyjson_mut_real(doc, n);
             yyjson_mut_obj_add(root, key, val);
@@ -828,7 +830,7 @@ void write_cpp_yyjson_object_double(benchmark::State& state)
     for (auto _ : state)
     {
         auto object = yyjson::object();
-        for (auto n : vec_double) object.emplace(fmt::format("{}", n), n);
+        for (auto n : vec_double) object.emplace(std::format("{}", n), n);
         auto result = object.write();
         if (result.size() != json_size_obj_double)
         {
@@ -847,7 +849,7 @@ void write_rapidjson_object_double(benchmark::State& state)
         Document doc;
         doc.SetObject();
         for (auto n : vec_double)
-            doc.AddMember(Value(fmt::format("{}", n).c_str(), doc.GetAllocator()).Move(), n, doc.GetAllocator());
+            doc.AddMember(Value(std::format("{}", n).c_str(), doc.GetAllocator()).Move(), n, doc.GetAllocator());
 
         StringBuffer buffer;
         Writer<StringBuffer> writer(buffer);
@@ -869,7 +871,7 @@ void write_nlohmann_object_double(benchmark::State& state)
     for (auto _ : state)
     {
         auto object = json();
-        for (auto n : vec_double) object[fmt::format("{}", n)] = n;
+        for (auto n : vec_double) object[std::format("{}", n)] = n;
         auto result = object.dump();
         if (result.size() != json_size_obj_double)
         {
@@ -882,7 +884,7 @@ void write_nlohmann_object_double(benchmark::State& state)
 void write_c_yyjson_object_string(benchmark::State& state)
 {
     std::iota(vec_int64.begin(), vec_int64.end(), 0);
-    std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return fmt::format("{}", n); });
+    std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return std::format("{}", n); });
     for (auto _ : state)
     {
         yyjson_mut_doc* doc = yyjson_mut_doc_new(NULL);
@@ -910,7 +912,7 @@ void write_cpp_yyjson_object_string(benchmark::State& state)
 {
     using namespace yyjson;
     std::iota(vec_int64.begin(), vec_int64.end(), 0);
-    std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return fmt::format("{}", n); });
+    std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return std::format("{}", n); });
     for (auto _ : state)
     {
         auto object = yyjson::object();
@@ -931,7 +933,7 @@ void write_rapidjson_object_string(benchmark::State& state)
 {
     using namespace rapidjson;
     std::iota(vec_int64.begin(), vec_int64.end(), 0);
-    std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return fmt::format("{}", n); });
+    std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return std::format("{}", n); });
     for (auto _ : state)
     {
         Document doc;
@@ -957,7 +959,7 @@ void write_rapidjson_object_string(benchmark::State& state)
 void write_c_yyjson_object_string_copy(benchmark::State& state)
 {
     std::iota(vec_int64.begin(), vec_int64.end(), 0);
-    std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return fmt::format("{}", n); });
+    std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return std::format("{}", n); });
     for (auto _ : state)
     {
         yyjson_mut_doc* doc = yyjson_mut_doc_new(NULL);
@@ -985,7 +987,7 @@ void write_cpp_yyjson_object_string_copy(benchmark::State& state)
 {
     using namespace yyjson;
     std::iota(vec_int64.begin(), vec_int64.end(), 0);
-    std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return fmt::format("{}", n); });
+    std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return std::format("{}", n); });
     for (auto _ : state)
     {
         auto object = yyjson::object();
@@ -1006,7 +1008,7 @@ void write_rapidjson_object_string_copy(benchmark::State& state)
 {
     using namespace rapidjson;
     std::iota(vec_int64.begin(), vec_int64.end(), 0);
-    std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return fmt::format("{}", n); });
+    std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return std::format("{}", n); });
     for (auto _ : state)
     {
         Document doc;
@@ -1034,7 +1036,7 @@ void write_nlohmann_object_string_copy(benchmark::State& state)
 {
     using namespace nlohmann;
     std::iota(vec_int64.begin(), vec_int64.end(), 0);
-    std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return fmt::format("{}", n); });
+    std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return std::format("{}", n); });
     for (auto _ : state)
     {
         auto object = json();
