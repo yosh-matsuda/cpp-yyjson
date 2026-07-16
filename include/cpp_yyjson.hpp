@@ -10,9 +10,9 @@
 
 #pragma once
 #include <algorithm>
+#include <cassert>
 #include <cstring>
 #include <memory>
-#include <nameof.hpp>
 #include <optional>
 #include <ranges>
 #include <variant>
@@ -282,6 +282,27 @@ namespace yyjson
     {
         template <typename...>
         inline constexpr bool false_v = false;
+
+        template <typename T>
+        constexpr std::string_view type_name() noexcept
+        {
+#if defined(__clang__) || defined(__GNUC__)
+            constexpr auto signature = std::string_view{__PRETTY_FUNCTION__};
+            constexpr auto prefix = std::string_view{"T = "};
+            const auto start = signature.find(prefix) + prefix.size();
+            const auto end = signature.find_first_of(";]", start);
+            return signature.substr(start, end - start);
+#elif defined(_MSC_VER)
+            constexpr auto signature = std::string_view{__FUNCSIG__};
+            constexpr auto prefix = std::string_view{"type_name<"};
+            constexpr auto suffix = std::string_view{">(void)"};
+            const auto start = signature.find(prefix) + prefix.size();
+            const auto end = signature.rfind(suffix);
+            return signature.substr(start, end - start);
+#else
+            return "unknown";
+#endif
+        }
 
         template <yyjson_allocator Alloc>
         auto* get_allocator_pointer(Alloc& alc) noexcept
@@ -3633,7 +3654,7 @@ namespace yyjson
                 if (!alc.check_capacity({str, len}, read_flag))
                 {
                     throw std::runtime_error(
-                        std::format("Insufficient capacity in the pool allocator for {}", NAMEOF_TYPE(Alloc)));
+                        std::format("Insufficient capacity in the pool allocator for {}", detail::type_name<Alloc>()));
                 }
             }
             result = yyjson_read_opts(str, len, to_underlying(read_flag), detail::get_allocator_pointer(alc), &err);
@@ -3911,7 +3932,7 @@ namespace yyjson
             {
                 if (arr.size() > std::ranges::size(result))
                     throw bad_cast(
-                        std::format("the size of JSON array is greater than the size of {}", NAMEOF_TYPE(T)));
+                        std::format("the size of JSON array is greater than the size of {}", detail::type_name<T>()));
                 std::ranges::transform(arr, std::ranges::begin(result),
                                        [](const auto& e) { return cast<std::ranges::range_value_t<T>>(e); });
             }
@@ -3939,7 +3960,7 @@ namespace yyjson
                     return from_json(*obj);
                 }
                 else
-                    throw bad_cast(std::format("{} is not constructible from JSON object", NAMEOF_TYPE(T)));
+                    throw bad_cast(std::format("{} is not constructible from JSON object", detail::type_name<T>()));
             }
             else if (const auto arr = json.as_array(); arr.has_value())
             {
@@ -3948,7 +3969,7 @@ namespace yyjson
                     return from_json(*arr);
                 }
                 else
-                    throw bad_cast(std::format("{} is not constructible from JSON array", NAMEOF_TYPE(T)));
+                    throw bad_cast(std::format("{} is not constructible from JSON array", detail::type_name<T>()));
             }
             else if (json.is_null())
             {
@@ -3961,7 +3982,7 @@ namespace yyjson
                 else if constexpr (std::constructible_from<T, std::monostate>)
                     return T(std::monostate());
                 else
-                    throw bad_cast(std::format("{} is not constructible from JSON null", NAMEOF_TYPE(T)));
+                    throw bad_cast(std::format("{} is not constructible from JSON null", detail::type_name<T>()));
             }
             else if (json.is_bool())
             {
@@ -3972,7 +3993,7 @@ namespace yyjson
 #endif
                     return T(*json.as_bool());
                 else
-                    throw bad_cast(std::format("{} is not constructible from JSON bool", NAMEOF_TYPE(T)));
+                    throw bad_cast(std::format("{} is not constructible from JSON bool", detail::type_name<T>()));
             }
             else if (json.is_real())
             {
@@ -3985,7 +4006,7 @@ namespace yyjson
                     return T(*json.as_real());
                 }
                 else
-                    throw bad_cast(std::format("{} is not constructible from JSON number", NAMEOF_TYPE(T)));
+                    throw bad_cast(std::format("{} is not constructible from JSON number", detail::type_name<T>()));
             }
             else if (json.is_string())
             {
@@ -3996,7 +4017,7 @@ namespace yyjson
                 else if constexpr (std::constructible_from<T, const char*>)
                     return T(json.as_string()->data());
                 else
-                    throw bad_cast(std::format("{} is not constructible from JSON string", NAMEOF_TYPE(T)));
+                    throw bad_cast(std::format("{} is not constructible from JSON string", detail::type_name<T>()));
             }
             else if (const auto vui = json.as_uint(); vui.has_value())
             {
@@ -4007,7 +4028,7 @@ namespace yyjson
                         return static_cast<T>(*vui);
                     }
                     throw bad_cast(std::format("overflow detected: {} is not constructible from JSON integer {}",
-                                               NAMEOF_TYPE(T), *vui));
+                                               detail::type_name<T>(), *vui));
                 }
 #ifdef _MSC_VER
                 else if constexpr (requires { T(std::declval<std::uint64_t>()); })
@@ -4018,7 +4039,7 @@ namespace yyjson
                     return T(*vui);
                 }
                 else
-                    throw bad_cast(std::format("{} is not constructible from JSON integer", NAMEOF_TYPE(T)));
+                    throw bad_cast(std::format("{} is not constructible from JSON integer", detail::type_name<T>()));
             }
             else if (const auto vsi = json.as_sint(); vsi.has_value())
             {
@@ -4029,7 +4050,7 @@ namespace yyjson
                         return static_cast<T>(*vsi);
                     }
                     throw bad_cast(std::format("overflow detected: {} is not constructible from JSON integer {}",
-                                               NAMEOF_TYPE(T), *vsi));
+                                               detail::type_name<T>(), *vsi));
                 }
                 else if constexpr (std::signed_integral<T>)
                 {
@@ -4038,7 +4059,7 @@ namespace yyjson
                         return static_cast<T>(*vsi);
                     }
                     throw bad_cast(std::format("overflow detected: {} is not constructible from JSON integer {}",
-                                               NAMEOF_TYPE(T), *vsi));
+                                               detail::type_name<T>(), *vsi));
                 }
 #ifdef _MSC_VER
                 else if constexpr (requires { T(std::declval<std::int64_t>()); })
@@ -4049,9 +4070,9 @@ namespace yyjson
                     return T(*vsi);
                 }
                 else
-                    throw bad_cast(std::format("{} is not constructible from JSON integer", NAMEOF_TYPE(T)));
+                    throw bad_cast(std::format("{} is not constructible from JSON integer", detail::type_name<T>()));
             }
-            throw bad_cast(std::format("{} is not constructible from raw json", NAMEOF_TYPE(T)));
+            throw bad_cast(std::format("{} is not constructible from raw json", detail::type_name<T>()));
         }
 #if defined(__GNUC__)
 #pragma GCC diagnostic pop
@@ -4150,7 +4171,7 @@ namespace yyjson
             auto result = std::optional<std::variant<Ts...>>();
             ((result = cast_no_except<Ts>(json)).has_value() || ...);
             if (result.has_value()) return *result;
-            throw bad_cast(std::format("{} is not constructible from JSON", NAMEOF_TYPE(std::variant<Ts...>)));
+            throw bad_cast(std::format("{} is not constructible from JSON", detail::type_name<std::variant<Ts...>>()));
         }
 #if defined(__GNUC__) or defined(__clang__)
 #pragma GCC diagnostic pop
@@ -4227,7 +4248,7 @@ namespace yyjson
 
                     if (obj->size() > std::tuple_size_v<Tuple<Ts...>>)
                         throw bad_cast(std::format("the size of JSON object is greater than the size of {}",
-                                                   NAMEOF_TYPE(Tuple<Ts...>)));
+                                                   detail::type_name<Tuple<Ts...>>()));
 
                     using indices = std::make_index_sequence<std::tuple_size_v<Tuple<Ts...>>>;
                     auto it = obj->begin();
@@ -4250,7 +4271,7 @@ namespace yyjson
 
                     if (arr->size() > std::tuple_size_v<Tuple<Ts...>>)
                         throw bad_cast(std::format("the size of JSON array is greater than the size of {}",
-                                                   NAMEOF_TYPE(Tuple<Ts...>)));
+                                                   detail::type_name<Tuple<Ts...>>()));
 
                     using indices = std::make_index_sequence<std::tuple_size_v<Tuple<Ts...>>>;
                     auto it = arr->begin();
@@ -4262,7 +4283,7 @@ namespace yyjson
                 }
             }
 
-            throw bad_cast(std::format("{} is not constructible from JSON", NAMEOF_TYPE(Tuple<Ts...>)));
+            throw bad_cast(std::format("{} is not constructible from JSON", detail::type_name<Tuple<Ts...>>()));
         }
 
         template <detail::copy_string_args... Args>

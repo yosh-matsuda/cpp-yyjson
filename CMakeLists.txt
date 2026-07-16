@@ -44,7 +44,6 @@ function(find_and_link package_name qualified_name)
 endfunction()
 
 find_and_link(yyjson yyjson::yyjson)
-find_and_link(nameof nameof::nameof VERSION 0.10.0)
 
 # install
 if(CPPYYJSON_IS_TOPLEVEL_PROJECT)
