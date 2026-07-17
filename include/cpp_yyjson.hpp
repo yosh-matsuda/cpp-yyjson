@@ -53,6 +53,17 @@ namespace yyjson
 #if YYJSON_VERSION_HEX >= 0x000700
         BignumAsRaw = YYJSON_READ_BIGNUM_AS_RAW,
 #endif
+#if YYJSON_VERSION_HEX >= 0x000B00
+        AllowBom = YYJSON_READ_ALLOW_BOM,
+#endif
+#if YYJSON_VERSION_HEX >= 0x000C00
+        AllowExtNumber = YYJSON_READ_ALLOW_EXT_NUMBER,
+        AllowExtEscape = YYJSON_READ_ALLOW_EXT_ESCAPE,
+        AllowExtWhitespace = YYJSON_READ_ALLOW_EXT_WHITESPACE,
+        AllowSingleQuotedStr = YYJSON_READ_ALLOW_SINGLE_QUOTED_STR,
+        AllowUnquotedKey = YYJSON_READ_ALLOW_UNQUOTED_KEY,
+        Json5 = YYJSON_READ_JSON5,
+#endif
     };
 
     enum class WriteFlag : yyjson_write_flag
@@ -3639,6 +3650,20 @@ namespace yyjson
         }
 
 #pragma region read
+        [[nodiscard]] inline read_error make_read_error(const char* str, std::size_t len, const yyjson_read_err& err)
+        {
+#if YYJSON_VERSION_HEX >= 0x000A00
+            auto line = std::size_t{0};
+            auto col = std::size_t{0};
+            auto chr = std::size_t{0};
+            auto success = yyjson_locate_pos(str, len, err.pos, &line, &col, &chr);
+            if (success)
+                return read_error(
+                    std::format("Read JSON error: {} at line {}, column {}, pos {}", err.msg, line, col, err.pos));
+#endif
+            return read_error(std::format("Read JSON error: {} at pos {}", err.msg, err.pos));
+        }
+
         template <yyjson_allocator Alloc>
         value read(char* str, std::size_t len, Alloc& alc, ReadFlag read_flag)
         {
@@ -3667,7 +3692,7 @@ namespace yyjson
             {
                 if (result != nullptr) return value(result);
             }
-            throw read_error(std::format("read JSON error: {} at position: {}", err.msg, err.pos));
+            throw make_read_error(str, len, err);
         }
         template <yyjson_allocator Alloc>
         value read(const char* str, std::size_t len, Alloc& alc, const ReadFlag read_flag = ReadFlag::NoFlag)
@@ -3737,17 +3762,7 @@ namespace yyjson
             auto err = yyjson_read_err();
             auto* result = yyjson_read_opts(str, len, to_underlying(read_flag), nullptr, &err);
             if (result != nullptr) return value(result);
-
-#if YYJSON_VERSION_HEX >= 0x000A00
-            auto line = std::size_t{0};
-            auto col = std::size_t{0};
-            auto chr = std::size_t{0};
-            auto success = yyjson_locate_pos(str, len, err.pos, &line, &col, &chr);
-            if (success)
-                throw read_error(
-                    std::format("Read JSON error: {} at line {}, row {}, pos {}", err.msg, line, col, err.pos));
-#endif
-            throw read_error(std::format("Read JSON error: {} at pos {}", err.msg, err.pos));
+            throw make_read_error(str, len, err);
         }
         inline value read(const char* str, std::size_t len, const ReadFlag read_flag = ReadFlag::NoFlag)
         {

@@ -2562,6 +2562,35 @@ TEST(Reader, Allocator)
         EXPECT_EQ(json_str, result);
     }
 
+#if YYJSON_VERSION_HEX >= 0x000B00
+    {
+        auto json_with_bom = "\xEF\xBB\xBF[1]"sv;
+        auto json = read(json_with_bom, d_alloc, ReadFlag::AllowBom);
+        EXPECT_EQ("[1]"sv, json.write());
+    }
+#endif
+
+#if YYJSON_VERSION_HEX >= 0x000C00
+    {
+        auto json5 = "{name:'cpp-yyjson', value:+0x2A}"sv;
+        auto json = read(json5, d_alloc, ReadFlag::Json5);
+        EXPECT_EQ(R"({"name":"cpp-yyjson","value":42})"sv, json.write());
+    }
+#endif
+
+    {
+        auto invalid_json = "[\n,]"sv;
+        try
+        {
+            static_cast<void>(read(invalid_json, d_alloc));
+            FAIL() << "Expected read_error";
+        }
+        catch (const read_error& err)
+        {
+            EXPECT_NE(std::string_view(err.what()).find("line 2, column"), std::string_view::npos);
+        }
+    }
+
     auto str_insitu = std::string(json_str) + "    "s;
     h_alloc.reserve(json_str, ReadFlag::ReadInsitu);
     auto result = read(str_insitu, json_str.size(), h_alloc, yyjson::ReadFlag::ReadInsitu).write();
