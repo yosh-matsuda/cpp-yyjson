@@ -18,9 +18,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        compiler: [ { c: "clang-cl", cxx: "clang-cl" } ] # { c: "cl", cxx: "cl" },
-    name: Windows - ${{ matrix.compiler.cxx }}
-    runs-on: windows-latest
+        os: [ windows-2022, windows-2025 ]
+        compiler: [ { c: "clang-cl", cxx: "clang-cl" } ]
+    name: Windows - ${{ matrix.os }} - ${{ matrix.compiler.cxx }}
+    runs-on: ${{ matrix.os }}
 
     env:
       triplet: x64-windows
