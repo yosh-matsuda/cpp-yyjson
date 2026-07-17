@@ -50,9 +50,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        compiler: [ { c: "gcc-13", cxx: "g++-13" }, { c: "gcc-14", cxx: "g++-14" }, { c: "clang-17", cxx: "clang++-17" }, { c: "clang-18", cxx: "clang++-18" } ]
-    name: Ubuntu - ${{ matrix.compiler.cxx }}
-    runs-on: ubuntu-24.04
+        compiler:
+        - { name: "GCC 13", os: "ubuntu-24.04", install: "apt", c: "gcc-13", cxx: "g++-13", packages: "gcc-13 g++-13" }
+        - { name: "GCC 14", os: "ubuntu-24.04", install: "apt", c: "gcc-14", cxx: "g++-14", packages: "gcc-14 g++-14" }
+        - { name: "GCC 15", os: "ubuntu-26.04", install: "apt", c: "gcc-15", cxx: "g++-15", packages: "gcc-15 g++-15" }
+        - { name: "GCC 16", os: "ubuntu-26.04", install: "apt", c: "gcc-16", cxx: "g++-16", packages: "gcc-16 g++-16" }
+        - { name: "LLVM 17", os: "ubuntu-24.04", install: "brew", c: "$(brew --prefix llvm@17)/bin/clang", cxx: "$(brew --prefix llvm@17)/bin/clang++", brewpkg: "llvm@17" }
+        - { name: "LLVM 18", os: "ubuntu-24.04", install: "brew", c: "$(brew --prefix llvm@18)/bin/clang", cxx: "$(brew --prefix llvm@18)/bin/clang++", brewpkg: "llvm@18" }
+        - { name: "LLVM 19", os: "ubuntu-24.04", install: "brew", c: "$(brew --prefix llvm@19)/bin/clang", cxx: "$(brew --prefix llvm@19)/bin/clang++", brewpkg: "llvm@19" }
+        - { name: "LLVM 20", os: "ubuntu-24.04", install: "brew", c: "$(brew --prefix llvm@20)/bin/clang", cxx: "$(brew --prefix llvm@20)/bin/clang++", brewpkg: "llvm@20" }
+        - { name: "LLVM 21", os: "ubuntu-24.04", install: "brew", c: "$(brew --prefix llvm@21)/bin/clang", cxx: "$(brew --prefix llvm@21)/bin/clang++", brewpkg: "llvm@21" }
+        - { name: "LLVM 22", os: "ubuntu-24.04", install: "brew", c: "$(brew --prefix llvm@22)/bin/clang", cxx: "$(brew --prefix llvm@22)/bin/clang++", brewpkg: "llvm@22" }
+    name: Ubuntu - ${{ matrix.compiler.name }}
+    runs-on: ${{ matrix.compiler.os }}
 
     env:
       triplet: x64-linux
@@ -64,17 +74,28 @@ jobs:
 
     - name: Install compilers
       run: |
-        eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
-        brew install ninja
+        if [[ "${{ matrix.compiler.install }}" == "brew" ]]; then
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          brew install ninja ${{ matrix.compiler.brewpkg }}
+        else
+          sudo apt-get update
+          sudo apt-get install -y ninja-build ${{ matrix.compiler.packages }}
+        fi
 
     - name: Install dependencies
-      run: CC=${{ matrix.compiler.c }} CXX=${{ matrix.compiler.cxx }} vcpkg install yyjson gtest --triplet ${{ env.triplet }}
+      run: |
+        if [[ "${{ matrix.compiler.install }}" == "brew" ]]; then
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+        fi
+        CC=${{ matrix.compiler.c }} CXX=${{ matrix.compiler.cxx }} vcpkg install yyjson gtest --triplet ${{ env.triplet }}
 
     - name: Build and test
       run: |
-        eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+        if [[ "${{ matrix.compiler.install }}" == "brew" ]]; then
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+        fi
         rm -rf ${{ github.workspace }}/build
-        cmake -B ${{ github.workspace }}/build -DCMAKE_TOOLCHAIN_FILE=$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=${{ env.triplet }} -DCMAKE_CXX_COMPILER=${{ matrix.compiler.cxx }} -G "Ninja Multi-Config"
+        cmake -B ${{ github.workspace }}/build -DCMAKE_TOOLCHAIN_FILE=$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=${{ env.triplet }} -DCMAKE_C_COMPILER=${{ matrix.compiler.c }} -DCMAKE_CXX_COMPILER=${{ matrix.compiler.cxx }} -G "Ninja Multi-Config"
         cmake --build ${{ github.workspace }}/build --config Debug --clean-first
         ctest --test-dir ${{ github.workspace }}/build -C Debug
         cmake --build ${{ github.workspace }}/build --config Release --clean-first
@@ -84,8 +105,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        compiler: [ { c: "gcc-13", cxx: "g++-13", brewpkg: "" }, { c: "gcc-14", cxx: "g++-14", brewpkg: "" }, { c: "$(brew --prefix llvm@17)/bin/clang", cxx: "$(brew --prefix llvm@17)/bin/clang++", brewpkg: "llvm@17" }, { c: "$(brew --prefix llvm@18)/bin/clang", cxx: "$(brew --prefix llvm@18)/bin/clang++", brewpkg: "llvm@18" } ]
-    name: MacOS - ${{ matrix.compiler.cxx }}
+        compiler:
+        - { name: "GCC 13", c: "gcc-13", cxx: "g++-13", brewpkg: "gcc@13" }
+        - { name: "GCC 14", c: "gcc-14", cxx: "g++-14", brewpkg: "gcc@14" }
+        - { name: "GCC 15", c: "gcc-15", cxx: "g++-15", brewpkg: "gcc@15" }
+        - { name: "GCC 16", c: "gcc-16", cxx: "g++-16", brewpkg: "gcc@16" }
+        - { name: "Clang 17", c: "$(brew --prefix llvm@17)/bin/clang", cxx: "$(brew --prefix llvm@17)/bin/clang++", brewpkg: "llvm@17" }
+        - { name: "Clang 18", c: "$(brew --prefix llvm@18)/bin/clang", cxx: "$(brew --prefix llvm@18)/bin/clang++", brewpkg: "llvm@18" }
+        - { name: "Clang 19", c: "$(brew --prefix llvm@19)/bin/clang", cxx: "$(brew --prefix llvm@19)/bin/clang++", brewpkg: "llvm@19" }
+        - { name: "Clang 20", c: "$(brew --prefix llvm@20)/bin/clang", cxx: "$(brew --prefix llvm@20)/bin/clang++", brewpkg: "llvm@20" }
+        - { name: "Clang 21", c: "$(brew --prefix llvm@21)/bin/clang", cxx: "$(brew --prefix llvm@21)/bin/clang++", brewpkg: "llvm@21" }
+        - { name: "Clang 22", c: "$(brew --prefix llvm@22)/bin/clang", cxx: "$(brew --prefix llvm@22)/bin/clang++", brewpkg: "llvm@22" }
+    name: MacOS - ${{ matrix.compiler.name }}
     runs-on: macos-latest
 
     env:
@@ -108,7 +139,7 @@ jobs:
     - name: Build and test
       run: |
         rm -rf ${{ github.workspace }}/build
-        cmake -B ${{ github.workspace }}/build -DCMAKE_TOOLCHAIN_FILE=./external/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=${{ env.triplet }} -DCMAKE_CXX_COMPILER=${{ matrix.compiler.cxx }} -G "Ninja Multi-Config"
+        cmake -B ${{ github.workspace }}/build -DCMAKE_TOOLCHAIN_FILE=./external/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=${{ env.triplet }} -DCMAKE_C_COMPILER=${{ matrix.compiler.c }} -DCMAKE_CXX_COMPILER=${{ matrix.compiler.cxx }} -G "Ninja Multi-Config"
         cmake --build ${{ github.workspace }}/build --config Debug --clean-first
         ctest --test-dir ${{ github.workspace }}/build -C Debug
         cmake --build ${{ github.workspace }}/build --config Release --clean-first
