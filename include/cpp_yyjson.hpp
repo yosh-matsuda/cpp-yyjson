@@ -10,6 +10,7 @@
 
 #pragma once
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cstring>
 #include <memory>
@@ -3053,8 +3054,9 @@ namespace yyjson
                 return std::nullopt;
             }
 
-            template <typename T>
-            concept to_json_with_reflection = []<std::size_t... Is>(std::index_sequence<Is...>) {
+            template <typename T, std::size_t... Is>
+            consteval bool to_json_with_reflection_impl(std::index_sequence<Is...>)
+            {
                 return field_reflection::field_namable<T>&&
                 requires (const T& t)
                 {
@@ -3062,7 +3064,11 @@ namespace yyjson
                                                          field_reflection::get_field<Is>(t)),
                      ...);
                 };
-            }(std::make_index_sequence<field_reflection::field_count<T>>());
+            }
+
+            template <typename T>
+            concept to_json_with_reflection =
+                to_json_with_reflection_impl<T>(std::make_index_sequence<field_reflection::field_count<T>>());
 
         }  // namespace detail
 
