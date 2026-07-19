@@ -416,11 +416,11 @@ namespace yyjson
         {
             if constexpr (optional_like<Field>)
             {
-                if (field.has_value()) obj.emplace(field_name, std::forward<Field>(field), ts...);
+                if (field.has_value()) obj.emplace_no_iter(field_name, std::forward<Field>(field), ts...);
             }
             else
             {
-                obj.emplace(field_name, std::forward<Field>(field), ts...);
+                obj.emplace_no_iter(field_name, std::forward<Field>(field), ts...);
             }
         }
 
@@ -2075,12 +2075,17 @@ namespace yyjson
                 using base::base;
 
                 template <create_value_callable T, copy_string_args... Ts>
-                auto array_append(T&& t, Ts... ts) noexcept
+                void array_append_no_iter(T&& t, Ts... ts) noexcept
                 {
-                    auto prev = static_cast<yyjson_mut_val*>(base::val_->uni.ptr);
                     auto new_val = base::doc_.create_value(std::forward<T>(t), ts...);
                     [[maybe_unused]] auto success = yyjson_mut_arr_append(base::val_, new_val);
                     assert(success);
+                }
+                template <create_value_callable T, copy_string_args... Ts>
+                auto array_append(T&& t, Ts... ts) noexcept
+                {
+                    auto prev = static_cast<yyjson_mut_val*>(base::val_->uni.ptr);
+                    array_append_no_iter(std::forward<T>(t), ts...);
 
                     // XXX: last iterator is created from modifying begin().
                     // XXX: DO NOT USE iter.pre since it is not set.
@@ -2094,10 +2099,8 @@ namespace yyjson
                     return iter;
                 }
                 template <base_of_value T>
-                auto array_append(T&& json_value) noexcept
+                void array_append_no_iter(T&& json_value) noexcept
                 {
-                    auto prev = static_cast<yyjson_mut_val*>(base::val_->uni.ptr);
-
                     if constexpr (!std::is_assignable_v<decltype(json_value.get_has_parent()), bool>)
                     {
                         // force copy
@@ -2132,6 +2135,12 @@ namespace yyjson
                                 base::doc_.ptrs->children.emplace_back(std::forward<T>(json_value).doc_.ptrs);
                         }
                     }
+                }
+                template <base_of_value T>
+                auto array_append(T&& json_value) noexcept
+                {
+                    auto prev = static_cast<yyjson_mut_val*>(base::val_->uni.ptr);
+                    array_append_no_iter(std::forward<T>(json_value));
 
                     // XXX: last iterator is created from modifying begin().
                     // XXX: DO NOT USE iter.pre since it is not set.
@@ -2145,12 +2154,17 @@ namespace yyjson
                     return iter;
                 }
                 template <reader::detail::base_of_value_ref T>
-                auto array_append(T&& json_value) noexcept
+                void array_append_no_iter(T&& json_value) noexcept
                 {
-                    auto prev = static_cast<yyjson_mut_val*>(base::val_->uni.ptr);
                     auto val_copy = base::doc_.copy_value(json_value);
                     [[maybe_unused]] auto success = yyjson_mut_arr_append(base::val_, val_copy);
                     assert(success);
+                }
+                template <reader::detail::base_of_value_ref T>
+                auto array_append(T&& json_value) noexcept
+                {
+                    auto prev = static_cast<yyjson_mut_val*>(base::val_->uni.ptr);
+                    array_append_no_iter(std::forward<T>(json_value));
 
                     // XXX: last iterator is created from modifying begin().
                     // XXX: DO NOT USE iter.pre since it is not set.
@@ -2393,6 +2407,22 @@ namespace yyjson
                 auto emplace_back(T&& t, Ts...) noexcept
                 {
                     return array_iter<DocType>(*this, array_append(std::forward<T>(t)));
+                }
+                template <create_value_callable T, copy_string_args... Ts>
+                requires (!base_of_value<T>) && (!reader::detail::base_of_value_ref<T>)
+                void emplace_back_no_iter(T&& t, Ts... ts) noexcept
+                {
+                    array_append_no_iter(std::forward<T>(t), ts...);
+                }
+                template <base_of_value T, copy_string_args... Ts>
+                void emplace_back_no_iter(T&& t, Ts...) noexcept
+                {
+                    array_append_no_iter(std::forward<T>(t));
+                }
+                template <reader::detail::base_of_value_ref T, copy_string_args... Ts>
+                void emplace_back_no_iter(T&& t, Ts...) noexcept
+                {
+                    array_append_no_iter(std::forward<T>(t));
                 }
                 template <typename T = void>  // penalize overload priority
                 auto emplace_back(std::initializer_list<value> list) noexcept
@@ -2811,13 +2841,19 @@ namespace yyjson
 
                 template <typename Key, create_value_callable T, copy_string_args... Ts>
                 requires key_type<std::remove_cvref_t<Key&&>>
-                auto object_append(Key&& key, T&& t, Ts... ts) noexcept
+                void object_append_no_iter(Key&& key, T&& t, Ts... ts) noexcept
                 {
-                    auto prev = static_cast<yyjson_mut_val*>(base::val_->uni.ptr);
                     const auto add_key = base::doc_.create_primitive(std::forward<Key>(key), ts...);
                     auto add_val = base::doc_.create_value(std::forward<T>(t), ts...);
                     [[maybe_unused]] auto success = yyjson_mut_obj_add(base::val_, add_key, add_val);
                     assert(success);
+                }
+                template <typename Key, create_value_callable T, copy_string_args... Ts>
+                requires key_type<std::remove_cvref_t<Key&&>>
+                auto object_append(Key&& key, T&& t, Ts... ts) noexcept
+                {
+                    auto prev = static_cast<yyjson_mut_val*>(base::val_->uni.ptr);
+                    object_append_no_iter(std::forward<Key>(key), std::forward<T>(t), ts...);
 
                     // XXX: last iterator is created from modifying begin().
                     // XXX: DO NOT USE iter.pre since it is not set.
@@ -2831,9 +2867,8 @@ namespace yyjson
                     return iter;
                 }
                 template <typename Key, base_of_value T, copy_string_args... Ts>
-                auto object_append(Key&& key, T&& json_value, Ts... ts) noexcept
+                void object_append_no_iter(Key&& key, T&& json_value, Ts... ts) noexcept
                 {
-                    auto prev = static_cast<yyjson_mut_val*>(base::val_->uni.ptr);
                     const auto add_key = base::doc_.create_primitive(std::forward<Key>(key), ts...);
 
                     if constexpr (!std::is_assignable_v<decltype(json_value.get_has_parent()), bool>)
@@ -2870,6 +2905,12 @@ namespace yyjson
                                 base::doc_.ptrs->children.emplace_back(std::forward<T>(json_value).doc_.ptrs);
                         }
                     }
+                }
+                template <typename Key, base_of_value T, copy_string_args... Ts>
+                auto object_append(Key&& key, T&& json_value, Ts... ts) noexcept
+                {
+                    auto prev = static_cast<yyjson_mut_val*>(base::val_->uni.ptr);
+                    object_append_no_iter(std::forward<Key>(key), std::forward<T>(json_value), ts...);
 
                     // XXX: last iterator is created from modifying begin().
                     // XXX: DO NOT USE iter.pre since it is not set.
@@ -2883,13 +2924,18 @@ namespace yyjson
                     return iter;
                 }
                 template <typename Key, reader::detail::base_of_value_ref T, copy_string_args... Ts>
-                auto object_append(Key&& key, T&& json_value, Ts... ts) noexcept
+                void object_append_no_iter(Key&& key, T&& json_value, Ts... ts) noexcept
                 {
-                    auto prev = static_cast<yyjson_mut_val*>(base::val_->uni.ptr);
                     const auto add_key = base::doc_.create_primitive(std::forward<Key>(key), ts...);
                     auto val_copy = base::doc_.copy_value(json_value);
                     [[maybe_unused]] auto success = yyjson_mut_obj_add(base::val_, add_key, val_copy);
                     assert(success);
+                }
+                template <typename Key, reader::detail::base_of_value_ref T, copy_string_args... Ts>
+                auto object_append(Key&& key, T&& json_value, Ts... ts) noexcept
+                {
+                    auto prev = static_cast<yyjson_mut_val*>(base::val_->uni.ptr);
+                    object_append_no_iter(std::forward<Key>(key), std::forward<T>(json_value), ts...);
 
                     // XXX: last iterator is created from modifying begin().
                     // XXX: DO NOT USE iter.pre since it is not set.
@@ -3026,6 +3072,22 @@ namespace yyjson
                 auto emplace(KeyType&& key, T&& t, Ts...) noexcept
                 {
                     return object_iter<DocType>(*this, object_append(std::forward<KeyType>(key), std::forward<T>(t)));
+                }
+                template <key_type KeyType, create_value_callable T, copy_string_args... Ts>
+                requires (!base_of_value<T>) && (!reader::detail::base_of_value_ref<T>)
+                void emplace_no_iter(KeyType&& key, T&& t, Ts... ts) noexcept
+                {
+                    object_append_no_iter(std::forward<KeyType>(key), std::forward<T>(t), ts...);
+                }
+                template <key_type KeyType, base_of_value T, copy_string_args... Ts>
+                void emplace_no_iter(KeyType&& key, T&& t, Ts...) noexcept
+                {
+                    object_append_no_iter(std::forward<KeyType>(key), std::forward<T>(t));
+                }
+                template <key_type KeyType, reader::detail::base_of_value_ref T, copy_string_args... Ts>
+                void emplace_no_iter(KeyType&& key, T&& t, Ts...) noexcept
+                {
+                    object_append_no_iter(std::forward<KeyType>(key), std::forward<T>(t));
                 }
                 template <key_type KeyType, typename T = void>  // penalize overload priority
                 auto emplace(KeyType&& key, std::initializer_list<value> list) noexcept
@@ -4504,7 +4566,7 @@ namespace yyjson
         {
             using indices = std::make_index_sequence<std::tuple_size_v<Tuple<Ts...>>>;
             [&arr, &t, args...]<std::size_t... N>(std::index_sequence<N...>) {
-                (arr.emplace_back(std::get<N>(t), args...), ...);
+                (arr.emplace_back_no_iter(std::get<N>(t), args...), ...);
             }(indices{});
         }
         template <detail::copy_string_args... Args>
@@ -4513,7 +4575,7 @@ namespace yyjson
         {
             using indices = std::make_index_sequence<std::tuple_size_v<Tuple<Ts...>>>;
             [&arr, t = std::move(t), args...]<std::size_t... N>(std::index_sequence<N...>) mutable {
-                (arr.emplace_back(std::get<N>(std::move(t)), args...), ...);
+                (arr.emplace_back_no_iter(std::get<N>(std::move(t)), args...), ...);
             }(indices{});
         }
 
@@ -4525,7 +4587,7 @@ namespace yyjson
         {
             using indices = std::make_index_sequence<std::tuple_size_v<Tuple<Ts...>>>;
             [&obj, &t, args...]<std::size_t... N>(std::index_sequence<N...>) {
-                (obj.emplace(std::get<0>(std::get<N>(t)), std::get<1>(std::get<N>(t)), args...), ...);
+                (obj.emplace_no_iter(std::get<0>(std::get<N>(t)), std::get<1>(std::get<N>(t)), args...), ...);
             }(indices{});
         }
         template <detail::copy_string_args... Args>
@@ -4536,7 +4598,8 @@ namespace yyjson
         {
             using indices = std::make_index_sequence<std::tuple_size_v<Tuple<Ts...>>>;
             [&obj, t = std::move(t), args...]<std::size_t... N>(std::index_sequence<N...>) mutable {
-                (obj.emplace(std::get<0>(std::get<N>(std::move(t))), std::get<1>(std::get<N>(std::move(t))), args...),
+                (obj.emplace_no_iter(std::get<0>(std::get<N>(std::move(t))), std::get<1>(std::get<N>(std::move(t))),
+                                     args...),
                  ...);
             }(indices{});
         }
