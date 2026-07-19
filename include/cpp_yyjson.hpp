@@ -4626,6 +4626,26 @@ namespace yyjson
     };
 }  // namespace yyjson
 
+template <>
+struct std::formatter<yyjson::json_string>
+{
+    constexpr auto parse(std::format_parse_context& ctx) -> std::format_parse_context::iterator
+    {
+        const auto i = ctx.begin();
+        if (i != ctx.end() && *i != '}')
+        {
+            throw std::format_error("invalid format");
+        }
+        return i;
+    }
+
+    // NOTE: the context must stay generic; libc++ checks formattability with `basic_format_context<char*, char>`
+    auto format(const yyjson::json_string& str, auto& ctx) const
+    {
+        return std::format_to(ctx.out(), "{}", std::string_view(str));
+    }
+};
+
 template <typename T>
 requires requires(const T& t) {
     // clang-format off
