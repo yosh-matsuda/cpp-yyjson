@@ -48,8 +48,8 @@ void fill_objects(std::vector<Object>& objects)
 constexpr auto json_size_arr_int64 = 6888891;
 constexpr auto json_size_arr_double = 8888891;
 constexpr auto json_size_arr_string = 8888891;
-constexpr auto json_size_arr_tuple = 26666695;
-constexpr auto json_size_arr_object = 38666695;
+constexpr auto json_size_arr_tuple = 26666684;
+constexpr auto json_size_arr_object = 38666684;
 constexpr auto json_size_arr_double_append = 9259259;
 constexpr auto json_size_obj_int64 = 15777781;
 constexpr auto json_size_obj_double = 17777781;
