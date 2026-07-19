@@ -3959,7 +3959,10 @@ namespace yyjson
         {
             using value_type = std::remove_cvref_t<std::tuple_element_t<1, std::ranges::range_value_t<T>>>;
             auto result = T();
-            // TODO: reserve
+            if constexpr (requires(T& t, std::size_t size) { t.reserve(size); })
+            {
+                result.reserve(obj.size());
+            }
             for (auto&& kv : obj)
             {
                 result.emplace(kv.first, cast<value_type>(kv.second));
@@ -3980,7 +3983,10 @@ namespace yyjson
         {
             using value_type = std::remove_cvref_t<std::tuple_element_t<1, std::ranges::range_value_t<T>>>;
             auto result = T();
-            // TODO: use back_insertable
+            if constexpr (requires(T& t, std::size_t size) { t.reserve(size); })
+            {
+                result.reserve(obj.size());
+            }
             for (auto&& kv : obj)
             {
                 result.emplace_back(kv.first, cast<value_type>(kv.second));
