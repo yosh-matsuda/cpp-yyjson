@@ -4547,17 +4547,19 @@ struct std::formatter<T>
 #define CPPYYJSON_FOR_EACH_IMPL_25(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_24(FUNC, __VA_ARGS__)
 #define CPPYYJSON_FOR_EACH_IMPL_26(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_25(FUNC, __VA_ARGS__)
 #define CPPYYJSON_FOR_EACH_IMPL_27(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_26(FUNC, __VA_ARGS__)
+#define CPPYYJSON_FOR_EACH_IMPL_28(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_27(FUNC, __VA_ARGS__)
 #define CPPYYJSON_FOR_EACH_IMPL_29(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_28(FUNC, __VA_ARGS__)
+#define CPPYYJSON_FOR_EACH_IMPL_30(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_29(FUNC, __VA_ARGS__)
 #define CPPYYJSON_FOR_EACH_IMPL_31(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_30(FUNC, __VA_ARGS__)
 #define CPPYYJSON_FOR_EACH_IMPL_32(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_31(FUNC, __VA_ARGS__)
 #define CPPYYJSON_FOR_EACH(FUNC, ...) \
     CPPYYJSON_CONCAT(CPPYYJSON_FOR_EACH_IMPL_, CPPYYJSON_VA_ARGS_SIZE(__VA_ARGS__))(FUNC, __VA_ARGS__)
 
-#define VISITABLE_STRUCT_IMPL1(X)                          \
-    if (key == #X)                                         \
-    {                                                       \
+#define VISITABLE_STRUCT_IMPL1(X)                                \
+    if (key == #X)                                               \
+    {                                                            \
         yyjson::detail::assign_reflected_field(result.X, value); \
-    }                                                       \
+    }                                                            \
     else
 #define VISITABLE_STRUCT_IMPL2(X) yyjson::detail::emplace_reflected_field(obj, std::string_view(#X), t.X, ts...);
 #define VISITABLE_STRUCT_IMPL3(X) \

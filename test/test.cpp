@@ -2196,6 +2196,44 @@ struct Z : public X
 
 VISITABLE_STRUCT(Z, a, b, c);
 
+struct ManyFields
+{
+    int f01;
+    int f02;
+    int f03;
+    int f04;
+    int f05;
+    int f06;
+    int f07;
+    int f08;
+    int f09;
+    int f10;
+    int f11;
+    int f12;
+    int f13;
+    int f14;
+    int f15;
+    int f16;
+    int f17;
+    int f18;
+    int f19;
+    int f20;
+    int f21;
+    int f22;
+    int f23;
+    int f24;
+    int f25;
+    int f26;
+    int f27;
+    int f28;
+    int f29;
+    int f30;
+    bool operator==(const ManyFields&) const = default;
+};
+
+VISITABLE_STRUCT(ManyFields, f01, f02, f03, f04, f05, f06, f07, f08, f09, f10, f11, f12, f13, f14, f15, f16, f17, f18,
+                 f19, f20, f21, f22, f23, f24, f25, f26, f27, f28, f29, f30);
+
 struct NullableField
 {
     std::optional<int> optional_value;
@@ -2277,6 +2315,8 @@ TEST(Writer, PredefinedCaster)
     static_assert(std::constructible_from<object, Z&&>);
     static_assert(std::constructible_from<object, Z&>);
     static_assert(std::constructible_from<object, const Z&>);
+    static_assert(std::constructible_from<value, ManyFields&&>);
+    static_assert(std::constructible_from<object, ManyFields&&>);
 
     // from json
     // clang-format off
@@ -2317,6 +2357,7 @@ TEST(Writer, PredefinedCaster)
     static_assert(!std::same_as<void, decltype(cast<std::vector<std::pair<std::string, int>>>(std::declval<object>()))>);
     static_assert(!std::same_as<void, decltype(cast<X>(std::declval<object>()))>);
     static_assert(!std::same_as<void, decltype(cast<Z>(std::declval<object>()))>);
+    static_assert(!std::same_as<void, decltype(cast<ManyFields>(std::declval<object>()))>);
     static_assert(!std::same_as<void, decltype(cast<std::array<int, 5>>(std::declval<value>()))>);
     static_assert(!std::same_as<void, decltype(cast<std::array<int, 5>>(std::declval<array>()))>);
     static_assert(!std::same_as<void, decltype(cast<std::tuple<int, std::string>>(std::declval<value>()))>);
@@ -2498,6 +2539,41 @@ TEST(Writer, PredefinedCaster)
     auto x_null = cast<X>(object{{"a", 1}, {"b", nullptr}, {"c", "x"}});
     EXPECT_EQ(std::nullopt, x_null.b);
 
+    const auto many_fields = ManyFields{.f01 = 1,
+                                        .f02 = 2,
+                                        .f03 = 3,
+                                        .f04 = 4,
+                                        .f05 = 5,
+                                        .f06 = 6,
+                                        .f07 = 7,
+                                        .f08 = 8,
+                                        .f09 = 9,
+                                        .f10 = 10,
+                                        .f11 = 11,
+                                        .f12 = 12,
+                                        .f13 = 13,
+                                        .f14 = 14,
+                                        .f15 = 15,
+                                        .f16 = 16,
+                                        .f17 = 17,
+                                        .f18 = 18,
+                                        .f19 = 19,
+                                        .f20 = 20,
+                                        .f21 = 21,
+                                        .f22 = 22,
+                                        .f23 = 23,
+                                        .f24 = 24,
+                                        .f25 = 25,
+                                        .f26 = 26,
+                                        .f27 = 27,
+                                        .f28 = 28,
+                                        .f29 = 29,
+                                        .f30 = 30};
+    const auto many_fields_obj = object(many_fields);
+    EXPECT_EQ(*many_fields_obj["f28"].as_int(), many_fields.f28);
+    EXPECT_EQ(*many_fields_obj["f30"].as_int(), many_fields.f30);
+    EXPECT_EQ(many_fields, cast<ManyFields>(many_fields_obj));
+
     auto nullable1 = NullableField{};
     auto nullable_obj1 = object(nullable1);
     EXPECT_FALSE(nullable_obj1.contains("optional_value"));
@@ -2505,9 +2581,8 @@ TEST(Writer, PredefinedCaster)
     EXPECT_TRUE(nullable_obj1["nullable_value"].is_null());
     EXPECT_FALSE(nullable_obj1.contains("tri_state"));
 
-    auto nullable2 = cast<NullableField>(object{{"optional_value", nullptr},
-                                                {"nullable_value", nullptr},
-                                                {"tri_state", nullptr}});
+    auto nullable2 =
+        cast<NullableField>(object{{"optional_value", nullptr}, {"nullable_value", nullptr}, {"tri_state", nullptr}});
     EXPECT_FALSE(nullable2.optional_value.has_value());
     EXPECT_EQ(nullptr, nullable2.nullable_value);
     EXPECT_TRUE(nullable2.tri_state.has_value());
