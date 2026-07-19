@@ -893,7 +893,7 @@ auto map = cast<std::unordered_map<std::string, double>>(obj);
 
 If the conversion fails, the `yyjson::bad_cast` exception is thrown or a compile error occurs.
 
-Note that the `cast` function and `static_cast` may give a different result. The `cast` function tries to convert JSON directly to a given type, while `static_cast` follows the C++ conversion rules. For example, `cast<std::optional<int>>(value(nullptr))` succeeds but `static_cast<std::optional<int>>(value(nullptr))` does not. This is because `std::optional<int>` has a conversion constructor from `int`, but `value(nullptr)` cannot be converted to `int`.
+Note that `yyjson::cast<T>` and `static_cast<T>` may give different results. `yyjson::cast<T>` applies cpp-yyjson's JSON conversion rules, including predefined casters, while `static_cast<T>` only uses ordinary C++ conversion rules. For example, `yyjson::cast<std::shared_ptr<int>>(value(nullptr))` returns `nullptr` because the predefined `std::shared_ptr` caster maps JSON null to a null pointer. The corresponding `static_cast<std::shared_ptr<int>>(value(nullptr))` is ill-formed because `yyjson::value` is not directly convertible to `std::shared_ptr<int>` in C++.
 
 In addition to the above, the following four methods are provided for converting *arbitrary* C++ types from/to JSON value, array and object:
 
@@ -907,24 +907,37 @@ In addition to the above, the following four methods are provided for converting
 Several casters from/to STL classes to JSON are pre-defined in the library for convenience. Currently, available STL types are as follows:
 
 *   `std::optional`
+*   `std::shared_ptr`
 *   `std::variant`
 *   `std::tuple`-like
 *   `std::vector<bool>` (specialized)
 
-For example, if you receive elements of multiple types, casts from/to `std::optional` or `std::variant` are useful.
+For reflected object fields, `std::optional` represents field presence: fields with `std::nullopt` are omitted when serialized, and JSON null is ignored when deserializing into the optional field. If JSON null is a value to be preserved, use `std::shared_ptr` instead.
 
 ```cpp
 using namespace yyjson;
 
-auto val = value(std::optional<int>(3));    // serialize
-// -> 3
-auto num = cast<std::optional<int>>(val);   // deserialize
-// -> 3
+struct Settings
+{
+    std::optional<int> timeout;
+    std::shared_ptr<int> limit;
+    std::optional<std::shared_ptr<int>> explicit_limit;
+};
 
-auto val = value(std::optional<int>(std::nullopt)); // serialize
-// -> null
-auto num = cast<std::optional<int>>(val);           // deserialize
-// -> std::nullopt
+auto settings1 = Settings{};
+auto obj1 = object(settings1);
+// -> {"limit": null}
+
+auto obj2 = object{{"timeout", nullptr}, {"limit", nullptr}, {"explicit_limit", nullptr}};
+auto settings2 = cast<Settings>(obj2);
+// -> timeout == std::nullopt
+// -> limit == nullptr
+// -> explicit_limit.has_value() && *explicit_limit == nullptr
+
+auto val = value(std::make_shared<int>(3));          // serialize
+// -> 3
+auto ptr = cast<std::shared_ptr<int>>(val);          // deserialize
+// -> std::shared_ptr<int> to 3
 
 auto val = value(std::variant<std::monostate, int, std::string>());     // serialize
 // -> null
@@ -987,8 +1000,8 @@ struct X
 
 // serialize struxt X to JSON object with field-name reflection
 auto reflectable = X{.a = 1, .b = std::nullopt, .c = "x"};
-auto serialized = object(visitable);
-// -> {"a":1,"b":null,"c":"x"}
+auto serialized = object(reflectable);
+// -> {"a":1,"c":"x"}
 
 // deserialize JSON object into struct X with field-name reflection
 auto deserialized = cast<X>(serialized);
@@ -1006,7 +1019,7 @@ VISITABLE_STRUCT(X, a, b);
 // serialize visitable struxt X to JSON object
 auto visitable = X{.a = 1, .b = std::nullopt, .c = "x"};
 auto serialized = object(visitable);
-// -> {"a":1,"b":null}
+// -> {"a":1}
 
 // deserialize JSON object into struct X
 auto deserialized = cast<X>(serialized);
