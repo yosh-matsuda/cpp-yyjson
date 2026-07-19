@@ -1,8 +1,8 @@
 /*===================================================*
-|  cpp-yyjson version v0.7.0                         |
+|  cpp-yyjson version v0.8.0                         |
 |  https://github.com/yosh-matsuda/cpp-yyjson        |
 |                                                    |
-|  Copyright (c) 2024 Yoshiki Matsuda @yosh-matsuda  |
+|  Copyright (c) 2026 Yoshiki Matsuda @yosh-matsuda  |
 |                                                    |
 |  This software is released under the MIT License.  |
 |  https://opensource.org/license/mit/               |
@@ -3872,7 +3872,7 @@ namespace yyjson
         { yyjson::cast<T>(json) };
     };
 
-    template <json_object Json, field_reflection::field_referenceable T>
+    template <json_object Json, field_reflection::field_namable T>
     constexpr bool all_fields_castable_impl()
     {
         return []<std::size_t... I>(std::index_sequence<I...>) {
@@ -3884,7 +3884,7 @@ namespace yyjson
 
     template <typename Json, typename T>
     concept all_fields_castable =
-        json_object<Json> && field_reflection::field_referenceable<T> && all_fields_castable_impl<Json, T>();
+        json_object<Json> && field_reflection::field_namable<T> && all_fields_castable_impl<Json, T>();
 
     template <typename T>
     struct detail::default_caster

@@ -2313,6 +2313,7 @@ TEST(Writer, PredefinedCaster)
     static_assert(!std::same_as<void, decltype(cast<std::optional<int>>(std::declval<value>()))>);
     static_assert(!std::same_as<void, decltype(cast<std::variant<int, std::string>>(std::declval<value>()))>);
     static_assert(!std::same_as<void, decltype(cast<std::tuple<int, std::string>>(std::declval<array>()))>);
+    static_assert(!yyjson::all_fields_castable<object, std::monostate>);
     // clang-format on
 
     // constructor + type check
@@ -2445,6 +2446,10 @@ TEST(Writer, PredefinedCaster)
     auto val6 = value(variant5);
     auto variant6 = cast<std::variant<std::monostate, int, std::string>>(val6);
     EXPECT_EQ(variant5, variant6);
+
+    auto variant7 = cast<std::variant<std::monostate, X>>(object{{"a", 1}, {"b", 2.0}, {"c", "x"}});
+    ASSERT_TRUE(std::holds_alternative<X>(variant7));
+    EXPECT_EQ((X{1, 2.0, "x"}), std::get<X>(variant7));
 
     auto tuple1 = std::make_tuple(1, "2", 3.0);
     auto arr2 = array(tuple1);

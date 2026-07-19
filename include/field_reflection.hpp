@@ -1,8 +1,8 @@
 /*===================================================*
-|  field-reflection version v0.2.1                   |
+|  field-reflection version v0.3.2                   |
 |  https://github.com/yosh-matsuda/field-reflection  |
 |                                                    |
-|  Copyright (c) 2024 Yoshiki Matsuda @yosh-matsuda  |
+|  Copyright (c) 2026 Yoshiki Matsuda @yosh-matsuda  |
 |                                                    |
 |  This software is released under the MIT License.  |
 |  https://opensource.org/license/mit/               |
@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include <cassert>
 #include <climits>  // CHAR_BIT
 #include <limits>
 #include <source_location>
@@ -88,24 +89,17 @@ namespace field_reflection
 #endif
 
         template <typename T, std::size_t ArgNum>
-        concept constructible = []() {
-            if constexpr (ArgNum == 0)
-            {
-                return requires { T{}; };
-            }
-            else if constexpr (std::is_copy_constructible_v<T>)
-            {
-                return []<std::size_t I0, std::size_t... Is>(std::index_sequence<I0, Is...>) {
-                    return requires { T{std::declval<any_lref_no_base<T, I0>>(), std::declval<any_lref<T, Is>>()...}; };
-                }(std::make_index_sequence<ArgNum>());
-            }
-            else
-            {
-                return []<std::size_t I0, std::size_t... Is>(std::index_sequence<I0, Is...>) {
-                    return requires { T{std::declval<any_rref_no_base<T, I0>>(), std::declval<any_rref<T, Is>>()...}; };
-                }(std::make_index_sequence<ArgNum>());
-            }
-        }();
+        concept constructible = (ArgNum == 0 && requires { T{}; }) ||
+                                []<std::size_t I0, std::size_t... Is>(std::index_sequence<I0, Is...>) {
+                                    if constexpr (std::is_copy_constructible_v<T>)
+                                    {
+                                        return requires { T{any_lref_no_base<T, I0>(), any_lref<T, Is>()...}; };
+                                    }
+                                    else
+                                    {
+                                        return requires { T{any_rref_no_base<T, I0>(), any_rref<T, Is>()...}; };
+                                    }
+                                }(std::make_index_sequence<ArgNum>());
 
         template <typename T>
         concept has_base = []() {
@@ -155,11 +149,21 @@ namespace field_reflection
         template <typename T>
         concept field_referenceable = field_countable<T> && (!has_base<T>);
 
+        template <typename>
+        constexpr bool always_false = false;
+
         template <typename T, field_referenceable U = std::remove_cvref_t<T>>
         constexpr auto to_ptr_tuple(T&&)
         {
-            static_assert([] { return false; }(), "The supported maximum number of fields in struct must be <= 100.");
+            static_assert(always_false<U>, "The supported maximum number of fields in struct must be <= 100.");
         }
+        template <field_referenceable T>
+        constexpr auto field_type_tuple()
+        {
+            static_assert(always_false<T>, "The supported maximum number of fields in struct must be <= 100.");
+        }
+        template <typename T>
+        inline T* field_type_source = nullptr;
         template <typename T, field_referenceable U = std::remove_cvref_t<T>>
         requires (field_count<U> == 0)
         constexpr auto to_ptr_tuple(T&&)
@@ -171,6 +175,12 @@ namespace field_reflection
         constexpr auto to_tuple(T&&)
         {
             return std::tie();
+        }
+        template <field_referenceable T>
+        requires (field_count<T> == 0)
+        constexpr auto field_type_tuple()
+        {
+            return std::type_identity<std::tuple<>>{};
         }
 
 #pragma region TO_TUPLE_TEMPLATE_MACRO
@@ -209,22 +219,30 @@ namespace field_reflection
 #define FIELD_RFL_ADDR(x) &x
 #define FIELD_RFL_DECLTYPE(x) decltype(x)
 #define FIELD_RFL_FORWARD(x) std::forward<decltype(x)>(x)
+#define FIELD_RFL_FIELD_TYPE(x) decltype(x)
 
-#define TO_TUPLE_TEMPLATE(NUM, ...)                                             \
-    template <typename T, field_referenceable U = std::remove_cvref_t<T>>       \
-    requires (field_count<U> == NUM)                                            \
-    constexpr auto to_ptr_tuple(T&& t)                                          \
-    {                                                                           \
-        auto& [__VA_ARGS__] = t;                                                \
-        return std::tuple(FIELD_RFL_MAP_LIST(FIELD_RFL_ADDR, __VA_ARGS__));     \
-    }                                                                           \
-    template <typename T, field_referenceable U = std::remove_cvref_t<T>>       \
-    requires (field_count<U> == NUM)                                            \
-    constexpr auto to_tuple(T&& t)                                              \
-    {                                                                           \
-        auto [__VA_ARGS__] = std::forward<T>(t);                                \
-        return std::tuple<FIELD_RFL_MAP_LIST(FIELD_RFL_DECLTYPE, __VA_ARGS__)>( \
-            FIELD_RFL_MAP_LIST(FIELD_RFL_FORWARD, __VA_ARGS__));                \
+#define TO_TUPLE_TEMPLATE(NUM, ...)                                                                     \
+    template <typename T, field_referenceable U = std::remove_cvref_t<T>>                               \
+    requires (field_count<U> == NUM)                                                                    \
+    constexpr auto to_ptr_tuple(T&& t)                                                                  \
+    {                                                                                                   \
+        auto& [__VA_ARGS__] = t;                                                                        \
+        return std::tuple(FIELD_RFL_MAP_LIST(FIELD_RFL_ADDR, __VA_ARGS__));                             \
+    }                                                                                                   \
+    template <typename T, field_referenceable U = std::remove_cvref_t<T>>                               \
+    requires (field_count<U> == NUM)                                                                    \
+    constexpr auto to_tuple(T&& t)                                                                      \
+    {                                                                                                   \
+        auto [__VA_ARGS__] = std::forward<T>(t);                                                        \
+        return std::tuple<FIELD_RFL_MAP_LIST(FIELD_RFL_DECLTYPE, __VA_ARGS__)>(                         \
+            FIELD_RFL_MAP_LIST(FIELD_RFL_FORWARD, __VA_ARGS__));                                        \
+    }                                                                                                   \
+    template <field_referenceable T>                                                                    \
+    requires (field_count<T> == NUM)                                                                    \
+    constexpr auto field_type_tuple()                                                                   \
+    {                                                                                                   \
+        auto&& [__VA_ARGS__] = *field_type_source<T>;                                                   \
+        return std::type_identity<std::tuple<FIELD_RFL_MAP_LIST(FIELD_RFL_FIELD_TYPE, __VA_ARGS__)>>{}; \
     }
 
         TO_TUPLE_TEMPLATE(1, p0)
@@ -561,6 +579,9 @@ namespace field_reflection
 #undef FIELD_RFL_MAP
 #undef FIELD_RFL_MAP_LIST
 #undef FIELD_RFL_DECLTYPE
+#undef FIELD_RFL_FIELD_TYPE
+#undef FIELD_RFL_FORWARD
+#undef FIELD_RFL_ADDR
 #undef FIELD_RFL_MOVE
 #undef FIELD_RFL_TO_TUPLE_TEMPLATE
 #pragma endregion TO_TUPLE_TEMPLATE_MACRO
@@ -582,7 +603,7 @@ namespace field_reflection
             static wrapper<T> fake;  // NOLINT
         };
 
-        template <typename T, size_t N>  // NOLINT
+        template <typename T, std::size_t N>  // NOLINT
         consteval auto get_ptr() noexcept
         {
 #if defined(__clang__)
@@ -618,6 +639,17 @@ namespace field_reflection
 #endif
         }
 
+        template <typename T>
+        consteval std::string_view get_function_name()
+        {
+#if defined(__clang__) && defined(_WIN32)
+            // clang-cl returns function_name() as __FUNCTION__ instead of __PRETTY_FUNCTION__
+            return std::string_view{__PRETTY_FUNCTION__};
+#else
+            return std::string_view{std::source_location::current().function_name()};
+#endif
+        }
+
         template <typename T, auto Ptr>
         consteval std::string_view get_field_name()
         {
@@ -642,15 +674,51 @@ namespace field_reflection
             return field_name_raw.substr(begin, last - begin);
         }
 
-        template <typename T>
-        using remove_rvalue_reference_t =
-            std::conditional_t<std::is_rvalue_reference_v<T>, std::remove_reference_t<T>, T>;
-
         template <field_namable T, std::size_t N>
         constexpr std::string_view field_name = get_field_name<T, get_ptr<T, N>()>();
 
         template <field_referenceable T, std::size_t N>
-        using field_type = remove_rvalue_reference_t<decltype(std::get<N>(to_tuple(std::declval<T&>())))>;
+        using field_type = std::tuple_element_t<N, typename decltype(field_type_tuple<T>())::type>;
+
+        struct type_name_detector
+        {
+        };
+
+        template <typename T>
+        consteval std::string_view get_type_name()
+        {
+#if defined(__GNUC__) || defined(__clang__)
+            constexpr auto detector_name = get_function_name<type_name_detector>();
+            constexpr auto dummy = std::string_view("T = ");
+            constexpr auto dummy_begin = detector_name.find(dummy) + dummy.size();
+            constexpr auto dummy2 = std::string_view("type_name_detector");
+            constexpr auto dummy_suffix_length = detector_name.size() - detector_name.find(dummy2) - dummy2.size();
+
+            constexpr auto type_name_raw = get_function_name<T>();
+            return type_name_raw.substr(dummy_begin, type_name_raw.size() - dummy_begin - dummy_suffix_length);
+#else
+            constexpr auto detector_name = get_function_name<type_name_detector>();
+            constexpr auto dummy = std::string_view("struct field_reflection::detail::type_name_detector");
+            constexpr auto dummy_begin = detector_name.find(dummy);
+            constexpr auto dummy_suffix_length = detector_name.size() - dummy_begin - dummy.size();
+
+            auto type_name_raw = get_function_name<T>();
+            auto type_name =
+                type_name_raw.substr(dummy_begin, type_name_raw.size() - dummy_begin - dummy_suffix_length);
+            if (auto s = std::string_view("struct "); type_name.starts_with(s))
+            {
+                type_name.remove_prefix(s.size());
+            }
+            if (auto s = std::string_view("class "); type_name.starts_with(s))
+            {
+                type_name.remove_prefix(s.size());
+            }
+            return type_name;
+#endif
+        }
+
+        template <class T>
+        constexpr std::string_view type_name = get_type_name<T>();
 
         template <std::size_t N, typename T, field_referenceable U = std::remove_cvref_t<T>>
         constexpr decltype(auto) get_field(T& t) noexcept
@@ -665,20 +733,54 @@ namespace field_reflection
             return std::get<N>(to_tuple(std::forward<T>(t)));
         }
 
-        template <typename T, typename Func, std::size_t... Is, field_referenceable U = std::remove_cvref_t<T>>
-        void for_each_field_impl(T&& t, Func&& func, std::index_sequence<Is...>)
+        template <typename Tuple, bool Move>
+        struct field_storage
         {
-            if constexpr (requires { (func(get_field<Is>(t)), ...); })
+            Tuple fields;
+        };
+
+        template <typename T>
+        constexpr auto make_field_storage(T&& t)
+        {
+            if constexpr (std::is_rvalue_reference_v<T&&>)
             {
-                (func(get_field<Is>(t)), ...);
-            }
-            else if constexpr (requires { (func(field_name<U, Is>, get_field<Is>(t)), ...); })
-            {
-                (func(field_name<U, Is>, get_field<Is>(t)), ...);
+                return field_storage<decltype(to_tuple(std::forward<T>(t))), true>{to_tuple(std::forward<T>(t))};
             }
             else
             {
-                static_assert([] { return false; }(), "invalid function object for call to for_each_field");
+                return field_storage<decltype(to_ptr_tuple(t)), false>{to_ptr_tuple(t)};
+            }
+        }
+
+        template <std::size_t N, typename Tuple, bool Move>
+        constexpr decltype(auto) get_stored_field(field_storage<Tuple, Move>& storage) noexcept
+        {
+            if constexpr (Move)
+            {
+                return std::get<N>(std::move(storage.fields));
+            }
+            else
+            {
+                return *std::get<N>(storage.fields);
+            }
+        }
+
+        template <typename T, typename Func, std::size_t... Is, field_referenceable U = std::remove_cvref_t<T>>
+        void for_each_field_impl(T&& t, Func&& func, std::index_sequence<Is...>)
+        {
+            auto storage = make_field_storage(std::forward<T>(t));
+            if constexpr (requires { (func(get_stored_field<Is>(storage)), ...); })
+            {
+                (func(get_stored_field<Is>(storage)), ...);
+            }
+            else if constexpr (requires { (func(field_name<U, Is>, get_stored_field<Is>(storage)), ...); })
+            {
+                (func(field_name<U, Is>, get_stored_field<Is>(storage)), ...);
+            }
+            else
+            {
+                static_assert(always_false<std::remove_cvref_t<Func>>,
+                              "invalid function object for call to for_each_field");
             }
         }
 
@@ -686,34 +788,43 @@ namespace field_reflection
                   field_referenceable U = std::remove_cvref_t<T1>>
         void for_each_field_impl(T1&& t1, T2&& t2, Func&& func, std::index_sequence<Is...>)
         {
-            if constexpr (requires { (func(get_field<Is>(t1), get_field<Is>(t2)), ...); })
+            auto storage1 = make_field_storage(std::forward<T1>(t1));
+            auto storage2 = make_field_storage(std::forward<T2>(t2));
+            if constexpr (requires { (func(get_stored_field<Is>(storage1), get_stored_field<Is>(storage2)), ...); })
             {
-                (func(get_field<Is>(t1), get_field<Is>(t2)), ...);
+                (func(get_stored_field<Is>(storage1), get_stored_field<Is>(storage2)), ...);
             }
-            else if constexpr (requires { (func(field_name<U, Is>, get_field<Is>(t1), get_field<Is>(t2)), ...); })
+            else if constexpr (requires {
+                                   (func(field_name<U, Is>, get_stored_field<Is>(storage1),
+                                         get_stored_field<Is>(storage2)),
+                                    ...);
+                               })
             {
-                (func(field_name<U, Is>, get_field<Is>(t1), get_field<Is>(t2)), ...);
+                (func(field_name<U, Is>, get_stored_field<Is>(storage1), get_stored_field<Is>(storage2)), ...);
             }
             else
             {
-                static_assert([] { return false; }(), "invalid function object for call to for_each_field");
+                static_assert(always_false<std::remove_cvref_t<Func>>,
+                              "invalid function object for call to for_each_field");
             }
         }
 
         template <typename T, typename Func, std::size_t... Is, field_referenceable U = std::remove_cvref_t<T>>
         bool all_of_field_impl(T&& t, Func&& func, std::index_sequence<Is...>)
         {
-            if constexpr (requires { (func(get_field<Is>(t)) && ...); })
+            auto storage = make_field_storage(std::forward<T>(t));
+            if constexpr (requires { (func(get_stored_field<Is>(storage)) && ...); })
             {
-                return (func(get_field<Is>(t)) && ...);
+                return (func(get_stored_field<Is>(storage)) && ...);
             }
-            else if constexpr (requires { (func(field_name<U, Is>, get_field<Is>(t)) && ...); })
+            else if constexpr (requires { (func(field_name<U, Is>, get_stored_field<Is>(storage)) && ...); })
             {
-                return (func(field_name<U, Is>, get_field<Is>(t)) && ...);
+                return (func(field_name<U, Is>, get_stored_field<Is>(storage)) && ...);
             }
             else
             {
-                static_assert([] { return false; }(), "invalid function object for call to all_of_field");
+                static_assert(always_false<std::remove_cvref_t<Func>>,
+                              "invalid function object for call to all_of_field");
             }
         }
 
@@ -721,34 +832,43 @@ namespace field_reflection
                   field_referenceable U = std::remove_cvref_t<T1>>
         bool all_of_field_impl(T1&& t1, T2&& t2, Func&& func, std::index_sequence<Is...>)
         {
-            if constexpr (requires { (func(get_field<Is>(t1), get_field<Is>(t2)) && ...); })
+            auto storage1 = make_field_storage(std::forward<T1>(t1));
+            auto storage2 = make_field_storage(std::forward<T2>(t2));
+            if constexpr (requires { (func(get_stored_field<Is>(storage1), get_stored_field<Is>(storage2)) && ...); })
             {
-                return (func(get_field<Is>(t1), get_field<Is>(t2)) && ...);
+                return (func(get_stored_field<Is>(storage1), get_stored_field<Is>(storage2)) && ...);
             }
-            else if constexpr (requires { (func(field_name<U, Is>, get_field<Is>(t1), get_field<Is>(t2)) && ...); })
+            else if constexpr (requires {
+                                   (func(field_name<U, Is>, get_stored_field<Is>(storage1),
+                                         get_stored_field<Is>(storage2)) &&
+                                    ...);
+                               })
             {
-                return (func(field_name<U, Is>, get_field<Is>(t1), get_field<Is>(t2)) && ...);
+                return (func(field_name<U, Is>, get_stored_field<Is>(storage1), get_stored_field<Is>(storage2)) && ...);
             }
             else
             {
-                static_assert([] { return false; }(), "invalid function object for call to all_of_field");
+                static_assert(always_false<std::remove_cvref_t<Func>>,
+                              "invalid function object for call to all_of_field");
             }
         }
 
         template <typename T, typename Func, std::size_t... Is, field_referenceable U = std::remove_cvref_t<T>>
         bool any_of_field_impl(T&& t, Func&& func, std::index_sequence<Is...>)
         {
-            if constexpr (requires { (func(get_field<Is>(t)) || ...); })
+            auto storage = make_field_storage(std::forward<T>(t));
+            if constexpr (requires { (func(get_stored_field<Is>(storage)) || ...); })
             {
-                return (func(get_field<Is>(t)) || ...);
+                return (func(get_stored_field<Is>(storage)) || ...);
             }
-            else if constexpr (requires { (func(field_name<U, Is>, get_field<Is>(t)) || ...); })
+            else if constexpr (requires { (func(field_name<U, Is>, get_stored_field<Is>(storage)) || ...); })
             {
-                return (func(field_name<U, Is>, get_field<Is>(t)) || ...);
+                return (func(field_name<U, Is>, get_stored_field<Is>(storage)) || ...);
             }
             else
             {
-                static_assert([] { return false; }(), "invalid function object for call to any_of_field");
+                static_assert(always_false<std::remove_cvref_t<Func>>,
+                              "invalid function object for call to any_of_field");
             }
         }
 
@@ -756,17 +876,24 @@ namespace field_reflection
                   field_referenceable U = std::remove_cvref_t<T1>>
         bool any_of_field_impl(T1&& t1, T2&& t2, Func&& func, std::index_sequence<Is...>)
         {
-            if constexpr (requires { (func(get_field<Is>(t1), get_field<Is>(t2)) || ...); })
+            auto storage1 = make_field_storage(std::forward<T1>(t1));
+            auto storage2 = make_field_storage(std::forward<T2>(t2));
+            if constexpr (requires { (func(get_stored_field<Is>(storage1), get_stored_field<Is>(storage2)) || ...); })
             {
-                return (func(get_field<Is>(t1), get_field<Is>(t2)) || ...);
+                return (func(get_stored_field<Is>(storage1), get_stored_field<Is>(storage2)) || ...);
             }
-            else if constexpr (requires { (func(field_name<U, Is>, get_field<Is>(t1), get_field<Is>(t2)) || ...); })
+            else if constexpr (requires {
+                                   (func(field_name<U, Is>, get_stored_field<Is>(storage1),
+                                         get_stored_field<Is>(storage2)) ||
+                                    ...);
+                               })
             {
-                return (func(field_name<U, Is>, get_field<Is>(t1), get_field<Is>(t2)) || ...);
+                return (func(field_name<U, Is>, get_stored_field<Is>(storage1), get_stored_field<Is>(storage2)) || ...);
             }
             else
             {
-                static_assert([] { return false; }(), "invalid function object for call to any_of_field");
+                static_assert(always_false<std::remove_cvref_t<Func>>,
+                              "invalid function object for call to any_of_field");
             }
         }
     }  // namespace detail
@@ -779,6 +906,7 @@ namespace field_reflection
     using detail::field_type;
     using detail::get_field;
     using detail::to_tuple;
+    using detail::type_name;
 
     template <typename T1, typename T2, typename Func, field_referenceable U1 = std::remove_cvref_t<T1>,
               field_referenceable U2 = std::remove_cvref_t<T2>>
