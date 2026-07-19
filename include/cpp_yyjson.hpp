@@ -339,7 +339,7 @@ namespace yyjson
             struct
             {
                 T t;
-                inline T* operator->() { return &t; }
+                T* operator->() { return &t; }
             } cap{std::forward<T>(value)};
             return cap;
         };
@@ -2312,7 +2312,7 @@ namespace yyjson
                 // Work around MSVC cl missing inherited constrained constructors in constructibility checks.
                 template <create_array_callable T, copy_string_args... Ts>
                 requires base::is_value_type
-                mutable_array_base(T&& t, Ts... ts) : base(std::forward<T>(t), ts...)
+                mutable_array_base(T&& t, Ts... ts) : base(std::forward<T>(t), ts...)  // NOLINT
                 {
                 }
                 mutable_array_base(const mutable_array_base&) = default;
@@ -2963,7 +2963,7 @@ namespace yyjson
                 // Work around MSVC cl missing inherited constrained constructors in constructibility checks.
                 template <create_object_callable T, copy_string_args... Ts>
                 requires base::is_value_type
-                mutable_object_base(T&& t, Ts... ts) : base(std::forward<T>(t), ts...)
+                mutable_object_base(T&& t, Ts... ts) : base(std::forward<T>(t), ts...)  // NOLINT
                 {
                 }
                 mutable_object_base(std::initializer_list<key_value_pair> list)
