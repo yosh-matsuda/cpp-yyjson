@@ -2196,6 +2196,13 @@ struct Z : public X
 
 VISITABLE_STRUCT(Z, a, b, c);
 
+struct NullableField
+{
+    std::optional<int> optional_value;
+    std::shared_ptr<int> nullable_value;
+    std::optional<std::shared_ptr<int>> tri_state;
+};
+
 TEST(Writer, PredefinedCaster)
 {
     using namespace yyjson::writer;  // NOLINT
@@ -2205,6 +2212,9 @@ TEST(Writer, PredefinedCaster)
     static_assert(std::constructible_from<value, std::optional<int>&&>);
     static_assert(std::constructible_from<value, std::optional<int>&>);
     static_assert(std::constructible_from<value, const std::optional<int>&>);
+    static_assert(std::constructible_from<value, std::shared_ptr<int>&&>);
+    static_assert(std::constructible_from<value, std::shared_ptr<int>&>);
+    static_assert(std::constructible_from<value, const std::shared_ptr<int>&>);
     static_assert(!std::constructible_from<value_ref, std::optional<int>&&>);
     static_assert(!std::constructible_from<value_ref, std::optional<int>&>);
     static_assert(!std::constructible_from<value_ref, const std::optional<int>&>);
@@ -2320,6 +2330,8 @@ TEST(Writer, PredefinedCaster)
     EXPECT_TRUE(value(std::optional<int>(1)).is_int());
     EXPECT_EQ(1, *value(std::optional<int>(1)).as_int());
     EXPECT_TRUE(value(std::optional<int>()).is_null());
+    EXPECT_TRUE(value(std::shared_ptr<int>()).is_null());
+    EXPECT_EQ(1, *value(std::make_shared<int>(1)).as_int());
     EXPECT_TRUE(value(std::monostate()).is_null());
     EXPECT_TRUE(value(std::optional<int>(1)).is_int());
     EXPECT_EQ(1, *value(std::optional<int>(1)).as_int());
@@ -2477,10 +2489,40 @@ TEST(Writer, PredefinedCaster)
 
     auto x1 = X{.a = 1, .b = std::nullopt, .c = "x"};
     auto obj2 = object(x1);
+    EXPECT_FALSE(obj2.contains("b"));
     auto x2 = cast<X>(obj2);
     EXPECT_EQ(x1.a, x2.a);
     EXPECT_EQ(x1.b, x2.b);
     EXPECT_EQ(x1.c, x2.c);
+
+    auto x_null = cast<X>(object{{"a", 1}, {"b", nullptr}, {"c", "x"}});
+    EXPECT_EQ(std::nullopt, x_null.b);
+
+    auto nullable1 = NullableField{};
+    auto nullable_obj1 = object(nullable1);
+    EXPECT_FALSE(nullable_obj1.contains("optional_value"));
+    EXPECT_TRUE(nullable_obj1.contains("nullable_value"));
+    EXPECT_TRUE(nullable_obj1["nullable_value"].is_null());
+    EXPECT_FALSE(nullable_obj1.contains("tri_state"));
+
+    auto nullable2 = cast<NullableField>(object{{"optional_value", nullptr},
+                                                {"nullable_value", nullptr},
+                                                {"tri_state", nullptr}});
+    EXPECT_FALSE(nullable2.optional_value.has_value());
+    EXPECT_EQ(nullptr, nullable2.nullable_value);
+    EXPECT_TRUE(nullable2.tri_state.has_value());
+    EXPECT_EQ(nullptr, *nullable2.tri_state);
+
+    auto nullable3 = cast<NullableField>(object{{"optional_value", 1}, {"nullable_value", 2}, {"tri_state", 3}});
+    EXPECT_EQ(1, *nullable3.optional_value);
+    EXPECT_EQ(2, *nullable3.nullable_value);
+    EXPECT_TRUE(nullable3.tri_state.has_value());
+    EXPECT_EQ(3, **nullable3.tri_state);
+
+    auto nullable_obj3 = object(nullable3);
+    EXPECT_EQ(1, *nullable_obj3["optional_value"].as_int());
+    EXPECT_EQ(2, *nullable_obj3["nullable_value"].as_int());
+    EXPECT_EQ(3, *nullable_obj3["tri_state"].as_int());
 
     auto y1 = Y{1, std::nullopt, "y"};
     auto obj3 = value(y1);

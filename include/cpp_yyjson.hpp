@@ -369,6 +369,60 @@ namespace yyjson
                            std::convertible_to<Key, std::string_view>;
         template <typename Pair>
         concept key_value_like = pair_like<Pair> && key_type<std::tuple_element_t<0, Pair>>;
+        template <typename T>
+        struct is_optional : std::false_type
+        {
+        };
+        template <typename T>
+        struct is_optional<std::optional<T>> : std::true_type
+        {
+            using value_type = T;
+        };
+        template <typename T>
+        concept optional_like = is_optional<std::remove_cvref_t<T>>::value;
+
+        template <typename T>
+        struct is_shared_ptr : std::false_type
+        {
+        };
+        template <typename T>
+        struct is_shared_ptr<std::shared_ptr<T>> : std::true_type
+        {
+            using value_type = T;
+        };
+        template <typename T>
+        concept shared_ptr_like = is_shared_ptr<std::remove_cvref_t<T>>::value;
+
+        template <typename Field, typename Json>
+        void assign_reflected_field(Field& field, const Json& value)
+        {
+            using field_type = std::remove_cvref_t<Field>;
+            if constexpr (optional_like<field_type>)
+            {
+                using value_type = typename is_optional<field_type>::value_type;
+                if (!value.is_null() || shared_ptr_like<value_type>)
+                {
+                    field = cast<value_type>(value);
+                }
+            }
+            else
+            {
+                field = cast<field_type>(value);
+            }
+        }
+
+        template <typename Obj, typename Field, typename... Ts>
+        void emplace_reflected_field(Obj& obj, std::string_view field_name, Field&& field, Ts... ts)
+        {
+            if constexpr (optional_like<Field>)
+            {
+                if (field.has_value()) obj.emplace(field_name, std::forward<Field>(field), ts...);
+            }
+            else
+            {
+                obj.emplace(field_name, std::forward<Field>(field), ts...);
+            }
+        }
 
         template <typename T>
         concept is_initializer_list = requires(T d) { []<typename X>(const std::initializer_list<X>&) {}(d); };
@@ -3944,7 +3998,7 @@ namespace yyjson
                 field_reflection::any_of_field(result, [&](auto field_name, auto& field_value) {
                     if (key == field_name)
                     {
-                        field_value = cast<std::remove_cvref_t<decltype(field_value)>>(value);
+                        detail::assign_reflected_field(field_value, value);
                         return true;
                     }
                     return false;
@@ -4139,7 +4193,7 @@ namespace yyjson
         static auto to_json(writer::object_ref& obj, const T& t, Ts... ts)
         {
             field_reflection::for_each_field(t, [&](std::string_view field_name, const auto& field_value) {
-                obj.emplace(field_name, field_value, ts...);
+                detail::emplace_reflected_field(obj, field_name, field_value, ts...);
             });
         }
         template <copy_string_args... Ts>
@@ -4147,8 +4201,44 @@ namespace yyjson
         static auto to_json(writer::object_ref& obj, T&& t, Ts... ts)
         {
             field_reflection::for_each_field(t, [&](std::string_view field_name, auto& field_value) {
-                obj.emplace(field_name, std::move(field_value), ts...);
+                detail::emplace_reflected_field(obj, field_name, std::move(field_value), ts...);
             });
+        }
+    };
+
+    template <typename T>
+    struct caster<std::shared_ptr<T>>
+    {
+        static constexpr auto json_value_type = !std::same_as<T, writer::detail::mutable_document_ptrs>;
+
+        template <typename Json>
+        requires json_value_type
+        static std::shared_ptr<T> from_json(const Json& json)
+        {
+            if (json.is_null()) return {};
+            return std::make_shared<T>(cast<T>(json));
+        }
+
+        template <detail::copy_string_args... Ts>
+        requires json_value_type && requires(writer::value_ref& v, T t) {
+            v = t;
+            v = std::pair(t, copy_string);
+        }
+        static auto to_json(writer::value_ref& v, const std::shared_ptr<T>& t, Ts...)
+        {
+            constexpr auto copy = (sizeof...(Ts) != 0);
+            if (!t)
+            {
+                v = nullptr;
+            }
+            else if constexpr (copy)
+            {
+                v = std::pair(*t, copy_string);
+            }
+            else
+            {
+                v = *t;
+            }
         }
     };
 
@@ -4463,12 +4553,15 @@ struct std::formatter<T>
 #define CPPYYJSON_FOR_EACH(FUNC, ...) \
     CPPYYJSON_CONCAT(CPPYYJSON_FOR_EACH_IMPL_, CPPYYJSON_VA_ARGS_SIZE(__VA_ARGS__))(FUNC, __VA_ARGS__)
 
-#define VISITABLE_STRUCT_IMPL1(X)                           \
-    if (key == #X)                                          \
-        result.X = yyjson::cast<decltype(result.X)>(value); \
+#define VISITABLE_STRUCT_IMPL1(X)                          \
+    if (key == #X)                                         \
+    {                                                       \
+        yyjson::detail::assign_reflected_field(result.X, value); \
+    }                                                       \
     else
-#define VISITABLE_STRUCT_IMPL2(X) obj.emplace(std::string_view(#X), t.X, ts...);
-#define VISITABLE_STRUCT_IMPL3(X) obj.emplace(std::string_view(#X), std::move(t.X), ts...);
+#define VISITABLE_STRUCT_IMPL2(X) yyjson::detail::emplace_reflected_field(obj, std::string_view(#X), t.X, ts...);
+#define VISITABLE_STRUCT_IMPL3(X) \
+    yyjson::detail::emplace_reflected_field(obj, std::string_view(#X), std::move(t.X), ts...);
 #define VISITABLE_STRUCT(CLASS, ...)                                                          \
     static_assert(std::default_initializable<CLASS>, #CLASS " is not default initializable"); \
     template <>                                                                               \

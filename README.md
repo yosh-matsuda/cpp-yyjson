@@ -156,7 +156,7 @@ auto init_obj = object{{"id", 1},
 
 As shown above, cpp-yyjson provides conversion between JSON value/array/object classes and C++ ranges and container types recursively. In addition to that, the following additional JSON casters are available (see the [reference](docs/reference.md#serialize-and-deserialize-json) in detail):
 
-*   Pre-defined STL casters (e.g., `std::optional`, `std::variant`, `std::tuple` ([C++23 tuple-like](https://wg21.link/P2165R4))).
+*   Pre-defined STL casters (e.g., `std::optional`, `std::shared_ptr`, `std::variant`, `std::tuple` ([C++23 tuple-like](https://wg21.link/P2165R4))).
 *   Conversion using compile-time reflection of struct/class if it is available.
 *   Registration of field names with `VISITABLE_STRUCT` macro.
 *   User-defined casters.
@@ -164,10 +164,19 @@ As shown above, cpp-yyjson provides conversion between JSON value/array/object c
 #### Pre-defined STL casters
 
 ```cpp
-// cast JSON value from/to std::optional
-auto nullable = std::optional<int>(3);
-auto serialized = value(nullable);                        // serialize std::optional to JSON value
-auto deserialized = cast<decltype(nullable)>(serialized); // deserialize JSON value into std::optional
+// std::optional fields are omitted when they have no value
+struct Settings
+{
+    std::optional<int> timeout;
+};
+auto settings = Settings{.timeout = std::nullopt};
+auto serialized_settings = object(settings);              // -> {}
+
+// cast JSON null/value from/to std::shared_ptr
+auto nullable = std::shared_ptr<int>();
+auto serialized_nullable = value(nullable);               // -> null
+auto deserialized_nullable =
+    cast<decltype(nullable)>(serialized_nullable);         // -> nullptr
 
 // cast JSON value from/to std::variant
 auto variant = std::variant<std::monostate, int, std::string>("example");
@@ -200,7 +209,7 @@ struct X
 // serialize struxt X to JSON object with field-name reflection
 auto reflectable = X{.a = 1, .b = std::nullopt, .c = "x"};
 auto serialized = object(reflectable);
-// -> {"a":1,"b":null,"c":"x"}
+// -> {"a":1,"c":"x"}
 
 // deserialize JSON object into struct X with field-name reflection
 auto deserialized = cast<X>(serialized);
@@ -216,7 +225,7 @@ VISITABLE_STRUCT(X, a, b);
 // serialize visitable struxt X to JSON object
 auto visitable = X{.a = 1, .b = std::nullopt, .c = "x"};
 auto serialized = object(visitable);
-// -> {"a":1,"b":null}
+// -> {"a":1}
 
 // deserialize JSON object into struct X
 auto deserialized = cast<X>(serialized);
