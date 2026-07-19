@@ -640,6 +640,14 @@ namespace yyjson
             template <typename T>
             concept to_json_obj_defined = to_json_obj_usr<T> || to_json_obj_def<T>;
 
+            template <typename T>
+            using to_json_input_ref =
+                std::conditional_t<to_json_inp_usr_defined<T>,
+                                   std::conditional_t<to_json_obj_usr<T>, object_ref,
+                                                      std::conditional_t<to_json_arr_usr<T>, array_ref, value_ref>>,
+                                   std::conditional_t<to_json_obj_def<T>, object_ref,
+                                                      std::conditional_t<to_json_arr_def<T>, array_ref, value_ref>>>;
+
             template <to_json_def T, copy_string_args... Ts>
             auto to_json_wrapper(T&& t, Ts... ts)
             {
@@ -759,6 +767,39 @@ namespace yyjson
             concept key_value_like_create_value_callable =
                 key_value_like<Pair> && create_value_callable<std::tuple_element_t<1, Pair>>;
 
+            template <typename Range>
+            concept create_value_range =
+                std::ranges::input_range<Range> && create_value_callable<std::ranges::range_value_t<Range>> &&
+                (!create_primitive_callable<Range>) && (!convertible_to_create_array_callable<Range>);
+
+            template <typename Range>
+            concept mutable_value_range =
+                std::ranges::input_range<Range> && base_of_value<std::ranges::range_value_t<Range>> &&
+                (!base_of_value<Range>) && (!reader::detail::base_of_value_ref<Range>);
+
+            template <typename Range>
+            concept reader_value_ref_range = std::ranges::input_range<Range> &&
+                                             reader::detail::base_of_value_ref<std::ranges::range_value_t<Range>> &&
+                                             (!reader::detail::base_of_value_ref<Range>);
+
+            template <typename Range>
+            concept create_value_key_value_range =
+                std::ranges::input_range<Range> &&
+                key_value_like_create_value_callable<std::ranges::range_value_t<Range>> &&
+                (!convertible_to_create_object_callable<Range>);
+
+            template <typename Range>
+            concept mutable_value_key_value_range =
+                std::ranges::input_range<Range> && key_value_like<std::ranges::range_value_t<Range>> &&
+                base_of_value<std::tuple_element_t<1, std::ranges::range_value_t<Range>>> && (!base_of_value<Range>) &&
+                (!reader::detail::base_of_value_ref<Range>);
+
+            template <typename Range>
+            concept reader_value_ref_key_value_range =
+                std::ranges::input_range<Range> && key_value_like<std::ranges::range_value_t<Range>> &&
+                reader::detail::base_of_value_ref<std::tuple_element_t<1, std::ranges::range_value_t<Range>>> &&
+                (!reader::detail::base_of_value_ref<Range>);
+
             struct mutable_document_ptrs
             {
                 yyjson_mut_doc* self = yyjson_mut_doc_new(nullptr);
@@ -801,6 +842,22 @@ namespace yyjson
                 {
                     return yyjson_mut_val_mut_copy(ptrs->self, std::forward<T>(t).val_);
                 }
+                static void assign_value(yyjson_mut_val* dst, const yyjson_mut_val* src) noexcept
+                {
+                    dst->tag = src->tag;
+                    dst->uni = src->uni;
+                }
+                template <typename T>
+                void copy_value_to(yyjson_mut_val* dst, T&& json_value)
+                {
+                    assign_value(dst, copy_value(std::forward<T>(json_value)));
+                }
+                template <base_of_value T>
+                void add_child_document(T&& json_value)
+                {
+                    if (ptrs != json_value.doc_.ptrs)
+                        ptrs->children.emplace_back(std::forward<T>(json_value).doc_.ptrs);
+                }
                 template <std::same_as<std::nullptr_t> T, copy_string_args... Ts>
                 auto create_primitive(T, Ts...) noexcept
                 {
@@ -827,43 +884,35 @@ namespace yyjson
                 {
                     return yyjson_mut_real(ptrs->self, v);
                 }
-                auto create_primitive(const std::string& v, copy_string_t) noexcept
+                auto create_string(std::string_view v, copy_string_t) noexcept
                 {
                     return yyjson_mut_strncpy(ptrs->self, v.data(), v.size());
                 }
+                auto create_string(std::string_view v) noexcept
+                {
+                    return yyjson_mut_strn(ptrs->self, v.data(), v.size());
+                }
+                auto create_primitive(const std::string& v, copy_string_t) noexcept
+                {
+                    return create_string(v, copy_string);
+                }
                 auto create_primitive(std::string_view v, copy_string_t) noexcept
                 {
-                    return yyjson_mut_strncpy(ptrs->self, v.data(), v.size());
+                    return create_string(v, copy_string);
                 }
                 auto create_primitive(const char* v, copy_string_t) noexcept
                 {
                     return create_primitive(std::string_view(v), copy_string);
                 }
-                auto create_primitive(const std::string& v) noexcept
-                {
-                    return yyjson_mut_strn(ptrs->self, v.data(), v.size());
-                }
-                auto create_primitive(std::string&& v) noexcept
-                {
-                    return yyjson_mut_strncpy(ptrs->self, v.data(), v.size());
-                }
-                auto create_primitive(std::string_view v) noexcept
-                {
-                    return yyjson_mut_strn(ptrs->self, v.data(), v.size());
-                }
+                auto create_primitive(const std::string& v) noexcept { return create_string(v); }
+                auto create_primitive(std::string&& v) noexcept { return create_string(v, copy_string); }
+                auto create_primitive(std::string_view v) noexcept { return create_string(v); }
                 auto create_primitive(const char* v) noexcept { return create_primitive(std::string_view(v)); }
                 template <to_json_inp_defined T, copy_string_args... Ts>
                 auto create_primitive(T&& t, Ts... ts) noexcept
                 {
                     // T -(convert)-> value / array / object
-                    using reference_type = std::conditional_t<
-                        to_json_inp_usr_defined<T>,
-                        std::conditional_t<to_json_obj_usr<T>, object_ref,
-                                           std::conditional_t<to_json_arr_usr<T>, array_ref, value_ref>>,
-                        std::conditional_t<to_json_obj_def<T>, object_ref,
-                                           std::conditional_t<to_json_arr_def<T>, array_ref, value_ref>>>;
-
-                    auto vr = get_empty_value_ref<reference_type>();
+                    auto vr = get_empty_value_ref<to_json_input_ref<T>>();
                     to_json_wrapper(vr, std::forward<T>(t), ts...);
                     return vr.val_;
                 }
@@ -893,8 +942,7 @@ namespace yyjson
                     return create_array(convert(std::forward<T>(t), ts...), ts...);
                 }
                 template <std::ranges::input_range Range, copy_string_args... Args>
-                requires create_value_callable<std::ranges::range_value_t<Range>> &&
-                         (!create_primitive_callable<Range>) && (!convertible_to_create_array_callable<Range>)
+                requires create_value_range<Range>
                 auto create_array(Range&& range, Args... args) noexcept
                 {
                     // range<T> -> array
@@ -918,8 +966,7 @@ namespace yyjson
                     }
                 }
                 template <std::ranges::input_range Range>
-                requires base_of_value<std::ranges::range_value_t<Range>> && (!base_of_value<Range>) &&
-                         (!reader::detail::base_of_value_ref<Range>)
+                requires mutable_value_range<Range>
                 auto create_array(Range&& range, copy_string_t = copy_string) noexcept
                 {
                     // range<value> -> array<value>
@@ -982,8 +1029,7 @@ namespace yyjson
                     return result;
                 }
                 template <std::ranges::input_range Range>
-                requires reader::detail::base_of_value_ref<std::ranges::range_value_t<Range>> &&
-                         (!reader::detail::base_of_value_ref<Range>)
+                requires reader_value_ref_range<Range>
                 auto create_array(Range&& range, copy_string_t = copy_string) noexcept
                 {
                     // range<immut_value> -> array<value>
@@ -1020,17 +1066,14 @@ namespace yyjson
                     return create_object(convert(std::forward<T>(t), ts...), ts...);
                 }
                 template <std::ranges::input_range Range, copy_string_args... Ts>
-                requires key_value_like_create_value_callable<std::ranges::range_value_t<Range>> &&
-                         (!convertible_to_create_object_callable<Range>)
+                requires create_value_key_value_range<Range>
                 auto create_object(Range&& range, Ts... ts) noexcept
                 {
                     // range<T> -> object
                     return yyjson_mut_obj_with_range(std::forward<Range>(range), ts...);
                 }
                 template <std::ranges::input_range Range, copy_string_args... Ts>
-                requires key_value_like<std::ranges::range_value_t<Range>> &&
-                         base_of_value<std::tuple_element_t<1, std::ranges::range_value_t<Range>>> &&
-                         (!base_of_value<Range>) && (!reader::detail::base_of_value_ref<Range>)
+                requires mutable_value_key_value_range<Range>
                 auto create_object(Range&& range, Ts... ts) noexcept
                 {
                     // range<pair<key, value>> -> object
@@ -1099,10 +1142,7 @@ namespace yyjson
                     return result;
                 }
                 template <std::ranges::input_range Range, copy_string_args... Ts>
-                requires key_value_like<std::ranges::range_value_t<Range>> &&
-                         reader::detail::base_of_value_ref<
-                             std::tuple_element_t<1, std::ranges::range_value_t<Range>>> &&
-                         (!reader::detail::base_of_value_ref<Range>)
+                requires reader_value_ref_key_value_range<Range>
                 auto create_object(Range&& range, Ts... ts) noexcept
                 {
                     // range<pair<key, immut_value>> -> object
@@ -1208,8 +1248,7 @@ namespace yyjson
                     else
                     {
                         const auto new_val = create_value(std::forward<T>(t), ts...);
-                        dst->tag = new_val->tag;
-                        dst->uni = new_val->uni;
+                        assign_value(dst, new_val);
                     }
 
                     return true;
@@ -1221,18 +1260,14 @@ namespace yyjson
                     if constexpr (!std::is_assignable_v<decltype(json_value.get_has_parent()), bool>)
                     {
                         // copy
-                        auto val_copy = copy_value(json_value);
-                        dst->tag = val_copy->tag;
-                        dst->uni = val_copy->uni;
+                        copy_value_to(dst, json_value);
                         return;
                     }
                     else if constexpr (std::is_rvalue_reference_v<T&&>)
                     {
                         // no copy; move
-                        dst->tag = json_value.val_->tag;
-                        dst->uni = json_value.val_->uni;
-                        if (ptrs != json_value.doc_.ptrs)
-                            ptrs->children.emplace_back(std::forward<T>(json_value).doc_.ptrs);
+                        assign_value(dst, json_value.val_);
+                        add_child_document(std::forward<T>(json_value));
                         return;
                     }
                     else
@@ -1240,18 +1275,14 @@ namespace yyjson
                         if (json_value.get_has_parent()) [[unlikely]]
                         {
                             // copy
-                            auto val_copy = copy_value(json_value);
-                            dst->tag = val_copy->tag;
-                            dst->uni = val_copy->uni;
+                            copy_value_to(dst, json_value);
                             return;
                         }
 
                         // no copy
-                        dst->tag = json_value.val_->tag;
-                        dst->uni = json_value.val_->uni;
+                        assign_value(dst, json_value.val_);
                         if (set_has_parent) json_value.get_has_parent() = true;
-                        if (ptrs != json_value.doc_.ptrs)
-                            ptrs->children.emplace_back(std::forward<T>(json_value).doc_.ptrs);
+                        add_child_document(std::forward<T>(json_value));
                         return;
                     }
                 }
@@ -1259,9 +1290,7 @@ namespace yyjson
                 template <reader::detail::base_of_value_ref T>
                 auto set_value(yyjson_mut_val* dst, T&& json_value)
                 {
-                    auto val_copy = copy_value(json_value);
-                    dst->tag = val_copy->tag;
-                    dst->uni = val_copy->uni;
+                    copy_value_to(dst, json_value);
                     return;
                 }
 
@@ -3940,6 +3969,55 @@ namespace yyjson
     concept all_fields_castable =
         json_object<Json> && field_reflection::field_namable<T> && all_fields_castable_impl<Json, T>();
 
+    namespace detail
+    {
+        template <typename T>
+        concept reservable = requires(T& t, std::size_t size) { t.reserve(size); };
+
+        template <typename T>
+        void reserve_if_possible(T& t, std::size_t size)
+        {
+            if constexpr (reservable<T>)
+            {
+                t.reserve(size);
+            }
+        }
+
+        template <typename T, typename Json>
+        concept object_emplaceable_range =
+            std::default_initializable<T> && (!visitable<T>) && std::ranges::input_range<T> && requires {
+                typename std::ranges::range_value_t<T>;
+                requires key_value_like<std::ranges::range_value_t<T>>;
+                requires requires(T t, Json obj) { t.emplace(obj.begin()->first, obj.begin()->second); };
+            };
+
+        template <typename T, typename Json>
+        concept object_back_emplaceable_range =
+            std::default_initializable<T> && (!visitable<T>) && std::ranges::input_range<T> && requires {
+                typename std::ranges::range_value_t<T>;
+                requires pair_like<std::ranges::range_value_t<T>>;
+                requires requires(T t, Json obj) {
+                    t.emplace_back(obj.begin()->first,
+                                   cast<std::remove_cvref_t<std::tuple_element_t<1, std::ranges::range_value_t<T>>>>(
+                                       obj.begin()->second));
+                };
+            };
+
+        template <typename T, typename Json>
+        concept array_castable_range = std::ranges::range<T> && std::default_initializable<T> && requires {
+            typename std::ranges::range_value_t<T>;
+            requires std::ranges::output_range<T, std::ranges::range_value_t<T>>;
+            requires requires(const Json& arr) { cast<std::ranges::range_value_t<T>>(arr.front()); };
+        };
+
+        template <typename T, typename Arg>
+#ifdef _MSC_VER
+        concept json_scalar_constructible = requires { T(std::declval<Arg>()); };
+#else
+        concept json_scalar_constructible = std::constructible_from<T, Arg>;
+#endif
+    }  // namespace detail
+
     template <typename T>
     struct detail::default_caster
     {
@@ -3950,19 +4028,12 @@ namespace yyjson
             return visit_struct<T>::from_json_impl(obj);
         }
         template <json_object Json>
-        requires std::default_initializable<T> && (!visitable<T>) && std::ranges::input_range<T> && requires {
-            typename std::ranges::range_value_t<T>;
-            requires key_value_like<std::ranges::range_value_t<T>>;
-            requires requires(T t, Json obj) { t.emplace(obj.begin()->first, obj.begin()->second); };
-        }
+        requires object_emplaceable_range<T, Json>
         static auto from_json(const Json& obj)
         {
             using value_type = std::remove_cvref_t<std::tuple_element_t<1, std::ranges::range_value_t<T>>>;
             auto result = T();
-            if constexpr (requires(T& t, std::size_t size) { t.reserve(size); })
-            {
-                result.reserve(obj.size());
-            }
+            reserve_if_possible(result, obj.size());
             for (auto&& kv : obj)
             {
                 result.emplace(kv.first, cast<value_type>(kv.second));
@@ -3970,23 +4041,12 @@ namespace yyjson
             return result;
         }
         template <json_object Json>
-        requires std::default_initializable<T> && (!visitable<T>) && std::ranges::input_range<T> && requires {
-            typename std::ranges::range_value_t<T>;
-            requires pair_like<std::ranges::range_value_t<T>>;
-            requires requires(T t, Json obj) {
-                t.emplace_back(obj.begin()->first,
-                               cast<std::remove_cvref_t<std::tuple_element_t<1, std::ranges::range_value_t<T>>>>(
-                                   obj.begin()->second));
-            };
-        }
+        requires object_back_emplaceable_range<T, Json>
         static auto from_json(const Json& obj)
         {
             using value_type = std::remove_cvref_t<std::tuple_element_t<1, std::ranges::range_value_t<T>>>;
             auto result = T();
-            if constexpr (requires(T& t, std::size_t size) { t.reserve(size); })
-            {
-                result.reserve(obj.size());
-            }
+            reserve_if_possible(result, obj.size());
             for (auto&& kv : obj)
             {
                 result.emplace_back(kv.first, cast<value_type>(kv.second));
@@ -4013,21 +4073,14 @@ namespace yyjson
             return result;
         }
         template <json_array Json>
-        requires std::ranges::range<T> && std::default_initializable<T> && requires {
-            typename std::ranges::range_value_t<T>;
-            requires std::ranges::output_range<T, std::ranges::range_value_t<T>>;
-            requires requires(const Json& arr) { cast<std::ranges::range_value_t<T>>(arr.front()); };
-        }
+        requires array_castable_range<T, Json>
         static auto from_json(const Json& arr)
         {
             auto result = T();
 
             if constexpr (back_insertable<T>)
             {
-                if constexpr (requires(T& t) { t.reserve(std::declval<std::size_t>()); })
-                {
-                    result.reserve(arr.size());
-                }
+                reserve_if_possible(result, arr.size());
                 std::ranges::transform(arr, std::back_inserter(result),
                                        [](const auto& e) { return cast<std::ranges::range_value_t<T>>(e); });
             }
@@ -4052,6 +4105,103 @@ namespace yyjson
 #pragma GCC diagnostic ignored "-Wmissing-field-initializers"
 #pragma GCC diagnostic ignored "-Wshorten-64-to-32"
 #endif
+        template <typename U = T>
+        static U from_json_null()
+        {
+            if constexpr (std::constructible_from<U, std::nullptr_t>)
+            {
+                return U(nullptr);
+            }
+            else if constexpr (std::constructible_from<U, std::nullopt_t>)
+                return U(std::nullopt);
+            else if constexpr (std::constructible_from<U, std::monostate>)
+                return U(std::monostate());
+            else
+                throw bad_cast(std::format("{} is not constructible from JSON null", detail::type_name<U>()));
+        }
+
+        template <typename Json, typename U = T>
+        static U from_json_bool(const Json& json)
+        {
+            if constexpr (json_scalar_constructible<U, bool>)
+                return U(*json.as_bool());
+            else
+                throw bad_cast(std::format("{} is not constructible from JSON bool", detail::type_name<U>()));
+        }
+
+        template <typename Json, typename U = T>
+        static U from_json_real(const Json& json)
+        {
+            if constexpr (json_scalar_constructible<U, double>)
+            {
+                return U(*json.as_real());
+            }
+            else
+                throw bad_cast(std::format("{} is not constructible from JSON number", detail::type_name<U>()));
+        }
+
+        template <typename Json, typename U = T>
+        static U from_json_string(const Json& json)
+        {
+            if constexpr (std::constructible_from<U, std::string_view>)
+                return U(*json.as_string());
+            else if constexpr (std::constructible_from<U, std::string>)
+                return U(std::string(*json.as_string()));
+            else if constexpr (std::constructible_from<U, const char*>)
+                return U(json.as_string()->data());
+            else
+                throw bad_cast(std::format("{} is not constructible from JSON string", detail::type_name<U>()));
+        }
+
+        template <typename U = T>
+        static U from_json_uint(std::uint64_t value)
+        {
+            if constexpr (std::integral<U>)
+            {
+                if (value <= std::numeric_limits<U>::max())
+                {
+                    return static_cast<U>(value);
+                }
+                throw bad_cast(std::format("overflow detected: {} is not constructible from JSON integer {}",
+                                           detail::type_name<U>(), value));
+            }
+            else if constexpr (json_scalar_constructible<U, std::uint64_t>)
+            {
+                return U(value);
+            }
+            else
+                throw bad_cast(std::format("{} is not constructible from JSON integer", detail::type_name<U>()));
+        }
+
+        template <typename U = T>
+        static U from_json_sint(std::int64_t value)
+        {
+            if constexpr (std::unsigned_integral<U>)
+            {
+                if (value >= 0 && static_cast<std::uint64_t>(value) <= std::numeric_limits<U>::max())
+                {
+                    return static_cast<U>(value);
+                }
+                throw bad_cast(std::format("overflow detected: {} is not constructible from JSON integer {}",
+                                           detail::type_name<U>(), value));
+            }
+            else if constexpr (std::signed_integral<U>)
+            {
+                if (value >= std::numeric_limits<U>::min() && value <= std::numeric_limits<U>::max())
+                {
+                    return static_cast<U>(value);
+                }
+                throw bad_cast(std::format("overflow detected: {} is not constructible from JSON integer {}",
+                                           detail::type_name<U>(), value));
+            }
+            else if constexpr (json_scalar_constructible<U, std::int64_t>)
+            {
+                return U(value);
+            }
+            else
+                throw bad_cast(std::format("{} is not constructible from JSON integer", detail::type_name<U>()));
+        }
+
         template <typename Json>
         requires (std::same_as<reader::const_value_ref, Json> || writer::detail::base_of_const_value<Json>)
         static auto from_json(const Json& json)
@@ -4076,104 +4226,27 @@ namespace yyjson
             }
             else if (json.is_null())
             {
-                if constexpr (std::constructible_from<T, std::nullptr_t>)
-                {
-                    return T(nullptr);
-                }
-                else if constexpr (std::constructible_from<T, std::nullopt_t>)
-                    return T(std::nullopt);
-                else if constexpr (std::constructible_from<T, std::monostate>)
-                    return T(std::monostate());
-                else
-                    throw bad_cast(std::format("{} is not constructible from JSON null", detail::type_name<T>()));
+                return from_json_null();
             }
             else if (json.is_bool())
             {
-#ifdef _MSC_VER
-                if constexpr (requires { T(std::declval<bool>()); })
-#else
-                if constexpr (std::constructible_from<T, bool>)
-#endif
-                    return T(*json.as_bool());
-                else
-                    throw bad_cast(std::format("{} is not constructible from JSON bool", detail::type_name<T>()));
+                return from_json_bool(json);
             }
             else if (json.is_real())
             {
-#ifdef _MSC_VER
-                if constexpr (requires { T(std::declval<double>()); })
-#else
-                if constexpr (std::constructible_from<T, double>)
-#endif
-                {
-                    return T(*json.as_real());
-                }
-                else
-                    throw bad_cast(std::format("{} is not constructible from JSON number", detail::type_name<T>()));
+                return from_json_real(json);
             }
             else if (json.is_string())
             {
-                if constexpr (std::constructible_from<T, std::string_view>)
-                    return T(*json.as_string());
-                else if constexpr (std::constructible_from<T, std::string>)
-                    return T(std::string(*json.as_string()));
-                else if constexpr (std::constructible_from<T, const char*>)
-                    return T(json.as_string()->data());
-                else
-                    throw bad_cast(std::format("{} is not constructible from JSON string", detail::type_name<T>()));
+                return from_json_string(json);
             }
             else if (const auto vui = json.as_uint(); vui.has_value())
             {
-                if constexpr (std::integral<T>)
-                {
-                    if (*vui <= std::numeric_limits<T>::max())
-                    {
-                        return static_cast<T>(*vui);
-                    }
-                    throw bad_cast(std::format("overflow detected: {} is not constructible from JSON integer {}",
-                                               detail::type_name<T>(), *vui));
-                }
-#ifdef _MSC_VER
-                else if constexpr (requires { T(std::declval<std::uint64_t>()); })
-#else
-                else if constexpr (std::constructible_from<T, std::uint64_t>)
-#endif
-                {
-                    return T(*vui);
-                }
-                else
-                    throw bad_cast(std::format("{} is not constructible from JSON integer", detail::type_name<T>()));
+                return from_json_uint(*vui);
             }
             else if (const auto vsi = json.as_sint(); vsi.has_value())
             {
-                if constexpr (std::unsigned_integral<T>)
-                {
-                    if (*vsi >= 0 && static_cast<std::uint64_t>(*vsi) <= std::numeric_limits<T>::max())
-                    {
-                        return static_cast<T>(*vsi);
-                    }
-                    throw bad_cast(std::format("overflow detected: {} is not constructible from JSON integer {}",
-                                               detail::type_name<T>(), *vsi));
-                }
-                else if constexpr (std::signed_integral<T>)
-                {
-                    if (*vsi >= std::numeric_limits<T>::min() && *vsi <= std::numeric_limits<T>::max())
-                    {
-                        return static_cast<T>(*vsi);
-                    }
-                    throw bad_cast(std::format("overflow detected: {} is not constructible from JSON integer {}",
-                                               detail::type_name<T>(), *vsi));
-                }
-#ifdef _MSC_VER
-                else if constexpr (requires { T(std::declval<std::int64_t>()); })
-#else
-                else if constexpr (std::constructible_from<T, std::int64_t>)
-#endif
-                {
-                    return T(*vsi);
-                }
-                else
-                    throw bad_cast(std::format("{} is not constructible from JSON integer", detail::type_name<T>()));
+                return from_json_sint(*vsi);
             }
             throw bad_cast(std::format("{} is not constructible from raw json", detail::type_name<T>()));
         }
