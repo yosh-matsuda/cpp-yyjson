@@ -756,6 +756,7 @@ TEST(Writer, ValueExamples)
         auto i = -1;
         auto d = 3.14;
         EXPECT_EQ(std::format("{}", b), value(b).write());
+        EXPECT_EQ(std::format("{}", value(b).write()), value(b).write());
         EXPECT_EQ("null", value(n).write());
         EXPECT_EQ(std::format("{}", i), value(static_cast<std::int8_t>(i)).write());
         EXPECT_EQ(std::format("{}", i), value(static_cast<std::int16_t>(i)).write());
