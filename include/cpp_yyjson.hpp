@@ -2212,6 +2212,12 @@ namespace yyjson
                 }
 
             public:
+                // Work around MSVC cl missing inherited constrained constructors in constructibility checks.
+                template <create_array_callable T, copy_string_args... Ts>
+                requires base::is_value_type
+                mutable_array_base(T&& t, Ts... ts) : base(std::forward<T>(t), ts...)
+                {
+                }
                 mutable_array_base(const mutable_array_base&) = default;
                 mutable_array_base(mutable_array_base&&) noexcept = default;
 
@@ -2825,6 +2831,22 @@ namespace yyjson
                 }
 
             public:
+                // Work around MSVC cl missing inherited constrained constructors in constructibility checks.
+                template <create_object_callable T, copy_string_args... Ts>
+                requires base::is_value_type
+                mutable_object_base(T&& t, Ts... ts) : base(std::forward<T>(t), ts...)
+                {
+                }
+                mutable_object_base(std::initializer_list<key_value_pair> list)
+                requires base::is_value_type
+                    : base(list)
+                {
+                }
+                mutable_object_base(std::initializer_list<key_value_pair> list, copy_string_t)
+                requires base::is_value_type
+                    : base(list, copy_string)
+                {
+                }
                 mutable_object_base(const mutable_object_base&) = default;
                 mutable_object_base(mutable_object_base&&) noexcept = default;
 

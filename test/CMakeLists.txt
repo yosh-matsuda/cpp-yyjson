@@ -21,7 +21,6 @@ if(NOT MSVC)
   endif()
 else() # MSVC including clang-cl
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /W4 /utf-8")
-  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
 
 # O3 optimization

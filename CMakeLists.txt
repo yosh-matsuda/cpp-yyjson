@@ -27,10 +27,8 @@ target_include_directories(
             $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 set_target_properties(${PROJECT_NAME} PROPERTIES VERSION ${PROJECT_VERSION})
 
-# for MSVC
-if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "MSVC")
-  target_compile_options(${PROJECT_NAME} INTERFACE /Zc:preprocessor)
-endif()
+target_compile_options(
+  ${PROJECT_NAME} INTERFACE $<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/Zc:preprocessor>)
 
 # dependencies
 function(find_and_link package_name qualified_name)

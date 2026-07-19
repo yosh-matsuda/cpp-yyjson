@@ -19,7 +19,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ windows-2022, windows-2025 ]
-        compiler: [ { c: "clang-cl", cxx: "clang-cl" } ]
+        compiler: [ { c: "clang-cl", cxx: "clang-cl" }, { c: "cl", cxx: "cl" } ]
     name: Windows - ${{ matrix.os }} - ${{ matrix.compiler.cxx }}
     runs-on: ${{ matrix.os }}
 
