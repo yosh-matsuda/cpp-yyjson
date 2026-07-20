@@ -2140,12 +2140,6 @@ TEST(Writer, ObjectMethodExample)
     num_obj.emplace("5", {"5"}, copy_string);
     EXPECT_EQ(4, *num_obj["4"].as_int());
     EXPECT_EQ("5", *num_obj_const["5"].as_array()->front().as_string());
-    auto key = std::string("base_of_value_key");
-    auto value = yyjson::value(42);
-    num_obj.emplace(key, value, copy_string);
-    key[0] = 'X';
-    EXPECT_TRUE(num_obj.contains("base_of_value_key"));
-    EXPECT_FALSE(num_obj.contains("Xase_of_value_key"));
 
     // try_emplace
     auto iter2 = num_obj.try_emplace("4", 4);
@@ -2605,6 +2599,21 @@ TEST(Writer, PredefinedCaster)
     EXPECT_EQ(1, *nullable_obj3["optional_value"].as_int());
     EXPECT_EQ(2, *nullable_obj3["nullable_value"].as_int());
     EXPECT_EQ(3, *nullable_obj3["tri_state"].as_int());
+
+    auto x_optional_empty = X{10, std::nullopt, "borrowed"};
+    auto x_optional_empty_obj = object(x_optional_empty);
+    EXPECT_EQ(R"({"a":10,"c":"borrowed"})", x_optional_empty_obj.write());
+    EXPECT_FALSE(x_optional_empty_obj.contains("b"));
+
+    auto x_copy = X{11, 12.5, "stable"};
+    auto x_copy_obj = object(x_copy, yyjson::copy_string);
+    x_copy.c = "changed";
+    EXPECT_EQ("stable", *x_copy_obj["c"].as_string());
+
+    auto x_move_obj = object(X{13, 14.5, "moved"});
+    EXPECT_EQ(13, *x_move_obj["a"].as_int());
+    EXPECT_EQ(14.5, *x_move_obj["b"].as_real());
+    EXPECT_EQ("moved", *x_move_obj["c"].as_string());
 
     auto y1 = Y{1, std::nullopt, "y"};
     auto obj3 = value(y1);

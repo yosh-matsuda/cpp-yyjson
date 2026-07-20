@@ -424,6 +424,40 @@ namespace yyjson
             }
         }
 
+        template <typename T, std::size_t... Is>
+        consteval bool has_optional_reflected_field_impl(std::index_sequence<Is...>)
+        {
+            return (optional_like<field_reflection::field_type<T, Is>> || ...);
+        }
+
+        template <typename T>
+        concept has_optional_reflected_field =
+            has_optional_reflected_field_impl<T>(std::make_index_sequence<field_reflection::field_count<T>>{});
+
+        template <typename T, typename U = std::remove_cvref_t<T>>
+        std::size_t reflected_field_count(T&& t)
+        {
+            if constexpr (has_optional_reflected_field<U>)
+            {
+                auto count = std::size_t{0};
+                field_reflection::for_each_field(t, [&](std::string_view, const auto& field) {
+                    if constexpr (optional_like<decltype(field)>)
+                    {
+                        if (field.has_value()) ++count;
+                    }
+                    else
+                    {
+                        ++count;
+                    }
+                });
+                return count;
+            }
+            else
+            {
+                return field_reflection::field_count<U>;
+            }
+        }
+
         template <typename T>
         concept is_initializer_list = requires(T d) { []<typename X>(const std::initializer_list<X>&) {}(d); };
 
@@ -946,9 +980,17 @@ namespace yyjson
                 auto create_array(Range&& range, Args... args) noexcept
                 {
                     // range<T> -> array
-                    using value_type = std::ranges::range_value_t<Range>;
-                    if constexpr (convertible_to_create_primitive_callable<value_type> ||
-                                  to_json_inp_defined<value_type>)
+                    using value_type = std::remove_cvref_t<std::ranges::range_value_t<Range>>;
+                    if constexpr (std::ranges::sized_range<Range> && visitable<value_type> &&
+                                  requires { visit_struct<value_type>::field_count; })
+                    {
+                        return yyjson_mut_arr_with_visitable_objects(std::forward<Range>(range), args...);
+                    }
+                    else if constexpr (std::ranges::sized_range<Range>)
+                    {
+                        return yyjson_mut_arr_with_range(std::forward<Range>(range), args...);
+                    }
+                    else
                     {
                         auto& doc = ptrs->self;
                         auto* result = yyjson_mut_arr(doc);
@@ -959,10 +1001,6 @@ namespace yyjson
                             assert(success);
                         }
                         return result;
-                    }
-                    else
-                    {
-                        return yyjson_mut_arr_with_range(std::forward<Range>(range), args...);
                     }
                 }
                 template <std::ranges::input_range Range>
@@ -1329,6 +1367,88 @@ namespace yyjson
                     return nullptr;
                 }
 
+                template <tuple_like Tuple, std::size_t... Is, copy_string_args... Ts>
+                yyjson_mut_val* yyjson_mut_arr_with_tuple_impl(Tuple&& tuple, std::index_sequence<Is...>, Ts... ts)
+                {
+                    constexpr auto count = sizeof...(Is);
+                    auto* doc = ptrs->self;
+                    if (yyjson_likely(doc))
+                    {
+                        auto* arr = unsafe_yyjson_mut_val(doc, 1 + count);
+                        if (yyjson_likely(arr))
+                        {
+                            arr->tag = (static_cast<std::uint64_t>(count) << YYJSON_TAG_BIT) | YYJSON_TYPE_ARR;
+                            if constexpr (count > 0)
+                            {
+                                auto success = true;
+                                ((success = success &&
+                                            set_value(arr + Is + 1, std::get<Is>(std::forward<Tuple>(tuple)), ts...)),
+                                 ...);
+                                if (yyjson_unlikely(!success)) [[unlikely]]
+                                    return nullptr;
+
+                                ((arr[Is + 1].next = arr + Is + 2), ...);
+                                arr[count].next = arr + 1;
+                                arr->uni.ptr = arr + count;
+                            }
+                            return arr;
+                        }
+                    }
+                    return nullptr;
+                }
+
+                template <tuple_like Tuple, copy_string_args... Ts>
+                yyjson_mut_val* yyjson_mut_arr_with_tuple(Tuple&& tuple, Ts... ts)
+                {
+                    using tuple_type = std::remove_cvref_t<Tuple>;
+                    return yyjson_mut_arr_with_tuple_impl(
+                        std::forward<Tuple>(tuple), std::make_index_sequence<std::tuple_size_v<tuple_type>>{}, ts...);
+                }
+
+                template <std::ranges::sized_range Range, copy_string_args... Ts>
+                yyjson_mut_val* yyjson_mut_arr_with_visitable_objects(Range&& range, Ts... ts)
+                {
+                    using value_type = std::remove_cvref_t<std::ranges::range_value_t<Range>>;
+                    constexpr auto field_count = visit_struct<value_type>::field_count;
+                    const auto count = std::ranges::size(range);
+                    auto* doc = ptrs->self;
+                    constexpr auto max_values = ~static_cast<std::size_t>(0) / sizeof(yyjson_mut_val);
+                    if (yyjson_likely(doc && count <= (max_values - 1) / ((field_count * 2) + 1)))
+                    {
+                        auto* arr = unsafe_yyjson_mut_val(doc, 1 + (count * ((field_count * 2) + 1)));
+                        if (yyjson_likely(arr))
+                        {
+                            arr->tag = (static_cast<std::uint64_t>(count) << YYJSON_TAG_BIT) | YYJSON_TYPE_ARR;
+                            if (count > 0)
+                            {
+                                auto* values = arr + 1;
+                                auto* fields = values + count;
+                                for (std::size_t i = 0; auto&& v : std::forward<Range>(range))
+                                {
+                                    auto* obj = values + i;
+                                    auto* field_values = fields + (i * field_count * 2);
+                                    auto emitter = reflected_field_emitter{*this, obj, field_values, field_count};
+                                    visit_struct<value_type>::to_json_impl(
+                                        emitter, forward_element<Range&&>(std::forward<decltype(v)>(v)), ts...);
+                                    if (yyjson_unlikely(!emitter.success)) [[unlikely]]
+                                        return nullptr;
+
+                                    finish_reflected_object(obj, field_values, emitter.count);
+                                    obj->next = obj + 1;
+                                    ++i;
+                                }
+                                values[count - 1].next = values;
+                                arr->uni.ptr = values + count - 1;
+                            }
+                            else
+                            {
+                                arr->uni.ptr = nullptr;
+                            }
+                            return arr;
+                        }
+                    }
+                    return nullptr;
+                }
                 template <std::ranges::input_range Range, copy_string_args... Ts>
                 requires key_value_like_create_value_callable<std::ranges::range_value_t<Range>>
                 yyjson_mut_val* yyjson_mut_obj_with_range(Range&& range, Ts... ts)
@@ -1374,6 +1494,95 @@ namespace yyjson
                                 obj[count * 2].next = obj + 1;
                                 obj->uni.ptr = obj + (count * 2 - 1);
                             }
+                            return obj;
+                        }
+                    }
+                    return nullptr;
+                }
+
+                struct reflected_field_emitter
+                {
+                    mutable_document& doc;
+                    yyjson_mut_val* obj;
+                    yyjson_mut_val* fields;
+                    std::size_t capacity = 0;
+                    std::size_t count = 0;
+                    bool success = true;
+
+                    template <typename Field, copy_string_args... Ts>
+                    void emplace(std::string_view field_name, Field&& field, Ts... ts) noexcept
+                    {
+                        if (!success) [[unlikely]]
+                            return;
+                        if constexpr (optional_like<Field>)
+                        {
+                            if (!field.has_value()) return;
+                        }
+                        if (count >= capacity) [[unlikely]]
+                        {
+                            success = false;
+                            return;
+                        }
+
+                        auto* key = fields + (count * 2);
+                        auto* val = fields + ((count * 2) + 1);
+                        success = doc.set_value(key, field_name, ts...);
+                        if (!success) [[unlikely]]
+                            return;
+
+                        if constexpr (base_of_value<Field>)
+                        {
+                            doc.set_value(val, std::forward<Field>(field), true);
+                        }
+                        else if constexpr (reader::detail::base_of_value_ref<Field>)
+                        {
+                            doc.set_value(val, std::forward<Field>(field));
+                        }
+                        else
+                        {
+                            success = doc.set_value(val, std::forward<Field>(field), ts...);
+                            if (!success) [[unlikely]]
+                                return;
+                        }
+
+                        key->next = val;
+                        val->next = val + 1;
+                        ++count;
+                    }
+                };
+
+                static void finish_reflected_object(yyjson_mut_val* obj, yyjson_mut_val* fields,
+                                                    std::size_t count) noexcept
+                {
+                    obj->tag = (static_cast<std::uint64_t>(count) << YYJSON_TAG_BIT) | YYJSON_TYPE_OBJ;
+                    if (count > 0)
+                    {
+                        fields[(count * 2) - 1].next = fields;
+                        obj->uni.ptr = fields + ((count * 2) - 2);
+                    }
+                    else
+                    {
+                        obj->uni.ptr = nullptr;
+                    }
+                }
+
+                template <typename Func>
+                yyjson_mut_val* yyjson_mut_obj_with_reflected_fields(std::size_t capacity, Func&& func,
+                                                                     bool exact_count = true)
+                {
+                    auto* doc = ptrs->self;
+                    if (yyjson_likely(doc && capacity < (~static_cast<std::size_t>(0)) / (sizeof(yyjson_mut_val) * 2)))
+                    {
+                        auto* obj = unsafe_yyjson_mut_val(doc, 1 + (capacity * 2));
+                        if (yyjson_likely(obj))
+                        {
+                            auto emitter = reflected_field_emitter{*this, obj, obj + 1, capacity};
+                            std::forward<Func>(func)(emitter);
+                            if (yyjson_unlikely(!emitter.success || (exact_count && emitter.count != capacity)))
+                                [[unlikely]]
+                                return nullptr;
+
+                            finish_reflected_object(obj, obj + 1, emitter.count);
                             return obj;
                         }
                     }
@@ -2352,6 +2561,7 @@ namespace yyjson
                     base::doc_.set_value(base::val_, list);
                     return *this;
                 };
+
                 template <pair_like T>
                 requires std::same_as<std::remove_cvref_t<std::tuple_element_t<1, std::remove_cvref_t<T>>>,
                                       copy_string_t> &&
@@ -3013,6 +3223,7 @@ namespace yyjson
                     base::doc_.set_value(base::val_, list);
                     return *this;
                 };
+
                 template <pair_like T>
                 requires std::same_as<std::remove_cvref_t<std::tuple_element_t<1, std::remove_cvref_t<T>>>,
                                       copy_string_t> &&
@@ -3064,16 +3275,14 @@ namespace yyjson
                                                 object_append(std::forward<KeyType>(key), std::forward<T>(t), ts...));
                 }
                 template <key_type KeyType, base_of_value T, copy_string_args... Ts>
-                auto emplace(KeyType&& key, T&& t, Ts... ts) noexcept
+                auto emplace(KeyType&& key, T&& t, Ts...) noexcept
                 {
-                    return object_iter<DocType>(*this,
-                                                object_append(std::forward<KeyType>(key), std::forward<T>(t), ts...));
+                    return object_iter<DocType>(*this, object_append(std::forward<KeyType>(key), std::forward<T>(t)));
                 }
                 template <key_type KeyType, reader::detail::base_of_value_ref T, copy_string_args... Ts>
-                auto emplace(KeyType&& key, T&& t, Ts... ts) noexcept
+                auto emplace(KeyType&& key, T&& t, Ts...) noexcept
                 {
-                    return object_iter<DocType>(*this,
-                                                object_append(std::forward<KeyType>(key), std::forward<T>(t), ts...));
+                    return object_iter<DocType>(*this, object_append(std::forward<KeyType>(key), std::forward<T>(t)));
                 }
                 template <key_type KeyType, create_value_callable T, copy_string_args... Ts>
                 requires (!base_of_value<T>) && (!reader::detail::base_of_value_ref<T>)
@@ -3082,14 +3291,30 @@ namespace yyjson
                     object_append_no_iter(std::forward<KeyType>(key), std::forward<T>(t), ts...);
                 }
                 template <key_type KeyType, base_of_value T, copy_string_args... Ts>
-                void emplace_no_iter(KeyType&& key, T&& t, Ts... ts) noexcept
+                void emplace_no_iter(KeyType&& key, T&& t, Ts...) noexcept
                 {
-                    object_append_no_iter(std::forward<KeyType>(key), std::forward<T>(t), ts...);
+                    object_append_no_iter(std::forward<KeyType>(key), std::forward<T>(t));
                 }
                 template <key_type KeyType, reader::detail::base_of_value_ref T, copy_string_args... Ts>
-                void emplace_no_iter(KeyType&& key, T&& t, Ts... ts) noexcept
+                void emplace_no_iter(KeyType&& key, T&& t, Ts...) noexcept
                 {
-                    object_append_no_iter(std::forward<KeyType>(key), std::forward<T>(t), ts...);
+                    object_append_no_iter(std::forward<KeyType>(key), std::forward<T>(t));
+                }
+                template <typename Func>
+                void assign_reflected_fields(std::size_t max_count, Func&& func) noexcept
+                {
+                    auto* new_val =
+                        base::doc_.yyjson_mut_obj_with_reflected_fields(max_count, std::forward<Func>(func));
+                    assert(new_val != nullptr);
+                    base::doc_.assign_value(base::val_, new_val);
+                }
+                template <typename Func>
+                void assign_reflected_fields_max(std::size_t max_count, Func&& func) noexcept
+                {
+                    auto* new_val =
+                        base::doc_.yyjson_mut_obj_with_reflected_fields(max_count, std::forward<Func>(func), false);
+                    assert(new_val != nullptr);
+                    base::doc_.assign_value(base::val_, new_val);
                 }
                 template <key_type KeyType, typename T = void>  // penalize overload priority
                 auto emplace(KeyType&& key, std::initializer_list<value> list) noexcept
@@ -4335,16 +4560,21 @@ namespace yyjson
         requires writer::detail::to_json_with_reflection<T> && (!visitable<T>)
         static auto to_json(writer::object_ref& obj, const T& t, Ts... ts)
         {
-            field_reflection::for_each_field(t, [&](std::string_view field_name, const auto& field_value) {
-                detail::emplace_reflected_field(obj, field_name, field_value, ts...);
+            obj.assign_reflected_fields(detail::reflected_field_count(t), [&](auto& emitter) {
+                field_reflection::for_each_field(t, [&](std::string_view field_name, const auto& field_value) {
+                    emitter.emplace(field_name, field_value, ts...);
+                });
             });
         }
         template <copy_string_args... Ts>
         requires writer::detail::to_json_with_reflection<T> && (!visitable<T>)
         static auto to_json(writer::object_ref& obj, T&& t, Ts... ts)
         {
-            field_reflection::for_each_field(t, [&](std::string_view field_name, auto& field_value) {
-                detail::emplace_reflected_field(obj, field_name, std::move(field_value), ts...);
+            const auto field_count = detail::reflected_field_count(t);
+            obj.assign_reflected_fields(field_count, [&](auto& emitter) {
+                field_reflection::for_each_field(std::move(t), [&](std::string_view field_name, auto&& field_value) {
+                    emitter.emplace(field_name, std::forward<decltype(field_value)>(field_value), ts...);
+                });
             });
         }
     };
@@ -4724,32 +4954,48 @@ struct std::formatter<T>
         yyjson::detail::assign_reflected_field(result.X, value); \
     }                                                            \
     else
-#define VISITABLE_STRUCT_IMPL2(X) yyjson::detail::emplace_reflected_field(obj, std::string_view(#X), t.X, ts...);
-#define VISITABLE_STRUCT_IMPL3(X) \
-    yyjson::detail::emplace_reflected_field(obj, std::string_view(#X), std::move(t.X), ts...);
-#define VISITABLE_STRUCT(CLASS, ...)                                                          \
-    static_assert(std::default_initializable<CLASS>, #CLASS " is not default initializable"); \
-    template <>                                                                               \
-    struct yyjson::visit_struct<CLASS> : public std::true_type                                \
-    {                                                                                         \
-        template <typename Object>                                                            \
-        static auto from_json_impl(const Object& obj)                                         \
-        {                                                                                     \
-            auto result = CLASS();                                                            \
-            for (auto&& [key, value] : obj)                                                   \
-            {                                                                                 \
-                CPPYYJSON_FOR_EACH(VISITABLE_STRUCT_IMPL1, __VA_ARGS__) {}                    \
-            }                                                                                 \
-            return result;                                                                    \
-        }                                                                                     \
-        template <typename... Ts>                                                             \
-        static auto to_json_impl(writer::object_ref& obj, const CLASS& t, Ts... ts)           \
-        {                                                                                     \
-            CPPYYJSON_FOR_EACH(VISITABLE_STRUCT_IMPL2, __VA_ARGS__)                           \
-        }                                                                                     \
-        template <typename... Ts>                                                             \
-        static auto to_json_impl(writer::object_ref& obj, CLASS&& t, Ts... ts)                \
-        {                                                                                     \
-            CPPYYJSON_FOR_EACH(VISITABLE_STRUCT_IMPL3, __VA_ARGS__)                           \
-        }                                                                                     \
+#define VISITABLE_STRUCT_IMPL2(X) emitter.emplace(std::string_view(#X), t.X, ts...);
+#define VISITABLE_STRUCT_IMPL3(X) emitter.emplace(std::string_view(#X), std::move(t.X), ts...);
+#define VISITABLE_STRUCT(CLASS, ...)                                                                  \
+    static_assert(std::default_initializable<CLASS>, #CLASS " is not default initializable");         \
+    template <>                                                                                       \
+    struct yyjson::visit_struct<CLASS> : public std::true_type                                        \
+    {                                                                                                 \
+        static constexpr auto field_count = CPPYYJSON_VA_ARGS_SIZE(__VA_ARGS__);                      \
+        template <typename Object>                                                                    \
+        static auto from_json_impl(const Object& obj)                                                 \
+        {                                                                                             \
+            auto result = CLASS();                                                                    \
+            for (auto&& [key, value] : obj)                                                           \
+            {                                                                                         \
+                CPPYYJSON_FOR_EACH(VISITABLE_STRUCT_IMPL1, __VA_ARGS__) {}                            \
+            }                                                                                         \
+            return result;                                                                            \
+        }                                                                                             \
+        template <typename Emitter, typename... Ts>                                                   \
+        requires (!std::same_as<std::remove_cvref_t<Emitter>, yyjson::writer::object_ref>)            \
+        static auto to_json_impl(Emitter& emitter, const CLASS& t, Ts... ts)                           \
+        {                                                                                             \
+            CPPYYJSON_FOR_EACH(VISITABLE_STRUCT_IMPL2, __VA_ARGS__)                                   \
+        }                                                                                             \
+        template <typename Emitter, typename... Ts>                                                   \
+        requires (!std::same_as<std::remove_cvref_t<Emitter>, yyjson::writer::object_ref>)            \
+        static auto to_json_impl(Emitter& emitter, CLASS&& t, Ts... ts)                                \
+        {                                                                                             \
+            CPPYYJSON_FOR_EACH(VISITABLE_STRUCT_IMPL3, __VA_ARGS__)                                   \
+        }                                                                                             \
+        template <typename... Ts>                                                                     \
+        static auto to_json_impl(writer::object_ref& obj, const CLASS& t, Ts... ts)                   \
+        {                                                                                             \
+            obj.assign_reflected_fields_max(CPPYYJSON_VA_ARGS_SIZE(__VA_ARGS__), [&](auto& emitter) { \
+                CPPYYJSON_FOR_EACH(VISITABLE_STRUCT_IMPL2, __VA_ARGS__)                               \
+            });                                                                                       \
+        }                                                                                             \
+        template <typename... Ts>                                                                     \
+        static auto to_json_impl(writer::object_ref& obj, CLASS&& t, Ts... ts)                        \
+        {                                                                                             \
+            obj.assign_reflected_fields_max(CPPYYJSON_VA_ARGS_SIZE(__VA_ARGS__), [&](auto& emitter) { \
+                CPPYYJSON_FOR_EACH(VISITABLE_STRUCT_IMPL3, __VA_ARGS__)                               \
+            });                                                                                       \
+        }                                                                                             \
     }
