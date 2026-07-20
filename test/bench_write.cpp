@@ -5,10 +5,10 @@
 #include <rapidjson/writer.h>
 #include <cpp_yyjson.hpp>
 #include <format>
-#include <iostream>
 #include <nlohmann/json.hpp>
 #include <numeric>
 #include <ranges>
+#include <string_view>
 #include <vector>
 
 constexpr auto VEC_SIZE = 1'000'000;
@@ -44,20 +44,33 @@ void fill_objects(std::vector<Object>& objects)
     }
 }
 
-// JSON string size for validator
-constexpr auto json_size_arr_int64 = 6888891;
-constexpr auto json_size_arr_double = 8888891;
-constexpr auto json_size_arr_string = 8888891;
-constexpr auto json_size_arr_tuple = 26666684;
-constexpr auto json_size_arr_object = 38666684;
-constexpr auto json_size_arr_double_append = 9259259;
-constexpr auto json_size_obj_int64 = 15777781;
-constexpr auto json_size_obj_double = 17777781;
-constexpr auto json_size_obj_string = 17777781;
+enum class json_root_type
+{
+    array,
+    object,
+};
+
+bool validate_json_once(benchmark::State& state, bool& validated, std::string_view result, json_root_type root_type)
+{
+    if (validated) return true;
+
+    state.PauseTiming();
+    auto* doc = yyjson_read(const_cast<char*>(result.data()), result.size(), YYJSON_READ_NOFLAG);
+    auto* root = doc ? yyjson_doc_get_root(doc) : nullptr;
+    const auto valid = root_type == json_root_type::array ? yyjson_is_arr(root) && yyjson_arr_size(root) == VEC_SIZE
+                                                          : yyjson_is_obj(root) && yyjson_obj_size(root) == VEC_SIZE;
+    if (!valid) state.SkipWithError("Invalid JSON string");
+    if (doc) yyjson_doc_free(doc);
+    validated = valid;
+    state.ResumeTiming();
+
+    return valid;
+}
 
 void write_c_yyjson_array_int64(benchmark::State& state)
 {
     std::iota(vec_int64.begin(), vec_int64.end(), 0);
+    auto validated = false;
     for (auto _ : state)
     {
         yyjson_mut_doc* doc = yyjson_mut_doc_new(NULL);
@@ -65,9 +78,10 @@ void write_c_yyjson_array_int64(benchmark::State& state)
         yyjson_mut_doc_set_root(doc, root);
         const char* json = yyjson_mut_write(doc, 0, NULL);
         auto result = std::string_view(json);
-        if (result.size() != json_size_arr_int64)
+        if (!validate_json_once(state, validated, result, json_root_type::array))
         {
-            state.SkipWithError("Invalid JSON string");
+            free(const_cast<void*>(static_cast<const void*>(json)));
+            yyjson_mut_doc_free(doc);
             break;
         }
         free(const_cast<void*>(static_cast<const void*>(json)));
@@ -79,13 +93,13 @@ void write_cpp_yyjson_array_int64(benchmark::State& state)
 {
     using namespace yyjson;
     std::iota(vec_int64.begin(), vec_int64.end(), 0);
+    auto validated = false;
     for (auto _ : state)
     {
         auto array = yyjson::array(vec_int64);
         auto result = array.write();
-        if (result.size() != json_size_arr_int64)
+        if (!validate_json_once(state, validated, result, json_root_type::array))
         {
-            state.SkipWithError("Invalid JSON string");
             break;
         }
     }
@@ -96,13 +110,13 @@ void write_cpp_yyjson_single_array_int64(benchmark::State& state)
     using namespace yyjson;
     std::iota(vec_int64.begin(), vec_int64.end(), 0);
     auto alc = dynamic_allocator();
+    auto validated = false;
     for (auto _ : state)
     {
         auto array = yyjson::array(vec_int64);
         auto result = array.write(alc);
-        if (result.size() != json_size_arr_int64)
+        if (!validate_json_once(state, validated, result, json_root_type::array))
         {
-            state.SkipWithError("Invalid JSON string");
             break;
         }
     }
@@ -112,6 +126,7 @@ void write_rapidjson_array_int64(benchmark::State& state)
 {
     using namespace rapidjson;
     std::iota(vec_int64.begin(), vec_int64.end(), 0);
+    auto validated = false;
     for (auto _ : state)
     {
         Document doc;
@@ -122,9 +137,8 @@ void write_rapidjson_array_int64(benchmark::State& state)
         Writer<StringBuffer> writer(buffer);
         doc.Accept(writer);
         auto result = std::string_view(buffer.GetString(), buffer.GetSize());
-        if (result.size() != json_size_arr_int64)
+        if (!validate_json_once(state, validated, result, json_root_type::array))
         {
-            state.SkipWithError("Invalid JSON string");
             break;
         }
     }
@@ -134,13 +148,13 @@ void write_nlohmann_array_int64(benchmark::State& state)
 {
     using namespace nlohmann;
     std::iota(vec_int64.begin(), vec_int64.end(), 0);
+    auto validated = false;
     for (auto _ : state)
     {
         auto array = json(vec_int64);
         auto result = array.dump();
-        if (result.size() != json_size_arr_int64)
+        if (!validate_json_once(state, validated, result, json_root_type::array))
         {
-            state.SkipWithError("Invalid JSON string");
             break;
         }
     }
@@ -149,6 +163,7 @@ void write_nlohmann_array_int64(benchmark::State& state)
 void write_c_yyjson_array_double(benchmark::State& state)
 {
     std::iota(vec_double.begin(), vec_double.end(), 0);
+    auto validated = false;
     for (auto _ : state)
     {
         yyjson_mut_doc* doc = yyjson_mut_doc_new(NULL);
@@ -156,9 +171,10 @@ void write_c_yyjson_array_double(benchmark::State& state)
         yyjson_mut_doc_set_root(doc, root);
         const char* json = yyjson_mut_write(doc, 0, NULL);
         auto result = std::string_view(json);
-        if (result.size() != json_size_arr_double)
+        if (!validate_json_once(state, validated, result, json_root_type::array))
         {
-            state.SkipWithError("Invalid JSON string");
+            free(const_cast<void*>(static_cast<const void*>(json)));
+            yyjson_mut_doc_free(doc);
             break;
         }
         free(const_cast<void*>(static_cast<const void*>(json)));
@@ -170,13 +186,13 @@ void write_cpp_yyjson_array_double(benchmark::State& state)
 {
     using namespace yyjson;
     std::iota(vec_double.begin(), vec_double.end(), 0);
+    auto validated = false;
     for (auto _ : state)
     {
         auto array = yyjson::array(vec_double);
         auto result = array.write();
-        if (result.size() != json_size_arr_double)
+        if (!validate_json_once(state, validated, result, json_root_type::array))
         {
-            state.SkipWithError("Invalid JSON string");
             break;
         }
     }
@@ -187,13 +203,13 @@ void write_cpp_yyjson_single_array_double(benchmark::State& state)
     using namespace yyjson;
     std::iota(vec_double.begin(), vec_double.end(), 0);
     auto alc = dynamic_allocator();
+    auto validated = false;
     for (auto _ : state)
     {
         auto array = yyjson::array(vec_double);
         auto result = array.write(alc);
-        if (result.size() != json_size_arr_double)
+        if (!validate_json_once(state, validated, result, json_root_type::array))
         {
-            state.SkipWithError("Invalid JSON string");
             break;
         }
     }
@@ -203,6 +219,7 @@ void write_rapidjson_array_double(benchmark::State& state)
 {
     using namespace rapidjson;
     std::iota(vec_double.begin(), vec_double.end(), 0);
+    auto validated = false;
     for (auto _ : state)
     {
         Document doc;
@@ -214,9 +231,8 @@ void write_rapidjson_array_double(benchmark::State& state)
         doc.Accept(writer);
         auto result = std::string_view(buffer.GetString(), buffer.GetSize());
 
-        if (result.size() != json_size_arr_double)
+        if (!validate_json_once(state, validated, result, json_root_type::array))
         {
-            state.SkipWithError("Invalid JSON string");
             break;
         }
     }
@@ -226,13 +242,13 @@ void write_nlohmann_array_double(benchmark::State& state)
 {
     using namespace nlohmann;
     std::iota(vec_double.begin(), vec_double.end(), 0);
+    auto validated = false;
     for (auto _ : state)
     {
         auto array = json(vec_double);
         auto result = array.dump();
-        if (result.size() != json_size_arr_double)
+        if (!validate_json_once(state, validated, result, json_root_type::array))
         {
-            state.SkipWithError("Invalid JSON string");
             break;
         }
     }
@@ -242,6 +258,7 @@ void write_c_yyjson_array_string(benchmark::State& state)
 {
     std::iota(vec_int64.begin(), vec_int64.end(), 0);
     std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return std::format("{}", n); });
+    auto validated = false;
     for (auto _ : state)
     {
         yyjson_mut_doc* doc = yyjson_mut_doc_new(NULL);
@@ -250,9 +267,10 @@ void write_c_yyjson_array_string(benchmark::State& state)
         yyjson_mut_doc_set_root(doc, root);
         const char* json = yyjson_mut_write(doc, 0, NULL);
         auto result = std::string_view(json);
-        if (result.size() != json_size_arr_string)
+        if (!validate_json_once(state, validated, result, json_root_type::array))
         {
-            state.SkipWithError("Invalid JSON string");
+            free(const_cast<void*>(static_cast<const void*>(json)));
+            yyjson_mut_doc_free(doc);
             break;
         }
         free(const_cast<void*>(static_cast<const void*>(json)));
@@ -265,13 +283,13 @@ void write_cpp_yyjson_array_string(benchmark::State& state)
     using namespace yyjson;
     std::iota(vec_int64.begin(), vec_int64.end(), 0);
     std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return std::format("{}", n); });
+    auto validated = false;
     for (auto _ : state)
     {
         auto array = yyjson::array(vec_string);
         auto result = array.write();
-        if (result.size() != json_size_arr_string)
+        if (!validate_json_once(state, validated, result, json_root_type::array))
         {
-            state.SkipWithError("Invalid JSON string");
             break;
         }
     }
@@ -283,13 +301,13 @@ void write_cpp_yyjson_single_array_string(benchmark::State& state)
     std::iota(vec_int64.begin(), vec_int64.end(), 0);
     auto alc = dynamic_allocator();
     std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return std::format("{}", n); });
+    auto validated = false;
     for (auto _ : state)
     {
         auto array = yyjson::array(vec_string);
         auto result = array.write(alc);
-        if (result.size() != json_size_arr_string)
+        if (!validate_json_once(state, validated, result, json_root_type::array))
         {
-            state.SkipWithError("Invalid JSON string");
             break;
         }
     }
@@ -300,6 +318,7 @@ void write_rapidjson_array_string(benchmark::State& state)
     using namespace rapidjson;
     std::iota(vec_int64.begin(), vec_int64.end(), 0);
     std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return std::format("{}", n); });
+    auto validated = false;
     for (auto _ : state)
     {
         Document doc;
@@ -311,9 +330,8 @@ void write_rapidjson_array_string(benchmark::State& state)
         doc.Accept(writer);
         auto result = std::string_view(buffer.GetString(), buffer.GetSize());
 
-        if (result.size() != json_size_arr_string)
+        if (!validate_json_once(state, validated, result, json_root_type::array))
         {
-            state.SkipWithError("Invalid JSON string");
             break;
         }
     }
@@ -323,6 +341,7 @@ void write_c_yyjson_array_string_copy(benchmark::State& state)
 {
     std::iota(vec_int64.begin(), vec_int64.end(), 0);
     std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return std::format("{}", n); });
+    auto validated = false;
     for (auto _ : state)
     {
         yyjson_mut_doc* doc = yyjson_mut_doc_new(NULL);
@@ -331,9 +350,10 @@ void write_c_yyjson_array_string_copy(benchmark::State& state)
         yyjson_mut_doc_set_root(doc, root);
         const char* json = yyjson_mut_write(doc, 0, NULL);
         auto result = std::string_view(json);
-        if (result.size() != json_size_arr_string)
+        if (!validate_json_once(state, validated, result, json_root_type::array))
         {
-            state.SkipWithError("Invalid JSON string");
+            free(const_cast<void*>(static_cast<const void*>(json)));
+            yyjson_mut_doc_free(doc);
             break;
         }
         free(const_cast<void*>(static_cast<const void*>(json)));
@@ -346,13 +366,13 @@ void write_cpp_yyjson_array_string_copy(benchmark::State& state)
     using namespace yyjson;
     std::iota(vec_int64.begin(), vec_int64.end(), 0);
     std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return std::format("{}", n); });
+    auto validated = false;
     for (auto _ : state)
     {
         auto array = yyjson::array(vec_string, copy_string);
         auto result = array.write();
-        if (result.size() != json_size_arr_string)
+        if (!validate_json_once(state, validated, result, json_root_type::array))
         {
-            state.SkipWithError("Invalid JSON string");
             break;
         }
     }
@@ -362,6 +382,7 @@ void write_rapidjson_array_string_copy(benchmark::State& state)
 {
     using namespace rapidjson;
     std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return std::format("{}", n); });
+    auto validated = false;
     for (auto _ : state)
     {
         Document doc;
@@ -378,9 +399,8 @@ void write_rapidjson_array_string_copy(benchmark::State& state)
         doc.Accept(writer);
         auto result = std::string_view(buffer.GetString(), buffer.GetSize());
 
-        if (result.size() != json_size_arr_string)
+        if (!validate_json_once(state, validated, result, json_root_type::array))
         {
-            state.SkipWithError("Invalid JSON string");
             break;
         }
     }
@@ -391,13 +411,13 @@ void write_nlohmann_array_string_copy(benchmark::State& state)
     using namespace nlohmann;
     std::iota(vec_int64.begin(), vec_int64.end(), 0);
     std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return std::format("{}", n); });
+    auto validated = false;
     for (auto _ : state)
     {
         auto array = json(vec_string);
         auto result = array.dump();
-        if (result.size() != json_size_arr_string)
+        if (!validate_json_once(state, validated, result, json_root_type::array))
         {
-            state.SkipWithError("Invalid JSON string");
             break;
         }
     }
@@ -412,6 +432,7 @@ void write_c_yyjson_array_tuple(benchmark::State& state)
         std::get<2>(t) = std::format("{}", i + 3.0);
         ++i;
     }
+    auto validated = false;
     for (auto _ : state)
     {
         yyjson_mut_doc* doc = yyjson_mut_doc_new(NULL);
@@ -426,9 +447,10 @@ void write_c_yyjson_array_tuple(benchmark::State& state)
         yyjson_mut_doc_set_root(doc, root);
         const char* json = yyjson_mut_write(doc, 0, NULL);
         auto result = std::string_view(json);
-        if (result.size() != json_size_arr_tuple)
+        if (!validate_json_once(state, validated, result, json_root_type::array))
         {
-            state.SkipWithError("Invalid JSON string");
+            free(const_cast<void*>(static_cast<const void*>(json)));
+            yyjson_mut_doc_free(doc);
             break;
         }
         free(const_cast<void*>(static_cast<const void*>(json)));
@@ -446,13 +468,13 @@ void write_cpp_yyjson_array_tuple(benchmark::State& state)
         std::get<2>(t) = std::format("{}", i + 3.0);
         ++i;
     }
+    auto validated = false;
     for (auto _ : state)
     {
         auto array = yyjson::array(vec_tuple);
         auto result = array.write();
-        if (result.size() != json_size_arr_tuple)
+        if (!validate_json_once(state, validated, result, json_root_type::array))
         {
-            state.SkipWithError("Invalid JSON string");
             break;
         }
     }
@@ -468,6 +490,7 @@ void write_rapidjson_array_tuple(benchmark::State& state)
         std::get<2>(t) = std::format("{}", i + 3.0);
         ++i;
     }
+    auto validated = false;
     for (auto _ : state)
     {
         Document doc;
@@ -486,9 +509,8 @@ void write_rapidjson_array_tuple(benchmark::State& state)
         doc.Accept(writer);
         auto result = std::string_view(buffer.GetString(), buffer.GetSize());
 
-        if (result.size() != json_size_arr_tuple)
+        if (!validate_json_once(state, validated, result, json_root_type::array))
         {
-            state.SkipWithError("Invalid JSON string");
             break;
         }
     }
@@ -504,13 +526,13 @@ void write_nlohmann_array_tuple(benchmark::State& state)
         std::get<2>(t) = std::format("{}", i + 3.0);
         ++i;
     }
+    auto validated = false;
     for (auto _ : state)
     {
         auto array = json(vec_tuple);
         auto result = array.dump();
-        if (result.size() != json_size_arr_tuple)
+        if (!validate_json_once(state, validated, result, json_root_type::array))
         {
-            state.SkipWithError("Invalid JSON string");
             break;
         }
     }
@@ -519,6 +541,7 @@ void write_nlohmann_array_tuple(benchmark::State& state)
 void write_c_yyjson_array_object(benchmark::State& state)
 {
     fill_objects(vec_reflection_object);
+    auto validated = false;
     for (auto _ : state)
     {
         yyjson_mut_doc* doc = yyjson_mut_doc_new(NULL);
@@ -533,10 +556,10 @@ void write_c_yyjson_array_object(benchmark::State& state)
         yyjson_mut_doc_set_root(doc, root);
         const char* json = yyjson_mut_write(doc, 0, NULL);
         auto result = std::string_view(json);
-        if (result.size() != json_size_arr_object)
+        if (!validate_json_once(state, validated, result, json_root_type::array))
         {
-            std::cout << std::format("{}\n", result.size());
-            state.SkipWithError("Invalid JSON string");
+            free(const_cast<void*>(static_cast<const void*>(json)));
+            yyjson_mut_doc_free(doc);
             break;
         }
         free(const_cast<void*>(static_cast<const void*>(json)));
@@ -548,13 +571,13 @@ void write_cpp_yyjson_array_object_reflection(benchmark::State& state)
 {
     using namespace yyjson;
     fill_objects(vec_reflection_object);
+    auto validated = false;
     for (auto _ : state)
     {
         auto array = yyjson::array(vec_reflection_object);
         auto result = array.write();
-        if (result.size() != json_size_arr_object)
+        if (!validate_json_once(state, validated, result, json_root_type::array))
         {
-            state.SkipWithError("Invalid JSON string");
             break;
         }
     }
@@ -564,13 +587,13 @@ void write_cpp_yyjson_array_object_macro(benchmark::State& state)
 {
     using namespace yyjson;
     fill_objects(vec_macro_object);
+    auto validated = false;
     for (auto _ : state)
     {
         auto array = yyjson::array(vec_macro_object);
         auto result = array.write();
-        if (result.size() != json_size_arr_object)
+        if (!validate_json_once(state, validated, result, json_root_type::array))
         {
-            state.SkipWithError("Invalid JSON string");
             break;
         }
     }
@@ -580,6 +603,7 @@ void write_rapidjson_array_object(benchmark::State& state)
 {
     using namespace rapidjson;
     fill_objects(vec_reflection_object);
+    auto validated = false;
     for (auto _ : state)
     {
         Document doc;
@@ -598,9 +622,8 @@ void write_rapidjson_array_object(benchmark::State& state)
         doc.Accept(writer);
         auto result = std::string_view(buffer.GetString(), buffer.GetSize());
 
-        if (result.size() != json_size_arr_object)
+        if (!validate_json_once(state, validated, result, json_root_type::array))
         {
-            state.SkipWithError("Invalid JSON string");
             break;
         }
     }
@@ -610,6 +633,7 @@ void write_nlohmann_array_object(benchmark::State& state)
 {
     using namespace nlohmann;
     fill_objects(vec_reflection_object);
+    auto validated = false;
     for (auto _ : state)
     {
         auto array = json::array();
@@ -622,9 +646,8 @@ void write_nlohmann_array_object(benchmark::State& state)
             array.push_back(obj);
         }
         auto result = array.dump();
-        if (result.size() != json_size_arr_object)
+        if (!validate_json_once(state, validated, result, json_root_type::array))
         {
-            state.SkipWithError("Invalid JSON string");
             break;
         }
     }
@@ -633,6 +656,7 @@ void write_nlohmann_array_object(benchmark::State& state)
 void write_c_yyjson_array_double_append(benchmark::State& state)
 {
     std::iota(vec_double.begin(), vec_double.end(), 0);
+    auto validated = false;
     for (auto _ : state)
     {
         yyjson_mut_doc* doc = yyjson_mut_doc_new(NULL);
@@ -641,9 +665,10 @@ void write_c_yyjson_array_double_append(benchmark::State& state)
         yyjson_mut_doc_set_root(doc, root);
         const char* json = yyjson_mut_write(doc, 0, NULL);
         auto result = std::string_view(json);
-        if (result.size() != json_size_arr_double_append)
+        if (!validate_json_once(state, validated, result, json_root_type::array))
         {
-            state.SkipWithError("Invalid JSON string");
+            free(const_cast<void*>(static_cast<const void*>(json)));
+            yyjson_mut_doc_free(doc);
             break;
         }
         free(const_cast<void*>(static_cast<const void*>(json)));
@@ -655,13 +680,13 @@ void write_c_yyjson_array_double_append(benchmark::State& state)
 void write_cpp_yyjson_array_double_append_range(benchmark::State& state)
 {
     std::iota(vec_double.begin(), vec_double.end(), 0);
+    auto validated = false;
     for (auto _ : state)
     {
         auto array = yyjson::array(vec_double | std::ranges::views::transform([](const auto n) { return 1.5 * n; }));
         auto result = array.write();
-        if (result.size() != json_size_arr_double_append)
+        if (!validate_json_once(state, validated, result, json_root_type::array))
         {
-            state.SkipWithError("Invalid JSON string");
             break;
         }
     }
@@ -671,14 +696,14 @@ void write_cpp_yyjson_array_double_append_range(benchmark::State& state)
 void write_cpp_yyjson_array_double_append(benchmark::State& state)
 {
     std::iota(vec_double.begin(), vec_double.end(), 0);
+    auto validated = false;
     for (auto _ : state)
     {
         auto array = yyjson::array();
         for (const auto n : vec_double) array.emplace_back(1.5 * n);
         auto result = array.write();
-        if (result.size() != json_size_arr_double_append)
+        if (!validate_json_once(state, validated, result, json_root_type::array))
         {
-            state.SkipWithError("Invalid JSON string");
             break;
         }
     }
@@ -688,6 +713,7 @@ void write_rapidjson_array_double_append(benchmark::State& state)
 {
     using namespace rapidjson;
     std::iota(vec_double.begin(), vec_double.end(), 0);
+    auto validated = false;
     for (auto _ : state)
     {
         Document doc;
@@ -697,9 +723,8 @@ void write_rapidjson_array_double_append(benchmark::State& state)
         auto writer = Writer<StringBuffer>(buffer);
         doc.Accept(writer);
         auto result = std::string_view(buffer.GetString(), buffer.GetSize());
-        if (result.size() != json_size_arr_double_append)
+        if (!validate_json_once(state, validated, result, json_root_type::array))
         {
-            state.SkipWithError("Invalid JSON string");
             break;
         }
     }
@@ -709,14 +734,14 @@ void write_nlohmann_array_double_append(benchmark::State& state)
 {
     using namespace nlohmann;
     std::iota(vec_double.begin(), vec_double.end(), 0);
+    auto validated = false;
     for (auto _ : state)
     {
         auto array = json::array();
         for (const auto n : vec_double) array.emplace_back(1.5 * n);
         auto result = array.dump();
-        if (result.size() != json_size_arr_double_append)
+        if (!validate_json_once(state, validated, result, json_root_type::array))
         {
-            state.SkipWithError("Invalid JSON string");
             break;
         }
     }
@@ -725,6 +750,7 @@ void write_nlohmann_array_double_append(benchmark::State& state)
 void write_c_yyjson_object_int64(benchmark::State& state)
 {
     std::iota(vec_int64.begin(), vec_int64.end(), 0);
+    auto validated = false;
     for (auto _ : state)
     {
         yyjson_mut_doc* doc = yyjson_mut_doc_new(NULL);
@@ -739,9 +765,10 @@ void write_c_yyjson_object_int64(benchmark::State& state)
         yyjson_mut_doc_set_root(doc, root);
         const char* json = yyjson_mut_write(doc, 0, NULL);
         auto result = std::string_view(json);
-        if (result.size() != json_size_obj_int64)
+        if (!validate_json_once(state, validated, result, json_root_type::object))
         {
-            state.SkipWithError("Invalid JSON string");
+            free(const_cast<void*>(static_cast<const void*>(json)));
+            yyjson_mut_doc_free(doc);
             break;
         }
         free(const_cast<void*>(static_cast<const void*>(json)));
@@ -753,14 +780,14 @@ void write_cpp_yyjson_object_int64(benchmark::State& state)
 {
     using namespace yyjson;
     std::iota(vec_int64.begin(), vec_int64.end(), 0);
+    auto validated = false;
     for (auto _ : state)
     {
         auto object = yyjson::object();
         for (auto n : vec_int64) object.emplace(std::format("{}", n), n);
         auto result = object.write();
-        if (result.size() != json_size_obj_int64)
+        if (!validate_json_once(state, validated, result, json_root_type::object))
         {
-            state.SkipWithError("Invalid JSON string");
             break;
         }
     }
@@ -770,6 +797,7 @@ void write_rapidjson_object_int64(benchmark::State& state)
 {
     using namespace rapidjson;
     std::iota(vec_int64.begin(), vec_int64.end(), 0);
+    auto validated = false;
     for (auto _ : state)
     {
         Document doc;
@@ -782,9 +810,8 @@ void write_rapidjson_object_int64(benchmark::State& state)
         doc.Accept(writer);
         auto result = std::string_view(buffer.GetString(), buffer.GetSize());
 
-        if (result.size() != json_size_obj_int64)
+        if (!validate_json_once(state, validated, result, json_root_type::object))
         {
-            state.SkipWithError("Invalid JSON string");
             break;
         }
     }
@@ -794,14 +821,14 @@ void write_nlohmann_object_int64(benchmark::State& state)
 {
     using namespace nlohmann;
     std::iota(vec_int64.begin(), vec_int64.end(), 0);
+    auto validated = false;
     for (auto _ : state)
     {
         auto object = json();
         for (auto n : vec_int64) object[std::format("{}", n)] = n;
         auto result = object.dump();
-        if (result.size() != json_size_obj_int64)
+        if (!validate_json_once(state, validated, result, json_root_type::object))
         {
-            state.SkipWithError("Invalid JSON string");
             break;
         }
     }
@@ -810,6 +837,7 @@ void write_nlohmann_object_int64(benchmark::State& state)
 void write_c_yyjson_object_double(benchmark::State& state)
 {
     std::iota(vec_double.begin(), vec_double.end(), 0);
+    auto validated = false;
     for (auto _ : state)
     {
         yyjson_mut_doc* doc = yyjson_mut_doc_new(NULL);
@@ -824,9 +852,10 @@ void write_c_yyjson_object_double(benchmark::State& state)
         yyjson_mut_doc_set_root(doc, root);
         const char* json = yyjson_mut_write(doc, 0, NULL);
         auto result = std::string_view(json);
-        if (result.size() != json_size_obj_double)
+        if (!validate_json_once(state, validated, result, json_root_type::object))
         {
-            state.SkipWithError("Invalid JSON string");
+            free(const_cast<void*>(static_cast<const void*>(json)));
+            yyjson_mut_doc_free(doc);
             break;
         }
         free(const_cast<void*>(static_cast<const void*>(json)));
@@ -838,14 +867,14 @@ void write_cpp_yyjson_object_double(benchmark::State& state)
 {
     using namespace yyjson;
     std::iota(vec_double.begin(), vec_double.end(), 0);
+    auto validated = false;
     for (auto _ : state)
     {
         auto object = yyjson::object();
         for (auto n : vec_double) object.emplace(std::format("{}", n), n);
         auto result = object.write();
-        if (result.size() != json_size_obj_double)
+        if (!validate_json_once(state, validated, result, json_root_type::object))
         {
-            state.SkipWithError("Invalid JSON string");
             break;
         }
     }
@@ -855,6 +884,7 @@ void write_rapidjson_object_double(benchmark::State& state)
 {
     using namespace rapidjson;
     std::iota(vec_double.begin(), vec_double.end(), 0);
+    auto validated = false;
     for (auto _ : state)
     {
         Document doc;
@@ -867,9 +897,8 @@ void write_rapidjson_object_double(benchmark::State& state)
         doc.Accept(writer);
         auto result = std::string_view(buffer.GetString(), buffer.GetSize());
 
-        if (result.size() != json_size_obj_double)
+        if (!validate_json_once(state, validated, result, json_root_type::object))
         {
-            state.SkipWithError("Invalid JSON string");
             break;
         }
     }
@@ -879,14 +908,14 @@ void write_nlohmann_object_double(benchmark::State& state)
 {
     using namespace nlohmann;
     std::iota(vec_double.begin(), vec_double.end(), 0);
+    auto validated = false;
     for (auto _ : state)
     {
         auto object = json();
         for (auto n : vec_double) object[std::format("{}", n)] = n;
         auto result = object.dump();
-        if (result.size() != json_size_obj_double)
+        if (!validate_json_once(state, validated, result, json_root_type::object))
         {
-            state.SkipWithError("Invalid JSON string");
             break;
         }
     }
@@ -896,11 +925,12 @@ void write_c_yyjson_object_string(benchmark::State& state)
 {
     std::iota(vec_int64.begin(), vec_int64.end(), 0);
     std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return std::format("{}", n); });
+    auto validated = false;
     for (auto _ : state)
     {
         yyjson_mut_doc* doc = yyjson_mut_doc_new(NULL);
         auto root = yyjson_mut_obj(doc);
-        for (auto n : vec_string)
+        for (const auto& n : vec_string)
         {
             auto key = yyjson_mut_strn(doc, n.c_str(), n.size());
             auto val = yyjson_mut_strn(doc, n.c_str(), n.size());
@@ -909,9 +939,10 @@ void write_c_yyjson_object_string(benchmark::State& state)
         yyjson_mut_doc_set_root(doc, root);
         const char* json = yyjson_mut_write(doc, 0, NULL);
         auto result = std::string_view(json);
-        if (result.size() != json_size_obj_string)
+        if (!validate_json_once(state, validated, result, json_root_type::object))
         {
-            state.SkipWithError("Invalid JSON string");
+            free(const_cast<void*>(static_cast<const void*>(json)));
+            yyjson_mut_doc_free(doc);
             break;
         }
         free(const_cast<void*>(static_cast<const void*>(json)));
@@ -924,17 +955,17 @@ void write_cpp_yyjson_object_string(benchmark::State& state)
     using namespace yyjson;
     std::iota(vec_int64.begin(), vec_int64.end(), 0);
     std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return std::format("{}", n); });
+    auto validated = false;
     for (auto _ : state)
     {
         auto object = yyjson::object();
-        for (auto n : vec_string)
+        for (const auto& n : vec_string)
         {
             object.emplace(n, n);
         }
         auto result = object.write();
-        if (result.size() != json_size_obj_string)
+        if (!validate_json_once(state, validated, result, json_root_type::object))
         {
-            state.SkipWithError("Invalid JSON string");
             break;
         }
     }
@@ -945,11 +976,12 @@ void write_rapidjson_object_string(benchmark::State& state)
     using namespace rapidjson;
     std::iota(vec_int64.begin(), vec_int64.end(), 0);
     std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return std::format("{}", n); });
+    auto validated = false;
     for (auto _ : state)
     {
         Document doc;
         doc.SetObject();
-        for (auto n : vec_string)
+        for (const auto& n : vec_string)
         {
             doc.AddMember(StringRef(n.c_str()), StringRef(n.c_str()), doc.GetAllocator());
         }
@@ -959,9 +991,8 @@ void write_rapidjson_object_string(benchmark::State& state)
         doc.Accept(writer);
         auto result = std::string_view(buffer.GetString(), buffer.GetSize());
 
-        if (result.size() != json_size_obj_string)
+        if (!validate_json_once(state, validated, result, json_root_type::object))
         {
-            state.SkipWithError("Invalid JSON string");
             break;
         }
     }
@@ -971,11 +1002,12 @@ void write_c_yyjson_object_string_copy(benchmark::State& state)
 {
     std::iota(vec_int64.begin(), vec_int64.end(), 0);
     std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return std::format("{}", n); });
+    auto validated = false;
     for (auto _ : state)
     {
         yyjson_mut_doc* doc = yyjson_mut_doc_new(NULL);
         auto root = yyjson_mut_obj(doc);
-        for (auto n : vec_string)
+        for (const auto& n : vec_string)
         {
             auto key = yyjson_mut_strncpy(doc, n.c_str(), n.size());
             auto val = yyjson_mut_strncpy(doc, n.c_str(), n.size());
@@ -984,9 +1016,10 @@ void write_c_yyjson_object_string_copy(benchmark::State& state)
         yyjson_mut_doc_set_root(doc, root);
         const char* json = yyjson_mut_write(doc, 0, NULL);
         auto result = std::string_view(json);
-        if (result.size() != json_size_obj_string)
+        if (!validate_json_once(state, validated, result, json_root_type::object))
         {
-            state.SkipWithError("Invalid JSON string");
+            free(const_cast<void*>(static_cast<const void*>(json)));
+            yyjson_mut_doc_free(doc);
             break;
         }
         free(const_cast<void*>(static_cast<const void*>(json)));
@@ -999,17 +1032,17 @@ void write_cpp_yyjson_object_string_copy(benchmark::State& state)
     using namespace yyjson;
     std::iota(vec_int64.begin(), vec_int64.end(), 0);
     std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return std::format("{}", n); });
+    auto validated = false;
     for (auto _ : state)
     {
         auto object = yyjson::object();
-        for (auto n : vec_string)
+        for (const auto& n : vec_string)
         {
             object.emplace(n, n, copy_string);
         }
         auto result = object.write();
-        if (result.size() != json_size_obj_string)
+        if (!validate_json_once(state, validated, result, json_root_type::object))
         {
-            state.SkipWithError("Invalid JSON string");
             break;
         }
     }
@@ -1020,11 +1053,12 @@ void write_rapidjson_object_string_copy(benchmark::State& state)
     using namespace rapidjson;
     std::iota(vec_int64.begin(), vec_int64.end(), 0);
     std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return std::format("{}", n); });
+    auto validated = false;
     for (auto _ : state)
     {
         Document doc;
         doc.SetObject();
-        for (auto n : vec_string)
+        for (const auto& n : vec_string)
         {
             doc.AddMember(Value(n.c_str(), doc.GetAllocator()).Move(), Value(n.c_str(), doc.GetAllocator()).Move(),
                           doc.GetAllocator());
@@ -1035,9 +1069,8 @@ void write_rapidjson_object_string_copy(benchmark::State& state)
         doc.Accept(writer);
         auto result = std::string_view(buffer.GetString(), buffer.GetSize());
 
-        if (result.size() != json_size_obj_string)
+        if (!validate_json_once(state, validated, result, json_root_type::object))
         {
-            state.SkipWithError("Invalid JSON string");
             break;
         }
     }
@@ -1048,17 +1081,17 @@ void write_nlohmann_object_string_copy(benchmark::State& state)
     using namespace nlohmann;
     std::iota(vec_int64.begin(), vec_int64.end(), 0);
     std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return std::format("{}", n); });
+    auto validated = false;
     for (auto _ : state)
     {
         auto object = json();
-        for (auto n : vec_string)
+        for (const auto& n : vec_string)
         {
             object[n] = n;
         }
         auto result = object.dump();
-        if (result.size() != json_size_obj_string)
+        if (!validate_json_once(state, validated, result, json_root_type::object))
         {
-            state.SkipWithError("Invalid JSON string");
             break;
         }
     }
