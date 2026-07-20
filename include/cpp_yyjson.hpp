@@ -3064,14 +3064,16 @@ namespace yyjson
                                                 object_append(std::forward<KeyType>(key), std::forward<T>(t), ts...));
                 }
                 template <key_type KeyType, base_of_value T, copy_string_args... Ts>
-                auto emplace(KeyType&& key, T&& t, Ts...) noexcept
+                auto emplace(KeyType&& key, T&& t, Ts... ts) noexcept
                 {
-                    return object_iter<DocType>(*this, object_append(std::forward<KeyType>(key), std::forward<T>(t)));
+                    return object_iter<DocType>(*this,
+                                                object_append(std::forward<KeyType>(key), std::forward<T>(t), ts...));
                 }
                 template <key_type KeyType, reader::detail::base_of_value_ref T, copy_string_args... Ts>
-                auto emplace(KeyType&& key, T&& t, Ts...) noexcept
+                auto emplace(KeyType&& key, T&& t, Ts... ts) noexcept
                 {
-                    return object_iter<DocType>(*this, object_append(std::forward<KeyType>(key), std::forward<T>(t)));
+                    return object_iter<DocType>(*this,
+                                                object_append(std::forward<KeyType>(key), std::forward<T>(t), ts...));
                 }
                 template <key_type KeyType, create_value_callable T, copy_string_args... Ts>
                 requires (!base_of_value<T>) && (!reader::detail::base_of_value_ref<T>)
@@ -3080,14 +3082,14 @@ namespace yyjson
                     object_append_no_iter(std::forward<KeyType>(key), std::forward<T>(t), ts...);
                 }
                 template <key_type KeyType, base_of_value T, copy_string_args... Ts>
-                void emplace_no_iter(KeyType&& key, T&& t, Ts...) noexcept
+                void emplace_no_iter(KeyType&& key, T&& t, Ts... ts) noexcept
                 {
-                    object_append_no_iter(std::forward<KeyType>(key), std::forward<T>(t));
+                    object_append_no_iter(std::forward<KeyType>(key), std::forward<T>(t), ts...);
                 }
                 template <key_type KeyType, reader::detail::base_of_value_ref T, copy_string_args... Ts>
-                void emplace_no_iter(KeyType&& key, T&& t, Ts...) noexcept
+                void emplace_no_iter(KeyType&& key, T&& t, Ts... ts) noexcept
                 {
-                    object_append_no_iter(std::forward<KeyType>(key), std::forward<T>(t));
+                    object_append_no_iter(std::forward<KeyType>(key), std::forward<T>(t), ts...);
                 }
                 template <key_type KeyType, typename T = void>  // penalize overload priority
                 auto emplace(KeyType&& key, std::initializer_list<value> list) noexcept
