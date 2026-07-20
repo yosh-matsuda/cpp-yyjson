@@ -781,6 +781,17 @@ namespace yyjson
             concept create_value_callable =
                 create_primitive_callable<T> || create_array_callable<T> || create_object_callable<T>;
 
+            template <typename T, std::size_t... Is>
+            consteval bool directly_create_reflected_object_impl(std::index_sequence<Is...>)
+            {
+                return (create_value_callable<field_reflection::field_type<T, Is>> && ...);
+            }
+
+            template <typename T>
+            concept directly_create_reflected_object =
+                field_reflection::field_namable<std::remove_cvref_t<T>> && (!visitable<std::remove_cvref_t<T>>) &&
+                directly_create_reflected_object_impl<std::remove_cvref_t<T>>(
+                    std::make_index_sequence<field_reflection::field_count<std::remove_cvref_t<T>>>{});
             template <typename T>
             concept convertible_to_create_primitive_callable = requires(T&& t) {  // clang-format off
                     {convert(std::forward<T>(t))} -> create_primitive_callable;
@@ -985,6 +996,10 @@ namespace yyjson
                                   requires { visit_struct<value_type>::field_count; })
                     {
                         return yyjson_mut_arr_with_visitable_objects(std::forward<Range>(range), args...);
+                    }
+                    else if constexpr (std::ranges::sized_range<Range> && directly_create_reflected_object<value_type>)
+                    {
+                        return yyjson_mut_arr_with_reflected_objects(std::forward<Range>(range), args...);
                     }
                     else if constexpr (std::ranges::sized_range<Range>)
                     {
@@ -1430,6 +1445,77 @@ namespace yyjson
                                     auto emitter = reflected_field_emitter{*this, obj, field_values, field_count};
                                     visit_struct<value_type>::to_json_impl(
                                         emitter, forward_element<Range&&>(std::forward<decltype(v)>(v)), ts...);
+                                    if (yyjson_unlikely(!emitter.success)) [[unlikely]]
+                                        return nullptr;
+
+                                    finish_reflected_object(obj, field_values, emitter.count);
+                                    obj->next = obj + 1;
+                                    ++i;
+                                }
+                                values[count - 1].next = values;
+                                arr->uni.ptr = values + count - 1;
+                            }
+                            else
+                            {
+                                arr->uni.ptr = nullptr;
+                            }
+                            return arr;
+                        }
+                    }
+                    return nullptr;
+                }
+
+                template <std::ranges::sized_range Range, copy_string_args... Ts>
+                yyjson_mut_val* yyjson_mut_arr_with_reflected_objects(Range&& range, Ts... ts)
+                {
+                    using value_type = std::remove_cvref_t<std::ranges::range_value_t<Range>>;
+                    return yyjson_mut_arr_with_reflected_objects_impl(
+                        std::forward<Range>(range), std::make_index_sequence<field_reflection::field_count<value_type>>{},
+                        ts...);
+                }
+
+                template <std::ranges::sized_range Range, std::size_t... Is, copy_string_args... Ts>
+                yyjson_mut_val* yyjson_mut_arr_with_reflected_objects_impl(Range&& range, std::index_sequence<Is...>,
+                                                                           Ts... ts)
+                {
+                    using value_type = std::remove_cvref_t<std::ranges::range_value_t<Range>>;
+                    constexpr auto field_count = sizeof...(Is);
+                    const auto count = std::ranges::size(range);
+                    auto* doc = ptrs->self;
+                    constexpr auto max_values = ~static_cast<std::size_t>(0) / sizeof(yyjson_mut_val);
+                    if (yyjson_likely(doc && count <= (max_values - 1) / ((field_count * 2) + 1)))
+                    {
+                        auto* arr = unsafe_yyjson_mut_val(doc, 1 + (count * ((field_count * 2) + 1)));
+                        if (yyjson_likely(arr))
+                        {
+                            arr->tag = (static_cast<std::uint64_t>(count) << YYJSON_TAG_BIT) | YYJSON_TYPE_ARR;
+                            if (count > 0)
+                            {
+                                auto* values = arr + 1;
+                                auto* fields = values + count;
+                                for (std::size_t i = 0; auto&& v : std::forward<Range>(range))
+                                {
+                                    auto* obj = values + i;
+                                    auto* field_values = fields + (i * field_count * 2);
+                                    auto emitter = reflected_field_emitter{*this, obj, field_values, field_count};
+                                    auto&& element = forward_element<Range&&>(std::forward<decltype(v)>(v));
+                                    if constexpr (yyjson::detail::has_optional_reflected_field<value_type>)
+                                    {
+                                        field_reflection::for_each_field(
+                                            std::forward<decltype(element)>(element),
+                                            [&](std::string_view field_name, auto&& field_value) {
+                                                emitter.emplace(
+                                                    field_name, std::forward<decltype(field_value)>(field_value), ts...);
+                                            });
+                                    }
+                                    else
+                                    {
+                                        (emitter.emplace(field_reflection::field_name<value_type, Is>,
+                                                         field_reflection::get_field<Is>(
+                                                             std::forward<decltype(element)>(element)),
+                                                         ts...),
+                                         ...);
+                                    }
                                     if (yyjson_unlikely(!emitter.success)) [[unlikely]]
                                         return nullptr;
 
