@@ -2140,6 +2140,12 @@ TEST(Writer, ObjectMethodExample)
     num_obj.emplace("5", {"5"}, copy_string);
     EXPECT_EQ(4, *num_obj["4"].as_int());
     EXPECT_EQ("5", *num_obj_const["5"].as_array()->front().as_string());
+    auto key = std::string("base_of_value_key");
+    auto value = yyjson::value(42);
+    num_obj.emplace(key, value, copy_string);
+    key[0] = 'X';
+    EXPECT_TRUE(num_obj.contains("base_of_value_key"));
+    EXPECT_FALSE(num_obj.contains("Xase_of_value_key"));
 
     // try_emplace
     auto iter2 = num_obj.try_emplace("4", 4);
