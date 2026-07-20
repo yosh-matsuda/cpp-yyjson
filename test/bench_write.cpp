@@ -16,14 +16,33 @@ auto vec_int64 = std::vector<std::int64_t>(VEC_SIZE);
 auto vec_double = std::vector<double>(VEC_SIZE);
 auto vec_string = std::vector<std::string>(VEC_SIZE);
 auto vec_tuple = std::vector<std::tuple<int, double, std::string>>(VEC_SIZE);
-struct X
+struct ReflectionObject
 {
     int i = 1;
     double j = 2.5;
     std::string k = "4.0";
 };
-VISITABLE_STRUCT(X, i, j, k);
-auto vec_object = std::vector<X>(VEC_SIZE);
+struct MacroObject
+{
+    int i = 1;
+    double j = 2.5;
+    std::string k = "4.0";
+};
+VISITABLE_STRUCT(MacroObject, i, j, k);
+auto vec_reflection_object = std::vector<ReflectionObject>(VEC_SIZE);
+auto vec_macro_object = std::vector<MacroObject>(VEC_SIZE);
+
+template <typename Object>
+void fill_objects(std::vector<Object>& objects)
+{
+    for (auto i = 0; auto&& t : objects)
+    {
+        t.i = i;
+        t.j = i + 1.5;
+        t.k = std::format("{}", i + 3.0);
+        ++i;
+    }
+}
 
 // JSON string size for validator
 constexpr auto json_size_arr_int64 = 6888891;
@@ -499,18 +518,12 @@ void write_nlohmann_array_tuple(benchmark::State& state)
 
 void write_c_yyjson_array_object(benchmark::State& state)
 {
-    for (auto i = 0; auto&& t : vec_object)
-    {
-        t.i = i;
-        t.j = i + 1.5;
-        t.k = std::format("{}", i + 3.0);
-        ++i;
-    }
+    fill_objects(vec_reflection_object);
     for (auto _ : state)
     {
         yyjson_mut_doc* doc = yyjson_mut_doc_new(NULL);
         auto root = yyjson_mut_arr(doc);
-        for (const auto& t : vec_object)
+        for (const auto& t : vec_reflection_object)
         {
             auto* obj = yyjson_mut_arr_add_obj(doc, root);
             yyjson_mut_obj_add_sint(doc, obj, "i", t.i);
@@ -531,19 +544,29 @@ void write_c_yyjson_array_object(benchmark::State& state)
     }
 }
 
-void write_cpp_yyjson_array_object(benchmark::State& state)
+void write_cpp_yyjson_array_object_reflection(benchmark::State& state)
 {
     using namespace yyjson;
-    for (auto i = 0; auto&& t : vec_object)
-    {
-        t.i = i;
-        t.j = i + 1.5;
-        t.k = std::format("{}", i + 3.0);
-        ++i;
-    }
+    fill_objects(vec_reflection_object);
     for (auto _ : state)
     {
-        auto array = yyjson::array(vec_object);
+        auto array = yyjson::array(vec_reflection_object);
+        auto result = array.write();
+        if (result.size() != json_size_arr_object)
+        {
+            state.SkipWithError("Invalid JSON string");
+            break;
+        }
+    }
+}
+
+void write_cpp_yyjson_array_object_macro(benchmark::State& state)
+{
+    using namespace yyjson;
+    fill_objects(vec_macro_object);
+    for (auto _ : state)
+    {
+        auto array = yyjson::array(vec_macro_object);
         auto result = array.write();
         if (result.size() != json_size_arr_object)
         {
@@ -556,18 +579,12 @@ void write_cpp_yyjson_array_object(benchmark::State& state)
 void write_rapidjson_array_object(benchmark::State& state)
 {
     using namespace rapidjson;
-    for (auto i = 0; auto&& t : vec_object)
-    {
-        t.i = i;
-        t.j = i + 1.5;
-        t.k = std::format("{}", i + 3.0);
-        ++i;
-    }
+    fill_objects(vec_reflection_object);
     for (auto _ : state)
     {
         Document doc;
         doc.SetArray();
-        for (const auto& t : vec_object)
+        for (const auto& t : vec_reflection_object)
         {
             auto obj = Value(kObjectType);
             obj.AddMember("i", t.i, doc.GetAllocator());
@@ -592,17 +609,11 @@ void write_rapidjson_array_object(benchmark::State& state)
 void write_nlohmann_array_object(benchmark::State& state)
 {
     using namespace nlohmann;
-    for (auto i = 0; auto&& t : vec_object)
-    {
-        t.i = i;
-        t.j = i + 1.5;
-        t.k = std::format("{}", i + 3.0);
-        ++i;
-    }
+    fill_objects(vec_reflection_object);
     for (auto _ : state)
     {
         auto array = json::array();
-        for (const auto& t : vec_object)
+        for (const auto& t : vec_reflection_object)
         {
             auto obj = json::object();
             obj["i"] = t.i;
@@ -1075,7 +1086,8 @@ BENCHMARK(write_cpp_yyjson_array_tuple)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_c_yyjson_array_tuple)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_rapidjson_array_tuple)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_nlohmann_array_tuple)->Unit(benchmark::kMillisecond);
-BENCHMARK(write_cpp_yyjson_array_object)->Unit(benchmark::kMillisecond);
+BENCHMARK(write_cpp_yyjson_array_object_reflection)->Unit(benchmark::kMillisecond);
+BENCHMARK(write_cpp_yyjson_array_object_macro)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_c_yyjson_array_object)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_rapidjson_array_object)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_nlohmann_array_object)->Unit(benchmark::kMillisecond);
