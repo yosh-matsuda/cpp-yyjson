@@ -91,6 +91,23 @@ namespace yyjson
         return static_cast<std::underlying_type_t<T>>(value);
     }
 
+    template <class... Ts>
+    struct overloaded : Ts...
+    {
+        using Ts::operator()...;
+
+        template <typename... Args>
+        requires (requires(Ts& function, overloaded& self, Args&&... args) {
+            function(self, std::forward<Args>(args)...);
+        } || ...)
+        decltype(auto) operator()(Args&&... args)
+        {
+            return static_cast<overloaded&>(*this)(*this, std::forward<Args>(args)...);
+        }
+    };
+    template <class... Ts>
+    overloaded(Ts...) -> overloaded<Ts...>;
+
     inline constexpr yyjson::WriteFlag operator|(yyjson::WriteFlag lhs, yyjson::WriteFlag rhs)
     {
         return static_cast<yyjson::WriteFlag>(to_underlying(lhs) | to_underlying(rhs));
@@ -208,7 +225,7 @@ namespace yyjson
         {
             if (size == 0) return init();
             buf_ = std::allocator<char_like>().allocate(size);
-            std::ranges::uninitialized_default_construct(buf_, buf_ + size);
+            std::ranges::uninitialized_value_construct(buf_, buf_ + size);
             size_ = size;
 
             // allocate memory pool
@@ -497,6 +514,8 @@ namespace yyjson
         class array;
         class object;
         using const_key_value_ref_pair = std::pair<key_string, const_value_ref>;
+        using value_variant = std::variant<std::nullptr_t, bool, std::uint64_t, std::int64_t, double, std::string_view,
+                                           const_array_ref, const_object_ref>;
 
         // for backward compatibility
         using pool_allocator = yyjson::pool_allocator;
@@ -792,6 +811,7 @@ namespace yyjson
                 field_reflection::field_namable<std::remove_cvref_t<T>> && (!visitable<std::remove_cvref_t<T>>) &&
                 directly_create_reflected_object_impl<std::remove_cvref_t<T>>(
                     std::make_index_sequence<field_reflection::field_count<std::remove_cvref_t<T>>>{});
+
             template <typename T>
             concept convertible_to_create_primitive_callable = requires(T&& t) {  // clang-format off
                     {convert(std::forward<T>(t))} -> create_primitive_callable;
@@ -1470,8 +1490,8 @@ namespace yyjson
                 {
                     using value_type = std::remove_cvref_t<std::ranges::range_value_t<Range>>;
                     return yyjson_mut_arr_with_reflected_objects_impl(
-                        std::forward<Range>(range), std::make_index_sequence<field_reflection::field_count<value_type>>{},
-                        ts...);
+                        std::forward<Range>(range),
+                        std::make_index_sequence<field_reflection::field_count<value_type>>{}, ts...);
                 }
 
                 template <std::ranges::sized_range Range, std::size_t... Is, copy_string_args... Ts>
@@ -1504,16 +1524,17 @@ namespace yyjson
                                         field_reflection::for_each_field(
                                             std::forward<decltype(element)>(element),
                                             [&](std::string_view field_name, auto&& field_value) {
-                                                emitter.emplace(
-                                                    field_name, std::forward<decltype(field_value)>(field_value), ts...);
+                                                emitter.emplace(field_name,
+                                                                std::forward<decltype(field_value)>(field_value),
+                                                                ts...);
                                             });
                                     }
                                     else
                                     {
-                                        (emitter.emplace(field_reflection::field_name<value_type, Is>,
-                                                         field_reflection::get_field<Is>(
-                                                             std::forward<decltype(element)>(element)),
-                                                         ts...),
+                                        (emitter.emplace(
+                                             field_reflection::field_name<value_type, Is>,
+                                             field_reflection::get_field<Is>(std::forward<decltype(element)>(element)),
+                                             ts...),
                                          ...);
                                     }
                                     if (yyjson_unlikely(!emitter.success)) [[unlikely]]
@@ -1535,6 +1556,7 @@ namespace yyjson
                     }
                     return nullptr;
                 }
+
                 template <std::ranges::input_range Range, copy_string_args... Ts>
                 requires key_value_like_create_value_callable<std::ranges::range_value_t<Range>>
                 yyjson_mut_val* yyjson_mut_obj_with_range(Range&& range, Ts... ts)
@@ -3712,6 +3734,9 @@ namespace yyjson
                     return std::string_view(yyjson_get_str(val_), yyjson_get_len(val_));
                 return std::nullopt;
             }
+            [[nodiscard]] value_variant inspect() const noexcept;
+            template <typename Visitor>
+            decltype(auto) inspect(Visitor&& visitor) const;
 
             [[nodiscard]] std::optional<const_array_ref> as_array() const noexcept;
             [[nodiscard]] std::optional<const_object_ref> as_object() const noexcept;
@@ -3754,8 +3779,9 @@ namespace yyjson
 
             bool operator==(const const_array_iter& right) const
             {
-                return std::tie(iter_.idx, iter_.max, iter_.cur) ==
-                       std::tie(right.iter_.idx, right.iter_.max, right.iter_.cur);
+                const auto is_end = iter_.idx >= iter_.max;
+                const auto right_is_end = right.iter_.idx >= right.iter_.max;
+                return (is_end && right_is_end) || (iter_.cur == right.iter_.cur);
             }
             bool operator!=(const const_array_iter& right) const { return !(*this == right); }
 
@@ -3786,17 +3812,7 @@ namespace yyjson
                 assert(success);
                 return iter;
             }
-            static void array_iter_next(yyjson_arr_iter& iter) noexcept
-            {
-                if (iter.idx + 1 < iter.max)
-                {
-                    yyjson_arr_iter_next(&iter);
-                }
-                else
-                {
-                    iter = array_iter_end();
-                }
-            }
+            static void array_iter_next(yyjson_arr_iter& iter) noexcept { yyjson_arr_iter_next(&iter); }
             [[nodiscard]] auto array_size() const noexcept { return yyjson_arr_size(base::val_); }
             [[nodiscard]] auto array_empty() const noexcept { return yyjson_arr_size(base::val_) == 0; }
             [[nodiscard]] auto array_front() const noexcept { return yyjson_arr_get_first(base::val_); }
@@ -3875,8 +3891,9 @@ namespace yyjson
 
             bool operator==(const const_object_iter& right) const
             {
-                return std::tie(iter_.idx, iter_.max, iter_.cur, iter_.obj) ==
-                       std::tie(right.iter_.idx, right.iter_.max, right.iter_.cur, right.iter_.obj);
+                const auto is_end = iter_.idx >= iter_.max;
+                const auto right_is_end = right.iter_.idx >= right.iter_.max;
+                return (is_end && right_is_end) || (iter_.cur == right.iter_.cur);
             }
             bool operator!=(const const_object_iter& right) const { return !(*this == right); }
 
@@ -3911,17 +3928,7 @@ namespace yyjson
                 assert(success);
                 return iter;
             }
-            static void object_iter_next(yyjson_obj_iter& iter) noexcept
-            {
-                if (iter.idx + 1 < iter.max)
-                {
-                    yyjson_obj_iter_next(&iter);
-                }
-                else
-                {
-                    iter = object_iter_end();
-                }
-            }
+            static void object_iter_next(yyjson_obj_iter& iter) noexcept { yyjson_obj_iter_next(&iter); }
             [[nodiscard]] auto object_size() const noexcept { return yyjson_obj_size(base::val_); }
             [[nodiscard]] auto object_empty() const noexcept { return yyjson_obj_size(base::val_) == 0; }
             [[nodiscard]] auto object_get(std::string_view key) const
@@ -3987,6 +3994,42 @@ namespace yyjson
                 return cast<T>();
             }
         };
+        [[nodiscard]] inline value_variant const_value_ref::inspect() const noexcept
+        {
+            if (yyjson_is_arr(base::val_)) return const_array_ref(base::val_);
+            if (yyjson_is_obj(base::val_)) return const_object_ref(base::val_);
+            if (yyjson_is_str(base::val_))
+            {
+                return std::string_view(yyjson_get_str(base::val_), yyjson_get_len(base::val_));
+            }
+            if (yyjson_is_int(base::val_))
+            {
+                if (yyjson_is_uint(base::val_)) return yyjson_get_uint(base::val_);
+                return yyjson_get_sint(base::val_);
+            }
+            if (yyjson_is_real(base::val_)) return yyjson_get_real(base::val_);
+            if (yyjson_is_null(base::val_)) return nullptr;
+            return yyjson_get_bool(base::val_);
+        }
+        template <typename Visitor>
+        decltype(auto) const_value_ref::inspect(Visitor&& visitor) const
+        {
+            if (yyjson_is_arr(base::val_)) return std::forward<Visitor>(visitor)(const_array_ref(base::val_));
+            if (yyjson_is_obj(base::val_)) return std::forward<Visitor>(visitor)(const_object_ref(base::val_));
+            if (yyjson_is_str(base::val_))
+            {
+                return std::forward<Visitor>(visitor)(
+                    std::string_view(yyjson_get_str(base::val_), yyjson_get_len(base::val_)));
+            }
+            if (yyjson_is_int(base::val_))
+            {
+                if (yyjson_is_uint(base::val_)) return std::forward<Visitor>(visitor)(yyjson_get_uint(base::val_));
+                return std::forward<Visitor>(visitor)(yyjson_get_sint(base::val_));
+            }
+            if (yyjson_is_real(base::val_)) return std::forward<Visitor>(visitor)(yyjson_get_real(base::val_));
+            if (yyjson_is_null(base::val_)) return std::forward<Visitor>(visitor)(nullptr);
+            return std::forward<Visitor>(visitor)(yyjson_get_bool(base::val_));
+        }
         [[nodiscard]] inline std::optional<const_object_ref> const_value_ref::as_object() const noexcept
         {
             if (is_object()) [[likely]]
@@ -4495,35 +4538,35 @@ namespace yyjson
                 throw bad_cast(std::format("{} is not constructible from JSON null", detail::type_name<U>()));
         }
 
-        template <typename Json, typename U = T>
-        static U from_json_bool(const Json& json)
+        template <typename U = T>
+        static U from_json_bool(bool value)
         {
             if constexpr (json_scalar_constructible<U, bool>)
-                return U(*json.as_bool());
+                return U(value);
             else
                 throw bad_cast(std::format("{} is not constructible from JSON bool", detail::type_name<U>()));
         }
 
-        template <typename Json, typename U = T>
-        static U from_json_real(const Json& json)
+        template <typename U = T>
+        static U from_json_real(double value)
         {
             if constexpr (json_scalar_constructible<U, double>)
             {
-                return U(*json.as_real());
+                return U(value);
             }
             else
                 throw bad_cast(std::format("{} is not constructible from JSON number", detail::type_name<U>()));
         }
 
-        template <typename Json, typename U = T>
-        static U from_json_string(const Json& json)
+        template <typename U = T>
+        static U from_json_string(std::string_view value)
         {
             if constexpr (std::constructible_from<U, std::string_view>)
-                return U(*json.as_string());
+                return U(value);
             else if constexpr (std::constructible_from<U, std::string>)
-                return U(std::string(*json.as_string()));
+                return U(std::string(value));
             else if constexpr (std::constructible_from<U, const char*>)
-                return U(json.as_string()->data());
+                return U(value.data());
             else
                 throw bad_cast(std::format("{} is not constructible from JSON string", detail::type_name<U>()));
         }
@@ -4581,7 +4624,57 @@ namespace yyjson
         requires (std::same_as<reader::const_value_ref, Json> || writer::detail::base_of_const_value<Json>)
         static auto from_json(const Json& json)
         {
-            if (const auto obj = json.as_object(); obj.has_value())
+            if constexpr (requires { json.inspect(); })
+            {
+                return json.inspect([](const auto& value) -> T {
+                    using value_type = std::remove_cvref_t<decltype(value)>;
+                    if constexpr (std::same_as<value_type, reader::const_object_ref>)
+                    {
+                        if constexpr (writer::detail::from_json_def_obj_defined<T>)
+                        {
+                            return from_json(value);
+                        }
+                        else
+                            throw bad_cast(
+                                std::format("{} is not constructible from JSON object", detail::type_name<T>()));
+                    }
+                    else if constexpr (std::same_as<value_type, reader::const_array_ref>)
+                    {
+                        if constexpr (writer::detail::from_json_def_arr_defined<T>)
+                        {
+                            return from_json(value);
+                        }
+                        else
+                            throw bad_cast(
+                                std::format("{} is not constructible from JSON array", detail::type_name<T>()));
+                    }
+                    else if constexpr (std::same_as<value_type, std::nullptr_t>)
+                    {
+                        return from_json_null();
+                    }
+                    else if constexpr (std::same_as<value_type, bool>)
+                    {
+                        return from_json_bool(value);
+                    }
+                    else if constexpr (std::same_as<value_type, double>)
+                    {
+                        return from_json_real(value);
+                    }
+                    else if constexpr (std::same_as<value_type, std::string_view>)
+                    {
+                        return from_json_string(value);
+                    }
+                    else if constexpr (std::same_as<value_type, std::uint64_t>)
+                    {
+                        return from_json_uint(value);
+                    }
+                    else
+                    {
+                        return from_json_sint(value);
+                    }
+                });
+            }
+            else if (const auto obj = json.as_object(); obj.has_value())
             {
                 if constexpr (writer::detail::from_json_def_obj_defined<T>)
                 {
@@ -4605,15 +4698,15 @@ namespace yyjson
             }
             else if (json.is_bool())
             {
-                return from_json_bool(json);
+                return from_json_bool(*json.as_bool());
             }
             else if (json.is_real())
             {
-                return from_json_real(json);
+                return from_json_real(*json.as_real());
             }
             else if (json.is_string())
             {
-                return from_json_string(json);
+                return from_json_string(*json.as_string());
             }
             else if (const auto vui = json.as_uint(); vui.has_value())
             {
@@ -5060,13 +5153,13 @@ struct std::formatter<T>
         }                                                                                             \
         template <typename Emitter, typename... Ts>                                                   \
         requires (!std::same_as<std::remove_cvref_t<Emitter>, yyjson::writer::object_ref>)            \
-        static auto to_json_impl(Emitter& emitter, const CLASS& t, Ts... ts)                           \
+        static auto to_json_impl(Emitter& emitter, const CLASS& t, Ts... ts)                          \
         {                                                                                             \
             CPPYYJSON_FOR_EACH(VISITABLE_STRUCT_IMPL2, __VA_ARGS__)                                   \
         }                                                                                             \
         template <typename Emitter, typename... Ts>                                                   \
         requires (!std::same_as<std::remove_cvref_t<Emitter>, yyjson::writer::object_ref>)            \
-        static auto to_json_impl(Emitter& emitter, CLASS&& t, Ts... ts)                                \
+        static auto to_json_impl(Emitter& emitter, CLASS&& t, Ts... ts)                               \
         {                                                                                             \
             CPPYYJSON_FOR_EACH(VISITABLE_STRUCT_IMPL3, __VA_ARGS__)                                   \
         }                                                                                             \

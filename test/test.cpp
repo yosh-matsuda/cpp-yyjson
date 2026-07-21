@@ -2863,6 +2863,63 @@ TEST(Reader, ValueConversion)
         std::same_as<decltype(std::declval<const const_value_ref&>().as_array()), std::optional<const_array_ref>>);
     static_assert(
         std::same_as<decltype(std::declval<const const_value_ref&>().as_object()), std::optional<const_object_ref>>);
+    static_assert(std::same_as<decltype(std::declval<value&>().inspect()), value_variant>);
+    static_assert(std::same_as<decltype(std::declval<const value&>().inspect()), value_variant>);
+    static_assert(std::same_as<decltype(std::declval<const_value_ref&>().inspect()), value_variant>);
+    static_assert(std::same_as<decltype(std::declval<const const_value_ref&>().inspect()), value_variant>);
+}
+
+TEST(Reader, Inspect)
+{
+    using namespace yyjson::reader;  // NOLINT
+    using namespace std::literals;
+
+    auto doc = read(R"([null,true,false,-2,3,4.5,"xy",[],{}])"sv);
+    const auto root = std::get<const_array_ref>(doc.inspect());
+
+    EXPECT_TRUE(std::holds_alternative<std::nullptr_t>(root[0].inspect()));
+    EXPECT_EQ(true, std::get<bool>(root[1].inspect()));
+    EXPECT_EQ(false, std::get<bool>(root[2].inspect()));
+    EXPECT_EQ(-2, std::get<std::int64_t>(root[3].inspect()));
+    EXPECT_EQ(3, std::get<std::uint64_t>(root[4].inspect()));
+    EXPECT_EQ(4.5, std::get<double>(root[5].inspect()));
+    EXPECT_EQ("xy"sv, std::get<std::string_view>(root[6].inspect()));
+    EXPECT_TRUE(std::get<const_array_ref>(root[7].inspect()).empty());
+    EXPECT_TRUE(std::get<const_object_ref>(root[8].inspect()).empty());
+}
+
+TEST(Reader, InspectVisit)
+{
+    using namespace yyjson::reader;  // NOLINT
+    using yyjson::overloaded;
+    using namespace std::literals;
+
+    auto doc = read(R"({"a":[1,-2,3.5,true,false,null,"xy"],"b":{}})"sv);
+    auto total = std::uint64_t{0};
+
+    auto walk = overloaded{[&](auto& self, const const_value_ref value) -> void { value.inspect(self); },
+                           [&](auto&, std::nullptr_t) { total += 1; },
+                           [&](auto&, bool v) { total += v ? 2 : 3; },
+                           [&](auto&, std::uint64_t v) { total += v; },
+                           [&](auto&, std::int64_t v) { total += static_cast<std::uint64_t>(-v); },
+                           [&](auto&, double v) { total += static_cast<std::uint64_t>(v); },
+                           [&](auto&, std::string_view v) { total += v.size(); },
+                           [&](auto& self, const_array_ref v) {
+                               for (const auto child : v)
+                               {
+                                   self(child);
+                               }
+                           },
+                           [&](auto& self, const_object_ref v) {
+                               for (const auto& [key, child] : v)
+                               {
+                                   total += key.size();
+                                   self(child);
+                               }
+                           }};
+
+    walk(doc);
+    EXPECT_EQ(16, total);
 }
 
 TEST(Reader, ValueExamples)

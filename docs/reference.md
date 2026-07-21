@@ -20,6 +20,10 @@ The `yyjson` namespace includes the following function and classes. Typically, y
 | `yyjson::pool_allocator`       | Fixed size memory allocator wrapper on the heap                    |
 | `yyjson::stack_pool_allocator` | Fixed size memory allocator wrapper on the stack                   |
 
+| Utility              |                                                 |
+| -------------------- | ----------------------------------------------- |
+| `yyjson::overloaded` | Helper for combining lambdas for `std::visit`   |
+
 In internal namespaces, the cpp-yyjson provides JSON value, array, object, reference, and iterator classes. Each internal `yyjson::reader` and `yyjson::writer` namespace defines *immutable* and *mutable* JSON classes, respectively. Although you rarely need to be aware of the classes provided in the internal namespaces, the *reference* classes are noted here.
 
 The JSON value, array, and object classes have the corresponding *reference* (only for *mutable* classes) and *const reference* versions of them as shown later, such as `value_ref`, `const_value_ref`, `array_ref`, `const_array_ref`, and so on. The *reference* classes have member functions with almost the same signature as the normal versions. The difference between a normal `value` class and a `[const_]value_ref` class is whether they have their data ownership or not. The *(const) reference* JSON classes appear in return types of member functions of the JSON classes. This is to maximize performance by avoiding copying.
@@ -113,6 +117,11 @@ std::optional<yyjson::reader::array> as_array() &&;
 std::optional<yyjson::reader::const_object_ref> as_object() const&;
 std::optional<yyjson::reader::object> as_object() &&;
 
+// Inspect the JSON value with a type-safe variant or visitor
+yyjson::reader::value_variant inspect() const;
+template <typename Visitor>
+decltype(auto) inspect(Visitor&& visitor) const;
+
 // Cast
 template<typename T>
 T cast<T>() const;
@@ -141,6 +150,86 @@ enum class yyjson::WriteFlag : yyjson_write_flag
 The `write` function returns a read-only string which is inherited from `std::string_view`.
 
 See the reference of yyjson for the information on [writer flags](https://ibireme.github.io/yyjson/doc/doxygen/html/md_doc__a_p_i.html#autotoc_md40).
+
+**Type inspection**
+
+The `inspect` function returns the JSON value content as `yyjson::reader::value_variant`. It is useful when you want to branch by JSON type once and handle the value with `std::visit`, instead of trying multiple `as_*` functions. The `inspect(visitor)` overload dispatches directly to the visitor without creating a variant, which is useful for hot paths such as recursive JSON walkers.
+
+This is useful on the user side when the JSON shape is not fully known at compile time, such as logging, validation, normalization, filtering, or writing a generic JSON walker. For fixed-schema data, `as_*` and `cast<T>` are often simpler. For dynamic or mixed-schema data, `inspect` keeps the type dispatch in one place and makes it explicit which JSON types are handled.
+
+```cpp
+namespace yyjson::reader
+{
+    using value_variant = std::variant<std::nullptr_t,
+                                       bool,
+                                       std::uint64_t,
+                                       std::int64_t,
+                                       double,
+                                       std::string_view,
+                                       const_array_ref,
+                                       const_object_ref>;
+}
+```
+
+Arrays and objects are returned as reference classes, so they still refer to the owner JSON document. The `std::string_view` alternative also refers to the string stored in the owner JSON document.
+
+Non-negative integers are returned as `std::uint64_t`, and negative integers are returned as `std::int64_t`. A non-negative integer that does not fit in `std::int64_t` can still be inspected without losing precision. If you want to treat all integers uniformly, handle both alternatives in the visitor.
+
+The `yyjson::overloaded` helper can be used to combine lambdas for `std::visit` or `inspect(visitor)`.
+For ordinary overload resolution, it behaves like the common overloaded-lambda helper.
+
+```cpp
+auto val = yyjson::read(R"({"id":1,"name":"cpp-yyjson","ok":true})");
+auto obj = *val.as_object();
+
+auto id = std::visit(yyjson::overloaded{
+                         [](std::uint64_t value) { return std::to_string(value); },
+                         [](std::int64_t value) { return std::to_string(value); },
+                         [](const auto&) { return std::string(); }
+                     },
+                     obj["id"].inspect());
+
+auto name = std::visit(yyjson::overloaded{
+                           [](std::string_view value) { return std::string(value); },
+                           [](const auto&) { return std::string(); }
+                       },
+                       obj["name"].inspect());
+
+std::cout << id << ", " << name << std::endl;
+// -> 1, cpp-yyjson
+```
+
+For recursive visitors, `yyjson::overloaded` also supports a `self` parameter. If no overload matches the arguments directly, it retries the call by passing the `overloaded` object itself as the first argument. This lets a visitor call itself without a separate fixed-point helper. Recursive visitors must be stored as a non-const object because `self` is passed as `overloaded&`.
+
+```cpp
+using namespace yyjson;
+
+// Count the number of values in a JSON document recursively.
+auto count = std::size_t{0};
+auto walk = overloaded{
+    [&](auto& self, reader::const_value_ref value) -> void {
+        ++count;
+        value.inspect(self);
+    },
+    [](auto&, auto) {},
+    [](auto& self, reader::const_array_ref array) {
+        for (const auto child : array)
+        {
+            self(child);
+        }
+    },
+    [](auto& self, reader::const_object_ref object) {
+        for (const auto& [key, child] : object)
+        {
+            self(child);
+        }
+    }
+};
+
+walk(yyjson::read(R"({"items":[1,{"nested":[2,3]}]})"));
+std::cout << count << std::endl;
+// -> 7
+```
 
 **Example**
 

@@ -92,6 +92,13 @@ for (const auto& [k, v] : dict)
     std::cout << "{" << k << ": " << v.write() << "}" << std::endl;
 }
 
+// inspect() dispatches a JSON value by type in one std::visit call
+std::visit(overloaded{
+               [](std::string_view v) { std::cout << v << std::endl; },
+               [](const auto&) {}
+           },
+           obj["name"].inspect());
+
 // JSON array/object to container conversion
 auto numbers = cast<std::vector<int>>(list);
 auto currency = cast<std::map<std::string_view, double>>(dict);
