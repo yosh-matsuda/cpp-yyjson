@@ -211,57 +211,54 @@ auto json_files = std::array{
 
 std::pair<json_count, json_stats> iterate_all_cpp_yyjson(const auto& json)
 {
+    using yyjson::overloaded;
+    using namespace yyjson::reader;
     auto counter = json_count();
     auto stats = json_stats();
-    const auto iterate_all_elements = [&counter, &stats](auto self, const auto& v0) -> void {
-        if (auto arr = v0.as_array(); arr)
-        {
-            ++counter.cnt_array;
-            stats.total_arr_elm_cnt += arr->size();
-            for (const auto& v1 : *arr)
-            {
-                self(self, v1);
-            }
-        }
-        else if (auto obj = v0.as_object(); obj)
-        {
-            ++counter.cnt_object;
-            stats.total_obj_elm_cnt += obj->size();
-            for (const auto& [k, v1] : *obj)
-            {
-                stats.total_str_len += k.size();
-                self(self, v1);
-            }
-        }
-        else if (auto str = v0.as_string(); str)
-        {
-            ++counter.cnt_string;
-            stats.total_str_len += str->size();
-        }
-        else if (auto num = v0.as_int(); num)
-        {
-            ++counter.cnt_int;
-            stats.total_int += *num;
-        }
-        else if (auto rel = v0.as_real(); rel)
-        {
-            ++counter.cnt_real;
-            stats.total_real += *rel;
-        }
-        else if (auto p = v0.as_null(); p)
-        {
-            ++counter.cnt_null;
-        }
-        else if (auto b = v0.as_bool(); b)
-        {
-            ++counter.cnt_bool;
-            if (*b)
-                ++stats.total_true_cnt;
-            else
-                ++stats.total_false_cnt;
-        }
-    };
-    iterate_all_elements(iterate_all_elements, json);
+    auto iterate_all_elements =
+        overloaded{[&](auto& self, const const_value_ref value) -> void { value.inspect(self); },
+                   [&](auto& self, const_array_ref arr) {
+                       ++counter.cnt_array;
+                       stats.total_arr_elm_cnt += arr.size();
+                       for (const auto& v1 : arr)
+                       {
+                           self(v1);
+                       }
+                   },
+                   [&](auto& self, const_object_ref obj) {
+                       ++counter.cnt_object;
+                       stats.total_obj_elm_cnt += obj.size();
+                       for (const auto& [k, v1] : obj)
+                       {
+                           stats.total_str_len += k.size();
+                           self(v1);
+                       }
+                   },
+                   [&](auto&, std::string_view str) {
+                       ++counter.cnt_string;
+                       stats.total_str_len += str.size();
+                   },
+                   [&](auto&, std::uint64_t num) {
+                       ++counter.cnt_int;
+                       stats.total_int += static_cast<std::int64_t>(num);
+                   },
+                   [&](auto&, std::int64_t num) {
+                       ++counter.cnt_int;
+                       stats.total_int += num;
+                   },
+                   [&](auto&, double rel) {
+                       ++counter.cnt_real;
+                       stats.total_real += rel;
+                   },
+                   [&](auto&, std::nullptr_t) { ++counter.cnt_null; },
+                   [&](auto&, bool b) {
+                       ++counter.cnt_bool;
+                       if (b)
+                           ++stats.total_true_cnt;
+                       else
+                           ++stats.total_false_cnt;
+                   }};
+    iterate_all_elements(json);
     return {counter, stats};
 }
 
