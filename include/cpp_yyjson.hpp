@@ -4412,10 +4412,7 @@ struct std::formatter<T>
         return i;
     }
 
-    auto format(const T& t, std::format_context& ctx) const -> std::format_context::iterator
-    {
-        return std::format_to(ctx.out(), "{}", std::string_view(t.write()));
-    }
+    auto format(const T& t, auto& ctx) const { return std::format_to(ctx.out(), "{}", std::string_view(t.write())); }
 };
 
 #define CPPYYJSON_STRIGIFY_IMPL(x) #x

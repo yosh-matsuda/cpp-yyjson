@@ -77,6 +77,7 @@ jobs:
       run: |
         if [[ "${{ matrix.compiler.install }}" == "brew" ]]; then
           eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          brew update
           brew install ninja ${{ matrix.compiler.brewpkg }}
         else
           sudo apt-get update
@@ -107,14 +108,17 @@ jobs:
       fail-fast: false
       matrix:
         compiler:
-        - { name: "GCC 15", c: "gcc-15", cxx: "g++-15", brewpkg: "gcc@15" }
-        - { name: "GCC 16", c: "gcc-16", cxx: "g++-16", brewpkg: "gcc@16" }
-        - { name: "Clang 19", c: "$(brew --prefix llvm@19)/bin/clang", cxx: "$(brew --prefix llvm@19)/bin/clang++", brewpkg: "llvm@19" }
-        - { name: "Clang 20", c: "$(brew --prefix llvm@20)/bin/clang", cxx: "$(brew --prefix llvm@20)/bin/clang++", brewpkg: "llvm@20" }
-        - { name: "Clang 21", c: "$(brew --prefix llvm@21)/bin/clang", cxx: "$(brew --prefix llvm@21)/bin/clang++", brewpkg: "llvm@21" }
-        - { name: "Clang 22", c: "$(brew --prefix llvm@22)/bin/clang", cxx: "$(brew --prefix llvm@22)/bin/clang++", brewpkg: "llvm@22" }
+        - { name: "GCC 15", os: "macos-latest", c: "gcc-15", cxx: "g++-15", brewpkg: "gcc@15" }
+        - { name: "GCC 16", os: "macos-latest", c: "gcc-16", cxx: "g++-16", brewpkg: "gcc@16" }
+        - { name: "Clang 19", os: "macos-latest", c: "$(brew --prefix llvm@19)/bin/clang", cxx: "$(brew --prefix llvm@19)/bin/clang++", brewpkg: "llvm@19" }
+        - { name: "Clang 20", os: "macos-latest", c: "$(brew --prefix llvm@20)/bin/clang", cxx: "$(brew --prefix llvm@20)/bin/clang++", brewpkg: "llvm@20" }
+        - { name: "Clang 21", os: "macos-latest", c: "$(brew --prefix llvm@21)/bin/clang", cxx: "$(brew --prefix llvm@21)/bin/clang++", brewpkg: "llvm@21" }
+        - { name: "Clang 22", os: "macos-latest", c: "$(brew --prefix llvm@22)/bin/clang", cxx: "$(brew --prefix llvm@22)/bin/clang++", brewpkg: "llvm@22" }
+        - { name: "AppleClang16", os: "macos-14", c: "/usr/bin/clang", cxx: "/usr/bin/clang++", xcode: "/Applications/Xcode_16.2.app" }
+        - { name: "AppleClang17", os: "macos-15", c: "/usr/bin/clang", cxx: "/usr/bin/clang++", xcode: "/Applications/Xcode_26.3.app" }
+        - { name: "AppleClang21", os: "macos-26", c: "/usr/bin/clang", cxx: "/usr/bin/clang++", xcode: "/Applications/Xcode_26.6.app" }
     name: MacOS - ${{ matrix.compiler.name }}
-    runs-on: macos-latest
+    runs-on: ${{ matrix.compiler.os }}
 
     env:
       triplet: arm64-osx
@@ -124,8 +128,19 @@ jobs:
       with:
         submodules: true
 
-    - name: Install compilers
-      run: brew install ninja ${{ matrix.compiler.brewpkg }}
+    - name: Select Xcode
+      if: matrix.compiler.xcode != ''
+      run: |
+        sudo xcode-select --switch "${{ matrix.compiler.xcode }}/Contents/Developer"
+        xcodebuild -version
+        clang --version
+
+    - name: Install compiler
+      run: |
+        brew install ninja
+        if [[ -n "${{ matrix.compiler.brewpkg }}" ]]; then
+          brew install ${{ matrix.compiler.brewpkg }}
+        fi
 
     - name: Install dependencies
       run: |

@@ -14,6 +14,16 @@
 #endif
 
 // NOLINTBEGIN
+TEST(Format, JsonObjects)
+{
+    auto reader_doc = yyjson::read(R"({"reader":true})");
+    const auto reader_object = *reader_doc.as_object();
+    EXPECT_EQ(R"({"reader":true})", std::format("{}", reader_object));
+
+    const yyjson::writer::object writer_object = {{"writer", true}};
+    EXPECT_EQ(R"({"writer":true})", std::format("{}", writer_object));
+}
+
 TEST(Writer, Constructor)
 {
     using namespace yyjson::writer;  // NOLINT
