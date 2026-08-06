@@ -2207,6 +2207,24 @@ struct Z : public X
 
 VISITABLE_STRUCT(Z, a, b, c);
 
+struct ReflectionRecord
+{
+    int i;
+    double j;
+    std::string k;
+    bool operator==(const ReflectionRecord&) const = default;
+};
+
+struct VisitableRecord
+{
+    int i;
+    double j;
+    std::string k;
+    bool operator==(const VisitableRecord&) const = default;
+};
+
+VISITABLE_STRUCT(VisitableRecord, i, j, k);
+
 struct ManyFields
 {
     int f01;
@@ -2635,6 +2653,21 @@ TEST(Writer, PredefinedCaster)
     EXPECT_EQ(z1.a, z2.a);
     EXPECT_EQ(z1.b, z2.b);
     EXPECT_EQ(z1.c, z2.c);
+
+    auto reflected_records = std::vector<ReflectionRecord>{{1, 2.5, "a"}, {3, 4.5, "b"}};
+    auto reflected_arr = array(reflected_records);
+    EXPECT_EQ(R"([{"i":1,"j":2.5,"k":"a"},{"i":3,"j":4.5,"k":"b"}])", reflected_arr.write());
+    reflected_records.front().k = "x";
+    EXPECT_EQ(R"([{"i":1,"j":2.5,"k":"x"},{"i":3,"j":4.5,"k":"b"}])", reflected_arr.write());
+    EXPECT_EQ(reflected_records, cast<std::vector<ReflectionRecord>>(reflected_arr));
+
+    auto reflected_copy_arr = array(reflected_records, yyjson::copy_string);
+    reflected_records.front().k = "y";
+    EXPECT_EQ(R"([{"i":1,"j":2.5,"k":"x"},{"i":3,"j":4.5,"k":"b"}])", reflected_copy_arr.write());
+
+    auto visitable_records = std::vector<VisitableRecord>{{1, 2.5, "a"}, {3, 4.5, "b"}};
+    auto visitable_arr = array(visitable_records);
+    EXPECT_EQ(R"([{"i":1,"j":2.5,"k":"a"},{"i":3,"j":4.5,"k":"b"}])", visitable_arr.write());
 
     auto x_vec1 = std::vector<X>{{1, 2.0, "3"}, {4, std::nullopt, "6"}, {7, 8.0, "9"}};
     auto arr3 = array(x_vec1);

@@ -1,9 +1,12 @@
 @PACKAGE_INIT@
 
 set(CPPYYJSON_VERSION @PROJECT_VERSION@)
+set(CPPYYJSON_USE_BUNDLED_YYJSON @CPPYYJSON_USE_BUNDLED_YYJSON@)
 
-include(CMakeFindDependencyMacro)
-find_dependency(yyjson CONFIG REQUIRED)
+if(NOT CPPYYJSON_USE_BUNDLED_YYJSON)
+	include(CMakeFindDependencyMacro)
+	find_dependency(yyjson CONFIG REQUIRED)
+endif()
 
 include("${CMAKE_CURRENT_LIST_DIR}/@PROJECT_NAME@Targets.cmake")
 check_required_components("@PROJECT_NAME@")

@@ -53,16 +53,48 @@ if(CPPYYJSON_BUILD_BENCH)
   find_package(RapidJSON CONFIG REQUIRED)
   find_package(nlohmann_json CONFIG REQUIRED)
 
-  # executables
+  # cpp-yyjson comparison benchmarks
   add_executable("${PROJECT_NAME}_bench_read" bench_read.cpp)
   target_link_libraries(
     "${PROJECT_NAME}_bench_read" PRIVATE ${PROJECT_NAME} benchmark::benchmark
-                                         simdjson::simdjson rapidjson)
-  add_executable("${PROJECT_NAME}_bench_write" bench_write.cpp)
+    simdjson::simdjson rapidjson)
+
+    add_executable("${PROJECT_NAME}_bench_write" bench_write.cpp)
+    target_link_libraries(
+      "${PROJECT_NAME}_bench_write"
+      PRIVATE ${PROJECT_NAME} benchmark::benchmark rapidjson nlohmann_json
+      nlohmann_json::nlohmann_json)
+
+  if(NOT MSVC AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64)$")
+    foreach(target "${PROJECT_NAME}_bench_read" "${PROJECT_NAME}_bench_write")
+      target_compile_options(${target} PRIVATE -march=x86-64-v3)
+    endforeach()
+  endif()
+
+  cpp_yyjson_enable_lto("${PROJECT_NAME}_bench_read")
+  cpp_yyjson_enable_lto("${PROJECT_NAME}_bench_write")
+
+  # Upstream yyjson C API benchmarks
+  find_package(yyjson CONFIG REQUIRED)
+  add_executable(yyjson_bench_read bench_read.cpp)
   target_link_libraries(
-    "${PROJECT_NAME}_bench_write"
-    PRIVATE ${PROJECT_NAME} benchmark::benchmark rapidjson nlohmann_json
-            nlohmann_json::nlohmann_json)
+    yyjson_bench_read PRIVATE benchmark::benchmark yyjson::yyjson
+                              simdjson::simdjson rapidjson)
+  target_compile_features(yyjson_bench_read PRIVATE cxx_std_20)
+  target_compile_definitions(yyjson_bench_read PRIVATE CPPYYJSON_RAW_YYJSON_BENCHMARKS)
+
+  add_executable(yyjson_bench_write bench_write.cpp)
+  target_link_libraries(yyjson_bench_write PRIVATE benchmark::benchmark yyjson::yyjson)
+  target_compile_features(yyjson_bench_write PRIVATE cxx_std_20)
+  target_compile_definitions(yyjson_bench_write PRIVATE CPPYYJSON_RAW_YYJSON_BENCHMARKS)
+
+  get_target_property(YYJSON_INCLUDE_DIRECTORIES yyjson::yyjson INTERFACE_INCLUDE_DIRECTORIES)
+  foreach(target yyjson_bench_read yyjson_bench_write)
+    target_include_directories(
+      ${target}
+      SYSTEM BEFORE PRIVATE "$<BUILD_INTERFACE:${YYJSON_INCLUDE_DIRECTORIES}>"
+                            "${PROJECT_SOURCE_DIR}/include")
+  endforeach()
 endif()
 
 # compile commands

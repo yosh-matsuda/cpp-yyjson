@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 project(
   cpp_yyjson
   VERSION 0.8.0
-  LANGUAGES CXX)
+  LANGUAGES C CXX)
 
 # check if the project is top-level
 if(CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME)
@@ -15,37 +15,102 @@ endif()
 option(CPPYYJSON_BUILD_TEST "Build ${PROJECT_NAME} tests"
        ${CPPYYJSON_IS_TOPLEVEL_PROJECT})
 option(CPPYYJSON_BUILD_BENCH "Build ${PROJECT_NAME} tests and benchmarks" OFF)
+option(CPPYYJSON_USE_BUNDLED_YYJSON "Build with the bundled SIMD yyjson" ON)
+
+# Benchmarks are meant to measure the fastest available backend.
+if(CPPYYJSON_BUILD_BENCH AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64)$")
+  set(CPPYYJSON_ENABLE_AVX2_DEFAULT ON)
+else()
+  set(CPPYYJSON_ENABLE_AVX2_DEFAULT OFF)
+endif()
+option(CPPYYJSON_ENABLE_AVX2
+       "Compile the bundled yyjson backend with AVX2 (requires an AVX2 CPU)"
+       ${CPPYYJSON_ENABLE_AVX2_DEFAULT})
 
 # library
 include(GNUInstallDirs)
-add_library(${PROJECT_NAME} INTERFACE)
+if(CPPYYJSON_USE_BUNDLED_YYJSON)
+  add_library(${PROJECT_NAME} STATIC src/yyjson.c)
+  target_include_directories(
+    ${PROJECT_NAME}
+    PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+           $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+
+else()
+  add_library(${PROJECT_NAME} INTERFACE)
+  target_include_directories(
+    ${PROJECT_NAME}
+    SYSTEM INTERFACE $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+                     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+endif()
 add_library(${PROJECT_NAME}::${PROJECT_NAME} ALIAS ${PROJECT_NAME})
 target_compile_features(${PROJECT_NAME} INTERFACE cxx_std_20)
-target_include_directories(
-  ${PROJECT_NAME}
-  INTERFACE $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-            $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 set_target_properties(${PROJECT_NAME} PROPERTIES VERSION ${PROJECT_VERSION})
 
 target_compile_options(
   ${PROJECT_NAME} INTERFACE $<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/Zc:preprocessor>)
 
-# dependencies
-function(find_and_link package_name qualified_name)
-  cmake_parse_arguments(FIND_AND_LINK "" "VERSION" "" ${ARGN})
-  if(NOT TARGET ${package_name} OR CPPYYJSON_IS_TOPLEVEL_PROJECT)
-    find_package(${package_name} ${FIND_AND_LINK_VERSION} CONFIG REQUIRED)
-    target_link_libraries(${PROJECT_NAME} INTERFACE ${qualified_name})
+# The AVX2 paths of the bundled backend are selected by `__AVX2__` at compile
+# time, so the flag must reach `src/yyjson.c` itself.
+if(CPPYYJSON_USE_BUNDLED_YYJSON AND CPPYYJSON_ENABLE_AVX2)
+  if(MSVC)
+    target_compile_options(${PROJECT_NAME} PRIVATE /arch:AVX2)
   else()
-    target_link_libraries(${PROJECT_NAME} INTERFACE ${package_name})
+    target_compile_options(${PROJECT_NAME} PRIVATE -mavx2)
   endif()
+endif()
+
+function(cpp_yyjson_enable_lto target)
+  if(NOT TARGET ${target})
+    message(FATAL_ERROR "Target '${target}' does not exist")
+  endif()
+
+  include(CheckIPOSupported)
+  if(CPPYYJSON_USE_BUNDLED_YYJSON)
+    check_ipo_supported(RESULT lto_supported OUTPUT lto_error LANGUAGES C CXX)
+  else()
+    check_ipo_supported(RESULT lto_supported OUTPUT lto_error LANGUAGES CXX)
+  endif()
+  if(NOT lto_supported)
+    message(WARNING "LTO is not supported: ${lto_error}")
+    return()
+  endif()
+
+  set(lto_targets ${target})
+  if(CPPYYJSON_USE_BUNDLED_YYJSON)
+    list(APPEND lto_targets ${PROJECT_NAME})
+  endif()
+  foreach(lto_target ${lto_targets})
+    set_property(TARGET ${lto_target} PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+    set_property(TARGET ${lto_target} PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO TRUE)
+  endforeach()
 endfunction()
 
-find_and_link(yyjson yyjson::yyjson)
+if(NOT CPPYYJSON_USE_BUNDLED_YYJSON)
+  function(find_and_link package_name qualified_name)
+    cmake_parse_arguments(FIND_AND_LINK "" "VERSION" "" ${ARGN})
+    if(NOT TARGET ${package_name} OR CPPYYJSON_IS_TOPLEVEL_PROJECT)
+      find_package(${package_name} ${FIND_AND_LINK_VERSION} CONFIG REQUIRED)
+      target_link_libraries(${PROJECT_NAME} INTERFACE ${qualified_name})
+    else()
+      target_link_libraries(${PROJECT_NAME} INTERFACE ${package_name})
+    endif()
+  endfunction()
+
+  find_and_link(yyjson yyjson::yyjson)
+  get_target_property(YYJSON_INCLUDE_DIRECTORIES yyjson::yyjson INTERFACE_INCLUDE_DIRECTORIES)
+  target_include_directories(
+    ${PROJECT_NAME}
+    BEFORE INTERFACE "$<BUILD_INTERFACE:${YYJSON_INCLUDE_DIRECTORIES}>")
+endif()
 
 # install
 if(CPPYYJSON_IS_TOPLEVEL_PROJECT)
-  install(TARGETS ${PROJECT_NAME} EXPORT ${PROJECT_NAME}_Targets)
+  install(
+    TARGETS ${PROJECT_NAME}
+    EXPORT ${PROJECT_NAME}_Targets
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
   install(
     EXPORT ${PROJECT_NAME}_Targets
@@ -68,8 +133,14 @@ if(CPPYYJSON_IS_TOPLEVEL_PROJECT)
           DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/${PROJECT_NAME})
 
   # install header files
-  install(DIRECTORY ${PROJECT_SOURCE_DIR}/include/
-          DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+  if(CPPYYJSON_USE_BUNDLED_YYJSON)
+    install(DIRECTORY ${PROJECT_SOURCE_DIR}/include/
+            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+  else()
+    install(FILES ${PROJECT_SOURCE_DIR}/include/cpp_yyjson.hpp
+                  ${PROJECT_SOURCE_DIR}/include/field_reflection.hpp
+            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+  endif()
 endif()
 
 # test and benchmark

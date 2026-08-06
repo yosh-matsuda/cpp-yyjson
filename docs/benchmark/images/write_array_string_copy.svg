@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="182" viewBox="0 0 980 182">
+<rect width="100%" height="100%" fill="#ffffff"/>
+<style>text{font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,sans-serif;fill:#172033}.title{font-size:20px;font-weight:700}.heading{font-size:13px;font-weight:600;fill:#334155}.label{font-size:13px}.value{font-size:12px;fill:#475569}.axis{stroke:#cbd5e1;stroke-width:1}.grid{stroke:#e2e8f0;stroke-width:1}</style>
+<text x="24" y="34" class="title">Write performance: array string copy</text>
+<line x1="300" y1="156" x2="852" y2="156" class="axis"/>
+<line x1="300.0" y1="50" x2="300.0" y2="156" class="grid"/>
+<text x="300.0" y="174" class="value" text-anchor="middle">0.000 ms</text>
+<line x1="438.0" y1="50" x2="438.0" y2="156" class="grid"/>
+<text x="438.0" y="174" class="value" text-anchor="middle">18.6 ms</text>
+<line x1="576.0" y1="50" x2="576.0" y2="156" class="grid"/>
+<text x="576.0" y="174" class="value" text-anchor="middle">37.2 ms</text>
+<line x1="714.0" y1="50" x2="714.0" y2="156" class="grid"/>
+<text x="714.0" y="174" class="value" text-anchor="middle">55.8 ms</text>
+<line x1="852.0" y1="50" x2="852.0" y2="156" class="grid"/>
+<text x="852.0" y="174" class="value" text-anchor="middle">74.4 ms</text>
+<text x="24" y="74" class="label">cpp-yyjson</text>
+<rect x="300" y="63" width="140.0" height="14" rx="2" fill="#2563eb"/>
+<text x="864" y="74" class="value">18.9 ms</text>
+<text x="24" y="98" class="label">yyjson</text>
+<rect x="300" y="87" width="145.7" height="14" rx="2" fill="#16a34a"/>
+<text x="864" y="98" class="value">19.6 ms</text>
+<text x="24" y="122" class="label">rapidjson</text>
+<rect x="300" y="111" width="261.7" height="14" rx="2" fill="#dc2626"/>
+<text x="864" y="122" class="value">35.3 ms</text>
+<text x="24" y="146" class="label">nlohmann-json</text>
+<rect x="300" y="135" width="511.1" height="14" rx="2" fill="#f97316"/>
+<text x="864" y="146" class="value">68.9 ms</text>
+</svg>

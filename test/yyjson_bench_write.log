@@ -1,0 +1,47 @@
+------------------------------------------------------------------------------------
+Benchmark                                          Time             CPU   Iterations
+------------------------------------------------------------------------------------
+write_c_yyjson_array_int64_mean                 4.93 ms         4.93 ms          101
+write_c_yyjson_array_int64_median               4.93 ms         4.93 ms          101
+write_c_yyjson_array_int64_stddev              0.011 ms        0.011 ms          101
+write_c_yyjson_array_int64_cv                   0.23 %          0.23 %           101
+write_c_yyjson_array_double_mean                7.38 ms         7.38 ms          101
+write_c_yyjson_array_double_median              7.38 ms         7.38 ms          101
+write_c_yyjson_array_double_stddev             0.005 ms        0.005 ms          101
+write_c_yyjson_array_double_cv                  0.07 %          0.07 %           101
+write_c_yyjson_array_string_mean                8.98 ms         8.98 ms          101
+write_c_yyjson_array_string_median              8.98 ms         8.98 ms          101
+write_c_yyjson_array_string_stddev             0.010 ms        0.010 ms          101
+write_c_yyjson_array_string_cv                  0.11 %          0.11 %           101
+write_c_yyjson_array_string_copy_mean           19.6 ms         19.6 ms          101
+write_c_yyjson_array_string_copy_median         19.6 ms         19.6 ms          101
+write_c_yyjson_array_string_copy_stddev        0.011 ms        0.011 ms          101
+write_c_yyjson_array_string_copy_cv             0.06 %          0.06 %           101
+write_c_yyjson_array_tuple_mean                 62.4 ms         62.4 ms          101
+write_c_yyjson_array_tuple_median               62.4 ms         62.4 ms          101
+write_c_yyjson_array_tuple_stddev              0.073 ms        0.073 ms          101
+write_c_yyjson_array_tuple_cv                   0.12 %          0.12 %           101
+write_c_yyjson_array_object_mean                98.0 ms         98.0 ms          101
+write_c_yyjson_array_object_median              98.0 ms         98.0 ms          101
+write_c_yyjson_array_object_stddev             0.082 ms        0.084 ms          101
+write_c_yyjson_array_object_cv                  0.08 %          0.09 %           101
+write_c_yyjson_array_double_append_mean         15.2 ms         15.2 ms          101
+write_c_yyjson_array_double_append_median       15.2 ms         15.2 ms          101
+write_c_yyjson_array_double_append_stddev      0.021 ms        0.021 ms          101
+write_c_yyjson_array_double_append_cv           0.14 %          0.14 %           101
+write_c_yyjson_object_int64_mean                85.1 ms         85.1 ms          101
+write_c_yyjson_object_int64_median              85.2 ms         85.1 ms          101
+write_c_yyjson_object_int64_stddev             0.047 ms        0.046 ms          101
+write_c_yyjson_object_int64_cv                  0.06 %          0.05 %           101
+write_c_yyjson_object_double_mean               90.6 ms         90.6 ms          101
+write_c_yyjson_object_double_median             90.6 ms         90.6 ms          101
+write_c_yyjson_object_double_stddev            0.079 ms        0.079 ms          101
+write_c_yyjson_object_double_cv                 0.09 %          0.09 %           101
+write_c_yyjson_object_string_mean               21.5 ms         21.5 ms          101
+write_c_yyjson_object_string_median             21.5 ms         21.5 ms          101
+write_c_yyjson_object_string_stddev            0.039 ms        0.039 ms          101
+write_c_yyjson_object_string_cv                 0.18 %          0.18 %           101
+write_c_yyjson_object_string_copy_mean          37.9 ms         37.9 ms          101
+write_c_yyjson_object_string_copy_median        37.9 ms         37.9 ms          101
+write_c_yyjson_object_string_copy_stddev       0.026 ms        0.026 ms          101
+write_c_yyjson_object_string_copy_cv            0.07 %          0.07 %           101

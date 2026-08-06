@@ -1097,31 +1097,38 @@ void write_nlohmann_object_string_copy(benchmark::State& state)
     }
 }
 
+#if defined(CPPYYJSON_RAW_YYJSON_BENCHMARKS)
+BENCHMARK(write_c_yyjson_array_int64)->Unit(benchmark::kMillisecond);
+BENCHMARK(write_c_yyjson_array_double)->Unit(benchmark::kMillisecond);
+BENCHMARK(write_c_yyjson_array_string)->Unit(benchmark::kMillisecond);
+BENCHMARK(write_c_yyjson_array_string_copy)->Unit(benchmark::kMillisecond);
+BENCHMARK(write_c_yyjson_array_tuple)->Unit(benchmark::kMillisecond);
+BENCHMARK(write_c_yyjson_array_object)->Unit(benchmark::kMillisecond);
+BENCHMARK(write_c_yyjson_array_double_append)->Unit(benchmark::kMillisecond);
+BENCHMARK(write_c_yyjson_object_int64)->Unit(benchmark::kMillisecond);
+BENCHMARK(write_c_yyjson_object_double)->Unit(benchmark::kMillisecond);
+BENCHMARK(write_c_yyjson_object_string)->Unit(benchmark::kMillisecond);
+BENCHMARK(write_c_yyjson_object_string_copy)->Unit(benchmark::kMillisecond);
+#else
 BENCHMARK(write_cpp_yyjson_array_int64)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_cpp_yyjson_single_array_int64)->Unit(benchmark::kMillisecond);
-BENCHMARK(write_c_yyjson_array_int64)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_rapidjson_array_int64)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_nlohmann_array_int64)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_cpp_yyjson_array_double)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_cpp_yyjson_single_array_double)->Unit(benchmark::kMillisecond);
-BENCHMARK(write_c_yyjson_array_double)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_rapidjson_array_double)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_nlohmann_array_double)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_cpp_yyjson_array_string)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_cpp_yyjson_single_array_string)->Unit(benchmark::kMillisecond);
-BENCHMARK(write_c_yyjson_array_string)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_rapidjson_array_string)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_cpp_yyjson_array_string_copy)->Unit(benchmark::kMillisecond);
-BENCHMARK(write_c_yyjson_array_string_copy)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_rapidjson_array_string_copy)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_nlohmann_array_string_copy)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_cpp_yyjson_array_tuple)->Unit(benchmark::kMillisecond);
-BENCHMARK(write_c_yyjson_array_tuple)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_rapidjson_array_tuple)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_nlohmann_array_tuple)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_cpp_yyjson_array_object_reflection)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_cpp_yyjson_array_object_macro)->Unit(benchmark::kMillisecond);
-BENCHMARK(write_c_yyjson_array_object)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_rapidjson_array_object)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_nlohmann_array_object)->Unit(benchmark::kMillisecond);
 
@@ -1129,25 +1136,21 @@ BENCHMARK(write_nlohmann_array_object)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_cpp_yyjson_array_double_append_range)->Unit(benchmark::kMillisecond);
 #endif
 BENCHMARK(write_cpp_yyjson_array_double_append)->Unit(benchmark::kMillisecond);
-BENCHMARK(write_c_yyjson_array_double_append)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_rapidjson_array_double_append)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_nlohmann_array_double_append)->Unit(benchmark::kMillisecond);
 
 BENCHMARK(write_cpp_yyjson_object_int64)->Unit(benchmark::kMillisecond);
-BENCHMARK(write_c_yyjson_object_int64)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_rapidjson_object_int64)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_nlohmann_object_int64)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_cpp_yyjson_object_double)->Unit(benchmark::kMillisecond);
-BENCHMARK(write_c_yyjson_object_double)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_rapidjson_object_double)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_nlohmann_object_double)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_cpp_yyjson_object_string)->Unit(benchmark::kMillisecond);
-BENCHMARK(write_c_yyjson_object_string)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_rapidjson_object_string)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_cpp_yyjson_object_string_copy)->Unit(benchmark::kMillisecond);
-BENCHMARK(write_c_yyjson_object_string_copy)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_rapidjson_object_string_copy)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_nlohmann_object_string_copy)->Unit(benchmark::kMillisecond);
+#endif
 
 BENCHMARK_MAIN();
 // NOLINTEND

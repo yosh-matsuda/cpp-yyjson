@@ -3,6 +3,7 @@
 #include <rapidjson/document.h>
 #include <simdjson.h>
 #include <cpp_yyjson.hpp>
+#include <chrono>
 #include <format>
 #include <fstream>
 #include <streambuf>
@@ -261,7 +262,6 @@ std::pair<json_count, json_stats> iterate_all_cpp_yyjson(const auto& json)
     iterate_all_elements(json);
     return {counter, stats};
 }
-
 std::pair<json_count, json_stats> iterate_all_c_yyjson(auto* json)
 {
     auto counter = json_count();
@@ -685,7 +685,6 @@ void read_cpp_yyjson_insitu_single_copy(benchmark::State& state)
     state.SetLabel(std::get<0>(json_files[state.range(0)]));
     state.SetBytesProcessed(state.iterations() * json.size());
 }
-
 void read_c_yyjson(benchmark::State& state)
 {
     const auto json = read_file(std::get<0>(json_files[state.range(0)]));
@@ -855,6 +854,7 @@ void read_c_yyjson_insitu_single_copy(benchmark::State& state)
     state.SetLabel(std::get<0>(json_files[state.range(0)]));
     state.SetBytesProcessed(state.iterations() * json.size());
 }
+
 
 void read_rapidjson(benchmark::State& state)
 {
@@ -1318,22 +1318,7 @@ void read_simdjson_ond_pad_single_copy(benchmark::State& state)
     state.SetLabel(std::get<0>(json_files[state.range(0)]));
     state.SetBytesProcessed(state.iterations() * json.size());
 }
-
-BENCHMARK(read_cpp_yyjson)->Unit(benchmark::kMillisecond)->DenseRange(0, json_files.size() - 1)->UseManualTime();
-BENCHMARK(read_cpp_yyjson_single)->Unit(benchmark::kMillisecond)->DenseRange(0, json_files.size() - 1)->UseManualTime();
-BENCHMARK(read_cpp_yyjson_insitu)->Unit(benchmark::kMillisecond)->DenseRange(0, json_files.size() - 1)->UseManualTime();
-BENCHMARK(read_cpp_yyjson_insitu_copy)
-    ->Unit(benchmark::kMillisecond)
-    ->DenseRange(0, json_files.size() - 1)
-    ->UseManualTime();
-BENCHMARK(read_cpp_yyjson_insitu_single)
-    ->Unit(benchmark::kMillisecond)
-    ->DenseRange(0, json_files.size() - 1)
-    ->UseManualTime();
-BENCHMARK(read_cpp_yyjson_insitu_single_copy)
-    ->Unit(benchmark::kMillisecond)
-    ->DenseRange(0, json_files.size() - 1)
-    ->UseManualTime();
+#if defined(CPPYYJSON_RAW_YYJSON_BENCHMARKS)
 BENCHMARK(read_c_yyjson)->Unit(benchmark::kMillisecond)->DenseRange(0, json_files.size() - 1)->UseManualTime();
 BENCHMARK(read_c_yyjson_single)->Unit(benchmark::kMillisecond)->DenseRange(0, json_files.size() - 1)->UseManualTime();
 BENCHMARK(read_c_yyjson_insitu)->Unit(benchmark::kMillisecond)->DenseRange(0, json_files.size() - 1)->UseManualTime();
@@ -1346,6 +1331,22 @@ BENCHMARK(read_c_yyjson_insitu_single)
     ->DenseRange(0, json_files.size() - 1)
     ->UseManualTime();
 BENCHMARK(read_c_yyjson_insitu_single_copy)
+    ->Unit(benchmark::kMillisecond)
+    ->DenseRange(0, json_files.size() - 1)
+    ->UseManualTime();
+#else
+BENCHMARK(read_cpp_yyjson)->Unit(benchmark::kMillisecond)->DenseRange(0, json_files.size() - 1)->UseManualTime();
+BENCHMARK(read_cpp_yyjson_single)->Unit(benchmark::kMillisecond)->DenseRange(0, json_files.size() - 1)->UseManualTime();
+BENCHMARK(read_cpp_yyjson_insitu)->Unit(benchmark::kMillisecond)->DenseRange(0, json_files.size() - 1)->UseManualTime();
+BENCHMARK(read_cpp_yyjson_insitu_copy)
+    ->Unit(benchmark::kMillisecond)
+    ->DenseRange(0, json_files.size() - 1)
+    ->UseManualTime();
+BENCHMARK(read_cpp_yyjson_insitu_single)
+    ->Unit(benchmark::kMillisecond)
+    ->DenseRange(0, json_files.size() - 1)
+    ->UseManualTime();
+BENCHMARK(read_cpp_yyjson_insitu_single_copy)
     ->Unit(benchmark::kMillisecond)
     ->DenseRange(0, json_files.size() - 1)
     ->UseManualTime();
@@ -1395,6 +1396,7 @@ BENCHMARK(read_simdjson_dom_pad_single_copy)
     ->Unit(benchmark::kMillisecond)
     ->DenseRange(0, json_files.size() - 1)
     ->UseManualTime();
+#endif
 
 BENCHMARK_MAIN();
 // NOLINTEND
