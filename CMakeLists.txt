@@ -122,6 +122,33 @@ function(cpp_yyjson_enable_lto target)
       ${CPPYYJSON_TARGET_NAME}
       PRIVATE $<$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>:-ffat-lto-objects>)
   endif()
+
+  # CMake does not put the IPO options on the link line of every language. A compiler such as `nvcc`
+  # gives the link to the host compiler, and that rule passes no compile option to it, so the
+  # bitcode objects reach a linker that cannot read them. Give each linker language the options that
+  # its own link driver takes. The options repeat on a language that already carries them, and a
+  # compiler takes the same option twice.
+  if(NOT CMAKE_VERSION VERSION_LESS 3.18)
+    get_property(cppyyjson_languages GLOBAL PROPERTY ENABLED_LANGUAGES)
+    foreach(lang IN LISTS cppyyjson_languages)
+      set(cppyyjson_ipo_options "")
+      if(CMAKE_${lang}_LINK_EXECUTABLE MATCHES "HOST_LINK_LAUNCHER")
+        # The host compiler links. The C++ options fit only when it is the C++ compiler itself.
+        if(CMAKE_${lang}_HOST_LINK_LAUNCHER STREQUAL CMAKE_CXX_COMPILER)
+          set(cppyyjson_ipo_options "${CMAKE_CXX_COMPILE_OPTIONS_IPO}")
+        endif()
+      elseif(DEFINED CMAKE_${lang}_COMPILE_OPTIONS_IPO)
+        set(cppyyjson_ipo_options "${CMAKE_${lang}_COMPILE_OPTIONS_IPO}")
+      endif()
+      if(cppyyjson_ipo_options)
+        target_link_options(
+          ${target}
+          PRIVATE
+          "$<$<AND:$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>,$<LINK_LANGUAGE:${lang}>>:${cppyyjson_ipo_options}>"
+        )
+      endif()
+    endforeach()
+  endif()
 endfunction()
 
 if(NOT CPPYYJSON_USE_BUNDLED_YYJSON)
