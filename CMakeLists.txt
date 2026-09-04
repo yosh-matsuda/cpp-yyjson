@@ -60,25 +60,49 @@ if(CPPYYJSON_USE_BUNDLED_YYJSON AND CPPYYJSON_ENABLE_AVX2)
   endif()
 endif()
 
+# The target name and the LTO support are recorded here, because the body of a function runs in
+# the scope of its caller. `${PROJECT_NAME}` in the body names the project of the consumer, and
+# `check_ipo_supported` reads variables that CMake sets only in the directory where a language is
+# enabled. A consumer whose `project()` call omits `C` would otherwise get "CMake doesn't support
+# IPO for current C compiler", although this directory enables `C` for the bundled backend.
+set(CPPYYJSON_TARGET_NAME
+    ${PROJECT_NAME}
+    CACHE INTERNAL "The library target of cpp-yyjson")
+
+if(CPPYYJSON_USE_BUNDLED_YYJSON)
+  set(cppyyjson_lto_languages C CXX)
+else()
+  set(cppyyjson_lto_languages CXX)
+endif()
+if(NOT DEFINED CPPYYJSON_LTO_LANGUAGES OR NOT CPPYYJSON_LTO_LANGUAGES STREQUAL
+                                          "${cppyyjson_lto_languages}")
+  include(CheckIPOSupported)
+  check_ipo_supported(RESULT cppyyjson_lto_supported OUTPUT cppyyjson_lto_error
+                      LANGUAGES ${cppyyjson_lto_languages})
+  set(CPPYYJSON_LTO_SUPPORTED
+      ${cppyyjson_lto_supported}
+      CACHE INTERNAL "Whether LTO is available")
+  set(CPPYYJSON_LTO_ERROR
+      "${cppyyjson_lto_error}"
+      CACHE INTERNAL "Why LTO is not available")
+  set(CPPYYJSON_LTO_LANGUAGES
+      "${cppyyjson_lto_languages}"
+      CACHE INTERNAL "The languages that the LTO check covered")
+endif()
+
 function(cpp_yyjson_enable_lto target)
   if(NOT TARGET ${target})
     message(FATAL_ERROR "Target '${target}' does not exist")
   endif()
 
-  include(CheckIPOSupported)
-  if(CPPYYJSON_USE_BUNDLED_YYJSON)
-    check_ipo_supported(RESULT lto_supported OUTPUT lto_error LANGUAGES C CXX)
-  else()
-    check_ipo_supported(RESULT lto_supported OUTPUT lto_error LANGUAGES CXX)
-  endif()
-  if(NOT lto_supported)
-    message(WARNING "LTO is not supported: ${lto_error}")
+  if(NOT CPPYYJSON_LTO_SUPPORTED)
+    message(WARNING "LTO is not supported: ${CPPYYJSON_LTO_ERROR}")
     return()
   endif()
 
   set(lto_targets ${target})
   if(CPPYYJSON_USE_BUNDLED_YYJSON)
-    list(APPEND lto_targets ${PROJECT_NAME})
+    list(APPEND lto_targets ${CPPYYJSON_TARGET_NAME})
   endif()
   foreach(lto_target ${lto_targets})
     set_property(TARGET ${lto_target} PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
