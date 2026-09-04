@@ -90,6 +90,14 @@ if(NOT DEFINED CPPYYJSON_LTO_LANGUAGES OR NOT CPPYYJSON_LTO_LANGUAGES STREQUAL
       CACHE INTERNAL "The languages that the LTO check covered")
 endif()
 
+# The LTO archive of the backend holds bitcode only, and a target that does not use LTO cannot
+# link it. `-ffat-lto-objects` keeps the machine code beside the bitcode, so the same archive
+# serves both kinds of consumer.
+if(CPPYYJSON_USE_BUNDLED_YYJSON AND CPPYYJSON_LTO_SUPPORTED)
+  include(CheckCCompilerFlag)
+  check_c_compiler_flag(-ffat-lto-objects CPPYYJSON_HAS_FAT_LTO_OBJECTS)
+endif()
+
 function(cpp_yyjson_enable_lto target)
   if(NOT TARGET ${target})
     message(FATAL_ERROR "Target '${target}' does not exist")
@@ -108,6 +116,12 @@ function(cpp_yyjson_enable_lto target)
     set_property(TARGET ${lto_target} PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
     set_property(TARGET ${lto_target} PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO TRUE)
   endforeach()
+
+  if(CPPYYJSON_HAS_FAT_LTO_OBJECTS)
+    target_compile_options(
+      ${CPPYYJSON_TARGET_NAME}
+      PRIVATE $<$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>:-ffat-lto-objects>)
+  endif()
 endfunction()
 
 if(NOT CPPYYJSON_USE_BUNDLED_YYJSON)
