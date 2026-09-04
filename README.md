@@ -292,6 +292,11 @@ target_link_libraries(my_app PRIVATE cpp_yyjson::cpp_yyjson)
 cpp_yyjson_enable_lto(my_app)
 ```
 
+The backend library then holds bitcode, so cpp-yyjson compiles it with `-ffat-lto-objects` where the compiler has that option.
+The option keeps the machine code beside the bitcode and lets a target without link-time optimization link the same library.
+GCC and Clang 18 or later have the option, but Clang 17 and earlier and MSVC do not.
+On those compilers, call `cpp_yyjson_enable_lto()` for every target that links cpp-yyjson in the same build, or the link fails with `file format not recognized`.
+
 If you have installed cpp-yyjson via CMake, `find_package` command is enabled:
 
 ```cmake
