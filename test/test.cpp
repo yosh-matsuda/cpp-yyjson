@@ -3321,6 +3321,113 @@ TEST(Reader, PredefinedCaster)
     }
 }
 
+#if YYJSON_VERSION_HEX >= 0x000D00
+TEST(Writer, LowercaseHex)
+{
+    using namespace yyjson;
+
+    const auto doc = read(R"(["\u00e9\u2028"])");
+    EXPECT_EQ(R"(["\u00E9\u2028"])", doc.write(WriteFlag::EscapeUnicode));
+    EXPECT_EQ(R"(["\u00e9\u2028"])", doc.write(WriteFlag::EscapeUnicode | WriteFlag::LowercaseHex));
+
+    const auto val = value(doc);
+    EXPECT_EQ(R"(["\u00E9\u2028"])", val.write(WriteFlag::EscapeUnicode));
+    EXPECT_EQ(R"(["\u00e9\u2028"])", val.write(WriteFlag::EscapeUnicode | WriteFlag::LowercaseHex));
+}
+
+namespace
+{
+    // Checks the buffer `write` overload against the allocating one and the buffer size estimated by
+    // `write_max_memory_usage`.
+    void check_buffer_write(const auto& json_value, yyjson::WriteFlag write_flag, std::string_view label)
+    {
+        const auto expected = std::string(json_value.write(write_flag));
+        const auto required = json_value.write_max_memory_usage(write_flag);
+        ASSERT_GE(required, expected.size()) << label;
+
+        auto buffer = std::vector<char>(required);
+        EXPECT_EQ(expected, json_value.write(std::span(buffer), write_flag)) << label;
+
+        auto too_small = std::vector<char>(1);
+        EXPECT_THROW(std::ignore = json_value.write(std::span(too_small), write_flag), yyjson::write_error) << label;
+        EXPECT_THROW(std::ignore = json_value.write(std::span<char>(), write_flag), yyjson::write_error) << label;
+    }
+
+    constexpr auto write_flag_cases = std::array{
+        yyjson::WriteFlag::NoFlag,
+        yyjson::WriteFlag::Pretty,
+        yyjson::WriteFlag::PrettyTwoSpaces,
+        yyjson::WriteFlag::EscapeUnicode,
+        yyjson::WriteFlag::NewlineAtEnd,
+        yyjson::WriteFlag::Pretty | yyjson::WriteFlag::EscapeUnicode | yyjson::WriteFlag::NewlineAtEnd,
+        yyjson::WriteFlag::EscapeUnicode | yyjson::WriteFlag::LowercaseHex,
+    };
+}  // namespace
+
+TEST(Writer, BufferWrite)
+{
+    using namespace yyjson;
+
+    constexpr auto json_cases = std::array{
+        "null",
+        "true",
+        "1234567890",
+        "1.25",
+        R"("\u00e9 a/b\n")",
+        "[]",
+        "{}",
+        "[[],{},[[[1]]]]",
+        R"({"a":[1,2,3],"b":{"c":null,"d":"text"},"e":[]})",
+    };
+
+    for (const auto* json : json_cases)
+    {
+        const auto doc = read(json);
+        const auto mut = value(doc);
+        for (const auto write_flag : write_flag_cases)
+        {
+            check_buffer_write(doc, write_flag, json);
+            check_buffer_write(mut, write_flag, json);
+            if (const auto arr = doc.as_array(); arr)
+            {
+                for (const auto elem : *arr) check_buffer_write(elem, write_flag, json);
+            }
+            if (const auto obj = doc.as_object(); obj)
+            {
+                for (const auto [key, val] : *obj) check_buffer_write(val, write_flag, json);
+            }
+        }
+    }
+}
+
+TEST(Writer, WriteMaxMemoryUsage)
+{
+    using namespace yyjson;
+
+    // Cover the bulk allocation paths of the mutable value constructors.
+    const auto records = std::vector<ReflectionRecord>{{1, 1.5, "a"}, {2, 2.5, "b"}};
+    const auto values = std::array<value, 6>{
+        value(std::vector{1, 2, 3, 4, 5}),
+        value(std::map<std::string, int>{{"a", 1}, {"b", 2}}),
+        value(records),
+        value(std::tuple{nullptr, true, "2", 3.0, std::tuple{4.0, "5", false}}),
+        value(array()),
+        value(object()),
+    };
+
+    for (const auto& val : values)
+    {
+        for (const auto write_flag : write_flag_cases) check_buffer_write(val, write_flag, val.write());
+    }
+
+    // A deeply nested document keeps room for the writer context stack.
+    auto deep = std::string(64, '[');
+    deep += std::string(64, ']');
+    const auto deep_doc = read(deep);
+    for (const auto write_flag : write_flag_cases) check_buffer_write(deep_doc, write_flag, "deep");
+}
+#endif
+
 TEST(Readme, Example)
 {
     using namespace yyjson;
