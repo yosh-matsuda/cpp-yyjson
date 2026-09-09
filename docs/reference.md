@@ -143,7 +143,8 @@ enum class yyjson::WriteFlag : yyjson_write_flag
     InfAndNanAsNull = YYJSON_WRITE_INF_AND_NAN_AS_NULL,
     AllowInvalidUnicode = YYJSON_WRITE_ALLOW_INVALID_UNICODE,
     PrettyTwoSpaces = YYJSON_WRITE_PRETTY_TWO_SPACES,    // for yyjson >= v0.7.0
-    NewlineAtEnd = YYJSON_WRITE_NEWLINE_AT_END           // for yyjson >= v0.9.0
+    NewlineAtEnd = YYJSON_WRITE_NEWLINE_AT_END,          // for yyjson >= v0.9.0
+    LowercaseHex = YYJSON_WRITE_LOWERCASE_HEX            // for yyjson >= v0.13.0
 };
 ```
 

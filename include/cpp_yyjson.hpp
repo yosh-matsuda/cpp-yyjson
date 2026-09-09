@@ -82,6 +82,9 @@ namespace yyjson
 #if YYJSON_VERSION_HEX >= 0x000900
         NewlineAtEnd = YYJSON_WRITE_NEWLINE_AT_END,
 #endif
+#if YYJSON_VERSION_HEX >= 0x000D00
+        LowercaseHex = YYJSON_WRITE_LOWERCASE_HEX,
+#endif
     };
 
     // equivalent to C++23 std::to_underlying
