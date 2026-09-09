@@ -16,6 +16,7 @@
 #include <memory>
 #include <optional>
 #include <ranges>
+#include <span>
 #include <variant>
 #include <vector>
 
@@ -1976,6 +1977,25 @@ namespace yyjson
 
                     throw write_error(std::format("write JSON error: {}", err.msg));
                 }
+#if YYJSON_VERSION_HEX >= 0x000D00
+                [[nodiscard]] std::string_view write(std::span<char> buffer,
+                                                     WriteFlag write_flag = WriteFlag::NoFlag) const
+                {
+                    const auto write_doc =
+                        doc_.ptrs->self != nullptr && val_ == yyjson_mut_doc_get_root(doc_.ptrs->self);
+
+                    auto err = yyjson_write_err();
+                    const auto len = write_doc ? yyjson_mut_write_buf(buffer.data(), buffer.size(), doc_.ptrs->self,
+                                                                      to_underlying(write_flag), &err)
+                                               : yyjson_mut_val_write_buf(buffer.data(), buffer.size(), val_,
+                                                                          to_underlying(write_flag), &err);
+                    if (len != 0) [[likely]]
+                    {
+                        return {buffer.data(), len};
+                    }
+                    throw write_error(std::format("write JSON error: {}", err.msg));
+                }
+#endif
             };
 
             template <typename DocType>
@@ -3643,6 +3663,20 @@ namespace yyjson
                 }
                 throw write_error(std::format("write JSON error: {}", err.msg));
             }
+#if YYJSON_VERSION_HEX >= 0x000D00
+            [[nodiscard]] std::string_view write(std::span<char> buffer,
+                                                 const WriteFlag write_flag = WriteFlag::NoFlag) const
+            {
+                auto err = yyjson_write_err();
+                const auto len =
+                    yyjson_val_write_buf(buffer.data(), buffer.size(), val_, to_underlying(write_flag), &err);
+                if (len != 0) [[likely]]
+                {
+                    return {buffer.data(), len};
+                }
+                throw write_error(std::format("write JSON error: {}", err.msg));
+            }
+#endif
         };
 
         class const_value_ref : public abstract_value_ref
@@ -4102,6 +4136,21 @@ namespace yyjson
                 }
                 throw write_error(std::format("write JSON error: {}", err.msg));
             }
+
+#if YYJSON_VERSION_HEX >= 0x000D00
+            [[nodiscard]] std::string_view write(std::span<char> buffer,
+                                                 const WriteFlag write_flag = WriteFlag::NoFlag) const
+            {
+                auto err = yyjson_write_err();
+                const auto len =
+                    yyjson_write_buf(buffer.data(), buffer.size(), doc_.get(), to_underlying(write_flag), &err);
+                if (len != 0) [[likely]]
+                {
+                    return {buffer.data(), len};
+                }
+                throw write_error(std::format("write JSON error: {}", err.msg));
+            }
+#endif
 
             template <yyjson_allocator Alloc>
             friend value read(char*, std::size_t, Alloc&, ReadFlag);
