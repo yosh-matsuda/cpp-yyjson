@@ -131,6 +131,192 @@ namespace yyjson
         return static_cast<yyjson::ReadFlag>(to_underlying(lhs) & to_underlying(rhs));
     }
 
+#if YYJSON_VERSION_HEX >= 0x000D00
+    namespace detail
+    {
+        // The yyjson writer reserves a temporary space in the output buffer before each value and reuses
+        // it for the following values, so a buffer for `yyjson_*_write_buf` must be larger than the final
+        // JSON string. The reserve sizes below mirror the `incr_len` calls of the yyjson writer.
+        inline constexpr std::size_t write_buf_reserve_num = 40;
+        inline constexpr std::size_t write_buf_reserve_val = 16;
+        inline constexpr std::size_t write_buf_reserve_indent = 4;
+        inline constexpr std::size_t write_buf_escaped_char_size = 6;
+        inline constexpr std::size_t write_buf_reserve_margin = 64;
+
+        // Accumulates an upper bound of the buffer size required by the yyjson writer. The sum of the
+        // per-value reserves is an upper bound of the written bytes because each value writes at most as
+        // many bytes as it reserves.
+        class write_buf_size_counter
+        {
+            std::size_t total_ = 0;
+            std::size_t max_reserve_ = 0;
+            std::size_t max_depth_ = 0;
+            bool pretty_ = false;
+
+            [[nodiscard]] std::size_t indent(std::size_t depth) const noexcept
+            {
+                return pretty_ ? (depth + 1) * write_buf_reserve_indent : 0;
+            }
+            void reserve(std::size_t size) noexcept
+            {
+                total_ += size;
+                max_reserve_ = std::max(max_reserve_, size);
+            }
+
+        public:
+            explicit write_buf_size_counter(WriteFlag write_flag) noexcept
+                : pretty_((write_flag & (WriteFlag::Pretty | WriteFlag::PrettyTwoSpaces)) != WriteFlag::NoFlag)
+            {
+            }
+
+            void add_scalar(yyjson_type type, std::size_t len, std::size_t depth) noexcept
+            {
+                switch (type)
+                {
+                    case YYJSON_TYPE_STR:
+                        reserve((len * write_buf_escaped_char_size) + write_buf_reserve_val + indent(depth));
+                        break;
+                    case YYJSON_TYPE_NUM:
+                        reserve(write_buf_reserve_num + indent(depth));
+                        break;
+                    case YYJSON_TYPE_RAW:
+                        reserve(len + write_buf_reserve_val + indent(depth));
+                        break;
+                    default:
+                        reserve(write_buf_reserve_val + indent(depth));
+                        break;
+                }
+            }
+            void add_container(std::size_t depth) noexcept
+            {
+                max_depth_ = std::max(max_depth_, depth + 1);
+                reserve(write_buf_reserve_val + indent(depth));  // opening bracket
+                reserve(indent(depth));                          // closing bracket
+            }
+            [[nodiscard]] std::size_t result() const noexcept
+            {
+                // The writer context stack grows down from the end of the buffer, so it must not overlap
+                // the reserve of the value being written.
+                return total_ + max_reserve_ + (write_buf_reserve_val * max_depth_) + write_buf_reserve_margin;
+            }
+        };
+
+        [[nodiscard]] inline std::size_t write_max_memory_usage_impl(const yyjson_val* root, WriteFlag write_flag)
+        {
+            if (root == nullptr) return 0;
+
+            auto counter = write_buf_size_counter(write_flag);
+            if (!unsafe_yyjson_is_ctn(root) || unsafe_yyjson_get_len(root) == 0)
+            {
+                const auto type = unsafe_yyjson_get_type(root);
+                if (type == YYJSON_TYPE_ARR || type == YYJSON_TYPE_OBJ)
+                    counter.add_container(0);
+                else
+                    counter.add_scalar(type, unsafe_yyjson_get_len(root), 0);
+                return counter.result();
+            }
+
+            // The values of an immutable document are stored contiguously in depth-first order.
+            auto stack = std::vector<std::size_t>();
+            counter.add_container(0);
+            auto remaining = unsafe_yyjson_get_len(root) << static_cast<std::uint8_t>(unsafe_yyjson_is_obj(root));
+            auto depth = static_cast<std::size_t>(1);
+            const auto* val = root + 1;
+
+            while (remaining != 0)
+            {
+                const auto type = unsafe_yyjson_get_type(val);
+                if (type == YYJSON_TYPE_ARR || type == YYJSON_TYPE_OBJ)
+                {
+                    counter.add_container(depth);
+                    if (const auto len = unsafe_yyjson_get_len(val); len != 0)
+                    {
+                        stack.push_back(remaining - 1);
+                        remaining = len << static_cast<std::uint8_t>(type == YYJSON_TYPE_OBJ);
+                        ++depth;
+                        ++val;
+                        continue;
+                    }
+                }
+                else
+                {
+                    counter.add_scalar(type, unsafe_yyjson_get_len(val), depth);
+                }
+
+                ++val;
+                --remaining;
+                while (remaining == 0 && !stack.empty())
+                {
+                    remaining = stack.back();
+                    stack.pop_back();
+                    --depth;
+                }
+            }
+            return counter.result();
+        }
+
+        [[nodiscard]] inline std::size_t write_max_memory_usage_impl(const yyjson_mut_val* root, WriteFlag write_flag)
+        {
+            if (root == nullptr) return 0;
+
+            auto counter = write_buf_size_counter(write_flag);
+            if (!unsafe_yyjson_is_ctn(root) || unsafe_yyjson_get_len(root) == 0)
+            {
+                const auto type = unsafe_yyjson_get_type(root);
+                if (type == YYJSON_TYPE_ARR || type == YYJSON_TYPE_OBJ)
+                    counter.add_container(0);
+                else
+                    counter.add_scalar(type, unsafe_yyjson_get_len(root), 0);
+                return counter.result();
+            }
+
+            // The children of a mutable container form a circular linked list whose tail is `uni.ptr`.
+            const auto first_child = [](const yyjson_mut_val* ctn) {
+                const auto* tail = static_cast<const yyjson_mut_val*>(ctn->uni.ptr);
+                return unsafe_yyjson_is_obj(ctn) ? tail->next->next : tail->next;
+            };
+
+            auto stack = std::vector<std::pair<const yyjson_mut_val*, std::size_t>>();
+            counter.add_container(0);
+            auto remaining = unsafe_yyjson_get_len(root) << static_cast<std::uint8_t>(unsafe_yyjson_is_obj(root));
+            auto depth = static_cast<std::size_t>(1);
+            const auto* val = first_child(root);
+
+            while (remaining != 0)
+            {
+                const auto type = unsafe_yyjson_get_type(val);
+                if (type == YYJSON_TYPE_ARR || type == YYJSON_TYPE_OBJ)
+                {
+                    counter.add_container(depth);
+                    if (const auto len = unsafe_yyjson_get_len(val); len != 0)
+                    {
+                        stack.emplace_back(val->next, remaining - 1);
+                        remaining = len << static_cast<std::uint8_t>(type == YYJSON_TYPE_OBJ);
+                        ++depth;
+                        val = first_child(val);
+                        continue;
+                    }
+                }
+                else
+                {
+                    counter.add_scalar(type, unsafe_yyjson_get_len(val), depth);
+                }
+
+                val = val->next;
+                --remaining;
+                while (remaining == 0 && !stack.empty())
+                {
+                    val = stack.back().first;
+                    remaining = stack.back().second;
+                    stack.pop_back();
+                    --depth;
+                }
+            }
+            return counter.result();
+        }
+    }  // namespace detail
+#endif
+
     struct copy_string_t
     {
     } inline constexpr copy_string;
@@ -1995,6 +2181,10 @@ namespace yyjson
                     }
                     throw write_error(std::format("write JSON error: {}", err.msg));
                 }
+                [[nodiscard]] std::size_t write_max_memory_usage(WriteFlag write_flag = WriteFlag::NoFlag) const
+                {
+                    return yyjson::detail::write_max_memory_usage_impl(val_, write_flag);
+                }
 #endif
             };
 
@@ -3676,6 +3866,10 @@ namespace yyjson
                 }
                 throw write_error(std::format("write JSON error: {}", err.msg));
             }
+            [[nodiscard]] std::size_t write_max_memory_usage(const WriteFlag write_flag = WriteFlag::NoFlag) const
+            {
+                return yyjson::detail::write_max_memory_usage_impl(val_, write_flag);
+            }
 #endif
         };
 
@@ -4149,6 +4343,10 @@ namespace yyjson
                     return {buffer.data(), len};
                 }
                 throw write_error(std::format("write JSON error: {}", err.msg));
+            }
+            [[nodiscard]] std::size_t write_max_memory_usage(const WriteFlag write_flag = WriteFlag::NoFlag) const
+            {
+                return yyjson::detail::write_max_memory_usage_impl(yyjson_doc_get_root(doc_.get()), write_flag);
             }
 #endif
 
