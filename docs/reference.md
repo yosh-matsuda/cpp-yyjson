@@ -133,6 +133,10 @@ yyjson::json_string write(WriteFlag write_flag = WriteFlag::NoFlag) const;
 template <yyjson_allocator Allocator>
 yyjson::json_string write(Allocator alc, WriteFlag write_flag = WriteFlag::NoFlag) const;
 
+// Output JSON string into a caller-provided buffer          // for yyjson >= v0.13.0
+std::string_view write(std::span<char> buffer, WriteFlag write_flag = WriteFlag::NoFlag) const;
+std::size_t write_max_memory_usage(WriteFlag write_flag = WriteFlag::NoFlag) const;
+
 enum class yyjson::WriteFlag : yyjson_write_flag
 {
     NoFlag = YYJSON_WRITE_NOFLAG,
@@ -151,6 +155,19 @@ enum class yyjson::WriteFlag : yyjson_write_flag
 The `write` function returns a read-only string which is inherited from `std::string_view`.
 
 See the reference of yyjson for the information on [writer flags](https://ibireme.github.io/yyjson/doc/doxygen/html/md_doc__a_p_i.html#autotoc_md40).
+
+**Buffer writing**
+
+For yyjson v0.13.0 or later, the `write` function has an overload taking a `std::span<char>` buffer. It writes the JSON string into the buffer without allocating memory and returns a `std::string_view` referring to the written range, so the result is valid only while the buffer is alive. Unlike the other overloads, the returned string is not owned by the caller and the buffer contents are overwritten by the next call.
+
+```cpp
+auto buffer = std::vector<char>(v.write_max_memory_usage(WriteFlag::Pretty));
+std::string_view json = v.write(std::span(buffer), WriteFlag::Pretty);
+```
+
+The buffer must be larger than the final JSON string, because the yyjson writer reserves a temporary space for the value being written and reuses it for the following values. The `write_max_memory_usage` function walks the JSON value and returns an upper bound of the required buffer size, which is typically several times larger than the resulting JSON string since it assumes the worst case for every value. It must be called with the same `WriteFlag` as the subsequent `write` call, because the flags change the output size.
+
+A buffer that is too small does not overrun; the `write` function throws `yyjson::write_error` instead, as it does for the other write failures.
 
 **Type inspection**
 
@@ -318,6 +335,10 @@ yyjson::json_string write(WriteFlag write_flag = WriteFlag::NoFlag) const;
 template <yyjson_allocator Allocator>
 yyjson::json_string write(Allocator alc, WriteFlag write_flag = WriteFlag::NoFlag) const;
 
+// Output JSON string into a caller-provided buffer          // for yyjson >= v0.13.0
+std::string_view write(std::span<char> buffer, WriteFlag write_flag = WriteFlag::NoFlag) const;
+std::size_t write_max_memory_usage(WriteFlag write_flag = WriteFlag::NoFlag) const;
+
 // Range concept
 std::ranges::iterator_t<yyjson::reader::const_array_ref> -> yyjson::reader::const_array_iter
 std::ranges::range_value_t<yyjson::reader::const_array_ref> -> yyjson::reader::const_value_ref
@@ -388,6 +409,10 @@ explicit operator T() const;
 yyjson::json_string write(WriteFlag write_flag = WriteFlag::NoFlag) const;
 template <yyjson_allocator Allocator>
 yyjson::json_string write(Allocator alc, WriteFlag write_flag = WriteFlag::NoFlag) const;
+
+// Output JSON string into a caller-provided buffer          // for yyjson >= v0.13.0
+std::string_view write(std::span<char> buffer, WriteFlag write_flag = WriteFlag::NoFlag) const;
+std::size_t write_max_memory_usage(WriteFlag write_flag = WriteFlag::NoFlag) const;
 
 // Range concept
 using yyjson::reader::const_key_value_ref_pair = std::pair<std::string_view, yyjson::reader::const_value_ref>;
@@ -529,6 +554,10 @@ explicit operator T() const;
 yyjson::json_string write(WriteFlag write_flag = WriteFlag::NoFlag) const;
 template <yyjson_allocator Allocator>
 yyjson::json_string write(Allocator alc, WriteFlag write_flag = WriteFlag::NoFlag) const;
+
+// Output JSON string into a caller-provided buffer          // for yyjson >= v0.13.0
+std::string_view write(std::span<char> buffer, WriteFlag write_flag = WriteFlag::NoFlag) const;
+std::size_t write_max_memory_usage(WriteFlag write_flag = WriteFlag::NoFlag) const;
 ```
 
 Concepts `value_constructible`, `array_constructible`, and `object_constructible` are **NOT** defined in the library but are described in the above for explanation hereafter.
@@ -663,6 +692,10 @@ yyjson::json_string write(WriteFlag write_flag = WriteFlag::NoFlag) const;
 template <yyjson_allocator Allocator>
 yyjson::json_string write(Allocator alc, WriteFlag write_flag = WriteFlag::NoFlag) const;
 
+// Output JSON string into a caller-provided buffer          // for yyjson >= v0.13.0
+std::string_view write(std::span<char> buffer, WriteFlag write_flag = WriteFlag::NoFlag) const;
+std::size_t write_max_memory_usage(WriteFlag write_flag = WriteFlag::NoFlag) const;
+
 // Range concept
 std::ranges::range_value_t<yyjson::array&>       -> yyjson::writer::value_ref
 std::ranges::range_value_t<const yyjson::array&> -> yyjson::writer::const_value_ref
@@ -785,6 +818,10 @@ explicit operator T() const;
 yyjson::json_string write(WriteFlag write_flag = WriteFlag::NoFlag) const;
 template <yyjson_allocator Allocator>
 yyjson::json_string write(Allocator alc, WriteFlag write_flag = WriteFlag::NoFlag) const;
+
+// Output JSON string into a caller-provided buffer          // for yyjson >= v0.13.0
+std::string_view write(std::span<char> buffer, WriteFlag write_flag = WriteFlag::NoFlag) const;
+std::size_t write_max_memory_usage(WriteFlag write_flag = WriteFlag::NoFlag) const;
 
 // Range concept
 using yyjson::writer::key_value_ref_pair = std::pair<std::string_view, yyjson::writer::value_ref>;
