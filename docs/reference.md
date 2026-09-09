@@ -1066,7 +1066,7 @@ auto tpl_obj2 = cast<decltype(tpl_obj)>(json_obj);          // deserialize
 
 The compile-time reflection is supported to automatically convert C++ struct/class to JSON object and vice versa. This feature is provided by using [field-reflection](https://github.com/yosh-matsuda/field-reflection) and is included in this library.
 
-If a C++ struct/class satisfies the `field_reflection::field_namable` concept (see [field-reflection](https://https://github.com/yosh-matsuda/field-reflection)), it is possible to automatically convert from/to JSON objects with its field names and no need to write a caster definition or registration of field names with macros explained later.
+If a C++ struct/class satisfies the `field_reflection::field_namable` concept (see [field-reflection](https://github.com/yosh-matsuda/field-reflection)), it is possible to automatically convert from/to JSON objects with its field names and no need to write a caster definition or registration of field names with macros explained later.
 
 In practice, the following conditions are required for C++ types for automatic conversion:
 
@@ -1087,7 +1087,7 @@ struct X
     std::string c = "default";
 };
 
-// serialize struxt X to JSON object with field-name reflection
+// serialize struct X to JSON object with field-name reflection
 auto reflectable = X{.a = 1, .b = std::nullopt, .c = "x"};
 auto serialized = object(reflectable);
 // -> {"a":1,"c":"x"}
@@ -1105,7 +1105,7 @@ Even if the compile-time reflection is *NOT* available for a C++ type or you wan
 // register fields except `c` on purpose
 VISITABLE_STRUCT(X, a, b);
 
-// serialize visitable struxt X to JSON object
+// serialize visitable struct X to JSON object
 auto visitable = X{.a = 1, .b = std::nullopt, .c = "x"};
 auto serialized = object(visitable);
 // -> {"a":1}
@@ -1147,7 +1147,7 @@ struct yyjson::caster<X>
 };
 ```
 
-The `from_json` template function has a JSON value as an argument template and must return type `X`.
+The `from_json` template function has a JSON value as an argument template and must return type `X`. It has a second form, which writes into an object that the caller owns; [In-place assignment of a field](#in-place-assignment-of-a-field) gives it.
 
 For the `to_json` function, there are two ways. The first way is to define a *translator* for a *value_constructible* type and return it. The return type must be `value_constructible`:
 
@@ -1184,7 +1184,104 @@ struct yyjson::caster<X>
 
 The first argument type is a target JSON class to create. There are 3 options, `writer::object_ref&`, `writer::array_ref&` and `writer::value_ref&`; if you want to convert the class `X` to JSON array, the first argument should be `writer::array_ref&`.
 
-The casters are applied recursively to convert from/to JSON classes including custom casters. It is not always necessary to implement both `from_json` and `to_json` functions, and the two conversions do not have to be symmetric.
+The casters are applied recursively to convert from/to JSON classes including custom casters. It is not always necessary to implement both `from_json` and `to_json` functions, and the two conversions do not have to be symmetric. A caster also decides whether a field of its type appears in a JSON object at all; [Omitting a field with no value](#omitting-a-field-with-no-value) gives that.
+
+### Omitting a field with no value
+
+A field of type `std::optional` that holds no value is left out of the JSON object. The field `b` of the struct `X` above shows it.
+
+Another type gets the same treatment from its caster. The static member function `should_omit` returns `true` for a value that the JSON object must not hold:
+
+```cpp
+template <typename T>
+struct yyjson::caster<maybe<T>>
+{
+    static bool should_omit(const maybe<T>& m)
+    {
+        return !m;
+    }
+    template <typename... Ts>
+    static auto to_json(const maybe<T>& m, Ts...)
+    {
+        return *m;
+    }
+};
+
+struct Config
+{
+    int port = 8080;
+    maybe<std::string> host;
+};
+
+// serialize struct Config to JSON object
+auto config = Config();
+auto serialized = object(config);
+// -> {"port":8080}
+```
+
+This applies both to a struct that the compile-time reflection converts and to a struct that the `VISITABLE_STRUCT` macro registers.
+
+`std::optional` needs no work, because the library gives `caster<std::optional<T>>` the same member. Write both `should_omit` and the second form of `from_json` if you replace that caster with a full specialization of your own, because a specialization of yours takes the place of the one that the library gives.
+
+A caster that has `should_omit` and no `to_json` is enough for a type that the compile-time reflection already writes. The reflection continues to write the value, and `should_omit` only decides whether the field appears.
+
+### In-place assignment of a field
+
+`from_json` has a second form, which mirrors the second way of `to_json`. The first parameter is the C++ object to write into, and the JSON value follows it:
+
+```cpp
+static void from_json(X& field, const Json& json);
+```
+
+Use this form for a field that `cast` cannot produce. A field of a struct is read with `cast<field_type>`, which returns the field by value, so a type that cannot be copied or moved is not readable with the first form. `std::atomic<int>` is such a type, and so is a proxy object that stands for another member. The second form also chooses the type that it casts the JSON value to, which does not have to be the type of the field:
+
+```cpp
+template <>
+struct yyjson::caster<std::atomic<int>>
+{
+    template <typename Json>
+    static void from_json(std::atomic<int>& field, const Json& json)
+    {
+        field = yyjson::cast<int>(json);
+    }
+    template <typename... Ts>
+    static auto to_json(const std::atomic<int>& field, Ts...)
+    {
+        return field.load();
+    }
+};
+```
+
+The two forms answer different questions. The first form makes a new object, and the second form fills an object that exists. The library calls the second form where it already owns the object, which is a field of a struct that the compile-time reflection converts or that the `VISITABLE_STRUCT` macro registers. Everywhere else it has nothing to fill and calls the first form. `cast<T>` returns `T`, and an element of a container is read with `cast<value_type>` before the container holds it, so a `std::vector<X>` needs the first form even when `X` has the second.
+
+A field is read in this order:
+
+1.  `caster<field_type>::from_json(field, json)`, the second form, if the caster has it. `std::optional` uses this form to keep the value of the field when the JSON value is null.
+2.  `cast<field_type>`, which calls `caster<field_type>::from_json(json)` if the caster has that form, and a pre-defined conversion otherwise.
+
+The struct that holds such a field must still be copyable or movable, because the deserialization returns the struct by value. Write the copy or move operations by hand when a field does not have them:
+
+```cpp
+struct Counter
+{
+    std::string name;
+    std::atomic<int> hits;
+
+    Counter() = default;
+    Counter(const Counter& other) : name(other.name), hits(other.hits.load()) {}
+    Counter& operator=(const Counter& other)
+    {
+        name = other.name;
+        hits = other.hits.load();
+        return *this;
+    }
+};
+VISITABLE_STRUCT(Counter, name, hits);
+
+// deserialize JSON object into struct Counter
+auto deserialized = cast<Counter>(read(R"({"name":"b","hits":9})"));
+// -> Counter{.name = "b", .hits = 9}
+```
 
 ## Performance best practices
 

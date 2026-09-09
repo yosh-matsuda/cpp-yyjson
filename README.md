@@ -30,6 +30,7 @@ Ultra-fast and intuitive C++ JSON reader/writer with yyjson backend.
     *   compile-time reflection of struct/class field name
     *   pre-defined STL casters
     *   user-defined casters in two ways
+    *   omission of an empty field and in-place assignment of a field
 *   Minimum overhead compared to yyjson
 *   Object lifetime safety
 
@@ -169,6 +170,7 @@ As shown above, cpp-yyjson provides conversion between JSON value/array/object c
 *   Conversion using compile-time reflection of struct/class if it is available.
 *   Registration of field names with `VISITABLE_STRUCT` macro.
 *   User-defined casters.
+*   Omission of an empty field with [`should_omit`](docs/reference.md#omitting-a-field-with-no-value), and [in-place assignment](docs/reference.md#in-place-assignment-of-a-field) of a field that cannot be copied.
 
 #### Pre-defined STL casters
 
@@ -215,7 +217,7 @@ struct X
     std::string c = "default";
 };
 
-// serialize struxt X to JSON object with field-name reflection
+// serialize struct X to JSON object with field-name reflection
 auto reflectable = X{.a = 1, .b = std::nullopt, .c = "x"};
 auto serialized = object(reflectable);
 // -> {"a":1,"c":"x"}
@@ -231,7 +233,7 @@ Field name registration with `VISITABLE_STRUCT` macro:
 // register fields except `c` on purpose
 VISITABLE_STRUCT(X, a, b);
 
-// serialize visitable struxt X to JSON object
+// serialize visitable struct X to JSON object
 auto visitable = X{.a = 1, .b = std::nullopt, .c = "x"};
 auto serialized = object(visitable);
 // -> {"a":1}
@@ -241,7 +243,7 @@ auto deserialized = cast<X>(serialized);
 // -> X{.a = 1, .b = std::nullopt, .c = "default"}
 ```
 
-#### User-define caster (see the [reference](docs/reference.md#serialize-and-deserialize-json) in detail)
+#### User-defined caster (see the [reference](docs/reference.md#serialize-and-deserialize-json) in detail)
 
 ```cpp
 template <>
@@ -250,11 +252,11 @@ struct yyjson::caster<X>
     // convert X to string (serialize)
     inline static auto to_json(const X& x)
     {
-        return std::format("{} {} {}", x.a, (x.b ? std::format("{}", *y.b) : "null"), x.c);
+        return std::format("{} {} {}", x.a, (x.b ? std::format("{}", *x.b) : "null"), x.c);
     }
 };
 
-// convert struxt X to JSON string with user-defined caster
+// convert struct X to JSON string with user-defined caster
 auto x = X{.a = 1, .b = std::nullopt, .c = "x"};
 auto serialized = value(x);
 // -> "1 null x"
