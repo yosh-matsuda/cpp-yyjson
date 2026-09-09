@@ -3435,7 +3435,17 @@ TEST(Writer, WriteMaxMemoryUsage)
         check_buffer_write(*read(obj.write()).as_object(), write_flag, "const_object_ref");
     }
 
-    // A deeply nested document keeps room for the writer context stack.
+    // Raw values are written verbatim.
+    const auto raw_doc = read(R"([1,2.5,123456789012345678901234567890])", ReadFlag::NumberAsRaw);
+    const auto raw_mut = value(raw_doc);
+    for (const auto write_flag : write_flag_cases)
+    {
+        check_buffer_write(raw_doc, write_flag, "raw");
+        check_buffer_write(raw_mut, write_flag, "raw_mut");
+    }
+
+    // A deeply nested document keeps room for the writer context stack, whose entry is larger for
+    // the mutable writer.
     constexpr auto deep_depth = []() -> std::size_t {
         auto depth = static_cast<std::size_t>(64);
 #if YYJSON_READER_DEPTH_LIMIT
@@ -3449,7 +3459,12 @@ TEST(Writer, WriteMaxMemoryUsage)
     auto deep = std::string(deep_depth, '[');
     deep += std::string(deep_depth, ']');
     const auto deep_doc = read(deep);
-    for (const auto write_flag : write_flag_cases) check_buffer_write(deep_doc, write_flag, "deep");
+    const auto deep_mut = value(deep_doc);
+    for (const auto write_flag : write_flag_cases)
+    {
+        check_buffer_write(deep_doc, write_flag, "deep");
+        check_buffer_write(deep_mut, write_flag, "deep_mut");
+    }
 }
 #endif
 
