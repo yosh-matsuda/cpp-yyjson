@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <atomic>
 #include <format>
 #include <iostream>
 #include <list>
@@ -3591,6 +3592,153 @@ TEST(Readme, Example)
         auto tpl_obj2 = cast<decltype(tpl_obj)>(json_obj);
         std::cout << json_obj.write() << std::endl;
     }
+}
+
+template <typename T>
+class maybe
+{
+    std::optional<T> value_;
+
+public:
+    maybe() = default;
+    maybe(T value) : value_(std::move(value)) {}  // NOLINT
+    [[nodiscard]] explicit operator bool() const { return value_.has_value(); }
+    [[nodiscard]] const T& operator*() const { return *value_; }
+};
+
+template <typename T>
+struct yyjson::caster<maybe<T>>
+{
+    static bool should_omit(const maybe<T>& m) { return !m; }
+    template <typename... Ts>
+    static auto to_json(const maybe<T>& m, Ts...)
+    {
+        return *m;
+    }
+};
+
+struct OmittableRecord
+{
+    int port = 8080;
+    maybe<std::string> host;
+};
+
+VISITABLE_STRUCT(OmittableRecord, port, host);
+
+template <>
+struct yyjson::caster<std::atomic<int>>
+{
+    template <typename Json>
+    static void from_json(std::atomic<int>& field, const Json& json)
+    {
+        field = yyjson::cast<int>(json);
+    }
+    template <typename... Ts>
+    static auto to_json(const std::atomic<int>& field, Ts...)
+    {
+        return field.load();
+    }
+};
+
+struct CounterRecord
+{
+    std::string name;
+    std::atomic<int> hits;
+
+    CounterRecord() = default;
+    CounterRecord(const CounterRecord& other) : name(other.name), hits(other.hits.load()) {}
+    CounterRecord& operator=(const CounterRecord& other)
+    {
+        if (this != &other)
+        {
+            name = other.name;
+            hits = other.hits.load();
+        }
+        return *this;
+    }
+};
+
+VISITABLE_STRUCT(CounterRecord, name, hits);
+
+TEST(Writer, OmittableField)
+{
+    using namespace yyjson;
+
+    auto record = OmittableRecord();
+    EXPECT_EQ(object(record).write(), R"({"port":8080})");
+
+    record.host = maybe<std::string>("example.com");
+    EXPECT_EQ(object(record).write(), R"({"port":8080,"host":"example.com"})");
+}
+
+// the compile-time reflection writes this type, and the caster only decides whether it appears
+struct Coordinate
+{
+    double x = 0.0;
+    double y = 0.0;
+    bool valid = false;
+};
+
+template <>
+struct yyjson::caster<Coordinate>
+{
+    static bool should_omit(const Coordinate& c) { return !c.valid; }
+};
+
+struct Shape
+{
+    std::string name;
+    Coordinate origin;
+};
+
+TEST(Writer, OmittableReflectedField)
+{
+    using namespace yyjson;
+
+    auto shape = Shape();
+    shape.name = "a";
+    EXPECT_EQ(object(shape).write(), R"({"name":"a"})");
+
+    shape.origin.valid = true;
+    EXPECT_EQ(object(shape).write(), R"({"name":"a","origin":{"x":0.0,"y":0.0,"valid":true}})");
+}
+
+TEST(Reader, InPlaceAssignment)
+{
+    using namespace yyjson;
+
+    auto record = CounterRecord();
+    record.name = "a";
+    record.hits = 3;
+    EXPECT_EQ(object(record).write(), R"({"name":"a","hits":3})");
+
+    const auto deserialized = cast<CounterRecord>(read(R"({"name":"b","hits":9})"));
+    EXPECT_EQ(deserialized.name, "b");
+    EXPECT_EQ(deserialized.hits.load(), 9);
+}
+
+struct DefaultRecord
+{
+    int id = 0;
+    std::optional<int> level = 7;
+    std::optional<std::shared_ptr<int>> ptr;
+};
+
+VISITABLE_STRUCT(DefaultRecord, id, level, ptr);
+
+TEST(Reader, OptionalFieldKeepsDefault)
+{
+    using namespace yyjson;
+
+    // a null and a missing key both leave the field as it is
+    EXPECT_EQ(cast<DefaultRecord>(read(R"({"id":1,"level":null})")).level, 7);
+    EXPECT_EQ(cast<DefaultRecord>(read(R"({"id":1})")).level, 7);
+    EXPECT_EQ(cast<DefaultRecord>(read(R"({"id":1,"level":9})")).level, 9);
+
+    // a field that holds a shared pointer takes the null instead
+    const auto with_null = cast<DefaultRecord>(read(R"({"id":1,"ptr":null})"));
+    ASSERT_TRUE(with_null.ptr.has_value());
+    EXPECT_EQ(*with_null.ptr, nullptr);
 }
 
 // NOLINTEND
