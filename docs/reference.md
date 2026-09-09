@@ -133,7 +133,7 @@ yyjson::json_string write(WriteFlag write_flag = WriteFlag::NoFlag) const;
 template <yyjson_allocator Allocator>
 yyjson::json_string write(Allocator alc, WriteFlag write_flag = WriteFlag::NoFlag) const;
 
-// Output JSON string into a caller-provided buffer          // for yyjson >= v0.13.0
+// Output JSON string into a caller-provided buffer (for yyjson >= v0.13.0)
 std::string_view write(std::span<char> buffer, WriteFlag write_flag = WriteFlag::NoFlag) const;
 std::size_t write_max_memory_usage(WriteFlag write_flag = WriteFlag::NoFlag) const;
 
@@ -335,7 +335,7 @@ yyjson::json_string write(WriteFlag write_flag = WriteFlag::NoFlag) const;
 template <yyjson_allocator Allocator>
 yyjson::json_string write(Allocator alc, WriteFlag write_flag = WriteFlag::NoFlag) const;
 
-// Output JSON string into a caller-provided buffer          // for yyjson >= v0.13.0
+// Output JSON string into a caller-provided buffer (inherited, for yyjson >= v0.13.0)
 std::string_view write(std::span<char> buffer, WriteFlag write_flag = WriteFlag::NoFlag) const;
 std::size_t write_max_memory_usage(WriteFlag write_flag = WriteFlag::NoFlag) const;
 
@@ -410,7 +410,7 @@ yyjson::json_string write(WriteFlag write_flag = WriteFlag::NoFlag) const;
 template <yyjson_allocator Allocator>
 yyjson::json_string write(Allocator alc, WriteFlag write_flag = WriteFlag::NoFlag) const;
 
-// Output JSON string into a caller-provided buffer          // for yyjson >= v0.13.0
+// Output JSON string into a caller-provided buffer (inherited, for yyjson >= v0.13.0)
 std::string_view write(std::span<char> buffer, WriteFlag write_flag = WriteFlag::NoFlag) const;
 std::size_t write_max_memory_usage(WriteFlag write_flag = WriteFlag::NoFlag) const;
 
@@ -555,7 +555,7 @@ yyjson::json_string write(WriteFlag write_flag = WriteFlag::NoFlag) const;
 template <yyjson_allocator Allocator>
 yyjson::json_string write(Allocator alc, WriteFlag write_flag = WriteFlag::NoFlag) const;
 
-// Output JSON string into a caller-provided buffer          // for yyjson >= v0.13.0
+// Output JSON string into a caller-provided buffer (for yyjson >= v0.13.0)
 std::string_view write(std::span<char> buffer, WriteFlag write_flag = WriteFlag::NoFlag) const;
 std::size_t write_max_memory_usage(WriteFlag write_flag = WriteFlag::NoFlag) const;
 ```
@@ -692,7 +692,7 @@ yyjson::json_string write(WriteFlag write_flag = WriteFlag::NoFlag) const;
 template <yyjson_allocator Allocator>
 yyjson::json_string write(Allocator alc, WriteFlag write_flag = WriteFlag::NoFlag) const;
 
-// Output JSON string into a caller-provided buffer          // for yyjson >= v0.13.0
+// Output JSON string into a caller-provided buffer (for yyjson >= v0.13.0)
 std::string_view write(std::span<char> buffer, WriteFlag write_flag = WriteFlag::NoFlag) const;
 std::size_t write_max_memory_usage(WriteFlag write_flag = WriteFlag::NoFlag) const;
 
@@ -819,7 +819,7 @@ yyjson::json_string write(WriteFlag write_flag = WriteFlag::NoFlag) const;
 template <yyjson_allocator Allocator>
 yyjson::json_string write(Allocator alc, WriteFlag write_flag = WriteFlag::NoFlag) const;
 
-// Output JSON string into a caller-provided buffer          // for yyjson >= v0.13.0
+// Output JSON string into a caller-provided buffer (for yyjson >= v0.13.0)
 std::string_view write(std::span<char> buffer, WriteFlag write_flag = WriteFlag::NoFlag) const;
 std::size_t write_max_memory_usage(WriteFlag write_flag = WriteFlag::NoFlag) const;
 
