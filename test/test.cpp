@@ -3421,8 +3421,18 @@ TEST(Writer, WriteMaxMemoryUsage)
     }
 
     // A deeply nested document keeps room for the writer context stack.
-    auto deep = std::string(64, '[');
-    deep += std::string(64, ']');
+    constexpr auto deep_depth = []() -> std::size_t {
+        auto depth = static_cast<std::size_t>(64);
+#if YYJSON_READER_DEPTH_LIMIT
+        depth = std::min(depth, static_cast<std::size_t>(YYJSON_READER_DEPTH_LIMIT) - 1);
+#endif
+#if YYJSON_WRITER_DEPTH_LIMIT
+        depth = std::min(depth, static_cast<std::size_t>(YYJSON_WRITER_DEPTH_LIMIT) - 1);
+#endif
+        return depth;
+    }();
+    auto deep = std::string(deep_depth, '[');
+    deep += std::string(deep_depth, ']');
     const auto deep_doc = read(deep);
     for (const auto write_flag : write_flag_cases) check_buffer_write(deep_doc, write_flag, "deep");
 }
