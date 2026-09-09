@@ -397,6 +397,18 @@ namespace yyjson
         };
         template <typename T>
         concept optional_like = is_optional<std::remove_cvref_t<T>>::value;
+        template <typename T>
+        concept omittable = requires(const std::remove_cvref_t<T>& t) {
+            { caster<std::remove_cvref_t<T>>::should_omit(t) } -> std::convertible_to<bool>;
+        };
+
+        // Tells whether the reflection writer leaves this field out of the object.
+        template <typename T>
+        requires omittable<T>
+        [[nodiscard]] constexpr bool should_omit_field(const T& field)
+        {
+            return caster<std::remove_cvref_t<T>>::should_omit(field);
+        }
 
         template <typename T>
         struct is_shared_ptr : std::false_type
@@ -431,9 +443,9 @@ namespace yyjson
         template <typename Obj, typename Field, typename... Ts>
         void emplace_reflected_field(Obj& obj, std::string_view field_name, Field&& field, Ts... ts)
         {
-            if constexpr (optional_like<Field>)
+            if constexpr (omittable<Field>)
             {
-                if (field.has_value()) obj.emplace_no_iter(field_name, std::forward<Field>(field), ts...);
+                if (!should_omit_field(field)) obj.emplace_no_iter(field_name, std::forward<Field>(field), ts...);
             }
             else
             {
@@ -444,7 +456,7 @@ namespace yyjson
         template <typename T, std::size_t... Is>
         consteval bool has_optional_reflected_field_impl(std::index_sequence<Is...>)
         {
-            return (optional_like<field_reflection::field_type<T, Is>> || ...);
+            return (omittable<field_reflection::field_type<T, Is>> || ...);
         }
 
         template <typename T>
@@ -458,9 +470,9 @@ namespace yyjson
             {
                 auto count = std::size_t{0};
                 field_reflection::for_each_field(t, [&](std::string_view, const auto& field) {
-                    if constexpr (optional_like<decltype(field)>)
+                    if constexpr (omittable<decltype(field)>)
                     {
-                        if (field.has_value()) ++count;
+                        if (!should_omit_field(field)) ++count;
                     }
                     else
                     {
@@ -1622,9 +1634,9 @@ namespace yyjson
                     {
                         if (!success) [[unlikely]]
                             return;
-                        if constexpr (optional_like<Field>)
+                        if constexpr (omittable<Field>)
                         {
-                            if (!field.has_value()) return;
+                            if (should_omit_field(field)) return;
                         }
                         if (count >= capacity) [[unlikely]]
                         {
@@ -4797,6 +4809,9 @@ namespace yyjson
     template <typename T>
     struct caster<std::optional<T>>
     {
+        // A field that holds no value is left out of the JSON object.
+        static bool should_omit(const std::optional<T>& t) { return !t.has_value(); }
+
         template <detail::copy_string_args... Ts>
         requires requires(writer::value_ref& v, T t) {
             v = t;
