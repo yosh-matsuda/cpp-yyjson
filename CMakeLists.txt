@@ -27,6 +27,38 @@ option(CPPYYJSON_ENABLE_AVX2
        "Compile the bundled yyjson backend with AVX2 (requires an AVX2 CPU)"
        ${CPPYYJSON_ENABLE_AVX2_DEFAULT})
 
+# Compile-time options of the bundled yyjson backend. They also switch the
+# declarations in `include/yyjson.h`, so they are defined `PUBLIC` below to keep
+# the header and `src/yyjson.c` in sync.
+set(CPPYYJSON_READER_DEPTH_LIMIT
+    ""
+    CACHE STRING
+          "Depth limit for reading nested arrays/objects (empty for no limit)")
+set(CPPYYJSON_WRITER_DEPTH_LIMIT
+    ""
+    CACHE STRING
+          "Depth limit for writing nested arrays/objects (empty for no limit)")
+option(CPPYYJSON_DISABLE_FILE
+       "Disable the file and `FILE*` read/write APIs of yyjson" OFF)
+option(CPPYYJSON_FREESTANDING
+       "Build the bundled yyjson backend without libc" OFF)
+
+set(cppyyjson_backend_options CPPYYJSON_READER_DEPTH_LIMIT
+                              CPPYYJSON_WRITER_DEPTH_LIMIT)
+list(APPEND cppyyjson_backend_options CPPYYJSON_DISABLE_FILE
+     CPPYYJSON_FREESTANDING)
+if(NOT CPPYYJSON_USE_BUNDLED_YYJSON)
+  foreach(cppyyjson_option IN LISTS cppyyjson_backend_options)
+    if(${cppyyjson_option})
+      message(
+        FATAL_ERROR
+          "${cppyyjson_option} configures the bundled yyjson backend and "
+          "requires CPPYYJSON_USE_BUNDLED_YYJSON=ON. Configure the external "
+          "yyjson with the corresponding YYJSON_* option instead.")
+    endif()
+  endforeach()
+endif()
+
 # library
 include(GNUInstallDirs)
 if(CPPYYJSON_USE_BUNDLED_YYJSON)
@@ -57,6 +89,29 @@ if(CPPYYJSON_USE_BUNDLED_YYJSON AND CPPYYJSON_ENABLE_AVX2)
     target_compile_options(${PROJECT_NAME} PRIVATE /arch:AVX2)
   else()
     target_compile_options(${PROJECT_NAME} PRIVATE -mavx2)
+  endif()
+endif()
+
+# `YYJSON_FREESTANDING` and `YYJSON_DISABLE_FILE` remove declarations from
+# `include/yyjson.h`, and the depth limits are read by `include/cpp_yyjson.hpp`
+# through the same header, so these definitions must be visible to the consumer
+# as well as to `src/yyjson.c`.
+if(CPPYYJSON_USE_BUNDLED_YYJSON)
+  if(CPPYYJSON_READER_DEPTH_LIMIT)
+    target_compile_definitions(
+      ${PROJECT_NAME}
+      PUBLIC YYJSON_READER_DEPTH_LIMIT=${CPPYYJSON_READER_DEPTH_LIMIT})
+  endif()
+  if(CPPYYJSON_WRITER_DEPTH_LIMIT)
+    target_compile_definitions(
+      ${PROJECT_NAME}
+      PUBLIC YYJSON_WRITER_DEPTH_LIMIT=${CPPYYJSON_WRITER_DEPTH_LIMIT})
+  endif()
+  if(CPPYYJSON_DISABLE_FILE)
+    target_compile_definitions(${PROJECT_NAME} PUBLIC YYJSON_DISABLE_FILE=1)
+  endif()
+  if(CPPYYJSON_FREESTANDING)
+    target_compile_definitions(${PROJECT_NAME} PUBLIC YYJSON_FREESTANDING=1)
   endif()
 endif()
 
