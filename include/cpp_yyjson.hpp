@@ -387,17 +387,6 @@ namespace yyjson
         template <typename Pair>
         concept key_value_like = pair_like<Pair> && key_type<std::tuple_element_t<0, Pair>>;
         template <typename T>
-        struct is_optional : std::false_type
-        {
-        };
-        template <typename T>
-        struct is_optional<std::optional<T>> : std::true_type
-        {
-            using value_type = T;
-        };
-        template <typename T>
-        concept optional_like = is_optional<std::remove_cvref_t<T>>::value;
-        template <typename T>
         concept omittable = requires(const std::remove_cvref_t<T>& t) {
             { caster<std::remove_cvref_t<T>>::should_omit(t) } -> std::convertible_to<bool>;
         };
@@ -426,13 +415,11 @@ namespace yyjson
         void assign_reflected_field(Field& field, const Json& value)
         {
             using field_type = std::remove_cvref_t<Field>;
-            if constexpr (optional_like<field_type>)
+            if constexpr (requires { caster<field_type>::from_json(field, value); })
             {
-                using value_type = typename is_optional<field_type>::value_type;
-                if (!value.is_null() || shared_ptr_like<value_type>)
-                {
-                    field = cast<value_type>(value);
-                }
+                // A field that cannot be returned by value, such as a proxy or a non-movable type,
+                // is assigned in place. The caster decides which type it casts the JSON value to.
+                caster<field_type>::from_json(field, value);
             }
             else
             {
@@ -4385,13 +4372,18 @@ namespace yyjson
         { yyjson::cast<T>(json) };
     };
 
+    template <typename Json, typename T>
+    concept field_assignable = castable<Json, T> || requires(T& field, const Json& json) {
+        caster<std::remove_cvref_t<T>>::from_json(field, json);
+    };
+
     template <json_object Json, field_reflection::field_namable T>
     constexpr bool all_fields_castable_impl()
     {
         return []<std::size_t... I>(std::index_sequence<I...>) {
-            return (
-                castable<typename std::ranges::range_value_t<Json>::second_type, field_reflection::field_type<T, I>> &&
-                ...);
+            return (field_assignable<typename std::ranges::range_value_t<Json>::second_type,
+                                     field_reflection::field_type<T, I>> &&
+                    ...);
         }(std::make_index_sequence<field_reflection::field_count<T>>{});
     }
 
@@ -4811,6 +4803,14 @@ namespace yyjson
     {
         // A field that holds no value is left out of the JSON object.
         static bool should_omit(const std::optional<T>& t) { return !t.has_value(); }
+
+        // A field keeps the value that it holds when the JSON value is null.
+        template <typename Json>
+        requires castable<Json, T>
+        static void from_json(std::optional<T>& field, const Json& json)
+        {
+            if (!json.is_null() || detail::shared_ptr_like<T>) field = cast<T>(json);
+        }
 
         template <detail::copy_string_args... Ts>
         requires requires(writer::value_ref& v, T t) {
