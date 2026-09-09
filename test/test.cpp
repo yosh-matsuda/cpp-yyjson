@@ -1,10 +1,12 @@
 #include <gtest/gtest.h>
+#include <array>
 #include <atomic>
 #include <format>
 #include <iostream>
 #include <list>
 #include <map>
 #include <numeric>
+#include <tuple>
 #include "cpp_yyjson.hpp"
 
 #if defined(__GNUC__)
@@ -3418,6 +3420,19 @@ TEST(Writer, WriteMaxMemoryUsage)
     for (const auto& val : values)
     {
         for (const auto write_flag : write_flag_cases) check_buffer_write(val, write_flag, val.write());
+    }
+
+    // The mutable array and object classes have the same write functions.
+    auto arr = array(std::vector{1, 2, 3});
+    arr.emplace_back(empty_object);
+    auto obj = object(std::map<std::string, std::string>{{"a", "x"}, {"b", "y"}});
+    obj.emplace("c", empty_array);
+    for (const auto write_flag : write_flag_cases)
+    {
+        check_buffer_write(arr, write_flag, "array");
+        check_buffer_write(obj, write_flag, "object");
+        check_buffer_write(*read(arr.write()).as_array(), write_flag, "const_array_ref");
+        check_buffer_write(*read(obj.write()).as_object(), write_flag, "const_object_ref");
     }
 
     // A deeply nested document keeps room for the writer context stack.
