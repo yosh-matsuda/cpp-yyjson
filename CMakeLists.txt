@@ -27,9 +27,11 @@ option(CPPYYJSON_ENABLE_AVX2
        "Compile the bundled yyjson backend with AVX2 (requires an AVX2 CPU)"
        ${CPPYYJSON_ENABLE_AVX2_DEFAULT})
 
-# Compile-time options of the bundled yyjson backend. They also switch the
-# declarations in `include/yyjson.h`, so they are defined `PUBLIC` below to keep
-# the header and `src/yyjson.c` in sync.
+# Compile-time options of the bundled yyjson backend. They are defined below so
+# that the consumer sees the same configuration as `src/yyjson.c`.
+# `YYJSON_FREESTANDING` is left out on purpose: it replaces the default
+# allocator with one that always fails, and every cpp-yyjson function allocates
+# through it.
 set(CPPYYJSON_READER_DEPTH_LIMIT
     ""
     CACHE STRING
@@ -40,13 +42,10 @@ set(CPPYYJSON_WRITER_DEPTH_LIMIT
           "Depth limit for writing nested arrays/objects (empty for no limit)")
 option(CPPYYJSON_DISABLE_FILE
        "Disable the file and `FILE*` read/write APIs of yyjson" OFF)
-option(CPPYYJSON_FREESTANDING
-       "Build the bundled yyjson backend without libc" OFF)
 
 set(cppyyjson_backend_options CPPYYJSON_READER_DEPTH_LIMIT
-                              CPPYYJSON_WRITER_DEPTH_LIMIT)
-list(APPEND cppyyjson_backend_options CPPYYJSON_DISABLE_FILE
-     CPPYYJSON_FREESTANDING)
+                              CPPYYJSON_WRITER_DEPTH_LIMIT
+                              CPPYYJSON_DISABLE_FILE)
 if(NOT CPPYYJSON_USE_BUNDLED_YYJSON)
   foreach(cppyyjson_option IN LISTS cppyyjson_backend_options)
     if(${cppyyjson_option})
@@ -92,10 +91,9 @@ if(CPPYYJSON_USE_BUNDLED_YYJSON AND CPPYYJSON_ENABLE_AVX2)
   endif()
 endif()
 
-# `YYJSON_FREESTANDING` and `YYJSON_DISABLE_FILE` remove declarations from
-# `include/yyjson.h`, and the depth limits are read by `include/cpp_yyjson.hpp`
-# through the same header, so these definitions must be visible to the consumer
-# as well as to `src/yyjson.c`.
+# `YYJSON_DISABLE_FILE` removes declarations from `include/yyjson.h`, and the
+# depth limits default to `0` there unless they are defined, so these
+# definitions must be visible to the consumer as well as to `src/yyjson.c`.
 if(CPPYYJSON_USE_BUNDLED_YYJSON)
   if(CPPYYJSON_READER_DEPTH_LIMIT)
     target_compile_definitions(
@@ -109,9 +107,6 @@ if(CPPYYJSON_USE_BUNDLED_YYJSON)
   endif()
   if(CPPYYJSON_DISABLE_FILE)
     target_compile_definitions(${PROJECT_NAME} PUBLIC YYJSON_DISABLE_FILE=1)
-  endif()
-  if(CPPYYJSON_FREESTANDING)
-    target_compile_definitions(${PROJECT_NAME} PUBLIC YYJSON_FREESTANDING=1)
   endif()
 endif()
 

@@ -274,16 +274,7 @@ To use an external yyjson package instead, configure with `-DCPPYYJSON_USE_BUNDL
 $ ./vcpkg install yyjson
 ```
 
-The compile-time options of the bundled backend are exposed as CMake options. They also switch the declarations in `yyjson.h`, so cpp-yyjson defines them for the consumer as well as for `src/yyjson.c`. They require the bundled backend; with `-DCPPYYJSON_USE_BUNDLED_YYJSON=OFF`, configure the external yyjson with the corresponding `YYJSON_*` option instead.
-
-| CMake option                       | yyjson option                | Description                                                    |
-| ---------------------------------- | ---------------------------- | -------------------------------------------------------------- |
-| `CPPYYJSON_READER_DEPTH_LIMIT=<N>` | `YYJSON_READER_DEPTH_LIMIT`  | Depth limit for reading nested arrays/objects (empty for none)  |
-| `CPPYYJSON_WRITER_DEPTH_LIMIT=<N>` | `YYJSON_WRITER_DEPTH_LIMIT`  | Depth limit for writing nested arrays/objects (empty for none)  |
-| `CPPYYJSON_DISABLE_FILE=ON`        | `YYJSON_DISABLE_FILE`        | Disable the file and `FILE*` read/write APIs                    |
-| `CPPYYJSON_FREESTANDING=ON`        | `YYJSON_FREESTANDING`        | Build the backend without libc                                  |
-
-Note that `CPPYYJSON_FREESTANDING` only removes the libc dependency of the yyjson backend. The `cpp_yyjson.hpp` itself keeps using the C++ standard library.
+Some [compile-time options](https://ibireme.github.io/yyjson/doc/doxygen/html/building-and-testing.html#compile-time-options) of yyjson are available as CMake options of the same name, with the `CPPYYJSON_` prefix in place of `YYJSON_`: `CPPYYJSON_READER_DEPTH_LIMIT`, `CPPYYJSON_WRITER_DEPTH_LIMIT`, and `CPPYYJSON_DISABLE_FILE`. cpp-yyjson defines them for the consumer as well as for `src/yyjson.c`, and they require the bundled backend; with `-DCPPYYJSON_USE_BUNDLED_YYJSON=OFF`, define the `YYJSON_*` option for the external yyjson instead.
 
 When copying headers manually, copy `cpp_yyjson.hpp`, `field_reflection.hpp`, and, for the bundled backend, `yyjson.h`. The bundled backend also requires compiling and linking `src/yyjson.c`.
 
