@@ -443,6 +443,21 @@ uint32_t yyjson_version(void) {
 #   define gcc_full_barrier(val)
 #endif
 
+/**
+ Prevents the compiler from turning the enclosing branch into a conditional
+ move. It does not emit any instruction.
+
+ This is needed where a branch guards the update of a value that the branch
+ condition itself is computed from. Predicating such an update places the whole
+ computation of the condition on the loop-carried dependency chain, which is far
+ more expensive than a mispredicted branch when the branch is highly biased.
+ */
+#if defined(__GNUC__) || defined(__clang__)
+#   define keep_branch() __asm__ volatile("")
+#else
+#   define keep_branch()
+#endif
+
 
 
 /*==============================================================================
@@ -2084,134 +2099,172 @@ static_inline u32 u64_tz_bits(u64 v) {
 }
 
 #if YYJSON_HAS_SIMD_SSE2
-/** Scans the remaining chunks after the first one, see str_ascii_skip_sse2(). */
-static_noinline u8 *str_ascii_skip_sse2_loop(u8 *src, u8 *eof) {
-    __m128i quote = _mm_set1_epi8('"');
-    __m128i slash = _mm_set1_epi8('\\');
-    __m128i limit = _mm_set1_epi8(0x20);
-    while (src <= eof && (usize)(eof - src) >= 16 - YYJSON_PADDING_SIZE) {
-        __m128i chunk = _mm_loadu_si128((const __m128i *)(const void *)src);
-        __m128i quote_mask = _mm_cmpeq_epi8(chunk, quote);
-        __m128i slash_mask = _mm_cmpeq_epi8(chunk, slash);
-        __m128i ctrl_or_non_ascii = _mm_cmplt_epi8(chunk, limit);
-        u32 mask = (u32)_mm_movemask_epi8(_mm_or_si128(
-            _mm_or_si128(quote_mask, slash_mask), ctrl_or_non_ascii));
-        if (mask) return src + u64_tz_bits((u64)mask);
-        src += 16;
-    }
-    /* the padding is zeroed, so this loop always stops */
-    while (char_is_ascii_skip(*src)) src++;
-    return src;
-}
-
-/** Skips ASCII characters in a double-quoted string, returns the position of
-    the quote, backslash, control character or non-ASCII byte that stopped it.
-    The first chunk is handled here so that short strings never pay for a call. */
-static_inline u8 *str_ascii_skip_sse2(u8 *src, u8 *eof) {
-    if (likely(src <= eof && (usize)(eof - src) >= 16 - YYJSON_PADDING_SIZE)) {
-        __m128i quote = _mm_set1_epi8('"');
-        __m128i slash = _mm_set1_epi8('\\');
-        __m128i limit = _mm_set1_epi8(0x20);
-        __m128i chunk = _mm_loadu_si128((const __m128i *)(const void *)src);
-        __m128i quote_mask = _mm_cmpeq_epi8(chunk, quote);
-        __m128i slash_mask = _mm_cmpeq_epi8(chunk, slash);
-        __m128i ctrl_or_non_ascii = _mm_cmplt_epi8(chunk, limit);
-        u32 mask = (u32)_mm_movemask_epi8(_mm_or_si128(
-            _mm_or_si128(quote_mask, slash_mask), ctrl_or_non_ascii));
-        if (likely(mask)) return src + u64_tz_bits((u64)mask);
-        src += 16;
-    }
-    return str_ascii_skip_sse2_loop(src, eof);
-}
 
 /** A pair of read/write positions in a string. */
 typedef struct { u8 *src; u8 *dst; } str_pos_pair;
 
-/** Copies ASCII characters in a double-quoted string, returns the positions of
-    the quote, backslash, control character or non-ASCII byte that stopped it.
-    The positions are passed by value to keep them in the caller's registers. */
-static_noinline str_pos_pair str_ascii_copy_sse2(u8 *src, u8 *dst, u8 *eof) {
-    str_pos_pair pos;
+/**
+ Returns whether a SIMD chunk of `size` bytes can be loaded at `src`.
+
+ The input buffer is padded with `YYJSON_PADDING_SIZE` zeroed bytes, so a chunk
+ may overrun `eof` by at most that amount. A single signed comparison is used
+ here: if `src` is past `eof`, the difference is negative and the test fails,
+ so no separate `src <= eof` branch is required.
+ */
+#define simd_chunk_fits(src, eof, size) \
+    ((eof) - (src) >= (ptrdiff_t)((size) - YYJSON_PADDING_SIZE))
+
+/** Returns the last position a SIMD chunk of `size` bytes may be loaded at.
+    Only valid when `simd_chunk_fits()` holds, which keeps the result inside
+    the input buffer. Hoisting it out of a scan loop turns the bound check
+    into a single compare against a loop-invariant pointer. */
+#define simd_chunk_last(eof, size) \
+    ((eof) - (ptrdiff_t)((size) - YYJSON_PADDING_SIZE))
+
+/** Returns a bitmask of bytes that end a double-quoted ASCII run:
+    the quote, the backslash, a control character or a non-ASCII byte.
+    Bytes >= 0x80 are negative as signed, so a single signed compare covers
+    both control characters and non-ASCII bytes. */
+#if YYJSON_HAS_SIMD_AVX2
+static_inline u32 str_stop_mask_avx2(__m256i chunk) {
+    /*
+     The quote and the backslash are matched with a byte shuffle instead of two
+     compares: indexing the table with a byte yields that byte again only for
+     0x22 and 0x5C, since every other entry has a different low nibble. The
+     zero entries can only match a null byte, which stops the run anyway, and
+     a byte >= 0x80 shuffles in a zero and is caught by the compare below.
+     This keeps the whole test at two vector constants, which the compiler can
+     set up in far fewer instructions than three.
+     */
+    __m256i table = _mm256_setr_epi8(
+        0, 0, '"', 0, 0, 0, 0, 0, 0, 0, 0, 0, '\\', 0, 0, 0,
+        0, 0, '"', 0, 0, 0, 0, 0, 0, 0, 0, 0, '\\', 0, 0, 0);
+    __m256i limit = _mm256_set1_epi8(0x20);
+    __m256i quote_or_slash =
+        _mm256_cmpeq_epi8(chunk, _mm256_shuffle_epi8(table, chunk));
+    __m256i ctrl_or_non_ascii = _mm256_cmpgt_epi8(limit, chunk);
+    return (u32)_mm256_movemask_epi8(
+        _mm256_or_si256(quote_or_slash, ctrl_or_non_ascii));
+}
+#else
+static_inline u32 str_stop_mask_sse2(__m128i chunk) {
     __m128i quote = _mm_set1_epi8('"');
     __m128i slash = _mm_set1_epi8('\\');
     __m128i limit = _mm_set1_epi8(0x20);
-    while (src <= eof && (usize)(eof - src) >= 16 - YYJSON_PADDING_SIZE) {
-        __m128i chunk = _mm_loadu_si128((const __m128i *)(const void *)src);
-        __m128i quote_mask = _mm_cmpeq_epi8(chunk, quote);
-        __m128i slash_mask = _mm_cmpeq_epi8(chunk, slash);
-        __m128i ctrl_or_non_ascii = _mm_cmplt_epi8(chunk, limit);
-        u32 mask = (u32)_mm_movemask_epi8(_mm_or_si128(
-            _mm_or_si128(quote_mask, slash_mask), ctrl_or_non_ascii));
-        if (mask) {
-            u32 len = u64_tz_bits((u64)mask);
-            byte_move_forward(dst, src, len);
-            pos.src = src + len;
-            pos.dst = dst + len;
-            return pos;
-        }
-        _mm_storeu_si128((__m128i *)(void *)dst, chunk);
-        src += 16;
-        dst += 16;
+    __m128i quote_mask = _mm_cmpeq_epi8(chunk, quote);
+    __m128i slash_mask = _mm_cmpeq_epi8(chunk, slash);
+    __m128i ctrl_or_non_ascii = _mm_cmplt_epi8(chunk, limit);
+    return (u32)_mm_movemask_epi8(_mm_or_si128(
+        _mm_or_si128(quote_mask, slash_mask), ctrl_or_non_ascii));
+}
+#endif
+
+/**
+ Skips whole SIMD chunks of a double-quoted string that contain no quote,
+ backslash, control character or non-ASCII byte, and returns the position of
+ the first chunk that does (or the last position a chunk could be loaded at).
+
+ The exact stop position inside that chunk is deliberately *not* computed here.
+ Deriving it would require `src += count_trailing_zeros(mask)`, which puts the
+ whole load -> compare -> movemask -> tzcnt chain on the loop-carried dependency
+ that runs through every string of the document. Instead the mask only steers a
+ branch, so `src` always advances by a compile-time constant and the caller can
+ resolve the final bytes with its scalar unrolled loop, whose exits are likewise
+ constant offsets. This keeps short strings as fast as the scalar-only build
+ while long strings still get the full SIMD throughput.
+
+ Only the widest available chunk size is used. A narrower fallback pass would
+ only ever apply to the last few bytes of the input, while its extra inlined
+ code makes the whole string parser measurably slower.
+ */
+static_inline u8 *str_ascii_skip_chunks(u8 *src, u8 *eof) {
+#if YYJSON_HAS_SIMD_AVX2
+    if (simd_chunk_fits(src, eof, 32)) {
+        u8 *last = simd_chunk_last(eof, 32);
+        do {
+            __m256i chunk =
+                _mm256_loadu_si256((const __m256i *)(const void *)src);
+            u32 mask = str_stop_mask_avx2(chunk);
+            if (mask) {
+                keep_branch();
+#if YYJSON_IS_REAL_GCC
+                /* Narrow the hit down to the 16-byte half that holds it, so
+                   the caller's 16-byte scalar round never rescans a clean
+                   half. Testing the mask that was computed anyway keeps this
+                   a predicted branch plus a constant add.
+
+                   This is a pure hint, the caller resolves the same bytes
+                   without it. Only GCC profits: Clang generates markedly worse
+                   code around the refinement for strings of 16 to 48 bytes. */
+                if (!(mask & 0xFFFF)) src += 16;
+#endif
+                break;
+            }
+            src += 32;
+        } while (src <= last);
     }
-    /* the padding is zeroed, so this loop always stops */
-    while (char_is_ascii_skip(*src)) *dst++ = *src++;
+#else
+    if (simd_chunk_fits(src, eof, 16)) {
+        u8 *last = simd_chunk_last(eof, 16);
+        do {
+            __m128i chunk =
+                _mm_loadu_si128((const __m128i *)(const void *)src);
+            if (str_stop_mask_sse2(chunk)) { keep_branch(); break; }
+            src += 16;
+        } while (src <= last);
+    }
+#endif
+    return src;
+}
+
+/** Copies whole SIMD chunks of a double-quoted string that contain no quote,
+    backslash, control character or non-ASCII byte, see str_ascii_skip_chunks().
+    The positions are returned by value to keep them in the caller's registers. */
+static_inline str_pos_pair str_ascii_copy_chunks(u8 *src, u8 *dst, u8 *eof) {
+    str_pos_pair pos;
+#if YYJSON_HAS_SIMD_AVX2
+    if (simd_chunk_fits(src, eof, 32)) {
+        u8 *last = simd_chunk_last(eof, 32);
+        do {
+            __m256i chunk =
+                _mm256_loadu_si256((const __m256i *)(const void *)src);
+            u32 mask = str_stop_mask_avx2(chunk);
+            if (mask) {
+                keep_branch();
+#if YYJSON_IS_REAL_GCC
+                /* See the matching comment in str_ascii_skip_chunks(). */
+                if (!(mask & 0xFFFF)) {
+                    _mm_storeu_si128((__m128i *)(void *)dst,
+                                     _mm256_castsi256_si128(chunk));
+                    src += 16;
+                    dst += 16;
+                }
+#endif
+                break;
+            }
+            _mm256_storeu_si256((__m256i *)(void *)dst, chunk);
+            src += 32;
+            dst += 32;
+        } while (src <= last);
+    }
+#else
+    if (simd_chunk_fits(src, eof, 16)) {
+        u8 *last = simd_chunk_last(eof, 16);
+        do {
+            __m128i chunk =
+                _mm_loadu_si128((const __m128i *)(const void *)src);
+            if (str_stop_mask_sse2(chunk)) { keep_branch(); break; }
+            _mm_storeu_si128((__m128i *)(void *)dst, chunk);
+            src += 16;
+            dst += 16;
+        } while (src <= last);
+    }
+#endif
     pos.src = src;
     pos.dst = dst;
     return pos;
 }
 
-#if YYJSON_HAS_SIMD_AVX2
-/** Scans ASCII characters in a double-quoted string using 32-byte chunks. */
-static_noinline u8 *str_ascii_skip_avx2(u8 *src, u8 *eof) {
-    __m256i quote = _mm256_set1_epi8('"');
-    __m256i slash = _mm256_set1_epi8('\\');
-    __m256i limit = _mm256_set1_epi8(0x20);
-    while (src <= eof && (usize)(eof - src) >= 32 - YYJSON_PADDING_SIZE) {
-        __m256i chunk = _mm256_loadu_si256((const __m256i *)(const void *)src);
-        __m256i quote_mask = _mm256_cmpeq_epi8(chunk, quote);
-        __m256i slash_mask = _mm256_cmpeq_epi8(chunk, slash);
-        __m256i ctrl_or_non_ascii = _mm256_cmpgt_epi8(limit, chunk);
-        u32 mask = (u32)_mm256_movemask_epi8(_mm256_or_si256(
-            _mm256_or_si256(quote_mask, slash_mask), ctrl_or_non_ascii));
-        if (mask) return src + u64_tz_bits((u64)mask);
-        src += 32;
-    }
-    return str_ascii_skip_sse2(src, eof);
-}
-
-/** Copies ASCII characters in a double-quoted string using 32-byte chunks. */
-static_noinline str_pos_pair
-str_ascii_copy_avx2(u8 *src, u8 *dst, u8 *eof) {
-    str_pos_pair pos;
-    __m256i quote = _mm256_set1_epi8('"');
-    __m256i slash = _mm256_set1_epi8('\\');
-    __m256i limit = _mm256_set1_epi8(0x20);
-    while (src <= eof && (usize)(eof - src) >= 32 - YYJSON_PADDING_SIZE) {
-        __m256i chunk = _mm256_loadu_si256((const __m256i *)(const void *)src);
-        __m256i quote_mask = _mm256_cmpeq_epi8(chunk, quote);
-        __m256i slash_mask = _mm256_cmpeq_epi8(chunk, slash);
-        __m256i ctrl_or_non_ascii = _mm256_cmpgt_epi8(limit, chunk);
-        u32 mask = (u32)_mm256_movemask_epi8(_mm256_or_si256(
-            _mm256_or_si256(quote_mask, slash_mask), ctrl_or_non_ascii));
-        if (mask) {
-            u32 len = u64_tz_bits((u64)mask);
-                if (len > 16) {
-                    byte_move_16(dst, src);
-                    byte_move_forward(dst + 16, src + 16, len - 16);
-                } else {
-                    byte_move_forward(dst, src, len);
-                }
-            pos.src = src + len;
-            pos.dst = dst + len;
-            return pos;
-        }
-        _mm256_storeu_si256((__m256i *)(void *)dst, chunk);
-        src += 32;
-        dst += 32;
-    }
-    return str_ascii_copy_sse2(src, dst, eof);
-}
-#endif
 #endif
 
 /** Multiplies two 64-bit unsigned integers (a * b),
@@ -4990,15 +5043,15 @@ skip_ascii:
     repeat16_incr(expr_jump)
     src += 16;
 #if YYJSON_HAS_SIMD_SSE2
-#if YYJSON_HAS_SIMD_AVX2
-    src = str_ascii_skip_avx2(src, eof);
-#else
-    src = str_ascii_skip_sse2(src, eof);
+    /*
+     Only strings longer than this first unrolled round reach the SIMD scan,
+     so short strings keep the exact cost of the scalar-only build.
+     The scan merely reports which chunk holds the terminator; the unrolled
+     round above resolves the exact byte. See str_ascii_skip_chunks().
+     */
+    src = str_ascii_skip_chunks(src, eof);
 #endif
-    goto skip_ascii_end;
-#else
     goto skip_ascii;
-#endif
     repeat16_incr(expr_stop)
 
 #undef expr_jump
@@ -5111,11 +5164,6 @@ static_inline bool read_str_copy(u8 quo, u8 *hdr, u8 **end, u8 *src,
     dst = src;
 #endif
 
-#if YYJSON_HAS_SIMD_SSE2
-#define copy_ascii_after_escape goto copy_ascii_sse2
-#else
-#define copy_ascii_after_escape break
-#endif
 copy_escape:
     if (likely(*src == '\\')) {
         switch (*++src) {
@@ -5124,9 +5172,9 @@ copy_escape:
             case '/':  *dst++ = '/';  src++; break;
             case 'b':  *dst++ = '\b'; src++; break;
             case 'f':  *dst++ = '\f'; src++; break;
-            case 'n':  *dst++ = '\n'; src++; copy_ascii_after_escape;
-            case 'r':  *dst++ = '\r'; src++; copy_ascii_after_escape;
-            case 't':  *dst++ = '\t'; src++; copy_ascii_after_escape;
+            case 'n':  *dst++ = '\n'; src++; break;
+            case 'r':  *dst++ = '\r'; src++; break;
+            case 't':  *dst++ = '\t'; src++; break;
             case 'u':
                 src--;
                 if (!read_uni_esc(&src, &dst, msg)) return_err(src, *msg);
@@ -5194,22 +5242,8 @@ copy_escape:
         if (src >= eof) return_err(src, "unclosed string");
         *dst++ = *src++;
     }
-#undef copy_ascii_after_escape
 
     goto copy_ascii;
-#if YYJSON_HAS_SIMD_SSE2
-copy_ascii_sse2:
-    if (quo == '"') {
-#if YYJSON_HAS_SIMD_AVX2
-    str_pos_pair simd_pos = str_ascii_copy_avx2(src, dst, eof);
-#else
-        str_pos_pair simd_pos = str_ascii_copy_sse2(src, dst, eof);
-#endif
-        src = simd_pos.src;
-        dst = simd_pos.dst;
-        goto copy_utf8;
-    }
-#endif
 copy_ascii:
     /*
      Copy continuous ASCII, loop unrolling, same as the following code:
@@ -5236,10 +5270,14 @@ copy_ascii:
     byte_move_16(dst, src);
     dst += 16; src += 16;
 #if YYJSON_HAS_SIMD_SSE2
-    goto copy_ascii_sse2;
-#else
-    goto copy_ascii;
+    /* See the matching comment in the skip loop of `read_str_opt()`. */
+    if (quo == '"') {
+        str_pos_pair simd_pos = str_ascii_copy_chunks(src, dst, eof);
+        src = simd_pos.src;
+        dst = simd_pos.dst;
+    }
 #endif
+    goto copy_ascii;
 
     /*
      The memory is copied forward since `dst < src`.
