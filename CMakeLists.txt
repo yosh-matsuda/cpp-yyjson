@@ -148,6 +148,37 @@ if(CPPYYJSON_USE_BUNDLED_YYJSON AND CPPYYJSON_LTO_SUPPORTED)
   check_c_compiler_flag(-ffat-lto-objects CPPYYJSON_HAS_FAT_LTO_OBJECTS)
 endif()
 
+# CMake maps IPO to `-flto=thin` for Clang, and full LTO measures faster here, so the
+# option is repeated with `-flto=full`, which the driver takes because it comes last. A
+# Clang that takes no LTO mode keeps the plain `-flto` that CMake gives it.
+set(cppyyjson_full_lto_languages "")
+if(CPPYYJSON_LTO_SUPPORTED)
+  foreach(cppyyjson_lang IN LISTS CPPYYJSON_LTO_LANGUAGES)
+    if(NOT CMAKE_${cppyyjson_lang}_COMPILER_ID MATCHES "Clang"
+       OR NOT CMAKE_${cppyyjson_lang}_COMPILE_OPTIONS_IPO STREQUAL "-flto=thin")
+      continue()
+    endif()
+    # A bitcode object alone stops a linker that reads no plugin.
+    set(CMAKE_REQUIRED_LINK_OPTIONS -flto=full)
+    if(cppyyjson_lang STREQUAL "C")
+      include(CheckCCompilerFlag)
+      check_c_compiler_flag(-flto=full CPPYYJSON_HAS_FULL_LTO_C)
+      set(cppyyjson_has_full_lto ${CPPYYJSON_HAS_FULL_LTO_C})
+    else()
+      include(CheckCXXCompilerFlag)
+      check_cxx_compiler_flag(-flto=full CPPYYJSON_HAS_FULL_LTO_CXX)
+      set(cppyyjson_has_full_lto ${CPPYYJSON_HAS_FULL_LTO_CXX})
+    endif()
+    unset(CMAKE_REQUIRED_LINK_OPTIONS)
+    if(cppyyjson_has_full_lto)
+      list(APPEND cppyyjson_full_lto_languages ${cppyyjson_lang})
+    endif()
+  endforeach()
+endif()
+set(CPPYYJSON_FULL_LTO_LANGUAGES
+    "${cppyyjson_full_lto_languages}"
+    CACHE INTERNAL "The languages that take full LTO in place of ThinLTO")
+
 function(cpp_yyjson_enable_lto target)
   if(NOT TARGET ${target})
     message(FATAL_ERROR "Target '${target}' does not exist")
@@ -165,6 +196,13 @@ function(cpp_yyjson_enable_lto target)
   foreach(lto_target ${lto_targets})
     set_property(TARGET ${lto_target} PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
     set_property(TARGET ${lto_target} PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO TRUE)
+    foreach(lang IN LISTS CPPYYJSON_FULL_LTO_LANGUAGES)
+      target_compile_options(
+        ${lto_target}
+        PRIVATE
+        "$<$<AND:$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>,$<COMPILE_LANGUAGE:${lang}>>:-flto=full>"
+      )
+    endforeach()
   endforeach()
 
   if(CPPYYJSON_HAS_FAT_LTO_OBJECTS)
@@ -197,6 +235,15 @@ function(cpp_yyjson_enable_lto target)
           "$<$<AND:$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>,$<LINK_LANGUAGE:${lang}>>:${cppyyjson_ipo_options}>"
         )
       endif()
+    endforeach()
+
+    # The driver takes the last option, so this must follow the block above.
+    foreach(lang IN LISTS CPPYYJSON_FULL_LTO_LANGUAGES)
+      target_link_options(
+        ${target}
+        PRIVATE
+        "$<$<AND:$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>,$<LINK_LANGUAGE:${lang}>>:-flto=full>"
+      )
     endforeach()
   endif()
 endfunction()
