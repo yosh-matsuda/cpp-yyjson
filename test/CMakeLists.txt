@@ -65,15 +65,6 @@ if(CPPYYJSON_BUILD_BENCH)
       PRIVATE ${PROJECT_NAME} benchmark::benchmark rapidjson nlohmann_json
       nlohmann_json::nlohmann_json)
 
-  if(NOT MSVC AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64)$")
-    foreach(target "${PROJECT_NAME}_bench_read" "${PROJECT_NAME}_bench_write")
-      target_compile_options(${target} PRIVATE -march=x86-64-v3)
-    endforeach()
-  endif()
-
-  cpp_yyjson_enable_lto("${PROJECT_NAME}_bench_read")
-  cpp_yyjson_enable_lto("${PROJECT_NAME}_bench_write")
-
   # Upstream yyjson C API benchmarks
   find_package(yyjson CONFIG REQUIRED)
   add_executable(yyjson_bench_read bench_read.cpp)
@@ -94,6 +85,20 @@ if(CPPYYJSON_BUILD_BENCH)
       ${target}
       SYSTEM BEFORE PRIVATE "$<BUILD_INTERFACE:${YYJSON_INCLUDE_DIRECTORIES}>"
                             "${PROJECT_SOURCE_DIR}/include")
+  endforeach()
+
+  # The benchmark sources are shared between the cpp-yyjson and the upstream
+  # yyjson executables, so a flag given to only one side would land on the
+  # measured code itself and show up as a difference between the libraries.
+  # LTO is turned on for the yyjson side as well even though the prebuilt yyjson
+  # cannot take part in it; both libraries keep the flags they are shipped with,
+  # which is the comparison the benchmarks are about.
+  foreach(target "${PROJECT_NAME}_bench_read" "${PROJECT_NAME}_bench_write"
+                 yyjson_bench_read yyjson_bench_write)
+    cpp_yyjson_enable_lto(${target})
+    if(NOT MSVC AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64)$")
+      target_compile_options(${target} PRIVATE -march=x86-64-v3)
+    endif()
   endforeach()
 endif()
 
