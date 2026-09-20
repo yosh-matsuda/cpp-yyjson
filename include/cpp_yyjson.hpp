@@ -1026,6 +1026,22 @@ namespace yyjson
                 std::ranges::input_range<Range> && create_value_callable<std::ranges::range_value_t<Range>> &&
                 (!create_primitive_callable<Range>) && (!convertible_to_create_array_callable<Range>);
 
+            // The types `set_value` stores straight into the value it is handed.  Reserving the
+            // elements of an array up front pays off only for these: anything else is built by
+            // `create_value`, which allocates a value of its own, so the reserved element ends up
+            // holding a copy of its header while the original is left behind.  That is one wasted
+            // value per element, and for an array of tuples it is a fifth of the document.
+            template <typename T>
+            concept set_value_in_place =
+                std::same_as<T, std::nullptr_t> || std::same_as<T, bool> || std::signed_integral<T> ||
+                std::unsigned_integral<T> || std::floating_point<T> || std::same_as<T, const char*> ||
+                std::same_as<T, std::string_view> || std::same_as<T, std::string>;
+
+            template <typename Range>
+            concept reserved_create_value_range =
+                std::ranges::sized_range<Range> &&
+                set_value_in_place<std::remove_cvref_t<std::ranges::range_reference_t<Range>>>;
+
             template <typename Range>
             concept mutable_value_range =
                 std::ranges::input_range<Range> && base_of_value<std::ranges::range_value_t<Range>> &&
@@ -1210,7 +1226,7 @@ namespace yyjson
                     {
                         return yyjson_mut_arr_with_reflected_objects(std::forward<Range>(range), args...);
                     }
-                    else if constexpr (std::ranges::sized_range<Range>)
+                    else if constexpr (reserved_create_value_range<Range>)
                     {
                         return yyjson_mut_arr_with_range(std::forward<Range>(range), args...);
                     }
