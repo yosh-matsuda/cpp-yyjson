@@ -537,13 +537,13 @@ void read_cpp_yyjson(benchmark::State& state)
     {
         auto counter = json_count();
         auto stats = json_stats();
-        auto start = std::chrono::high_resolution_clock::now();
+        auto start = std::chrono::steady_clock::now();
         {
             auto v = read(json);
             std::tie(counter, stats) = iterate_all_cpp_yyjson(v);
         }
         state.SetIterationTime(
-            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
+            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
             state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
@@ -563,13 +563,13 @@ void read_cpp_yyjson_insitu(benchmark::State& state)
         auto counter = json_count();
         auto stats = json_stats();
         auto json_insitu = json + std::string(YYJSON_PADDING_SIZE, '\0');
-        auto start = std::chrono::high_resolution_clock::now();
+        auto start = std::chrono::steady_clock::now();
         {
             auto v = read(json_insitu, json.size(), ReadFlag::ReadInsitu);
             std::tie(counter, stats) = iterate_all_cpp_yyjson(v);
         }
         state.SetIterationTime(
-            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
+            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
             state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
@@ -588,14 +588,14 @@ void read_cpp_yyjson_insitu_copy(benchmark::State& state)
     {
         auto counter = json_count();
         auto stats = json_stats();
-        auto start = std::chrono::high_resolution_clock::now();
+        auto start = std::chrono::steady_clock::now();
         {
             auto json_insitu = json + std::string(YYJSON_PADDING_SIZE, '\0');
             auto v = read(json_insitu, json.size(), ReadFlag::ReadInsitu);
             std::tie(counter, stats) = iterate_all_cpp_yyjson(v);
         }
         state.SetIterationTime(
-            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
+            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
             state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
@@ -615,13 +615,13 @@ void read_cpp_yyjson_single(benchmark::State& state)
     {
         auto counter = json_count();
         auto stats = json_stats();
-        auto start = std::chrono::high_resolution_clock::now();
+        auto start = std::chrono::steady_clock::now();
         {
             auto v = read(json, alloc);
             std::tie(counter, stats) = iterate_all_cpp_yyjson(v);
         }
         state.SetIterationTime(
-            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
+            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
             state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
@@ -642,13 +642,13 @@ void read_cpp_yyjson_insitu_single(benchmark::State& state)
         auto counter = json_count();
         auto stats = json_stats();
         auto json_insitu = json + std::string(YYJSON_PADDING_SIZE, '\0');
-        auto start = std::chrono::high_resolution_clock::now();
+        auto start = std::chrono::steady_clock::now();
         {
             auto v = read(json_insitu, json.size(), alloc, ReadFlag::ReadInsitu);
             std::tie(counter, stats) = iterate_all_cpp_yyjson(v);
         }
         state.SetIterationTime(
-            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
+            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
             state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
@@ -668,14 +668,14 @@ void read_cpp_yyjson_insitu_single_copy(benchmark::State& state)
     {
         auto counter = json_count();
         auto stats = json_stats();
-        auto start = std::chrono::high_resolution_clock::now();
+        auto start = std::chrono::steady_clock::now();
         {
             auto json_insitu = json + std::string(YYJSON_PADDING_SIZE, '\0');
             auto v = read(json_insitu, json.size(), alloc, ReadFlag::ReadInsitu);
             std::tie(counter, stats) = iterate_all_cpp_yyjson(v);
         }
         state.SetIterationTime(
-            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
+            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
             state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
@@ -692,7 +692,7 @@ void read_c_yyjson(benchmark::State& state)
     {
         auto counter = json_count();
         auto stats = json_stats();
-        auto start = std::chrono::high_resolution_clock::now();
+        auto start = std::chrono::steady_clock::now();
         {
             auto* doc = yyjson_read(json.c_str(), json.size(), YYJSON_READ_NOFLAG);
             auto* v = yyjson_doc_get_root(doc);
@@ -700,7 +700,7 @@ void read_c_yyjson(benchmark::State& state)
             yyjson_doc_free(doc);
         }
         state.SetIterationTime(
-            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
+            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
             state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
@@ -719,7 +719,7 @@ void read_c_yyjson_insitu(benchmark::State& state)
         auto counter = json_count();
         auto stats = json_stats();
         auto json_insitu = json + std::string(YYJSON_PADDING_SIZE, '\0');
-        auto start = std::chrono::high_resolution_clock::now();
+        auto start = std::chrono::steady_clock::now();
         {
             auto* doc = yyjson_read_opts(json_insitu.data(), json.size(), YYJSON_READ_INSITU, nullptr, nullptr);
             auto* v = yyjson_doc_get_root(doc);
@@ -727,7 +727,7 @@ void read_c_yyjson_insitu(benchmark::State& state)
             yyjson_doc_free(doc);
         }
         state.SetIterationTime(
-            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
+            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
             state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
@@ -745,7 +745,7 @@ void read_c_yyjson_insitu_copy(benchmark::State& state)
     {
         auto counter = json_count();
         auto stats = json_stats();
-        auto start = std::chrono::high_resolution_clock::now();
+        auto start = std::chrono::steady_clock::now();
         {
             auto json_insitu = json + std::string(YYJSON_PADDING_SIZE, '\0');
             auto* doc = yyjson_read_opts(json_insitu.data(), json.size(), YYJSON_READ_INSITU, nullptr, nullptr);
@@ -754,7 +754,7 @@ void read_c_yyjson_insitu_copy(benchmark::State& state)
             yyjson_doc_free(doc);
         }
         state.SetIterationTime(
-            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
+            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
             state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
@@ -775,7 +775,7 @@ void read_c_yyjson_single(benchmark::State& state)
     {
         auto counter = json_count();
         auto stats = json_stats();
-        auto start = std::chrono::high_resolution_clock::now();
+        auto start = std::chrono::steady_clock::now();
         {
             auto* doc =
                 yyjson_read_opts(const_cast<char*>(json.c_str()), json.size(), YYJSON_READ_NOFLAG, &alc, nullptr);
@@ -784,7 +784,7 @@ void read_c_yyjson_single(benchmark::State& state)
             yyjson_doc_free(doc);
         }
         state.SetIterationTime(
-            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
+            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
             state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
@@ -806,7 +806,7 @@ void read_c_yyjson_insitu_single(benchmark::State& state)
         auto counter = json_count();
         auto stats = json_stats();
         auto json_insitu = json + std::string(YYJSON_PADDING_SIZE, '\0');
-        auto start = std::chrono::high_resolution_clock::now();
+        auto start = std::chrono::steady_clock::now();
         {
             auto* doc = yyjson_read_opts(json_insitu.data(), json.size(), YYJSON_READ_INSITU, &alc, nullptr);
             auto* v = yyjson_doc_get_root(doc);
@@ -814,7 +814,7 @@ void read_c_yyjson_insitu_single(benchmark::State& state)
             yyjson_doc_free(doc);
         }
         state.SetIterationTime(
-            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
+            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
             state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
@@ -835,7 +835,7 @@ void read_c_yyjson_insitu_single_copy(benchmark::State& state)
     {
         auto counter = json_count();
         auto stats = json_stats();
-        auto start = std::chrono::high_resolution_clock::now();
+        auto start = std::chrono::steady_clock::now();
         {
             auto json_insitu = json + std::string(YYJSON_PADDING_SIZE, '\0');
             auto* doc = yyjson_read_opts(json_insitu.data(), json.size(), YYJSON_READ_INSITU, &alc, nullptr);
@@ -844,7 +844,7 @@ void read_c_yyjson_insitu_single_copy(benchmark::State& state)
             yyjson_doc_free(doc);
         }
         state.SetIterationTime(
-            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
+            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
             state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
@@ -864,14 +864,14 @@ void read_rapidjson(benchmark::State& state)
     {
         auto counter = json_count();
         auto stats = json_stats();
-        auto start = std::chrono::high_resolution_clock::now();
+        auto start = std::chrono::steady_clock::now();
         {
             Document d;
             d.Parse(json.c_str());
             std::tie(counter, stats) = iterate_all_rapidjson(d);
         }
         state.SetIterationTime(
-            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
+            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
             state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
@@ -891,14 +891,14 @@ void read_rapidjson_insitu(benchmark::State& state)
         auto counter = json_count();
         auto stats = json_stats();
         auto json_insitu = json + std::string(YYJSON_PADDING_SIZE, '\0');
-        auto start = std::chrono::high_resolution_clock::now();
+        auto start = std::chrono::steady_clock::now();
         {
             Document d;
             d.ParseInsitu(json_insitu.data());
             std::tie(counter, stats) = iterate_all_rapidjson(d);
         }
         state.SetIterationTime(
-            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
+            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
             state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
@@ -917,7 +917,7 @@ void read_rapidjson_insitu_copy(benchmark::State& state)
     {
         auto counter = json_count();
         auto stats = json_stats();
-        auto start = std::chrono::high_resolution_clock::now();
+        auto start = std::chrono::steady_clock::now();
         {
             auto json_insitu = json + std::string(YYJSON_PADDING_SIZE, '\0');
             Document d;
@@ -925,7 +925,7 @@ void read_rapidjson_insitu_copy(benchmark::State& state)
             std::tie(counter, stats) = iterate_all_rapidjson(d);
         }
         state.SetIterationTime(
-            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
+            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
             state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
@@ -953,7 +953,7 @@ void read_rapidjson_single(benchmark::State& state)
     {
         auto counter = json_count();
         auto stats = json_stats();
-        auto start = std::chrono::high_resolution_clock::now();
+        auto start = std::chrono::steady_clock::now();
         {
             DocumentType d(&value_allocator, parse_buffer.size(), &parse_allocator);
             d.Parse(json.c_str());
@@ -962,7 +962,7 @@ void read_rapidjson_single(benchmark::State& state)
         value_allocator.Clear();
         parse_allocator.Clear();
         state.SetIterationTime(
-            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
+            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
             state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
@@ -991,7 +991,7 @@ void read_rapidjson_insitu_single(benchmark::State& state)
         auto counter = json_count();
         auto stats = json_stats();
         auto json_insitu = json + std::string(YYJSON_PADDING_SIZE, '\0');
-        auto start = std::chrono::high_resolution_clock::now();
+        auto start = std::chrono::steady_clock::now();
         {
             DocumentType d(&value_allocator, parse_buffer.size(), &parse_allocator);
             d.ParseInsitu(json_insitu.data());
@@ -1000,7 +1000,7 @@ void read_rapidjson_insitu_single(benchmark::State& state)
         value_allocator.Clear();
         parse_allocator.Clear();
         state.SetIterationTime(
-            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
+            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
             state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
@@ -1028,7 +1028,7 @@ void read_rapidjson_insitu_single_copy(benchmark::State& state)
     {
         auto counter = json_count();
         auto stats = json_stats();
-        auto start = std::chrono::high_resolution_clock::now();
+        auto start = std::chrono::steady_clock::now();
         {
             auto json_insitu = json + std::string(YYJSON_PADDING_SIZE, '\0');
             DocumentType d(&value_allocator, parse_buffer.size(), &parse_allocator);
@@ -1038,7 +1038,7 @@ void read_rapidjson_insitu_single_copy(benchmark::State& state)
         value_allocator.Clear();
         parse_allocator.Clear();
         state.SetIterationTime(
-            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
+            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
             state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
@@ -1057,14 +1057,14 @@ void read_simdjson_dom(benchmark::State& state)
     {
         auto counter = json_count();
         auto stats = json_stats();
-        auto start = std::chrono::high_resolution_clock::now();
+        auto start = std::chrono::steady_clock::now();
         {
             dom::parser parser;
             auto v = parser.parse(json);
             std::tie(counter, stats) = iterate_all_dom_simdjson(v);
         }
         state.SetIterationTime(
-            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
+            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
             state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
@@ -1084,14 +1084,14 @@ void read_simdjson_dom_pad(benchmark::State& state)
         auto counter = json_count();
         auto stats = json_stats();
         auto json_insitu = padded_string(json);
-        auto start = std::chrono::high_resolution_clock::now();
+        auto start = std::chrono::steady_clock::now();
         {
             dom::parser parser;
             auto v = parser.parse(json_insitu);
             std::tie(counter, stats) = iterate_all_dom_simdjson(v);
         }
         state.SetIterationTime(
-            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
+            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
             state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
@@ -1110,7 +1110,7 @@ void read_simdjson_dom_pad_copy(benchmark::State& state)
     {
         auto counter = json_count();
         auto stats = json_stats();
-        auto start = std::chrono::high_resolution_clock::now();
+        auto start = std::chrono::steady_clock::now();
         {
             auto json_insitu = padded_string(json);
             dom::parser parser;
@@ -1118,7 +1118,7 @@ void read_simdjson_dom_pad_copy(benchmark::State& state)
             std::tie(counter, stats) = iterate_all_dom_simdjson(v);
         }
         state.SetIterationTime(
-            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
+            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
             state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
@@ -1138,13 +1138,13 @@ void read_simdjson_dom_single(benchmark::State& state)
     {
         auto counter = json_count();
         auto stats = json_stats();
-        auto start = std::chrono::high_resolution_clock::now();
+        auto start = std::chrono::steady_clock::now();
         {
             auto v = parser.parse(json);
             std::tie(counter, stats) = iterate_all_dom_simdjson(v);
         }
         state.SetIterationTime(
-            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
+            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
             state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
@@ -1165,13 +1165,13 @@ void read_simdjson_dom_pad_single(benchmark::State& state)
         auto counter = json_count();
         auto stats = json_stats();
         auto json_insitu = padded_string(json);
-        auto start = std::chrono::high_resolution_clock::now();
+        auto start = std::chrono::steady_clock::now();
         {
             auto v = parser.parse(json_insitu);
             std::tie(counter, stats) = iterate_all_dom_simdjson(v);
         }
         state.SetIterationTime(
-            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
+            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
             state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
@@ -1192,14 +1192,14 @@ void read_simdjson_dom_pad_single_copy(benchmark::State& state)
     {
         auto counter = json_count();
         auto stats = json_stats();
-        auto start = std::chrono::high_resolution_clock::now();
+        auto start = std::chrono::steady_clock::now();
         {
             json_insitu = json;
             auto v = parser.parse(json_insitu);
             std::tie(counter, stats) = iterate_all_dom_simdjson(v);
         }
         state.SetIterationTime(
-            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
+            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
             state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
@@ -1219,14 +1219,14 @@ void read_simdjson_ond_pad(benchmark::State& state)
         auto counter = json_count();
         auto stats = json_stats();
         auto json_insitu = padded_string(json);
-        auto start = std::chrono::high_resolution_clock::now();
+        auto start = std::chrono::steady_clock::now();
         {
             ondemand::parser parser;
             ondemand::value v = parser.iterate(json_insitu);
             std::tie(counter, stats) = iterate_all_ond_simdjson(v);
         }
         state.SetIterationTime(
-            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
+            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
             state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
@@ -1245,7 +1245,7 @@ void read_simdjson_ond_pad_copy(benchmark::State& state)
     {
         auto counter = json_count();
         auto stats = json_stats();
-        auto start = std::chrono::high_resolution_clock::now();
+        auto start = std::chrono::steady_clock::now();
         {
             auto json_insitu = padded_string(json);
             ondemand::parser parser;
@@ -1253,7 +1253,7 @@ void read_simdjson_ond_pad_copy(benchmark::State& state)
             std::tie(counter, stats) = iterate_all_ond_simdjson(v);
         }
         state.SetIterationTime(
-            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
+            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
             state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
@@ -1274,13 +1274,13 @@ void read_simdjson_ond_pad_single(benchmark::State& state)
         auto counter = json_count();
         auto stats = json_stats();
         auto json_insitu = padded_string(json);
-        auto start = std::chrono::high_resolution_clock::now();
+        auto start = std::chrono::steady_clock::now();
         {
             ondemand::value v = parser.iterate(json_insitu);
             std::tie(counter, stats) = iterate_all_ond_simdjson(v);
         }
         state.SetIterationTime(
-            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
+            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
             state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
@@ -1301,14 +1301,14 @@ void read_simdjson_ond_pad_single_copy(benchmark::State& state)
     {
         auto counter = json_count();
         auto stats = json_stats();
-        auto start = std::chrono::high_resolution_clock::now();
+        auto start = std::chrono::steady_clock::now();
         {
             json_insitu = json;
             ondemand::value v = parser.iterate(json_insitu);
             std::tie(counter, stats) = iterate_all_ond_simdjson(v);
         }
         state.SetIterationTime(
-            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start)
+            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - start)
                 .count());
         if (counter != std::get<1>(json_files[state.range(0)]))
             state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
