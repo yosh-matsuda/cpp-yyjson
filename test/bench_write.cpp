@@ -750,16 +750,16 @@ void write_nlohmann_array_double_append(benchmark::State& state)
 void write_c_yyjson_object_int64(benchmark::State& state)
 {
     std::iota(vec_int64.begin(), vec_int64.end(), 0);
+    std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return std::format("{}", n); });
     auto validated = false;
     for (auto _ : state)
     {
         yyjson_mut_doc* doc = yyjson_mut_doc_new(NULL);
         auto root = yyjson_mut_obj(doc);
-        for (auto n : vec_int64)
+        for (std::size_t i = 0; i < vec_int64.size(); ++i)
         {
-            auto key_str = std::format("{}", n);
-            auto key = yyjson_mut_strncpy(doc, key_str.c_str(), key_str.size());
-            auto val = yyjson_mut_sint(doc, n);
+            auto key = yyjson_mut_strn(doc, vec_string[i].c_str(), vec_string[i].size());
+            auto val = yyjson_mut_sint(doc, vec_int64[i]);
             yyjson_mut_obj_add(root, key, val);
         }
         yyjson_mut_doc_set_root(doc, root);
@@ -780,11 +780,12 @@ void write_cpp_yyjson_object_int64(benchmark::State& state)
 {
     using namespace yyjson;
     std::iota(vec_int64.begin(), vec_int64.end(), 0);
+    std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return std::format("{}", n); });
     auto validated = false;
     for (auto _ : state)
     {
         auto object = yyjson::object();
-        for (auto n : vec_int64) object.emplace(std::format("{}", n), n);
+        for (std::size_t i = 0; i < vec_int64.size(); ++i) object.emplace(vec_string[i], vec_int64[i]);
         auto result = object.write();
         if (!validate_json_once(state, validated, result, json_root_type::object))
         {
@@ -797,13 +798,15 @@ void write_rapidjson_object_int64(benchmark::State& state)
 {
     using namespace rapidjson;
     std::iota(vec_int64.begin(), vec_int64.end(), 0);
+    std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return std::format("{}", n); });
     auto validated = false;
     for (auto _ : state)
     {
         Document doc;
         doc.SetObject();
-        for (auto n : vec_int64)
-            doc.AddMember(Value(std::format("{}", n).c_str(), doc.GetAllocator()).Move(), n, doc.GetAllocator());
+        for (std::size_t i = 0; i < vec_int64.size(); ++i)
+            doc.AddMember(Value(StringRef(vec_string[i].c_str(), vec_string[i].size())).Move(), vec_int64[i],
+                          doc.GetAllocator());
 
         StringBuffer buffer;
         Writer<StringBuffer> writer(buffer);
@@ -821,11 +824,12 @@ void write_nlohmann_object_int64(benchmark::State& state)
 {
     using namespace nlohmann;
     std::iota(vec_int64.begin(), vec_int64.end(), 0);
+    std::ranges::transform(vec_int64, vec_string.begin(), [](const auto n) { return std::format("{}", n); });
     auto validated = false;
     for (auto _ : state)
     {
         auto object = json();
-        for (auto n : vec_int64) object[std::format("{}", n)] = n;
+        for (std::size_t i = 0; i < vec_int64.size(); ++i) object[vec_string[i]] = vec_int64[i];
         auto result = object.dump();
         if (!validate_json_once(state, validated, result, json_root_type::object))
         {
@@ -837,16 +841,16 @@ void write_nlohmann_object_int64(benchmark::State& state)
 void write_c_yyjson_object_double(benchmark::State& state)
 {
     std::iota(vec_double.begin(), vec_double.end(), 0);
+    std::ranges::transform(vec_double, vec_string.begin(), [](const auto n) { return std::format("{}", n); });
     auto validated = false;
     for (auto _ : state)
     {
         yyjson_mut_doc* doc = yyjson_mut_doc_new(NULL);
         auto root = yyjson_mut_obj(doc);
-        for (auto n : vec_double)
+        for (std::size_t i = 0; i < vec_double.size(); ++i)
         {
-            auto key_str = std::format("{}", n);
-            auto key = yyjson_mut_strncpy(doc, key_str.c_str(), key_str.size());
-            auto val = yyjson_mut_real(doc, n);
+            auto key = yyjson_mut_strn(doc, vec_string[i].c_str(), vec_string[i].size());
+            auto val = yyjson_mut_real(doc, vec_double[i]);
             yyjson_mut_obj_add(root, key, val);
         }
         yyjson_mut_doc_set_root(doc, root);
@@ -867,11 +871,12 @@ void write_cpp_yyjson_object_double(benchmark::State& state)
 {
     using namespace yyjson;
     std::iota(vec_double.begin(), vec_double.end(), 0);
+    std::ranges::transform(vec_double, vec_string.begin(), [](const auto n) { return std::format("{}", n); });
     auto validated = false;
     for (auto _ : state)
     {
         auto object = yyjson::object();
-        for (auto n : vec_double) object.emplace(std::format("{}", n), n);
+        for (std::size_t i = 0; i < vec_double.size(); ++i) object.emplace(vec_string[i], vec_double[i]);
         auto result = object.write();
         if (!validate_json_once(state, validated, result, json_root_type::object))
         {
@@ -884,13 +889,15 @@ void write_rapidjson_object_double(benchmark::State& state)
 {
     using namespace rapidjson;
     std::iota(vec_double.begin(), vec_double.end(), 0);
+    std::ranges::transform(vec_double, vec_string.begin(), [](const auto n) { return std::format("{}", n); });
     auto validated = false;
     for (auto _ : state)
     {
         Document doc;
         doc.SetObject();
-        for (auto n : vec_double)
-            doc.AddMember(Value(std::format("{}", n).c_str(), doc.GetAllocator()).Move(), n, doc.GetAllocator());
+        for (std::size_t i = 0; i < vec_double.size(); ++i)
+            doc.AddMember(Value(StringRef(vec_string[i].c_str(), vec_string[i].size())).Move(), vec_double[i],
+                          doc.GetAllocator());
 
         StringBuffer buffer;
         Writer<StringBuffer> writer(buffer);
@@ -908,13 +915,13 @@ void write_nlohmann_object_double(benchmark::State& state)
 {
     using namespace nlohmann;
     std::iota(vec_double.begin(), vec_double.end(), 0);
+    std::ranges::transform(vec_double, vec_string.begin(), [](const auto n) { return std::format("{}", n); });
     auto validated = false;
     for (auto _ : state)
     {
         auto object = json();
-        for (auto n : vec_double) object[std::format("{}", n)] = n;
-        auto result = object.dump();
-        if (!validate_json_once(state, validated, result, json_root_type::object))
+        for (std::size_t i = 0; i < vec_double.size(); ++i) object[vec_string[i]] = vec_double[i];
+        auto result = object.dump();        if (!validate_json_once(state, validated, result, json_root_type::object))
         {
             break;
         }
