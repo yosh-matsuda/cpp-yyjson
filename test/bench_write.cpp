@@ -76,8 +76,9 @@ void write_c_yyjson_array_int64(benchmark::State& state)
         yyjson_mut_doc* doc = yyjson_mut_doc_new(NULL);
         auto root = yyjson_mut_arr_with_sint64(doc, vec_int64.data(), vec_int64.size());
         yyjson_mut_doc_set_root(doc, root);
-        const char* json = yyjson_mut_write(doc, 0, NULL);
-        auto result = std::string_view(json);
+        std::size_t json_len = 0;
+        const char* json = yyjson_mut_write(doc, 0, &json_len);
+        auto result = std::string_view(json, json_len);
         if (!validate_json_once(state, validated, result, json_root_type::array))
         {
             free(const_cast<void*>(static_cast<const void*>(json)));
@@ -169,8 +170,9 @@ void write_c_yyjson_array_double(benchmark::State& state)
         yyjson_mut_doc* doc = yyjson_mut_doc_new(NULL);
         auto root = yyjson_mut_arr_with_double(doc, vec_double.data(), vec_double.size());
         yyjson_mut_doc_set_root(doc, root);
-        const char* json = yyjson_mut_write(doc, 0, NULL);
-        auto result = std::string_view(json);
+        std::size_t json_len = 0;
+        const char* json = yyjson_mut_write(doc, 0, &json_len);
+        auto result = std::string_view(json, json_len);
         if (!validate_json_once(state, validated, result, json_root_type::array))
         {
             free(const_cast<void*>(static_cast<const void*>(json)));
@@ -265,8 +267,9 @@ void write_c_yyjson_array_string(benchmark::State& state)
         auto root = yyjson_mut_arr(doc);
         for (const auto& s : vec_string) yyjson_mut_arr_add_strn(doc, root, s.c_str(), s.size());
         yyjson_mut_doc_set_root(doc, root);
-        const char* json = yyjson_mut_write(doc, 0, NULL);
-        auto result = std::string_view(json);
+        std::size_t json_len = 0;
+        const char* json = yyjson_mut_write(doc, 0, &json_len);
+        auto result = std::string_view(json, json_len);
         if (!validate_json_once(state, validated, result, json_root_type::array))
         {
             free(const_cast<void*>(static_cast<const void*>(json)));
@@ -348,8 +351,9 @@ void write_c_yyjson_array_string_copy(benchmark::State& state)
         auto root = yyjson_mut_arr(doc);
         for (const auto& s : vec_string) yyjson_mut_arr_add_strncpy(doc, root, s.c_str(), s.size());
         yyjson_mut_doc_set_root(doc, root);
-        const char* json = yyjson_mut_write(doc, 0, NULL);
-        auto result = std::string_view(json);
+        std::size_t json_len = 0;
+        const char* json = yyjson_mut_write(doc, 0, &json_len);
+        auto result = std::string_view(json, json_len);
         if (!validate_json_once(state, validated, result, json_root_type::array))
         {
             free(const_cast<void*>(static_cast<const void*>(json)));
@@ -445,8 +449,9 @@ void write_c_yyjson_array_tuple(benchmark::State& state)
             yyjson_mut_arr_add_strn(doc, arr, std::get<2>(t).c_str(), std::get<2>(t).size());
         }
         yyjson_mut_doc_set_root(doc, root);
-        const char* json = yyjson_mut_write(doc, 0, NULL);
-        auto result = std::string_view(json);
+        std::size_t json_len = 0;
+        const char* json = yyjson_mut_write(doc, 0, &json_len);
+        auto result = std::string_view(json, json_len);
         if (!validate_json_once(state, validated, result, json_root_type::array))
         {
             free(const_cast<void*>(static_cast<const void*>(json)));
@@ -554,8 +559,9 @@ void write_c_yyjson_array_object(benchmark::State& state)
             yyjson_mut_obj_add_strn(doc, obj, "k", t.k.c_str(), t.k.size());
         }
         yyjson_mut_doc_set_root(doc, root);
-        const char* json = yyjson_mut_write(doc, 0, NULL);
-        auto result = std::string_view(json);
+        std::size_t json_len = 0;
+        const char* json = yyjson_mut_write(doc, 0, &json_len);
+        auto result = std::string_view(json, json_len);
         if (!validate_json_once(state, validated, result, json_root_type::array))
         {
             free(const_cast<void*>(static_cast<const void*>(json)));
@@ -663,8 +669,9 @@ void write_c_yyjson_array_double_append(benchmark::State& state)
         auto root = yyjson_mut_arr(doc);
         for (const auto n : vec_double) yyjson_mut_arr_add_real(doc, root, 1.5 * n);
         yyjson_mut_doc_set_root(doc, root);
-        const char* json = yyjson_mut_write(doc, 0, NULL);
-        auto result = std::string_view(json);
+        std::size_t json_len = 0;
+        const char* json = yyjson_mut_write(doc, 0, &json_len);
+        auto result = std::string_view(json, json_len);
         if (!validate_json_once(state, validated, result, json_root_type::array))
         {
             free(const_cast<void*>(static_cast<const void*>(json)));
@@ -763,8 +770,9 @@ void write_c_yyjson_object_int64(benchmark::State& state)
             yyjson_mut_obj_add(root, key, val);
         }
         yyjson_mut_doc_set_root(doc, root);
-        const char* json = yyjson_mut_write(doc, 0, NULL);
-        auto result = std::string_view(json);
+        std::size_t json_len = 0;
+        const char* json = yyjson_mut_write(doc, 0, &json_len);
+        auto result = std::string_view(json, json_len);
         if (!validate_json_once(state, validated, result, json_root_type::object))
         {
             free(const_cast<void*>(static_cast<const void*>(json)));
@@ -854,8 +862,9 @@ void write_c_yyjson_object_double(benchmark::State& state)
             yyjson_mut_obj_add(root, key, val);
         }
         yyjson_mut_doc_set_root(doc, root);
-        const char* json = yyjson_mut_write(doc, 0, NULL);
-        auto result = std::string_view(json);
+        std::size_t json_len = 0;
+        const char* json = yyjson_mut_write(doc, 0, &json_len);
+        auto result = std::string_view(json, json_len);
         if (!validate_json_once(state, validated, result, json_root_type::object))
         {
             free(const_cast<void*>(static_cast<const void*>(json)));
@@ -944,8 +953,9 @@ void write_c_yyjson_object_string(benchmark::State& state)
             yyjson_mut_obj_add(root, key, val);
         }
         yyjson_mut_doc_set_root(doc, root);
-        const char* json = yyjson_mut_write(doc, 0, NULL);
-        auto result = std::string_view(json);
+        std::size_t json_len = 0;
+        const char* json = yyjson_mut_write(doc, 0, &json_len);
+        auto result = std::string_view(json, json_len);
         if (!validate_json_once(state, validated, result, json_root_type::object))
         {
             free(const_cast<void*>(static_cast<const void*>(json)));
@@ -1021,8 +1031,9 @@ void write_c_yyjson_object_string_copy(benchmark::State& state)
             yyjson_mut_obj_add(root, key, val);
         }
         yyjson_mut_doc_set_root(doc, root);
-        const char* json = yyjson_mut_write(doc, 0, NULL);
-        auto result = std::string_view(json);
+        std::size_t json_len = 0;
+        const char* json = yyjson_mut_write(doc, 0, &json_len);
+        auto result = std::string_view(json, json_len);
         if (!validate_json_once(state, validated, result, json_root_type::object))
         {
             free(const_cast<void*>(static_cast<const void*>(json)));
