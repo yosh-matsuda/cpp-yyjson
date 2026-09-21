@@ -5,21 +5,8 @@
 #include <cpp_yyjson.hpp>
 #include <chrono>
 #include <format>
-#include <fstream>
-#include <streambuf>
 #include <string>
-
-auto read_file(std::string path)
-{
-    auto fstm = std::ifstream(path);
-    auto result = std::string();
-    fstm.seekg(0, std::ios::end);
-    result.reserve(fstm.tellg());
-    fstm.seekg(0, std::ios::beg);
-    result.assign((std::istreambuf_iterator<char>(fstm)), std::istreambuf_iterator<char>());
-
-    return result;
-}
+#include "bench_data.hpp"
 
 struct json_count
 {
@@ -58,7 +45,7 @@ struct json_stats
 auto json_stats::str() { return std::format("{}", yyjson::object(*this).write()); }
 
 auto json_files = std::array{
-    std::tuple<std::string, json_count, json_stats>{"./external/yyjson_benchmark/data/json/canada.json",
+    std::tuple<std::string, json_count, json_stats>{std::string(json_file_paths[0]),
                                                     {.cnt_array = 56045,
                                                      .cnt_object = 4,
                                                      .cnt_string = 4,
@@ -73,7 +60,7 @@ auto json_files = std::array{
                                                      .total_real = -1262274.108883936,
                                                      .total_true_cnt = 0,
                                                      .total_false_cnt = 0}},
-    std::tuple<std::string, json_count, json_stats>{"./external/yyjson_benchmark/data/json/citm_catalog.json",
+    std::tuple<std::string, json_count, json_stats>{std::string(json_file_paths[1]),
                                                     {.cnt_array = 10451,
                                                      .cnt_object = 10937,
                                                      .cnt_string = 735,
@@ -88,7 +75,7 @@ auto json_files = std::array{
                                                      .total_real = 0.0,
                                                      .total_true_cnt = 0,
                                                      .total_false_cnt = 0}},
-    std::tuple<std::string, json_count, json_stats>{"./external/yyjson_benchmark/data/json/fgo.json",
+    std::tuple<std::string, json_count, json_stats>{std::string(json_file_paths[2]),
                                                     {.cnt_array = 303375,
                                                      .cnt_object = 354372,
                                                      .cnt_string = 392465,
@@ -103,7 +90,7 @@ auto json_files = std::array{
                                                      .total_real = 7839.9683067770875,
                                                      .total_true_cnt = 2163,
                                                      .total_false_cnt = 13328}},
-    std::tuple<std::string, json_count, json_stats>{"./external/yyjson_benchmark/data/json/github_events.json",
+    std::tuple<std::string, json_count, json_stats>{std::string(json_file_paths[3]),
                                                     {.cnt_array = 19,
                                                      .cnt_object = 180,
                                                      .cnt_string = 752,
@@ -118,7 +105,7 @@ auto json_files = std::array{
                                                      .total_real = 0.0,
                                                      .total_true_cnt = 57,
                                                      .total_false_cnt = 7}},
-    std::tuple<std::string, json_count, json_stats>{"./external/yyjson_benchmark/data/json/gsoc-2018.json",
+    std::tuple<std::string, json_count, json_stats>{std::string(json_file_paths[4]),
                                                     {.cnt_array = 0,
                                                      .cnt_object = 3793,
                                                      .cnt_string = 15168,
@@ -133,7 +120,7 @@ auto json_files = std::array{
                                                      .total_real = 0.0,
                                                      .total_true_cnt = 0,
                                                      .total_false_cnt = 0}},
-    std::tuple<std::string, json_count, json_stats>{"./external/yyjson_benchmark/data/json/lottie.json",
+    std::tuple<std::string, json_count, json_stats>{std::string(json_file_paths[5]),
                                                     {.cnt_array = 8497,
                                                      .cnt_object = 6280,
                                                      .cnt_string = 3953,
@@ -148,7 +135,7 @@ auto json_files = std::array{
                                                      .total_real = 339017.47298054426,
                                                      .total_true_cnt = 290,
                                                      .total_false_cnt = 1}},
-    std::tuple<std::string, json_count, json_stats>{"./external/yyjson_benchmark/data/json/otfcc.json",
+    std::tuple<std::string, json_count, json_stats>{std::string(json_file_paths[6]),
                                                     {.cnt_array = 326947,
                                                      .cnt_object = 1939698,
                                                      .cnt_string = 72582,
@@ -163,7 +150,7 @@ auto json_files = std::array{
                                                      .total_real = 394962.37899780273,
                                                      .total_true_cnt = 1436024,
                                                      .total_false_cnt = 1210803}},
-    std::tuple<std::string, json_count, json_stats>{"./external/yyjson_benchmark/data/json/poet.json",
+    std::tuple<std::string, json_count, json_stats>{std::string(json_file_paths[7]),
                                                     {.cnt_array = 1,
                                                      .cnt_object = 8934,
                                                      .cnt_string = 26802,
@@ -178,7 +165,7 @@ auto json_files = std::array{
                                                      .total_real = 0.0,
                                                      .total_true_cnt = 0,
                                                      .total_false_cnt = 0}},
-    std::tuple<std::string, json_count, json_stats>{"./external/yyjson_benchmark/data/json/twitter.json",
+    std::tuple<std::string, json_count, json_stats>{std::string(json_file_paths[8]),
                                                     {.cnt_array = 1050,
                                                      .cnt_object = 1264,
                                                      .cnt_string = 4754,
@@ -193,7 +180,7 @@ auto json_files = std::array{
                                                      .total_real = 0.087,
                                                      .total_true_cnt = 345,
                                                      .total_false_cnt = 2446}},
-    std::tuple<std::string, json_count, json_stats>{"./external/yyjson_benchmark/data/json/twitterescaped.json",
+    std::tuple<std::string, json_count, json_stats>{std::string(json_file_paths[9]),
                                                     {.cnt_array = 1050,
                                                      .cnt_object = 1264,
                                                      .cnt_string = 4754,
