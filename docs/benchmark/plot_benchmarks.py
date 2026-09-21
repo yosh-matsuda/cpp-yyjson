@@ -174,6 +174,22 @@ WRITE_COLORS = {
     "nlohmann-json": "#f97316",
 }
 
+WRITE_POLICIES = {
+    "fresh": "New output buffer per write",
+    "reused": "Reused output buffer",
+}
+
+# benchmark name -> (output buffer policy, color key, label)
+WRITE_DATASET_VARIANTS = {
+    "write_cpp_yyjson_dataset": ("fresh", "cpp-yyjson", "cpp-yyjson"),
+    "write_cpp_yyjson_single_dataset": ("reused", "cpp-yyjson", "cpp-yyjson"),
+    "write_c_yyjson_dataset": ("fresh", "yyjson", "yyjson"),
+    "write_c_yyjson_single_dataset": ("reused", "yyjson", "yyjson"),
+    "write_rapidjson_dataset": ("fresh", "rapidjson", "rapidjson"),
+    "write_rapidjson_single_dataset": ("reused", "rapidjson", "rapidjson"),
+    "write_nlohmann_dataset": ("fresh", "nlohmann-json", "nlohmann-json"),
+}
+
 
 def clean_name(name: str) -> str:
     cleaned = name.removesuffix("_median")
@@ -285,11 +301,54 @@ def write_case(name: str) -> tuple[str, str] | None:
         return rest, "cpp-yyjson"
     if name.startswith("write_c_yyjson_"):
         return name.removeprefix("write_c_yyjson_"), "yyjson"
-    if name.startswith("write_rapidjson_"):
-        return name.removeprefix("write_rapidjson_"), "rapidjson"
-    if name.startswith("write_nlohmann_"):
-        return name.removeprefix("write_nlohmann_"), "nlohmann-json"
     return None
+
+
+WRITE_DATASET_PATTERN = re.compile(r"^(write_[A-Za-z0-9_]*dataset)/(\d+)$")
+
+
+def collect_write_dataset_charts(
+    times: dict[str, float],
+) -> dict[str, list[tuple[str, list[tuple[str, float, str]]]]]:
+    sections: dict[tuple[str, str], list[tuple[str, float, str]]] = defaultdict(list)
+    unknown_names: set[str] = set()
+    unknown_datasets: set[int] = set()
+
+    for name, value in times.items():
+        match = WRITE_DATASET_PATTERN.match(name)
+        if not match:
+            continue
+        benchmark_name = match.group(1)
+        dataset_index = int(match.group(2))
+        if benchmark_name not in WRITE_DATASET_VARIANTS:
+            unknown_names.add(benchmark_name)
+            continue
+        if dataset_index not in DATASET_NAMES:
+            unknown_datasets.add(dataset_index)
+            continue
+        policy, color_key, label = WRITE_DATASET_VARIANTS[benchmark_name]
+        sections[(DATASET_NAMES[dataset_index], policy)].append((label, value, color_key))
+
+    if unknown_names:
+        raise ValueError(
+            "unmapped write dataset benchmarks: " + ", ".join(sorted(unknown_names))
+        )
+    if unknown_datasets:
+        raise ValueError(
+            "unknown write dataset indexes: "
+            + ", ".join(str(index) for index in sorted(unknown_datasets))
+        )
+
+    charts: dict[str, list[tuple[str, list[tuple[str, float, str]]]]] = {}
+    for dataset_name in DATASET_NAMES.values():
+        groups = []
+        for policy, heading in WRITE_POLICIES.items():
+            rows = sections.get((dataset_name, policy), [])
+            if rows:
+                groups.append((heading, sorted(rows, key=lambda item: item[1])))
+        if groups:
+            charts[dataset_name] = groups
+    return charts
 
 
 def collect_write_charts(
@@ -299,6 +358,8 @@ def collect_write_charts(
     unknown_names: set[str] = set()
 
     for name, value in times.items():
+        if WRITE_DATASET_PATTERN.match(name):
+            continue
         parsed = write_case(name)
         if parsed is None:
             unknown_names.add(name)
@@ -427,6 +488,14 @@ def generate_charts(
 
     if write_json:
         write_times = load_median_times(write_json)
+        for dataset_name, groups in collect_write_dataset_charts(write_times).items():
+            output = output_dir / f"write_{safe_file_name(dataset_name)}_document.svg"
+            write_svg(
+                output,
+                f"Document serialization: {nice_title(dataset_name)}",
+                groups,
+                WRITE_COLORS,
+            )
         for scenario, groups in collect_write_charts(write_times).items():
             output = output_dir / f"write_{safe_file_name(scenario)}.svg"
             write_svg(
@@ -434,7 +503,7 @@ def generate_charts(
                 f"Write performance: {nice_title(scenario)}",
                 groups,
                 WRITE_COLORS,
-                min_rows=4,
+                min_rows=3,
             )
 
 
