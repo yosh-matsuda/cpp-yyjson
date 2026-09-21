@@ -2619,108 +2619,97 @@ namespace yyjson
                 using base = const_array_base<DocType>;
                 using base::base;
 
+                // A yyjson iterator addresses an element through the one in front of it, so the iterator for a
+                // value that has just been appended is the tail the array held beforehand, or the value itself
+                // once a single element closes the ring. Both are known before the append, so the array does
+                // not have to be read back once it has been written.
+                // XXX: pre is left unset, exactly as yyjson_mut_arr_iter_init leaves it.
+                [[nodiscard]] auto appended_iter(yyjson_mut_val* prev_tail, yyjson_mut_val* appended,
+                                                 std::size_t prev_size) const noexcept
+                {
+                    return yyjson_mut_arr_iter{prev_size, prev_size + 1, prev_size != 0 ? prev_tail : appended,
+                                               nullptr, base::val_};
+                }
                 template <create_value_callable T, copy_string_args... Ts>
-                void array_append_no_iter(T&& t, Ts... ts) noexcept
+                auto array_append_no_iter(T&& t, Ts... ts) noexcept
                 {
                     auto new_val = base::doc_.create_value(std::forward<T>(t), ts...);
                     [[maybe_unused]] auto success = yyjson_mut_arr_append(base::val_, new_val);
                     assert(success);
+                    return new_val;
                 }
                 template <create_value_callable T, copy_string_args... Ts>
                 auto array_append(T&& t, Ts... ts) noexcept
                 {
-                    auto prev = static_cast<yyjson_mut_val*>(base::val_->uni.ptr);
-                    array_append_no_iter(std::forward<T>(t), ts...);
-
-                    // XXX: last iterator is created from modifying begin().
-                    // XXX: DO NOT USE iter.pre since it is not set.
-                    auto iter = base::array_iter_begin();
-                    if (iter.max > 1)
-                    {
-                        iter.cur = prev;
-                        iter.idx = iter.max - 1;
-                    }
-
-                    return iter;
+                    auto* const prev_tail = static_cast<yyjson_mut_val*>(base::val_->uni.ptr);
+                    const auto prev_size = yyjson_mut_arr_size(base::val_);
+                    return appended_iter(prev_tail, array_append_no_iter(std::forward<T>(t), ts...), prev_size);
                 }
                 template <base_of_value T>
-                void array_append_no_iter(T&& json_value) noexcept
+                auto array_append_no_iter(T&& json_value) noexcept -> yyjson_mut_val*
                 {
                     if constexpr (!std::is_assignable_v<decltype(json_value.get_has_parent()), bool>)
                     {
                         // force copy
-                        [[maybe_unused]] auto success =
-                            yyjson_mut_arr_append(base::val_, base::doc_.copy_value(json_value));
+                        auto* new_val = base::doc_.copy_value(json_value);
+                        [[maybe_unused]] auto success = yyjson_mut_arr_append(base::val_, new_val);
                         assert(success);
+                        return new_val;
                     }
                     else if constexpr (std::is_rvalue_reference_v<T&&>)
                     {
                         // no copy; move
-                        [[maybe_unused]] auto success = yyjson_mut_arr_append(base::val_, json_value.val_);
+                        auto* new_val = json_value.val_;
+                        [[maybe_unused]] auto success = yyjson_mut_arr_append(base::val_, new_val);
                         assert(success);
                         if (base::doc_.ptrs != json_value.doc_.ptrs)
                             base::doc_.ptrs->children.emplace_back(std::forward<T>(json_value).doc_.ptrs);
+                        return new_val;
                     }
                     else
                     {
                         if (json_value.get_has_parent()) [[unlikely]]
                         {
                             // copy
-                            [[maybe_unused]] auto success =
-                                yyjson_mut_arr_append(base::val_, base::doc_.copy_value(json_value));
+                            auto* new_val = base::doc_.copy_value(json_value);
+                            [[maybe_unused]] auto success = yyjson_mut_arr_append(base::val_, new_val);
                             assert(success);
+                            return new_val;
                         }
                         else
                         {
                             // no copy
-                            [[maybe_unused]] auto success = yyjson_mut_arr_append(base::val_, json_value.val_);
+                            auto* new_val = json_value.val_;
+                            [[maybe_unused]] auto success = yyjson_mut_arr_append(base::val_, new_val);
                             assert(success);
                             json_value.get_has_parent() = true;
                             if (base::doc_.ptrs != json_value.doc_.ptrs)
                                 base::doc_.ptrs->children.emplace_back(std::forward<T>(json_value).doc_.ptrs);
+                            return new_val;
                         }
                     }
                 }
                 template <base_of_value T>
                 auto array_append(T&& json_value) noexcept
                 {
-                    auto prev = static_cast<yyjson_mut_val*>(base::val_->uni.ptr);
-                    array_append_no_iter(std::forward<T>(json_value));
-
-                    // XXX: last iterator is created from modifying begin().
-                    // XXX: DO NOT USE iter.pre since it is not set.
-                    auto iter = base::array_iter_begin();
-                    if (iter.max > 1)
-                    {
-                        iter.cur = prev;
-                        iter.idx = iter.max - 1;
-                    }
-
-                    return iter;
+                    auto* const prev_tail = static_cast<yyjson_mut_val*>(base::val_->uni.ptr);
+                    const auto prev_size = yyjson_mut_arr_size(base::val_);
+                    return appended_iter(prev_tail, array_append_no_iter(std::forward<T>(json_value)), prev_size);
                 }
                 template <reader::detail::base_of_value_ref T>
-                void array_append_no_iter(T&& json_value) noexcept
+                auto array_append_no_iter(T&& json_value) noexcept
                 {
                     auto val_copy = base::doc_.copy_value(json_value);
                     [[maybe_unused]] auto success = yyjson_mut_arr_append(base::val_, val_copy);
                     assert(success);
+                    return val_copy;
                 }
                 template <reader::detail::base_of_value_ref T>
                 auto array_append(T&& json_value) noexcept
                 {
-                    auto prev = static_cast<yyjson_mut_val*>(base::val_->uni.ptr);
-                    array_append_no_iter(std::forward<T>(json_value));
-
-                    // XXX: last iterator is created from modifying begin().
-                    // XXX: DO NOT USE iter.pre since it is not set.
-                    auto iter = base::array_iter_begin();
-                    if (iter.max > 1)
-                    {
-                        iter.cur = prev;
-                        iter.idx = iter.max - 1;
-                    }
-
-                    return iter;
+                    auto* const prev_tail = static_cast<yyjson_mut_val*>(base::val_->uni.ptr);
+                    const auto prev_size = yyjson_mut_arr_size(base::val_);
+                    return appended_iter(prev_tail, array_append_no_iter(std::forward<T>(json_value)), prev_size);
                 }
                 template <create_value_callable T, copy_string_args... Ts>
                 auto array_prepend(T&& t, Ts... ts) noexcept
@@ -3385,35 +3374,38 @@ namespace yyjson
                 using base = const_object_base<DocType>;
                 using base::base;
 
+                // As with arrays, the iterator for a freshly added member is the tail the object held
+                // beforehand, or the new key once a single member closes the ring. yyjson makes the key the
+                // tail, so that is what an append hands back. Nothing here reads the object after the write.
+                // XXX: pre is left unset, exactly as yyjson_mut_obj_iter_init leaves it.
+                [[nodiscard]] auto appended_iter(yyjson_mut_val* prev_tail, yyjson_mut_val* appended_key,
+                                                 std::size_t prev_size) const noexcept
+                {
+                    return yyjson_mut_obj_iter{prev_size, prev_size + 1, prev_size != 0 ? prev_tail : appended_key,
+                                               nullptr, base::val_};
+                }
                 template <typename Key, create_value_callable T, copy_string_args... Ts>
                 requires key_type<std::remove_cvref_t<Key&&>>
-                void object_append_no_iter(Key&& key, T&& t, Ts... ts) noexcept
+                auto object_append_no_iter(Key&& key, T&& t, Ts... ts) noexcept
                 {
                     const auto add_key = base::doc_.create_primitive(std::forward<Key>(key), ts...);
                     auto add_val = base::doc_.create_value(std::forward<T>(t), ts...);
                     [[maybe_unused]] auto success = yyjson_mut_obj_add(base::val_, add_key, add_val);
                     assert(success);
+                    return add_key;
                 }
                 template <typename Key, create_value_callable T, copy_string_args... Ts>
                 requires key_type<std::remove_cvref_t<Key&&>>
                 auto object_append(Key&& key, T&& t, Ts... ts) noexcept
                 {
-                    auto prev = static_cast<yyjson_mut_val*>(base::val_->uni.ptr);
-                    object_append_no_iter(std::forward<Key>(key), std::forward<T>(t), ts...);
-
-                    // XXX: last iterator is created from modifying begin().
-                    // XXX: DO NOT USE iter.pre since it is not set.
-                    auto iter = base::object_iter_begin();
-                    if (iter.max > 1)
-                    {
-                        iter.cur = prev;
-                        iter.idx = iter.max - 1;
-                    }
-
-                    return iter;
+                    auto* const prev_tail = static_cast<yyjson_mut_val*>(base::val_->uni.ptr);
+                    const auto prev_size = yyjson_mut_obj_size(base::val_);
+                    return appended_iter(
+                        prev_tail, object_append_no_iter(std::forward<Key>(key), std::forward<T>(t), ts...),
+                        prev_size);
                 }
                 template <typename Key, base_of_value T, copy_string_args... Ts>
-                void object_append_no_iter(Key&& key, T&& json_value, Ts... ts) noexcept
+                auto object_append_no_iter(Key&& key, T&& json_value, Ts... ts) noexcept
                 {
                     const auto add_key = base::doc_.create_primitive(std::forward<Key>(key), ts...);
 
@@ -3451,48 +3443,36 @@ namespace yyjson
                                 base::doc_.ptrs->children.emplace_back(std::forward<T>(json_value).doc_.ptrs);
                         }
                     }
+                    return add_key;
                 }
                 template <typename Key, base_of_value T, copy_string_args... Ts>
                 auto object_append(Key&& key, T&& json_value, Ts... ts) noexcept
                 {
-                    auto prev = static_cast<yyjson_mut_val*>(base::val_->uni.ptr);
-                    object_append_no_iter(std::forward<Key>(key), std::forward<T>(json_value), ts...);
-
-                    // XXX: last iterator is created from modifying begin().
-                    // XXX: DO NOT USE iter.pre since it is not set.
-                    auto iter = base::object_iter_begin();
-                    if (iter.max > 1)
-                    {
-                        iter.cur = prev;
-                        iter.idx = iter.max - 1;
-                    }
-
-                    return iter;
+                    auto* const prev_tail = static_cast<yyjson_mut_val*>(base::val_->uni.ptr);
+                    const auto prev_size = yyjson_mut_obj_size(base::val_);
+                    return appended_iter(
+                        prev_tail,
+                        object_append_no_iter(std::forward<Key>(key), std::forward<T>(json_value), ts...),
+                        prev_size);
                 }
                 template <typename Key, reader::detail::base_of_value_ref T, copy_string_args... Ts>
-                void object_append_no_iter(Key&& key, T&& json_value, Ts... ts) noexcept
+                auto object_append_no_iter(Key&& key, T&& json_value, Ts... ts) noexcept
                 {
                     const auto add_key = base::doc_.create_primitive(std::forward<Key>(key), ts...);
                     auto val_copy = base::doc_.copy_value(json_value);
                     [[maybe_unused]] auto success = yyjson_mut_obj_add(base::val_, add_key, val_copy);
                     assert(success);
+                    return add_key;
                 }
                 template <typename Key, reader::detail::base_of_value_ref T, copy_string_args... Ts>
                 auto object_append(Key&& key, T&& json_value, Ts... ts) noexcept
                 {
-                    auto prev = static_cast<yyjson_mut_val*>(base::val_->uni.ptr);
-                    object_append_no_iter(std::forward<Key>(key), std::forward<T>(json_value), ts...);
-
-                    // XXX: last iterator is created from modifying begin().
-                    // XXX: DO NOT USE iter.pre since it is not set.
-                    auto iter = base::object_iter_begin();
-                    if (iter.max > 1)
-                    {
-                        iter.cur = prev;
-                        iter.idx = iter.max - 1;
-                    }
-
-                    return iter;
+                    auto* const prev_tail = static_cast<yyjson_mut_val*>(base::val_->uni.ptr);
+                    const auto prev_size = yyjson_mut_obj_size(base::val_);
+                    return appended_iter(
+                        prev_tail,
+                        object_append_no_iter(std::forward<Key>(key), std::forward<T>(json_value), ts...),
+                        prev_size);
                 }
                 void object_erase(std::string_view key) noexcept
                 {
