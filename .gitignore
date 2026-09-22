@@ -275,3 +275,6 @@ __marimo__/
 .streamlit/secrets.toml
 
 test/*.json
+
+# Local, machine-specific agent skills
+.github/skills/
