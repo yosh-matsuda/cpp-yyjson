@@ -50,6 +50,16 @@ if(CPPYYJSON_BUILD_BENCH)
 
   # JSON libraries
   find_package(simdjson CONFIG REQUIRED)
+  # simdjson 4.6.4 exports SIMDJSON_DEVELOPMENT_CHECKS for every GCC/Clang build, not
+  # only for Debug (fixed upstream after that release), which leaves its API-misuse
+  # checks in the inlined On Demand code of the release benchmarks.
+  get_target_property(_simdjson_defs simdjson::simdjson
+                      INTERFACE_COMPILE_DEFINITIONS)
+  if(_simdjson_defs)
+    list(REMOVE_ITEM _simdjson_defs SIMDJSON_DEVELOPMENT_CHECKS)
+    set_target_properties(simdjson::simdjson PROPERTIES
+                          INTERFACE_COMPILE_DEFINITIONS "${_simdjson_defs}")
+  endif()
   find_package(RapidJSON CONFIG REQUIRED)
   find_package(nlohmann_json CONFIG REQUIRED)
 
