@@ -2,6 +2,7 @@
 #pragma once
 
 #include <array>
+#include <cstdlib>
 #include <fstream>
 #include <string>
 #include <string_view>
@@ -25,6 +26,21 @@ inline auto read_file(std::string path)
 
     return result;
 }
+
+// Puts glibc's allocator into the state of a process that has freed a large block before.
+// glibc raises its mmap and trim thresholds to the size of every mmapped block of up to
+// 32 MiB that is freed, and whether a new-allocator-per-parse benchmark returns its memory
+// to the kernel after each parse, and faults it in again on the next, depends on how that
+// size compares to the parse's own: a few hundred bytes more or less in whatever the
+// process freed first doubled some rows.  Freeing a 16 MiB block at startup settles the
+// question for every document whose blocks fit below it, as it is in any long-running
+// program.  The environment is left alone, and blocks above 32 MiB, which glibc always
+// maps afresh, still show what reusing an allocator saves on the largest documents.
+inline const bool glibc_thresholds_raised = [] {
+    void* volatile block = std::malloc(std::size_t{16} << 20);
+    std::free(block);
+    return true;
+}();
 
 inline constexpr auto json_file_paths = std::array<std::string_view, 10>{
     "./external/yyjson_benchmark/data/json/canada.json",
