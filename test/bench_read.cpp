@@ -651,13 +651,16 @@ void read_cpp_yyjson_insitu_single_copy(benchmark::State& state)
     using namespace yyjson;
     const auto json = read_file(std::get<0>(json_files[state.range(0)]));
     auto alloc = reader::pool_allocator(json, ReadFlag::ReadInsitu);
+    // The padded copy is reused the same way the simdjson rows reuse theirs, so that
+    // this section differs from the one above only in the reuse of parser memory.
+    auto json_insitu = json + std::string(YYJSON_PADDING_SIZE, '\0');
     for (auto _ : state)
     {
         auto counter = json_count();
         auto stats = json_stats();
         auto start = std::chrono::steady_clock::now();
         {
-            auto json_insitu = json + std::string(YYJSON_PADDING_SIZE, '\0');
+            json_insitu.assign(json).append(YYJSON_PADDING_SIZE, '\0');
             auto v = read(json_insitu, json.size(), alloc, ReadFlag::ReadInsitu);
             std::tie(counter, stats) = iterate_all_cpp_yyjson(v);
         }
@@ -818,13 +821,15 @@ void read_c_yyjson_insitu_single_copy(benchmark::State& state)
     auto buffer = std::vector<char>(yyjson_read_max_memory_usage(json.size(), YYJSON_READ_INSITU));
     yyjson_alc alc;
     yyjson_alc_pool_init(&alc, buffer.data(), buffer.size());
+    // Reused as in read_cpp_yyjson_insitu_single_copy.
+    auto json_insitu = json + std::string(YYJSON_PADDING_SIZE, '\0');
     for (auto _ : state)
     {
         auto counter = json_count();
         auto stats = json_stats();
         auto start = std::chrono::steady_clock::now();
         {
-            auto json_insitu = json + std::string(YYJSON_PADDING_SIZE, '\0');
+            json_insitu.assign(json).append(YYJSON_PADDING_SIZE, '\0');
             auto* doc = yyjson_read_opts(json_insitu.data(), json.size(), YYJSON_READ_INSITU, &alc, nullptr);
             auto* v = yyjson_doc_get_root(doc);
             std::tie(counter, stats) = iterate_all_c_yyjson(v);
@@ -932,7 +937,10 @@ void read_rapidjson_single(benchmark::State& state)
     // TODO: Is there a good way to determine the appropriate buffer size?
     const auto buffer_size = json.size() * 10;
     auto value_buffer = std::vector<char>(buffer_size);
-    auto parse_buffer = std::vector<char>(buffer_size);
+    // The pool allocator carves a chunk header out of the buffer it is given, so a stack
+    // capacity equal to the whole buffer does not fit and the allocator falls back to
+    // malloc on every parse, which is what reusing it is meant to avoid.
+    auto parse_buffer = std::vector<char>(buffer_size + 1024);
     auto value_allocator = MemoryPoolAllocator<>(value_buffer.data(), value_buffer.size());
     auto parse_allocator = MemoryPoolAllocator<>(parse_buffer.data(), parse_buffer.size());
 
@@ -942,7 +950,7 @@ void read_rapidjson_single(benchmark::State& state)
         auto stats = json_stats();
         auto start = std::chrono::steady_clock::now();
         {
-            DocumentType d(&value_allocator, parse_buffer.size(), &parse_allocator);
+            DocumentType d(&value_allocator, buffer_size, &parse_allocator);
             d.Parse(json.c_str());
             std::tie(counter, stats) = iterate_all_rapidjson(d);
         }
@@ -969,7 +977,8 @@ void read_rapidjson_insitu_single(benchmark::State& state)
     // TODO: Is there a good way to determine the appropriate buffer size?
     const auto buffer_size = json.size() * 10;
     auto value_buffer = std::vector<char>(buffer_size);
-    auto parse_buffer = std::vector<char>(buffer_size);
+    // Room for the chunk header, as in read_rapidjson_single.
+    auto parse_buffer = std::vector<char>(buffer_size + 1024);
     auto value_allocator = MemoryPoolAllocator<>(value_buffer.data(), value_buffer.size());
     auto parse_allocator = MemoryPoolAllocator<>(parse_buffer.data(), parse_buffer.size());
 
@@ -980,7 +989,7 @@ void read_rapidjson_insitu_single(benchmark::State& state)
         auto json_insitu = json + std::string(YYJSON_PADDING_SIZE, '\0');
         auto start = std::chrono::steady_clock::now();
         {
-            DocumentType d(&value_allocator, parse_buffer.size(), &parse_allocator);
+            DocumentType d(&value_allocator, buffer_size, &parse_allocator);
             d.ParseInsitu(json_insitu.data());
             std::tie(counter, stats) = iterate_all_rapidjson(d);
         }
@@ -1007,9 +1016,12 @@ void read_rapidjson_insitu_single_copy(benchmark::State& state)
     // TODO: Is there a good way to determine the appropriate buffer size?
     const auto buffer_size = json.size() * 10;
     auto value_buffer = std::vector<char>(buffer_size);
-    auto parse_buffer = std::vector<char>(buffer_size);
+    // Room for the chunk header, as in read_rapidjson_single.
+    auto parse_buffer = std::vector<char>(buffer_size + 1024);
     auto value_allocator = MemoryPoolAllocator<>(value_buffer.data(), value_buffer.size());
     auto parse_allocator = MemoryPoolAllocator<>(parse_buffer.data(), parse_buffer.size());
+    // Reused as in read_cpp_yyjson_insitu_single_copy.
+    auto json_insitu = json + std::string(YYJSON_PADDING_SIZE, '\0');
 
     for (auto _ : state)
     {
@@ -1017,8 +1029,8 @@ void read_rapidjson_insitu_single_copy(benchmark::State& state)
         auto stats = json_stats();
         auto start = std::chrono::steady_clock::now();
         {
-            auto json_insitu = json + std::string(YYJSON_PADDING_SIZE, '\0');
-            DocumentType d(&value_allocator, parse_buffer.size(), &parse_allocator);
+            json_insitu.assign(json).append(YYJSON_PADDING_SIZE, '\0');
+            DocumentType d(&value_allocator, buffer_size, &parse_allocator);
             d.ParseInsitu(json_insitu.data());
             std::tie(counter, stats) = iterate_all_rapidjson(d);
         }
