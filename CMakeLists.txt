@@ -42,10 +42,14 @@ set(CPPYYJSON_WRITER_DEPTH_LIMIT
           "Depth limit for writing nested arrays/objects (empty for no limit)")
 option(CPPYYJSON_DISABLE_FILE
        "Disable the file and `FILE*` read/write APIs of yyjson" OFF)
+option(CPPYYJSON_DISABLE_HUGE_PAGES
+       "Disable the transparent huge page advice for large blocks on Linux"
+       OFF)
 
 set(cppyyjson_backend_options CPPYYJSON_READER_DEPTH_LIMIT
                               CPPYYJSON_WRITER_DEPTH_LIMIT
-                              CPPYYJSON_DISABLE_FILE)
+                              CPPYYJSON_DISABLE_FILE
+                              CPPYYJSON_DISABLE_HUGE_PAGES)
 if(NOT CPPYYJSON_USE_BUNDLED_YYJSON)
   foreach(cppyyjson_option IN LISTS cppyyjson_backend_options)
     if(${cppyyjson_option})
@@ -107,6 +111,11 @@ if(CPPYYJSON_USE_BUNDLED_YYJSON)
   endif()
   if(CPPYYJSON_DISABLE_FILE)
     target_compile_definitions(${PROJECT_NAME} PUBLIC YYJSON_DISABLE_FILE=1)
+  endif()
+  # Only the default allocator in `src/yyjson.c` reads this one.
+  if(CPPYYJSON_DISABLE_HUGE_PAGES)
+    target_compile_definitions(${PROJECT_NAME}
+                               PRIVATE YYJSON_DISABLE_HUGE_PAGES=1)
   endif()
 endif()
 
