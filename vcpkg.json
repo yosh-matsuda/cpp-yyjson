@@ -1,0 +1,25 @@
+{
+    "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+    "builtin-baseline": "cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3",
+    "dependencies": [
+        "gtest"
+    ],
+    "features": {
+        "bench": {
+            "description": "Libraries compared in the benchmarks",
+            "dependencies": [
+                "benchmark",
+                "nlohmann-json",
+                "rapidjson",
+                "simdjson",
+                "yyjson"
+            ]
+        },
+        "system-yyjson": {
+            "description": "External yyjson for CPPYYJSON_USE_BUNDLED_YYJSON=OFF",
+            "dependencies": [
+                "yyjson"
+            ]
+        }
+    }
+}

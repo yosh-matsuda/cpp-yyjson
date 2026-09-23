@@ -34,9 +34,6 @@ jobs:
     - name: Configure VS Toolchain
       uses: ilammy/msvc-dev-cmd@v1
 
-    - name: Install dependencies
-      run: vcpkg install yyjson gtest --triplet ${{ env.triplet }}
-
     - name: Build and test
       run: |
         rm -rf "${{ github.workspace }}\build"
@@ -84,18 +81,12 @@ jobs:
           sudo apt-get install -y ninja-build ${{ matrix.compiler.packages }}
         fi
 
-    - name: Install dependencies
-      run: |
-        if [[ "${{ matrix.compiler.install }}" == "brew" ]]; then
-          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
-        fi
-        CC=${{ matrix.compiler.c }} CXX=${{ matrix.compiler.cxx }} vcpkg install yyjson gtest --triplet ${{ env.triplet }}
-
     - name: Build and test
       run: |
         if [[ "${{ matrix.compiler.install }}" == "brew" ]]; then
           eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
         fi
+        export CC=${{ matrix.compiler.c }} CXX=${{ matrix.compiler.cxx }}
         rm -rf ${{ github.workspace }}/build
         cmake -B ${{ github.workspace }}/build -DCMAKE_TOOLCHAIN_FILE=$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=${{ env.triplet }} -DCMAKE_C_COMPILER=${{ matrix.compiler.c }} -DCMAKE_CXX_COMPILER=${{ matrix.compiler.cxx }} -G "Ninja Multi-Config"
         cmake --build ${{ github.workspace }}/build --config Debug --clean-first
@@ -142,14 +133,15 @@ jobs:
           brew install ${{ matrix.compiler.brewpkg }}
         fi
 
-    - name: Install dependencies
+    - name: Install vcpkg
       run: |
-        git clone --depth 1 https://github.com/microsoft/vcpkg.git external/vcpkg
+        # A full clone: vcpkg.json pins a builtin-baseline commit.
+        git clone https://github.com/microsoft/vcpkg.git external/vcpkg
         ./external/vcpkg/bootstrap-vcpkg.sh
-        CC=${{ matrix.compiler.c }} CXX=${{ matrix.compiler.cxx }} ./external/vcpkg/vcpkg install yyjson gtest --triplet ${{ env.triplet }}
 
     - name: Build and test
       run: |
+        export CC=${{ matrix.compiler.c }} CXX=${{ matrix.compiler.cxx }}
         rm -rf ${{ github.workspace }}/build
         cmake -B ${{ github.workspace }}/build -DCMAKE_TOOLCHAIN_FILE=./external/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=${{ env.triplet }} -DCMAKE_C_COMPILER=${{ matrix.compiler.c }} -DCMAKE_CXX_COMPILER=${{ matrix.compiler.cxx }} -G "Ninja Multi-Config"
         cmake --build ${{ github.workspace }}/build --config Debug --clean-first
