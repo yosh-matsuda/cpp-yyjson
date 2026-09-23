@@ -3,7 +3,6 @@
 
 #include <array>
 #include <fstream>
-#include <iterator>
 #include <string>
 #include <string_view>
 
@@ -11,14 +10,18 @@
 // the read benchmarks parse them, the write benchmarks serialize the documents
 // parsed from them.  Both are run from the repository root, so the paths are
 // relative to it.
+//
+// The string is sized exactly, without spare capacity: simdjson reads past the end of
+// a `std::string` whose capacity leaves room for its padding instead of copying it,
+// and the slack left by a growing read would hand it that shortcut on a read-only
+// fixed-length input by accident.
 inline auto read_file(std::string path)
 {
-    auto fstm = std::ifstream(path);
-    auto result = std::string();
+    auto fstm = std::ifstream(path, std::ios::binary);
     fstm.seekg(0, std::ios::end);
-    result.reserve(fstm.tellg());
+    auto result = std::string(static_cast<std::size_t>(fstm.tellg()), '\0');
     fstm.seekg(0, std::ios::beg);
-    result.assign((std::istreambuf_iterator<char>(fstm)), std::istreambuf_iterator<char>());
+    fstm.read(result.data(), static_cast<std::streamsize>(result.size()));
 
     return result;
 }
