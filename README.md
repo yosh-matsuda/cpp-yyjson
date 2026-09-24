@@ -15,14 +15,15 @@ Ultra-fast and intuitive C++ JSON reader/writer with yyjson backend.
     1.  [Using CMake](#using-cmake)
 6.  [Benchmark](#benchmark)
 7.  [Reference](docs/reference.md)
-8.  [Author](#author)
+8.  [License](#license)
+9.  [Author](#author)
 
 ## Features
 
-*   Header-only
+*   Header-only C++ interface
 *   Bundled [faster yyjson](#bundled-backend) backend by default
 *   Optional external yyjson backend
-*   C++20 range adaption
+*   C++20 range adaptation
 *   STL-like accessors
 *   Intuitive JSON construction
 *   Mutual transformation of JSON and C++ classes with
@@ -35,12 +36,12 @@ Ultra-fast and intuitive C++ JSON reader/writer with yyjson backend.
 
 ## Requirements
 
-*   C++20 compiler with range supports
+*   C++20 compiler with range support
     *   GCC 13-16
     *   LLVM 17-22
     *   AppleClang 16 (Xcode 16.2), 17 (Xcode 26.3), and 21 (Xcode 26.6)
     *   MSVC `cl` and `clang-cl` on `windows-2022` and `windows-2025`
-*   [yyjson](https://github.com/ibireme/yyjson)
+*   [yyjson](https://github.com/ibireme/yyjson) 0.6.0 or later, only when the external backend is used instead of the [bundled](#bundled-backend) one
 
 ## Overview
 
@@ -163,7 +164,7 @@ auto init_obj = object{{"id", 1},
 
 ### Serialization and Deserialization
 
-As shown above, cpp-yyjson provides conversion between JSON value/array/object classes and C++ ranges and container types recursively. In addition to that, the following additional JSON casters are available (see the [reference](docs/reference.md#serialize-and-deserialize-json) in detail):
+As shown above, cpp-yyjson provides conversion between JSON value/array/object classes and C++ ranges and container types recursively. In addition, the following JSON casters are available (see the [reference](docs/reference.md#serialize-and-deserialize-json) for details):
 
 *   Pre-defined STL casters (e.g., `std::optional`, `std::shared_ptr`, `std::variant`, `std::tuple` ([C++23 tuple-like](https://wg21.link/P2165R4))).
 *   Conversion using compile-time reflection of struct/class if it is available.
@@ -242,7 +243,7 @@ auto deserialized = cast<X>(serialized);
 // -> X{.a = 1, .b = std::nullopt, .c = "default"}
 ```
 
-#### User-defined caster (see the [reference](docs/reference.md#serialize-and-deserialize-json) in detail)
+#### User-defined caster (see the [reference](docs/reference.md#serialize-and-deserialize-json) for details)
 
 ```cpp
 template <>
@@ -265,7 +266,7 @@ auto serialized = value(x);
 
 cpp-yyjson ships with its own copy of yyjson, a [fork](https://github.com/yosh-matsuda/yyjson/tree/simd) of the upstream 0.13.0 release that only changes how fast it runs. The API, the accepted input and the output are those of yyjson, and the fork passes the upstream test suite, so nothing in your code depends on which of the two is used.
 
-What gets faster, measured against the upstream yyjson in the [benchmark](#benchmark):
+What gets faster, measured against the upstream yyjson in the [benchmark](#benchmark) with AVX2 enabled:
 
 | Workload | Why it is faster | Speed-up |
 | --- | --- | --- |
@@ -281,7 +282,7 @@ To use the upstream yyjson instead, configure with `-DCPPYYJSON_USE_BUNDLED_YYJS
 
 ## Installation
 
-cpp-yyjson uses its [bundled yyjson backend](#bundled-backend) by default and builds a static library.
+cpp-yyjson uses its [bundled yyjson backend](#bundled-backend) by default. The C++ interface is header-only, and the backend is compiled from `src/yyjson.c` into a static library.
 
 The backend selects its SIMD paths at compile time. SSE2 is used on x86-64 by default, and `-DCPPYYJSON_ENABLE_AVX2=ON` additionally compiles the backend with `-mavx2` (`/arch:AVX2` on MSVC). The resulting binary then requires an AVX2-capable CPU.
 
@@ -338,7 +339,9 @@ The table gives how many times faster cpp-yyjson is than each of them.
 | Read  | 1.0 - 1.8x | 1.1 - 1.6x   | 1.4 - 4.6x    | -                 |
 | Write | 1.0 - 2.1x | -            | 2.6 - 8.1x    | 2.8 - 27x         |
 
-Slowest and fastest of the ten documents, with no average in between: which document you feed a JSON library moves the result more than any single number can convey. When writing, the low end is the number-only `canada` document, and the smallest document, `github_events`, produces both maxima against rapidjson. When reading, the high end against yyjson and simdjson, whose fastest method "On Demand" is the one compared, is the 48.8 MB `fgo` document, where most of the time goes into faulting in fresh memory rather than into parsing, and the [huge pages](#bundled-backend) of the bundled backend save most of those faults. With the parser and allocator reused, so that no document faults in fresh memory, cpp-yyjson still reads all ten documents 1.06 to 1.48x faster than On Demand. The read row compares plain parsing of a read-only input, the write row serialization of a parsed document; simdjson has no serializer and nlohmann-json is not in the read comparison.
+Each range is the slowest and the fastest of the ten documents, with no average in between, because which document you feed a JSON library moves the result more than any single number can convey. When writing, the low end is the number-only `canada` document, and the smallest document, `github_events`, produces both maxima against rapidjson.
+
+When reading, the high end against yyjson and simdjson, whose fastest method "On Demand" is the one compared, is the 48.8 MB `fgo` document, where most of the time goes into faulting in fresh memory rather than into parsing, and the [huge pages](#bundled-backend) of the bundled backend save most of those faults. With the parser and allocator reused, so that no document faults in fresh memory, cpp-yyjson still reads all ten documents 1.06 to 1.48x faster than On Demand. The read row compares plain parsing of a read-only input, the write row serialization of a parsed document; simdjson has no serializer and nlohmann-json is not in the read comparison.
 
 Against yyjson, which cpp-yyjson is built on, the C++ interface costs nothing measurable: where the two differ it is because cpp-yyjson uses its [bundled backend](#bundled-backend) and compiles it together with the calling code, while the yyjson row is the upstream release as packaged by vcpkg. That is also the main caveat of the comparison, and it cuts both ways: simdjson and yyjson are linked as prebuilt vcpkg libraries and therefore do not get `-march=x86-64-v3` or link-time optimization, whereas the header-only rapidjson and nlohmann-json are compiled with exactly the same options as cpp-yyjson.
 
@@ -346,7 +349,11 @@ Which parsing method a library offers is not interchangeable either — some nee
 
 ## Reference
 
-The full API reference has moved to [docs/reference.md](docs/reference.md).
+The full API reference is in [docs/reference.md](docs/reference.md).
+
+## License
+
+cpp-yyjson is released under the [MIT License](LICENSE). The bundled backend in `src/yyjson.c` and `include/yyjson.h` is derived from [yyjson](https://github.com/ibireme/yyjson), which is also released under the MIT License.
 
 ## Author
 
