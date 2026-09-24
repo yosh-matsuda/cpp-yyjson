@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Re-measure the benchmarks shown in README.md and refresh the stored results.
+# Re-measure the benchmarks shown in docs/benchmark/README.md and refresh the results.
 #
 # The script is meant to be run by a human on an idle machine: interactive agents,
 # editors and background services distort the numbers.  It runs the Google Benchmark
@@ -27,6 +27,7 @@ ISOLATE=1
 BUILD_DIR=build
 CONFIG=Release
 RESULT_DIR=test
+DOC=docs/benchmark/README.md
 IMAGE_DIR=docs/benchmark/images
 DO_BUILD=0
 DO_PLOT=1
@@ -334,7 +335,10 @@ fi
 if command -v readelf >/dev/null 2>&1; then
     binary_gcc=$(readelf -p .comment "${BIN_DIR}/${TARGETS[0]}" 2>/dev/null |
         grep -oE 'GCC: \([^)]*\) [0-9.]+' | sed 's/.*) //' | sort -u | paste -sd, -)
-    readme_gcc=$(grep -oE 'compiled with GCC [0-9]+(\.[0-9]+){0,2}' README.md | head -n 1 | sed 's/.*GCC //')
+    # `grep` finding nothing is not an error here, but it would end the script
+    # under `set -o pipefail`, so the pipeline is allowed to come back empty.
+    readme_gcc=$(grep -ohE 'compiled with GCC [0-9]+(\.[0-9]+){0,2}' "${DOC}" 2>/dev/null |
+        head -n 1 | sed 's/.*GCC //' || true)
     printf '  compiler (binary)   : GCC %s\n' "${binary_gcc:-unknown}"
     printf '  compiler (README)   : GCC %s\n' "${readme_gcc:-unknown}"
     if command -v g++ >/dev/null 2>&1; then
@@ -342,9 +346,9 @@ if command -v readelf >/dev/null 2>&1; then
     fi
     if [[ -n ${binary_gcc} && -n ${readme_gcc} && ${binary_gcc} != "${readme_gcc}" ]]; then
         if [[ -n ${FILTER} ]]; then
-            preflight_error "the executables were built with GCC ${binary_gcc} but README.md documents GCC ${readme_gcc}; merging a partial run would mix toolchains, use --scope all and update README.md"
+            preflight_error "the executables were built with GCC ${binary_gcc} but ${DOC} documents GCC ${readme_gcc}; merging a partial run would mix toolchains, use --scope all and update ${DOC}"
         else
-            warn "the executables were built with GCC ${binary_gcc} but README.md documents GCC ${readme_gcc}; update the README environment paragraph after this run"
+            warn "the executables were built with GCC ${binary_gcc} but ${DOC} documents GCC ${readme_gcc}; update its environment paragraph after this run"
         fi
     fi
 fi
@@ -775,5 +779,5 @@ fi
 info "Done"
 printf '  changed files:\n'
 git status --porcelain -- "${RESULT_DIR}" "${IMAGE_DIR}" 2>/dev/null | sed 's/^/    /' || true
-printf '\n  Review the diff and update the environment paragraph of README.md if the\n'
+printf '\n  Review the diff and update the environment paragraph of %s if the\n' "${DOC}"
 printf '  machine, the compiler or the vcpkg baseline changed.\n'

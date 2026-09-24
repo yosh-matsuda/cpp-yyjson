@@ -13,8 +13,6 @@ Ultra-fast and intuitive C++ JSON reader/writer with yyjson backend.
 4.  [Installation](#installation)
     1.  [Using CMake](#using-cmake)
 5.  [Benchmark](#benchmark)
-    1.  [Read performance](#read-performance)
-    2.  [Write performance](#write-performance)
 6.  [Reference](docs/reference.md)
 7.  [Author](#author)
 
@@ -312,99 +310,20 @@ target_link_libraries(${PROJECT_NAME} PRIVATE cpp_yyjson::cpp_yyjson)
 
 ## Benchmark
 
-The benchmarks below compare the cpp-yyjson with other prominent fast C/C++ JSON libraries. The comparison libraries are resolved by the vcpkg manifest (baseline `cd61e1e`), which gives [yyjson](https://github.com/ibireme/yyjson) 0.12.0, [simdjson](https://github.com/simdjson/simdjson) 4.6.4, [rapidjson](https://github.com/Tencent/rapidjson/) 2025-02-26, and [nlohmann-json](https://github.com/nlohmann/json) 3.12.0#2.
+cpp-yyjson is compared with [yyjson](https://github.com/ibireme/yyjson), [simdjson](https://github.com/simdjson/simdjson), [rapidjson](https://github.com/Tencent/rapidjson/) and [nlohmann-json](https://github.com/nlohmann/json) on the ten documents of [yyjson_benchmark](https://github.com/ibireme/yyjson_benchmark#json-datasets), which range from 0.1 MB to 66 MB and from number-heavy to string-heavy. Reading is timed as parsing a document and visiting every element of it; writing as turning a parsed document back into JSON text.
 
-The results are obtained on Ubuntu 24.04.3 LTS with Linux 6.8.0, Intel Core i9-12900K with 8 logical CPUs (E-cores disabled and Turbo Boost disabled), compiled with GCC 13.3.0. Every measurement is the median of 101 repetitions on [google benchmark](https://github.com/google/benchmark) v1.9.5. The benchmark programs are in the [`test`](https://github.com/yosh-matsuda/cpp-yyjson/tree/main/test) directory.
+The table gives how many times faster cpp-yyjson is than each of them.
 
-All benchmarks are built in Release mode with `-O3`. The cpp-yyjson cases use the bundled yyjson backend, a customized copy of yyjson that adds SSE2/AVX2 code paths; it is built with AVX2 enabled, compiled with `-march=x86-64-v3`, and takes part in link-time optimization together with the benchmark code. The header-only [rapidjson](https://github.com/Tencent/rapidjson/) and [nlohmann-json](https://github.com/nlohmann/json) cases are compiled in the same binary with the same options. The [simdjson](https://github.com/simdjson/simdjson) and [yyjson](https://github.com/ibireme/yyjson) cases link the prebuilt vcpkg libraries, so the yyjson row is the upstream release as packaged by vcpkg, built with the vcpkg default options and thus without `-march=x86-64-v3` or link-time optimization.
+|       | vs. yyjson | vs. simdjson | vs. rapidjson | vs. nlohmann-json |
+| ----- | ---------- | ------------ | ------------- | ----------------- |
+| Read  | 1.0 - 1.8x | 1.1 - 1.6x   | 1.4 - 4.6x    | -                 |
+| Write | 1.0 - 2.1x | -            | 2.6 - 8.1x    | 2.8 - 27x         |
 
-### Read performance
+Slowest and fastest of the ten documents, with no average in between: which document you feed a JSON library moves the result more than any single number can convey. When writing, the low end is the number-only `canada` document, and the smallest document, `github_events`, produces both maxima against rapidjson. When reading, the high end against yyjson and simdjson, whose fastest method "On Demand" is the one compared, is the 48.8 MB `fgo` document, where most of the time goes into faulting in fresh memory rather than into parsing: on Linux with glibc, the bundled backend asks the kernel to back blocks of 32 MiB or more with transparent huge pages, which saves most of those faults and which neither of the other two does. With the parser and allocator reused, so that no document faults in fresh memory, cpp-yyjson still reads all ten documents 1.06 to 1.48x faster than On Demand. The read row compares plain parsing of a read-only input, the write row serialization of a parsed document; simdjson has no serializer and nlohmann-json is not in the read comparison.
 
-The parsing options offered by each library are not interchangeable: some of them require the caller to hand over a JSON buffer that is writable, padded, and safe to destroy. Comparing all of them in a single ranking would mix results that answer different questions, so the charts below are separated by **what the caller can guarantee about the input**, and within each chart by **whether parser or allocator memory is reused**.
+Against yyjson, which cpp-yyjson is built on, the C++ interface costs nothing measurable: where the two differ it is because cpp-yyjson bundles a [customized backend](https://github.com/yosh-matsuda/yyjson/tree/simd) with SSE2/AVX2 code paths and compiles it together with the calling code, while the yyjson row is the upstream release as packaged by vcpkg. That is also the main caveat of the comparison, and it cuts both ways: simdjson and yyjson are linked as prebuilt vcpkg libraries and therefore do not get `-march=x86-64-v3` or link-time optimization, whereas the header-only rapidjson and nlohmann-json are compiled with exactly the same options as cpp-yyjson.
 
-*Read-only fixed-length input*
-: The input is a plain read-only string of fixed length, which is the usual situation for a JSON payload received from a file or a network response. In-situ parsing is still possible here, but only by copying the input first, so that copy (and the padding that [yyjson](https://github.com/ibireme/yyjson) and [simdjson](https://github.com/simdjson/simdjson) require) is included in the measured time. Rows marked `copy + in-situ` or `copy + pad` pay that cost inside the measurement.
-
-*Caller-prepared writable/padded buffer*
-: The caller already owns a writable, sufficiently padded buffer that may be destroyed during parsing, so the preparation is excluded from the measured time. This is the fastest path of each library, but it is only applicable when your code controls the buffer. The [rapidjson](https://github.com/Tencent/rapidjson/) does not need padding for in-situ parsing, while [yyjson](https://github.com/ibireme/yyjson) and [simdjson](https://github.com/simdjson/simdjson) do.
-
-*New parser/allocator per parse vs. reused*
-: Each chart is split into these two sections. Reuse of a pre-allocated buffer or a parser object is suitable for tasks that repeatedly read many JSON strings, e.g. API servers. The [yyjson](https://github.com/ibireme/yyjson) and cpp-yyjson can size a pool allocator from the length of the JSON string, the [rapidjson](https://github.com/Tencent/rapidjson/) accepts allocators but must be cleared explicitly after parsing, and the [simdjson](https://github.com/simdjson/simdjson) parser object is reusable.
-
-The [simdjson](https://github.com/simdjson/simdjson) has two parsing methods, "DOM" and "On Demand". The "On Demand" approach is faster but less flexible because it behaves as a forward iterator like a stream and can only receive padded JSON strings, so it always appears as a padded row.
-
-> [!NOTE]
-> In the reused section of *read-only fixed-length input*, the [simdjson](https://github.com/simdjson/simdjson) rows reuse a single string object for the padded copy, whereas the cpp-yyjson, [yyjson](https://github.com/ibireme/yyjson) and [rapidjson](https://github.com/Tencent/rapidjson/) rows reuse the allocator only and still allocate the copy for each parse.
-
-The JSON datasets are from [yyjson_benchmark](https://github.com/ibireme/yyjson_benchmark#json-datasets). Each measurement is the median time to parse the document and iterate all of its elements. The time unit is `ms` and the raw logs are available in [test/cpp_yyjson_bench_read.log](test/cpp_yyjson_bench_read.log) and [test/yyjson_bench_read.log](test/yyjson_bench_read.log).
-
-#### Read-only fixed-length input
-
-<img src="docs/benchmark/images/read_canada_fixed_input.svg" width="48%"></img>
-<img src="docs/benchmark/images/read_citm_catalog_fixed_input.svg" width="48%"></img>
-<img src="docs/benchmark/images/read_fgo_fixed_input.svg" width="48%"></img>
-<img src="docs/benchmark/images/read_github_events_fixed_input.svg" width="48%"></img>
-<img src="docs/benchmark/images/read_gsoc-2018_fixed_input.svg" width="48%"></img>
-<img src="docs/benchmark/images/read_lottie_fixed_input.svg" width="48%"></img>
-<img src="docs/benchmark/images/read_otfcc_fixed_input.svg" width="48%"></img>
-<img src="docs/benchmark/images/read_poet_fixed_input.svg" width="48%"></img>
-<img src="docs/benchmark/images/read_twitter_fixed_input.svg" width="48%"></img>
-<img src="docs/benchmark/images/read_twitterescaped_fixed_input.svg" width="48%"></img>
-
-#### Caller-prepared writable/padded buffer
-
-<img src="docs/benchmark/images/read_canada_prepared_input.svg" width="48%"></img>
-<img src="docs/benchmark/images/read_citm_catalog_prepared_input.svg" width="48%"></img>
-<img src="docs/benchmark/images/read_fgo_prepared_input.svg" width="48%"></img>
-<img src="docs/benchmark/images/read_github_events_prepared_input.svg" width="48%"></img>
-<img src="docs/benchmark/images/read_gsoc-2018_prepared_input.svg" width="48%"></img>
-<img src="docs/benchmark/images/read_lottie_prepared_input.svg" width="48%"></img>
-<img src="docs/benchmark/images/read_otfcc_prepared_input.svg" width="48%"></img>
-<img src="docs/benchmark/images/read_poet_prepared_input.svg" width="48%"></img>
-<img src="docs/benchmark/images/read_twitter_prepared_input.svg" width="48%"></img>
-<img src="docs/benchmark/images/read_twitterescaped_prepared_input.svg" width="48%"></img>
-
-The cpp-yyjson stays ahead of the yyjson row on every dataset and in every section of the charts. The two are not rival implementations: cpp-yyjson ships its own copy of the yyjson backend, which lets it add SIMD code paths and lets the parser be optimized together with the calling code through link-time optimization, whereas the yyjson row is the upstream release as packaged by vcpkg. The difference is therefore about how the backend is built and integrated, not about a cost of the C++ interface, which does not surface as a measurable penalty anywhere.
-
-The [simdjson](https://github.com/simdjson/simdjson) rows are better read as a different trade-off than as a ranking. Its "On Demand" method is the fastest option on several of the string- and structure-heavy documents, but it asks for a padded buffer and gives up random access in return. Like the yyjson row it is measured as a prebuilt vcpkg library, so it does not receive the `-march=x86-64-v3` and link-time optimization treatment that the cpp-yyjson case does, and the gap on those documents may well narrow under the same build conditions.
-
-The two largest datasets, `fgo` and `otfcc`, show why the allocation policy matters. Reusing the allocator roughly halves the parse time of the cpp-yyjson there, while on the small datasets it makes no measurable difference, so it is worth adopting exactly where the payload is large. In-situ parsing, by contrast, pays off only when the caller already owns the buffer: in the *read-only fixed-length input* charts the copy it requires cancels the gain almost exactly.
-
-### Write performance
-
-The write performance is measured by the time it takes to build a large array or object in memory and serialize it to a JSON string, with 1,000,000 elements per scenario. The [simdjson](https://github.com/simdjson/simdjson) is absent from these charts because it is a parser and offers no document building API. The time unit is `ms` and the raw logs are available in [test/cpp_yyjson_bench_write.log](test/cpp_yyjson_bench_write.log) and [test/yyjson_bench_write.log](test/yyjson_bench_write.log).
-
-One option when creating a JSON document is whether a string value is copied into the document or only referenced. The cpp-yyjson, [yyjson](https://github.com/ibireme/yyjson) and [rapidjson](https://github.com/Tencent/rapidjson/) offer both, and the paired `*_string` and `*_string_copy` charts show what the copy costs, while [nlohmann-json](https://github.com/nlohmann/json) always owns its strings and therefore appears only in the copy charts.
-
-The cpp-yyjson rows are labelled by the API that builds the document:
-
-*cpp-yyjson*
-: The straightforward path, allocating a new document for each measured iteration.
-
-*cpp-yyjson single*
-: The same code with a single allocator reused across iterations, matching the reused sections of the read charts.
-
-*cpp-yyjson range*
-: Converts a whole range into a JSON array in one call instead of appending the elements one by one.
-
-*cpp-yyjson reflection* / *cpp-yyjson macro*
-: Convert a user-defined struct into a JSON object, by compile-time field reflection and by explicit `VISITABLE_STRUCT` registration respectively.
-
-<img src="docs/benchmark/images/write_array_double.svg" width="48%"></img>
-<img src="docs/benchmark/images/write_array_double_append.svg" width="48%"></img>
-<img src="docs/benchmark/images/write_array_int64.svg" width="48%"></img>
-<img src="docs/benchmark/images/write_array_object.svg" width="48%"></img>
-<img src="docs/benchmark/images/write_array_string.svg" width="48%"></img>
-<img src="docs/benchmark/images/write_array_string_copy.svg" width="48%"></img>
-<img src="docs/benchmark/images/write_array_tuple.svg" width="48%"></img>
-<img src="docs/benchmark/images/write_object_double.svg" width="48%"></img>
-<img src="docs/benchmark/images/write_object_int64.svg" width="48%"></img>
-<img src="docs/benchmark/images/write_object_string.svg" width="48%"></img>
-<img src="docs/benchmark/images/write_object_string_copy.svg" width="48%"></img>
-
-The cpp-yyjson is the fastest in every write scenario, and the margin over [rapidjson](https://github.com/Tencent/rapidjson/) and [nlohmann-json](https://github.com/nlohmann/json) ranges from a clear lead to more than an order of magnitude. It also stays ahead of the yyjson row, partly because of the bundled backend and link-time optimization as in the read benchmarks, and partly because the C++ layer offers shortcuts that the C API has no equivalent of. The `array_double_append` chart separates the two effects: appending element by element lands close to the equivalent C loop, while handing the whole range to the library in a single call is clearly faster than either.
-
-Two further observations concern the choice of API. Copying string values is a visible cost, so referencing an existing buffer is worthwhile whenever the lifetime allows it, and building an array of objects through compile-time reflection costs the same as the macro-based registration, so the more convenient of the two can be chosen freely.
+Which parsing method a library offers is not interchangeable either — some need a writable, padded buffer they may destroy — so the full results separate the cases instead of merging them into one ranking. They are in [docs/benchmark](docs/benchmark/README.md), together with per-document charts, the effect of reusing parser memory, and how to reproduce the numbers.
 
 ## Reference
 
