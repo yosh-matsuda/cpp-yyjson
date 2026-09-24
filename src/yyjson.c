@@ -111,7 +111,7 @@ uint32_t yyjson_version(void) {
 /* SIMD support: enabled only when the compiler targets an available ISA. */
 #undef YYJSON_HAS_SIMD_SSE2
 #if !YYJSON_FREESTANDING && \
-    (!defined(YYJSON_DISABLE_SIMD) || !YYJSON_DISABLE_SIMD) && \
+    !YYJSON_DISABLE_SIMD && \
     (!defined(YYJSON_DISABLE_UNALIGNED_MEMORY_ACCESS) || \
     !YYJSON_DISABLE_UNALIGNED_MEMORY_ACCESS) && \
     (defined(__SSE2__) || defined(_M_X64) || \
@@ -122,9 +122,7 @@ uint32_t yyjson_version(void) {
 #endif
 
 #undef YYJSON_HAS_SIMD_AVX2
-#if YYJSON_HAS_SIMD_SSE2 && \
-    (!defined(YYJSON_DISABLE_AVX2) || !YYJSON_DISABLE_AVX2) && \
-    (defined(__AVX2__) || defined(_M_AVX2))
+#if YYJSON_HAS_SIMD_SSE2 && (defined(__AVX2__) || defined(_M_AVX2))
 #   define YYJSON_HAS_SIMD_AVX2 1
 #else
 #   define YYJSON_HAS_SIMD_AVX2 0
@@ -391,6 +389,10 @@ uint32_t yyjson_version(void) {
 #define repeat8_incr(x)   { x(0)  x(1)  x(2)  x(3)  x(4)  x(5)  x(6)  x(7)  }
 #define repeat16_incr(x)  { x(0)  x(1)  x(2)  x(3)  x(4)  x(5)  x(6)  x(7)  \
                             x(8)  x(9)  x(10) x(11) x(12) x(13) x(14) x(15) }
+#define repeat32_incr(x)  { x(0)  x(1)  x(2)  x(3)  x(4)  x(5)  x(6)  x(7)  \
+                            x(8)  x(9)  x(10) x(11) x(12) x(13) x(14) x(15) \
+                            x(16) x(17) x(18) x(19) x(20) x(21) x(22) x(23) \
+                            x(24) x(25) x(26) x(27) x(28) x(29) x(30) x(31) }
 #define repeat_in_1_18(x) { x(1)  x(2)  x(3)  x(4)  x(5)  x(6)  x(7)  x(8)  \
                             x(9)  x(10) x(11) x(12) x(13) x(14) x(15) x(16) \
                             x(17) x(18) }
@@ -925,6 +927,26 @@ static_inline bool char_is_space(u8 c) {
     return !!(char_table1[c] & CHAR_TYPE_SPACE);
 }
 
+/**
+ Returns the position after a run of whitespace starting at `cur`.
+
+ Indentation is a run of spaces, so four of them are matched with a single
+ comparison, which is endian independent since all four bytes are equal. Four
+ bytes may always be read here: the buffer is followed by `YYJSON_PADDING_SIZE`
+ zeroed bytes, which are not spaces, so the loop stops at the first padding
+ byte at the latest and never reads beyond the padding.
+ */
+static_noinline u8 *skip_spaces(u8 *cur) {
+    u32 four;
+    for (;;) {
+        byte_copy_4(&four, cur);
+        if (four != 0x20202020UL) break;
+        cur += 4;
+    }
+    while (char_is_space(*cur)) cur++;
+    return cur;
+}
+
 /** Match an extended whitespace: [ \t\n\r\\v\\f], JSON5 whitespace. */
 static_inline bool char_is_space_ext(u8 c) {
     return !!(char_table1[c] & CHAR_TYPE_SPACE_EXT);
@@ -988,6 +1010,51 @@ static_inline bool char_is_nonzero(u8 d) {
 /** Match a digit: [0-9] */
 static_inline bool char_is_digit(u8 d) {
     return !!(char_table3[d] & CHAR_TYPE_DIGIT);
+}
+
+/**
+ Returns whether all four bytes of `v` are decimal digits. `v` is evaluated
+ more than once.
+
+ A byte is a digit if its high nibble is 3 and it is not above '9'. The latter
+ is true when adding 6 does not carry into the high nibble, so both tests fold
+ into a single comparison. A byte large enough to carry into the next one fails
+ its own test, which rejects the whole word anyway, so the order the bytes were
+ loaded in does not matter.
+ */
+#define dec_4_is_digits(v) \
+    ((((v) & 0xF0F0F0F0UL) | \
+      ((((v) + 0x06060606UL) & 0xF0F0F0F0UL) >> 4)) == 0x33333333UL)
+
+/**
+ Returns the position after a run of decimal digits starting at `cur`.
+
+ The first four digits are checked one at a time, so a number that is shorter
+ than that costs exactly what it did before, and only longer runs pay for the
+ word test.
+
+ `padded` tells whether the input is followed by `YYJSON_PADDING_SIZE` bytes,
+ which is what makes reading a word at a time legal: the padding is zeroed, so
+ it is not made of digits and stops the loop at the first padding byte at the
+ latest. `yyjson_read_number()` takes a plain null-terminated string, which
+ carries no such padding.
+ */
+static_inline u8 *skip_digits(u8 *cur, bool padded) {
+    u32 four;
+    if (!char_is_digit(cur[0])) return cur + 0;
+    if (!char_is_digit(cur[1])) return cur + 1;
+    if (!char_is_digit(cur[2])) return cur + 2;
+    if (!char_is_digit(cur[3])) return cur + 3;
+    cur += 4;
+    if (padded) {
+        for (;;) {
+            byte_copy_4(&four, cur);
+            if (!dec_4_is_digits(four)) break;
+            cur += 4;
+        }
+    }
+    while (char_is_digit(*cur)) cur++;
+    return cur;
 }
 
 /** Match an exponent character: [eE]. */
@@ -1105,6 +1172,47 @@ static const u8 hex_conv_table[256] = {
     0xF0, 0xF0, 0xF0, 0xF0, 0xF0, 0xF0, 0xF0, 0xF0,
     0xF0, 0xF0, 0xF0, 0xF0, 0xF0, 0xF0, 0xF0, 0xF0,
     0xF0, 0xF0, 0xF0, 0xF0, 0xF0, 0xF0, 0xF0, 0xF0
+};
+
+/**
+ This table is used to convert a two-character escape sequence to a byte.
+ The character following the backslash is mapped to the byte it produces;
+ every other character, including `u`, is mapped to zero.
+ (generated with misc/make_tables.c)
+ */
+static const u8 esc_conv_table[256] = {
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x22, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2F,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x5C, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x0C, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0A, 0x00,
+    0x00, 0x00, 0x0D, 0x00, 0x09, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 };
 
 /** Load 4 hex characters to `u16`, return true on valid input. */
@@ -2169,9 +2277,8 @@ static_inline u32 str_stop_mask_sse2(__m128i chunk) {
  whole load -> compare -> movemask -> tzcnt chain on the loop-carried dependency
  that runs through every string of the document. Instead the mask only steers a
  branch, so `src` always advances by a compile-time constant and the caller can
- resolve the final bytes with its scalar unrolled loop, whose exits are likewise
- constant offsets. This keeps short strings as fast as the scalar-only build
- while long strings still get the full SIMD throughput.
+ resolve the final bytes with its head dispatch (or its scalar unrolled loop),
+ whose exits are likewise constant offsets.
 
  Only the widest available chunk size is used. A narrower fallback pass would
  only ever apply to the last few bytes of the input, while its extra inlined
@@ -2188,9 +2295,9 @@ static_inline u8 *str_ascii_skip_chunks(u8 *src, u8 *eof) {
             if (mask) {
                 keep_branch();
 #if YYJSON_IS_REAL_GCC
-                /* Narrow the hit down to the 16-byte half that holds it, so
-                   the caller's 16-byte scalar round never rescans a clean
-                   half. Testing the mask that was computed anyway keeps this
+                /* Narrow the hit down to the 16-byte half that holds it,
+                   which starts the caller's next chunk test right at it.
+                   Testing the mask that was computed anyway keeps this
                    a predicted branch plus a constant add.
 
                    This is a pure hint, the caller resolves the same bytes
@@ -2442,12 +2549,55 @@ static const yyjson_alc YYJSON_DEFAULT_ALC = {
 
 #else /* YYJSON_FREESTANDING */
 
+/*
+ glibc serves a block of 32 MiB or more with a mapping of its own and returns
+ it to the kernel when freed, so each new block faults in page by page. Other
+ libcs may place a large block next to other allocations and are left alone.
+ See YYJSON_DISABLE_HUGE_PAGES.
+ */
+#if !YYJSON_DISABLE_HUGE_PAGES && defined(__linux__) && defined(__GLIBC__) && \
+    yyjson_has_include(<sys/mman.h>) && yyjson_has_include(<unistd.h>)
+#include <sys/mman.h>
+#include <unistd.h>
+#if defined(MADV_HUGEPAGE)
+#define YYJSON_HUGE_PAGE_ADVICE 1
+#endif
+#endif
+
+#if defined(YYJSON_HUGE_PAGE_ADVICE)
+#define HUGE_PAGE_MIN_BLOCK ((usize)32 << 20)
+
+static void huge_page_advise(void *ptr, usize size) {
+    /* Advise the whole mapping: advising a part would split it, and `mremap`
+       then fails and turns every `realloc` of the block into a copy. */
+    long page = sysconf(_SC_PAGESIZE);
+    usize mask, beg, end;
+    if (page <= 0) return;
+    mask = (usize)page - 1;
+    beg = (usize)ptr & ~mask;
+    end = ((usize)ptr + size + mask) & ~mask;
+    madvise((void *)beg, end - beg, MADV_HUGEPAGE);
+}
+#endif
+
 /* default libc allocator */
 static void *default_malloc(void *ctx, usize size) {
+#if defined(YYJSON_HUGE_PAGE_ADVICE)
+    void *ptr = malloc(size);
+    if (ptr && size >= HUGE_PAGE_MIN_BLOCK) huge_page_advise(ptr, size);
+    return ptr;
+#else
     return malloc(size);
+#endif
 }
 static void *default_realloc(void *ctx, void *ptr, usize old_size, usize size) {
+#if defined(YYJSON_HUGE_PAGE_ADVICE)
+    ptr = realloc(ptr, size);
+    if (ptr && size >= HUGE_PAGE_MIN_BLOCK) huge_page_advise(ptr, size);
+    return ptr;
+#else
     return realloc(ptr, size);
+#endif
 }
 static void default_free(void *ctx, void *ptr) {
     free(ptr);
@@ -3462,7 +3612,8 @@ static_inline bool read_inf_or_nan(u8 **ptr, u8 **pre,
 
 /** Read a JSON number as raw string. */
 static_noinline bool read_num_raw(u8 **ptr, u8 **pre, yyjson_read_flag flg,
-                                  yyjson_val *val, const char **msg) {
+                                  yyjson_val *val, const char **msg,
+                                  bool padded) {
 #define return_err(_pos, _msg) do { \
     *msg = _msg; *end = _pos; return false; \
 } while (false)
@@ -3511,7 +3662,7 @@ static_noinline bool read_num_raw(u8 **ptr, u8 **pre, yyjson_read_flag flg,
             return_raw();
         }
     } else {
-        while (char_is_digit(*cur)) cur++;
+        cur = skip_digits(cur, padded);
         if (!char_is_fp(*cur)) return_raw();
     }
 
@@ -3526,7 +3677,7 @@ read_double:
                 return_err(cur, "no digit after decimal point");
             }
         }
-        while (char_is_digit(*cur)) cur++;
+        cur = skip_digits(cur, padded);
     }
 
     /* read exponent part */
@@ -3535,7 +3686,7 @@ read_double:
         if (!char_is_digit(*cur++)) {
             return_err(cur, "no digit after exponent sign");
         }
-        while (char_is_digit(*cur)) cur++;
+        cur = skip_digits(cur, padded);
     }
 
     return_raw();
@@ -4057,6 +4208,42 @@ static_inline u64 diy_fp_to_ieee_raw(diy_fp fp) {
  *============================================================================*/
 
 /**
+ The number of significant digits a number must have before the reader
+ switches from reading one digit at a time to reading four at a time.
+
+ It may not exceed `U64_SAFE_DIG - 4`, because the first four digits are
+ added to the significand before the digit budget is tested again, nor 18,
+ which is the last position the unrolled reader defines a label for.
+ */
+#define DEC_4_MIN_DIG 8
+
+/**
+ Reads four consecutive decimal digits at `ptr` and stores their value in
+ `val`. Returns false if the four bytes are not all digits, leaving `val`
+ unchanged.
+
+ The bytes are always combined in little-endian order, so the digit read at
+ `ptr` ends up in the lowest byte on any host and a single load is emitted.
+
+ Four bytes may only be read when the input is followed by
+ `YYJSON_PADDING_SIZE` bytes, which is why the callers test `padded` first.
+ */
+static_inline bool read_dec_4(const u8 *ptr, u32 *val) {
+    u32 v = ((u32)ptr[0]) | ((u32)ptr[1] << 8) |
+            ((u32)ptr[2] << 16) | ((u32)ptr[3] << 24);
+    if (!dec_4_is_digits(v)) return false;
+    /*
+     Fold the four digits pairwise: each multiply shifts one digit of a pair
+     onto the other and adds them, which leaves the pair value in a single
+     byte, then the two pairs in a single half-word.
+     */
+    v &= 0x0F0F0F0FUL;
+    v = (u32)(v * 2561UL) >> 8;
+    *val = (u32)((v & 0x00FF00FFUL) * 6553601UL) >> 16;
+    return true;
+}
+
+/**
  Read a JSON number.
 
  1. This function assume that the floating-point number is in IEEE-754 format.
@@ -4066,7 +4253,7 @@ static_inline u64 diy_fp_to_ieee_raw(diy_fp fp) {
  3. This function (with inline attribute) may generate a lot of instructions.
  */
 static_inline bool read_num(u8 **ptr, u8 **pre, yyjson_read_flag flg,
-                            yyjson_val *val, const char **msg) {
+                            yyjson_val *val, const char **msg, bool padded) {
 #define return_err(_pos, _msg) do { \
     *msg = _msg; \
     *end = _pos; \
@@ -4121,6 +4308,7 @@ static_inline bool read_num(u8 **ptr, u8 **pre, yyjson_read_flag flg,
     i64 exp_sig = 0; /* temporary exponent number from significant part */
     i64 exp_lit = 0; /* temporary exponent number from exponent literal part */
     u64 num; /* temporary number for reading */
+    u32 num4; /* temporary four-digit number for reading */
     u8 *tmp; /* temporary cursor for reading */
 
     u8 *hdr = *ptr;
@@ -4130,7 +4318,7 @@ static_inline bool read_num(u8 **ptr, u8 **pre, yyjson_read_flag flg,
 
     /* read number as raw string if has `YYJSON_READ_NUMBER_AS_RAW` flag */
     if (has_flg(NUMBER_AS_RAW)) {
-        return read_num_raw(ptr, pre, flg, val, msg);
+        return read_num_raw(ptr, pre, flg, val, msg, padded);
     }
 
     sign = (*hdr == '-');
@@ -4239,6 +4427,9 @@ leading_dot:
     /* read fraction part */
 #define expr_frac(i) \
     digi_frac_##i: \
+    if ((i) == DEC_4_MIN_DIG && padded && read_dec_4(cur + (i) + 1, &num4)) { \
+        num = (i); goto digi_frac_read; \
+    } \
     if (likely((num = (u64)(cur[i + 1] - (u8)'0')) <= 9)) \
         sig = num + sig * 10; \
     else { goto digi_stop_##i; }
@@ -4257,6 +4448,33 @@ leading_dot:
     goto digi_frac_end;
     repeat_in_1_18(expr_stop)
 #undef expr_stop
+
+
+    /*
+     Read the rest of a long fraction part, same as the unrolled code above.
+     Entered with `num4` holding the next four digits, `num` the digit count
+     already in `sig`, and `cur + num + 1` the first of those four digits.
+
+     Reading four digits at a time shortens the dependency chain of four
+     multiply-adds to a single one, and replaces four unpredictable branches
+     with a single test. The hand-off sits inside the unrolled code rather
+     than at its entry, so that only numbers long enough to profit from it
+     ever reach the test.
+     */
+digi_frac_read:
+    cur += num + 1;
+    do {
+        sig = sig * 10000 + num4;
+        cur += 4;
+        num += 4;
+    } while (num <= U64_SAFE_DIG - 4 && read_dec_4(cur, &num4));
+    while (num < U64_SAFE_DIG && char_is_digit(*cur)) {
+        sig = sig * 10 + (u64)(*cur - '0');
+        cur++;
+        num++;
+    }
+    if (likely(!char_is_digit(*cur))) goto digi_frac_end; /* fraction end */
+    goto digi_frac_more; /* read more digits in fraction part */
 
 
     /* read more digits in integral part */
@@ -4701,7 +4919,7 @@ digi_finish:
  This function use libc's strtod() to read floating-point number.
  */
 static_inline bool read_num(u8 **ptr, u8 **pre, yyjson_read_flag flg,
-                            yyjson_val *val, const char **msg) {
+                            yyjson_val *val, const char **msg, bool padded) {
 #define return_err(_pos, _msg) do { \
     *msg = _msg; \
     *end = _pos; \
@@ -4754,7 +4972,7 @@ static_inline bool read_num(u8 **ptr, u8 **pre, yyjson_read_flag flg,
 
     /* read number as raw string if has `YYJSON_READ_NUMBER_AS_RAW` flag */
     if (has_flg(NUMBER_AS_RAW)) {
-        return read_num_raw(ptr, pre, flg, val, msg);
+        return read_num_raw(ptr, pre, flg, val, msg, padded);
     }
 
     sign = (*hdr == '-');
@@ -5031,6 +5249,45 @@ skip_ascii:
      })
      */
     if (quo == '"') {
+#if YYJSON_HAS_SIMD_SSE2
+    /*
+     With SIMD, the first chunk of the string is tested at once and the exact
+     stop position is dispatched through a jump table. Every case advances
+     `src` by a constant, so the position is predicted by the indirect branch
+     like the exits of the unrolled round below, instead of waiting for the
+     result of `count_trailing_zeros(mask)`. This replaces a load, a table
+     lookup and a branch per byte with a few instructions per string.
+     */
+#if YYJSON_HAS_SIMD_AVX2
+#define str_head_size 32
+#define str_head_mask(src) str_stop_mask_avx2( \
+    _mm256_loadu_si256((const __m256i *)(const void *)(src)))
+#define str_head_cases repeat32_incr
+#else
+#define str_head_size 16
+#define str_head_mask(src) str_stop_mask_sse2( \
+    _mm_loadu_si128((const __m128i *)(const void *)(src)))
+#define str_head_cases repeat16_incr
+#endif
+#define expr_case(i) case i: src += i; goto skip_ascii_end;
+    if (simd_chunk_fits(src, eof, str_head_size)) {
+        tmp = str_head_mask(src);
+        if (likely(tmp)) {
+            switch (u64_tz_bits(tmp)) {
+                str_head_cases(expr_case)
+                default: break;
+            }
+        }
+        src += str_head_size;
+        src = str_ascii_skip_chunks(src, eof);
+        goto skip_ascii;
+    }
+#undef expr_case
+#undef str_head_cases
+#undef str_head_mask
+#undef str_head_size
+#endif
+
 #define expr_jump(i) \
     if (likely(char_is_ascii_skip(src[i]))) {} \
     else goto skip_ascii_stop##i;
@@ -5040,14 +5297,13 @@ skip_ascii:
     src += i; \
     goto skip_ascii_end;
 
+    /* With SIMD, only the tail of the input where no chunk fits gets here. */
     repeat16_incr(expr_jump)
     src += 16;
 #if YYJSON_HAS_SIMD_SSE2
     /*
-     Only strings longer than this first unrolled round reach the SIMD scan,
-     so short strings keep the exact cost of the scalar-only build.
-     The scan merely reports which chunk holds the terminator; the unrolled
-     round above resolves the exact byte. See str_ascii_skip_chunks().
+     The head test above did not fit, so this scan fails its bound check at
+     once. It is kept because GCC lays out the string parser worse without it.
      */
     src = str_ascii_skip_chunks(src, eof);
 #endif
@@ -5166,67 +5422,61 @@ static_inline bool read_str_copy(u8 quo, u8 *hdr, u8 **end, u8 *src,
 
 copy_escape:
     if (likely(*src == '\\')) {
-        switch (*++src) {
-            case '"':  *dst++ = '"';  src++; break;
-            case '\\': *dst++ = '\\'; src++; break;
-            case '/':  *dst++ = '/';  src++; break;
-            case 'b':  *dst++ = '\b'; src++; break;
-            case 'f':  *dst++ = '\f'; src++; break;
-            case 'n':  *dst++ = '\n'; src++; break;
-            case 'r':  *dst++ = '\r'; src++; break;
-            case 't':  *dst++ = '\t'; src++; break;
-            case 'u':
-                src--;
-                if (!read_uni_esc(&src, &dst, msg)) return_err(src, *msg);
-                break;
-            default: {
-                if (has_allow(EXT_ESCAPE)) {
-                    /* read extended escape (non-standard) */
-                    switch (*src) {
-                        case '\'': *dst++ = '\''; src++; break;
-                        case 'a':  *dst++ = '\a'; src++; break;
-                        case 'v':  *dst++ = '\v'; src++; break;
-                        case '?':  *dst++ = '\?'; src++; break;
-                        case 'e':  *dst++ = 0x1B; src++; break;
-                        case '0':
-                            if (!char_is_digit(src[1])) {
-                                *dst++ = '\0'; src++; break;
-                            }
-                            return_err(src - 1, "octal escape is not allowed");
-                        case '1': case '2': case '3': case '4':
-                        case '5': case '6': case '7': case '8': case '9':
-                            return_err(src - 1, "invalid number escape");
-                        case 'x': {
-                            u8 c;
-                            if (hex_load_2(src + 1, &c)) {
-                                src += 3;
-                                if (c <= 0x7F) { /* 1-byte ASCII */
-                                    *dst++ = c;
-                                } else { /* 2-byte UTF-8 */
-                                    *dst++ = (u8)(0xC0 | (c >> 6));
-                                    *dst++ = (u8)(0x80 | (c & 0x3F));
-                                }
-                                break;
-                            }
-                            return_err(src - 1, "invalid hex escape");
-                        }
-                        case '\n': src++; break;
-                        case '\r': src++; src += (*src == '\n'); break;
-                        case 0xE2: /* Line terminator: U+2028, U+2029 */
-                            if ((src[1] == 0x80 && src[2] == 0xA8) ||
-                                (src[1] == 0x80 && src[2] == 0xA9)) {
-                                src += 3;
-                            }
-                            break;
-                        default:
-                            break; /* skip */
+        u8 esc = esc_conv_table[*++src];
+        if (likely(esc != 0)) {
+            /* One of ["\\/bfnrt], resolved with a table load: which escape
+               follows is hard to predict, so dispatching on the character
+               costs a mispredicted indirect branch on nearly every escape. */
+            *dst++ = esc;
+            src++;
+        } else if (likely(*src == 'u')) {
+            src--;
+            if (!read_uni_esc(&src, &dst, msg)) return_err(src, *msg);
+        } else if (has_allow(EXT_ESCAPE)) {
+            /* read extended escape (non-standard) */
+            switch (*src) {
+                case '\'': *dst++ = '\''; src++; break;
+                case 'a':  *dst++ = '\a'; src++; break;
+                case 'v':  *dst++ = '\v'; src++; break;
+                case '?':  *dst++ = '\?'; src++; break;
+                case 'e':  *dst++ = 0x1B; src++; break;
+                case '0':
+                    if (!char_is_digit(src[1])) {
+                        *dst++ = '\0'; src++; break;
                     }
-                } else if (quo == '\'' && *src == '\'') {
-                    *dst++ = '\''; src++; break;
-                } else {
-                    return_err(src - 1, "invalid escaped sequence in string");
+                    return_err(src - 1, "octal escape is not allowed");
+                case '1': case '2': case '3': case '4':
+                case '5': case '6': case '7': case '8': case '9':
+                    return_err(src - 1, "invalid number escape");
+                case 'x': {
+                    u8 c;
+                    if (hex_load_2(src + 1, &c)) {
+                        src += 3;
+                        if (c <= 0x7F) { /* 1-byte ASCII */
+                            *dst++ = c;
+                        } else { /* 2-byte UTF-8 */
+                            *dst++ = (u8)(0xC0 | (c >> 6));
+                            *dst++ = (u8)(0x80 | (c & 0x3F));
+                        }
+                        break;
+                    }
+                    return_err(src - 1, "invalid hex escape");
                 }
+                case '\n': src++; break;
+                case '\r': src++; src += (*src == '\n'); break;
+                case 0xE2: /* Line terminator: U+2028, U+2029 */
+                    if ((src[1] == 0x80 && src[2] == 0xA8) ||
+                        (src[1] == 0x80 && src[2] == 0xA9)) {
+                        src += 3;
+                    }
+                    break;
+                default:
+                    break; /* skip */
             }
+        } else if (quo == '\'' && *src == '\'') {
+            *dst++ = '\''; src++;
+        } else {
+            return_err(src - 1, "invalid escaped sequence in string");
         }
     } else if (likely(*src == quo)) {
         val->tag = ((u64)(dst - hdr) << YYJSON_TAG_BIT) | YYJSON_TYPE_STR;
@@ -5243,7 +5493,6 @@ copy_escape:
         *dst++ = *src++;
     }
 
-    goto copy_ascii;
 copy_ascii:
     /*
      Copy continuous ASCII, loop unrolling, same as the following code:
@@ -5270,7 +5519,8 @@ copy_ascii:
     byte_move_16(dst, src);
     dst += 16; src += 16;
 #if YYJSON_HAS_SIMD_SSE2
-    /* See the matching comment in the skip loop of `read_str_opt()`. */
+    /* Only strings longer than the unrolled round above reach the SIMD copy,
+       which leaves the exact stop to that round. See str_ascii_copy_chunks(). */
     if (quo == '"') {
         str_pos_pair simd_pos = str_ascii_copy_chunks(src, dst, eof);
         src = simd_pos.src;
@@ -5554,7 +5804,7 @@ static_noinline yyjson_doc *read_root_single(u8 *hdr, u8 *cur, u8 *eof,
     val = val_hdr + hdr_len;
 
     if (char_is_num(*cur)) {
-        if (likely(read_num(&cur, pre, flg, val, &msg))) goto doc_end;
+        if (likely(read_num(&cur, pre, flg, val, &msg, true))) goto doc_end;
         goto fail_number;
     }
     if (*cur == '"') {
@@ -5588,7 +5838,7 @@ static_noinline yyjson_doc *read_root_single(u8 *hdr, u8 *cur, u8 *eof,
 doc_end:
     /* check invalid contents after json document */
     if (unlikely(cur < eof) && !has_flg(STOP_WHEN_DONE)) {
-        while (char_is_space(*cur)) cur++;
+        cur = skip_spaces(cur);
         if (has_allow(TRIVIA) && char_is_trivia(*cur)) {
             if (!skip_trivia(&cur, eof, flg) && cur == eof) {
                 goto fail_comment;
@@ -5736,7 +5986,7 @@ arr_val_begin:
     if (char_is_num(*cur)) {
         val_incr();
         ctn_len++;
-        if (likely(read_num(&cur, pre, flg, val, &msg))) goto arr_val_end;
+        if (likely(read_num(&cur, pre, flg, val, &msg, true))) goto arr_val_end;
         goto fail_number;
     }
     if (*cur == '"') {
@@ -5914,7 +6164,7 @@ obj_val_begin:
     if (char_is_num(*cur)) {
         val++;
         ctn_len++;
-        if (likely(read_num(&cur, pre, flg, val, &msg))) goto obj_val_end;
+        if (likely(read_num(&cur, pre, flg, val, &msg, true))) goto obj_val_end;
         goto fail_number;
     }
     if (*cur == '{') {
@@ -6009,7 +6259,7 @@ obj_end:
 doc_end:
     /* check invalid contents after json document */
     if (unlikely(cur < eof) && !has_flg(STOP_WHEN_DONE)) {
-        while (char_is_space(*cur)) cur++;
+        cur = skip_spaces(cur);
         if (has_allow(TRIVIA) && char_is_trivia(*cur)) {
             if (!skip_trivia(&cur, eof, flg) && cur == eof) {
                 goto fail_comment;
@@ -6047,11 +6297,38 @@ fail_depth:             return_err(cur, DEPTH, MSG_DEPTH);
 #undef return_err
 }
 
-/** Read JSON document (accept all style, but optimized for pretty). */
-static_inline yyjson_doc *read_root_pretty(u8 *hdr, u8 *cur, u8 *eof,
-                                           yyjson_alc alc,
-                                           yyjson_read_flag flg,
-                                           yyjson_read_err *err) {
+#if YYJSON_HAS_SIMD_SSE2
+/**
+ Returns whether `cur` starts with exactly `ind` spaces, that is `ind` spaces
+ followed by another character. Reads 32 bytes, so `ind` must be less than 32
+ to match, and the caller must make sure that the 32 bytes are readable.
+ */
+static_inline bool indent_match(const u8 *cur, usize ind) {
+    u32 m;
+#if YYJSON_HAS_SIMD_AVX2
+    __m256i c = _mm256_loadu_si256((const __m256i *)(const void *)cur);
+    m = (u32)_mm256_movemask_epi8(_mm256_cmpeq_epi8(c, _mm256_set1_epi8(' ')));
+#else
+    __m128i sp = _mm_set1_epi8(' ');
+    __m128i c0 = _mm_loadu_si128((const __m128i *)(const void *)cur);
+    __m128i c1 = _mm_loadu_si128((const __m128i *)(const void *)(cur + 16));
+    m = (u32)_mm_movemask_epi8(_mm_cmpeq_epi8(c0, sp)) |
+        ((u32)_mm_movemask_epi8(_mm_cmpeq_epi8(c1, sp)) << 16);
+#endif
+    return u64_tz_bits(~(u64)m) == ind;
+}
+#endif
+
+/**
+ Read JSON document (accept all style, but optimized for pretty).
+
+ Kept out of line, so that it does not share one register allocation with the
+ minified reader and changes to one of them do not perturb the other.
+ */
+static_noinline yyjson_doc *read_root_pretty(u8 *hdr, u8 *cur, u8 *eof,
+                                             yyjson_alc alc,
+                                             yyjson_read_flag flg,
+                                             yyjson_read_err *err) {
 #define return_err(_pos, _code, _msg) do { \
     if (is_truncated_end(hdr, _pos, eof, YYJSON_READ_ERROR_##_code, flg)) { \
         err->pos = (usize)(eof - hdr); \
@@ -6065,6 +6342,46 @@ static_inline yyjson_doc *read_root_pretty(u8 *hdr, u8 *cur, u8 *eof,
     if (val_hdr) alc.free(alc.ctx, val_hdr); \
     return NULL; \
 } while (false)
+
+/*
+ Pretty-printed documents indent each line by the depth of the line times a
+ fixed width, so the indentation that follows a line break is known before it
+ is read. It is checked with a single vector comparison and skipped at once,
+ where the loop below takes one iteration per two spaces and a mispredicted
+ exit whenever the depth changes. Any other layout falls back to the loop.
+ */
+#if YYJSON_HAS_SIMD_SSE2
+#define indent_learn() do { \
+    while (cur[ind_unit] == ' ') ind_unit++; \
+    ind = ind_unit; \
+} while (false)
+#define indent_open() ind += ind_unit
+#define indent_close() ind -= ind_unit
+#define skip_indent(_label) do { \
+    if (likely(eof - cur > 32) && likely(indent_match(cur, ind))) { \
+        cur += ind; \
+        goto _label; \
+    } \
+} while (false)
+#define skip_close_indent(_chr, _label) do { \
+    usize ind_close = ind - ind_unit; \
+    if (*cur == '\n' && likely(eof - cur > 33) && \
+        indent_match(cur + 1, ind_close) && cur[1 + ind_close] == (_chr)) { \
+        cur += 1 + ind_close; \
+        goto _label; \
+    } \
+} while (false)
+#else
+#define indent_learn() do {} while (false)
+#define indent_open() do {} while (false)
+#define indent_close() do {} while (false)
+#define skip_indent(_label) do { \
+    if (false) goto _label; \
+} while (false)
+#define skip_close_indent(_chr, _label) do { \
+    if (false) goto _label; \
+} while (false)
+#endif
 
 #define val_incr() do { \
     val++; \
@@ -6105,6 +6422,10 @@ static_inline yyjson_doc *read_root_pretty(u8 *hdr, u8 *cur, u8 *eof,
 #if YYJSON_READER_DEPTH_LIMIT
     usize ctn_depth = 0; /* current array/object depth */
 #endif
+#if YYJSON_HAS_SIMD_SSE2
+    usize ind_unit = 0; /* indentation width of one level */
+    usize ind; /* expected indentation inside current container */
+#endif
 
     dat_len = has_flg(STOP_WHEN_DONE) ? 256 : (usize)(eof - cur);
     hdr_len = sizeof(yyjson_doc) / sizeof(yyjson_val);
@@ -6124,11 +6445,13 @@ static_inline yyjson_doc *read_root_pretty(u8 *hdr, u8 *cur, u8 *eof,
         ctn->tag = YYJSON_TYPE_OBJ;
         ctn->uni.ofs = 0;
         if (*cur == '\n') cur++;
+        indent_learn();
         goto obj_key_begin;
     } else {
         ctn->tag = YYJSON_TYPE_ARR;
         ctn->uni.ofs = 0;
         if (*cur == '\n') cur++;
+        indent_learn();
         goto arr_val_begin;
     }
 
@@ -6152,7 +6475,11 @@ arr_begin:
     /* push the new array value as current container */
     ctn = val;
     ctn_len = 0;
-    if (*cur == '\n') cur++;
+    indent_open();
+    if (*cur == '\n') {
+        cur++;
+        skip_indent(arr_val_ready);
+    }
 
 arr_val_begin:
 #if YYJSON_IS_REAL_GCC
@@ -6166,6 +6493,7 @@ arr_val_begin:
         else break;
     })
 #endif
+arr_val_ready:
 
     if (*cur == '{') {
         cur++;
@@ -6178,7 +6506,7 @@ arr_val_begin:
     if (char_is_num(*cur)) {
         val_incr();
         ctn_len++;
-        if (likely(read_num(&cur, pre, flg, val, &msg))) goto arr_val_end;
+        if (likely(read_num(&cur, pre, flg, val, &msg, true))) goto arr_val_end;
         goto fail_number;
     }
     if (*cur == '"') {
@@ -6216,7 +6544,7 @@ arr_val_begin:
         goto fail_trailing_comma;
     }
     if (char_is_space(*cur)) {
-        while (char_is_space(*++cur));
+        cur = skip_spaces(cur + 1);
         goto arr_val_begin;
     }
     if (has_allow(INF_AND_NAN) &&
@@ -6241,6 +6569,7 @@ arr_val_begin:
 arr_val_end:
     if (byte_match_2(cur, ",\n")) {
         cur += 2;
+        skip_indent(arr_val_ready);
         goto arr_val_begin;
     }
     if (*cur == ',') {
@@ -6248,11 +6577,13 @@ arr_val_end:
         goto arr_val_begin;
     }
     if (*cur == ']') {
+arr_val_end_close:
         cur++;
         goto arr_end;
     }
     if (char_is_space(*cur)) {
-        while (char_is_space(*++cur));
+        skip_close_indent(']', arr_val_end_close);
+        cur = skip_spaces(cur + 1);
         goto arr_val_end;
     }
     if (has_allow(TRIVIA) && char_is_trivia(*cur)) {
@@ -6276,6 +6607,7 @@ arr_end:
     /* pop parent as current container */
     ctn = ctn_parent;
     ctn_len = (usize)(ctn->tag >> YYJSON_TAG_BIT);
+    indent_close();
     if (*cur == '\n') cur++;
     if ((ctn->tag & YYJSON_TYPE_MASK) == YYJSON_TYPE_OBJ) {
         goto obj_val_end;
@@ -6300,7 +6632,11 @@ obj_begin:
     val->uni.ofs = (usize)((u8 *)val - (u8 *)ctn);
     ctn = val;
     ctn_len = 0;
-    if (*cur == '\n') cur++;
+    indent_open();
+    if (*cur == '\n') {
+        cur++;
+        skip_indent(obj_key_ready);
+    }
 
 obj_key_begin:
 #if YYJSON_IS_REAL_GCC
@@ -6314,6 +6650,7 @@ obj_key_begin:
         else break;
     })
 #endif
+obj_key_ready:
     if (likely(*cur == '"')) {
         val_incr();
         ctn_len++;
@@ -6328,7 +6665,7 @@ obj_key_begin:
         goto fail_trailing_comma;
     }
     if (char_is_space(*cur)) {
-        while (char_is_space(*++cur));
+        cur = skip_spaces(cur + 1);
         goto obj_key_begin;
     }
     if (has_allow(SINGLE_QUOTED_STR) && *cur == '\'') {
@@ -6359,7 +6696,7 @@ obj_key_end:
         goto obj_val_begin;
     }
     if (char_is_space(*cur)) {
-        while (char_is_space(*++cur));
+        cur = skip_spaces(cur + 1);
         goto obj_key_end;
     }
     if (has_allow(TRIVIA) && char_is_trivia(*cur)) {
@@ -6378,7 +6715,7 @@ obj_val_begin:
     if (char_is_num(*cur)) {
         val++;
         ctn_len++;
-        if (likely(read_num(&cur, pre, flg, val, &msg))) goto obj_val_end;
+        if (likely(read_num(&cur, pre, flg, val, &msg, true))) goto obj_val_end;
         goto fail_number;
     }
     if (*cur == '{') {
@@ -6411,7 +6748,7 @@ obj_val_begin:
         goto fail_literal_null;
     }
     if (char_is_space(*cur)) {
-        while (char_is_space(*++cur));
+        cur = skip_spaces(cur + 1);
         goto obj_val_begin;
     }
     if (has_allow(INF_AND_NAN) &&
@@ -6436,6 +6773,7 @@ obj_val_begin:
 obj_val_end:
     if (byte_match_2(cur, ",\n")) {
         cur += 2;
+        skip_indent(obj_key_ready);
         goto obj_key_begin;
     }
     if (likely(*cur == ',')) {
@@ -6443,11 +6781,13 @@ obj_val_end:
         goto obj_key_begin;
     }
     if (likely(*cur == '}')) {
+obj_val_end_close:
         cur++;
         goto obj_end;
     }
     if (char_is_space(*cur)) {
-        while (char_is_space(*++cur));
+        skip_close_indent('}', obj_val_end_close);
+        cur = skip_spaces(cur + 1);
         goto obj_val_end;
     }
     if (has_allow(TRIVIA) && char_is_trivia(*cur)) {
@@ -6469,6 +6809,7 @@ obj_end:
     if (unlikely(ctn == ctn_parent)) goto doc_end;
     ctn = ctn_parent;
     ctn_len = (usize)(ctn->tag >> YYJSON_TAG_BIT);
+    indent_close();
     if (*cur == '\n') cur++;
     if ((ctn->tag & YYJSON_TYPE_MASK) == YYJSON_TYPE_OBJ) {
         goto obj_val_end;
@@ -6479,7 +6820,7 @@ obj_end:
 doc_end:
     /* check invalid contents after json document */
     if (unlikely(cur < eof) && !has_flg(STOP_WHEN_DONE)) {
-        while (char_is_space(*cur)) cur++;
+        cur = skip_spaces(cur);
         if (has_allow(TRIVIA) && char_is_trivia(*cur)) {
             if (!skip_trivia(&cur, eof, flg) && cur == eof) {
                 goto fail_comment;
@@ -6513,6 +6854,11 @@ fail_comment:           return_err(cur, INVALID_COMMENT, MSG_COMMENT);
 fail_garbage:           return_err(cur, UNEXPECTED_CONTENT, MSG_GARBAGE);
 fail_depth:             return_err(cur, DEPTH, MSG_DEPTH);
 
+#undef skip_close_indent
+#undef skip_indent
+#undef indent_close
+#undef indent_open
+#undef indent_learn
 #undef val_incr
 #undef return_err
 }
@@ -6570,7 +6916,7 @@ yyjson_doc *yyjson_read_opts(char *dat, usize len,
 
     /* skip empty contents before json document */
     if (unlikely(!char_is_ctn(*cur))) {
-        while (char_is_space(*cur)) cur++;
+        cur = skip_spaces(cur);
         if (unlikely(!char_is_ctn(*cur))) {
             if (has_allow(TRIVIA) && char_is_trivia(*cur)) {
                 if (!skip_trivia(&cur, eof, flg) && cur == eof) {
@@ -6795,7 +7141,7 @@ const char *yyjson_read_number(const char *dat,
 #endif
 
 #if YYJSON_DISABLE_FAST_FP_CONV
-    if (!read_num(&cur, pre, flg, val, &msg)) {
+    if (!read_num(&cur, pre, flg, val, &msg, false)) {
         if (dat_len >= sizeof(buf)) alc->free(alc->ctx, hdr);
         return_err(cur, INVALID_NUMBER, msg);
     }
@@ -6803,7 +7149,7 @@ const char *yyjson_read_number(const char *dat,
     if (yyjson_is_raw(val)) val->uni.str = dat;
     return dat + (cur - hdr);
 #else
-    if (!read_num(&cur, pre, flg, val, &msg)) {
+    if (!read_num(&cur, pre, flg, val, &msg, false)) {
         return_err(cur, INVALID_NUMBER, msg);
     }
     return (const char *)cur;
@@ -7051,7 +7397,7 @@ yyjson_doc *yyjson_incr_read(yyjson_incr_state *state, size_t len,
 doc_begin:
     /* skip empty contents before json document */
     if (unlikely(!char_is_ctn(*cur))) {
-        while (char_is_space(*cur)) cur++;
+        cur = skip_spaces(cur);
         if (unlikely(cur >= end)) goto unexpected_end; /* input data is empty */
     }
 
@@ -7093,7 +7439,7 @@ doc_begin:
         goto arr_val_begin;
     }
     if (char_is_num(*cur)) {
-        if (likely(read_num(&cur, pre, flg, val, &msg))) {
+        if (likely(read_num(&cur, pre, flg, val, &msg, true))) {
             /* a root number may continue with more digits in a later chunk */
             if (unlikely(len < state->buf_len)) check_maybe_truncated_number();
             goto doc_end;
@@ -7161,7 +7507,7 @@ arr_val_continue:
     if (char_is_num(*cur)) {
         val_incr();
         ctn_len++;
-        if (likely(read_num(&cur, pre, flg, val, &msg))) goto arr_val_maybe_end;
+        if (likely(read_num(&cur, pre, flg, val, &msg, true))) goto arr_val_maybe_end;
         goto fail_number;
     }
     if (*cur == '"') {
@@ -7196,7 +7542,7 @@ arr_val_continue:
         goto fail_trailing_comma;
     }
     if (char_is_space(*cur)) {
-        while (char_is_space(*++cur));
+        cur = skip_spaces(cur + 1);
         goto arr_val_continue;
     }
     goto fail_character_val;
@@ -7217,7 +7563,7 @@ arr_val_end:
         goto arr_end;
     }
     if (char_is_space(*cur)) {
-        while (char_is_space(*++cur));
+        cur = skip_spaces(cur + 1);
         goto arr_val_end;
     }
     goto fail_character_arr_end;
@@ -7278,7 +7624,7 @@ obj_key_continue:
         goto fail_trailing_comma;
     }
     if (char_is_space(*cur)) {
-        while (char_is_space(*++cur));
+        cur = skip_spaces(cur + 1);
         goto obj_key_continue;
     }
     goto fail_character_obj_key;
@@ -7290,7 +7636,7 @@ obj_key_end:
         goto obj_val_begin;
     }
     if (char_is_space(*cur)) {
-        while (char_is_space(*++cur));
+        cur = skip_spaces(cur + 1);
         goto obj_key_end;
     }
     goto fail_character_obj_sep;
@@ -7308,7 +7654,7 @@ obj_val_continue:
     if (char_is_num(*cur)) {
         val++;
         ctn_len++;
-        if (likely(read_num(&cur, pre, flg, val, &msg))) goto obj_val_maybe_end;
+        if (likely(read_num(&cur, pre, flg, val, &msg, true))) goto obj_val_maybe_end;
         goto fail_number;
     }
     if (*cur == '{') {
@@ -7338,7 +7684,7 @@ obj_val_continue:
         goto fail_literal_null;
     }
     if (char_is_space(*cur)) {
-        while (char_is_space(*++cur));
+        cur = skip_spaces(cur + 1);
         goto obj_val_continue;
     }
     goto fail_character_val;
@@ -7359,7 +7705,7 @@ obj_val_end:
         goto obj_end;
     }
     if (char_is_space(*cur)) {
-        while (char_is_space(*++cur));
+        cur = skip_spaces(cur + 1);
         goto obj_val_end;
     }
     goto fail_character_obj_end;
@@ -7388,7 +7734,7 @@ doc_end:
     if (unlikely(cur < end || len < state->buf_len) &&
         !has_flg(STOP_WHEN_DONE)) {
         save_incr_state(doc_end);
-        while (char_is_space(*cur)) cur++;
+        cur = skip_spaces(cur);
         if (unlikely(cur < end)) goto fail_garbage;
         /* the document is complete for the bytes seen so far, but more input
            is still pending; it may hold trailing content that has to be
@@ -8774,6 +9120,10 @@ typedef u8 char_enc_type;
 #define CHAR_ENC_CPY_4  8 /* 4-byte UTF-8, copy. */
 #define CHAR_ENC_ESC_4  9 /* 4-byte UTF-8, escaped as '\uXXXX\uXXXX'. */
 
+/* The SIMD stop set of the string writer must match the non-zero entries of
+   these tables, or it would copy a byte through unescaped. See
+   enc_copy_chunks(). */
+
 /** Character encode type table: don't escape unicode, don't escape '/'.
     (generated with misc/make_tables.c) */
 static const char_enc_type enc_table_cpy[256] = {
@@ -9126,6 +9476,151 @@ static_inline u8 *write_str_noesc(u8 *cur, const u8 *str, usize str_len) {
     return cur;
 }
 
+#if YYJSON_HAS_SIMD_SSE2
+
+/** A pair of read/write positions used by the string writer. */
+typedef struct { const u8 *src; u8 *dst; } enc_pos_pair;
+
+/** SIMD chunk size used by the string writer. */
+#if YYJSON_HAS_SIMD_AVX2
+#   define ENC_CHUNK_SIZE 32
+#else
+#   define ENC_CHUNK_SIZE 16
+#endif
+
+/**
+ Returns a bitmask of bytes that end a copyable ASCII run in the string writer:
+ a control character, a non-ASCII byte, the quote, the backslash, and the slash
+ if it is escaped. This is exactly the set of bytes with a non-zero entry in
+ `enc_table`, for all four tables: they differ only in the slash entry and in
+ the encode type (not the zero/non-zero state) of the non-ASCII bytes.
+ Bytes >= 0x80 are negative as signed, so a single signed compare covers both
+ control characters and non-ASCII bytes. The SSE2 variant takes the slash as
+ an argument and is given the quote instead when slashes are not escaped, so
+ that one compare serves both cases without a second copy of the loop.
+ */
+#if YYJSON_HAS_SIMD_AVX2
+/** Returns the shuffle table used by enc_stop_mask_avx2(). */
+static_inline __m256i enc_stop_table_avx2(bool esc_slash) {
+    /*
+     The quote, the backslash and the slash are matched with a byte shuffle
+     instead of three compares: indexing the table with a byte yields that byte
+     again only for 0x22, 0x5C and 0x2F, since every other entry has a
+     different low nibble. The zero entries can only match a null byte, which
+     stops the run anyway, and a byte >= 0x80 shuffles in a zero and is caught
+     by the signed compare. See also str_stop_mask_avx2().
+
+     The two variants are kept as constant data and selected with an index, so
+     that setting the table up costs a single load instead of the instruction
+     sequence a vector built from a runtime value would need.
+     */
+    static const u8 tables[2][32] = {
+        { 0, 0, '"', 0, 0, 0, 0, 0, 0, 0, 0, 0, '\\', 0, 0, 0,
+          0, 0, '"', 0, 0, 0, 0, 0, 0, 0, 0, 0, '\\', 0, 0, 0 },
+        { 0, 0, '"', 0, 0, 0, 0, 0, 0, 0, 0, 0, '\\', 0, 0, '/',
+          0, 0, '"', 0, 0, 0, 0, 0, 0, 0, 0, 0, '\\', 0, 0, '/' }
+    };
+    return _mm256_loadu_si256(
+        (const __m256i *)(const void *)tables[esc_slash]);
+}
+
+static_inline u32 enc_stop_mask_avx2(__m256i chunk, __m256i table) {
+    __m256i limit = _mm256_set1_epi8(0x20);
+    __m256i esc_char = _mm256_cmpeq_epi8(chunk,
+                                         _mm256_shuffle_epi8(table, chunk));
+    __m256i ctrl_or_non_ascii = _mm256_cmpgt_epi8(limit, chunk);
+    return (u32)_mm256_movemask_epi8(
+        _mm256_or_si256(esc_char, ctrl_or_non_ascii));
+}
+#else
+static_inline u32 enc_stop_mask_sse2(__m128i chunk, __m128i extra) {
+    __m128i quote = _mm_set1_epi8('"');
+    __m128i slash = _mm_set1_epi8('\\');
+    __m128i limit = _mm_set1_epi8(0x20);
+    __m128i quote_mask = _mm_cmpeq_epi8(chunk, quote);
+    __m128i slash_mask = _mm_cmpeq_epi8(chunk, slash);
+    __m128i extra_mask = _mm_cmpeq_epi8(chunk, extra);
+    __m128i ctrl_or_non_ascii = _mm_cmplt_epi8(chunk, limit);
+    return (u32)_mm_movemask_epi8(_mm_or_si128(
+        _mm_or_si128(quote_mask, slash_mask),
+        _mm_or_si128(extra_mask, ctrl_or_non_ascii)));
+}
+#endif
+
+/**
+ Copies whole SIMD chunks of a string that need no escaping and returns the
+ position of the first byte that does (or the position where fewer than one
+ chunk is left).
+
+ Unlike the reader, the writer must not read past the end of the input string,
+ since the caller's buffer has no padding, so only full chunks are loaded.
+ The store, on the other hand, may always write a whole chunk: the output
+ buffer is sized for `str_len * 6 + 2` bytes and each consumed input byte
+ produces at most 6 output bytes, so at least `6 * (end - src) + 1` bytes are
+ still available, which exceeds the chunk size whenever a chunk is loaded.
+ Storing unconditionally keeps the loop at a single branch, and the exact stop
+ position is then cheap to derive because the bytes are already in place.
+
+ GCC reads static_inline as always_inline and would paste both instruction set
+ variants into the already large writer, so only GCC is asked to keep it out
+ of line; Clang makes the better choice by itself.
+ */
+#if YYJSON_IS_REAL_GCC
+#   define enc_copy_chunks_linkage static_noinline
+#else
+#   define enc_copy_chunks_linkage static_inline
+#endif
+
+enc_copy_chunks_linkage enc_pos_pair enc_copy_chunks(const u8 *src, u8 *dst,
+                                                     const u8 *end,
+                                                     bool esc_slash) {
+    enc_pos_pair pos;
+#if YYJSON_HAS_SIMD_AVX2
+    if (end - src >= ENC_CHUNK_SIZE) {
+        __m256i table = enc_stop_table_avx2(esc_slash);
+        do {
+            __m256i chunk =
+                _mm256_loadu_si256((const __m256i *)(const void *)src);
+            u32 mask = enc_stop_mask_avx2(chunk, table);
+            _mm256_storeu_si256((__m256i *)(void *)dst, chunk);
+            if (mask) {
+                u32 cnt = u64_tz_bits(mask);
+                src += cnt;
+                dst += cnt;
+                break;
+            }
+            src += ENC_CHUNK_SIZE;
+            dst += ENC_CHUNK_SIZE;
+        } while (end - src >= ENC_CHUNK_SIZE);
+    }
+#else
+    if (end - src >= ENC_CHUNK_SIZE) {
+        __m128i extra = _mm_set1_epi8(esc_slash ? '/' : '"');
+        do {
+            __m128i chunk =
+                _mm_loadu_si128((const __m128i *)(const void *)src);
+            u32 mask = enc_stop_mask_sse2(chunk, extra);
+            _mm_storeu_si128((__m128i *)(void *)dst, chunk);
+            if (mask) {
+                u32 cnt = u64_tz_bits(mask);
+                src += cnt;
+                dst += cnt;
+                break;
+            }
+            src += ENC_CHUNK_SIZE;
+            dst += ENC_CHUNK_SIZE;
+        } while (end - src >= ENC_CHUNK_SIZE);
+    }
+#endif
+    pos.src = src;
+    pos.dst = dst;
+    return pos;
+}
+
+#undef enc_copy_chunks_linkage
+
+#endif
+
 /**
  Write UTF-8 string (requires len * 6 + 2 bytes buffer).
  @param cur Buffer cursor.
@@ -9170,6 +9665,16 @@ copy_ascii:
         repeat16_incr(expr_jump)
         byte_copy_16(cur, src);
         cur += 16; src += 16;
+#if YYJSON_HAS_SIMD_SSE2
+        /*
+         Only strings that already passed the unrolled round above reach the
+         chunk copy, so text that escapes or leaves ASCII every few bytes
+         never pays for the chunk setup. The copy itself is kept out of this
+         loop so that its code does not compete with the unrolled round for
+         the instruction fetch window. See enc_copy_chunks().
+         */
+        if (end - src >= (ptrdiff_t)ENC_CHUNK_SIZE) goto copy_chunks;
+#endif
     }
 
     while (end - src >= 4) {
@@ -9190,6 +9695,22 @@ copy_ascii:
 
 #undef expr_jump
 #undef expr_stop
+
+#if YYJSON_HAS_SIMD_SSE2
+copy_chunks:
+    /*
+     On return `src` either points at a byte that the table marks, which the
+     unrolled round resolves with a single lookup, or at the last bytes of the
+     string.
+     */
+    {
+        enc_pos_pair pos = enc_copy_chunks(src, cur, end,
+                                           enc_table[(u8)'/'] != 0);
+        src = pos.src;
+        cur = pos.dst;
+    }
+    goto copy_ascii;
+#endif
 
 copy_utf8:
     if (unlikely(src + 4 > end)) {
@@ -10005,11 +10526,24 @@ fail_depth: return_err(DEPTH, MSG_DEPTH);
 #undef check_str_len
 }
 
-static char *write_root(const yyjson_val *val,
-                        yyjson_write_flag flg,
-                        const yyjson_alc *alc_ptr,
-                        char *buf, usize *dat_len,
-                        yyjson_write_err *err) {
+/*
+ With link-time optimization or a unity build, the caller's constant write
+ flags let the optimizer specialize write_root(). The clone is smaller but
+ slower, because its branch layout leaves the hot path jumping instead of
+ falling through, so the flags are kept out of interprocedural analysis where
+ the compiler allows it. The mutable writer profits from the propagation.
+ */
+#if yyjson_has_attribute(noipa)
+#   define write_root_noipa __attribute__((noipa))
+#else
+#   define write_root_noipa
+#endif
+
+static write_root_noipa char *write_root(const yyjson_val *val,
+                                         yyjson_write_flag flg,
+                                         const yyjson_alc *alc_ptr,
+                                         char *buf, usize *dat_len,
+                                         yyjson_write_err *err) {
     yyjson_write_err tmp_err;
     usize tmp_dat_len;
     yyjson_alc alc = alc_ptr ? *alc_ptr : YYJSON_DEFAULT_ALC;
@@ -10033,6 +10567,8 @@ static char *write_root(const yyjson_val *val,
         return (char *)write_root_minify(root, flg, alc, buf, dat_len, err);
     }
 }
+
+#undef write_root_noipa
 
 
 

@@ -117,6 +117,16 @@
 #define YYJSON_DISABLE_SIMD 0
 #endif
 
+/* Define as 1 to stop the default allocator from asking Linux to back blocks
+   of 32 MiB or more with transparent huge pages, which saves most of the page
+   faults of reading or writing a large document. The advice only affects how
+   the memory is mapped, never its contents. It is only done with glibc, and
+   needs `madvise` to be declared, which strict ISO C modes such as `-std=c11`
+   hide. */
+#ifndef YYJSON_DISABLE_HUGE_PAGES
+#define YYJSON_DISABLE_HUGE_PAGES 0
+#endif
+
 /* Define to an integer to set a depth limit for reading nested arrays/objects.
    0 disables the policy limit. */
 #ifndef YYJSON_READER_DEPTH_LIMIT
