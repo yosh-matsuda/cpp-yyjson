@@ -1,25 +1,22 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="980" height="158" viewBox="0 0 980 158">
 <rect width="100%" height="100%" fill="#ffffff"/>
 <style>text{font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,sans-serif;fill:#172033}.title{font-size:20px;font-weight:700}.heading{font-size:13px;font-weight:600;fill:#334155}.label{font-size:13px}.value{font-size:12px;fill:#475569}.axis{stroke:#cbd5e1;stroke-width:1}.grid{stroke:#e2e8f0;stroke-width:1}</style>
-<text x="24" y="34" class="title">Write performance: array double</text>
+<text x="24" y="34" class="title">Write performance: object append</text>
 <line x1="300" y1="132" x2="852" y2="132" class="axis"/>
 <line x1="300.0" y1="50" x2="300.0" y2="132" class="grid"/>
 <text x="300.0" y="150" class="value" text-anchor="middle">0.000 ms</text>
 <line x1="438.0" y1="50" x2="438.0" y2="132" class="grid"/>
-<text x="438.0" y="150" class="value" text-anchor="middle">2.03 ms</text>
+<text x="438.0" y="150" class="value" text-anchor="middle">8.25 ms</text>
 <line x1="576.0" y1="50" x2="576.0" y2="132" class="grid"/>
-<text x="576.0" y="150" class="value" text-anchor="middle">4.07 ms</text>
+<text x="576.0" y="150" class="value" text-anchor="middle">16.5 ms</text>
 <line x1="714.0" y1="50" x2="714.0" y2="132" class="grid"/>
-<text x="714.0" y="150" class="value" text-anchor="middle">6.10 ms</text>
+<text x="714.0" y="150" class="value" text-anchor="middle">24.8 ms</text>
 <line x1="852.0" y1="50" x2="852.0" y2="132" class="grid"/>
-<text x="852.0" y="150" class="value" text-anchor="middle">8.13 ms</text>
+<text x="852.0" y="150" class="value" text-anchor="middle">33.0 ms</text>
 <text x="24" y="74" class="label">cpp-yyjson</text>
-<rect x="300" y="63" width="498.0" height="14" rx="2" fill="#2563eb"/>
-<text x="864" y="74" class="value">7.33 ms</text>
-<text x="24" y="98" class="label">cpp-yyjson single</text>
-<rect x="300" y="87" width="500.9" height="14" rx="2" fill="#2563eb"/>
-<text x="864" y="98" class="value">7.38 ms</text>
-<text x="24" y="122" class="label">yyjson</text>
-<rect x="300" y="111" width="511.1" height="14" rx="2" fill="#16a34a"/>
-<text x="864" y="122" class="value">7.53 ms</text>
+<rect x="300" y="63" width="453.5" height="14" rx="2" fill="#2563eb"/>
+<text x="864" y="74" class="value">27.1 ms</text>
+<text x="24" y="98" class="label">yyjson</text>
+<rect x="300" y="87" width="511.1" height="14" rx="2" fill="#16a34a"/>
+<text x="864" y="98" class="value">30.6 ms</text>
 </svg>

@@ -6,43 +6,43 @@
 <line x1="300.0" y1="50" x2="300.0" y2="352" class="grid"/>
 <text x="300.0" y="370" class="value" text-anchor="middle">0.000 ms</text>
 <line x1="438.0" y1="50" x2="438.0" y2="352" class="grid"/>
-<text x="438.0" y="370" class="value" text-anchor="middle">0.468 ms</text>
+<text x="438.0" y="370" class="value" text-anchor="middle">0.337 ms</text>
 <line x1="576.0" y1="50" x2="576.0" y2="352" class="grid"/>
-<text x="576.0" y="370" class="value" text-anchor="middle">0.935 ms</text>
+<text x="576.0" y="370" class="value" text-anchor="middle">0.674 ms</text>
 <line x1="714.0" y1="50" x2="714.0" y2="352" class="grid"/>
-<text x="714.0" y="370" class="value" text-anchor="middle">1.40 ms</text>
+<text x="714.0" y="370" class="value" text-anchor="middle">1.01 ms</text>
 <line x1="852.0" y1="50" x2="852.0" y2="352" class="grid"/>
-<text x="852.0" y="370" class="value" text-anchor="middle">1.87 ms</text>
+<text x="852.0" y="370" class="value" text-anchor="middle">1.35 ms</text>
 <text x="24" y="76" class="heading">New parser / allocator per parse</text>
-<text x="24" y="100" class="label">simdjson On Demand (pad)</text>
-<rect x="300" y="89" width="163.7" height="14" rx="2" fill="#9333ea"/>
-<text x="864" y="100" class="value">0.555 ms</text>
-<text x="24" y="124" class="label">simdjson DOM (pad)</text>
-<rect x="300" y="113" width="206.6" height="14" rx="2" fill="#9333ea"/>
-<text x="864" y="124" class="value">0.700 ms</text>
-<text x="24" y="148" class="label">cpp-yyjson (in-situ)</text>
-<rect x="300" y="137" width="215.0" height="14" rx="2" fill="#2563eb"/>
-<text x="864" y="148" class="value">0.728 ms</text>
+<text x="24" y="100" class="label">cpp-yyjson (in-situ)</text>
+<rect x="300" y="89" width="206.0" height="14" rx="2" fill="#2563eb"/>
+<text x="864" y="100" class="value">0.503 ms</text>
+<text x="24" y="124" class="label">simdjson On Demand (pad)</text>
+<rect x="300" y="113" width="230.1" height="14" rx="2" fill="#9333ea"/>
+<text x="864" y="124" class="value">0.562 ms</text>
+<text x="24" y="148" class="label">simdjson DOM (pad)</text>
+<rect x="300" y="137" width="271.9" height="14" rx="2" fill="#9333ea"/>
+<text x="864" y="148" class="value">0.664 ms</text>
 <text x="24" y="172" class="label">yyjson (in-situ)</text>
-<rect x="300" y="161" width="276.1" height="14" rx="2" fill="#16a34a"/>
-<text x="864" y="172" class="value">0.935 ms</text>
+<rect x="300" y="161" width="300.7" height="14" rx="2" fill="#16a34a"/>
+<text x="864" y="172" class="value">0.734 ms</text>
 <text x="24" y="196" class="label">rapidjson (in-situ)</text>
-<rect x="300" y="185" width="511.1" height="14" rx="2" fill="#dc2626"/>
-<text x="864" y="196" class="value">1.73 ms</text>
+<rect x="300" y="185" width="493.5" height="14" rx="2" fill="#dc2626"/>
+<text x="864" y="196" class="value">1.21 ms</text>
 <text x="24" y="222" class="heading">Reused parser / allocator</text>
-<text x="24" y="246" class="label">simdjson On Demand (pad)</text>
-<rect x="300" y="235" width="164.0" height="14" rx="2" fill="#9333ea"/>
-<text x="864" y="246" class="value">0.556 ms</text>
-<text x="24" y="270" class="label">simdjson DOM (pad)</text>
-<rect x="300" y="259" width="206.2" height="14" rx="2" fill="#9333ea"/>
-<text x="864" y="270" class="value">0.699 ms</text>
-<text x="24" y="294" class="label">cpp-yyjson (in-situ)</text>
-<rect x="300" y="283" width="213.6" height="14" rx="2" fill="#2563eb"/>
-<text x="864" y="294" class="value">0.724 ms</text>
+<text x="24" y="246" class="label">cpp-yyjson (in-situ)</text>
+<rect x="300" y="235" width="205.7" height="14" rx="2" fill="#2563eb"/>
+<text x="864" y="246" class="value">0.502 ms</text>
+<text x="24" y="270" class="label">simdjson On Demand (pad)</text>
+<rect x="300" y="259" width="228.8" height="14" rx="2" fill="#9333ea"/>
+<text x="864" y="270" class="value">0.559 ms</text>
+<text x="24" y="294" class="label">simdjson DOM (pad)</text>
+<rect x="300" y="283" width="270.4" height="14" rx="2" fill="#9333ea"/>
+<text x="864" y="294" class="value">0.660 ms</text>
 <text x="24" y="318" class="label">yyjson (in-situ)</text>
-<rect x="300" y="307" width="276.0" height="14" rx="2" fill="#16a34a"/>
-<text x="864" y="318" class="value">0.935 ms</text>
+<rect x="300" y="307" width="299.8" height="14" rx="2" fill="#16a34a"/>
+<text x="864" y="318" class="value">0.732 ms</text>
 <text x="24" y="342" class="label">rapidjson (in-situ)</text>
-<rect x="300" y="331" width="497.7" height="14" rx="2" fill="#dc2626"/>
-<text x="864" y="342" class="value">1.69 ms</text>
+<rect x="300" y="331" width="511.1" height="14" rx="2" fill="#dc2626"/>
+<text x="864" y="342" class="value">1.25 ms</text>
 </svg>

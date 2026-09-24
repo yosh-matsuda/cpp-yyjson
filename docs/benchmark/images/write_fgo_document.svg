@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="306" viewBox="0 0 980 306">
+<rect width="100%" height="100%" fill="#ffffff"/>
+<style>text{font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,sans-serif;fill:#172033}.title{font-size:20px;font-weight:700}.heading{font-size:13px;font-weight:600;fill:#334155}.label{font-size:13px}.value{font-size:12px;fill:#475569}.axis{stroke:#cbd5e1;stroke-width:1}.grid{stroke:#e2e8f0;stroke-width:1}</style>
+<text x="24" y="34" class="title">Document serialization: fgo</text>
+<line x1="300" y1="280" x2="852" y2="280" class="axis"/>
+<line x1="300.0" y1="50" x2="300.0" y2="280" class="grid"/>
+<text x="300.0" y="298" class="value" text-anchor="middle">0.000 ms</text>
+<line x1="438.0" y1="50" x2="438.0" y2="280" class="grid"/>
+<text x="438.0" y="298" class="value" text-anchor="middle">52.0 ms</text>
+<line x1="576.0" y1="50" x2="576.0" y2="280" class="grid"/>
+<text x="576.0" y="298" class="value" text-anchor="middle">104 ms</text>
+<line x1="714.0" y1="50" x2="714.0" y2="280" class="grid"/>
+<text x="714.0" y="298" class="value" text-anchor="middle">156 ms</text>
+<line x1="852.0" y1="50" x2="852.0" y2="280" class="grid"/>
+<text x="852.0" y="298" class="value" text-anchor="middle">208 ms</text>
+<text x="24" y="76" class="heading">New output buffer per write</text>
+<text x="24" y="100" class="label">cpp-yyjson</text>
+<rect x="300" y="89" width="66.8" height="14" rx="2" fill="#2563eb"/>
+<text x="864" y="100" class="value">25.2 ms</text>
+<text x="24" y="124" class="label">yyjson</text>
+<rect x="300" y="113" width="103.8" height="14" rx="2" fill="#16a34a"/>
+<text x="864" y="124" class="value">39.1 ms</text>
+<text x="24" y="148" class="label">rapidjson</text>
+<rect x="300" y="137" width="315.4" height="14" rx="2" fill="#dc2626"/>
+<text x="864" y="148" class="value">119 ms</text>
+<text x="24" y="172" class="label">nlohmann-json</text>
+<rect x="300" y="161" width="511.1" height="14" rx="2" fill="#f97316"/>
+<text x="864" y="172" class="value">192 ms</text>
+<text x="24" y="198" class="heading">Reused output buffer</text>
+<text x="24" y="222" class="label">cpp-yyjson</text>
+<rect x="300" y="211" width="59.6" height="14" rx="2" fill="#2563eb"/>
+<text x="864" y="222" class="value">22.4 ms</text>
+<text x="24" y="246" class="label">yyjson</text>
+<rect x="300" y="235" width="67.7" height="14" rx="2" fill="#16a34a"/>
+<text x="864" y="246" class="value">25.5 ms</text>
+<text x="24" y="270" class="label">rapidjson</text>
+<rect x="300" y="259" width="292.7" height="14" rx="2" fill="#dc2626"/>
+<text x="864" y="270" class="value">110 ms</text>
+</svg>
