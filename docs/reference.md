@@ -171,6 +171,8 @@ The buffer must be larger than the final JSON string, because the yyjson writer 
 
 A buffer that is too small does not overrun; the `write` function throws `yyjson::write_error` instead, as it does for the other write failures.
 
+The `code()` member function of `yyjson::write_error` returns the [`yyjson_write_code`](https://ibireme.github.io/yyjson/doc/doxygen/html/yyjson_8h.html) of the failure that yyjson reports, as `yyjson::read_error` does for a read. A `write_error` that is constructed from a message alone returns `YYJSON_WRITE_SUCCESS`.
+
 **Type inspection**
 
 The `inspect` function returns the JSON value content as `yyjson::reader::value_variant`. It is useful when you want to branch by JSON type once and handle the value with `std::visit`, instead of trying multiple `as_*` functions. The `inspect(visitor)` overload dispatches directly to the visitor without creating a variant, which is useful for hot paths such as recursive JSON walkers.

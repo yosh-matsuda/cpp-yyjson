@@ -2801,6 +2801,20 @@ TEST(Reader, Allocator)
         {
             EXPECT_EQ(YYJSON_READ_ERROR_MEMORY_ALLOCATION, err.code());
         }
+
+        const auto expect_write_allocation_error = [&f_alloc](const auto& json, std::string_view label) {
+            try
+            {
+                static_cast<void>(json.write(f_alloc));
+                ADD_FAILURE() << "Expected write_error: " << label;
+            }
+            catch (const write_error& err)
+            {
+                EXPECT_EQ(YYJSON_WRITE_ERROR_MEMORY_ALLOCATION, err.code()) << label;
+            }
+        };
+        expect_write_allocation_error(read(json_str), "immutable");
+        expect_write_allocation_error(yyjson::value(read(json_str)), "mutable");
     }
 
     auto str_insitu = std::string(json_str) + "    "s;
@@ -3379,8 +3393,19 @@ namespace
         EXPECT_EQ(expected, json_value.write(std::span(buffer), write_flag)) << label;
 
         auto too_small = std::vector<char>(1);
-        EXPECT_THROW(std::ignore = json_value.write(std::span(too_small), write_flag), yyjson::write_error) << label;
-        EXPECT_THROW(std::ignore = json_value.write(std::span<char>(), write_flag), yyjson::write_error) << label;
+        const auto expect_write_error = [&](std::span<char> out, yyjson_write_code code) {
+            try
+            {
+                std::ignore = json_value.write(out, write_flag);
+                ADD_FAILURE() << "Expected write_error: " << label;
+            }
+            catch (const yyjson::write_error& err)
+            {
+                EXPECT_EQ(code, err.code()) << label;
+            }
+        };
+        expect_write_error(std::span(too_small), YYJSON_WRITE_ERROR_MEMORY_ALLOCATION);
+        expect_write_error(std::span<char>(), YYJSON_WRITE_ERROR_INVALID_PARAMETER);
     }
 
     constexpr auto write_flag_cases = std::array{

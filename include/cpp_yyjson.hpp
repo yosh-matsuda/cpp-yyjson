@@ -47,7 +47,14 @@ namespace yyjson
     };
     class write_error : public std::runtime_error
     {
+        yyjson_write_code code_ = YYJSON_WRITE_SUCCESS;
+
+    public:
         using std::runtime_error::runtime_error;
+        write_error(const std::string& what, yyjson_write_code code) : std::runtime_error(what), code_(code) {}
+
+        // The code is the one that yyjson reports, so the caller need not parse the message.
+        [[nodiscard]] yyjson_write_code code() const noexcept { return code_; }
     };
 
     enum class ReadFlag : yyjson_read_flag
@@ -2157,7 +2164,7 @@ namespace yyjson
                     {
                         return json_string(result, len);
                     }
-                    throw write_error(std::format("write JSON error: {}", err.msg));
+                    throw write_error(std::format("write JSON error: {}", err.msg), err.code);
                 }
                 template <yyjson_allocator Alloc>
                 [[nodiscard]] auto write(Alloc& alc, WriteFlag write_flag = WriteFlag::NoFlag) const
@@ -2184,7 +2191,7 @@ namespace yyjson
                             return json_string(result, len, detail::get_allocator_pointer(alc));
                     }
 
-                    throw write_error(std::format("write JSON error: {}", err.msg));
+                    throw write_error(std::format("write JSON error: {}", err.msg), err.code);
                 }
 #if YYJSON_VERSION_HEX >= 0x000D00
                 [[nodiscard]] std::string_view write(std::span<char> buffer,
@@ -2202,7 +2209,7 @@ namespace yyjson
                     {
                         return {buffer.data(), len};
                     }
-                    throw write_error(std::format("write JSON error: {}", err.msg));
+                    throw write_error(std::format("write JSON error: {}", err.msg), err.code);
                 }
                 [[nodiscard]] std::size_t write_max_memory_usage(WriteFlag write_flag = WriteFlag::NoFlag) const
                 {
@@ -3835,7 +3842,7 @@ namespace yyjson
                 {
                     return json_string(result, len);
                 }
-                throw write_error(std::format("write JSON error: {}", err.msg));
+                throw write_error(std::format("write JSON error: {}", err.msg), err.code);
             }
             template <yyjson_allocator Alloc>
             [[nodiscard]] auto write(Alloc& alc, const WriteFlag write_flag = WriteFlag::NoFlag) const
@@ -3854,7 +3861,7 @@ namespace yyjson
                     if (result != nullptr) [[likely]]
                         return json_string(result, len, detail::get_allocator_pointer(alc));
                 }
-                throw write_error(std::format("write JSON error: {}", err.msg));
+                throw write_error(std::format("write JSON error: {}", err.msg), err.code);
             }
 #if YYJSON_VERSION_HEX >= 0x000D00
             [[nodiscard]] std::string_view write(std::span<char> buffer,
@@ -3867,7 +3874,7 @@ namespace yyjson
                 {
                     return {buffer.data(), len};
                 }
-                throw write_error(std::format("write JSON error: {}", err.msg));
+                throw write_error(std::format("write JSON error: {}", err.msg), err.code);
             }
             [[nodiscard]] std::size_t write_max_memory_usage(const WriteFlag write_flag = WriteFlag::NoFlag) const
             {
@@ -4311,7 +4318,7 @@ namespace yyjson
                 {
                     return json_string(result, len);
                 }
-                throw write_error(std::format("write JSON error: {}", err.msg));
+                throw write_error(std::format("write JSON error: {}", err.msg), err.code);
             }
 
             template <yyjson_allocator Alloc>
@@ -4331,7 +4338,7 @@ namespace yyjson
                     if (result != nullptr) [[likely]]
                         return json_string(result, len, detail::get_allocator_pointer(alc));
                 }
-                throw write_error(std::format("write JSON error: {}", err.msg));
+                throw write_error(std::format("write JSON error: {}", err.msg), err.code);
             }
 
 #if YYJSON_VERSION_HEX >= 0x000D00
@@ -4345,7 +4352,7 @@ namespace yyjson
                 {
                     return {buffer.data(), len};
                 }
-                throw write_error(std::format("write JSON error: {}", err.msg));
+                throw write_error(std::format("write JSON error: {}", err.msg), err.code);
             }
             [[nodiscard]] std::size_t write_max_memory_usage(const WriteFlag write_flag = WriteFlag::NoFlag) const
             {
