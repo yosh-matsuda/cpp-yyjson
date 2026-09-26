@@ -598,6 +598,9 @@ void read_cpp_yyjson_single(benchmark::State& state)
     using namespace yyjson;
     const auto json = read_file(std::get<0>(json_files[state.range(0)]));
     auto alloc = reader::pool_allocator(json);
+    // `pool_allocator` leaves its buffer untouched, so fault its pages in outside the timed
+    // loop, as the zero-initialized buffer of read_c_yyjson_single does.
+    std::ignore = read(json, alloc);
     for (auto _ : state)
     {
         auto counter = json_count();
@@ -624,6 +627,11 @@ void read_cpp_yyjson_insitu_single(benchmark::State& state)
     using namespace yyjson;
     const auto json = read_file(std::get<0>(json_files[state.range(0)]));
     auto alloc = reader::pool_allocator(json, ReadFlag::ReadInsitu);
+    {
+        // Fault the pool in outside the timed loop, as in read_cpp_yyjson_single.
+        auto json_insitu = json + std::string(YYJSON_PADDING_SIZE, '\0');
+        std::ignore = read(json_insitu, json.size(), alloc, ReadFlag::ReadInsitu);
+    }
     for (auto _ : state)
     {
         auto counter = json_count();
@@ -654,6 +662,8 @@ void read_cpp_yyjson_insitu_single_copy(benchmark::State& state)
     // The padded copy is reused the same way the simdjson rows reuse theirs, so that
     // this section differs from the one above only in the reuse of parser memory.
     auto json_insitu = json + std::string(YYJSON_PADDING_SIZE, '\0');
+    // Fault the pool in outside the timed loop, as in read_cpp_yyjson_single.
+    std::ignore = read(json_insitu, json.size(), alloc, ReadFlag::ReadInsitu);
     for (auto _ : state)
     {
         auto counter = json_count();
