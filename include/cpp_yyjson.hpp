@@ -415,7 +415,7 @@ namespace yyjson
         {
             if (size == 0) return init();
             buf_ = std::allocator<char_like>().allocate(size);
-            std::ranges::uninitialized_value_construct(buf_, buf_ + size);
+            std::ranges::uninitialized_default_construct(buf_, buf_ + size);
             size_ = size;
 
             // allocate memory pool
