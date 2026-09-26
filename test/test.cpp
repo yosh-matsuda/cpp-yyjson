@@ -2712,8 +2712,14 @@ TEST(Reader, Allocator)
     }
     EXPECT_EQ(1, d_alloc.ptr().use_count());
 
+    try
     {
-        EXPECT_THROW(read(json_str, s_alloc_s).write(), std::runtime_error);
+        static_cast<void>(read(json_str, s_alloc_s));
+        FAIL() << "Expected read_error";
+    }
+    catch (const read_error& err)
+    {
+        EXPECT_EQ(YYJSON_READ_ERROR_MEMORY_ALLOCATION, err.code());
     }
     {
         auto json = read(json_str, s_alloc_l);
@@ -2772,6 +2778,28 @@ TEST(Reader, Allocator)
         catch (const read_error& err)
         {
             EXPECT_NE(std::string_view(err.what()).find("line 2, column"), std::string_view::npos);
+            EXPECT_EQ(YYJSON_READ_ERROR_UNEXPECTED_CHARACTER, err.code());
+        }
+    }
+
+    {
+        struct failing_allocator
+        {
+            yyjson_alc alc = {.malloc = [](void*, std::size_t) -> void* { return nullptr; },
+                              .realloc = [](void*, void*, std::size_t, std::size_t) -> void* { return nullptr; },
+                              .free = [](void*, void*) {},
+                              .ctx = nullptr};
+            yyjson_alc* ptr() { return &alc; }
+        };
+        auto f_alloc = failing_allocator();
+        try
+        {
+            static_cast<void>(read(json_str, f_alloc));
+            FAIL() << "Expected read_error";
+        }
+        catch (const read_error& err)
+        {
+            EXPECT_EQ(YYJSON_READ_ERROR_MEMORY_ALLOCATION, err.code());
         }
     }
 

@@ -36,7 +36,14 @@ namespace yyjson
     };
     class read_error : public std::runtime_error
     {
+        yyjson_read_code code_ = YYJSON_READ_SUCCESS;
+
+    public:
         using std::runtime_error::runtime_error;
+        read_error(const std::string& what, yyjson_read_code code) : std::runtime_error(what), code_(code) {}
+
+        // The code tells a failed allocation from a malformed input without parsing the message.
+        [[nodiscard]] yyjson_read_code code() const noexcept { return code_; }
     };
     class write_error : public std::runtime_error
     {
@@ -4433,9 +4440,10 @@ namespace yyjson
             auto success = yyjson_locate_pos(str, len, err.pos, &line, &col, &chr);
             if (success)
                 return read_error(
-                    std::format("Read JSON error: {} at line {}, column {}, pos {}", err.msg, line, col, err.pos));
+                    std::format("Read JSON error: {} at line {}, column {}, pos {}", err.msg, line, col, err.pos),
+                    err.code);
 #endif
-            return read_error(std::format("Read JSON error: {} at pos {}", err.msg, err.pos));
+            return read_error(std::format("Read JSON error: {} at pos {}", err.msg, err.pos), err.code);
         }
 
         template <yyjson_allocator Alloc>
@@ -4452,8 +4460,9 @@ namespace yyjson
             {
                 if (!alc.check_capacity({str, len}, read_flag))
                 {
-                    throw std::runtime_error(
-                        std::format("Insufficient capacity in the pool allocator for {}", detail::type_name<Alloc>()));
+                    throw read_error(
+                        std::format("Insufficient capacity in the pool allocator for {}", detail::type_name<Alloc>()),
+                        YYJSON_READ_ERROR_MEMORY_ALLOCATION);
                 }
             }
             result = yyjson_read_opts(str, len, to_underlying(read_flag), detail::get_allocator_pointer(alc), &err);

@@ -72,6 +72,8 @@ The `read` function takes a JSON string and returns an immutable JSON value. The
 
 If the read option has the [`ReadInsitu`](https://ibireme.github.io/yyjson/doc/doxygen/html/md_doc__a_p_i.html#autotoc_md34) flag, You must specify the JSON string as writable (`std::string&` or `char*`) and its length. This writable string must be padded at least [`YYJSON_PADDING_SIZE`](https://ibireme.github.io/yyjson/doc/doxygen/html/yyjson_8h.html#abbe8e69f634b1a5a78c1dae08b88e0ef) bytes to the end. The length of the JSON string should be unpadded.
 
+If the read fails, the `read` function throws `yyjson::read_error`. Its `code()` member function returns the [`yyjson_read_code`](https://ibireme.github.io/yyjson/doc/doxygen/html/yyjson_8h.html) of the failure, so that the caller can tell a failed allocation (`YYJSON_READ_ERROR_MEMORY_ALLOCATION`) from a malformed input. A `read_error` that is constructed from a message alone returns `YYJSON_READ_SUCCESS`.
+
 ### `yyjson::reader::value`
 
 The immutable JSON value class is returned from `yyjson::read` function.
@@ -917,7 +919,7 @@ auto write_json(const auto& json)
 
 This is a smart pointer wrapper for the fixed-size memory allocator of yyjson. The lifetime of the allocator's internal smart pointer will be tied to JSON objects and strings created by `read`/`write` (member) functions, respectively. This allocator is useful when the required memory size is known; for reading JSON strings. Since the buffer size is fixed, the `read` function using the single buffer would be faster than the dynamic allocator.
 
-If the free space of the buffer is not large enough, the `read` or `write` (member) function will throw an exception. The `reset` function re-creates the buffer with the specified size and the `reserve` function can be used to expand the buffer size to be required.
+If the free space of the buffer is not large enough, the `read` function throws `yyjson::read_error` with `YYJSON_READ_ERROR_MEMORY_ALLOCATION`, and the `write` (member) function throws `yyjson::write_error`. The `reset` function re-creates the buffer with the specified size and the `reserve` function can be used to expand the buffer size to be required.
 
 **Constructor**
 
