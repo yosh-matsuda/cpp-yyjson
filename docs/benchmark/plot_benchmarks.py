@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import math
 import re
 from collections import defaultdict
 from pathlib import Path
@@ -190,6 +191,39 @@ WRITE_DATASET_VARIANTS = {
     "write_nlohmann_dataset": ("fresh", "nlohmann-json", "nlohmann-json"),
 }
 
+# The comparisons of the README table: output name -> (title, subtitle,
+# [(benchmark, color key, legend label)], colors).  The first benchmark is cpp-yyjson.
+THROUGHPUT_CHARTS = {
+    "read_throughput": (
+        "Read throughput per document",
+        "Read-only input, new parser / allocator per parse; higher is better",
+        [
+            ("read_cpp_yyjson", "cpp_yyjson", "cpp-yyjson"),
+            ("read_c_yyjson", "c_yyjson", "yyjson"),
+            (
+                "read_simdjson_ond_pad_copy",
+                "simdjson",
+                "simdjson On Demand (copy + pad)",
+            ),
+            ("read_rapidjson", "rapidjson", "rapidjson"),
+        ],
+        READ_COLORS,
+    ),
+    "write_throughput": (
+        "Write throughput per document",
+        "Document serialization, new output buffer per write; higher is better",
+        [
+            ("write_cpp_yyjson_dataset", "cpp-yyjson", "cpp-yyjson"),
+            ("write_c_yyjson_dataset", "yyjson", "yyjson"),
+            ("write_rapidjson_dataset", "rapidjson", "rapidjson"),
+            ("write_nlohmann_dataset", "nlohmann-json", "nlohmann-json"),
+        ],
+        WRITE_COLORS,
+    ),
+}
+
+TIME_UNITS = {"ns": 1e-9, "us": 1e-6, "ms": 1e-3, "s": 1.0}
+
 
 def clean_name(name: str) -> str:
     cleaned = name.removesuffix("_median")
@@ -233,6 +267,38 @@ def load_median_times(paths: list[Path]) -> dict[str, float]:
 
     result = dict(aggregate_times)
     for name, values in iteration_times.items():
+        result.setdefault(name, median(values))
+    return result
+
+
+def load_processed_bytes(paths: list[Path]) -> dict[str, float]:
+    """Bytes processed per iteration, recovered from the `bytes_per_second` counter."""
+    aggregate_bytes: dict[str, float] = {}
+    iteration_bytes: dict[str, list[float]] = defaultdict(list)
+
+    for path in paths:
+        with path.open(encoding="utf-8") as file:
+            data = json.load(file)
+
+        for row in data.get("benchmarks", []):
+            name = row.get("name")
+            rate = row.get("bytes_per_second")
+            time = benchmark_time(row)
+            unit = TIME_UNITS.get(row.get("time_unit", "ms"))
+            if not isinstance(name, str) or not isinstance(rate, int | float):
+                continue
+            if time is None or unit is None:
+                continue
+            value = rate * time * unit
+
+            aggregate_name = row.get("aggregate_name")
+            if aggregate_name == "median" or name.endswith("_median"):
+                aggregate_bytes[clean_name(name)] = value
+            elif row.get("run_type") == "iteration":
+                iteration_bytes[clean_name(name)].append(value)
+
+    result = dict(aggregate_bytes)
+    for name, values in iteration_bytes.items():
         result.setdefault(name, median(values))
     return result
 
@@ -378,6 +444,142 @@ def collect_write_charts(
     }
 
 
+def collect_throughput(
+    times: dict[str, float],
+    processed_bytes: dict[str, float],
+    benchmarks: list[str],
+) -> list[tuple[str, list[float]]]:
+    # Every library is divided into the size cpp-yyjson reports, so the bars of a
+    # document keep the time ratios of the README table even where the libraries
+    # write texts of slightly different lengths.
+    documents = []
+    missing = []
+    baseline = benchmarks[0]
+    for index, dataset_name in DATASET_NAMES.items():
+        size = processed_bytes.get(f"{baseline}/{index}")
+        if size is None:
+            continue
+        values = []
+        for benchmark in benchmarks:
+            time = times.get(f"{benchmark}/{index}")
+            if time is None:
+                missing.append(f"{benchmark}/{index}")
+            elif time > 0:
+                values.append(size / (time * TIME_UNITS["ms"]) / 1e9)
+        documents.append((dataset_name, values))
+    if missing:
+        raise ValueError("missing throughput benchmarks: " + ", ".join(missing))
+    return documents
+
+
+def nice_step(max_value: float, target_ticks: int = 5) -> float:
+    raw = max_value / target_ticks
+    magnitude = 10 ** math.floor(math.log10(raw))
+    for factor in (1, 2, 2.5, 5, 10):
+        if raw <= factor * magnitude:
+            return factor * magnitude
+    return 10 * magnitude
+
+
+def write_throughput_svg(
+    path: Path,
+    title: str,
+    subtitle: str,
+    legend: list[tuple[str, str]],
+    documents: list[tuple[str, list[float]]],
+) -> None:
+    values = [value for _, row in documents for value in row]
+    if not values:
+        return
+
+    width = 980
+    left = 64
+    right = 24
+    plot_top = 112
+    plot_height = 280
+    plot_bottom = plot_top + plot_height
+    height = plot_bottom + 40
+    group_width = (width - left - right) / len(documents)
+    bar_gap = 0
+    bar_width = group_width * 0.62 / len(legend)
+
+    step = nice_step(max(values))
+    scale_max = math.ceil(max(values) * 1.08 / step) * step
+
+    def y_of(value: float) -> float:
+        return plot_bottom - value / scale_max * plot_height
+
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
+        '<rect width="100%" height="100%" fill="#ffffff"/>',
+        "<style>text{font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,sans-serif;fill:#172033}.title{font-size:20px;font-weight:700}.subtitle{font-size:13px;fill:#475569}.label{font-size:13px}.value{font-size:12px;fill:#475569}.axis{stroke:#cbd5e1;stroke-width:1}.grid{stroke:#e2e8f0;stroke-width:1}</style>",
+        f'<text x="24" y="34" class="title">{html.escape(title)}</text>',
+        f'<text x="24" y="56" class="subtitle">{html.escape(subtitle)}</text>',
+    ]
+
+    legend_x = 24.0
+    for label, color in legend:
+        parts.append(
+            f'<rect x="{legend_x:.1f}" y="72" width="12" height="12" rx="2" fill="{color}"/>'
+        )
+        parts.append(
+            f'<text x="{legend_x + 18:.1f}" y="83" class="label">{html.escape(label)}</text>'
+        )
+        legend_x += 18 + 7.2 * len(label) + 24
+
+    tick_count = round(scale_max / step)
+    for tick_index in range(tick_count + 1):
+        tick = step * tick_index
+        tick_y = y_of(tick)
+        parts.append(
+            f'<line x1="{left}" y1="{tick_y:.1f}" x2="{width - right}" y2="{tick_y:.1f}" class="grid"/>'
+        )
+        parts.append(
+            f'<text x="{left - 8}" y="{tick_y + 4:.1f}" class="value" text-anchor="end">{tick:g}</text>'
+        )
+    parts.append(f'<text x="24" y="{plot_top - 10}" class="value">GB/s</text>')
+    parts.append(
+        f'<line x1="{left}" y1="{plot_bottom}" x2="{width - right}" y2="{plot_bottom}" class="axis"/>'
+    )
+
+    for document_index, (dataset_name, row) in enumerate(documents):
+        center = left + group_width * (document_index + 0.5)
+        bars_width = bar_width * len(row) + bar_gap * (len(row) - 1)
+        for value_index, value in enumerate(row):
+            bar_x = center - bars_width / 2 + (bar_width + bar_gap) * value_index
+            top = y_of(value)
+            parts.append(
+                f'<rect x="{bar_x:.1f}" y="{top:.1f}" width="{bar_width:.1f}" height="{max(plot_bottom - top, 1.0):.1f}" fill="{legend[value_index][1]}"/>'
+            )
+        parts.append(
+            f'<text x="{center:.1f}" y="{plot_bottom + 20}" class="value" text-anchor="middle">{html.escape(dataset_name)}</text>'
+        )
+
+    parts.append("</svg>")
+    path.write_text("\n".join(parts) + "\n", encoding="utf-8")
+
+
+def generate_throughput_charts(
+    times: dict[str, float],
+    processed_bytes: dict[str, float],
+    prefix: str,
+    output_dir: Path,
+) -> None:
+    for name, chart in THROUGHPUT_CHARTS.items():
+        title, subtitle, benchmarks, colors = chart
+        if not name.startswith(prefix):
+            continue
+        documents = collect_throughput(
+            times, processed_bytes, [benchmark for benchmark, _, _ in benchmarks]
+        )
+        if not documents:
+            continue
+        legend = [(label, colors[color_key]) for _, color_key, label in benchmarks]
+        write_throughput_svg(
+            output_dir / f"{name}.svg", title, subtitle, legend, documents
+        )
+
+
 def safe_file_name(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", name).strip("_")
 
@@ -485,6 +687,9 @@ def generate_charts(
                 groups,
                 READ_COLORS,
             )
+        generate_throughput_charts(
+            read_times, load_processed_bytes(read_json), "read_", output_dir
+        )
 
     if write_json:
         write_times = load_median_times(write_json)
@@ -505,6 +710,9 @@ def generate_charts(
                 WRITE_COLORS,
                 min_rows=3,
             )
+        generate_throughput_charts(
+            write_times, load_processed_bytes(write_json), "write_", output_dir
+        )
 
 
 def parse_args() -> argparse.Namespace:

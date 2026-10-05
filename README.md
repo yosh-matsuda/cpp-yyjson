@@ -332,12 +332,16 @@ target_link_libraries(${PROJECT_NAME} PRIVATE cpp_yyjson::cpp_yyjson)
 
 cpp-yyjson is compared with [yyjson](https://github.com/ibireme/yyjson), [simdjson](https://github.com/simdjson/simdjson), [rapidjson](https://github.com/Tencent/rapidjson/) and [nlohmann-json](https://github.com/nlohmann/json) on the ten documents of [yyjson_benchmark](https://github.com/ibireme/yyjson_benchmark#json-datasets), which range from 0.1 MB to 66 MB and from number-heavy to string-heavy. Reading is timed as parsing a document and visiting every element of it; writing as turning a parsed document back into JSON text.
 
-The table gives how many times faster cpp-yyjson is than each of them.
+The table gives how many times faster cpp-yyjson is than each of them, and the charts below it give the throughput of each library on each document, higher being faster.
 
 |       | vs. yyjson | vs. simdjson | vs. rapidjson | vs. nlohmann-json |
 | ----- | ---------- | ------------ | ------------- | ----------------- |
 | Read  | 1.0 - 1.8x | 1.1 - 1.6x   | 1.4 - 4.6x    | -                 |
 | Write | 1.0 - 2.1x | -            | 2.6 - 8.1x    | 2.8 - 27x         |
+
+![Read throughput per document](docs/benchmark/images/read_throughput.svg)
+
+![Write throughput per document](docs/benchmark/images/write_throughput.svg)
 
 Each range is the slowest and the fastest of the ten documents, with no average in between, because which document you feed a JSON library moves the result more than any single number can convey. When writing, the low end is the number-only `canada` document, and the smallest document, `github_events`, produces both maxima against rapidjson.
 

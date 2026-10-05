@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="432" viewBox="0 0 980 432">
+<rect width="100%" height="100%" fill="#ffffff"/>
+<style>text{font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,sans-serif;fill:#172033}.title{font-size:20px;font-weight:700}.subtitle{font-size:13px;fill:#475569}.label{font-size:13px}.value{font-size:12px;fill:#475569}.axis{stroke:#cbd5e1;stroke-width:1}.grid{stroke:#e2e8f0;stroke-width:1}</style>
+<text x="24" y="34" class="title">Write throughput per document</text>
+<text x="24" y="56" class="subtitle">Document serialization, new output buffer per write; higher is better</text>
+<rect x="24.0" y="72" width="12" height="12" rx="2" fill="#2563eb"/>
+<text x="42.0" y="83" class="label">cpp-yyjson</text>
+<rect x="138.0" y="72" width="12" height="12" rx="2" fill="#16a34a"/>
+<text x="156.0" y="83" class="label">yyjson</text>
+<rect x="223.2" y="72" width="12" height="12" rx="2" fill="#dc2626"/>
+<text x="241.2" y="83" class="label">rapidjson</text>
+<rect x="330.0" y="72" width="12" height="12" rx="2" fill="#f97316"/>
+<text x="348.0" y="83" class="label">nlohmann-json</text>
+<line x1="64" y1="392.0" x2="956" y2="392.0" class="grid"/>
+<text x="56" y="396.0" class="value" text-anchor="end">0</text>
+<line x1="64" y1="336.0" x2="956" y2="336.0" class="grid"/>
+<text x="56" y="340.0" class="value" text-anchor="end">2</text>
+<line x1="64" y1="280.0" x2="956" y2="280.0" class="grid"/>
+<text x="56" y="284.0" class="value" text-anchor="end">4</text>
+<line x1="64" y1="224.0" x2="956" y2="224.0" class="grid"/>
+<text x="56" y="228.0" class="value" text-anchor="end">6</text>
+<line x1="64" y1="168.0" x2="956" y2="168.0" class="grid"/>
+<text x="56" y="172.0" class="value" text-anchor="end">8</text>
+<line x1="64" y1="112.0" x2="956" y2="112.0" class="grid"/>
+<text x="56" y="116.0" class="value" text-anchor="end">10</text>
+<text x="24" y="102" class="value">GB/s</text>
+<line x1="64" y1="392" x2="956" y2="392" class="axis"/>
+<rect x="80.9" y="369.1" width="13.8" height="22.9" fill="#2563eb"/>
+<rect x="94.8" y="368.9" width="13.8" height="23.1" fill="#16a34a"/>
+<rect x="108.6" y="383.1" width="13.8" height="8.9" fill="#dc2626"/>
+<rect x="122.4" y="383.7" width="13.8" height="8.3" fill="#f97316"/>
+<text x="108.6" y="412" class="value" text-anchor="middle">canada</text>
+<rect x="170.1" y="321.0" width="13.8" height="71.0" fill="#2563eb"/>
+<rect x="184.0" y="326.0" width="13.8" height="66.0" fill="#16a34a"/>
+<rect x="197.8" y="376.7" width="13.8" height="15.3" fill="#dc2626"/>
+<rect x="211.6" y="381.1" width="13.8" height="10.9" fill="#f97316"/>
+<text x="197.8" y="412" class="value" text-anchor="middle">citm_catalog</text>
+<rect x="259.3" y="337.7" width="13.8" height="54.3" fill="#2563eb"/>
+<rect x="273.2" y="357.0" width="13.8" height="35.0" fill="#16a34a"/>
+<rect x="287.0" y="380.5" width="13.8" height="11.5" fill="#dc2626"/>
+<rect x="300.8" y="384.9" width="13.8" height="7.1" fill="#f97316"/>
+<text x="287.0" y="412" class="value" text-anchor="middle">fgo</text>
+<rect x="348.5" y="232.3" width="13.8" height="159.7" fill="#2563eb"/>
+<rect x="362.4" y="261.3" width="13.8" height="130.7" fill="#16a34a"/>
+<rect x="376.2" y="372.3" width="13.8" height="19.7" fill="#dc2626"/>
+<rect x="390.0" y="383.3" width="13.8" height="8.7" fill="#f97316"/>
+<text x="376.2" y="412" class="value" text-anchor="middle">github_events</text>
+<rect x="437.7" y="218.1" width="13.8" height="173.9" fill="#2563eb"/>
+<rect x="451.6" y="309.4" width="13.8" height="82.6" fill="#16a34a"/>
+<rect x="465.4" y="359.3" width="13.8" height="32.7" fill="#dc2626"/>
+<rect x="479.2" y="385.5" width="13.8" height="6.5" fill="#f97316"/>
+<text x="465.4" y="412" class="value" text-anchor="middle">gsoc-2018</text>
+<rect x="526.9" y="366.8" width="13.8" height="25.2" fill="#2563eb"/>
+<rect x="540.8" y="367.5" width="13.8" height="24.5" fill="#16a34a"/>
+<rect x="554.6" y="383.6" width="13.8" height="8.4" fill="#dc2626"/>
+<rect x="568.4" y="385.4" width="13.8" height="6.6" fill="#f97316"/>
+<text x="554.6" y="412" class="value" text-anchor="middle">lottie</text>
+<rect x="616.1" y="352.4" width="13.8" height="39.6" fill="#2563eb"/>
+<rect x="630.0" y="364.5" width="13.8" height="27.5" fill="#16a34a"/>
+<rect x="643.8" y="380.6" width="13.8" height="11.4" fill="#dc2626"/>
+<rect x="657.6" y="385.4" width="13.8" height="6.6" fill="#f97316"/>
+<text x="643.8" y="412" class="value" text-anchor="middle">otfcc</text>
+<rect x="705.3" y="159.1" width="13.8" height="232.9" fill="#2563eb"/>
+<rect x="719.2" y="166.5" width="13.8" height="225.5" fill="#16a34a"/>
+<rect x="733.0" y="360.6" width="13.8" height="31.4" fill="#dc2626"/>
+<rect x="746.8" y="382.8" width="13.8" height="9.2" fill="#f97316"/>
+<text x="733.0" y="412" class="value" text-anchor="middle">poet</text>
+<rect x="794.5" y="277.6" width="13.8" height="114.4" fill="#2563eb"/>
+<rect x="808.4" y="288.5" width="13.8" height="103.5" fill="#16a34a"/>
+<rect x="822.2" y="375.5" width="13.8" height="16.5" fill="#dc2626"/>
+<rect x="836.0" y="382.9" width="13.8" height="9.1" fill="#f97316"/>
+<text x="822.2" y="412" class="value" text-anchor="middle">twitter</text>
+<rect x="883.7" y="305.7" width="13.8" height="86.3" fill="#2563eb"/>
+<rect x="897.6" y="311.0" width="13.8" height="81.0" fill="#16a34a"/>
+<rect x="911.4" y="375.6" width="13.8" height="16.4" fill="#dc2626"/>
+<rect x="925.2" y="382.8" width="13.8" height="9.2" fill="#f97316"/>
+<text x="911.4" y="412" class="value" text-anchor="middle">twitterescaped</text>
+</svg>
