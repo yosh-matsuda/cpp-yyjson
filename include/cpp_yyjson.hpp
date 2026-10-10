@@ -4315,7 +4315,7 @@ namespace yyjson
                 ++*this;
                 return result;
             }
-            auto operator*() const noexcept
+            CPPYYJSON_ALWAYS_INLINE auto operator*() const noexcept
             {
                 return const_key_value_ref_pair(std::string_view(yyjson_get_str(iter_.cur), yyjson_get_len(iter_.cur)),
                                                 const_value_ref(yyjson_obj_iter_get_val(iter_.cur)));
@@ -4331,7 +4331,7 @@ namespace yyjson
 
         protected:
             [[nodiscard]] static auto object_iter_end() noexcept { return yyjson_obj_iter{0, 0, nullptr, nullptr}; }
-            [[nodiscard]] auto object_iter_begin() const noexcept
+            [[nodiscard]] CPPYYJSON_ALWAYS_INLINE auto object_iter_begin() const noexcept
             {
                 if (yyjson_obj_size(base::val_) == 0) return object_iter_end();
                 auto iter = yyjson_obj_iter();
