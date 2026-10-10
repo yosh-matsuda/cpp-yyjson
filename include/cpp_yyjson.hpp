@@ -714,6 +714,19 @@ namespace yyjson
             return std::forward<forward_element_type<R, T>>(t);
         }
 
+        // Field I of an object, moved out only when the object is an rvalue.  This is unlike
+        // `field_reflection::get_field`, which moves the whole object into a tuple to hand out one
+        // field of an rvalue, so that a second call finds the other fields moved from.
+        template <std::size_t I, typename T>
+        decltype(auto) forward_field(T&& t) noexcept
+        {
+            using field_type = field_reflection::field_type<std::remove_cvref_t<T>, I>;
+            if constexpr (std::is_rvalue_reference_v<T&&> && !std::is_reference_v<field_type>)
+                return std::move(field_reflection::get_field<I>(t));
+            else
+                return field_reflection::get_field<I>(t);
+        }
+
         template <typename T>
         struct default_caster;
     }  // namespace detail
@@ -1766,7 +1779,7 @@ namespace yyjson
                                     {
                                         (emitter.emplace(
                                              field_reflection::field_name<value_type, Is>,
-                                             field_reflection::get_field<Is>(std::forward<decltype(element)>(element)),
+                                             yyjson::detail::forward_field<Is>(std::forward<decltype(element)>(element)),
                                              ts...),
                                          ...);
                                     }

@@ -4020,6 +4020,26 @@ TEST(Writer, AggregateRangeIsArray)
     EXPECT_EQ(object(Holder{labeled, 1}).write(), R"({"labeled":{"items":[1,2],"name":"x"},"k":1})");
 }
 
+TEST(Writer, RvalueRangeOfReflectedStructs)
+{
+    using namespace yyjson;
+
+    struct Entry
+    {
+        int id;
+        std::string name;
+        std::vector<int> values;
+    };
+
+    // every field of an element is written, not only the first one that is moved out
+    const auto expected = R"([{"id":1,"name":"a","values":[1,2]},{"id":2,"name":"b","values":[3]}])";
+    auto entries = std::vector<Entry>{{1, "a", {1, 2}}, {2, "b", {3}}};
+    EXPECT_EQ(value(entries).write(), expected);
+    EXPECT_EQ(value(std::vector<Entry>{{1, "a", {1, 2}}, {2, "b", {3}}}).write(), expected);
+    EXPECT_EQ(array(std::vector<Entry>{{1, "a", {1, 2}}, {2, "b", {3}}}).write(), expected);
+    EXPECT_EQ(value(std::move(entries)).write(), expected);
+}
+
 // NOLINTEND
 #if defined(__GNUC__)
 #pragma GCC diagnostic pop
