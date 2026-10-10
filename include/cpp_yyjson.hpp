@@ -6420,61 +6420,90 @@ namespace yyjson
                     buf_.cur += 5;
                 }
             }
-            static int count_digits(std::uint64_t v) noexcept
+            // The integer writer of yyjson: the value is split by 10^8 and 10^4 with multiplications, and the
+            // digits are copied in pairs.
+            static constexpr auto digit_pairs = [] {
+                auto a = std::array<char, 200>{};
+                for (auto i = 0; i < 100; ++i)
+                {
+                    a[i * 2] = static_cast<char>('0' + i / 10);
+                    a[(i * 2) + 1] = static_cast<char>('0' + i % 10);
+                }
+                return a;
+            }();
+            static void write_pair(char* p, std::uint32_t v) noexcept { std::memcpy(p, &digit_pairs[v * 2], 2); }
+            // the first pair, without its leading zero
+            static char* write_first_pair(char* p, std::uint32_t v) noexcept
             {
-                // the number of digits from the bit width, one too many below the power of ten
-                static constexpr std::uint8_t bit_digits[] = {
-                    1,  1,  1,  2,  2,  2,  3,  3,  3,  4,  4,  4,  4,  5,  5,  5,  6,  6,  6,  7,  7,  7,
-                    7,  8,  8,  8,  9,  9,  9,  10, 10, 10, 10, 11, 11, 11, 12, 12, 12, 13, 13, 13, 13, 14,
-                    14, 14, 15, 15, 15, 16, 16, 16, 16, 17, 17, 17, 18, 18, 18, 19, 19, 19, 19, 20};
-                static constexpr std::uint64_t powers[] = {0,
-                                                           0,
-                                                           10ull,
-                                                           100ull,
-                                                           1000ull,
-                                                           10000ull,
-                                                           100000ull,
-                                                           1000000ull,
-                                                           10000000ull,
-                                                           100000000ull,
-                                                           1000000000ull,
-                                                           10000000000ull,
-                                                           100000000000ull,
-                                                           1000000000000ull,
-                                                           10000000000000ull,
-                                                           100000000000000ull,
-                                                           1000000000000000ull,
-                                                           10000000000000000ull,
-                                                           100000000000000000ull,
-                                                           1000000000000000000ull,
-                                                           10000000000000000000ull};
-                const auto t = bit_digits[63 - std::countl_zero(v | 1)];
-                return t - (v < powers[t]);
+                const auto lz = static_cast<std::uint32_t>(v < 10);
+                std::memcpy(p, &digit_pairs[(v * 2) + lz], 2);
+                return p + 2 - lz;
+            }
+            static char* write_u32_len_4(char* p, std::uint32_t v) noexcept
+            {
+                const auto aa = (v * 5243) >> 19;
+                write_pair(p, aa);
+                write_pair(p + 2, v - (aa * 100));
+                return p + 4;
+            }
+            static char* write_u32_len_8(char* p, std::uint32_t v) noexcept
+            {
+                const auto aabb = static_cast<std::uint32_t>((std::uint64_t{v} * 109951163) >> 40);
+                const auto ccdd = v - (aabb * 10000);
+                const auto aa = (aabb * 5243) >> 19;
+                const auto cc = (ccdd * 5243) >> 19;
+                write_pair(p, aa);
+                write_pair(p + 2, aabb - (aa * 100));
+                write_pair(p + 4, cc);
+                write_pair(p + 6, ccdd - (cc * 100));
+                return p + 8;
+            }
+            static char* write_u32_len_1_to_8(char* p, std::uint32_t v) noexcept
+            {
+                if (v < 100) return write_first_pair(p, v);
+                if (v < 10000)
+                {
+                    const auto aa = (v * 5243) >> 19;
+                    p = write_first_pair(p, aa);
+                    write_pair(p, v - (aa * 100));
+                    return p + 2;
+                }
+                if (v < 1000000)
+                {
+                    const auto aa = static_cast<std::uint32_t>((std::uint64_t{v} * 429497) >> 32);
+                    const auto bbcc = v - (aa * 10000);
+                    const auto bb = (bbcc * 5243) >> 19;
+                    p = write_first_pair(p, aa);
+                    write_pair(p, bb);
+                    write_pair(p + 2, bbcc - (bb * 100));
+                    return p + 4;
+                }
+                const auto aabb = static_cast<std::uint32_t>((std::uint64_t{v} * 109951163) >> 40);
+                const auto ccdd = v - (aabb * 10000);
+                const auto aa = (aabb * 5243) >> 19;
+                const auto cc = (ccdd * 5243) >> 19;
+                p = write_first_pair(p, aa);
+                write_pair(p, aabb - (aa * 100));
+                write_pair(p + 2, cc);
+                write_pair(p + 4, ccdd - (cc * 100));
+                return p + 6;
             }
             static char* write_u64(char* p, std::uint64_t v) noexcept
             {
-                static constexpr auto pairs = [] {
-                    auto a = std::array<char, 200>{};
-                    for (auto i = 0; i < 100; ++i)
-                    {
-                        a[i * 2] = static_cast<char>('0' + i / 10);
-                        a[(i * 2) + 1] = static_cast<char>('0' + i % 10);
-                    }
-                    return a;
-                }();
-                const auto n = count_digits(v);
-                auto* q = p + n;
-                while (v >= 100)
+                if (v < 100000000) return write_u32_len_1_to_8(p, static_cast<std::uint32_t>(v));
+                if (v < 100000000ull * 100000000ull)
                 {
-                    q -= 2;
-                    std::memcpy(q, &pairs[(v % 100) * 2], 2);
-                    v /= 100;
+                    const auto high = v / 100000000;
+                    p = write_u32_len_1_to_8(p, static_cast<std::uint32_t>(high));
+                    return write_u32_len_8(p, static_cast<std::uint32_t>(v - (high * 100000000)));
                 }
-                if (v >= 10)
-                    std::memcpy(q - 2, &pairs[v * 2], 2);
-                else
-                    q[-1] = static_cast<char>('0' + v);
-                return p + n;
+                const auto high = v / 100000000;
+                const auto low = static_cast<std::uint32_t>(v - (high * 100000000));
+                // 17 to 20 digits: 5 to 8, then 4, then 8
+                const auto top = static_cast<std::uint32_t>(high / 10000);
+                p = write_u32_len_1_to_8(p, top);
+                p = write_u32_len_4(p, static_cast<std::uint32_t>(high - (std::uint64_t{top} * 10000)));
+                return write_u32_len_8(p, low);
             }
             void write_integer(std::uint64_t v)
             {
@@ -6488,6 +6517,67 @@ namespace yyjson
                 *p = '-';
                 buf_.cur =
                     write_u64(p + (v < 0), v < 0 ? 0 - static_cast<std::uint64_t>(v) : static_cast<std::uint64_t>(v));
+            }
+            // The longest text of a value that `put_flat` writes, or 0 for a value it does not write: a
+            // floating-point number, or a `std::array` of those without a caster of its own.
+            template <typename T>
+            static consteval std::size_t flat_size()
+            {
+                using U = std::remove_cvref_t<T>;
+                if constexpr (std::floating_point<U>)
+                    return 41;  // `yyjson_write_number` writes up to 40 characters and a null terminator
+                else if constexpr (yyjson::detail::std_array<U>)
+                {
+                    if constexpr (std::tuple_size_v<U> == 0 || to_json_defined<U> || to_json_inp_defined<U> ||
+                                  create_primitive_callable<const U&> || create_object_callable<const U&>)
+                        return 0;
+                    else
+                    {
+                        constexpr auto n = flat_size<typename U::value_type>();
+                        return n == 0 ? 0 : 1 + std::tuple_size_v<U> * (n + 1);
+                    }
+                }
+                else
+                    return 0;
+            }
+            // Writes a value of `flat_size` without checking the space, or returns nullptr for a number that is
+            // not finite.  The caller must have checked that the number format flags are not set.
+            template <typename T>
+            CPPYYJSON_ALWAYS_INLINE static char* put_flat(char* p, const T& v) noexcept
+            {
+                using U = std::remove_cvref_t<T>;
+                if constexpr (std::floating_point<U>)
+                {
+                    const auto d = static_cast<double>(v);
+                    if (!std::isfinite(d)) [[unlikely]]
+                        return nullptr;
+                    auto num = yyjson_val{};
+                    num.tag = YYJSON_TYPE_NUM | YYJSON_SUBTYPE_REAL;
+                    num.uni.f64 = d;
+                    return yyjson_write_number(&num, p);
+                }
+                else
+                {
+                    *p++ = '[';
+                    // unrolled: GCC keeps a loop of two iterations for `std::array<double, 2>`
+                    p = put_flat_elements(p, v, std::make_index_sequence<std::tuple_size_v<U>>{});
+                    if (p == nullptr) [[unlikely]]
+                        return nullptr;
+                    *p++ = ']';
+                    return p;
+                }
+            }
+            template <typename T, std::size_t... Is>
+            CPPYYJSON_ALWAYS_INLINE static char* put_flat_elements(char* p, const T& v,
+                                                                   std::index_sequence<Is...>) noexcept
+            {
+                const auto put = [&p, &v]<std::size_t I>(std::integral_constant<std::size_t, I>)
+                                     CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                    if constexpr (I != 0) *p++ = ',';
+                    p = put_flat(p, v[I]);
+                    return p != nullptr;
+                };
+                return (put(std::integral_constant<std::size_t, Is>{}) && ...) ? p : nullptr;
             }
             CPPYYJSON_COLD void write_non_finite(double v)
             {
@@ -7682,6 +7772,12 @@ namespace yyjson
             requires create_value_range<Range> || mutable_value_range<Range> || reader_value_ref_range<Range>
             void write_array(Range&& range)
             {
+                using E = std::ranges::range_reference_t<Range>;
+                if constexpr (flat_size<E>() != 0)
+                {
+                    if (!pretty_ && !(static_cast<std::uint32_t>(flg_) >> (32 - YYJSON_WRITE_FP_FLAG_BITS)))
+                        return write_flat_elements(std::forward<Range>(range));
+                }
                 open('[');
                 auto first = true;
                 for (auto&& v : std::forward<Range>(range))
@@ -7689,6 +7785,42 @@ namespace yyjson
                     next_element(first);
                     write_value(forward_element<Range&&>(std::forward<decltype(v)>(v)));
                 }
+                close(']', first);
+            }
+
+            // `write_elements` of values of `flat_size`, minified and without number format flags.  The position
+            // is kept in a local so that it does not go through memory around each number.
+            template <std::ranges::input_range Range>
+            void write_flat_elements(Range&& range)
+            {
+                constexpr auto n = 1 + flat_size<std::ranges::range_reference_t<Range>>();
+                open('[');
+                auto* p = buf_.cur;
+                auto* end = buf_.end;
+                auto first = true;
+                for (auto&& v : range)
+                {
+                    if (static_cast<std::size_t>(end - p) < n) [[unlikely]]
+                    {
+                        buf_.cur = p;
+                        buf_.grow(buf_, n);
+                        p = buf_.cur;
+                        end = buf_.end;
+                    }
+                    *p = ',';
+                    p += !first;
+                    first = false;
+                    if (auto* q = put_flat(p, v)) [[likely]]
+                        p = q;
+                    else
+                    {
+                        buf_.cur = p;
+                        write_value(v);
+                        p = buf_.cur;
+                        end = buf_.end;
+                    }
+                }
+                buf_.cur = p;
                 close(']', first);
             }
 
