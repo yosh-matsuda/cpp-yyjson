@@ -17,6 +17,7 @@
 #include <optional>
 #include <ranges>
 #include <span>
+#include <tuple>
 #include <variant>
 #include <vector>
 
@@ -24,6 +25,12 @@
 #include <format>
 #include <string_view>
 #include "field_reflection.hpp"
+
+#if defined(__GNUC__) || defined(__clang__)
+#define CPPYYJSON_ALWAYS_INLINE [[gnu::always_inline]]
+#else
+#define CPPYYJSON_ALWAYS_INLINE
+#endif
 
 namespace yyjson
 {
@@ -642,6 +649,135 @@ namespace yyjson
             {
                 field = cast<field_type>(value);
             }
+        }
+
+        // Finds the field that a JSON key names.  Keys usually come in the order that the fields are
+        // declared, so the field after the last one found and the field after that, which follows a
+        // missing or unknown key, are tried first.  Any other key is looked up among the names of its
+        // length.
+        template <std::size_t N>
+        class field_key_matcher
+        {
+            std::array<std::string_view, N> names_;
+            std::array<std::size_t, N> order_ = {};  // indices of the names sorted by length
+            std::array<std::size_t, N> sizes_ = {};  // the lengths of the names in that order
+
+            // Compares names of the same length without calling `memcmp`, as they are short.  GCC warns
+            // that the 8-byte loads read past a name shorter than 8 bytes, though they run only for a
+            // name of 8 bytes or longer.
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Warray-bounds"
+#endif
+            CPPYYJSON_ALWAYS_INLINE static constexpr bool equal(const char* a, const char* b, std::size_t n) noexcept
+            {
+                if (std::is_constant_evaluated()) return std::string_view(a, n) == std::string_view(b, n);
+                const auto load8 = [](const char* p) {
+                    std::uint64_t v;
+                    std::memcpy(&v, p, sizeof(v));
+                    return v;
+                };
+                const auto load4 = [](const char* p) {
+                    std::uint32_t v;
+                    std::memcpy(&v, p, sizeof(v));
+                    return v;
+                };
+                if (n >= 8)
+                {
+                    for (std::size_t i = 0; i + 8 < n; i += 8)
+                    {
+                        if (load8(a + i) != load8(b + i)) return false;
+                    }
+                    return load8(a + n - 8) == load8(b + n - 8);
+                }
+                if (n >= 4) return load4(a) == load4(b) && load4(a + n - 4) == load4(b + n - 4);
+                for (std::size_t i = 0; i < n; ++i)
+                {
+                    if (a[i] != b[i]) return false;
+                }
+                return true;
+            }
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
+
+            [[nodiscard]] CPPYYJSON_ALWAYS_INLINE constexpr bool is_name_of(std::size_t index,
+                                                                            std::string_view key) const noexcept
+            {
+                return names_[index].size() == key.size() && equal(names_[index].data(), key.data(), key.size());
+            }
+
+        public:
+            static constexpr std::size_t size = N;
+
+            constexpr explicit field_key_matcher(const std::array<std::string_view, N>& names) : names_(names)
+            {
+                for (std::size_t i = 0; i < N; ++i) order_[i] = i;
+                std::ranges::sort(order_, [this](std::size_t a, std::size_t b) {
+                    return names_[a].size() < names_[b].size() || (names_[a].size() == names_[b].size() && a < b);
+                });
+                for (std::size_t i = 0; i < N; ++i) sizes_[i] = names_[order_[i]].size();
+            }
+
+            // Returns N when no field has the name.
+            [[nodiscard]] CPPYYJSON_ALWAYS_INLINE constexpr std::size_t find(std::string_view key,
+                                                                             std::size_t hint) const noexcept
+            {
+                if (hint < N && is_name_of(hint, key)) return hint;
+                if (hint + 1 < N && is_name_of(hint + 1, key)) return hint + 1;
+                for (auto i = static_cast<std::size_t>(std::ranges::lower_bound(sizes_, key.size()) - sizes_.begin());
+                     i < N && sizes_[i] == key.size(); ++i)
+                {
+                    if (equal(names_[order_[i]].data(), key.data(), key.size())) return order_[i];
+                }
+                return N;
+            }
+        };
+
+        // Calls `assign(index, value)` with the index of the field that each key of the object names,
+        // and skips the keys that name no field.
+        template <std::size_t N, typename Json, typename Assign>
+        void assign_fields_by_key(const field_key_matcher<N>& matcher, const Json& obj, Assign&& assign)
+        {
+            std::size_t hint = 0;
+            for (auto&& [key, value] : obj)
+            {
+                if (const auto index = matcher.find(key, hint); index < N)
+                {
+                    assign(index, value);
+                    hint = index + 1;
+                }
+            }
+        }
+
+        template <typename T>
+        inline constexpr auto reflected_key_matcher = []<std::size_t... Is>(std::index_sequence<Is...>) {
+            return field_key_matcher<sizeof...(Is)>(
+                std::array<std::string_view, sizeof...(Is)>{field_reflection::field_name<T, Is>...});
+        }(std::make_index_sequence<field_reflection::field_count<T>>{});
+
+        template <typename T, typename Json>
+        void assign_reflected_fields(T& t, const Json& obj)
+        {
+            assign_fields_by_key(reflected_key_matcher<T>, obj, [&t](std::size_t index, const auto& value) {
+                [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                    (void)((index == Is && (assign_reflected_field(field_reflection::get_field<Is>(t), value), true)) ||
+                           ...);
+                }(std::make_index_sequence<field_reflection::field_count<T>>{});
+            });
+        }
+
+        // The same as `assign_reflected_fields` for a struct registered by `VISITABLE_STRUCT`, whose
+        // fields are given as pointers to members in the order of their names.
+        template <typename T, std::size_t N, typename Json, typename... Members>
+        void assign_visitable_fields(T& t, const field_key_matcher<N>& matcher, const std::tuple<Members...>& members,
+                                     const Json& obj)
+        {
+            assign_fields_by_key(matcher, obj, [&](std::size_t index, const auto& value) {
+                [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                    (void)((index == Is && (assign_reflected_field(t.*std::get<Is>(members), value), true)) || ...);
+                }(std::index_sequence_for<Members...>{});
+            });
         }
 
         template <typename Obj, typename Field, typename... Ts>
@@ -4717,6 +4853,10 @@ namespace yyjson
 #else
         concept json_scalar_constructible = std::constructible_from<T, Arg>;
 #endif
+
+        template <typename T, typename Json>
+        concept reflected_object_castable = std::default_initializable<T> && (!visitable<T>) &&
+                                            (!std::ranges::input_range<T>) && all_fields_castable<Json, T>;
     }  // namespace detail
 
     template <typename T>
@@ -4755,22 +4895,11 @@ namespace yyjson
             return result;
         }
         template <json_object Json>
-        requires std::default_initializable<T> && (!visitable<T>) && (!std::ranges::input_range<T>) &&
-                 all_fields_castable<Json, T>
+        requires reflected_object_castable<T, Json>
         static auto from_json(const Json& obj)
         {
             auto result = T();
-            for (auto&& [key, value] : obj)
-            {
-                field_reflection::any_of_field(result, [&](auto field_name, auto& field_value) {
-                    if (key == field_name)
-                    {
-                        detail::assign_reflected_field(field_value, value);
-                        return true;
-                    }
-                    return false;
-                });
-            }
+            detail::assign_reflected_fields(result, obj);
             return result;
         }
         template <json_array Json>
@@ -5423,28 +5552,25 @@ struct std::formatter<T>
 #define CPPYYJSON_FOR_EACH(FUNC, ...) \
     CPPYYJSON_CONCAT(CPPYYJSON_FOR_EACH_IMPL_, CPPYYJSON_VA_ARGS_SIZE(__VA_ARGS__))(FUNC, __VA_ARGS__)
 
-#define VISITABLE_STRUCT_IMPL1(X)                                \
-    if (key == #X)                                               \
-    {                                                            \
-        yyjson::detail::assign_reflected_field(result.X, value); \
-    }                                                            \
-    else
+#define VISITABLE_STRUCT_IMPL1(X) std::string_view(#X),
 #define VISITABLE_STRUCT_IMPL2(X) emitter.emplace(std::string_view(#X), t.X, ts...);
 #define VISITABLE_STRUCT_IMPL3(X) emitter.emplace(std::string_view(#X), std::move(t.X), ts...);
+#define VISITABLE_STRUCT_IMPL4(X) &class_type::X,
 #define VISITABLE_STRUCT(CLASS, ...)                                                                  \
     static_assert(std::default_initializable<CLASS>, #CLASS " is not default initializable");         \
     template <>                                                                                       \
     struct yyjson::visit_struct<CLASS> : public std::true_type                                        \
     {                                                                                                 \
+        using class_type = CLASS;                                                                     \
         static constexpr auto field_count = CPPYYJSON_VA_ARGS_SIZE(__VA_ARGS__);                      \
+        static constexpr std::array names{CPPYYJSON_FOR_EACH(VISITABLE_STRUCT_IMPL1, __VA_ARGS__)};   \
+        static constexpr std::tuple members{CPPYYJSON_FOR_EACH(VISITABLE_STRUCT_IMPL4, __VA_ARGS__)}; \
+        static constexpr yyjson::detail::field_key_matcher key_matcher{names};                        \
         template <typename Object>                                                                    \
         static auto from_json_impl(const Object& obj)                                                 \
         {                                                                                             \
             auto result = CLASS();                                                                    \
-            for (auto&& [key, value] : obj)                                                           \
-            {                                                                                         \
-                CPPYYJSON_FOR_EACH(VISITABLE_STRUCT_IMPL1, __VA_ARGS__) {}                            \
-            }                                                                                         \
+            yyjson::detail::assign_visitable_fields(result, key_matcher, members, obj);               \
             return result;                                                                            \
         }                                                                                             \
         template <typename Emitter, typename... Ts>                                                   \

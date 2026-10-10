@@ -4111,6 +4111,98 @@ TEST(Writer, RvalueFieldsGivenToCaster)
               R"({"x":{"n":"a","o":1}})");
 }
 
+TEST(Reader, FieldKeyMatcher)
+{
+    using yyjson::detail::field_key_matcher;
+
+    constexpr auto matcher = field_key_matcher<6>(std::array<std::string_view, 6>{
+        "id", "ab", "name", "long_name_10", "a_very_long_name_with_25", "x"});
+    static_assert(matcher.find("id", 0) == 0);
+    static_assert(matcher.find("ab", 0) == 1);
+    static_assert(matcher.find("x", 0) == 5);
+    static_assert(matcher.find("long_name_10", 5) == 3);
+    static_assert(matcher.find("a_very_long_name_with_25", 0) == 4);
+    static_assert(matcher.find("a_very_long_name_with_2X", 0) == 6);
+    static_assert(matcher.find("nam", 0) == 6);
+    static_assert(matcher.find("", 0) == 6);
+    static_assert(matcher.find("id", 6) == 0);
+
+    // the same at run time, where the names are compared by loading words
+    const auto keys = std::vector<std::string>{"id", "ab", "name", "long_name_10", "a_very_long_name_with_25", "x"};
+    for (std::size_t hint = 0; hint <= 6; ++hint)
+    {
+        for (std::size_t i = 0; i < keys.size(); ++i) EXPECT_EQ(matcher.find(keys[i], hint), i);
+        EXPECT_EQ(matcher.find("ba", hint), 6);
+        EXPECT_EQ(matcher.find("long_name_11", hint), 6);
+        EXPECT_EQ(matcher.find("b_very_long_name_with_25", hint), 6);
+        EXPECT_EQ(matcher.find("a_very_long_name_with_26", hint), 6);
+        EXPECT_EQ(matcher.find("long_name_10_", hint), 6);
+    }
+}
+
+struct KeyOrderRecord
+{
+    int id = -1;
+    int ab = -2;
+    int ba = -3;
+    std::string name = "default";
+    std::string long_name_10 = "default";
+    std::string a_very_long_name_with_25 = "default";
+    bool operator==(const KeyOrderRecord&) const = default;
+};
+
+struct VisitableKeyOrderRecord
+{
+    int id = -1;
+    int ab = -2;
+    int ba = -3;
+    std::string name = "default";
+    std::string long_name_10 = "default";
+    std::string a_very_long_name_with_25 = "default";
+    bool operator==(const VisitableKeyOrderRecord&) const = default;
+};
+
+VISITABLE_STRUCT(VisitableKeyOrderRecord, id, ab, ba, name, long_name_10, a_very_long_name_with_25);
+
+template <typename T>
+void test_key_order()
+{
+    using namespace yyjson;
+
+    const auto check = [](std::string_view json, const T& expected) {
+        EXPECT_EQ(cast<T>(read(json)), expected) << json;
+        EXPECT_EQ(cast<T>(value(read(json))), expected) << json;
+    };
+
+    // keys in the declared order, in reverse and shuffled
+    check(R"({"id":1,"ab":2,"ba":3,"name":"n","long_name_10":"l","a_very_long_name_with_25":"v"})",
+          T{1, 2, 3, "n", "l", "v"});
+    check(R"({"a_very_long_name_with_25":"v","long_name_10":"l","name":"n","ba":3,"ab":2,"id":1})",
+          T{1, 2, 3, "n", "l", "v"});
+    check(R"({"ba":3,"name":"n","id":1,"a_very_long_name_with_25":"v","ab":2,"long_name_10":"l"})",
+          T{1, 2, 3, "n", "l", "v"});
+
+    // missing fields keep their defaults, and unknown keys are skipped
+    check(R"({})", T{});
+    check(R"({"ba":3})", T{-1, -2, 3, "default", "default", "default"});
+    check(R"({"unknown":0,"id":1,"Id":5,"idx":6,"ab ":7,"ba":3,"long_name_11":"x","a_very_long_name_with_2":"y"})",
+          T{1, -2, 3, "default", "default", "default"});
+    check(R"({"id":1,"nested":{"id":9,"ab":9},"ab":2})", T{1, 2, -3, "default", "default", "default"});
+
+    // the last one of duplicate keys wins
+    check(R"({"id":1,"ab":2,"id":3,"name":"a","name":"b"})", T{3, 2, -3, "b", "default", "default"});
+
+    // a value of a wrong type is still an error
+    EXPECT_THROW(cast<T>(read(R"({"ab":2,"id":"1"})")), bad_cast);
+    EXPECT_THROW(cast<T>(read(R"([1,2])")), bad_cast);
+}
+
+TEST(Reader, ReflectedKeyOrder)
+{
+    test_key_order<KeyOrderRecord>();
+    test_key_order<VisitableKeyOrderRecord>();
+}
+
 // NOLINTEND
 #if defined(__GNUC__)
 #pragma GCC diagnostic pop
