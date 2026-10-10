@@ -4679,7 +4679,7 @@ namespace yyjson
         concept object_back_emplaceable_range =
             std::default_initializable<T> && (!visitable<T>) && std::ranges::input_range<T> && requires {
                 typename std::ranges::range_value_t<T>;
-                requires pair_like<std::ranges::range_value_t<T>>;
+                requires key_value_like<std::ranges::range_value_t<T>>;
                 requires requires(T t, Json obj) {
                     t.emplace_back(obj.begin()->first,
                                    cast<std::remove_cvref_t<std::tuple_element_t<1, std::ranges::range_value_t<T>>>>(

@@ -3941,6 +3941,38 @@ TEST(Reader, OptionalFieldKeepsDefault)
     EXPECT_EQ(*with_null.ptr, nullptr);
 }
 
+TEST(Reader, PairRangeNeedsKeyToReadObject)
+{
+    using namespace yyjson;
+    using points = std::vector<std::array<double, 2>>;
+    using int_pairs = std::vector<std::pair<int, int>>;
+    using entries = std::vector<std::pair<std::string, int>>;
+
+    // a range of pairs reads a JSON object only when the first element of the pair is a key
+    static_assert(!detail::object_back_emplaceable_range<points, reader::const_object_ref>);
+    static_assert(!detail::object_back_emplaceable_range<points, const object&>);
+    static_assert(!detail::object_back_emplaceable_range<int_pairs, reader::const_object_ref>);
+    static_assert(!detail::object_back_emplaceable_range<int_pairs, const object&>);
+    static_assert(detail::object_back_emplaceable_range<entries, reader::const_object_ref>);
+    static_assert(detail::object_back_emplaceable_range<entries, const object&>);
+
+    // other pair ranges still read a JSON array
+    const auto arr = read("[[1,2.5],[3,4]]");
+    EXPECT_EQ(cast<points>(arr), (points{{1.0, 2.5}, {3.0, 4.0}}));
+    EXPECT_EQ(cast<points>(value(arr)), (points{{1.0, 2.5}, {3.0, 4.0}}));
+    EXPECT_EQ(cast<int_pairs>(read("[[1,2],[3,4]]")), (int_pairs{{1, 2}, {3, 4}}));
+
+    // and a JSON object given to them is a type mismatch
+    const auto obj = read(R"({"a":1,"b":2})");
+    EXPECT_THROW(cast<points>(obj), bad_cast);
+    EXPECT_THROW(cast<points>(value(obj)), bad_cast);
+    EXPECT_THROW(cast<int_pairs>(obj), bad_cast);
+    EXPECT_THROW(cast<int_pairs>(value(obj)), bad_cast);
+
+    EXPECT_EQ(cast<entries>(obj), (entries{{"a", 1}, {"b", 2}}));
+    EXPECT_EQ(cast<entries>(value(obj)), (entries{{"a", 1}, {"b", 2}}));
+}
+
 // NOLINTEND
 #if defined(__GNUC__)
 #pragma GCC diagnostic pop
