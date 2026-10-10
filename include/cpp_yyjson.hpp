@@ -31,7 +31,9 @@
 #include <string_view>
 #include "field_reflection.hpp"
 
-#if defined(__SSSE3__) || defined(__AVX__)
+#if defined(__AVX2__)
+#include <immintrin.h>
+#elif defined(__SSSE3__) || defined(__AVX__)
 #include <tmmintrin.h>
 #elif defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
 #include <emmintrin.h>
@@ -5814,6 +5816,19 @@ namespace yyjson
         inline constexpr std::array<std::array<std::uint8_t, 256>, 4> enc_tables = {
             make_enc_table(false, false), make_enc_table(false, true), make_enc_table(true, false),
             make_enc_table(true, true)};
+        // The letter after the backslash of the ASCII characters of `enc_esc_a`, and zero for the others.
+        inline constexpr std::array<char, 128> esc_letters = [] {
+            auto letters = std::array<char, 128>{};
+            letters['\b'] = 'b';
+            letters['\t'] = 't';
+            letters['\n'] = 'n';
+            letters['\f'] = 'f';
+            letters['\r'] = 'r';
+            letters['"'] = '"';
+            letters['\\'] = '\\';
+            letters['/'] = '/';
+            return letters;
+        }();
 
         // A struct key that needs no escape under any flag, written with its quotes and colon in one copy.
         consteval bool is_plain_key(std::string_view name)
@@ -6171,6 +6186,18 @@ namespace yyjson
                 dst[4] = hex_[(u >> 4) & 0xF];
                 dst[5] = hex_[u & 0xF];
             }
+            // Writes the escape of an ASCII character that the encode table marks.
+            CPPYYJSON_ALWAYS_INLINE char* write_ascii_escape(char* dst, std::uint8_t c) const noexcept
+            {
+                if (const auto e = esc_letters[c]; e != 0)
+                {
+                    dst[0] = '\\';
+                    dst[1] = e;
+                    return dst + 2;
+                }
+                write_hex4(dst, c);
+                return dst + 6;
+            }
             // The bytes from `s` in memory order, the first in the lowest bits, as yyjson compares them.
             static std::uint32_t load_u32(const std::uint8_t* s) noexcept
             {
@@ -6197,56 +6224,360 @@ namespace yyjson
                 for (auto i = 0; i < n; ++i) u |= static_cast<std::uint32_t>(s[i]) << (8 * i);
                 return u;
             }
+            template <typename W>
+            static W load_word(const std::uint8_t* s) noexcept
+            {
+                auto w = W{};
+                std::memcpy(&w, s, sizeof(W));
+                return w;
+            }
+            // The top bit of each byte of `x` that is not copied as it is: a control character, a quote,
+            // a backslash, `slash` and the bytes of 0x80 and above.
+            template <typename W>
+            static W special_bytes(W x, char slash) noexcept
+            {
+                constexpr auto ones = static_cast<W>(~W{0}) / 0xFF;
+                constexpr auto lo7_mask = ones * 0x7F;
+                const auto lo7 = x & lo7_mask;
+                const auto quote = (lo7 ^ (ones * '"')) + lo7_mask;
+                const auto backslash = (lo7 ^ (ones * '\\')) + lo7_mask;
+                const auto sl = (lo7 ^ (ones * static_cast<std::uint8_t>(slash))) + lo7_mask;
+                const auto ctrl = (x & (ones * 0x60)) + lo7_mask;
+                return static_cast<W>((~(quote & backslash & sl & ctrl) | x) & (ones * 0x80));
+            }
 
 #if defined(__SSSE3__) || defined(__AVX__)
-            // Whether the 16 bytes of `input` are valid UTF-8 after the 16 bytes of `prev`, all but a
-            // sequence that `input` leaves incomplete at its end (the lookup algorithm of
-            // John Keiser and Daniel Lemire, "Validating UTF-8 In Less Than One Instruction Per Byte").
-            static bool is_valid_utf8(__m128i input, __m128i prev) noexcept
+            // The operations on a block of 16 bytes, and of 32 under AVX2, that `copy_blocks` needs.
+            struct block16
             {
-                constexpr char too_short = 1 << 0;
-                constexpr char too_long = 1 << 1;
-                constexpr char overlong_3 = 1 << 2;
-                constexpr char too_large = 1 << 3;
-                constexpr char surrogate = 1 << 4;
-                constexpr char overlong_2 = 1 << 5;
-                constexpr char too_large_1000 = 1 << 6;
-                constexpr char overlong_4 = 1 << 6;
-                constexpr char two_conts = static_cast<char>(1 << 7);
-                constexpr char carry = too_short | too_long | two_conts;
-                const auto nibble = _mm_set1_epi8(0x0F);
-                const auto prev1 = _mm_alignr_epi8(input, prev, 15);
-                const auto byte_1_high = _mm_shuffle_epi8(
-                    _mm_setr_epi8(too_long, too_long, too_long, too_long, too_long, too_long, too_long, too_long,
-                                  two_conts, two_conts, two_conts, two_conts, too_short | overlong_2, too_short,
-                                  too_short | overlong_3 | surrogate,
-                                  too_short | too_large | too_large_1000 | overlong_4),
-                    _mm_and_si128(_mm_srli_epi16(prev1, 4), nibble));
-                const auto byte_1_low = _mm_shuffle_epi8(
-                    _mm_setr_epi8(carry | overlong_3 | overlong_2 | overlong_4, carry | overlong_2, carry, carry,
-                                  carry | too_large, carry | too_large | too_large_1000,
-                                  carry | too_large | too_large_1000, carry | too_large | too_large_1000,
-                                  carry | too_large | too_large_1000, carry | too_large | too_large_1000,
-                                  carry | too_large | too_large_1000, carry | too_large | too_large_1000,
-                                  carry | too_large | too_large_1000, carry | too_large | too_large_1000 | surrogate,
-                                  carry | too_large | too_large_1000, carry | too_large | too_large_1000),
-                    _mm_and_si128(prev1, nibble));
-                const auto byte_2_high = _mm_shuffle_epi8(
-                    _mm_setr_epi8(too_short, too_short, too_short, too_short, too_short, too_short, too_short,
-                                  too_short,
-                                  too_long | overlong_2 | two_conts | overlong_3 | too_large_1000 | overlong_4,
-                                  too_long | overlong_2 | two_conts | overlong_3 | too_large,
-                                  too_long | overlong_2 | two_conts | surrogate | too_large,
-                                  too_long | overlong_2 | two_conts | surrogate | too_large, too_short, too_short,
-                                  too_short, too_short),
-                    _mm_and_si128(_mm_srli_epi16(input, 4), nibble));
-                const auto special_cases = _mm_and_si128(_mm_and_si128(byte_1_high, byte_1_low), byte_2_high);
+                using type = __m128i;
+                static constexpr int width = 16;
+                static type load(const std::uint8_t* p) noexcept
+                {
+                    return _mm_loadu_si128(reinterpret_cast<const __m128i*>(p));
+                }
+                static void store(char* p, type v) noexcept { _mm_storeu_si128(reinterpret_cast<__m128i*>(p), v); }
+                static type set1(char c) noexcept { return _mm_set1_epi8(c); }
+                static type zero() noexcept { return _mm_setzero_si128(); }
+                static type table(const char* t) noexcept
+                {
+                    return _mm_loadu_si128(reinterpret_cast<const __m128i*>(t));
+                }
+                static type iota() noexcept
+                {
+                    return _mm_setr_epi8(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
+                }
+                static unsigned movemask(type v) noexcept { return static_cast<unsigned>(_mm_movemask_epi8(v)); }
+                static bool any(type v) noexcept { return movemask(_mm_cmpeq_epi8(v, zero())) != 0xFFFF; }
+                static type or_(type a, type b) noexcept { return _mm_or_si128(a, b); }
+                static type and_(type a, type b) noexcept { return _mm_and_si128(a, b); }
+                static type andnot(type a, type b) noexcept { return _mm_andnot_si128(a, b); }
+                static type xor_(type a, type b) noexcept { return _mm_xor_si128(a, b); }
+                static type eq(type a, type b) noexcept { return _mm_cmpeq_epi8(a, b); }
+                static type lt(type a, type b) noexcept { return _mm_cmplt_epi8(a, b); }
+                static type gt(type a, type b) noexcept { return _mm_cmpgt_epi8(a, b); }
+                static type subs_u(type a, type b) noexcept { return _mm_subs_epu8(a, b); }
+                static type shuffle(type t, type i) noexcept { return _mm_shuffle_epi8(t, i); }
+                static type high_nibble(type v) noexcept { return _mm_and_si128(_mm_srli_epi16(v, 4), set1(0x0F)); }
+                // the bytes of `input` moved up by N, with the last N of `prev` before them
+                template <int N>
+                static type prev(type input, type prev) noexcept
+                {
+                    return _mm_alignr_epi8(input, prev, 16 - N);
+                }
+                // Exceeded by the last bytes of a block only where they begin a sequence that the block leaves
+                // incomplete.
+                static type incomplete_limit() noexcept
+                {
+                    return _mm_setr_epi8(-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, char(0xF0 - 1),
+                                         char(0xE0 - 1), char(0xC0 - 1));
+                }
+                // The last `n` bytes before `end`, 0 < n < 16, followed by 'a', from the 16 bytes before `end`.
+                static type load_tail(const std::uint8_t* end, std::ptrdiff_t n) noexcept
+                {
+                    alignas(16) static constexpr char shift[32] = {
+                        0,          1,          2,          3,          4,          5,          6,          7,
+                        8,          9,          10,         11,         12,         13,         14,         15,
+                        char(0x80), char(0x80), char(0x80), char(0x80), char(0x80), char(0x80), char(0x80), char(0x80),
+                        char(0x80), char(0x80), char(0x80), char(0x80), char(0x80), char(0x80), char(0x80), char(0x80)};
+                    alignas(16) static constexpr char pad[32] = {0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+                                                                 0,   0,   0,   0,   0,   'a', 'a', 'a', 'a', 'a', 'a',
+                                                                 'a', 'a', 'a', 'a', 'a', 'a', 'a', 'a', 'a', 'a'};
+                    return _mm_or_si128(_mm_shuffle_epi8(load(end - 16), table(shift + 16 - n)), table(pad + 16 - n));
+                }
+            };
+#if defined(__AVX2__)
+            struct block32
+            {
+                using type = __m256i;
+                static constexpr int width = 32;
+                static type load(const std::uint8_t* p) noexcept
+                {
+                    return _mm256_loadu_si256(reinterpret_cast<const __m256i*>(p));
+                }
+                static void store(char* p, type v) noexcept { _mm256_storeu_si256(reinterpret_cast<__m256i*>(p), v); }
+                static type set1(char c) noexcept { return _mm256_set1_epi8(c); }
+                static type zero() noexcept { return _mm256_setzero_si256(); }
+                static type table(const char* t) noexcept
+                {
+                    return _mm256_broadcastsi128_si256(_mm_loadu_si128(reinterpret_cast<const __m128i*>(t)));
+                }
+                static type iota() noexcept
+                {
+                    return _mm256_setr_epi8(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+                                            21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31);
+                }
+                static unsigned movemask(type v) noexcept { return static_cast<unsigned>(_mm256_movemask_epi8(v)); }
+                static bool any(type v) noexcept { return !_mm256_testz_si256(v, v); }
+                static type or_(type a, type b) noexcept { return _mm256_or_si256(a, b); }
+                static type and_(type a, type b) noexcept { return _mm256_and_si256(a, b); }
+                static type andnot(type a, type b) noexcept { return _mm256_andnot_si256(a, b); }
+                static type xor_(type a, type b) noexcept { return _mm256_xor_si256(a, b); }
+                static type eq(type a, type b) noexcept { return _mm256_cmpeq_epi8(a, b); }
+                static type lt(type a, type b) noexcept { return _mm256_cmpgt_epi8(b, a); }
+                static type gt(type a, type b) noexcept { return _mm256_cmpgt_epi8(a, b); }
+                static type subs_u(type a, type b) noexcept { return _mm256_subs_epu8(a, b); }
+                static type shuffle(type t, type i) noexcept { return _mm256_shuffle_epi8(t, i); }
+                static type high_nibble(type v) noexcept
+                {
+                    return _mm256_and_si256(_mm256_srli_epi16(v, 4), set1(0x0F));
+                }
+                template <int N>
+                static type prev(type input, type prev) noexcept
+                {
+                    return _mm256_alignr_epi8(input, _mm256_permute2x128_si256(prev, input, 0x21), 16 - N);
+                }
+            };
+#endif
+
+            // The tables of the lookup algorithm of John Keiser and Daniel Lemire, "Validating UTF-8 In Less
+            // Than One Instruction Per Byte".
+            struct utf8_tables
+            {
+                static constexpr char too_short = 1 << 0;
+                static constexpr char too_long = 1 << 1;
+                static constexpr char overlong_3 = 1 << 2;
+                static constexpr char too_large = 1 << 3;
+                static constexpr char surrogate = 1 << 4;
+                static constexpr char overlong_2 = 1 << 5;
+                static constexpr char too_large_1000 = 1 << 6;
+                static constexpr char overlong_4 = 1 << 6;
+                static constexpr char two_conts = static_cast<char>(1 << 7);
+                static constexpr char carry = too_short | too_long | two_conts;
+                alignas(16) static constexpr char byte_1_high[16] = {
+                    too_long,
+                    too_long,
+                    too_long,
+                    too_long,
+                    too_long,
+                    too_long,
+                    too_long,
+                    too_long,
+                    two_conts,
+                    two_conts,
+                    two_conts,
+                    two_conts,
+                    too_short | overlong_2,
+                    too_short,
+                    too_short | overlong_3 | surrogate,
+                    too_short | too_large | too_large_1000 | overlong_4};
+                alignas(16) static constexpr char byte_1_low[16] = {carry | overlong_3 | overlong_2 | overlong_4,
+                                                                    carry | overlong_2,
+                                                                    carry,
+                                                                    carry,
+                                                                    carry | too_large,
+                                                                    carry | too_large | too_large_1000,
+                                                                    carry | too_large | too_large_1000,
+                                                                    carry | too_large | too_large_1000,
+                                                                    carry | too_large | too_large_1000,
+                                                                    carry | too_large | too_large_1000,
+                                                                    carry | too_large | too_large_1000,
+                                                                    carry | too_large | too_large_1000,
+                                                                    carry | too_large | too_large_1000,
+                                                                    carry | too_large | too_large_1000 | surrogate,
+                                                                    carry | too_large | too_large_1000,
+                                                                    carry | too_large | too_large_1000};
+                alignas(16) static constexpr char byte_2_high[16] = {
+                    too_short,
+                    too_short,
+                    too_short,
+                    too_short,
+                    too_short,
+                    too_short,
+                    too_short,
+                    too_short,
+                    too_long | overlong_2 | two_conts | overlong_3 | too_large_1000 | overlong_4,
+                    too_long | overlong_2 | two_conts | overlong_3 | too_large,
+                    too_long | overlong_2 | two_conts | surrogate | too_large,
+                    too_long | overlong_2 | two_conts | surrogate | too_large,
+                    too_short,
+                    too_short,
+                    too_short,
+                    too_short};
+            };
+
+            // Nonzero bytes where the bytes of `input` are not valid UTF-8 after the bytes of `prev`, all but a
+            // sequence that `input` leaves incomplete at its end.
+            template <typename B>
+            static typename B::type utf8_error(typename B::type input, typename B::type prev) noexcept
+            {
+                using t = utf8_tables;
+                const auto nibble = B::set1(0x0F);
+                const auto prev1 = B::template prev<1>(input, prev);
+                const auto special_cases = B::and_(B::and_(B::shuffle(B::table(t::byte_1_high), B::high_nibble(prev1)),
+                                                           B::shuffle(B::table(t::byte_1_low), B::and_(prev1, nibble))),
+                                                   B::shuffle(B::table(t::byte_2_high), B::high_nibble(input)));
                 // the third and the fourth byte of a sequence must be continuation bytes
-                const auto is_third = _mm_subs_epu8(_mm_alignr_epi8(input, prev, 14), _mm_set1_epi8(0xE0 - 0x80));
-                const auto is_fourth = _mm_subs_epu8(_mm_alignr_epi8(input, prev, 13), _mm_set1_epi8(0xF0 - 0x80));
-                const auto must_be_cont = _mm_and_si128(_mm_or_si128(is_third, is_fourth), _mm_set1_epi8(-0x80));
-                const auto error = _mm_xor_si128(must_be_cont, special_cases);
-                return _mm_movemask_epi8(_mm_cmpeq_epi8(error, _mm_setzero_si128())) == 0xFFFF;
+                const auto is_third = B::subs_u(B::template prev<2>(input, prev), B::set1(0xE0 - 0x80));
+                const auto is_fourth = B::subs_u(B::template prev<3>(input, prev), B::set1(0xF0 - 0x80));
+                const auto must_be_cont = B::and_(B::or_(is_third, is_fourth), B::set1(-0x80));
+                return B::xor_(must_be_cont, special_cases);
+            }
+
+            // The state of `copy_blocks` from one string block to the next.
+            template <typename B>
+            struct block_state
+            {
+                typename B::type prev = B::zero();
+                // nonzero where the blocks since `run_src` are not valid UTF-8
+                typename B::type error = B::zero();
+                // whether `prev` has bytes that are not ASCII, and may end with an incomplete sequence
+                bool multi = false;
+                // whether `error` has been accumulated
+                bool checked = false;
+                // where the bytes not yet known to be valid begin, and where they are written
+                const std::uint8_t* run_src;
+                char* run_dst;
+            };
+
+            // Copies the string in blocks of `B::width` bytes, and writes the ASCII characters to escape in
+            // between.  Text that is not ASCII is copied too if `copy_utf8`, and checked to be valid UTF-8
+            // whenever an escape or the end of the blocks is reached; otherwise the copy stops at it.  Returns
+            // false if the text since `state.run_src` is not valid.
+            template <typename B, bool Tail = false>
+            CPPYYJSON_ALWAYS_INLINE bool copy_blocks(const std::uint8_t*& src_ref, char*& dst_ref,
+                                                     const std::uint8_t* end, bool copy_utf8,
+                                                     block_state<B>& state) const noexcept
+            {
+                constexpr auto width = B::width;
+                auto src = src_ref;
+                auto dst = dst_ref;
+                auto prev = state.prev;
+                auto error = state.error;
+                auto multi = state.multi;
+                auto checked = state.checked;
+                const auto ctrl = B::set1(0x20);
+                const auto quote = B::set1('"');
+                const auto bslash = B::set1('\\');
+                const auto slash = B::set1((flg_ & YYJSON_WRITE_ESCAPE_SLASHES) ? '/' : '"');
+                auto ok = true;
+                while (Tail ? src != end : end - src >= width)
+                {
+                    auto v = typename B::type{};
+                    auto size = std::ptrdiff_t{width};
+                    if constexpr (Tail)
+                    {
+                        if (end - src >= width)
+                        {
+                            v = B::load(src);
+                        }
+                        else
+                        {
+                            size = end - src;
+                            v = B::load_tail(end, size);
+                        }
+                    }
+                    else
+                    {
+                        v = B::load(src);
+                    }
+                    B::store(dst, v);
+                    // bytes of 0x80 and above are negative, so the signed compare stops at them too
+                    const auto mask = B::movemask(
+                        B::or_(B::or_(B::lt(v, ctrl), B::eq(v, quote)), B::or_(B::eq(v, bslash), B::eq(v, slash))));
+                    if (mask == 0 && !multi)
+                    {
+                        src += size;
+                        dst += size;
+                        continue;
+                    }
+                    const auto high = B::movemask(v);
+                    // the ASCII bytes to escape
+                    const auto stop = mask & ~high;
+                    if (copy_utf8 && inv_)
+                    {
+                        // yyjson copies the bytes that are not valid UTF-8 as they are
+                        if (stop == 0)
+                        {
+                            src += size;
+                            dst += size;
+                            continue;
+                        }
+                        const auto n = std::countr_zero(stop);
+                        src += n;
+                        dst = write_ascii_escape(dst + n, *src++);
+                        continue;
+                    }
+                    if (copy_utf8)
+                    {
+                        if (stop == 0)
+                        {
+                            error = B::or_(error, utf8_error<B>(v, prev));
+                            checked = true;
+                            prev = v;
+                            multi = high != 0;
+                            src += size;
+                            dst += size;
+                            continue;
+                        }
+                        // the bytes before the first of them, followed by ASCII, have to be valid and complete
+                        const auto n = std::countr_zero(stop);
+                        if (multi || (high & ((1u << n) - 1)) != 0)
+                        {
+                            const auto keep = B::gt(B::set1(static_cast<char>(n)), B::iota());
+                            error = B::or_(
+                                error, utf8_error<B>(B::or_(B::and_(keep, v), B::andnot(keep, B::set1('a'))), prev));
+                            checked = true;
+                        }
+                        if (checked && B::any(error))
+                        {
+                            ok = false;
+                            break;
+                        }
+                        src += n;
+                        dst = write_ascii_escape(dst + n, *src++);
+                        prev = B::zero();
+                        multi = false;
+                        checked = false;
+                        state.run_src = src;
+                        state.run_dst = dst;
+                        continue;
+                    }
+                    const auto n = std::countr_zero(mask);
+                    src += n;
+                    dst += n;
+                    if (((stop >> n) & 1u) == 0) break;
+                    dst = write_ascii_escape(dst, *src++);
+                    state.run_src = src;
+                    state.run_dst = dst;
+                }
+                if constexpr (Tail)
+                {
+                    if (src == end && multi)
+                    {
+                        // the string must not end in the middle of a sequence
+                        error = B::or_(error, B::subs_u(prev, B::incomplete_limit()));
+                        checked = true;
+                        multi = false;
+                    }
+                }
+                src_ref = src;
+                dst_ref = dst;
+                state.prev = prev;
+                state.error = error;
+                state.multi = multi;
+                state.checked = checked;
+                return ok;
             }
 #endif
 
@@ -6264,37 +6595,12 @@ namespace yyjson
                 switch (type)
                 {
                     case enc_esc_a:
-                    {
-                        char c = static_cast<char>(*src);
-                        switch (*src)
-                        {
-                            case '\b':
-                                c = 'b';
-                                break;
-                            case '\t':
-                                c = 't';
-                                break;
-                            case '\n':
-                                c = 'n';
-                                break;
-                            case '\f':
-                                c = 'f';
-                                break;
-                            case '\r':
-                                c = 'r';
-                                break;
-                            default:
-                                break;
-                        }
                         dst[0] = '\\';
-                        dst[1] = c;
-                        dst += 2;
-                        return {src + 1, dst};
-                    }
+                        dst[1] = esc_letters[*src];
+                        return {src + 1, dst + 2};
                     case enc_esc_1:
                         write_hex4(dst, *src);
-                        dst += 6;
-                        return {src + 1, dst};
+                        return {src + 1, dst + 6};
                     case enc_cpy_2:
                         if (!is_utf8_seq2(load_utf8(src, 2))) return write_invalid(src, dst);
                         std::memcpy(dst, src, 2);
@@ -6352,29 +6658,61 @@ namespace yyjson
 
             void write_string(std::string_view str)
             {
-                ensure((str.size() * 6) + 2);
+                // 16 bytes more than the escapes need, for the words that are stored as a whole
+                ensure((str.size() * 6) + 18);
                 auto* dst = buf_.cur;
                 const auto* const table = enc_table_;
                 const auto* src = reinterpret_cast<const std::uint8_t*>(str.data());
                 const auto* const end = src + str.size();
+#if defined(__SSSE3__) || defined(__AVX__)
+                // Text that is not ASCII is copied in blocks too, unless it is to be escaped or turns out not to
+                // be valid UTF-8.  A sequence that the last block leaves incomplete, and the text that is not
+                // valid, are left to the code below, which writes them as yyjson does.
+                auto copy_utf8 = !esc_;
+#endif
                 *dst++ = '"';
                 for (;;)
                 {
-#if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+#if defined(__SSSE3__) || defined(__AVX__)
+                    if (end - src >= 16)
+                    {
+#if defined(__AVX2__)
+                        auto state32 = block_state<block32>{.run_src = src, .run_dst = dst};
+                        auto ok = copy_blocks(src, dst, end, copy_utf8, state32);
+                        auto state =
+                            block_state<block16>{.prev = _mm256_extracti128_si256(state32.prev, 1),
+                                                 .error = _mm_or_si128(_mm256_castsi256_si128(state32.error),
+                                                                       _mm256_extracti128_si256(state32.error, 1)),
+                                                 .multi = state32.multi,
+                                                 .checked = state32.checked,
+                                                 .run_src = state32.run_src,
+                                                 .run_dst = state32.run_dst};
+                        if (ok) ok = copy_blocks<block16, true>(src, dst, end, copy_utf8, state);
+#else
+                        auto state = block_state<block16>{.run_src = src, .run_dst = dst};
+                        auto ok = copy_blocks<block16, true>(src, dst, end, copy_utf8, state);
+#endif
+                        if (!ok || (state.checked && block16::any(state.error)))
+                        {
+                            // write the text since the last escape again, without copying it in blocks
+                            src = state.run_src;
+                            dst = state.run_dst;
+                            copy_utf8 = false;
+                        }
+                        else if (state.multi)
+                        {
+                            // back to the start of the sequence that the last block leaves incomplete
+                            const auto tail = src[-1] >= 0xC0 ? 1 : src[-2] >= 0xE0 ? 2 : src[-3] >= 0xF0 ? 3 : 0;
+                            src -= tail;
+                            dst -= tail;
+                        }
+                    }
+#elif defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
                     {
                         const auto ctrl = _mm_set1_epi8(0x20);
                         const auto quote = _mm_set1_epi8('"');
                         const auto bslash = _mm_set1_epi8('\\');
                         const auto slash = _mm_set1_epi8((flg_ & YYJSON_WRITE_ESCAPE_SLASHES) ? '/' : '"');
-#if defined(__SSSE3__) || defined(__AVX__)
-                        // Text that is not ASCII is copied in blocks too, unless it is to be escaped, after
-                        // the blocks are checked to be valid UTF-8.  A sequence that a block leaves
-                        // incomplete, `tail` bytes long, and a block that is not valid are left to the code
-                        // below, which writes them as yyjson does.
-                        const auto copy_utf8 = !esc_;
-                        auto prev = _mm_setzero_si128();
-                        auto tail = 0;
-#endif
                         while (end - src >= 16)
                         {
                             const auto v = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src));
@@ -6384,31 +6722,6 @@ namespace yyjson
                                 _mm_or_si128(_mm_or_si128(_mm_cmplt_epi8(v, ctrl), _mm_cmpeq_epi8(v, quote)),
                                              _mm_or_si128(_mm_cmpeq_epi8(v, bslash), _mm_cmpeq_epi8(v, slash)));
                             const auto mask = static_cast<unsigned>(_mm_movemask_epi8(special));
-#if defined(__SSSE3__) || defined(__AVX__)
-                            if ((mask | static_cast<unsigned>(tail)) == 0)
-                            {
-                                prev = _mm_setzero_si128();
-                                src += 16;
-                                dst += 16;
-                                continue;
-                            }
-                            const auto high = static_cast<unsigned>(_mm_movemask_epi8(v));
-                            if (copy_utf8 && (mask & ~high) == 0 && is_valid_utf8(v, prev))
-                            {
-                                prev = v;
-                                src += 16;
-                                dst += 16;
-                                tail = src[-1] >= 0xC0 ? 1 : src[-2] >= 0xE0 ? 2 : src[-3] >= 0xF0 ? 3 : 0;
-                                continue;
-                            }
-                            if (tail == 0 && mask != 0)
-                            {
-                                const auto n = std::countr_zero(mask);
-                                src += n;
-                                dst += n;
-                            }
-                            break;
-#else
                             if (mask == 0)
                             {
                                 src += 16;
@@ -6418,16 +6731,80 @@ namespace yyjson
                             const auto n = std::countr_zero(mask);
                             src += n;
                             dst += n;
-                            break;
-#endif
+                            if (*src >= 0x80) break;
+                            dst = write_ascii_escape(dst, *src++);
                         }
-#if defined(__SSSE3__) || defined(__AVX__)
-                        src -= tail;
-                        dst -= tail;
-#endif
                     }
 #endif
                     // the last bytes, or a byte that the table marks
+                    if constexpr (std::endian::native == std::endian::little)
+                    {
+                        const auto slash = (flg_ & YYJSON_WRITE_ESCAPE_SLASHES) ? '/' : '"';
+                        while (end - src >= 8)
+                        {
+                            const auto x = load_word<std::uint64_t>(src);
+                            std::memcpy(dst, &x, 8);
+                            const auto m = special_bytes(x, slash);
+                            if (m != 0)
+                            {
+                                const auto n = std::countr_zero(m) / 8;
+                                src += n;
+                                dst += n;
+                                goto special;
+                            }
+                            src += 8;
+                            dst += 8;
+                        }
+                        if (src != end)
+                        {
+                            const auto n = static_cast<int>(end - src);
+                            // the word that ends with the string, with the bytes before `src` shifted out
+                            auto m = std::uint64_t{};
+                            if (str.size() >= 8)
+                            {
+                                const auto x = load_word<std::uint64_t>(end - 8) >> (8 * (8 - n));
+                                std::memcpy(dst, &x, 8);
+                                m = special_bytes(x, slash) & (~std::uint64_t{0} >> (8 * (8 - n)));
+                            }
+                            else if (str.size() >= 4)
+                            {
+                                auto k = 0;
+                                if (n >= 4)
+                                {
+                                    const auto x = load_word<std::uint32_t>(src);
+                                    std::memcpy(dst, &x, 4);
+                                    k = 4;
+                                    m = special_bytes(x, slash);
+                                }
+                                if (m == 0 && n > k)
+                                {
+                                    const auto x = load_word<std::uint32_t>(end - 4) >> (8 * (4 - n + k));
+                                    std::memcpy(dst + k, &x, 4);
+                                    m = static_cast<std::uint64_t>(special_bytes(x, slash) &
+                                                                   (~std::uint32_t{0} >> (8 * (4 - n + k))))
+                                        << (8 * k);
+                                }
+                            }
+                            else
+                            {
+                                for (auto i = 0; i < n; ++i)
+                                {
+                                    dst[i] = static_cast<char>(src[i]);
+                                    if (table[src[i]] != enc_cpy_1) m |= std::uint64_t{0x80} << (8 * i);
+                                }
+                            }
+                            if (m == 0)
+                            {
+                                dst += n;
+                                break;
+                            }
+                            const auto i = std::countr_zero(m) / 8;
+                            src += i;
+                            dst += i;
+                            goto special;
+                        }
+                        break;
+                    }
                     while (end - src >= 4)
                     {
                         if (table[src[0]] != enc_cpy_1) goto special;
@@ -6457,7 +6834,8 @@ namespace yyjson
                     while (src != end && table[*src] == enc_cpy_1) *dst++ = static_cast<char>(*src++);
                     if (src == end) break;
                 special:
-                    // stay here while the text is not ASCII, as in CJK text, instead of restarting the scan
+                    // stay here while the text is not ASCII, as in CJK text, instead of restarting the scan,
+                    // unless the blocks above copy such text
                     do
                     {
                         const auto type = table[*src];
@@ -6481,7 +6859,11 @@ namespace yyjson
                             src = pos.src;
                             dst = pos.dst;
                         }
-                    } while (src != end && table[*src] != enc_cpy_1);
+                    } while (src != end && table[*src] != enc_cpy_1
+#if defined(__SSSE3__) || defined(__AVX__)
+                             && (!copy_utf8 || end - src < 16)
+#endif
+                    );
                     if (src == end) break;
                 }
                 *dst++ = '"';
