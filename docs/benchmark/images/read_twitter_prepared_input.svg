@@ -15,7 +15,7 @@
 <text x="852.0" y="370" class="value" text-anchor="middle">0.623 ms</text>
 <text x="24" y="76" class="heading">New parser / allocator per parse</text>
 <text x="24" y="100" class="label">cpp-yyjson (in-situ)</text>
-<rect x="300" y="89" width="193.1" height="14" rx="2" fill="#2563eb"/>
+<rect x="300" y="89" width="193.4" height="14" rx="2" fill="#2563eb"/>
 <text x="864" y="100" class="value">0.218 ms</text>
 <text x="24" y="124" class="label">simdjson On Demand (pad)</text>
 <rect x="300" y="113" width="205.8" height="14" rx="2" fill="#9333ea"/>
@@ -31,8 +31,8 @@
 <text x="864" y="196" class="value">0.553 ms</text>
 <text x="24" y="222" class="heading">Reused parser / allocator</text>
 <text x="24" y="246" class="label">cpp-yyjson (in-situ)</text>
-<rect x="300" y="235" width="192.4" height="14" rx="2" fill="#2563eb"/>
-<text x="864" y="246" class="value">0.217 ms</text>
+<rect x="300" y="235" width="193.2" height="14" rx="2" fill="#2563eb"/>
+<text x="864" y="246" class="value">0.218 ms</text>
 <text x="24" y="270" class="label">simdjson On Demand (pad)</text>
 <rect x="300" y="259" width="204.6" height="14" rx="2" fill="#9333ea"/>
 <text x="864" y="270" class="value">0.231 ms</text>

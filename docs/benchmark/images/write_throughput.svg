@@ -30,49 +30,49 @@
 <rect x="108.6" y="383.1" width="13.8" height="8.9" fill="#dc2626"/>
 <rect x="122.4" y="383.7" width="13.8" height="8.3" fill="#f97316"/>
 <text x="108.6" y="412" class="value" text-anchor="middle">canada</text>
-<rect x="170.1" y="321.0" width="13.8" height="71.0" fill="#2563eb"/>
-<rect x="184.0" y="326.0" width="13.8" height="66.0" fill="#16a34a"/>
+<rect x="170.1" y="320.9" width="13.8" height="71.1" fill="#2563eb"/>
+<rect x="184.0" y="326.1" width="13.8" height="65.9" fill="#16a34a"/>
 <rect x="197.8" y="376.7" width="13.8" height="15.3" fill="#dc2626"/>
-<rect x="211.6" y="381.1" width="13.8" height="10.9" fill="#f97316"/>
+<rect x="211.6" y="381.0" width="13.8" height="11.0" fill="#f97316"/>
 <text x="197.8" y="412" class="value" text-anchor="middle">citm_catalog</text>
 <rect x="259.3" y="337.7" width="13.8" height="54.3" fill="#2563eb"/>
-<rect x="273.2" y="357.0" width="13.8" height="35.0" fill="#16a34a"/>
+<rect x="273.2" y="357.1" width="13.8" height="34.9" fill="#16a34a"/>
 <rect x="287.0" y="380.5" width="13.8" height="11.5" fill="#dc2626"/>
 <rect x="300.8" y="384.9" width="13.8" height="7.1" fill="#f97316"/>
 <text x="287.0" y="412" class="value" text-anchor="middle">fgo</text>
-<rect x="348.5" y="232.3" width="13.8" height="159.7" fill="#2563eb"/>
-<rect x="362.4" y="261.3" width="13.8" height="130.7" fill="#16a34a"/>
-<rect x="376.2" y="372.3" width="13.8" height="19.7" fill="#dc2626"/>
-<rect x="390.0" y="383.3" width="13.8" height="8.7" fill="#f97316"/>
+<rect x="348.5" y="231.3" width="13.8" height="160.7" fill="#2563eb"/>
+<rect x="362.4" y="256.4" width="13.8" height="135.6" fill="#16a34a"/>
+<rect x="376.2" y="371.7" width="13.8" height="20.3" fill="#dc2626"/>
+<rect x="390.0" y="383.0" width="13.8" height="9.0" fill="#f97316"/>
 <text x="376.2" y="412" class="value" text-anchor="middle">github_events</text>
-<rect x="437.7" y="218.1" width="13.8" height="173.9" fill="#2563eb"/>
-<rect x="451.6" y="309.4" width="13.8" height="82.6" fill="#16a34a"/>
-<rect x="465.4" y="359.3" width="13.8" height="32.7" fill="#dc2626"/>
+<rect x="437.7" y="219.4" width="13.8" height="172.6" fill="#2563eb"/>
+<rect x="451.6" y="309.2" width="13.8" height="82.8" fill="#16a34a"/>
+<rect x="465.4" y="359.4" width="13.8" height="32.6" fill="#dc2626"/>
 <rect x="479.2" y="385.5" width="13.8" height="6.5" fill="#f97316"/>
 <text x="465.4" y="412" class="value" text-anchor="middle">gsoc-2018</text>
-<rect x="526.9" y="366.8" width="13.8" height="25.2" fill="#2563eb"/>
+<rect x="526.9" y="367.0" width="13.8" height="25.0" fill="#2563eb"/>
 <rect x="540.8" y="367.5" width="13.8" height="24.5" fill="#16a34a"/>
 <rect x="554.6" y="383.6" width="13.8" height="8.4" fill="#dc2626"/>
 <rect x="568.4" y="385.4" width="13.8" height="6.6" fill="#f97316"/>
 <text x="554.6" y="412" class="value" text-anchor="middle">lottie</text>
-<rect x="616.1" y="352.4" width="13.8" height="39.6" fill="#2563eb"/>
-<rect x="630.0" y="364.5" width="13.8" height="27.5" fill="#16a34a"/>
-<rect x="643.8" y="380.6" width="13.8" height="11.4" fill="#dc2626"/>
+<rect x="616.1" y="352.6" width="13.8" height="39.4" fill="#2563eb"/>
+<rect x="630.0" y="364.6" width="13.8" height="27.4" fill="#16a34a"/>
+<rect x="643.8" y="380.7" width="13.8" height="11.3" fill="#dc2626"/>
 <rect x="657.6" y="385.4" width="13.8" height="6.6" fill="#f97316"/>
 <text x="643.8" y="412" class="value" text-anchor="middle">otfcc</text>
-<rect x="705.3" y="159.1" width="13.8" height="232.9" fill="#2563eb"/>
-<rect x="719.2" y="166.5" width="13.8" height="225.5" fill="#16a34a"/>
+<rect x="705.3" y="159.5" width="13.8" height="232.5" fill="#2563eb"/>
+<rect x="719.2" y="166.7" width="13.8" height="225.3" fill="#16a34a"/>
 <rect x="733.0" y="360.6" width="13.8" height="31.4" fill="#dc2626"/>
 <rect x="746.8" y="382.8" width="13.8" height="9.2" fill="#f97316"/>
 <text x="733.0" y="412" class="value" text-anchor="middle">poet</text>
-<rect x="794.5" y="277.6" width="13.8" height="114.4" fill="#2563eb"/>
-<rect x="808.4" y="288.5" width="13.8" height="103.5" fill="#16a34a"/>
-<rect x="822.2" y="375.5" width="13.8" height="16.5" fill="#dc2626"/>
-<rect x="836.0" y="382.9" width="13.8" height="9.1" fill="#f97316"/>
+<rect x="794.5" y="276.9" width="13.8" height="115.1" fill="#2563eb"/>
+<rect x="808.4" y="288.3" width="13.8" height="103.7" fill="#16a34a"/>
+<rect x="822.2" y="375.4" width="13.8" height="16.6" fill="#dc2626"/>
+<rect x="836.0" y="382.8" width="13.8" height="9.2" fill="#f97316"/>
 <text x="822.2" y="412" class="value" text-anchor="middle">twitter</text>
-<rect x="883.7" y="305.7" width="13.8" height="86.3" fill="#2563eb"/>
-<rect x="897.6" y="311.0" width="13.8" height="81.0" fill="#16a34a"/>
-<rect x="911.4" y="375.6" width="13.8" height="16.4" fill="#dc2626"/>
-<rect x="925.2" y="382.8" width="13.8" height="9.2" fill="#f97316"/>
+<rect x="883.7" y="305.3" width="13.8" height="86.7" fill="#2563eb"/>
+<rect x="897.6" y="311.1" width="13.8" height="80.9" fill="#16a34a"/>
+<rect x="911.4" y="375.7" width="13.8" height="16.3" fill="#dc2626"/>
+<rect x="925.2" y="382.9" width="13.8" height="9.1" fill="#f97316"/>
 <text x="911.4" y="412" class="value" text-anchor="middle">twitterescaped</text>
 </svg>
