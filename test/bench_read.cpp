@@ -3,6 +3,9 @@
 #include <rapidjson/document.h>
 #include <simdjson.h>
 #include <cpp_yyjson.hpp>
+#if defined(CPPYYJSON_GLAZE_BENCHMARKS)
+#include <glaze/glaze.hpp>
+#endif
 #include <chrono>
 #include <format>
 #include <string>
@@ -1327,6 +1330,133 @@ void read_simdjson_ond_pad_single_copy(benchmark::State& state)
     state.SetLabel(std::get<0>(json_files[state.range(0)]));
     state.SetBytesProcessed(state.iterations() * json.size());
 }
+#if defined(CPPYYJSON_GLAZE_BENCHMARKS)
+// `glz::generic` keeps every number as a double, so integers would be counted as reals.
+// `glz::generic_u64` keeps them as integers the way yyjson does: an unsigned integer
+// first, then a signed one, then a double.
+using glaze_generic = glz::generic_u64;
+
+std::pair<json_count, json_stats> iterate_all_glaze(const glaze_generic& json)
+{
+    auto counter = json_count();
+    auto stats = json_stats();
+    const auto iterate_all_elements = [&counter, &stats](auto self, const glaze_generic& v0) -> void {
+        std::visit(
+            [&](const auto& v) {
+                using T = std::remove_cvref_t<decltype(v)>;
+                if constexpr (std::same_as<T, glaze_generic::array_t>)
+                {
+                    ++counter.cnt_array;
+                    stats.total_arr_elm_cnt += v.size();
+                    for (const auto& v1 : v) self(self, v1);
+                }
+                else if constexpr (std::same_as<T, glaze_generic::object_t>)
+                {
+                    ++counter.cnt_object;
+                    stats.total_obj_elm_cnt += v.size();
+                    for (const auto& [k, v1] : v)
+                    {
+                        stats.total_str_len += k.size();
+                        self(self, v1);
+                    }
+                }
+                else if constexpr (std::same_as<T, std::string>)
+                {
+                    ++counter.cnt_string;
+                    stats.total_str_len += v.size();
+                }
+                else if constexpr (std::same_as<T, std::uint64_t> || std::same_as<T, std::int64_t>)
+                {
+                    ++counter.cnt_int;
+                    stats.total_int += static_cast<std::int64_t>(v);
+                }
+                else if constexpr (std::same_as<T, double>)
+                {
+                    ++counter.cnt_real;
+                    stats.total_real += v;
+                }
+                else if constexpr (std::same_as<T, glaze_generic::null_t>)
+                {
+                    ++counter.cnt_null;
+                }
+                else
+                {
+                    static_assert(std::same_as<T, bool>);
+                    ++counter.cnt_bool;
+                    if (v)
+                        ++stats.total_true_cnt;
+                    else
+                        ++stats.total_false_cnt;
+                }
+            },
+            v0.data);
+    };
+    iterate_all_elements(iterate_all_elements, json);
+    return {counter, stats};
+}
+
+void read_glaze(benchmark::State& state)
+{
+    const auto json = read_file(std::get<0>(json_files[state.range(0)]));
+    for (auto _ : state)
+    {
+        auto counter = json_count();
+        auto stats = json_stats();
+        auto start = std::chrono::steady_clock::now();
+        {
+            auto v = glaze_generic();
+            if (const auto ec = glz::read_json(v, json); ec)
+            {
+                state.SkipWithError(glz::format_error(ec, json).c_str());
+                break;
+            }
+            std::tie(counter, stats) = iterate_all_glaze(v);
+        }
+        state.SetIterationTime(
+            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - start)
+                .count());
+        if (counter != std::get<1>(json_files[state.range(0)]))
+            state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
+        if (stats != std::get<2>(json_files[state.range(0)]))
+            state.SkipWithError(std::format("JSON stats mismatch\n{}", stats.str()).c_str());
+    }
+    state.SetLabel(std::get<0>(json_files[state.range(0)]));
+    state.SetBytesProcessed(state.iterations() * json.size());
+}
+
+void read_glaze_single(benchmark::State& state)
+{
+    const auto json = read_file(std::get<0>(json_files[state.range(0)]));
+    // Glaze has no parser state to reuse; what a later parse can reuse is the document
+    // it reads into, as cpp-yyjson reuses its pool allocator.
+    auto v = glaze_generic();
+    std::ignore = glz::read_json(v, json);
+    for (auto _ : state)
+    {
+        auto counter = json_count();
+        auto stats = json_stats();
+        auto start = std::chrono::steady_clock::now();
+        {
+            if (const auto ec = glz::read_json(v, json); ec)
+            {
+                state.SkipWithError(glz::format_error(ec, json).c_str());
+                break;
+            }
+            std::tie(counter, stats) = iterate_all_glaze(v);
+        }
+        state.SetIterationTime(
+            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - start)
+                .count());
+        if (counter != std::get<1>(json_files[state.range(0)]))
+            state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
+        if (stats != std::get<2>(json_files[state.range(0)]))
+            state.SkipWithError(std::format("JSON stats mismatch\n{}", stats.str()).c_str());
+    }
+    state.SetLabel(std::get<0>(json_files[state.range(0)]));
+    state.SetBytesProcessed(state.iterations() * json.size());
+}
+#endif
+
 #if defined(CPPYYJSON_RAW_YYJSON_BENCHMARKS)
 BENCHMARK(read_c_yyjson)->Unit(benchmark::kMillisecond)->DenseRange(0, json_files.size() - 1)->UseManualTime();
 BENCHMARK(read_c_yyjson_single)->Unit(benchmark::kMillisecond)->DenseRange(0, json_files.size() - 1)->UseManualTime();
@@ -1343,6 +1473,9 @@ BENCHMARK(read_c_yyjson_insitu_single_copy)
     ->Unit(benchmark::kMillisecond)
     ->DenseRange(0, json_files.size() - 1)
     ->UseManualTime();
+#elif defined(CPPYYJSON_GLAZE_BENCHMARKS)
+BENCHMARK(read_glaze)->Unit(benchmark::kMillisecond)->DenseRange(0, json_files.size() - 1)->UseManualTime();
+BENCHMARK(read_glaze_single)->Unit(benchmark::kMillisecond)->DenseRange(0, json_files.size() - 1)->UseManualTime();
 #else
 BENCHMARK(read_cpp_yyjson)->Unit(benchmark::kMillisecond)->DenseRange(0, json_files.size() - 1)->UseManualTime();
 BENCHMARK(read_cpp_yyjson_single)->Unit(benchmark::kMillisecond)->DenseRange(0, json_files.size() - 1)->UseManualTime();
