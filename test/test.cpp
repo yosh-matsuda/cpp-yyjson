@@ -4407,6 +4407,35 @@ TEST(Writer, RangeOfStructsWithCaster)
     EXPECT_EQ(value(VisitableCasterPoint{1, 2}).write(), "[1,2]");
 }
 
+struct TranslatedPoint
+{
+    int x;
+    int y;
+};
+
+template <>
+struct yyjson::caster<TranslatedPoint>
+{
+    static auto to_json(const TranslatedPoint& p) { return std::format("{},{}", p.x, p.y); }
+};
+
+struct TranslatedPointHolder
+{
+    TranslatedPoint point;
+    std::vector<TranslatedPoint> points;
+};
+
+TEST(Writer, TranslatorOfAggregate)
+{
+    using namespace yyjson;
+
+    // the value that the caster returns is written instead of the fields of the aggregate
+    EXPECT_EQ(value(TranslatedPoint{1, 2}).write(), R"("1,2")");
+    EXPECT_EQ(value(std::vector<TranslatedPoint>{{1, 2}, {3, 4}}).write(), R"(["1,2","3,4"])");
+    EXPECT_EQ(value(std::map<std::string, TranslatedPoint>{{"p", {1, 2}}}).write(), R"({"p":"1,2"})");
+    EXPECT_EQ(object(TranslatedPointHolder{{1, 2}, {{3, 4}}}).write(), R"({"point":"1,2","points":["3,4"]})");
+}
+
 struct NestedWriteInner
 {
     std::string name;

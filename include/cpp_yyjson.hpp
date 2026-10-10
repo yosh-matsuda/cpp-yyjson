@@ -5375,20 +5375,20 @@ namespace yyjson
 #endif
 
         template <copy_string_args... Ts>
-        requires visitable<T>
+        requires visitable<T> && (!writer::detail::to_json_usr<T>)
         static auto to_json(writer::object_ref& obj, const T& t, Ts... ts)
         {
             visit_struct<T>::to_json_impl(obj, t, ts...);
         }
         template <copy_string_args... Ts>
-        requires visitable<T>
+        requires visitable<T> && (!writer::detail::to_json_usr<T>)
         static auto to_json(writer::object_ref& obj, T&& t, Ts... ts)
         {
             visit_struct<T>::to_json_impl(obj, std::move(t), ts...);
         }
 
         template <copy_string_args... Ts>
-        requires writer::detail::to_json_with_reflection<T> && (!visitable<T>)
+        requires writer::detail::to_json_with_reflection<T> && (!visitable<T>) && (!writer::detail::to_json_usr<T>)
         static auto to_json(writer::object_ref& obj, const T& t, Ts... ts)
         {
             obj.assign_reflected_fields(detail::reflected_field_count(t), [&](auto& emitter) {
@@ -5398,7 +5398,7 @@ namespace yyjson
             });
         }
         template <copy_string_args... Ts>
-        requires writer::detail::to_json_with_reflection<T> && (!visitable<T>)
+        requires writer::detail::to_json_with_reflection<T> && (!visitable<T>) && (!writer::detail::to_json_usr<T>)
         static auto to_json(writer::object_ref& obj, T&& t, Ts... ts)
         {
             // The fields are moved one by one out of `t` itself.  `for_each_field` would move them into a
