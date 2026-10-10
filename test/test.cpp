@@ -4676,6 +4676,119 @@ TEST(DirectWriter, SameAsDocument)
     expect_direct_write(value());
 }
 
+struct CasterSample
+{
+    std::string label;
+    double value;
+};
+
+template <>
+struct yyjson::caster<CasterSample>
+{
+    template <typename... Ts>
+    static void to_json(writer::object_ref& obj, const CasterSample& v, Ts... ts)
+    {
+        obj.emplace("label", v.label, ts...);
+        obj.emplace("value", v.value, ts...);
+    }
+};
+
+struct CasterSamples
+{
+    std::vector<CasterSample> values;
+    std::map<std::string, CasterSample> named;
+    std::vector<ArrayCasterPoint> points;
+};
+
+struct CasterSampleField
+{
+    int id;
+    CasterSample sample;
+};
+
+struct MovedInSample
+{
+    int value;
+};
+
+template <>
+struct yyjson::caster<MovedInSample>
+{
+    static void to_json(writer::value_ref& v, const MovedInSample& s) { v = object{{"value", s.value}}; }
+};
+
+struct MovedInSampleField
+{
+    MovedInSample sample;
+};
+
+TEST(DirectWriter, TupleKeys)
+{
+    // every byte at the start, the middle and the end of keys around the lengths at which the writer copies a
+    // key in words of another size, or gives it to the string writer
+    for (auto c = 0; c < 256; ++c)
+    {
+        auto keys = std::vector<std::string>();
+        for (const auto n : {1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 24, 31, 32, 33})
+        {
+            for (const auto i : {0, n / 2, n - 1})
+            {
+                auto key = std::string(static_cast<std::size_t>(n), 'k');
+                key[static_cast<std::size_t>(i)] = static_cast<char>(c);
+                keys.push_back(std::move(key));
+            }
+        }
+        using members = std::tuple<std::pair<std::string, int>, std::pair<std::string_view, bool>,
+                                   std::pair<const char*, std::string>, std::pair<std::string, double>>;
+        auto tuples = std::vector<members>();
+        tuples.emplace_back(std::pair<std::string, int>("", 0), std::pair<std::string_view, bool>("", true),
+                            std::pair<const char*, std::string>("", ""), std::pair<std::string, double>("", 0.5));
+        for (const auto& key : keys)
+        {
+            tuples.emplace_back(std::pair<std::string, int>(key, 1), std::pair<std::string_view, bool>(key, false),
+                                std::pair<const char*, std::string>(key.c_str(), key),
+                                std::pair<std::string, double>(key, 1.5));
+        }
+        expect_direct_write(tuples);
+    }
+}
+
+TEST(DirectWriter, CastersOnDocument)
+{
+    using namespace yyjson;
+
+    // the elements of a range that a caster builds on a document are written from one document of them all, at
+    // the top and nested, where pretty printing indents them
+    const auto values =
+        std::vector<CasterSample>{{"a", 1.5}, {"b/\n\u3042", -0.0}, {std::string(3000, 'x'), 1e300}};
+    expect_direct_write(values);
+    expect_direct_write(std::vector<CasterSample>{});
+    expect_direct_write(std::map<std::string, CasterSample>{{"k", {"v", 2.0}}, {"l", {"w", 0.5}}});
+    const auto samples = CasterSamples{values, {{"k", {"v", 2.0}}}, {{1, 2}, {3, 4}}};
+    expect_direct_write(samples);
+    expect_direct_write(std::vector<CasterSamples>{samples, {}});
+
+    // the text grows past the size that yyjson estimates, and its errors are those of the document
+    expect_direct_write(std::vector<CasterSample>(200, {std::string(500, '\n'), 0.5}));
+    expect_direct_write(std::vector<CasterSample>{{"nan", std::numeric_limits<double>::quiet_NaN()}});
+    expect_direct_write(
+        std::map<std::string, CasterSample>{{"inf", {"inf", std::numeric_limits<double>::infinity()}}});
+    expect_direct_write(CasterSamples{{{"nan", std::numeric_limits<double>::quiet_NaN()}}, {}, {}});
+
+    // the document is freed once it holds a megabyte or many documents that values were moved in from, and the
+    // values that follow are built in a new one
+    auto fields = std::vector<CasterSampleField>();
+    for (auto i = 0; i < 20000; ++i)
+        fields.push_back({i, {std::string(300, static_cast<char>('a' + i % 26)), i * 0.25}});
+    expect_direct_write(fields);
+    auto ranges = std::vector<std::vector<CasterSample>>();
+    for (auto i = 0; i < 400; ++i) ranges.emplace_back(50, CasterSample{std::string(300, 'r'), i * 0.5});
+    expect_direct_write(ranges);
+    auto moved = std::vector<MovedInSampleField>();
+    for (auto i = 0; i < 300; ++i) moved.push_back({{i}});
+    expect_direct_write(moved);
+}
+
 TEST(DirectWriter, Strings)
 {
     using namespace yyjson;
@@ -4793,6 +4906,12 @@ TEST(DirectWriter, Buffer)
     {
         EXPECT_EQ(e.code(), YYJSON_WRITE_ERROR_NAN_OR_INF);
     }
+    EXPECT_TRUE(out.empty());
+    auto grown = std::vector<double>(1000, 1.5);
+    grown.push_back(std::numeric_limits<double>::quiet_NaN());
+    EXPECT_THROW((void)write(grown), write_error);
+    out = "previous";
+    EXPECT_THROW(write(grown, out), write_error);
     EXPECT_TRUE(out.empty());
     EXPECT_THROW((void)write(std::string("\xff")), write_error);
     EXPECT_EQ(std::string(write(std::string("\xff"), WriteFlag::AllowInvalidUnicode)), "\"\xff\"");
