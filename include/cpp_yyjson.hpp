@@ -1226,12 +1226,19 @@ namespace yyjson
                 return (create_value_callable<field_reflection::field_type<T, Is>> && ...);
             }
 
+            // The structs written field by field without their casters: those that have no `to_json` of
+            // the user, which would decide how they are written.
             template <typename T>
             concept directly_create_reflected_object =
                 field_reflection::field_namable<std::remove_cvref_t<T>> && (!visitable<std::remove_cvref_t<T>>) &&
-                (!yyjson::detail::std_array<T>) &&
+                (!yyjson::detail::std_array<T>) && (!to_json_usr<T>) &&
+                (!to_json_inp_usr_defined<T>) &&
                 directly_create_reflected_object_impl<std::remove_cvref_t<T>>(
                     std::make_index_sequence<field_reflection::field_count<std::remove_cvref_t<T>>>{});
+            template <typename T>
+            concept directly_create_visitable_object = visitable<std::remove_cvref_t<T>> && requires {
+                visit_struct<std::remove_cvref_t<T>>::field_count;
+            } && (!to_json_usr<T>) && (!to_json_inp_usr_defined<T>);
 
             template <typename T>
             concept convertible_to_create_primitive_callable = requires(T&& t) {  // clang-format off
@@ -1449,8 +1456,7 @@ namespace yyjson
                 {
                     // range<T> -> array
                     using value_type = std::remove_cvref_t<std::ranges::range_value_t<Range>>;
-                    if constexpr (std::ranges::sized_range<Range> && visitable<value_type> &&
-                                  requires { visit_struct<value_type>::field_count; })
+                    if constexpr (std::ranges::sized_range<Range> && directly_create_visitable_object<value_type>)
                     {
                         return yyjson_mut_arr_with_visitable_objects(std::forward<Range>(range), args...);
                     }

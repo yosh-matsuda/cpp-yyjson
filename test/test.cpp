@@ -4322,6 +4322,91 @@ TEST(Reader, ReflectedFieldInPlace)
     EXPECT_EQ(cast<OverlappedRecord>(read(R"({"flag":true,"padded":{}})")), (OverlappedRecord{{"", 'a'}, true}));
 }
 
+struct ObjectCasterPoint
+{
+    int x;
+    int y;
+};
+
+template <>
+struct yyjson::caster<ObjectCasterPoint>
+{
+    template <typename... Ts>
+    static void to_json(writer::object_ref& obj, const ObjectCasterPoint& p, Ts... ts)
+    {
+        if (p.x != 0) obj.emplace("x", p.x, ts...);
+        if (p.y != 0) obj.emplace("y", p.y, ts...);
+    }
+};
+
+struct ArrayCasterPoint
+{
+    int x;
+    int y;
+};
+
+template <>
+struct yyjson::caster<ArrayCasterPoint>
+{
+    template <typename... Ts>
+    static void to_json(writer::array_ref& arr, const ArrayCasterPoint& p, Ts... ts)
+    {
+        arr.emplace_back(p.x, ts...);
+        arr.emplace_back(p.y, ts...);
+    }
+};
+
+struct ValueCasterName
+{
+    std::string name;
+};
+
+template <>
+struct yyjson::caster<ValueCasterName>
+{
+    template <typename... Ts>
+    static void to_json(writer::value_ref& v, const ValueCasterName& n, Ts...)
+    {
+        if (n.name.empty())
+            v = nullptr;
+        else
+            v = n.name;
+    }
+};
+
+struct VisitableCasterPoint
+{
+    int x;
+    int y;
+};
+
+VISITABLE_STRUCT(VisitableCasterPoint, x, y);
+
+template <>
+struct yyjson::caster<VisitableCasterPoint>
+{
+    template <typename... Ts>
+    static void to_json(writer::array_ref& arr, const VisitableCasterPoint& p, Ts... ts)
+    {
+        arr.emplace_back(p.x, ts...);
+        arr.emplace_back(p.y, ts...);
+    }
+};
+
+TEST(Writer, RangeOfStructsWithCaster)
+{
+    using namespace yyjson;
+
+    // the casters of the user decide how the elements are written, as they do for a single struct
+    EXPECT_EQ(value(std::vector<ObjectCasterPoint>{{1, 2}, {0, 0}, {0, 3}}).write(), R"([{"x":1,"y":2},{},{"y":3}])");
+    EXPECT_EQ(value(std::vector<ArrayCasterPoint>{{1, 2}, {3, 4}}).write(), "[[1,2],[3,4]]");
+    EXPECT_EQ(value(std::vector<ValueCasterName>{{"a"}, {""}}).write(), R"(["a",null])");
+    EXPECT_EQ(value(std::vector<VisitableCasterPoint>{{1, 2}}).write(), "[[1,2]]");
+    EXPECT_EQ(value(std::vector<std::vector<ArrayCasterPoint>>{{{1, 2}}, {}}).write(), "[[[1,2]],[]]");
+    EXPECT_EQ(value(ArrayCasterPoint{1, 2}).write(), "[1,2]");
+    EXPECT_EQ(value(VisitableCasterPoint{1, 2}).write(), "[1,2]");
+}
+
 // NOLINTEND
 #if defined(__GNUC__)
 #pragma GCC diagnostic pop
