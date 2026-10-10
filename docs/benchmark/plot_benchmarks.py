@@ -227,6 +227,12 @@ TYPED_VARIANTS = {
         "cpp_yyjson",
         "cpp-yyjson (DOM + cast)",
     ),
+    "typed_read_cpp_yyjson_direct": (
+        "read",
+        "fresh",
+        "cpp_yyjson",
+        "cpp-yyjson (direct)",
+    ),
     "typed_read_glaze": ("read", "fresh", "glaze", "Glaze"),
     "typed_read_glaze_single": ("read", "reused", "glaze", "Glaze"),
     "typed_write_cpp_yyjson": ("write", "fresh", "cpp_yyjson", "cpp-yyjson"),

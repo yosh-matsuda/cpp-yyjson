@@ -39,12 +39,18 @@
 
 #if defined(__GNUC__) || defined(__clang__)
 #define CPPYYJSON_ALWAYS_INLINE [[gnu::always_inline]]
+#define CPPYYJSON_LAMBDA_ALWAYS_INLINE __attribute__((always_inline))
+#define CPPYYJSON_NOINLINE [[gnu::noinline]]
 #define CPPYYJSON_COLD [[gnu::cold, gnu::noinline]]
 #elif defined(_MSC_VER)
 #define CPPYYJSON_ALWAYS_INLINE
+#define CPPYYJSON_LAMBDA_ALWAYS_INLINE
+#define CPPYYJSON_NOINLINE __declspec(noinline)
 #define CPPYYJSON_COLD __declspec(noinline)
 #else
 #define CPPYYJSON_ALWAYS_INLINE
+#define CPPYYJSON_LAMBDA_ALWAYS_INLINE
+#define CPPYYJSON_NOINLINE
 #define CPPYYJSON_COLD
 #endif
 
@@ -649,6 +655,15 @@ namespace yyjson
         template <typename T>
         concept shared_ptr_like = is_shared_ptr<std::remove_cvref_t<T>>::value;
 
+        template <typename T>
+        struct is_std_optional : std::false_type
+        {
+        };
+        template <typename T>
+        struct is_std_optional<std::optional<T>> : std::true_type
+        {
+        };
+
         // `std::array` is an aggregate as well as a range.  The writer has to treat it as a range, the
         // way the reader does, rather than reflect it into an object of its members.
         template <typename T>
@@ -717,6 +732,11 @@ namespace yyjson
             std::array<std::string_view, N> names_;
             std::array<std::size_t, N> order_ = {};  // indices of the names sorted by length
             std::array<std::size_t, N> sizes_ = {};  // the lengths of the names in that order
+            std::array<bool, N> plain_ = {};         // whether a name is written in JSON as it is
+            // A plain name shorter than 16 characters followed by the closing quotation mark, as the 16 bytes
+            // loaded from the text in little-endian order compare with it under the mask.
+            std::array<std::array<std::uint64_t, 2>, N> key_ = {};
+            std::array<std::array<std::uint64_t, 2>, N> key_mask_ = {};
 
             // Compares names of the same length without calling `memcmp`, as they are short.  GCC warns
             // that the 8-byte loads read past a name shorter than 8 bytes, though they run only for a
@@ -773,6 +793,51 @@ namespace yyjson
                     return names_[a].size() < names_[b].size() || (names_[a].size() == names_[b].size() && a < b);
                 });
                 for (std::size_t i = 0; i < N; ++i) sizes_[i] = names_[order_[i]].size();
+                for (std::size_t i = 0; i < N; ++i)
+                {
+                    plain_[i] = std::ranges::none_of(names_[i], [](char c) {
+                        return c == '"' || c == '\\' || static_cast<unsigned char>(c) < 0x20;
+                    });
+                    if (plain_[i] && names_[i].size() < 16)
+                    {
+                        for (std::size_t j = 0; j <= names_[i].size(); ++j)
+                        {
+                            const auto c = j < names_[i].size() ? names_[i][j] : '"';
+                            key_[i][j / 8] |= std::uint64_t{static_cast<unsigned char>(c)} << (j % 8 * 8);
+                            key_mask_[i][j / 8] |= std::uint64_t{0xFF} << (j % 8 * 8);
+                        }
+                    }
+                }
+            }
+
+            // Whether `is_raw_key_at(index, p)` can be asked.
+            [[nodiscard]] CPPYYJSON_ALWAYS_INLINE constexpr bool has_short_key(std::size_t index) const noexcept
+            {
+                return std::endian::native == std::endian::little && key_mask_[index][0] != 0;
+            }
+
+            // Whether the 16 characters at `p` begin with the name of the field `index` and the quotation mark
+            // that closes it.
+            [[nodiscard]] CPPYYJSON_ALWAYS_INLINE bool is_raw_key_at(std::size_t index, const char* p) const noexcept
+            {
+                std::uint64_t lo, hi;
+                std::memcpy(&lo, p, sizeof(lo));
+                std::memcpy(&hi, p + 8, sizeof(hi));
+                const auto diff_lo = (lo ^ key_[index][0]) & key_mask_[index][0];
+                const auto diff_hi = (hi ^ key_[index][1]) & key_mask_[index][1];
+                return (diff_lo | diff_hi) == 0;
+            }
+
+            [[nodiscard]] CPPYYJSON_ALWAYS_INLINE constexpr std::size_t name_size(std::size_t index) const noexcept
+            {
+                return names_[index].size();
+            }
+
+            // Whether the `name_size(index)` characters at `p` are the name of the field `index` written without
+            // escapes, so that the JSON string ends at the next quotation mark.
+            [[nodiscard]] CPPYYJSON_ALWAYS_INLINE bool is_raw_name_at(std::size_t index, const char* p) const noexcept
+            {
+                return plain_[index] && equal(names_[index].data(), p, names_[index].size());
             }
 
             // Returns N when no field has the name.
@@ -4150,6 +4215,11 @@ namespace yyjson
 
     namespace reader
     {
+        namespace detail
+        {
+            class direct_reader;
+        }
+
         class abstract_value_ref
         {
             friend struct writer::detail::mutable_document;
@@ -4227,6 +4297,7 @@ namespace yyjson
             friend class const_array_ref;
             friend class const_object_iter;
             friend class const_object_ref;
+            friend class detail::direct_reader;
             template <typename T>
             friend struct yyjson::detail::default_caster;
 
@@ -4949,8 +5020,9 @@ namespace yyjson
 
     }  // namespace reader
 
-    template <typename... Ts>
-    auto read(Ts&&... ts)
+    // The leading parameter keeps `read<T>(json)`, which reads into a T, from naming this overload.
+    template <std::nullptr_t = nullptr, typename... Ts>
+    auto read(Ts&&... ts) -> decltype(reader::read(std::forward<Ts>(ts)...))
     {
         return reader::read(std::forward<Ts>(ts)...);
     }
@@ -5005,12 +5077,32 @@ namespace yyjson
             }
         }
 
+        template <typename T>
+        using key_value_mapped_t = std::remove_cvref_t<std::tuple_element_t<1, std::ranges::range_value_t<T>>>;
+
+        // An element of the range T is made from a key and a value either by its constructor, like `std::pair`,
+        // or by aggregate initialization, like `std::array`.
+        template <typename T, typename Key>
+        concept key_value_constructible =
+            std::constructible_from<std::ranges::range_value_t<T>, Key, key_value_mapped_t<T>>;
+        template <typename T, typename Key>
+        concept key_value_aggregate_initializable = requires(Key&& key, key_value_mapped_t<T>&& value) {
+            std::ranges::range_value_t<T>{
+                std::tuple_element_t<0, std::ranges::range_value_t<T>>(std::forward<Key>(key)), std::move(value)};
+        };
+
         template <typename T, typename Json>
         concept object_emplaceable_range =
             std::default_initializable<T> && (!visitable<T>) && std::ranges::input_range<T> && requires {
                 typename std::ranges::range_value_t<T>;
                 requires key_value_like<std::ranges::range_value_t<T>>;
-                requires requires(T t, Json obj) { t.emplace(obj.begin()->first, obj.begin()->second); };
+                requires requires(T t, Json obj, key_value_mapped_t<T> value, std::ranges::range_value_t<T> kv) {
+                    requires (key_value_constructible<T, decltype((obj.begin()->first))> && requires {
+                                 t.emplace(obj.begin()->first, std::move(value));
+                             }) || (key_value_aggregate_initializable<T, decltype((obj.begin()->first))> && requires {
+                                 t.emplace(std::move(kv));
+                             });
+                };
             };
 
         template <typename T, typename Json>
@@ -5018,26 +5110,86 @@ namespace yyjson
             std::default_initializable<T> && (!visitable<T>) && std::ranges::input_range<T> && requires {
                 typename std::ranges::range_value_t<T>;
                 requires key_value_like<std::ranges::range_value_t<T>>;
-                requires requires(T t, Json obj) {
-                    t.emplace_back(obj.begin()->first,
-                                   cast<std::remove_cvref_t<std::tuple_element_t<1, std::ranges::range_value_t<T>>>>(
-                                       obj.begin()->second));
+                requires requires(T t, Json obj, key_value_mapped_t<T> value, std::ranges::range_value_t<T> kv) {
+                    requires (key_value_constructible<T, decltype((obj.begin()->first))> && requires {
+                                 t.emplace_back(obj.begin()->first, std::move(value));
+                             }) || (key_value_aggregate_initializable<T, decltype((obj.begin()->first))> && requires {
+                                 t.emplace_back(std::move(kv));
+                             });
                 };
             };
 
-        template <typename T, typename Json>
-        concept array_castable_range = std::ranges::range<T> && std::default_initializable<T> && requires {
-            typename std::ranges::range_value_t<T>;
-            requires std::ranges::output_range<T, std::ranges::range_value_t<T>>;
-            requires requires(const Json& arr) { cast<std::ranges::range_value_t<T>>(arr.front()); };
+        // Adds a member of a JSON object to a range satisfying `object_emplaceable_range` (`Back` false) or
+        // `object_back_emplaceable_range` (`Back` true).
+        template <bool Back, typename T, typename Key, typename Value>
+        void emplace_key_value(T& result, Key&& key, Value&& value)
+        {
+            auto emplace = [&result](auto&&... args) {
+                if constexpr (Back)
+                    result.emplace_back(std::forward<decltype(args)>(args)...);
+                else
+                    result.emplace(std::forward<decltype(args)>(args)...);
+            };
+            if constexpr (key_value_constructible<T, Key&&>)
+                emplace(std::forward<Key>(key), std::forward<Value>(value));
+            else
+            {
+                using pair_type = std::ranges::range_value_t<T>;
+                emplace(
+                    pair_type{std::tuple_element_t<0, pair_type>(std::forward<Key>(key)), std::forward<Value>(value)});
+            }
+        }
+
+        template <typename T>
+        struct is_basic_string : std::false_type
+        {
+        };
+        template <typename... Ts>
+        struct is_basic_string<std::basic_string<Ts...>> : std::true_type
+        {
         };
 
+        // A string is a range of characters, but is read from a JSON string only.
+        template <typename T, typename Json>
+        concept array_castable_range =
+            (!is_basic_string<T>::value) && std::ranges::range<T> && std::default_initializable<T> && requires {
+                typename std::ranges::range_value_t<T>;
+                requires std::ranges::output_range<T, std::ranges::range_value_t<T>>;
+                requires requires(const Json& arr) { cast<std::ranges::range_value_t<T>>(arr.front()); };
+            };
+
+        // A struct is read from a JSON object only, although C++20 lets `T(v)` initialize its first field from
+        // any value.
+        template <typename T>
+        concept json_aggregate = std::is_class_v<T> && std::is_aggregate_v<T> && (!std::same_as<T, std::monostate>);
+
+        // T is constructed from a JSON scalar given as Arg, which is not done when the result is not the value
+        // of the scalar: a container takes a number as its size and a struct as its first field, and C++
+        // converts numbers, pointers and null to `bool`, which is read from JSON true and false only.
         template <typename T, typename Arg>
 #ifdef _MSC_VER
-        concept json_scalar_constructible = requires { T(std::declval<Arg>()); };
+        concept json_scalar_constructible =
+            (!std::ranges::range<T>) && (!json_aggregate<T>) && (!std::same_as<T, bool> || std::same_as<Arg, bool>) &&
+            requires { T(std::declval<Arg>()); };
 #else
-        concept json_scalar_constructible = std::constructible_from<T, Arg>;
+        concept json_scalar_constructible =
+            (!std::ranges::range<T>) && (!json_aggregate<T>) && (!std::same_as<T, bool> || std::same_as<Arg, bool>) &&
+            std::constructible_from<T, Arg>;
 #endif
+
+        // `default_caster<T>::from_json_null` gives a T.
+        template <typename T>
+        concept json_null_constructible =
+            (!json_aggregate<T>) && (!std::same_as<T, bool>) &&
+            ((std::constructible_from<T, std::nullptr_t> && !std::constructible_from<T, std::string_view>) ||
+             std::constructible_from<T, std::nullopt_t> || std::constructible_from<T, std::monostate>);
+
+        // `default_caster<T>::from_json_string` gives a T.
+        template <typename T>
+        concept json_string_constructible =
+            (!json_aggregate<T>) && (!std::same_as<T, bool>) &&
+            (std::constructible_from<T, std::string_view> || std::constructible_from<T, std::string> ||
+             std::constructible_from<T, const char*>);
 
         template <typename T, typename Json>
         concept reflected_object_castable = std::default_initializable<T> && (!visitable<T>) &&
@@ -5049,6 +5201,13 @@ namespace yyjson
         concept reflected_assignable_in_place =
             std::same_as<Json, reader::const_value_ref> && (!reader::detail::from_json_val_usr_defined<T>) &&
             reflected_object_castable<T, reader::const_object_ref>;
+
+        // A range of fixed size, such as `std::array`, that `default_caster` fills in place from a JSON array of
+        // a read document.
+        template <typename T, typename Json>
+        concept fixed_size_assignable_in_place =
+            std::same_as<Json, reader::const_value_ref> && (!reader::detail::from_json_val_usr_defined<T>) &&
+            (!back_insertable<T>) && std::ranges::sized_range<T> && array_castable_range<T, reader::const_array_ref>;
     }  // namespace detail
 
     template <typename T>
@@ -5069,7 +5228,7 @@ namespace yyjson
             reserve_if_possible(result, obj.size());
             for (auto&& kv : obj)
             {
-                result.emplace(kv.first, cast<value_type>(kv.second));
+                emplace_key_value<false>(result, kv.first, cast<value_type>(kv.second));
             }
             return result;
         }
@@ -5082,7 +5241,7 @@ namespace yyjson
             reserve_if_possible(result, obj.size());
             for (auto&& kv : obj)
             {
-                result.emplace_back(kv.first, cast<value_type>(kv.second));
+                emplace_key_value<true>(result, kv.first, cast<value_type>(kv.second));
             }
             return result;
         }
@@ -5115,6 +5274,9 @@ namespace yyjson
                         result.push_back(cast<value_type>(e));
                 }
             }
+            else if constexpr (back_insertable<T> &&
+                               fixed_size_assignable_in_place<value_type, std::ranges::range_value_t<Json>>)
+                return read_fixed_size_elements(arr);
             else if constexpr (back_insertable<T>)
             {
                 reserve_if_possible(result, arr.size());
@@ -5122,15 +5284,50 @@ namespace yyjson
                                        [](const auto& e) { return cast<std::ranges::range_value_t<T>>(e); });
             }
             else  // TODO: fixed size range concept
-            {
-                if (arr.size() > std::ranges::size(result))
-                    detail::throw_bad_cast("the size of JSON array is greater than the size of {}",
-                                           detail::type_name<T>());
-                std::ranges::transform(arr, std::ranges::begin(result),
-                                       [](const auto& e) { return cast<std::ranges::range_value_t<T>>(e); });
-            }
+                assign_fixed_size_range(result, arr);
 
             return result;
+        }
+        // Reads elements such as `std::array` from JSON arrays without dispatching on the type of each.
+        template <typename Json>
+        static auto read_fixed_size_elements(const Json& arr)
+        {
+            using value_type = std::ranges::range_value_t<T>;
+            auto result = T();
+            reserve_if_possible(result, arr.size());
+            for (const auto& e : arr)
+            {
+                if (const auto inner = e.as_array(); inner.has_value())
+                {
+                    auto value = value_type();
+                    default_caster<value_type>::assign_fixed_size_range(value, *inner);
+                    result.push_back(value);
+                }
+                else
+                    result.push_back(cast<value_type>(e));
+            }
+            return result;
+        }
+        template <typename Json>
+        static void assign_fixed_size_range(T& result, const Json& arr)
+        {
+            using value_type = std::ranges::range_value_t<T>;
+            if (arr.size() > std::ranges::size(result))
+                detail::throw_bad_cast("the size of JSON array is greater than the size of {}", detail::type_name<T>());
+            if constexpr (requires { std::tuple_size<T>::value; } && std::tuple_size_v<T> <= 16)
+            {
+                // unrolled over the size of the type, which compilers do not always do for a loop over the
+                // size of the JSON array
+                const auto n = arr.size();
+                auto it = arr.begin();
+                auto out = std::ranges::begin(result);
+                [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                    (void)((Is < n && (*out = cast<value_type>(*it), ++it, ++out, true)) && ...);
+                }(std::make_index_sequence<std::tuple_size_v<T>>{});
+            }
+            else
+                std::ranges::transform(arr, std::ranges::begin(result),
+                                       [](const auto& e) { return cast<value_type>(e); });
         }
 #if defined(__GNUC__)
 #pragma GCC diagnostic push
@@ -5145,16 +5342,19 @@ namespace yyjson
         template <typename U = T>
         static U from_json_null()
         {
-            if constexpr (std::constructible_from<U, std::nullptr_t>)
+            // Before C++23 a string type converts from `nullptr` through its `const char*` constructor, which
+            // reads the null pointer as a C string.
+            if constexpr (!json_null_constructible<U>)
+                detail::throw_bad_cast("{} is not constructible from JSON null", detail::type_name<U>());
+            else if constexpr (std::constructible_from<U, std::nullptr_t> &&
+                               !std::constructible_from<U, std::string_view>)
             {
                 return U(nullptr);
             }
             else if constexpr (std::constructible_from<U, std::nullopt_t>)
                 return U(std::nullopt);
-            else if constexpr (std::constructible_from<U, std::monostate>)
-                return U(std::monostate());
             else
-                detail::throw_bad_cast("{} is not constructible from JSON null", detail::type_name<U>());
+                return U(std::monostate());
         }
 
         template <typename U = T>
@@ -5169,7 +5369,19 @@ namespace yyjson
         template <typename U = T>
         static U from_json_real(double value)
         {
-            if constexpr (json_scalar_constructible<U, double>)
+            if constexpr (std::integral<U> && !std::same_as<U, bool>)
+            {
+                // the value is truncated toward zero, as the conversion does, if it fits in U
+                constexpr auto upper = std::numeric_limits<U>::max() / 2 * 2.0 + 2.0;
+                constexpr auto lower = std::signed_integral<U> ? -upper : 0.0;
+                if (const auto t = std::trunc(value); t >= lower && t < upper)
+                {
+                    return static_cast<U>(t);
+                }
+                detail::throw_bad_cast("overflow detected: {} is not constructible from JSON number {}",
+                                       detail::type_name<U>(), value);
+            }
+            else if constexpr (json_scalar_constructible<U, double>)
             {
                 return U(value);
             }
@@ -5180,20 +5392,20 @@ namespace yyjson
         template <typename U = T>
         static U from_json_string(std::string_view value)
         {
-            if constexpr (std::constructible_from<U, std::string_view>)
+            if constexpr (!json_string_constructible<U>)
+                detail::throw_bad_cast("{} is not constructible from JSON string", detail::type_name<U>());
+            else if constexpr (std::constructible_from<U, std::string_view>)
                 return U(value);
             else if constexpr (std::constructible_from<U, std::string>)
                 return U(std::string(value));
-            else if constexpr (std::constructible_from<U, const char*>)
-                return U(value.data());
             else
-                detail::throw_bad_cast("{} is not constructible from JSON string", detail::type_name<U>());
+                return U(value.data());
         }
 
         template <typename U = T>
         static U from_json_uint(std::uint64_t value)
         {
-            if constexpr (std::integral<U>)
+            if constexpr (std::integral<U> && !std::same_as<U, bool>)
             {
                 if (value <= std::numeric_limits<U>::max())
                 {
@@ -5213,7 +5425,7 @@ namespace yyjson
         template <typename U = T>
         static U from_json_sint(std::int64_t value)
         {
-            if constexpr (std::unsigned_integral<U>)
+            if constexpr (std::unsigned_integral<U> && !std::same_as<U, bool>)
             {
                 if (value >= 0 && static_cast<std::uint64_t>(value) <= std::numeric_limits<U>::max())
                 {
@@ -5297,8 +5509,7 @@ namespace yyjson
                         return from_json_uint(unsafe_yyjson_get_uint(val));
                     if (unsafe_yyjson_is_sint(val)) return from_json_sint(unsafe_yyjson_get_sint(val));
                 }
-                else if constexpr (std::constructible_from<T, std::string_view> ||
-                                   std::constructible_from<T, std::string>)
+                else if constexpr (json_string_constructible<T>)
                 {
                     if (unsafe_yyjson_is_str(val)) [[likely]]
                         return from_json_string(
@@ -5501,6 +5712,15 @@ namespace yyjson
             if (!json.is_null() || detail::shared_ptr_like<T>) field = cast<T>(json);
         }
 
+        // Null gives no value, and any other JSON value is read as `cast<T>` reads it.
+        template <typename Json>
+        requires castable<Json, T>
+        static std::optional<T> from_json(const Json& json)
+        {
+            if (json.is_null() && !detail::shared_ptr_like<T>) return std::nullopt;
+            return cast<T>(json);
+        }
+
         template <detail::copy_string_args... Ts>
         requires requires(writer::value_ref& v, T t) {
             v = t;
@@ -5547,6 +5767,117 @@ namespace yyjson
         }
     };
 
+    namespace detail
+    {
+        // The kinds of JSON values, as bits of a mask.
+        enum json_kind : std::uint8_t
+        {
+            json_kind_null = 1U << 0U,
+            json_kind_bool = 1U << 1U,
+            json_kind_uint = 1U << 2U,
+            json_kind_sint = 1U << 3U,
+            json_kind_real = 1U << 4U,
+            json_kind_string = 1U << 5U,
+            json_kind_array = 1U << 6U,
+            json_kind_object = 1U << 7U,
+            json_kind_all = 0xFFU,
+        };
+
+        template <typename Json>
+        concept json_value_of_document =
+            std::same_as<Json, reader::const_value_ref> || writer::detail::base_of_const_value<Json>;
+
+        // The kind of a JSON value, or every kind for a raw value and for a JSON type other than a value
+        // of a document.
+        template <typename Json>
+        std::uint8_t json_kind_of(const Json& json) noexcept
+        {
+            if constexpr (json_value_of_document<Json>)
+            {
+                if (json.is_real()) return json_kind_real;
+                if (json.is_uint()) return json_kind_uint;
+                if (json.is_sint()) return json_kind_sint;
+                if (json.is_string()) return json_kind_string;
+                if (json.is_object()) return json_kind_object;
+                if (json.is_array()) return json_kind_array;
+                if (json.is_null()) return json_kind_null;
+                if (json.is_bool()) return json_kind_bool;
+            }
+            return json_kind_all;
+        }
+
+        template <typename T>
+        struct variant_json_kinds
+        {
+            static constexpr bool is_variant = false;
+        };
+
+        // The kinds of JSON values from which `cast<T>(json)` may succeed.  Every kind that it does not
+        // reject at compile time is included, so that a kind left out is one that always fails.
+        template <typename T, typename Json>
+        consteval std::uint8_t accepted_json_kinds()
+        {
+            if constexpr (!json_value_of_document<Json>)
+            {
+                return json_kind_all;
+            }
+            else if constexpr (!std::same_as<T, std::remove_cvref_t<T>>)
+            {
+                return accepted_json_kinds<std::remove_cvref_t<T>, Json>();
+            }
+            else if constexpr (requires(const Json& json) {
+                                   { caster<T>::from_json(json) } -> std::same_as<T>;
+                               })
+            {
+                if constexpr (!std::derived_from<caster<T>, builtin_caster>)
+                    return json_kind_all;
+                else if constexpr (variant_json_kinds<T>::is_variant)
+                    return variant_json_kinds<T>::template value<Json>();
+                else if constexpr (shared_ptr_like<T>)
+                    return json_kind_null | accepted_json_kinds<typename is_shared_ptr<T>::value_type, Json>();
+                else if constexpr (is_std_optional<T>::value)
+                    return json_kind_null | accepted_json_kinds<typename T::value_type, Json>();
+                else if constexpr (tuple_like<T>)
+                    return json_kind_array | json_kind_object;
+                else
+                    return json_kind_all;
+            }
+            else
+            {
+                // the rules of `default_caster<T>::from_json` for a value
+                auto kinds = 0U;
+                if constexpr (writer::detail::from_json_def_obj_defined<T> ||
+                              reader::detail::from_json_def_obj_defined<T>)
+                    kinds |= json_kind_object;
+                if constexpr (writer::detail::from_json_def_arr_defined<T> ||
+                              reader::detail::from_json_def_arr_defined<T>)
+                    kinds |= json_kind_array;
+                if constexpr (json_null_constructible<T>) kinds |= json_kind_null;
+                if constexpr (json_scalar_constructible<T, bool>) kinds |= json_kind_bool;
+                if constexpr (json_scalar_constructible<T, double>) kinds |= json_kind_real;
+                if constexpr ((std::integral<T> && !std::same_as<T, bool>) ||
+                              json_scalar_constructible<T, std::uint64_t>)
+                    kinds |= json_kind_uint;
+                if constexpr ((std::integral<T> && !std::same_as<T, bool>) ||
+                              json_scalar_constructible<T, std::int64_t>)
+                    kinds |= json_kind_sint;
+                if constexpr (json_string_constructible<T>) kinds |= json_kind_string;
+                return static_cast<std::uint8_t>(kinds);
+            }
+        }
+
+        template <typename... Ts>
+        struct variant_json_kinds<std::variant<Ts...>>
+        {
+            static constexpr bool is_variant = true;
+            template <typename Json>
+            static consteval std::uint8_t value()
+            {
+                return static_cast<std::uint8_t>((0U | ... | accepted_json_kinds<Ts, Json>()));
+            }
+        };
+    }  // namespace detail
+
     template <typename... Ts>
     struct caster<std::variant<Ts...>> : detail::builtin_caster
     {
@@ -5554,12 +5885,19 @@ namespace yyjson
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-value"
 #endif
+        // Tries the alternatives in order, and skips those that cannot be cast from the kind of the JSON
+        // value, which saves throwing and catching an exception for each of them.
         template <typename Json>
         static std::variant<Ts...> from_json(const Json& json)
         {
+            static constexpr auto kinds = std::array<std::uint8_t, sizeof...(Ts)>{
+                detail::accepted_json_kinds<Ts, Json>()...};
+            const auto kind = detail::json_kind_of(json);
             auto result = std::optional<std::variant<Ts...>>();
-            ((result = cast_no_except<Ts>(json)).has_value() || ...);
-            if (result.has_value()) return *result;
+            [&]<std::size_t... I>(std::index_sequence<I...>) {
+                (((kinds[I] & kind) != 0 && cast_no_except<Ts>(json, result)) || ...);
+            }(std::index_sequence_for<Ts...>{});
+            if (result.has_value()) return std::move(*result);
             detail::throw_bad_cast("{} is not constructible from JSON", detail::type_name<std::variant<Ts...>>());
         }
 #if defined(__GNUC__) or defined(__clang__)
@@ -5597,16 +5935,18 @@ namespace yyjson
         }
 
     private:
+        // `result` is empty, and holds the variant constructed from `cast<T>(json)` unless the cast fails.
         template <typename T, typename Json>
-        static std::optional<T> cast_no_except(const Json& json)
+        static bool cast_no_except(const Json& json, std::optional<std::variant<Ts...>>& result)
         {
             try
             {
-                return cast<T>(json);
+                result.emplace(cast<T>(json));
+                return true;
             }
             catch (...)
             {
-                return std::nullopt;
+                return false;
             }
         }
     };
@@ -5639,13 +5979,16 @@ namespace yyjson
                         detail::throw_bad_cast("the size of JSON object is greater than the size of {}",
                                                detail::type_name<Tuple<Ts...>>());
 
+                    // the elements after those of the JSON value are left value-initialized
                     using indices = std::make_index_sequence<std::tuple_size_v<Tuple<Ts...>>>;
                     auto it = obj->begin();
-                    [&result, &it]<std::size_t... N>(std::index_sequence<N...>) {
-                        (((std::get<N>(result) = std::tuple_element_t<N, Tuple<Ts...>>(
-                               static_cast<std::tuple_element_t<0, Ts>>(std::get<0>(*it)),
-                               cast<std::tuple_element_t<1, Ts>>(std::get<1>(*it)))),
-                          ++it),
+                    const auto size = obj->size();
+                    [&result, &it, size]<std::size_t... N>(std::index_sequence<N...>) {
+                        ((N < size ? (void)(std::get<N>(result) = std::tuple_element_t<N, Tuple<Ts...>>(
+                                                static_cast<std::tuple_element_t<0, Ts>>(std::get<0>(*it)),
+                                                cast<std::tuple_element_t<1, Ts>>(std::get<1>(*it))),
+                                            ++it)
+                                   : void()),
                          ...);
                     }(indices{});
 
@@ -5662,10 +6005,14 @@ namespace yyjson
                         detail::throw_bad_cast("the size of JSON array is greater than the size of {}",
                                                detail::type_name<Tuple<Ts...>>());
 
+                    // the elements after those of the JSON value are left value-initialized
                     using indices = std::make_index_sequence<std::tuple_size_v<Tuple<Ts...>>>;
                     auto it = arr->begin();
-                    [&result, &it]<std::size_t... N>(std::index_sequence<N...>) {
-                        ((std::get<N>(result) = cast<std::tuple_element_t<N, Tuple<Ts...>>>(*(it++))), ...);
+                    const auto size = arr->size();
+                    [&result, &it, size]<std::size_t... N>(std::index_sequence<N...>) {
+                        ((N < size ? (void)(std::get<N>(result) = cast<std::tuple_element_t<N, Tuple<Ts...>>>(*(it++)))
+                                   : void()),
+                         ...);
                     }(indices{});
 
                     return result;
@@ -5741,6 +6088,11 @@ namespace yyjson
     };
 
 #if YYJSON_VERSION_HEX >= 0x000A00
+    namespace reader::detail
+    {
+        class direct_reader;
+    }
+
     namespace writer::detail
     {
         // The pointer to the yyjson value that a JSON value of this library wraps.
@@ -5868,6 +6220,8 @@ namespace yyjson
         // writing it with yyjson.
         class direct_writer
         {
+            friend class reader::detail::direct_reader;
+
             direct_write_buffer& buf_;
             const std::uint8_t* enc_table_;
             const char* hex_;
@@ -6888,6 +7242,2137 @@ namespace yyjson
             throw;
         }
         out.resize(static_cast<std::size_t>(buf.cur - buf.beg));
+    }
+#endif
+
+#if YYJSON_VERSION_HEX >= 0x000A00
+    namespace reader::detail
+    {
+        // Thrown by the direct reader at text that is not valid JSON and at a value that the type cannot be cast
+        // from.  `read<T>` then reads the text into a document and casts it, which gives the result or the
+        // exception that the cast gives, as it does for any other exception.
+        struct direct_read_failure
+        {
+        };
+
+        // Thrown by the direct reader at text that it leaves to yyjson, which a document may read: a number
+        // whose exponent has 6 digits or more, a number of 128 characters or more if yyjson is built without
+        // its fast conversion of reals, and nesting deeper than it skips.  A `std::variant` lets it through
+        // instead of trying the next alternative, which the cast from a document may not take.
+        struct direct_read_unsupported
+        {
+        };
+
+        // 128-bit approximations of the powers of five from 5^-342 to 5^308 for the Eisel-Lemire algorithm, the
+        // high half first.  A positive power is truncated to its leading 128 bits, and a negative power is
+        // computed as in fast_float, which the proof of the algorithm without a fallback takes them from
+        // (Mushtak and Lemire, "Fast Number Parsing Without Fallback", 2023).  The test `DirectReader.PowersOfFive`
+        // computes them again; they are not computed here because that takes more steps than MSVC allows a
+        // constant expression by default.
+        inline constexpr int pow5_128_min = -342;
+        inline constexpr int pow5_128_max = 308;
+        inline constexpr std::uint64_t pow5_128_table[] = {
+            0xEEF453D6923BD65A, 0x113FAA2906A13B3F, 0x9558B4661B6565F8, 0x4AC7CA59A424C507,
+            0xBAAEE17FA23EBF76, 0x5D79BCF00D2DF649, 0xE95A99DF8ACE6F53, 0xF4D82C2C107973DC,
+            0x91D8A02BB6C10594, 0x79071B9B8A4BE869, 0xB64EC836A47146F9, 0x9748E2826CDEE284,
+            0xE3E27A444D8D98B7, 0xFD1B1B2308169B25, 0x8E6D8C6AB0787F72, 0xFE30F0F5E50E20F7,
+            0xB208EF855C969F4F, 0xBDBD2D335E51A935, 0xDE8B2B66B3BC4723, 0xAD2C788035E61382,
+            0x8B16FB203055AC76, 0x4C3BCB5021AFCC31, 0xADDCB9E83C6B1793, 0xDF4ABE242A1BBF3D,
+            0xD953E8624B85DD78, 0xD71D6DAD34A2AF0D, 0x87D4713D6F33AA6B, 0x8672648C40E5AD68,
+            0xA9C98D8CCB009506, 0x680EFDAF511F18C2, 0xD43BF0EFFDC0BA48, 0x0212BD1B2566DEF2,
+            0x84A57695FE98746D, 0x014BB630F7604B57, 0xA5CED43B7E3E9188, 0x419EA3BD35385E2D,
+            0xCF42894A5DCE35EA, 0x52064CAC828675B9, 0x818995CE7AA0E1B2, 0x7343EFEBD1940993,
+            0xA1EBFB4219491A1F, 0x1014EBE6C5F90BF8, 0xCA66FA129F9B60A6, 0xD41A26E077774EF6,
+            0xFD00B897478238D0, 0x8920B098955522B4, 0x9E20735E8CB16382, 0x55B46E5F5D5535B0,
+            0xC5A890362FDDBC62, 0xEB2189F734AA831D, 0xF712B443BBD52B7B, 0xA5E9EC7501D523E4,
+            0x9A6BB0AA55653B2D, 0x47B233C92125366E, 0xC1069CD4EABE89F8, 0x999EC0BB696E840A,
+            0xF148440A256E2C76, 0xC00670EA43CA250D, 0x96CD2A865764DBCA, 0x380406926A5E5728,
+            0xBC807527ED3E12BC, 0xC605083704F5ECF2, 0xEBA09271E88D976B, 0xF7864A44C633682E,
+            0x93445B8731587EA3, 0x7AB3EE6AFBE0211D, 0xB8157268FDAE9E4C, 0x5960EA05BAD82964,
+            0xE61ACF033D1A45DF, 0x6FB92487298E33BD, 0x8FD0C16206306BAB, 0xA5D3B6D479F8E056,
+            0xB3C4F1BA87BC8696, 0x8F48A4899877186C, 0xE0B62E2929ABA83C, 0x331ACDABFE94DE87,
+            0x8C71DCD9BA0B4925, 0x9FF0C08B7F1D0B14, 0xAF8E5410288E1B6F, 0x07ECF0AE5EE44DD9,
+            0xDB71E91432B1A24A, 0xC9E82CD9F69D6150, 0x892731AC9FAF056E, 0xBE311C083A225CD2,
+            0xAB70FE17C79AC6CA, 0x6DBD630A48AAF406, 0xD64D3D9DB981787D, 0x092CBBCCDAD5B108,
+            0x85F0468293F0EB4E, 0x25BBF56008C58EA5, 0xA76C582338ED2621, 0xAF2AF2B80AF6F24E,
+            0xD1476E2C07286FAA, 0x1AF5AF660DB4AEE1, 0x82CCA4DB847945CA, 0x50D98D9FC890ED4D,
+            0xA37FCE126597973C, 0xE50FF107BAB528A0, 0xCC5FC196FEFD7D0C, 0x1E53ED49A96272C8,
+            0xFF77B1FCBEBCDC4F, 0x25E8E89C13BB0F7A, 0x9FAACF3DF73609B1, 0x77B191618C54E9AC,
+            0xC795830D75038C1D, 0xD59DF5B9EF6A2417, 0xF97AE3D0D2446F25, 0x4B0573286B44AD1D,
+            0x9BECCE62836AC577, 0x4EE367F9430AEC32, 0xC2E801FB244576D5, 0x229C41F793CDA73F,
+            0xF3A20279ED56D48A, 0x6B43527578C1110F, 0x9845418C345644D6, 0x830A13896B78AAA9,
+            0xBE5691EF416BD60C, 0x23CC986BC656D553, 0xEDEC366B11C6CB8F, 0x2CBFBE86B7EC8AA8,
+            0x94B3A202EB1C3F39, 0x7BF7D71432F3D6A9, 0xB9E08A83A5E34F07, 0xDAF5CCD93FB0CC53,
+            0xE858AD248F5C22C9, 0xD1B3400F8F9CFF68, 0x91376C36D99995BE, 0x23100809B9C21FA1,
+            0xB58547448FFFFB2D, 0xABD40A0C2832A78A, 0xE2E69915B3FFF9F9, 0x16C90C8F323F516C,
+            0x8DD01FAD907FFC3B, 0xAE3DA7D97F6792E3, 0xB1442798F49FFB4A, 0x99CD11CFDF41779C,
+            0xDD95317F31C7FA1D, 0x40405643D711D583, 0x8A7D3EEF7F1CFC52, 0x482835EA666B2572,
+            0xAD1C8EAB5EE43B66, 0xDA3243650005EECF, 0xD863B256369D4A40, 0x90BED43E40076A82,
+            0x873E4F75E2224E68, 0x5A7744A6E804A291, 0xA90DE3535AAAE202, 0x711515D0A205CB36,
+            0xD3515C2831559A83, 0x0D5A5B44CA873E03, 0x8412D9991ED58091, 0xE858790AFE9486C2,
+            0xA5178FFF668AE0B6, 0x626E974DBE39A872, 0xCE5D73FF402D98E3, 0xFB0A3D212DC8128F,
+            0x80FA687F881C7F8E, 0x7CE66634BC9D0B99, 0xA139029F6A239F72, 0x1C1FFFC1EBC44E80,
+            0xC987434744AC874E, 0xA327FFB266B56220, 0xFBE9141915D7A922, 0x4BF1FF9F0062BAA8,
+            0x9D71AC8FADA6C9B5, 0x6F773FC3603DB4A9, 0xC4CE17B399107C22, 0xCB550FB4384D21D3,
+            0xF6019DA07F549B2B, 0x7E2A53A146606A48, 0x99C102844F94E0FB, 0x2EDA7444CBFC426D,
+            0xC0314325637A1939, 0xFA911155FEFB5308, 0xF03D93EEBC589F88, 0x793555AB7EBA27CA,
+            0x96267C7535B763B5, 0x4BC1558B2F3458DE, 0xBBB01B9283253CA2, 0x9EB1AAEDFB016F16,
+            0xEA9C227723EE8BCB, 0x465E15A979C1CADC, 0x92A1958A7675175F, 0x0BFACD89EC191EC9,
+            0xB749FAED14125D36, 0xCEF980EC671F667B, 0xE51C79A85916F484, 0x82B7E12780E7401A,
+            0x8F31CC0937AE58D2, 0xD1B2ECB8B0908810, 0xB2FE3F0B8599EF07, 0x861FA7E6DCB4AA15,
+            0xDFBDCECE67006AC9, 0x67A791E093E1D49A, 0x8BD6A141006042BD, 0xE0C8BB2C5C6D24E0,
+            0xAECC49914078536D, 0x58FAE9F773886E18, 0xDA7F5BF590966848, 0xAF39A475506A899E,
+            0x888F99797A5E012D, 0x6D8406C952429603, 0xAAB37FD7D8F58178, 0xC8E5087BA6D33B83,
+            0xD5605FCDCF32E1D6, 0xFB1E4A9A90880A64, 0x855C3BE0A17FCD26, 0x5CF2EEA09A55067F,
+            0xA6B34AD8C9DFC06F, 0xF42FAA48C0EA481E, 0xD0601D8EFC57B08B, 0xF13B94DAF124DA26,
+            0x823C12795DB6CE57, 0x76C53D08D6B70858, 0xA2CB1717B52481ED, 0x54768C4B0C64CA6E,
+            0xCB7DDCDDA26DA268, 0xA9942F5DCF7DFD09, 0xFE5D54150B090B02, 0xD3F93B35435D7C4C,
+            0x9EFA548D26E5A6E1, 0xC47BC5014A1A6DAF, 0xC6B8E9B0709F109A, 0x359AB6419CA1091B,
+            0xF867241C8CC6D4C0, 0xC30163D203C94B62, 0x9B407691D7FC44F8, 0x79E0DE63425DCF1D,
+            0xC21094364DFB5636, 0x985915FC12F542E4, 0xF294B943E17A2BC4, 0x3E6F5B7B17B2939D,
+            0x979CF3CA6CEC5B5A, 0xA705992CEECF9C42, 0xBD8430BD08277231, 0x50C6FF782A838353,
+            0xECE53CEC4A314EBD, 0xA4F8BF5635246428, 0x940F4613AE5ED136, 0x871B7795E136BE99,
+            0xB913179899F68584, 0x28E2557B59846E3F, 0xE757DD7EC07426E5, 0x331AEADA2FE589CF,
+            0x9096EA6F3848984F, 0x3FF0D2C85DEF7621, 0xB4BCA50B065ABE63, 0x0FED077A756B53A9,
+            0xE1EBCE4DC7F16DFB, 0xD3E8495912C62894, 0x8D3360F09CF6E4BD, 0x64712DD7ABBBD95C,
+            0xB080392CC4349DEC, 0xBD8D794D96AACFB3, 0xDCA04777F541C567, 0xECF0D7A0FC5583A0,
+            0x89E42CAAF9491B60, 0xF41686C49DB57244, 0xAC5D37D5B79B6239, 0x311C2875C522CED5,
+            0xD77485CB25823AC7, 0x7D633293366B828B, 0x86A8D39EF77164BC, 0xAE5DFF9C02033197,
+            0xA8530886B54DBDEB, 0xD9F57F830283FDFC, 0xD267CAA862A12D66, 0xD072DF63C324FD7B,
+            0x8380DEA93DA4BC60, 0x4247CB9E59F71E6D, 0xA46116538D0DEB78, 0x52D9BE85F074E608,
+            0xCD795BE870516656, 0x67902E276C921F8B, 0x806BD9714632DFF6, 0x00BA1CD8A3DB53B6,
+            0xA086CFCD97BF97F3, 0x80E8A40ECCD228A4, 0xC8A883C0FDAF7DF0, 0x6122CD128006B2CD,
+            0xFAD2A4B13D1B5D6C, 0x796B805720085F81, 0x9CC3A6EEC6311A63, 0xCBE3303674053BB0,
+            0xC3F490AA77BD60FC, 0xBEDBFC4411068A9C, 0xF4F1B4D515ACB93B, 0xEE92FB5515482D44,
+            0x991711052D8BF3C5, 0x751BDD152D4D1C4A, 0xBF5CD54678EEF0B6, 0xD262D45A78A0635D,
+            0xEF340A98172AACE4, 0x86FB897116C87C34, 0x9580869F0E7AAC0E, 0xD45D35E6AE3D4DA0,
+            0xBAE0A846D2195712, 0x8974836059CCA109, 0xE998D258869FACD7, 0x2BD1A438703FC94B,
+            0x91FF83775423CC06, 0x7B6306A34627DDCF, 0xB67F6455292CBF08, 0x1A3BC84C17B1D542,
+            0xE41F3D6A7377EECA, 0x20CABA5F1D9E4A93, 0x8E938662882AF53E, 0x547EB47B7282EE9C,
+            0xB23867FB2A35B28D, 0xE99E619A4F23AA43, 0xDEC681F9F4C31F31, 0x6405FA00E2EC94D4,
+            0x8B3C113C38F9F37E, 0xDE83BC408DD3DD04, 0xAE0B158B4738705E, 0x9624AB50B148D445,
+            0xD98DDAEE19068C76, 0x3BADD624DD9B0957, 0x87F8A8D4CFA417C9, 0xE54CA5D70A80E5D6,
+            0xA9F6D30A038D1DBC, 0x5E9FCF4CCD211F4C, 0xD47487CC8470652B, 0x7647C3200069671F,
+            0x84C8D4DFD2C63F3B, 0x29ECD9F40041E073, 0xA5FB0A17C777CF09, 0xF468107100525890,
+            0xCF79CC9DB955C2CC, 0x7182148D4066EEB4, 0x81AC1FE293D599BF, 0xC6F14CD848405530,
+            0xA21727DB38CB002F, 0xB8ADA00E5A506A7C, 0xCA9CF1D206FDC03B, 0xA6D90811F0E4851C,
+            0xFD442E4688BD304A, 0x908F4A166D1DA663, 0x9E4A9CEC15763E2E, 0x9A598E4E043287FE,
+            0xC5DD44271AD3CDBA, 0x40EFF1E1853F29FD, 0xF7549530E188C128, 0xD12BEE59E68EF47C,
+            0x9A94DD3E8CF578B9, 0x82BB74F8301958CE, 0xC13A148E3032D6E7, 0xE36A52363C1FAF01,
+            0xF18899B1BC3F8CA1, 0xDC44E6C3CB279AC1, 0x96F5600F15A7B7E5, 0x29AB103A5EF8C0B9,
+            0xBCB2B812DB11A5DE, 0x7415D448F6B6F0E7, 0xEBDF661791D60F56, 0x111B495B3464AD21,
+            0x936B9FCEBB25C995, 0xCAB10DD900BEEC34, 0xB84687C269EF3BFB, 0x3D5D514F40EEA742,
+            0xE65829B3046B0AFA, 0x0CB4A5A3112A5112, 0x8FF71A0FE2C2E6DC, 0x47F0E785EABA72AB,
+            0xB3F4E093DB73A093, 0x59ED216765690F56, 0xE0F218B8D25088B8, 0x306869C13EC3532C,
+            0x8C974F7383725573, 0x1E414218C73A13FB, 0xAFBD2350644EEACF, 0xE5D1929EF90898FA,
+            0xDBAC6C247D62A583, 0xDF45F746B74ABF39, 0x894BC396CE5DA772, 0x6B8BBA8C328EB783,
+            0xAB9EB47C81F5114F, 0x066EA92F3F326564, 0xD686619BA27255A2, 0xC80A537B0EFEFEBD,
+            0x8613FD0145877585, 0xBD06742CE95F5F36, 0xA798FC4196E952E7, 0x2C48113823B73704,
+            0xD17F3B51FCA3A7A0, 0xF75A15862CA504C5, 0x82EF85133DE648C4, 0x9A984D73DBE722FB,
+            0xA3AB66580D5FDAF5, 0xC13E60D0D2E0EBBA, 0xCC963FEE10B7D1B3, 0x318DF905079926A8,
+            0xFFBBCFE994E5C61F, 0xFDF17746497F7052, 0x9FD561F1FD0F9BD3, 0xFEB6EA8BEDEFA633,
+            0xC7CABA6E7C5382C8, 0xFE64A52EE96B8FC0, 0xF9BD690A1B68637B, 0x3DFDCE7AA3C673B0,
+            0x9C1661A651213E2D, 0x06BEA10CA65C084E, 0xC31BFA0FE5698DB8, 0x486E494FCFF30A62,
+            0xF3E2F893DEC3F126, 0x5A89DBA3C3EFCCFA, 0x986DDB5C6B3A76B7, 0xF89629465A75E01C,
+            0xBE89523386091465, 0xF6BBB397F1135823, 0xEE2BA6C0678B597F, 0x746AA07DED582E2C,
+            0x94DB483840B717EF, 0xA8C2A44EB4571CDC, 0xBA121A4650E4DDEB, 0x92F34D62616CE413,
+            0xE896A0D7E51E1566, 0x77B020BAF9C81D17, 0x915E2486EF32CD60, 0x0ACE1474DC1D122E,
+            0xB5B5ADA8AAFF80B8, 0x0D819992132456BA, 0xE3231912D5BF60E6, 0x10E1FFF697ED6C69,
+            0x8DF5EFABC5979C8F, 0xCA8D3FFA1EF463C1, 0xB1736B96B6FD83B3, 0xBD308FF8A6B17CB2,
+            0xDDD0467C64BCE4A0, 0xAC7CB3F6D05DDBDE, 0x8AA22C0DBEF60EE4, 0x6BCDF07A423AA96B,
+            0xAD4AB7112EB3929D, 0x86C16C98D2C953C6, 0xD89D64D57A607744, 0xE871C7BF077BA8B7,
+            0x87625F056C7C4A8B, 0x11471CD764AD4972, 0xA93AF6C6C79B5D2D, 0xD598E40D3DD89BCF,
+            0xD389B47879823479, 0x4AFF1D108D4EC2C3, 0x843610CB4BF160CB, 0xCEDF722A585139BA,
+            0xA54394FE1EEDB8FE, 0xC2974EB4EE658828, 0xCE947A3DA6A9273E, 0x733D226229FEEA32,
+            0x811CCC668829B887, 0x0806357D5A3F525F, 0xA163FF802A3426A8, 0xCA07C2DCB0CF26F7,
+            0xC9BCFF6034C13052, 0xFC89B393DD02F0B5, 0xFC2C3F3841F17C67, 0xBBAC2078D443ACE2,
+            0x9D9BA7832936EDC0, 0xD54B944B84AA4C0D, 0xC5029163F384A931, 0x0A9E795E65D4DF11,
+            0xF64335BCF065D37D, 0x4D4617B5FF4A16D5, 0x99EA0196163FA42E, 0x504BCED1BF8E4E45,
+            0xC06481FB9BCF8D39, 0xE45EC2862F71E1D6, 0xF07DA27A82C37088, 0x5D767327BB4E5A4C,
+            0x964E858C91BA2655, 0x3A6A07F8D510F86F, 0xBBE226EFB628AFEA, 0x890489F70A55368B,
+            0xEADAB0ABA3B2DBE5, 0x2B45AC74CCEA842E, 0x92C8AE6B464FC96F, 0x3B0B8BC90012929D,
+            0xB77ADA0617E3BBCB, 0x09CE6EBB40173744, 0xE55990879DDCAABD, 0xCC420A6A101D0515,
+            0x8F57FA54C2A9EAB6, 0x9FA946824A12232D, 0xB32DF8E9F3546564, 0x47939822DC96ABF9,
+            0xDFF9772470297EBD, 0x59787E2B93BC56F7, 0x8BFBEA76C619EF36, 0x57EB4EDB3C55B65A,
+            0xAEFAE51477A06B03, 0xEDE622920B6B23F1, 0xDAB99E59958885C4, 0xE95FAB368E45ECED,
+            0x88B402F7FD75539B, 0x11DBCB0218EBB414, 0xAAE103B5FCD2A881, 0xD652BDC29F26A119,
+            0xD59944A37C0752A2, 0x4BE76D3346F0495F, 0x857FCAE62D8493A5, 0x6F70A4400C562DDB,
+            0xA6DFBD9FB8E5B88E, 0xCB4CCD500F6BB952, 0xD097AD07A71F26B2, 0x7E2000A41346A7A7,
+            0x825ECC24C873782F, 0x8ED400668C0C28C8, 0xA2F67F2DFA90563B, 0x728900802F0F32FA,
+            0xCBB41EF979346BCA, 0x4F2B40A03AD2FFB9, 0xFEA126B7D78186BC, 0xE2F610C84987BFA8,
+            0x9F24B832E6B0F436, 0x0DD9CA7D2DF4D7C9, 0xC6EDE63FA05D3143, 0x91503D1C79720DBB,
+            0xF8A95FCF88747D94, 0x75A44C6397CE912A, 0x9B69DBE1B548CE7C, 0xC986AFBE3EE11ABA,
+            0xC24452DA229B021B, 0xFBE85BADCE996168, 0xF2D56790AB41C2A2, 0xFAE27299423FB9C3,
+            0x97C560BA6B0919A5, 0xDCCD879FC967D41A, 0xBDB6B8E905CB600F, 0x5400E987BBC1C920,
+            0xED246723473E3813, 0x290123E9AAB23B68, 0x9436C0760C86E30B, 0xF9A0B6720AAF6521,
+            0xB94470938FA89BCE, 0xF808E40E8D5B3E69, 0xE7958CB87392C2C2, 0xB60B1D1230B20E04,
+            0x90BD77F3483BB9B9, 0xB1C6F22B5E6F48C2, 0xB4ECD5F01A4AA828, 0x1E38AEB6360B1AF3,
+            0xE2280B6C20DD5232, 0x25C6DA63C38DE1B0, 0x8D590723948A535F, 0x579C487E5A38AD0E,
+            0xB0AF48EC79ACE837, 0x2D835A9DF0C6D851, 0xDCDB1B2798182244, 0xF8E431456CF88E65,
+            0x8A08F0F8BF0F156B, 0x1B8E9ECB641B58FF, 0xAC8B2D36EED2DAC5, 0xE272467E3D222F3F,
+            0xD7ADF884AA879177, 0x5B0ED81DCC6ABB0F, 0x86CCBB52EA94BAEA, 0x98E947129FC2B4E9,
+            0xA87FEA27A539E9A5, 0x3F2398D747B36224, 0xD29FE4B18E88640E, 0x8EEC7F0D19A03AAD,
+            0x83A3EEEEF9153E89, 0x1953CF68300424AC, 0xA48CEAAAB75A8E2B, 0x5FA8C3423C052DD7,
+            0xCDB02555653131B6, 0x3792F412CB06794D, 0x808E17555F3EBF11, 0xE2BBD88BBEE40BD0,
+            0xA0B19D2AB70E6ED6, 0x5B6ACEAEAE9D0EC4, 0xC8DE047564D20A8B, 0xF245825A5A445275,
+            0xFB158592BE068D2E, 0xEED6E2F0F0D56712, 0x9CED737BB6C4183D, 0x55464DD69685606B,
+            0xC428D05AA4751E4C, 0xAA97E14C3C26B886, 0xF53304714D9265DF, 0xD53DD99F4B3066A8,
+            0x993FE2C6D07B7FAB, 0xE546A8038EFE4029, 0xBF8FDB78849A5F96, 0xDE98520472BDD033,
+            0xEF73D256A5C0F77C, 0x963E66858F6D4440, 0x95A8637627989AAD, 0xDDE7001379A44AA8,
+            0xBB127C53B17EC159, 0x5560C018580D5D52, 0xE9D71B689DDE71AF, 0xAAB8F01E6E10B4A6,
+            0x9226712162AB070D, 0xCAB3961304CA70E8, 0xB6B00D69BB55C8D1, 0x3D607B97C5FD0D22,
+            0xE45C10C42A2B3B05, 0x8CB89A7DB77C506A, 0x8EB98A7A9A5B04E3, 0x77F3608E92ADB242,
+            0xB267ED1940F1C61C, 0x55F038B237591ED3, 0xDF01E85F912E37A3, 0x6B6C46DEC52F6688,
+            0x8B61313BBABCE2C6, 0x2323AC4B3B3DA015, 0xAE397D8AA96C1B77, 0xABEC975E0A0D081A,
+            0xD9C7DCED53C72255, 0x96E7BD358C904A21, 0x881CEA14545C7575, 0x7E50D64177DA2E54,
+            0xAA242499697392D2, 0xDDE50BD1D5D0B9E9, 0xD4AD2DBFC3D07787, 0x955E4EC64B44E864,
+            0x84EC3C97DA624AB4, 0xBD5AF13BEF0B113E, 0xA6274BBDD0FADD61, 0xECB1AD8AEACDD58E,
+            0xCFB11EAD453994BA, 0x67DE18EDA5814AF2, 0x81CEB32C4B43FCF4, 0x80EACF948770CED7,
+            0xA2425FF75E14FC31, 0xA1258379A94D028D, 0xCAD2F7F5359A3B3E, 0x096EE45813A04330,
+            0xFD87B5F28300CA0D, 0x8BCA9D6E188853FC, 0x9E74D1B791E07E48, 0x775EA264CF55347E,
+            0xC612062576589DDA, 0x95364AFE032A819E, 0xF79687AED3EEC551, 0x3A83DDBD83F52205,
+            0x9ABE14CD44753B52, 0xC4926A9672793543, 0xC16D9A0095928A27, 0x75B7053C0F178294,
+            0xF1C90080BAF72CB1, 0x5324C68B12DD6339, 0x971DA05074DA7BEE, 0xD3F6FC16EBCA5E04,
+            0xBCE5086492111AEA, 0x88F4BB1CA6BCF585, 0xEC1E4A7DB69561A5, 0x2B31E9E3D06C32E6,
+            0x9392EE8E921D5D07, 0x3AFF322E62439FD0, 0xB877AA3236A4B449, 0x09BEFEB9FAD487C3,
+            0xE69594BEC44DE15B, 0x4C2EBE687989A9B4, 0x901D7CF73AB0ACD9, 0x0F9D37014BF60A11,
+            0xB424DC35095CD80F, 0x538484C19EF38C95, 0xE12E13424BB40E13, 0x2865A5F206B06FBA,
+            0x8CBCCC096F5088CB, 0xF93F87B7442E45D4, 0xAFEBFF0BCB24AAFE, 0xF78F69A51539D749,
+            0xDBE6FECEBDEDD5BE, 0xB573440E5A884D1C, 0x89705F4136B4A597, 0x31680A88F8953031,
+            0xABCC77118461CEFC, 0xFDC20D2B36BA7C3E, 0xD6BF94D5E57A42BC, 0x3D32907604691B4D,
+            0x8637BD05AF6C69B5, 0xA63F9A49C2C1B110, 0xA7C5AC471B478423, 0x0FCF80DC33721D54,
+            0xD1B71758E219652B, 0xD3C36113404EA4A9, 0x83126E978D4FDF3B, 0x645A1CAC083126EA,
+            0xA3D70A3D70A3D70A, 0x3D70A3D70A3D70A4, 0xCCCCCCCCCCCCCCCC, 0xCCCCCCCCCCCCCCCD,
+            0x8000000000000000, 0x0000000000000000, 0xA000000000000000, 0x0000000000000000,
+            0xC800000000000000, 0x0000000000000000, 0xFA00000000000000, 0x0000000000000000,
+            0x9C40000000000000, 0x0000000000000000, 0xC350000000000000, 0x0000000000000000,
+            0xF424000000000000, 0x0000000000000000, 0x9896800000000000, 0x0000000000000000,
+            0xBEBC200000000000, 0x0000000000000000, 0xEE6B280000000000, 0x0000000000000000,
+            0x9502F90000000000, 0x0000000000000000, 0xBA43B74000000000, 0x0000000000000000,
+            0xE8D4A51000000000, 0x0000000000000000, 0x9184E72A00000000, 0x0000000000000000,
+            0xB5E620F480000000, 0x0000000000000000, 0xE35FA931A0000000, 0x0000000000000000,
+            0x8E1BC9BF04000000, 0x0000000000000000, 0xB1A2BC2EC5000000, 0x0000000000000000,
+            0xDE0B6B3A76400000, 0x0000000000000000, 0x8AC7230489E80000, 0x0000000000000000,
+            0xAD78EBC5AC620000, 0x0000000000000000, 0xD8D726B7177A8000, 0x0000000000000000,
+            0x878678326EAC9000, 0x0000000000000000, 0xA968163F0A57B400, 0x0000000000000000,
+            0xD3C21BCECCEDA100, 0x0000000000000000, 0x84595161401484A0, 0x0000000000000000,
+            0xA56FA5B99019A5C8, 0x0000000000000000, 0xCECB8F27F4200F3A, 0x0000000000000000,
+            0x813F3978F8940984, 0x4000000000000000, 0xA18F07D736B90BE5, 0x5000000000000000,
+            0xC9F2C9CD04674EDE, 0xA400000000000000, 0xFC6F7C4045812296, 0x4D00000000000000,
+            0x9DC5ADA82B70B59D, 0xF020000000000000, 0xC5371912364CE305, 0x6C28000000000000,
+            0xF684DF56C3E01BC6, 0xC732000000000000, 0x9A130B963A6C115C, 0x3C7F400000000000,
+            0xC097CE7BC90715B3, 0x4B9F100000000000, 0xF0BDC21ABB48DB20, 0x1E86D40000000000,
+            0x96769950B50D88F4, 0x1314448000000000, 0xBC143FA4E250EB31, 0x17D955A000000000,
+            0xEB194F8E1AE525FD, 0x5DCFAB0800000000, 0x92EFD1B8D0CF37BE, 0x5AA1CAE500000000,
+            0xB7ABC627050305AD, 0xF14A3D9E40000000, 0xE596B7B0C643C719, 0x6D9CCD05D0000000,
+            0x8F7E32CE7BEA5C6F, 0xE4820023A2000000, 0xB35DBF821AE4F38B, 0xDDA2802C8A800000,
+            0xE0352F62A19E306E, 0xD50B2037AD200000, 0x8C213D9DA502DE45, 0x4526F422CC340000,
+            0xAF298D050E4395D6, 0x9670B12B7F410000, 0xDAF3F04651D47B4C, 0x3C0CDD765F114000,
+            0x88D8762BF324CD0F, 0xA5880A69FB6AC800, 0xAB0E93B6EFEE0053, 0x8EEA0D047A457A00,
+            0xD5D238A4ABE98068, 0x72A4904598D6D880, 0x85A36366EB71F041, 0x47A6DA2B7F864750,
+            0xA70C3C40A64E6C51, 0x999090B65F67D924, 0xD0CF4B50CFE20765, 0xFFF4B4E3F741CF6D,
+            0x82818F1281ED449F, 0xBFF8F10E7A8921A4, 0xA321F2D7226895C7, 0xAFF72D52192B6A0D,
+            0xCBEA6F8CEB02BB39, 0x9BF4F8A69F764490, 0xFEE50B7025C36A08, 0x02F236D04753D5B4,
+            0x9F4F2726179A2245, 0x01D762422C946590, 0xC722F0EF9D80AAD6, 0x424D3AD2B7B97EF5,
+            0xF8EBAD2B84E0D58B, 0xD2E0898765A7DEB2, 0x9B934C3B330C8577, 0x63CC55F49F88EB2F,
+            0xC2781F49FFCFA6D5, 0x3CBF6B71C76B25FB, 0xF316271C7FC3908A, 0x8BEF464E3945EF7A,
+            0x97EDD871CFDA3A56, 0x97758BF0E3CBB5AC, 0xBDE94E8E43D0C8EC, 0x3D52EEED1CBEA317,
+            0xED63A231D4C4FB27, 0x4CA7AAA863EE4BDD, 0x945E455F24FB1CF8, 0x8FE8CAA93E74EF6A,
+            0xB975D6B6EE39E436, 0xB3E2FD538E122B44, 0xE7D34C64A9C85D44, 0x60DBBCA87196B616,
+            0x90E40FBEEA1D3A4A, 0xBC8955E946FE31CD, 0xB51D13AEA4A488DD, 0x6BABAB6398BDBE41,
+            0xE264589A4DCDAB14, 0xC696963C7EED2DD1, 0x8D7EB76070A08AEC, 0xFC1E1DE5CF543CA2,
+            0xB0DE65388CC8ADA8, 0x3B25A55F43294BCB, 0xDD15FE86AFFAD912, 0x49EF0EB713F39EBE,
+            0x8A2DBF142DFCC7AB, 0x6E3569326C784337, 0xACB92ED9397BF996, 0x49C2C37F07965404,
+            0xD7E77A8F87DAF7FB, 0xDC33745EC97BE906, 0x86F0AC99B4E8DAFD, 0x69A028BB3DED71A3,
+            0xA8ACD7C0222311BC, 0xC40832EA0D68CE0C, 0xD2D80DB02AABD62B, 0xF50A3FA490C30190,
+            0x83C7088E1AAB65DB, 0x792667C6DA79E0FA, 0xA4B8CAB1A1563F52, 0x577001B891185938,
+            0xCDE6FD5E09ABCF26, 0xED4C0226B55E6F86, 0x80B05E5AC60B6178, 0x544F8158315B05B4,
+            0xA0DC75F1778E39D6, 0x696361AE3DB1C721, 0xC913936DD571C84C, 0x03BC3A19CD1E38E9,
+            0xFB5878494ACE3A5F, 0x04AB48A04065C723, 0x9D174B2DCEC0E47B, 0x62EB0D64283F9C76,
+            0xC45D1DF942711D9A, 0x3BA5D0BD324F8394, 0xF5746577930D6500, 0xCA8F44EC7EE36479,
+            0x9968BF6ABBE85F20, 0x7E998B13CF4E1ECB, 0xBFC2EF456AE276E8, 0x9E3FEDD8C321A67E,
+            0xEFB3AB16C59B14A2, 0xC5CFE94EF3EA101E, 0x95D04AEE3B80ECE5, 0xBBA1F1D158724A12,
+            0xBB445DA9CA61281F, 0x2A8A6E45AE8EDC97, 0xEA1575143CF97226, 0xF52D09D71A3293BD,
+            0x924D692CA61BE758, 0x593C2626705F9C56, 0xB6E0C377CFA2E12E, 0x6F8B2FB00C77836C,
+            0xE498F455C38B997A, 0x0B6DFB9C0F956447, 0x8EDF98B59A373FEC, 0x4724BD4189BD5EAC,
+            0xB2977EE300C50FE7, 0x58EDEC91EC2CB657, 0xDF3D5E9BC0F653E1, 0x2F2967B66737E3ED,
+            0x8B865B215899F46C, 0xBD79E0D20082EE74, 0xAE67F1E9AEC07187, 0xECD8590680A3AA11,
+            0xDA01EE641A708DE9, 0xE80E6F4820CC9495, 0x884134FE908658B2, 0x3109058D147FDCDD,
+            0xAA51823E34A7EEDE, 0xBD4B46F0599FD415, 0xD4E5E2CDC1D1EA96, 0x6C9E18AC7007C91A,
+            0x850FADC09923329E, 0x03E2CF6BC604DDB0, 0xA6539930BF6BFF45, 0x84DB8346B786151C,
+            0xCFE87F7CEF46FF16, 0xE612641865679A63, 0x81F14FAE158C5F6E, 0x4FCB7E8F3F60C07E,
+            0xA26DA3999AEF7749, 0xE3BE5E330F38F09D, 0xCB090C8001AB551C, 0x5CADF5BFD3072CC5,
+            0xFDCB4FA002162A63, 0x73D9732FC7C8F7F6, 0x9E9F11C4014DDA7E, 0x2867E7FDDCDD9AFA,
+            0xC646D63501A1511D, 0xB281E1FD541501B8, 0xF7D88BC24209A565, 0x1F225A7CA91A4226,
+            0x9AE757596946075F, 0x3375788DE9B06958, 0xC1A12D2FC3978937, 0x0052D6B1641C83AE,
+            0xF209787BB47D6B84, 0xC0678C5DBD23A49A, 0x9745EB4D50CE6332, 0xF840B7BA963646E0,
+            0xBD176620A501FBFF, 0xB650E5A93BC3D898, 0xEC5D3FA8CE427AFF, 0xA3E51F138AB4CEBE,
+            0x93BA47C980E98CDF, 0xC66F336C36B10137, 0xB8A8D9BBE123F017, 0xB80B0047445D4184,
+            0xE6D3102AD96CEC1D, 0xA60DC059157491E5, 0x9043EA1AC7E41392, 0x87C89837AD68DB2F,
+            0xB454E4A179DD1877, 0x29BABE4598C311FB, 0xE16A1DC9D8545E94, 0xF4296DD6FEF3D67A,
+            0x8CE2529E2734BB1D, 0x1899E4A65F58660C, 0xB01AE745B101E9E4, 0x5EC05DCFF72E7F8F,
+            0xDC21A1171D42645D, 0x76707543F4FA1F73, 0x899504AE72497EBA, 0x6A06494A791C53A8,
+            0xABFA45DA0EDBDE69, 0x0487DB9D17636892, 0xD6F8D7509292D603, 0x45A9D2845D3C42B6,
+            0x865B86925B9BC5C2, 0x0B8A2392BA45A9B2, 0xA7F26836F282B732, 0x8E6CAC7768D7141E,
+            0xD1EF0244AF2364FF, 0x3207D795430CD926, 0x8335616AED761F1F, 0x7F44E6BD49E807B8,
+            0xA402B9C5A8D3A6E7, 0x5F16206C9C6209A6, 0xCD036837130890A1, 0x36DBA887C37A8C0F,
+            0x802221226BE55A64, 0xC2494954DA2C9789, 0xA02AA96B06DEB0FD, 0xF2DB9BAA10B7BD6C,
+            0xC83553C5C8965D3D, 0x6F92829494E5ACC7, 0xFA42A8B73ABBF48C, 0xCB772339BA1F17F9,
+            0x9C69A97284B578D7, 0xFF2A760414536EFB, 0xC38413CF25E2D70D, 0xFEF5138519684ABA,
+            0xF46518C2EF5B8CD1, 0x7EB258665FC25D69, 0x98BF2F79D5993802, 0xEF2F773FFBD97A61,
+            0xBEEEFB584AFF8603, 0xAAFB550FFACFD8FA, 0xEEAABA2E5DBF6784, 0x95BA2A53F983CF38,
+            0x952AB45CFA97A0B2, 0xDD945A747BF26183, 0xBA756174393D88DF, 0x94F971119AEEF9E4,
+            0xE912B9D1478CEB17, 0x7A37CD5601AAB85D, 0x91ABB422CCB812EE, 0xAC62E055C10AB33A,
+            0xB616A12B7FE617AA, 0x577B986B314D6009, 0xE39C49765FDF9D94, 0xED5A7E85FDA0B80B,
+            0x8E41ADE9FBEBC27D, 0x14588F13BE847307, 0xB1D219647AE6B31C, 0x596EB2D8AE258FC8,
+            0xDE469FBD99A05FE3, 0x6FCA5F8ED9AEF3BB, 0x8AEC23D680043BEE, 0x25DE7BB9480D5854,
+            0xADA72CCC20054AE9, 0xAF561AA79A10AE6A, 0xD910F7FF28069DA4, 0x1B2BA1518094DA04,
+            0x87AA9AFF79042286, 0x90FB44D2F05D0842, 0xA99541BF57452B28, 0x353A1607AC744A53,
+            0xD3FA922F2D1675F2, 0x42889B8997915CE8, 0x847C9B5D7C2E09B7, 0x69956135FEBADA11,
+            0xA59BC234DB398C25, 0x43FAB9837E699095, 0xCF02B2C21207EF2E, 0x94F967E45E03F4BB,
+            0x8161AFB94B44F57D, 0x1D1BE0EEBAC278F5, 0xA1BA1BA79E1632DC, 0x6462D92A69731732,
+            0xCA28A291859BBF93, 0x7D7B8F7503CFDCFE, 0xFCB2CB35E702AF78, 0x5CDA735244C3D43E,
+            0x9DEFBF01B061ADAB, 0x3A0888136AFA64A7, 0xC56BAEC21C7A1916, 0x088AAA1845B8FDD0,
+            0xF6C69A72A3989F5B, 0x8AAD549E57273D45, 0x9A3C2087A63F6399, 0x36AC54E2F678864B,
+            0xC0CB28A98FCF3C7F, 0x84576A1BB416A7DD, 0xF0FDF2D3F3C30B9F, 0x656D44A2A11C51D5,
+            0x969EB7C47859E743, 0x9F644AE5A4B1B325, 0xBC4665B596706114, 0x873D5D9F0DDE1FEE,
+            0xEB57FF22FC0C7959, 0xA90CB506D155A7EA, 0x9316FF75DD87CBD8, 0x09A7F12442D588F2,
+            0xB7DCBF5354E9BECE, 0x0C11ED6D538AEB2F, 0xE5D3EF282A242E81, 0x8F1668C8A86DA5FA,
+            0x8FA475791A569D10, 0xF96E017D694487BC, 0xB38D92D760EC4455, 0x37C981DCC395A9AC,
+            0xE070F78D3927556A, 0x85BBE253F47B1417, 0x8C469AB843B89562, 0x93956D7478CCEC8E,
+            0xAF58416654A6BABB, 0x387AC8D1970027B2, 0xDB2E51BFE9D0696A, 0x06997B05FCC0319E,
+            0x88FCF317F22241E2, 0x441FECE3BDF81F03, 0xAB3C2FDDEEAAD25A, 0xD527E81CAD7626C3,
+            0xD60B3BD56A5586F1, 0x8A71E223D8D3B074, 0x85C7056562757456, 0xF6872D5667844E49,
+            0xA738C6BEBB12D16C, 0xB428F8AC016561DB, 0xD106F86E69D785C7, 0xE13336D701BEBA52,
+            0x82A45B450226B39C, 0xECC0024661173473, 0xA34D721642B06084, 0x27F002D7F95D0190,
+            0xCC20CE9BD35C78A5, 0x31EC038DF7B441F4, 0xFF290242C83396CE, 0x7E67047175A15271,
+            0x9F79A169BD203E41, 0x0F0062C6E984D386, 0xC75809C42C684DD1, 0x52C07B78A3E60868,
+            0xF92E0C3537826145, 0xA7709A56CCDF8A82, 0x9BBCC7A142B17CCB, 0x88A66076400BB691,
+            0xC2ABF989935DDBFE, 0x6ACFF893D00EA435, 0xF356F7EBF83552FE, 0x0583F6B8C4124D43,
+            0x98165AF37B2153DE, 0xC3727A337A8B704A, 0xBE1BF1B059E9A8D6, 0x744F18C0592E4C5C,
+            0xEDA2EE1C7064130C, 0x1162DEF06F79DF73, 0x9485D4D1C63E8BE7, 0x8ADDCB5645AC2BA8,
+            0xB9A74A0637CE2EE1, 0x6D953E2BD7173692, 0xE8111C87C5C1BA99, 0xC8FA8DB6CCDD0437,
+            0x910AB1D4DB9914A0, 0x1D9C9892400A22A2, 0xB54D5E4A127F59C8, 0x2503BEB6D00CAB4B,
+            0xE2A0B5DC971F303A, 0x2E44AE64840FD61D, 0x8DA471A9DE737E24, 0x5CEAECFED289E5D2,
+            0xB10D8E1456105DAD, 0x7425A83E872C5F47, 0xDD50F1996B947518, 0xD12F124E28F77719,
+            0x8A5296FFE33CC92F, 0x82BD6B70D99AAA6F, 0xACE73CBFDC0BFB7B, 0x636CC64D1001550B,
+            0xD8210BEFD30EFA5A, 0x3C47F7E05401AA4E, 0x8714A775E3E95C78, 0x65ACFAEC34810A71,
+            0xA8D9D1535CE3B396, 0x7F1839A741A14D0D, 0xD31045A8341CA07C, 0x1EDE48111209A050,
+            0x83EA2B892091E44D, 0x934AED0AAB460432, 0xA4E4B66B68B65D60, 0xF81DA84D5617853F,
+            0xCE1DE40642E3F4B9, 0x36251260AB9D668E, 0x80D2AE83E9CE78F3, 0xC1D72B7C6B426019,
+            0xA1075A24E4421730, 0xB24CF65B8612F81F, 0xC94930AE1D529CFC, 0xDEE033F26797B627,
+            0xFB9B7CD9A4A7443C, 0x169840EF017DA3B1, 0x9D412E0806E88AA5, 0x8E1F289560EE864E,
+            0xC491798A08A2AD4E, 0xF1A6F2BAB92A27E2, 0xF5B5D7EC8ACB58A2, 0xAE10AF696774B1DB,
+            0x9991A6F3D6BF1765, 0xACCA6DA1E0A8EF29, 0xBFF610B0CC6EDD3F, 0x17FD090A58D32AF3,
+            0xEFF394DCFF8A948E, 0xDDFC4B4CEF07F5B0, 0x95F83D0A1FB69CD9, 0x4ABDAF101564F98E,
+            0xBB764C4CA7A4440F, 0x9D6D1AD41ABE37F1, 0xEA53DF5FD18D5513, 0x84C86189216DC5ED,
+            0x92746B9BE2F8552C, 0x32FD3CF5B4E49BB4, 0xB7118682DBB66A77, 0x3FBC8C33221DC2A1,
+            0xE4D5E82392A40515, 0x0FABAF3FEAA5334A, 0x8F05B1163BA6832D, 0x29CB4D87F2A7400E,
+            0xB2C71D5BCA9023F8, 0x743E20E9EF511012, 0xDF78E4B2BD342CF6, 0x914DA9246B255416,
+            0x8BAB8EEFB6409C1A, 0x1AD089B6C2F7548E, 0xAE9672ABA3D0C320, 0xA184AC2473B529B1,
+            0xDA3C0F568CC4F3E8, 0xC9E5D72D90A2741E, 0x8865899617FB1871, 0x7E2FA67C7A658892,
+            0xAA7EEBFB9DF9DE8D, 0xDDBB901B98FEEAB7, 0xD51EA6FA85785631, 0x552A74227F3EA565,
+            0x8533285C936B35DE, 0xD53A88958F87275F, 0xA67FF273B8460356, 0x8A892ABAF368F137,
+            0xD01FEF10A657842C, 0x2D2B7569B0432D85, 0x8213F56A67F6B29B, 0x9C3B29620E29FC73,
+            0xA298F2C501F45F42, 0x8349F3BA91B47B8F, 0xCB3F2F7642717713, 0x241C70A936219A73,
+            0xFE0EFB53D30DD4D7, 0xED238CD383AA0110, 0x9EC95D1463E8A506, 0xF4363804324A40AA,
+            0xC67BB4597CE2CE48, 0xB143C6053EDCD0D5, 0xF81AA16FDC1B81DA, 0xDD94B7868E94050A,
+            0x9B10A4E5E9913128, 0xCA7CF2B4191C8326, 0xC1D4CE1F63F57D72, 0xFD1C2F611F63A3F0,
+            0xF24A01A73CF2DCCF, 0xBC633B39673C8CEC, 0x976E41088617CA01, 0xD5BE0503E085D813,
+            0xBD49D14AA79DBC82, 0x4B2D8644D8A74E18, 0xEC9C459D51852BA2, 0xDDF8E7D60ED1219E,
+            0x93E1AB8252F33B45, 0xCABB90E5C942B503, 0xB8DA1662E7B00A17, 0x3D6A751F3B936243,
+            0xE7109BFBA19C0C9D, 0x0CC512670A783AD4, 0x906A617D450187E2, 0x27FB2B80668B24C5,
+            0xB484F9DC9641E9DA, 0xB1F9F660802DEDF6, 0xE1A63853BBD26451, 0x5E7873F8A0396973,
+            0x8D07E33455637EB2, 0xDB0B487B6423E1E8, 0xB049DC016ABC5E5F, 0x91CE1A9A3D2CDA62,
+            0xDC5C5301C56B75F7, 0x7641A140CC7810FB, 0x89B9B3E11B6329BA, 0xA9E904C87FCB0A9D,
+            0xAC2820D9623BF429, 0x546345FA9FBDCD44, 0xD732290FBACAF133, 0xA97C177947AD4095,
+            0x867F59A9D4BED6C0, 0x49ED8EABCCCC485D, 0xA81F301449EE8C70, 0x5C68F256BFFF5A74,
+            0xD226FC195C6A2F8C, 0x73832EEC6FFF3111, 0x83585D8FD9C25DB7, 0xC831FD53C5FF7EAB,
+            0xA42E74F3D032F525, 0xBA3E7CA8B77F5E55, 0xCD3A1230C43FB26F, 0x28CE1BD2E55F35EB,
+            0x80444B5E7AA7CF85, 0x7980D163CF5B81B3, 0xA0555E361951C366, 0xD7E105BCC332621F,
+            0xC86AB5C39FA63440, 0x8DD9472BF3FEFAA7, 0xFA856334878FC150, 0xB14F98F6F0FEB951,
+            0x9C935E00D4B9D8D2, 0x6ED1BF9A569F33D3, 0xC3B8358109E84F07, 0x0A862F80EC4700C8,
+            0xF4A642E14C6262C8, 0xCD27BB612758C0FA, 0x98E7E9CCCFBD7DBD, 0x8038D51CB897789C,
+            0xBF21E44003ACDD2C, 0xE0470A63E6BD56C3, 0xEEEA5D5004981478, 0x1858CCFCE06CAC74,
+            0x95527A5202DF0CCB, 0x0F37801E0C43EBC8, 0xBAA718E68396CFFD, 0xD30560258F54E6BA,
+            0xE950DF20247C83FD, 0x47C6B82EF32A2069, 0x91D28B7416CDD27E, 0x4CDC331D57FA5441,
+            0xB6472E511C81471D, 0xE0133FE4ADF8E952, 0xE3D8F9E563A198E5, 0x58180FDDD97723A6,
+            0x8E679C2F5E44FF8F, 0x570F09EAA7EA7648,
+        };
+        static_assert(std::size(pow5_128_table) == 2 * (pow5_128_max - pow5_128_min + 1));
+
+        // Reads JSON text into C++ values as `cast<T>` reads them from a document, without the document.  The
+        // root is an object or an array whose closing bracket is the last character other than white space, so
+        // that every scan for a character that ends a token stops at that bracket at the latest; only strings
+        // and literals, which end in characters that may be missing, check the bound.
+        template <typename T>
+        concept builtin_variant = yyjson::detail::variant_json_kinds<T>::is_variant &&
+                                  std::derived_from<caster<T>, yyjson::detail::builtin_caster>;
+
+        template <typename T>
+        concept builtin_tuple = yyjson::detail::tuple_like<T> && !yyjson::detail::std_array<T> &&
+                                std::derived_from<caster<T>, yyjson::detail::builtin_caster> &&
+                                requires(const const_value_ref& v) {
+                                    { caster<T>::from_json(v) } -> std::same_as<T>;
+                                };
+
+        // Whether the caster of the tuple T takes a JSON object, a member for each element, and whether it takes
+        // a JSON array, a value for each element.
+        template <typename T>
+        constexpr bool tuple_from_object = []<std::size_t... I>(std::index_sequence<I...>) {
+            if constexpr ((yyjson::detail::key_value_like<std::tuple_element_t<I, T>> && ...))
+                return requires(const const_object_ref& obj) {
+                    (static_cast<std::tuple_element_t<0, std::tuple_element_t<I, T>>>(std::get<0>(*obj.begin())), ...);
+                    (cast<std::tuple_element_t<1, std::tuple_element_t<I, T>>>(std::get<1>(*obj.begin())), ...);
+                };
+            else
+                return false;
+        }(std::make_index_sequence<std::tuple_size_v<T>>{});
+        template <typename T>
+        constexpr bool tuple_from_array = []<std::size_t... I>(std::index_sequence<I...>) {
+            return requires(const const_value_ref& v) { (cast<std::tuple_element_t<I, T>>(v), ...); };
+        }(std::make_index_sequence<std::tuple_size_v<T>>{});
+        // Whether the keys of the members that the tuple T takes are copied, so that the reader can give them
+        // from the text, which does not outlive the result.
+        template <typename T>
+        constexpr bool tuple_copies_keys = []<std::size_t... I>(std::index_sequence<I...>) {
+            if constexpr ((yyjson::detail::key_value_like<std::tuple_element_t<I, T>> && ...))
+                return (std::same_as<std::remove_cv_t<std::tuple_element_t<0, std::tuple_element_t<I, T>>>,
+                                     std::string> &&
+                        ...);
+            else
+                return false;
+        }(std::make_index_sequence<std::tuple_size_v<T>>{});
+
+        class direct_reader
+        {
+            using utf8 = writer::detail::direct_writer;
+
+            const char* cur_;
+            const char* first_;  // the opening bracket of the root
+            const char* last_;   // the closing bracket of the root
+            ReadFlag flg_;
+            bool inv_;
+            std::string scratch_;
+            struct free_alc
+            {
+                void operator()(yyjson_alc* alc) const noexcept { yyjson_alc_dyn_free(alc); }
+            };
+            struct free_doc
+            {
+                void operator()(yyjson_doc* doc) const noexcept { yyjson_doc_free(doc); }
+            };
+            std::unique_ptr<yyjson_alc, free_alc> alc_;
+
+        public:
+            direct_reader(const char* first, const char* last, ReadFlag flg) noexcept
+                : cur_(first),
+                  first_(first),
+                  last_(last),
+                  flg_(flg),
+                  inv_((flg & ReadFlag::AllowInvalidUnicode) != ReadFlag::NoFlag)
+            {
+            }
+
+            // Whether reading T calls `with_document` for each element of a range or a map: then a document of the
+            // whole text is cheaper.  The functions follow `read_value`, `read_object`, `read_array_into` and
+            // `read_field`; `Loop` is whether the value is an element, and `Seen` the types on the way there,
+            // where a recursive type stops.
+            template <typename... Ts>
+            struct type_list
+            {
+            };
+            template <typename T, bool Loop>
+            struct seen_type
+            {
+            };
+            template <typename T, bool Loop, typename... Seen>
+            static consteval bool documents_of_value(type_list<Seen...>)
+            {
+                if constexpr ((std::same_as<seen_type<T, Loop>, Seen> || ...))
+                    return false;
+                else
+                {
+                    using seen = type_list<Seen..., seen_type<T, Loop>>;
+                    if constexpr (builtin_variant<T>)
+                        return []<std::size_t... Is>(std::index_sequence<Is...>) {
+                            return (documents_of_value<std::remove_cv_t<std::variant_alternative_t<Is, T>>, Loop>(
+                                        seen{}) ||
+                                    ...);
+                        }(std::make_index_sequence<std::variant_size_v<T>>{});
+                    else if constexpr (builtin_tuple<T>)
+                        return []<std::size_t... Is>(std::index_sequence<Is...>) {
+                            auto result = false;
+                            if constexpr (tuple_from_object<T>)
+                                result = (!tuple_copies_keys<T> && Loop) ||
+                                         (documents_of_value<std::remove_cv_t<std::tuple_element_t<
+                                                                 1, std::tuple_element_t<Is, T>>>,
+                                                             Loop>(seen{}) ||
+                                          ...);
+                            if constexpr (tuple_from_array<T>)
+                                result = result ||
+                                         (documents_of_value<std::remove_cv_t<std::tuple_element_t<Is, T>>, Loop>(
+                                              seen{}) ||
+                                          ...);
+                            return result;
+                        }(std::make_index_sequence<std::tuple_size_v<T>>{});
+                    else if constexpr (from_json_val_usr_defined<T>)
+                    {
+                        if constexpr (yyjson::detail::shared_ptr_like<T> &&
+                                      std::derived_from<caster<T>, yyjson::detail::builtin_caster>)
+                            return documents_of_value<std::remove_cv_t<typename T::element_type>, Loop>(seen{});
+                        else if constexpr (is_std_optional<T>::value &&
+                                           std::derived_from<caster<T>, yyjson::detail::builtin_caster>)
+                            return documents_of_value<typename T::value_type, Loop>(seen{});
+                        else
+                            return Loop;
+                    }
+                    else
+                    {
+                        auto result = false;
+                        if constexpr (from_json_def_obj_defined<T>) result = result || documents_of_object<T, Loop>(seen{});
+                        if constexpr (from_json_def_arr_defined<T>) result = result || documents_of_array<T>(seen{});
+                        return result;
+                    }
+                }
+            }
+            template <typename T, bool Loop, typename Seen>
+            static consteval bool documents_of_object(Seen seen)
+            {
+                using json_object = const_object_ref;
+                if constexpr (yyjson::detail::visitable<T> && requires {
+                                  visit_struct<T>::key_matcher;
+                                  visit_struct<T>::members;
+                              })
+                    return documents_of_visitable_fields<T, Loop>(seen);
+                else if constexpr (yyjson::detail::object_emplaceable_range<T, json_object> ||
+                                   yyjson::detail::object_back_emplaceable_range<T, json_object>)
+                    return documents_of_value<
+                        std::remove_cvref_t<std::tuple_element_t<1, std::ranges::range_value_t<T>>>, true>(seen);
+                else if constexpr (yyjson::detail::reflected_object_castable<T, json_object>)
+                    return documents_of_reflected_fields<T, Loop>(seen);
+                else
+                    return Loop;
+            }
+            template <typename T, typename Seen>
+            static consteval bool documents_of_array(Seen seen)
+            {
+                using value_type = std::ranges::range_value_t<T>;
+                auto result = documents_of_value<value_type, true>(seen);
+                if constexpr (yyjson::detail::back_insertable<T>)
+                {
+                    if constexpr (yyjson::detail::reflected_assignable_in_place<value_type, const_value_ref>)
+                        result = result || documents_of_reflected_fields<value_type, true>(seen);
+                    else if constexpr (array_readable_in_place<value_type>)
+                        result = result || documents_of_array<value_type>(seen);
+                }
+                return result;
+            }
+            template <typename F, bool Loop, typename Seen>
+            static consteval bool documents_of_field(Seen seen)
+            {
+                if constexpr (requires(F& field, const const_value_ref& v) { caster<F>::from_json(field, v); })
+                {
+                    if constexpr (is_std_optional<F>::value &&
+                                  std::derived_from<caster<F>, yyjson::detail::builtin_caster>)
+                    {
+                        using value_type = typename F::value_type;
+                        auto result = documents_of_value<value_type, Loop>(seen);
+                        if constexpr (yyjson::detail::reflected_assignable_in_place<value_type, const_value_ref>)
+                            result = result || documents_of_reflected_fields<value_type, Loop>(seen);
+                        return result;
+                    }
+                    else
+                        return Loop;
+                }
+                else
+                {
+                    auto result = documents_of_value<F, Loop>(seen);
+                    if constexpr (yyjson::detail::reflected_assignable_in_place<F, const_value_ref>)
+                        result = result || documents_of_reflected_fields<F, Loop>(seen);
+                    return result;
+                }
+            }
+            template <typename T, bool Loop, typename Seen>
+            static consteval bool documents_of_reflected_fields(Seen seen)
+            {
+                return [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                    return (documents_of_field<std::remove_cvref_t<decltype(field_reflection::get_field<Is>(
+                                                   std::declval<T&>()))>,
+                                               Loop>(seen) ||
+                            ...);
+                }(std::make_index_sequence<field_reflection::field_count<T>>{});
+            }
+            template <typename T, bool Loop, typename Seen>
+            static consteval bool documents_of_visitable_fields(Seen seen)
+            {
+                using members = std::remove_cvref_t<decltype(visit_struct<T>::members)>;
+                return [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                    return (documents_of_field<
+                                std::remove_cvref_t<decltype(std::declval<T&>().*std::get<Is>(visit_struct<T>::members))>,
+                                Loop>(seen) ||
+                            ...);
+                }(std::make_index_sequence<std::tuple_size_v<members>>{});
+            }
+
+        public:
+            template <typename T>
+            static constexpr bool reads_documents_in_loop = documents_of_value<T, false>(type_list<>{});
+
+            template <typename T>
+            T read_root()
+            {
+                auto result = read_value<T>();
+                if (cur_ != last_ + 1) fail();
+                return result;
+            }
+
+        private:
+            [[noreturn]] CPPYYJSON_COLD static void fail() { throw direct_read_failure{}; }
+            [[noreturn]] CPPYYJSON_COLD static void unsupported() { throw direct_read_unsupported{}; }
+
+            CPPYYJSON_ALWAYS_INLINE static bool is_digit(char c) noexcept
+            {
+                return static_cast<unsigned char>(c - '0') < 10;
+            }
+
+            CPPYYJSON_ALWAYS_INLINE static bool is_ws(char c) noexcept
+            {
+                return c == ' ' || c == '\n' || c == '\r' || c == '\t';
+            }
+
+            // Skips white space, of which there is usually none or a single space, and otherwise a line break
+            // and the indentation of the next line.
+            CPPYYJSON_ALWAYS_INLINE void skip_ws() noexcept
+            {
+                if (static_cast<unsigned char>(*cur_) > ' ') [[likely]]
+                    return;
+                if (*cur_ == ' ' && static_cast<unsigned char>(cur_[1]) > ' ') [[likely]]
+                {
+                    ++cur_;
+                    return;
+                }
+                cur_ = skip_ws_run(cur_, last_);
+            }
+
+            // Skips the white space before a key, where a pretty-printed text puts a line break and an
+            // indentation, without a call.
+            CPPYYJSON_ALWAYS_INLINE void skip_ws_before_key() noexcept
+            {
+                if (static_cast<unsigned char>(*cur_) > ' ') [[likely]]
+                    return;
+                cur_ = skip_ws_span(cur_, last_);
+            }
+
+            CPPYYJSON_NOINLINE static const char* skip_ws_run(const char* cur, const char* last) noexcept
+            {
+                return skip_ws_span(cur, last);
+            }
+
+            CPPYYJSON_ALWAYS_INLINE static const char* skip_ws_span(const char* cur, const char* last) noexcept
+            {
+#if defined(__AVX2__)
+                while (last - cur >= 32)
+                {
+                    const auto v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(cur));
+                    // the white space characters at the indices of their low nibbles
+                    const auto table = _mm256_setr_epi8(' ', 0, 0, 0, 0, 0, 0, 0, 0, '\t', '\n', 0, 0, '\r', 0, 0, ' ',
+                                                        0, 0, 0, 0, 0, 0, 0, 0, '\t', '\n', 0, 0, '\r', 0, 0);
+                    const auto ws = _mm256_cmpeq_epi8(_mm256_shuffle_epi8(table, v), v);
+                    const auto m = ~static_cast<std::uint32_t>(_mm256_movemask_epi8(ws));
+                    if (m != 0)
+                    {
+                        return cur + std::countr_zero(m);
+                    }
+                    cur += 32;
+                }
+#elif defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+                while (last - cur >= 16)
+                {
+                    const auto v = _mm_loadu_si128(reinterpret_cast<const __m128i*>(cur));
+                    const auto ws = _mm_or_si128(_mm_or_si128(_mm_cmpeq_epi8(v, _mm_set1_epi8(' ')),
+                                                              _mm_cmpeq_epi8(v, _mm_set1_epi8('\n'))),
+                                                 _mm_or_si128(_mm_cmpeq_epi8(v, _mm_set1_epi8('\r')),
+                                                              _mm_cmpeq_epi8(v, _mm_set1_epi8('\t'))));
+                    const auto m = ~static_cast<std::uint32_t>(_mm_movemask_epi8(ws)) & 0xFFFFu;
+                    if (m != 0)
+                    {
+                        return cur + std::countr_zero(m);
+                    }
+                    cur += 16;
+                }
+#endif
+                while (is_ws(*cur)) ++cur;
+                return cur;
+            }
+
+            // Consumes the closing bracket of the container opened at `open`.  Only the root may close at the
+            // last bracket, as the characters after it are not to be read.
+            CPPYYJSON_ALWAYS_INLINE void close(const char* open)
+            {
+                if (cur_ == last_ && open != first_) [[unlikely]]
+                    fail();
+                ++cur_;
+            }
+
+            CPPYYJSON_ALWAYS_INLINE void expect(char c)
+            {
+                if (*cur_ != c) [[unlikely]]
+                    fail();
+                ++cur_;
+            }
+
+            template <std::size_t N>
+            CPPYYJSON_ALWAYS_INLINE void read_literal(const char (&lit)[N])
+            {
+                constexpr auto n = N - 1;
+                if (static_cast<std::size_t>(last_ - cur_) < n || std::memcmp(cur_, lit, n) != 0) [[unlikely]]
+                    fail();
+                cur_ += n;
+            }
+
+            // Numbers -----------------------------------------------------------------------------------------
+
+            static constexpr std::uint32_t pow10_u32[] = {1,      10,      100,      1000,     10000,
+                                                          100000, 1000000, 10000000, 100000000};
+            static constexpr double pow10_f64[] = {1e0,  1e1,  1e2,  1e3,  1e4,  1e5,  1e6,  1e7,
+                                                   1e8,  1e9,  1e10, 1e11, 1e12, 1e13, 1e14, 1e15,
+                                                   1e16, 1e17, 1e18, 1e19, 1e20, 1e21, 1e22};
+
+            // Reads the digits among the 8 characters at `p` up to the first other character into `v`, moves `p`
+            // past them and returns their count.  The characters are loaded in little-endian order.
+            CPPYYJSON_ALWAYS_INLINE static std::size_t read_digits8(const char*& p, std::uint64_t& v) noexcept
+            {
+                auto w = std::uint64_t{0};
+                std::memcpy(&w, p, sizeof(w));
+                // the high bit of each byte that is not a digit; the carries and borrows reach only the bytes
+                // after the first such byte
+                const auto other =
+                    ((w + 0x4646464646464646u) | (w - 0x3030303030303030u)) & 0x8080808080808080u;
+                const auto k = other == 0 ? std::size_t{8} : static_cast<std::size_t>(std::countr_zero(other)) / 8;
+                if (k == 0) return 0;
+                // the digits, in the high bytes of `w`, are converted as an 8-digit number with leading zeros
+                v = convert_digits8((w - 0x3030303030303030u) << (64 - 8 * k));
+                p += k;
+                return k;
+            }
+
+            // The number of the 8 digit values in the bytes of `w`, the first in the lowest byte.
+            CPPYYJSON_ALWAYS_INLINE static std::uint32_t convert_digits8(std::uint64_t w) noexcept
+            {
+                w = (w * 10) + (w >> 8);
+                return static_cast<std::uint32_t>((((w & 0x000000FF000000FFu) * 0x000F424000000064u) +
+                                                   (((w >> 16) & 0x000000FF000000FFu) * 0x0000271000000001u)) >>
+                                                  32);
+            }
+
+#if defined(__AVX2__) || defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+#define CPPYYJSON_READ_DECIMAL 1
+            // Reads the number at `cur_` into `d` if it is a decimal fraction without exponent, of up to 8 digits
+            // before the point, 16 after it and 19 in all, and returns whether it did.  Every position is taken
+            // from one load of 32 characters, so that the end of the number, which the next value waits for,
+            // does not wait for its digits.
+            CPPYYJSON_ALWAYS_INLINE bool read_decimal(double& d)
+            {
+                const char* const s = cur_;
+                if (last_ - s < 32) [[unlikely]]
+                    return false;
+#if defined(__AVX2__)
+                const auto x = _mm256_sub_epi8(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(s)),
+                                               _mm256_set1_epi8('0'));
+                const auto other = ~static_cast<std::uint64_t>(static_cast<std::uint32_t>(
+                    _mm256_movemask_epi8(_mm256_cmpeq_epi8(_mm256_min_epu8(x, _mm256_set1_epi8(9)), x))));
+                const auto points = static_cast<std::uint64_t>(static_cast<std::uint32_t>(
+                    _mm256_movemask_epi8(_mm256_cmpeq_epi8(x, _mm256_set1_epi8('.' - '0')))));
+#else
+                const auto classify16 = [](const char* p) {
+                    const auto x =
+                        _mm_sub_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i*>(p)), _mm_set1_epi8('0'));
+                    return std::pair{static_cast<std::uint32_t>(
+                                         _mm_movemask_epi8(_mm_cmpeq_epi8(_mm_min_epu8(x, _mm_set1_epi8(9)), x))),
+                                     static_cast<std::uint32_t>(
+                                         _mm_movemask_epi8(_mm_cmpeq_epi8(x, _mm_set1_epi8('.' - '0'))))};
+                };
+                const auto [digits_lo, points_lo] = classify16(s);
+                const auto [digits_hi, points_hi] = classify16(s + 16);
+                const auto other = ~static_cast<std::uint64_t>(digits_lo | digits_hi << 16);
+                const auto points = static_cast<std::uint64_t>(points_lo | points_hi << 16);
+#endif
+                // The end of the number, taken without waiting for the lengths of its parts, which are only
+                // checked; the first character is the sign or a digit.
+                const auto end = std::countr_zero(other & ~points & ~std::uint64_t{1});
+                const auto i0 = static_cast<int>(*s == '-');
+                const auto n1 = std::countr_zero(other >> i0);
+                const auto f0 = i0 + n1 + 1;
+                const auto n2 = std::countr_zero(other >> f0);
+                if (n1 - 1u >= 8u || s[f0 - 1] != '.' || n2 - 1u >= 16u || n1 + n2 > 19 ||
+                    (s[f0 + n2] | 0x20) == 'e' || (n1 > 1 && s[i0] == '0') || end != f0 + n2) [[unlikely]]
+                    return false;
+                const auto load = [](const char* p) {
+                    auto w = std::uint64_t{0};
+                    std::memcpy(&w, p, sizeof(w));
+                    return w - 0x3030303030303030u;
+                };
+                auto v = std::uint64_t{convert_digits8(load(s + i0) << (64 - 8 * n1))};
+                if (n2 <= 8)
+                    v = v * pow10_u32[n2] + convert_digits8(load(s + f0) << (64 - 8 * n2));
+                else
+                    v = (v * 100000000 + convert_digits8(load(s + f0))) * pow10_u32[n2 - 8] +
+                        convert_digits8(load(s + f0 + 8) << (128 - 8 * n2));
+                d = 0.0;
+                if (v != 0)
+                {
+                    if (v <= std::uint64_t{1} << 53)
+                        d = static_cast<double>(v) / pow10_f64[n2];
+                    else
+                        d = eisel_lemire(v, -n2);
+                }
+                d = i0 != 0 ? -d : d;
+                cur_ = s + end;
+                return true;
+            }
+#endif
+
+            // Reads a number and hands it to `f` as yyjson types it: a non-negative integer that fits in 64 bits
+            // as `std::uint64_t`, a negative one that fits as `std::int64_t`, anything else as `double`.
+            template <typename F>
+            CPPYYJSON_ALWAYS_INLINE decltype(auto) read_number(F&& f)
+            {
+                const char* p = cur_;
+                const auto neg = *p == '-';
+                p += neg;
+                auto v = std::uint64_t{0};
+                const char* digits = p;
+                if (*p == '0')
+                {
+                    ++p;
+                    digits = p;
+                    if (is_digit(*p)) [[unlikely]]
+                        fail();
+                }
+                else if (static_cast<unsigned char>(*p - '1') < 9)
+                {
+                    if (std::endian::native == std::endian::little && last_ - p >= 8) [[likely]]
+                    {
+                        auto k = read_digits8(p, v);
+                        if (k == 8 && last_ - p >= 8)
+                        {
+                            auto w = std::uint64_t{0};
+                            k = read_digits8(p, w);
+                            v = v * pow10_u32[k] + w;
+                        }
+                    }
+                    else
+                        v = static_cast<std::uint64_t>(*p++ - '0');
+                    while (is_digit(*p) && p - digits < 19) v = v * 10 + static_cast<std::uint64_t>(*p++ - '0');
+                    if (is_digit(*p)) [[unlikely]]
+                    {
+                        // a twentieth digit fits only below 2^64, and the integer is a real number beyond
+                        const auto d = static_cast<std::uint64_t>(*p - '0');
+                        if (neg || is_digit(p[1]) || p[1] == '.' || (p[1] | 0x20) == 'e' ||
+                            v > (std::numeric_limits<std::uint64_t>::max() - d) / 10)
+                            return f(read_real());
+                        cur_ = p + 1;
+                        return f(v * 10 + d);
+                    }
+                }
+                else [[unlikely]]
+                    fail();
+                if (*p == '.' || (*p | 0x20) == 'e') return f(read_real(p, v, static_cast<int>(p - digits)));
+                if (!neg)
+                {
+                    cur_ = p;
+                    return f(v);
+                }
+                if (v > std::uint64_t{1} << 63) [[unlikely]]
+                    return f(read_real());
+                cur_ = p;
+                return f(static_cast<std::int64_t>(0 - v));
+            }
+
+            CPPYYJSON_ALWAYS_INLINE static void mul_64x64(std::uint64_t a, std::uint64_t b, std::uint64_t& hi,
+                                                          std::uint64_t& lo) noexcept
+            {
+#if defined(__SIZEOF_INT128__)
+                __extension__ using u128 = unsigned __int128;
+                const auto r = static_cast<u128>(a) * b;
+                hi = static_cast<std::uint64_t>(r >> 64);
+                lo = static_cast<std::uint64_t>(r);
+#else
+                const auto a0 = a & 0xFFFFFFFFu, a1 = a >> 32, b0 = b & 0xFFFFFFFFu, b1 = b >> 32;
+                const auto p00 = a0 * b0, p01 = a0 * b1, p10 = a1 * b0, p11 = a1 * b1;
+                const auto mid = (p00 >> 32) + (p01 & 0xFFFFFFFFu) + (p10 & 0xFFFFFFFFu);
+                hi = p11 + (p01 >> 32) + (p10 >> 32) + (mid >> 32);
+                lo = (mid << 32) | (p00 & 0xFFFFFFFFu);
+#endif
+            }
+
+            // The double nearest to `w` * 10^`q` for a nonzero `w` (Eisel-Lemire, as fast_float computes it),
+            // or infinity.
+            CPPYYJSON_ALWAYS_INLINE static double eisel_lemire(std::uint64_t w, std::int64_t q) noexcept
+            {
+                constexpr int mantissa_bits = 52;
+                constexpr int infinite_power = 0x7FF;
+                if (q < pow5_128_min) return 0.0;
+                if (q > pow5_128_max) return std::numeric_limits<double>::infinity();
+                const auto to_double = [](std::uint64_t mantissa, std::int64_t power2) {
+                    return std::bit_cast<double>(mantissa | static_cast<std::uint64_t>(power2) << mantissa_bits);
+                };
+                const int lz = std::countl_zero(w);
+                w <<= lz;
+                const auto index = static_cast<std::size_t>(2 * (q - pow5_128_min));
+                auto hi = std::uint64_t{0}, lo = std::uint64_t{0};
+                mul_64x64(w, pow5_128_table[index], hi, lo);
+                constexpr auto precision_mask = ~std::uint64_t{0} >> (mantissa_bits + 3);
+                if ((hi & precision_mask) == precision_mask)
+                {
+                    auto hi2 = std::uint64_t{0}, lo2 = std::uint64_t{0};
+                    mul_64x64(w, pow5_128_table[index + 1], hi2, lo2);
+                    lo += hi2;
+                    if (hi2 > lo) ++hi;
+                }
+                const auto upper_bit = static_cast<int>(hi >> 63);
+                const int shift = upper_bit + 64 - mantissa_bits - 3;
+                auto mantissa = hi >> shift;
+                auto power2 = (((152170 + 65536) * q) >> 16) + 63 + upper_bit - lz + 1023;
+                if (power2 <= 0)
+                {
+                    // subnormal
+                    if (-power2 + 1 >= 64) return 0.0;
+                    mantissa >>= -power2 + 1;
+                    mantissa += mantissa & 1;
+                    mantissa >>= 1;
+                    return to_double(mantissa, mantissa < std::uint64_t{1} << mantissa_bits ? 0 : 1);
+                }
+                // exactly halfway between two doubles, which rounds to even
+                if (lo <= 1 && q >= -4 && q <= 23 && (mantissa & 3) == 1 && (mantissa << shift) == hi)
+                    mantissa &= ~std::uint64_t{1};
+                mantissa += mantissa & 1;
+                mantissa >>= 1;
+                if (mantissa >= std::uint64_t{2} << mantissa_bits)
+                {
+                    mantissa = std::uint64_t{1} << mantissa_bits;
+                    ++power2;
+                }
+                mantissa &= ~(std::uint64_t{1} << mantissa_bits);
+                if (power2 >= infinite_power) return std::numeric_limits<double>::infinity();
+                return to_double(mantissa, power2);
+            }
+
+            // Reads the rest of the number at `cur_` from its fraction or exponent at `p`, where `v` is the value
+            // of the `nd` significant digits before it, as yyjson reads it: correctly rounded, and failing at
+            // infinity.  More than 19 significant digits are left to yyjson.
+            double read_real(const char* p, std::uint64_t v, int nd)
+            {
+                auto exp10 = std::int64_t{0};
+                if (*p == '.')
+                {
+                    ++p;
+                    if (!is_digit(*p)) [[unlikely]]
+                        fail();
+                    const char* const frac = p;
+                    for (;;)
+                    {
+                        if (std::endian::native == std::endian::little && last_ - p >= 8)
+                        {
+                            auto w = std::uint64_t{0};
+                            const auto k = read_digits8(p, w);
+                            if (k == 0) break;
+                            if (v == 0)
+                            {
+                                // the leading zeros of a number below 1 are not significant
+                                nd = 0;
+                                for (auto x = w; x != 0; x /= 10) ++nd;
+                            }
+                            else
+                                nd += static_cast<int>(k);
+                            if (nd > 19) [[unlikely]]
+                                return read_real();
+                            v = v * pow10_u32[k] + w;
+                            if (k < 8) break;
+                        }
+                        else
+                        {
+                            for (; is_digit(*p); ++p)
+                            {
+                                if (v != 0 || *p != '0')
+                                {
+                                    if (++nd > 19) [[unlikely]]
+                                        return read_real();
+                                    v = v * 10 + static_cast<std::uint64_t>(*p - '0');
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    exp10 = frac - p;
+                }
+                if ((*p | 0x20) == 'e')
+                {
+                    ++p;
+                    const auto neg_exp = *p == '-';
+                    if (*p == '-' || *p == '+') ++p;
+                    if (!is_digit(*p)) [[unlikely]]
+                        fail();
+                    // a larger exponent is left to yyjson: the leading zeros of a fraction, of which there may
+                    // be any number, can bring it back into range
+                    auto e = std::int64_t{0};
+                    for (; is_digit(*p); ++p)
+                    {
+                        e = e * 10 + (*p - '0');
+                        if (e >= 100000) [[unlikely]]
+                            unsupported();
+                    }
+                    exp10 += neg_exp ? -e : e;
+                }
+                auto d = 0.0;
+                if (v != 0)
+                {
+                    if (exp10 >= -22 && exp10 <= 22 && v <= std::uint64_t{1} << 53)
+                    {
+                        // both are exact, and so is the rounding of their product or quotient
+                        d = static_cast<double>(v);
+                        d = exp10 < 0 ? d / pow10_f64[-exp10] : d * pow10_f64[exp10];
+                    }
+                    else
+                    {
+                        d = eisel_lemire(v, exp10);
+                        if (std::isinf(d)) [[unlikely]]
+                            fail();
+                    }
+                }
+                const auto neg = *cur_ == '-';
+                cur_ = p;
+                return neg ? -d : d;
+            }
+
+            // Reads the number at `cur_`, which is not an integer of 64 bits, as yyjson reads it.  yyjson stops at
+            // the first character that does not continue the number, which the closing bracket of the root is at
+            // the latest, unless it is built to copy the number first, for which it has to be terminated.
+            CPPYYJSON_COLD double read_real()
+            {
+                auto val = yyjson_val();
+#if YYJSON_DISABLE_FAST_FP_CONV
+                char buf[128];
+                const auto* p = cur_;
+                while (p != last_ && (is_digit(*p) || *p == '-' || *p == '+' || *p == '.' || (*p | 0x20) == 'e')) ++p;
+                const auto len = static_cast<std::size_t>(p - cur_);
+                if (len >= sizeof(buf)) unsupported();
+                std::memcpy(buf, cur_, len);
+                buf[len] = '\0';
+                const auto* end = yyjson_read_number(buf, &val, 0, nullptr, nullptr);
+                if (end == nullptr) fail();
+                end = cur_ + (end - buf);
+#else
+                const auto* end = yyjson_read_number(cur_, &val, 0, nullptr, nullptr);
+                if (end == nullptr) [[unlikely]]
+                    fail();
+#endif
+                if (!unsafe_yyjson_is_real(&val)) [[unlikely]]
+                    fail();
+                cur_ = end;
+                return unsafe_yyjson_get_real(&val);
+            }
+
+            // Strings -----------------------------------------------------------------------------------------
+
+            struct scanned_string
+            {
+                const char* begin;
+                const char* end;
+                bool escaped;
+            };
+
+            // Finds the end of the string that starts at `cur_`, checks its characters and moves past it.
+            CPPYYJSON_NOINLINE scanned_string scan_string()
+            {
+                const char* const begin = cur_ + 1;
+                const char* p = begin;
+                auto high = 0u;
+                auto escaped = false;
+                for (;;)
+                {
+#if defined(__AVX2__)
+                    while (last_ - p >= 32)
+                    {
+                        const auto v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(p));
+                        const auto special = _mm256_or_si256(
+                            _mm256_or_si256(_mm256_cmpeq_epi8(v, _mm256_set1_epi8('"')),
+                                            _mm256_cmpeq_epi8(v, _mm256_set1_epi8('\\'))),
+                            _mm256_cmpeq_epi8(_mm256_max_epu8(v, _mm256_set1_epi8(0x1F)), _mm256_set1_epi8(0x1F)));
+                        const auto m = static_cast<std::uint32_t>(_mm256_movemask_epi8(special));
+                        const auto h = static_cast<std::uint32_t>(_mm256_movemask_epi8(v));
+                        if (m == 0)
+                        {
+                            high |= h;
+                            p += 32;
+                            continue;
+                        }
+                        high |= h & (m ^ (m - 1));
+                        p += std::countr_zero(m);
+                        goto special;
+                    }
+#endif
+#if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+                    while (last_ - p >= 16)
+                    {
+                        const auto v = _mm_loadu_si128(reinterpret_cast<const __m128i*>(p));
+                        const auto special =
+                            _mm_or_si128(_mm_or_si128(_mm_cmpeq_epi8(v, _mm_set1_epi8('"')),
+                                                      _mm_cmpeq_epi8(v, _mm_set1_epi8('\\'))),
+                                         _mm_cmpeq_epi8(_mm_max_epu8(v, _mm_set1_epi8(0x1F)), _mm_set1_epi8(0x1F)));
+                        const auto m = static_cast<std::uint32_t>(_mm_movemask_epi8(special));
+                        const auto h = static_cast<std::uint32_t>(_mm_movemask_epi8(v));
+                        if (m == 0)
+                        {
+                            high |= h;
+                            p += 16;
+                            continue;
+                        }
+                        high |= h & (m ^ (m - 1));
+                        p += std::countr_zero(m);
+                        goto special;
+                    }
+#endif
+                    for (;; ++p)
+                    {
+                        if (p == last_) [[unlikely]]
+                            fail();
+                        const auto c = static_cast<unsigned char>(*p);
+                        if (c == '"' || c == '\\' || c < 0x20) break;
+                        high |= c & 0x80u;
+                    }
+                special:
+                    if (*p == '"') break;
+                    if (*p != '\\' || last_ - p < 2) [[unlikely]]
+                        fail();
+                    escaped = true;
+                    p += 2;
+                }
+                cur_ = p + 1;
+                if (high != 0 && !inv_ && !is_valid_utf8(begin, p)) [[unlikely]]
+                    fail();
+                return {begin, p, escaped};
+            }
+
+            static bool is_valid_utf8(const char* first, const char* last) noexcept
+            {
+                const auto* s = reinterpret_cast<const std::uint8_t*>(first);
+                const auto* e = reinterpret_cast<const std::uint8_t*>(last);
+#if defined(__SSSE3__) || defined(__AVX__)
+                if (e - s >= 16) return utf8::is_valid_utf8(s, e);
+#endif
+                while (s < e)
+                {
+                    const auto c = *s;
+                    if (c < 0x80)
+                    {
+                        ++s;
+                        continue;
+                    }
+                    if ((c & 0xE0) == 0xC0)
+                    {
+                        if (e - s < 2 || !utf8::is_utf8_seq2(utf8::load_utf8(s, 2))) return false;
+                        s += 2;
+                    }
+                    else if ((c & 0xF0) == 0xE0)
+                    {
+                        if (e - s < 3 || !utf8::is_utf8_seq3(utf8::load_utf8(s, 3))) return false;
+                        s += 3;
+                    }
+                    else if ((c & 0xF8) == 0xF0)
+                    {
+                        if (e - s < 4 || !utf8::is_utf8_seq4(utf8::load_utf8(s, 4))) return false;
+                        s += 4;
+                    }
+                    else
+                        return false;
+                }
+                return true;
+            }
+
+            static std::uint32_t read_hex4(const char* p)
+            {
+                auto u = std::uint32_t{0};
+                for (auto i = 0; i < 4; ++i)
+                {
+                    const auto c = static_cast<unsigned char>(p[i]);
+                    std::uint32_t d;
+                    if (c - 0x30u < 10u)
+                        d = c - '0';
+                    else if ((c | 0x20u) - 'a' < 6u)
+                        d = (c | 0x20u) - 'a' + 10;
+                    else
+                        fail();
+                    u = u << 4 | d;
+                }
+                return u;
+            }
+
+            // Writes the content of a string with escapes to `dst`, which has room for `end - src` characters,
+            // and returns the end of what it wrote.  No escape is shorter than the character it stands for.  A
+            // surrogate that is not part of a pair, which yyjson rejects or reads according to the flags, is left
+            // to yyjson.
+            CPPYYJSON_COLD static char* unescape(const char* src, const char* end, char* dst)
+            {
+                while (src != end)
+                {
+                    const auto* bs =
+                        static_cast<const char*>(std::memchr(src, '\\', static_cast<std::size_t>(end - src)));
+                    if (bs == nullptr) bs = end;
+                    std::memcpy(dst, src, static_cast<std::size_t>(bs - src));
+                    dst += bs - src;
+                    if (bs == end) break;
+                    src = bs + 2;
+                    switch (bs[1])
+                    {
+                        case '"': *dst++ = '"'; break;
+                        case '\\': *dst++ = '\\'; break;
+                        case '/': *dst++ = '/'; break;
+                        case 'b': *dst++ = '\b'; break;
+                        case 'f': *dst++ = '\f'; break;
+                        case 'n': *dst++ = '\n'; break;
+                        case 'r': *dst++ = '\r'; break;
+                        case 't': *dst++ = '\t'; break;
+                        case 'u':
+                        {
+                            if (end - bs < 6) fail();
+                            auto u = read_hex4(bs + 2);
+                            src = bs + 6;
+                            if ((u & 0xFC00) == 0xD800)
+                            {
+                                if (end - src < 6 || src[0] != '\\' || src[1] != 'u') fail();
+                                const auto lo = read_hex4(src + 2);
+                                if ((lo & 0xFC00) != 0xDC00) fail();
+                                u = 0x10000 + ((u - 0xD800) << 10) + (lo - 0xDC00);
+                                src += 6;
+                            }
+                            else if ((u & 0xFC00) == 0xDC00)
+                                fail();
+                            if (u < 0x80)
+                                *dst++ = static_cast<char>(u);
+                            else if (u < 0x800)
+                            {
+                                *dst++ = static_cast<char>(0xC0 | (u >> 6));
+                                *dst++ = static_cast<char>(0x80 | (u & 0x3F));
+                            }
+                            else if (u < 0x10000)
+                            {
+                                *dst++ = static_cast<char>(0xE0 | (u >> 12));
+                                *dst++ = static_cast<char>(0x80 | ((u >> 6) & 0x3F));
+                                *dst++ = static_cast<char>(0x80 | (u & 0x3F));
+                            }
+                            else
+                            {
+                                *dst++ = static_cast<char>(0xF0 | (u >> 18));
+                                *dst++ = static_cast<char>(0x80 | ((u >> 12) & 0x3F));
+                                *dst++ = static_cast<char>(0x80 | ((u >> 6) & 0x3F));
+                                *dst++ = static_cast<char>(0x80 | (u & 0x3F));
+                            }
+                            break;
+                        }
+                        default: fail();
+                    }
+                }
+                return dst;
+            }
+
+            CPPYYJSON_COLD static void unescape(const char* src, const char* end, std::string& out)
+            {
+                out.resize(static_cast<std::size_t>(end - src));
+                out.resize(static_cast<std::size_t>(unescape(src, end, out.data()) - out.data()));
+            }
+
+            // Moves past the string at `cur_` and checks its escapes, which only `unescape` does.
+            CPPYYJSON_ALWAYS_INLINE void skip_string()
+            {
+                const auto s = scan_string();
+                if (s.escaped) [[unlikely]]
+                    unescape(s.begin, s.end, scratch_);
+            }
+
+            // The content of the string at `cur_`, in the text or, if it has escapes, in `buf`.
+            CPPYYJSON_ALWAYS_INLINE std::string_view read_string(std::string& buf)
+            {
+                const auto s = scan_string();
+                if (!s.escaped) [[likely]]
+                    return {s.begin, static_cast<std::size_t>(s.end - s.begin)};
+                unescape(s.begin, s.end, buf);
+                return buf;
+            }
+
+            CPPYYJSON_ALWAYS_INLINE void read_string_into(std::string& out)
+            {
+                const auto s = scan_string();
+                if (!s.escaped) [[likely]]
+                {
+                    // a string without room is replaced, which constructs it without the checks of `assign`
+                    if (out.capacity() < static_cast<std::size_t>(s.end - s.begin))
+                        out = std::string(s.begin, s.end);
+                    else
+                        out.assign(s.begin, s.end);
+                    return;
+                }
+                unescape(s.begin, s.end, out);
+            }
+
+            // Skipping ----------------------------------------------------------------------------------------
+
+            // Skips the value at `cur_`, checking it as yyjson would.  Containers nested deeper than the stack
+            // here are left to yyjson.
+            void skip_value()
+            {
+                const char* const start = cur_;
+                char stack[64];
+                auto depth = std::size_t{0};
+                for (;;)
+                {
+                    // at the beginning of a value
+                    switch (*cur_)
+                    {
+                        case '{':
+                            ++cur_;
+                            skip_ws();
+                            if (*cur_ == '}')
+                            {
+                                if (cur_ == last_ && (depth != 0 || start != first_)) fail();
+                                ++cur_;
+                                break;
+                            }
+                            if (depth == sizeof(stack)) unsupported();
+                            stack[depth++] = '}';
+                            if (*cur_ != '"') fail();
+                            skip_string();
+                            skip_ws();
+                            expect(':');
+                            skip_ws();
+                            continue;
+                        case '[':
+                            ++cur_;
+                            skip_ws();
+                            if (*cur_ == ']')
+                            {
+                                if (cur_ == last_ && (depth != 0 || start != first_)) fail();
+                                ++cur_;
+                                break;
+                            }
+                            if (depth == sizeof(stack)) unsupported();
+                            stack[depth++] = ']';
+                            continue;
+                        case '"': skip_string(); break;
+                        case 't': read_literal("true"); break;
+                        case 'f': read_literal("false"); break;
+                        case 'n': read_literal("null"); break;
+                        default: read_number([](auto) {}); break;
+                    }
+                    // after a value
+                    for (;;)
+                    {
+                        if (depth == 0) return;
+                        skip_ws();
+                        if (*cur_ == ',')
+                        {
+                            ++cur_;
+                            skip_ws();
+                            if (stack[depth - 1] == '}')
+                            {
+                                if (*cur_ != '"') fail();
+                                skip_string();
+                                skip_ws();
+                                expect(':');
+                                skip_ws();
+                            }
+                            break;
+                        }
+                        if (*cur_ != stack[depth - 1]) fail();
+                        --depth;
+                        if (cur_ == last_ && (depth != 0 || start != first_)) fail();
+                        ++cur_;
+                    }
+                }
+            }
+
+            // Values ------------------------------------------------------------------------------------------
+
+            // Calls `f` with the value at `cur_` read into a document of its own, for the casters that take one.
+            // The documents come from an allocator that keeps the memory of the previous one.
+            template <typename F>
+            decltype(auto) with_document(F&& f)
+            {
+                const char* const start = cur_;
+                skip_value();
+                if (alc_ == nullptr)
+                {
+                    alc_.reset(yyjson_alc_dyn_new());
+                    if (alc_ == nullptr) throw std::bad_alloc();
+                }
+                auto err = yyjson_read_err();
+                auto* const doc = yyjson_read_opts(const_cast<char*>(start), static_cast<std::size_t>(cur_ - start),
+                                                   to_underlying(flg_), alc_.get(), &err);
+                if (doc == nullptr) fail();
+                const auto guard = std::unique_ptr<yyjson_doc, free_doc>(doc);
+                return std::forward<F>(f)(const_value_ref(yyjson_doc_get_root(doc)));
+            }
+
+            template <typename T>
+            T read_by_document()
+            {
+                return with_document([](const const_value_ref& v) { return v.template cast<T>(); });
+            }
+
+            // The kinds of JSON values that the value at `cur_` may be, from its first character.
+            std::uint8_t kind_at() const noexcept
+            {
+                using namespace yyjson::detail;
+                switch (*cur_)
+                {
+                    case '{': return json_kind_object;
+                    case '[': return json_kind_array;
+                    case '"': return json_kind_string;
+                    case 't':
+                    case 'f': return json_kind_bool;
+                    case 'n': return json_kind_null;
+                    default: return json_kind_uint | json_kind_sint | json_kind_real;
+                }
+            }
+
+            // Reads the value at `cur_` into the first alternative of the variant T that `cast` takes from a document,
+            // trying each from the start of the value again.  `make(std::in_place_index<I>, args...)` constructs the
+            // variant with the alternative I from `args`, or emplaces it into the variant that an earlier call
+            // constructed, and returns the variant, which holds any value if the read fails.
+            template <typename T, typename Make>
+            void read_variant(Make&& make)
+            {
+                const char* const start = cur_;
+                const auto kind = kind_at();
+                const auto found = [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                    static constexpr auto kinds = std::array<std::uint8_t, sizeof...(Is)>{
+                        yyjson::detail::accepted_json_kinds<std::variant_alternative_t<Is, T>, const_value_ref>()...};
+                    return (((kinds[Is] & kind) != 0 && read_alternative<T, Is>(make, start)) || ...);
+                }(std::make_index_sequence<std::variant_size_v<T>>{});
+                if (!found) fail();
+            }
+
+            template <typename T, std::size_t I, typename Make>
+            bool read_alternative(Make& make, const char* start)
+            {
+                using alternative = std::remove_cv_t<std::variant_alternative_t<I, T>>;
+                constexpr auto index = std::in_place_index<I>;
+                try
+                {
+                    if constexpr (std::same_as<alternative, std::string>)
+                    {
+                        if (*cur_ == '"')
+                        {
+                            const auto s = scan_string();
+                            if (!s.escaped) [[likely]]
+                                make(index, s.begin, s.end);
+                            else
+                            {
+                                auto str = std::string();
+                                unescape(s.begin, s.end, str);
+                                make(index, std::move(str));
+                            }
+                            return true;
+                        }
+                    }
+                    else if constexpr (yyjson::detail::reflected_assignable_in_place<alternative, const_value_ref>)
+                    {
+                        if (*cur_ == '{')
+                        {
+                            read_reflected_fields(std::get<I>(make(index)));
+                            return true;
+                        }
+                    }
+                    make(index, read_value<alternative>());
+                    return true;
+                }
+                catch (const direct_read_unsupported&)
+                {
+                    throw;
+                }
+                catch (...)
+                {
+                    cur_ = start;
+                    return false;
+                }
+            }
+
+            // Emplaces the alternative I into `v`.
+            template <typename T, std::size_t I, typename... Args>
+            CPPYYJSON_ALWAYS_INLINE static T& emplace_alternative(T& v, std::in_place_index_t<I>, Args&&... args)
+            {
+                v.template emplace<I>(std::forward<Args>(args)...);
+                return v;
+            }
+
+            // Reads the value at `cur_` into `target` as `target = read_value<T>()` does, but writes a string into
+            // the buffer `target` already has.
+            template <typename T>
+            CPPYYJSON_ALWAYS_INLINE void assign_value(T& target)
+            {
+                if constexpr (std::same_as<T, std::string>)
+                {
+                    if (*cur_ == '"')
+                    {
+                        const auto str = scan_string();
+                        if (!str.escaped) [[likely]]
+                            target.assign(str.begin, str.end);
+                        else
+                            unescape(str.begin, str.end, target);
+                        return;
+                    }
+                }
+                target = read_value<T>();
+            }
+
+            // Reads the value at `cur_` into the tuple T as its caster reads it from a document: the members of an
+            // object or the values of an array into the elements in order, leaving those after them
+            // value-initialized.
+            template <typename T>
+            T read_tuple()
+            {
+                constexpr auto size = std::tuple_size_v<T>;
+                auto result = T();
+                // reads the element I if `i` is I
+                const auto element = [&]<std::size_t I>(std::size_t i, auto read) {
+                    if (i == I) read(std::get<I>(result), std::type_identity<std::tuple_element_t<I, T>>{});
+                };
+                const auto each = [&](std::size_t i, auto read) {
+                    [&]<std::size_t... I>(std::index_sequence<I...>) {
+                        (element.template operator()<I>(i, read), ...);
+                    }(std::make_index_sequence<size>{});
+                };
+                if (*cur_ == '{')
+                {
+                    if constexpr (tuple_from_object<T> && tuple_copies_keys<T>)
+                    {
+                        auto i = std::size_t{0};
+                        read_members([&] {
+                            if (i == size) fail();
+                            each(i++, [&]<typename E>(auto& e, std::type_identity<E>) {
+                                using key_type = std::tuple_element_t<0, E>;
+                                using value_type = std::tuple_element_t<1, E>;
+                                if constexpr (std::same_as<key_type, std::string> && !std::is_const_v<value_type> &&
+                                              std::is_move_assignable_v<value_type>)
+                                {
+                                    // the key and the value go straight into the element; constructing E and moving
+                                    // it in copies short strings with `rep movsb` under GCC
+                                    auto& key = std::get<0>(e);
+                                    if (const auto s = read_string(key); s.data() != key.data()) key.assign(s);
+                                    read_colon();
+                                    assign_value(std::get<1>(e));
+                                }
+                                else
+                                {
+                                    auto key = std::string(read_string(scratch_));
+                                    read_colon();
+                                    e = E(std::move(key), read_value<std::remove_cv_t<value_type>>());
+                                }
+                            });
+                        });
+                        return result;
+                    }
+                    else if constexpr (tuple_from_object<T>)
+                        return read_by_document<T>();
+                    else
+                        fail();
+                }
+                if constexpr (tuple_from_array<T>)
+                {
+                    if (*cur_ == '[')
+                    {
+                        const char* const open = cur_;
+                        ++cur_;
+                        skip_ws();
+                        if (*cur_ != ']')
+                        {
+                            for (auto i = std::size_t{0};; ++i)
+                            {
+                                if (i == size) fail();
+                                each(i, [&]<typename E>(auto& e, std::type_identity<E>) {
+                                    if constexpr (!std::is_const_v<E> && std::is_move_assignable_v<E>)
+                                        assign_value(e);
+                                    else
+                                        e = read_value<std::remove_cv_t<E>>();
+                                });
+                                skip_ws();
+                                if (*cur_ == ',')
+                                {
+                                    ++cur_;
+                                    skip_ws();
+                                    continue;
+                                }
+                                if (*cur_ != ']') [[unlikely]]
+                                    fail();
+                                break;
+                            }
+                        }
+                        close(open);
+                        return result;
+                    }
+                }
+                fail();
+            }
+
+            // Reads the value at `cur_` as `cast<T>` reads it from a document.
+            template <typename T>
+            T read_value()
+            {
+                if constexpr (builtin_variant<T>)
+                {
+                    auto result = std::optional<T>();
+                    read_variant<T>([&](auto index, auto&&... args) -> T& {
+                        if (result.has_value())
+                            return emplace_alternative(*result, index, std::forward<decltype(args)>(args)...);
+                        return result.emplace(index, std::forward<decltype(args)>(args)...);
+                    });
+                    return std::move(*result);
+                }
+                else if constexpr (builtin_tuple<T>)
+                    return read_tuple<T>();
+                else if constexpr (from_json_val_usr_defined<T>)
+                {
+                    if constexpr (yyjson::detail::shared_ptr_like<T> &&
+                                  std::derived_from<caster<T>, yyjson::detail::builtin_caster>)
+                    {
+                        if (*cur_ == 'n')
+                        {
+                            read_literal("null");
+                            return T();
+                        }
+                        return std::make_shared<typename T::element_type>(
+                            read_value<std::remove_cv_t<typename T::element_type>>());
+                    }
+                    else if constexpr (is_std_optional<T>::value &&
+                                       std::derived_from<caster<T>, yyjson::detail::builtin_caster>)
+                    {
+                        if constexpr (!yyjson::detail::shared_ptr_like<typename T::value_type>)
+                        {
+                            if (*cur_ == 'n')
+                            {
+                                read_literal("null");
+                                return std::nullopt;
+                            }
+                        }
+                        return T(read_value<typename T::value_type>());
+                    }
+                    else
+                        return read_by_document<T>();
+                }
+                else
+                {
+                    using dc = yyjson::detail::default_caster<T>;
+                    const auto number = [](auto v) -> T {
+                        if constexpr (std::same_as<decltype(v), std::uint64_t>)
+                            return dc::from_json_uint(v);
+                        else if constexpr (std::same_as<decltype(v), std::int64_t>)
+                            return dc::from_json_sint(v);
+                        else
+                            return dc::from_json_real(v);
+                    };
+                    switch (*cur_)
+                    {
+                        case '{':
+                            if constexpr (from_json_def_obj_defined<T>)
+                                return read_object<T>();
+                            else
+                                fail();
+                        case '[':
+                            if constexpr (from_json_def_arr_defined<T>)
+                                return read_array<T>();
+                            else
+                                fail();
+                        case '"':
+                            if constexpr (std::same_as<T, std::string>)
+                            {
+                                auto result = std::string();
+                                read_string_into(result);
+                                return result;
+                            }
+                            else
+                                return dc::from_json_string(read_string(scratch_));
+                        case 't': read_literal("true"); return dc::from_json_bool(true);
+                        case 'f': read_literal("false"); return dc::from_json_bool(false);
+                        case 'n': read_literal("null"); return dc::from_json_null();
+                        default:
+#if defined(CPPYYJSON_READ_DECIMAL)
+                            if constexpr (std::floating_point<T>)
+                            {
+                                auto d = 0.0;
+                                if (read_decimal(d)) [[likely]]
+                                    return number(d);
+                            }
+#endif
+                            return read_number(number);
+                    }
+                }
+            }
+
+            // Reads the members of the object at `cur_`, calling `member(key)` with `cur_` at each value.
+            template <typename Member>
+            CPPYYJSON_ALWAYS_INLINE void read_members(Member&& member)
+            {
+                const char* const open = cur_;
+                ++cur_;
+                skip_ws_before_key();
+                if (*cur_ == '}')
+                {
+                    close(open);
+                    return;
+                }
+                for (;;)
+                {
+                    if (*cur_ != '"') [[unlikely]]
+                        fail();
+                    member();
+                    skip_ws();
+                    if (*cur_ == ',')
+                    {
+                        ++cur_;
+                        skip_ws_before_key();
+                        continue;
+                    }
+                    if (*cur_ != '}') [[unlikely]]
+                        fail();
+                    close(open);
+                    return;
+                }
+            }
+
+            CPPYYJSON_ALWAYS_INLINE void read_colon()
+            {
+                skip_ws();
+                expect(':');
+                skip_ws();
+            }
+
+            template <typename T>
+            T read_object()
+            {
+                using json_object = const_object_ref;
+                if constexpr (yyjson::detail::visitable<T> && requires {
+                                  visit_struct<T>::key_matcher;
+                                  visit_struct<T>::members;
+                              })
+                {
+                    auto result = T();
+                    read_visitable_fields(result);
+                    return result;
+                }
+                else if constexpr (yyjson::detail::object_emplaceable_range<T, json_object> ||
+                                   yyjson::detail::object_back_emplaceable_range<T, json_object>)
+                {
+                    using value_type = std::remove_cvref_t<std::tuple_element_t<1, std::ranges::range_value_t<T>>>;
+                    auto result = T();
+                    auto key_buf = std::string();
+                    read_members([&] {
+                        // the key is kept in `key_buf` while the value is read if it has escapes
+                        const auto key = read_string(key_buf);
+                        read_colon();
+                        yyjson::detail::emplace_key_value<!yyjson::detail::object_emplaceable_range<T, json_object>>(
+                            result, key, read_value<value_type>());
+                    });
+                    return result;
+                }
+                else if constexpr (yyjson::detail::reflected_object_castable<T, json_object>)
+                {
+                    auto result = T();
+                    read_reflected_fields(result);
+                    return result;
+                }
+                else
+                    return read_by_document<T>();
+            }
+
+            template <typename T>
+            T read_array()
+            {
+                auto result = T();
+                read_array_into(result);
+                return result;
+            }
+
+            // Whether an element of type T is read into a default-constructed element of a range, rather than
+            // read and then inserted.
+            template <typename T>
+            static constexpr bool array_readable_in_place =
+                !from_json_val_usr_defined<T> && from_json_def_arr_defined<T> && std::ranges::range<T> &&
+                std::is_default_constructible_v<T>;
+
+            // Counts the elements from `cur_` to the end of the array that `cur_` is in, or returns 0 if one of them
+            // is an array or an object or the array does not end before `last_`.  A count across nested containers
+            // costs as much as the moves that it saves.
+            std::size_t count_elements() const noexcept
+            {
+                auto n = std::size_t{1};
+                auto quoted = false;
+                auto escaped = false;
+                // returns 1 at the end of the array, -1 at a container, and 0 otherwise
+                const auto step = [&](char c) {
+                    if (quoted)
+                    {
+                        if (escaped)
+                            escaped = false;
+                        else if (c == '\\')
+                            escaped = true;
+                        else if (c == '"')
+                            quoted = false;
+                        return 0;
+                    }
+                    switch (c)
+                    {
+                        case '"': quoted = true; return 0;
+                        case ',': ++n; return 0;
+                        case ']': return 1;
+                        case '[':
+                        case '{': return -1;
+                        default: return 0;
+                    }
+                };
+                const char* p = cur_;
+#if defined(__AVX2__)
+                for (; last_ - p >= 32; p += 32)
+                {
+                    const auto v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(p));
+                    const auto mask = [v](char c) {
+                        return static_cast<std::uint32_t>(
+                            _mm256_movemask_epi8(_mm256_cmpeq_epi8(v, _mm256_set1_epi8(c))));
+                    };
+                    if (escaped || mask('\\') != 0) [[unlikely]]
+                    {
+                        for (auto i = 0; i < 32; ++i)
+                            if (const auto r = step(p[i]); r != 0) return r > 0 ? n : 0;
+                        continue;
+                    }
+                    // the characters inside strings, with the opening quotes and without the closing ones
+                    auto inside = mask('"');
+                    inside ^= inside << 1;
+                    inside ^= inside << 2;
+                    inside ^= inside << 4;
+                    inside ^= inside << 8;
+                    inside ^= inside << 16;
+                    if (quoted) inside = ~inside;
+                    quoted = (inside >> 31) != 0;
+                    const auto commas = mask(',') & ~inside;
+                    if (((mask('[') | mask('{')) & ~inside) != 0) return 0;
+                    if (const auto close = mask(']') & ~inside; close != 0)
+                        return n + static_cast<std::size_t>(std::popcount(commas & ((close & (0 - close)) - 1)));
+                    n += static_cast<std::size_t>(std::popcount(commas));
+                }
+#endif
+                for (; p <= last_; ++p)
+                    if (const auto r = step(*p); r != 0) return r > 0 ? n : 0;
+                return 0;
+            }
+
+            // Whether `read_array_into` counts the rest of the elements of an array of T once it has read 512, and
+            // reserves room for them, rather than growing the range, which moves every element read so far.
+            template <typename T>
+            static constexpr bool counts_elements =
+                !std::is_trivially_copyable_v<std::ranges::range_value_t<T>> &&
+                requires(T& t, std::size_t n) {
+                    t.reserve(n);
+                    { t.capacity() } -> std::convertible_to<std::size_t>;
+                };
+
+            // Reserves room in `result` for the rest of the elements of the array that opens at `open`.  The elements
+            // of the root array, which ends at `last_`, are estimated from the bytes that those read so far took when
+            // they cannot be counted, as long as the room stays within four times the bytes left to read.
+            template <typename T>
+            void reserve_rest(T& result, const char* open)
+            {
+                auto n = count_elements();
+                if (n == 0 && open == first_)
+                {
+                    const auto done = static_cast<std::size_t>(cur_ - open);
+                    const auto rest = static_cast<std::size_t>(last_ - cur_);
+                    n = result.size() * rest / done;
+                    n = std::min(n + n / 16, rest * 4 / sizeof(std::ranges::range_value_t<T>));
+                }
+                if (n != 0) result.reserve(result.size() + n);
+            }
+
+            // Reads the elements of the array at `cur_` into the empty or default-constructed range `result`.
+            template <typename T>
+            void read_array_into(T& result)
+            {
+                using value_type = std::ranges::range_value_t<T>;
+                const char* const open = cur_;
+                ++cur_;
+                skip_ws();
+                if (*cur_ == ']')
+                {
+                    close(open);
+                    return;
+                }
+                [[maybe_unused]] auto out = std::ranges::begin(result);
+                [[maybe_unused]] auto count = std::size_t{0};
+                for (;;)
+                {
+                    if constexpr (yyjson::detail::back_insertable<T>)
+                    {
+                        if constexpr (counts_elements<T>)
+                        {
+                            if (count++ == 512 && result.size() == result.capacity()) [[unlikely]]
+                                reserve_rest(result, open);
+                        }
+                        if constexpr (yyjson::detail::reflected_assignable_in_place<value_type, const_value_ref> &&
+                                      requires {
+                                          { result.emplace_back() } -> std::same_as<value_type&>;
+                                      })
+                        {
+                            if (*cur_ == '{')
+                                read_reflected_fields(result.emplace_back());
+                            else
+                                result.push_back(read_value<value_type>());
+                        }
+                        else if constexpr (std::same_as<value_type, std::string> && requires {
+                                               { result.emplace_back() } -> std::same_as<value_type&>;
+                                           })
+                        {
+                            if (*cur_ == '"')
+                            {
+                                const auto str = scan_string();
+                                if (!str.escaped) [[likely]]
+                                    result.emplace_back(str.begin, str.end);
+                                else
+                                    unescape(str.begin, str.end, result.emplace_back());
+                            }
+                            else
+                                result.push_back(read_value<value_type>());
+                        }
+                        else if constexpr (array_readable_in_place<value_type> && requires {
+                                               { result.emplace_back() } -> std::same_as<value_type&>;
+                                           })
+                        {
+                            if (*cur_ == '[')
+                                read_array_into(result.emplace_back());
+                            else
+                                result.push_back(read_value<value_type>());
+                        }
+                        else if constexpr (builtin_variant<value_type> && requires {
+                                               { result.emplace_back() } -> std::same_as<value_type&>;
+                                           })
+                        {
+                            // the variant is constructed in place, as moving it costs as much as reading it
+                            auto made = false;
+                            read_variant<value_type>([&](auto index, auto&&... args) -> value_type& {
+                                if (made)
+                                    return emplace_alternative(result.back(), index,
+                                                               std::forward<decltype(args)>(args)...);
+                                made = true;
+                                return result.emplace_back(index, std::forward<decltype(args)>(args)...);
+                            });
+                        }
+                        else
+                            result.push_back(read_value<value_type>());
+                    }
+                    else
+                    {
+                        if (count++ == std::ranges::size(result)) fail();
+                        *out = read_value<value_type>();
+                        ++out;
+                    }
+                    skip_ws();
+                    if (*cur_ == ',')
+                    {
+                        ++cur_;
+                        skip_ws();
+                        continue;
+                    }
+                    if (*cur_ != ']') [[unlikely]]
+                        fail();
+                    close(open);
+                    return;
+                }
+            }
+
+            // Assigns the value at `cur_` to a field of a struct as `assign_reflected_field` assigns it from a
+            // document.
+            template <typename Field>
+            CPPYYJSON_ALWAYS_INLINE void read_field(Field& field, bool replaceable)
+            {
+                using field_type = std::remove_cvref_t<Field>;
+                if constexpr (requires(const const_value_ref& v) { caster<field_type>::from_json(field, v); })
+                {
+                    if constexpr (is_std_optional<field_type>::value &&
+                                  std::derived_from<caster<field_type>, yyjson::detail::builtin_caster>)
+                    {
+                        using value_type = typename field_type::value_type;
+                        if constexpr (yyjson::detail::reflected_assignable_in_place<value_type, const_value_ref>)
+                        {
+                            if (*cur_ == '{')
+                            {
+                                read_reflected_fields(field.emplace());
+                                return;
+                            }
+                        }
+                        if constexpr (!yyjson::detail::shared_ptr_like<value_type>)
+                        {
+                            if (*cur_ == 'n')
+                            {
+                                read_literal("null");
+                                return;
+                            }
+                        }
+                        if constexpr (std::same_as<value_type, std::string>)
+                        {
+                            if (*cur_ == '"')
+                            {
+                                if (!field.has_value()) field.emplace();
+                                read_string_into(*field);
+                                return;
+                            }
+                        }
+                        if constexpr (builtin_variant<value_type>)
+                        {
+                            read_variant<value_type>([&](auto index, auto&&... args) -> value_type& {
+                                if (field.has_value())
+                                    return emplace_alternative(*field, index, std::forward<decltype(args)>(args)...);
+                                return field.emplace(index, std::forward<decltype(args)>(args)...);
+                            });
+                            return;
+                        }
+                        field = read_value<value_type>();
+                    }
+                    else
+                        with_document([&](const const_value_ref& v) { caster<field_type>::from_json(field, v); });
+                }
+                else if constexpr (std::same_as<field_type, std::string>)
+                {
+                    if (*cur_ == '"') [[likely]]
+                        read_string_into(field);
+                    else
+                        field = read_value<field_type>();
+                }
+                else if constexpr (builtin_variant<field_type>)
+                {
+                    read_variant<field_type>([&](auto index, auto&&... args) -> field_type& {
+                        return emplace_alternative(field, index, std::forward<decltype(args)>(args)...);
+                    });
+                }
+                else if constexpr (yyjson::detail::reflected_assignable_in_place<field_type, const_value_ref> &&
+                                   std::is_nothrow_default_constructible_v<field_type>)
+                {
+                    if (*cur_ == '{' && replaceable)
+                    {
+                        std::destroy_at(std::addressof(field));
+                        std::construct_at(std::addressof(field));
+                        read_reflected_fields(field);
+                    }
+                    else
+                        field = read_value<field_type>();
+                }
+                else
+                    field = read_value<field_type>();
+            }
+
+            // Reads the members of an object, assigning those that `matcher` finds with `assign(index)`.
+            template <std::size_t N, typename Assign>
+            CPPYYJSON_ALWAYS_INLINE void read_fields(const yyjson::detail::field_key_matcher<N>& matcher,
+                                                     Assign&& assign)
+            {
+                auto hint = std::size_t{0};
+                read_members([&]() CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                    auto index = N;
+                    if (hint < N)
+                    {
+                        // the key that is expected next is compared with the text without scanning it first
+                        const auto n = matcher.name_size(hint);
+                        if (matcher.has_short_key(hint) && last_ - cur_ >= 16)
+                        {
+                            if (matcher.is_raw_key_at(hint, cur_ + 1))
+                            {
+                                index = hint;
+                                cur_ += n + 2;
+                            }
+                        }
+                        else if (static_cast<std::size_t>(last_ - cur_) > n + 1 && cur_[n + 1] == '"' &&
+                                 matcher.is_raw_name_at(hint, cur_ + 1))
+                        {
+                            index = hint;
+                            cur_ += n + 2;
+                        }
+                    }
+                    if (index == N) index = matcher.find(read_string(scratch_), hint);
+                    read_colon();
+                    if (index < N)
+                    {
+                        assign(index);
+                        hint = index + 1;
+                    }
+                    else
+                        skip_value();
+                });
+            }
+
+            template <typename T>
+            void read_reflected_fields(T& t)
+            {
+                read_fields(yyjson::detail::reflected_key_matcher<T>, [&](std::size_t index) {
+                    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                        (void)((index == Is && (read_field(field_reflection::get_field<Is>(t),
+                                                           yyjson::detail::reflected_field_replaceable<Is>(t)),
+                                                true)) ||
+                               ...);
+                    }(std::make_index_sequence<field_reflection::field_count<T>>{});
+                });
+            }
+
+            template <typename T>
+            void read_visitable_fields(T& t)
+            {
+                constexpr auto& members = visit_struct<T>::members;
+                read_fields(visit_struct<T>::key_matcher, [&](std::size_t index) {
+                    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                        const auto replaceable = [&]<std::size_t I>(std::integral_constant<std::size_t, I>) {
+                            return yyjson::detail::has_own_bytes<I>(t.*std::get<Is>(members)...);
+                        };
+                        (void)((index == Is && (read_field(t.*std::get<Is>(members),
+                                                           replaceable(std::integral_constant<std::size_t, Is>{})),
+                                                true)) ||
+                               ...);
+                    }(std::make_index_sequence<std::tuple_size_v<std::remove_cvref_t<decltype(members)>>>{});
+                });
+            }
+        };
+
+        CPPYYJSON_ALWAYS_INLINE inline bool is_json_ws(char c) noexcept
+        {
+            return c == ' ' || c == '\n' || c == '\r' || c == '\t';
+        }
+    }  // namespace reader::detail
+
+    // Reads JSON text into a value of type T, with the same result as `yyjson::read(json, read_flag).cast<T>()`
+    // and the same exception if it fails, but without building a document for the parts of T that the default
+    // casters read.  Those that a `caster` specialization reads are read through a document of their own, and
+    // when T holds them in a range or a map, the whole text is read into one document first.
+    template <typename T>
+    requires (!std::is_reference_v<T>) && castable<reader::const_value_ref, T>
+    [[nodiscard]] T read(std::string_view json, ReadFlag read_flag = ReadFlag::NoFlag)
+    {
+        using U = std::remove_cv_t<T>;
+        if constexpr (reader::detail::direct_reader::reads_documents_in_loop<U>)
+            return reader::read(json, read_flag).template cast<U>();
+        else if ((to_underlying(read_flag) & ~yyjson_read_flag{YYJSON_READ_ALLOW_INVALID_UNICODE}) == 0) [[likely]]
+        {
+            const auto* first = json.data();
+            const auto* last = json.data() + json.size();
+            while (first != last && reader::detail::is_json_ws(*first)) ++first;
+            while (first != last && reader::detail::is_json_ws(last[-1])) --last;
+            if (last - first >= 2 && ((*first == '{' && last[-1] == '}') || (*first == '[' && last[-1] == ']')))
+            {
+                try
+                {
+                    return reader::detail::direct_reader(first, last - 1, read_flag).read_root<U>();
+                }
+                catch (...)
+                {
+                }
+            }
+        }
+        return reader::read(json, read_flag).template cast<U>();
     }
 #endif
 }  // namespace yyjson

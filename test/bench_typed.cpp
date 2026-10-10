@@ -5,10 +5,11 @@
 // glaze_bench_typed with the Glaze rows (CPPYYJSON_GLAZE_BENCHMARKS), compiled as the
 // C++23 that Glaze requires.
 //
-// cpp-yyjson reads a document into its DOM and casts the DOM into the type; Glaze reads
-// the text into the type directly.  `typed_read_cpp_yyjson_dom` times the first of the
-// two steps alone, so that the cost of the cast is the difference to
-// `typed_read_cpp_yyjson`.
+// `yyjson::read(json).cast<T>()` reads a document into the DOM of cpp-yyjson and casts
+// the DOM into the type; `typed_read_cpp_yyjson_dom` times the first of the two steps
+// alone, so that the cost of the cast is the difference to `typed_read_cpp_yyjson`.
+// `yyjson::read<T>(json)`, the `direct` row, reads the text into the type without the
+// DOM, as Glaze does.
 //
 // The timed region of a read ends when the object is filled: destroying it is left out
 // for both libraries, while the DOM that cpp-yyjson reads through is freed inside it.
@@ -185,6 +186,24 @@ namespace
                     benchmark::DoNotOptimize(v);
                 }
                 state.SetIterationTime(seconds_since(start));
+            }
+            finish<T>(state, json.size());
+        }
+    };
+
+    template <typename T>
+    struct typed_read_cpp_yyjson_direct
+    {
+        static void run(benchmark::State& state)
+        {
+            const auto& json = typed_json<T>();
+            auto validated = false;
+            for (auto _ : state)
+            {
+                const auto start = std::chrono::steady_clock::now();
+                auto result = yyjson::read<T>(json);
+                state.SetIterationTime(seconds_since(start));
+                if (!validate_read_once(state, validated, result)) break;
             }
             finish<T>(state, json.size());
         }
@@ -400,6 +419,11 @@ BENCHMARK(dispatch<typed_read_cpp_yyjson_single>)
     ->UseManualTime();
 BENCHMARK(dispatch<typed_read_cpp_yyjson_dom>)
     ->Name("typed_read_cpp_yyjson_dom")
+    ->Unit(benchmark::kMillisecond)
+    ->DenseRange(0, typed_dataset_count - 1)
+    ->UseManualTime();
+BENCHMARK(dispatch<typed_read_cpp_yyjson_direct>)
+    ->Name("typed_read_cpp_yyjson_direct")
     ->Unit(benchmark::kMillisecond)
     ->DenseRange(0, typed_dataset_count - 1)
     ->UseManualTime();

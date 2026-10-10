@@ -72,6 +72,8 @@ The `read` function takes a JSON string and returns an immutable JSON value. The
 
 If the read option has the [`ReadInsitu`](https://ibireme.github.io/yyjson/doc/doxygen/html/md_doc__a_p_i.html#autotoc_md34) flag, You must specify the JSON string as writable (`std::string&` or `char*`) and its length. This writable string must be padded at least [`YYJSON_PADDING_SIZE`](https://ibireme.github.io/yyjson/doc/doxygen/html/yyjson_8h.html#abbe8e69f634b1a5a78c1dae08b88e0ef) bytes to the end. The length of the JSON string should be unpadded.
 
+To read a JSON string into a C++ object without the immutable JSON value, see [`yyjson::read<T>`](#reading-a-json-string-into-a-c-object-directly).
+
 If the read fails, the `read` function throws `yyjson::read_error`. Its `code()` member function returns the [`yyjson_read_code`](https://ibireme.github.io/yyjson/doc/doxygen/html/yyjson_8h.html) of the failure, so that the caller can tell a failed allocation (`YYJSON_READ_ERROR_MEMORY_ALLOCATION`) from a malformed input. A `read_error` that is constructed from a message alone returns `YYJSON_READ_SUCCESS`.
 
 ### `yyjson::reader::value`
@@ -1022,7 +1024,16 @@ auto map = cast<std::unordered_map<std::string, double>>(obj);
 // -> {{"first", 1.5}, {"second", 2.5}, {"third", 3.5}}
 ```
 
-If the conversion fails, the `yyjson::bad_cast` exception is thrown or a compile error occurs.
+A range of key-value pairs converts to a JSON object, and from one. A key-value pair is any tuple-like type of two elements whose first element is a string, such as `std::pair<std::string, int>`, `std::tuple<std::string, int>` or `std::array<std::string, 2>`, so `std::vector<std::array<std::string, 2>>{{"a", "b"}}` becomes `{"a": "b"}`. A sequence of them, such as `std::vector`, also converts from a JSON array of two-element arrays.
+
+If the conversion fails, the `yyjson::bad_cast` exception is thrown or a compile error occurs. In particular:
+
+*   JSON null does not convert to a string type such as `std::string` or `std::string_view`. Use `std::optional<std::string>` for a string that may be null.
+*   A JSON number converts to an integer type only if it fits in the type. A real number is truncated toward zero first, so `1.5` gives `1`, and `1e300` or `NaN` fails.
+*   A JSON number or boolean does not convert to a container such as `std::vector<int>`, although the container is constructible from an integer as its size.
+*   Only JSON `true` and `false` convert to `bool`. A number, a string or null does not, although C++ converts them to `bool`.
+*   A string type such as `std::string` converts from a JSON string only, not from an array of integers. Another range of characters, such as `std::vector<char>`, converts from an array.
+*   A struct read by [reflection](#automatic-casting-with-compile-time-reflection) or `VISITABLE_STRUCT` converts from a JSON object only, although C++20 initializes the first field of an aggregate from `T(v)`. To read a struct from another JSON value, define a [translator `from_json`](#translator-from_json).
 
 Note that `yyjson::cast<T>` and `static_cast<T>` may give different results. `yyjson::cast<T>` applies cpp-yyjson's JSON conversion rules, including predefined casters, while `static_cast<T>` only uses ordinary C++ conversion rules. For example, `yyjson::cast<std::shared_ptr<int>>(value(nullptr))` returns `nullptr` because the predefined `std::shared_ptr` caster maps JSON null to a null pointer. The corresponding `static_cast<std::shared_ptr<int>>(value(nullptr))` is ill-formed because `yyjson::value` is not directly convertible to `std::shared_ptr<int>` in C++.
 
@@ -1043,7 +1054,7 @@ Several casters from/to STL classes to JSON are pre-defined in the library for c
 *   `std::tuple`-like
 *   `std::vector<bool>` (specialized)
 
-For reflected object fields, `std::optional` represents field presence: fields with `std::nullopt` are omitted when serialized, and JSON null is ignored when deserializing into the optional field. If JSON null is a value to be preserved, use `std::shared_ptr` instead.
+For reflected object fields, `std::optional` represents field presence: fields with `std::nullopt` are omitted when serialized, and JSON null is ignored when deserializing into the optional field. If JSON null is a value to be preserved, use `std::shared_ptr` instead. Any other `std::optional<T>`, such as the root or an element of an array, is deserialized from JSON null into `std::nullopt` and from any other value as `T` is.
 
 ```cpp
 using namespace yyjson;
@@ -1086,6 +1097,8 @@ auto var = cast<std::variant<std::monostate, int, std::string>>(val);   // deser
 // -> "a"
 ```
 
+A `std::variant` is deserialized into the first of its alternatives, in the order of the template arguments, that the JSON value converts to. An alternative that never converts from the kind of the JSON value, such as `std::vector<double>` from a number, is skipped without trying it, while an alternative with a user-defined `from_json` is always tried.
+
 For a multi-type JSON array or object, using the caster for `std::tuple` is valuable and efficient.
 
 ```cpp
@@ -1103,6 +1116,8 @@ auto json_obj = object(tpl_obj);                            // serialize
 auto tpl_obj2 = cast<decltype(tpl_obj)>(json_obj);          // deserialize
 // -> {{"number", 1.5}, {"error", nullptr}, {"text", "abc"}}
 ```
+
+A JSON array or object with more elements than the tuple throws `yyjson::bad_cast`, and one with fewer leaves the remaining elements of the tuple value-initialized, as a `std::array` does.
 
 ### Automatic casting with compile-time reflection
 
@@ -1324,6 +1339,37 @@ VISITABLE_STRUCT(Counter, name, hits);
 auto deserialized = cast<Counter>(read(R"({"name":"b","hits":9})"));
 // -> Counter{.name = "b", .hits = 9}
 ```
+
+### Reading a JSON string into a C++ object directly
+
+`yyjson::read<T>` reads a JSON string into a C++ object without building a `yyjson::reader::value` first. It accepts every type that `yyjson::cast` can convert a JSON value to and follows the same conversion rules, so the result is the same as `read(json_string, flag).cast<T>()`. So are the exceptions: `yyjson::read_error` when the text is not valid JSON, and `yyjson::bad_cast` when it cannot be converted to `T`.
+
+```cpp
+template <typename T>
+T read(std::string_view json_string, ReadFlag flag = ReadFlag::NoFlag);
+```
+
+```cpp
+using namespace yyjson;
+
+struct Point
+{
+    int x;
+    int y;
+};
+
+auto points = read<std::vector<Point>>(R"([{"x":1,"y":2},{"x":3,"y":4}])");
+// -> {{1, 2}, {3, 4}}
+```
+
+Most types are read straight from the string: numbers, strings, `bool`, `nullptr`, ranges, maps, the pre-defined STL casters, and structs that the compile-time reflection or the `VISITABLE_STRUCT` macro converts. A `std::variant` tries its alternatives on the string in the same order as the cast tries them on a value. A tuple-like type, such as `std::tuple` or `std::pair`, is read from an array or an object as its caster reads it from a value; only a tuple of key-value pairs whose keys are not `std::string` is read like a user-defined `from_json` below. A user-defined `from_json` takes a JSON value, so the value that it converts is read into a temporary document, while the values around it are still read directly. When `T` holds such values as the elements of a range or a map, also as an alternative of a `std::variant`, a temporary document for each element would cost more than one document for the whole string, so `read<T>` then reads the string into a document and casts it, as `read(json_string, flag).cast<T>()` does.
+
+The string is read without a document when its root is an array or an object and `flag` is `NoFlag` or `AllowInvalidUnicode`. Otherwise, and whenever the direct read fails, `read<T>` reads the string into a document and casts it, which is how it gives the result and the exception of `cast<T>` in every case. Two things follow from this:
+
+*   A user-defined `from_json` may be called twice for the same JSON value, when the direct read fails after calling it. Do not rely on the number of calls.
+*   A `T` that refers to the JSON value, such as `std::string_view` or a struct with a `std::string_view` field, refers to memory that is freed when `read<T>` returns, as it does after `read(json_string).cast<T>()` on a temporary value. Cast such types from a `yyjson::reader::value` that outlives them instead.
+
+`yyjson::read<T>` is available with yyjson 0.10.0 or later, which includes the bundled backend.
 
 ### Writing a C++ object to a JSON string directly
 
