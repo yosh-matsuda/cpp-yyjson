@@ -928,6 +928,17 @@ namespace yyjson
             return std::forward<forward_element_type<R, T>>(t);
         }
 
+        // A struct key that needs no escape under any flag.  The direct writer copies it with its quotes and
+        // colon, and a mutable document marks it `YYJSON_SUBTYPE_NOESC` so that yyjson copies it as well.
+        consteval bool is_plain_key(std::string_view name)
+        {
+            for (const auto c : name)
+            {
+                if (c < 0x20 || c > 0x7E || c == '"' || c == '\\' || c == '/') return false;
+            }
+            return true;
+        }
+
         // Field I of an object, moved out only when the object is an rvalue.  This is unlike
         // `field_reflection::get_field`, which moves the whole object into a tuple to hand out one
         // field of an rvalue, so that a second call finds the other fields moved from.
@@ -2083,7 +2094,8 @@ namespace yyjson
                                     auto* field_values = fields + (i * field_count * 2);
                                     auto emitter = reflected_field_emitter{*this, obj, field_values, field_count};
                                     auto&& element = forward_element<Range&&>(std::forward<decltype(v)>(v));
-                                    (emitter.emplace(
+                                    (emitter.template emplace<yyjson::detail::is_plain_key(
+                                         field_reflection::field_name<value_type, Is>)>(
                                          field_reflection::field_name<value_type, Is>,
                                          yyjson::detail::forward_field<Is>(std::forward<decltype(element)>(element)),
                                          ts...),
@@ -2168,7 +2180,9 @@ namespace yyjson
                     std::size_t count = 0;
                     bool success = true;
 
-                    template <typename Field, copy_string_args... Ts>
+                    // `NoEsc` marks the key `YYJSON_SUBTYPE_NOESC`, as `yyjson_mut_obj_add_*` does for a key
+                    // without characters to escape, so that yyjson copies it without scanning.
+                    template <bool NoEsc = false, typename Field, copy_string_args... Ts>
                     void emplace(std::string_view field_name, Field&& field, Ts... ts) noexcept
                     {
                         if (!success) [[unlikely]]
@@ -2188,6 +2202,7 @@ namespace yyjson
                         success = doc.set_value(key, field_name, ts...);
                         if (!success) [[unlikely]]
                             return;
+                        if constexpr (NoEsc) key->tag |= YYJSON_SUBTYPE_NOESC;
 
                         if constexpr (base_of_value<Field>)
                         {
@@ -5422,9 +5437,11 @@ namespace yyjson
         static auto to_json(writer::object_ref& obj, const T& t, Ts... ts)
         {
             obj.assign_reflected_fields(detail::reflected_field_count(t), [&](auto& emitter) {
-                field_reflection::for_each_field(t, [&](std::string_view field_name, const auto& field_value) {
-                    emitter.emplace(field_name, field_value, ts...);
-                });
+                [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                    (emitter.template emplace<detail::is_plain_key(field_reflection::field_name<T, Is>)>(
+                         field_reflection::field_name<T, Is>, detail::forward_field<Is>(t), ts...),
+                     ...);
+                }(std::make_index_sequence<field_reflection::field_count<T>>{});
             });
         }
         template <copy_string_args... Ts>
@@ -5437,8 +5454,8 @@ namespace yyjson
             const auto field_count = detail::reflected_field_count(t);
             obj.assign_reflected_fields(field_count, [&](auto& emitter) {
                 [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                    (emitter.emplace(field_reflection::field_name<T, Is>, detail::forward_field<Is>(std::move(t)),
-                                     ts...),
+                    (emitter.template emplace<detail::is_plain_key(field_reflection::field_name<T, Is>)>(
+                         field_reflection::field_name<T, Is>, detail::forward_field<Is>(std::move(t)), ts...),
                      ...);
                 }(std::make_index_sequence<field_reflection::field_count<T>>{});
             });
@@ -5830,15 +5847,6 @@ namespace yyjson
             return letters;
         }();
 
-        // A struct key that needs no escape under any flag, written with its quotes and colon in one copy.
-        consteval bool is_plain_key(std::string_view name)
-        {
-            for (const auto c : name)
-            {
-                if (c < 0x20 || c > 0x7E || c == '"' || c == '\\' || c == '/') return false;
-            }
-            return true;
-        }
         template <std::size_t N>
         consteval std::array<char, N + 3> quote_key(std::string_view name)
         {
@@ -7568,8 +7576,10 @@ struct std::formatter<T>
     CPPYYJSON_CONCAT(CPPYYJSON_FOR_EACH_IMPL_, CPPYYJSON_VA_ARGS_SIZE(__VA_ARGS__))(FUNC, __VA_ARGS__)
 
 #define VISITABLE_STRUCT_IMPL1(X) std::string_view(#X),
-#define VISITABLE_STRUCT_IMPL2(X) emitter.emplace(std::string_view(#X), t.X, ts...);
-#define VISITABLE_STRUCT_IMPL3(X) emitter.emplace(std::string_view(#X), std::move(t.X), ts...);
+#define VISITABLE_STRUCT_IMPL2(X) \
+    emitter.template emplace<yyjson::detail::is_plain_key(#X)>(std::string_view(#X), t.X, ts...);
+#define VISITABLE_STRUCT_IMPL3(X) \
+    emitter.template emplace<yyjson::detail::is_plain_key(#X)>(std::string_view(#X), std::move(t.X), ts...);
 #define VISITABLE_STRUCT_IMPL4(X) &class_type::X,
 #define VISITABLE_STRUCT(CLASS, ...)                                                                  \
     static_assert(std::default_initializable<CLASS>, #CLASS " is not default initializable");         \
