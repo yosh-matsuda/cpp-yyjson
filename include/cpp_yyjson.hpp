@@ -615,6 +615,19 @@ namespace yyjson
         template <typename T>
         concept shared_ptr_like = is_shared_ptr<std::remove_cvref_t<T>>::value;
 
+        // `std::array` is an aggregate as well as a range.  The writer has to treat it as a range, the
+        // way the reader does, rather than reflect it into an object of its members.
+        template <typename T>
+        struct is_std_array : std::false_type
+        {
+        };
+        template <typename T, std::size_t N>
+        struct is_std_array<std::array<T, N>> : std::true_type
+        {
+        };
+        template <typename T>
+        concept std_array = is_std_array<std::remove_cvref_t<T>>::value;
+
         template <typename Field, typename Json>
         void assign_reflected_field(Field& field, const Json& value)
         {
@@ -1012,6 +1025,7 @@ namespace yyjson
             template <typename T>
             concept directly_create_reflected_object =
                 field_reflection::field_namable<std::remove_cvref_t<T>> && (!visitable<std::remove_cvref_t<T>>) &&
+                (!yyjson::detail::std_array<T>) &&
                 directly_create_reflected_object_impl<std::remove_cvref_t<T>>(
                     std::make_index_sequence<field_reflection::field_count<std::remove_cvref_t<T>>>{});
 
@@ -3790,8 +3804,11 @@ namespace yyjson
                 };
             }
 
+            // `std::array` is written as a JSON array, as the reader casts it from one.  Other aggregates
+            // are reflected into objects even if they have `begin()` and `end()`.
             template <typename T>
             concept to_json_with_reflection =
+                (!yyjson::detail::std_array<T>) &&
                 to_json_with_reflection_impl<T>(std::make_index_sequence<field_reflection::field_count<T>>());
 
         }  // namespace detail

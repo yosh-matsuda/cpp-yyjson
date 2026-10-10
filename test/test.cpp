@@ -3973,6 +3973,53 @@ TEST(Reader, PairRangeNeedsKeyToReadObject)
     EXPECT_EQ(cast<entries>(value(obj)), (entries{{"a", 1}, {"b", 2}}));
 }
 
+TEST(Writer, AggregateRangeIsArray)
+{
+    using namespace yyjson;
+
+    struct Shape
+    {
+        std::array<int, 2> size;
+        std::vector<std::array<double, 2>> points;
+    };
+
+    // std::array is an aggregate as well as a range, and it is written as a JSON array
+    EXPECT_EQ(value(std::array<int, 3>{1, 2, 3}).write(), "[1,2,3]");
+    EXPECT_EQ(array(std::array<int, 3>{1, 2, 3}).write(), "[1,2,3]");
+    EXPECT_EQ(value(std::array<std::string, 2>{"a", "b"}).write(), R"(["a","b"])");
+    EXPECT_EQ(value(std::vector<std::array<int, 2>>{{1, 2}, {3, 4}}).write(), "[[1,2],[3,4]]");
+
+    // also as a field of a reflected struct, and it reads back into the struct
+    const auto shape = Shape{{3, 4}, {{1.5, 2.5}}};
+    const auto json = object(shape).write();
+    EXPECT_EQ(json, R"({"size":[3,4],"points":[[1.5,2.5]]})");
+    const auto shapes = std::vector<Shape>{shape};
+    EXPECT_EQ(value(shapes).write(), "[" + std::string(json) + "]");
+    const auto read_back = cast<Shape>(read(json));
+    EXPECT_EQ(read_back.size, shape.size);
+    EXPECT_EQ(read_back.points, shape.points);
+
+    // an aggregate of the user that has begin() and end() is still reflected into an object
+    struct Labeled
+    {
+        std::vector<int> items;
+        std::string name;
+        [[nodiscard]] auto begin() const { return items.begin(); }
+        [[nodiscard]] auto end() const { return items.end(); }
+    };
+    struct Holder
+    {
+        Labeled labeled;
+        int k;
+    };
+    const auto labeled = Labeled{{1, 2}, "x"};
+    EXPECT_EQ(value(labeled).write(), R"({"items":[1,2],"name":"x"})");
+    EXPECT_EQ(object(labeled).write(), R"({"items":[1,2],"name":"x"})");
+    const auto labeled_range = std::vector<Labeled>{labeled};
+    EXPECT_EQ(value(labeled_range).write(), R"([{"items":[1,2],"name":"x"}])");
+    EXPECT_EQ(object(Holder{labeled, 1}).write(), R"({"labeled":{"items":[1,2],"name":"x"},"k":1})");
+}
+
 // NOLINTEND
 #if defined(__GNUC__)
 #pragma GCC diagnostic pop
