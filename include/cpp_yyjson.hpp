@@ -4060,6 +4060,8 @@ namespace yyjson
             friend class const_array_ref;
             friend class const_object_iter;
             friend class const_object_ref;
+            template <typename T>
+            friend struct yyjson::detail::default_caster;
 
         protected:
             const_value_ref& operator=(const const_value_ref&) = default;
@@ -5074,6 +5076,37 @@ namespace yyjson
         requires (std::same_as<reader::const_value_ref, Json> || writer::detail::base_of_const_value<Json>)
         static auto from_json(const Json& json)
         {
+            if constexpr (std::same_as<Json, reader::const_value_ref>)
+            {
+                // Checks first the JSON type that T is usually read from, and converts it in the same way
+                // as `inspect` below does.  The value is read from the tag directly, since returning it
+                // through `std::optional` makes the compiler spill it to the stack.
+                const auto* val = json.val_;
+                if constexpr (std::same_as<T, bool>)
+                {
+                    if (unsafe_yyjson_is_bool(val)) [[likely]]
+                        return from_json_bool(unsafe_yyjson_get_bool(val));
+                }
+                else if constexpr (std::floating_point<T>)
+                {
+                    if (unsafe_yyjson_is_real(val)) [[likely]]
+                        return from_json_real(unsafe_yyjson_get_real(val));
+                }
+                else if constexpr (std::integral<T>)
+                {
+                    // yyjson tags a non-negative integer as unsigned
+                    if (unsafe_yyjson_is_uint(val)) [[likely]]
+                        return from_json_uint(unsafe_yyjson_get_uint(val));
+                    if (unsafe_yyjson_is_sint(val)) return from_json_sint(unsafe_yyjson_get_sint(val));
+                }
+                else if constexpr (std::constructible_from<T, std::string_view> ||
+                                   std::constructible_from<T, std::string>)
+                {
+                    if (unsafe_yyjson_is_str(val)) [[likely]]
+                        return from_json_string(
+                            std::string_view(unsafe_yyjson_get_str(val), unsafe_yyjson_get_len(val)));
+                }
+            }
             if constexpr (requires { json.inspect(); })
             {
                 return json.inspect([](const auto& value) -> T {
