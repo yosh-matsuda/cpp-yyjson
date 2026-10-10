@@ -1765,24 +1765,11 @@ namespace yyjson
                                     auto* field_values = fields + (i * field_count * 2);
                                     auto emitter = reflected_field_emitter{*this, obj, field_values, field_count};
                                     auto&& element = forward_element<Range&&>(std::forward<decltype(v)>(v));
-                                    if constexpr (yyjson::detail::has_optional_reflected_field<value_type>)
-                                    {
-                                        field_reflection::for_each_field(
-                                            std::forward<decltype(element)>(element),
-                                            [&](std::string_view field_name, auto&& field_value) {
-                                                emitter.emplace(field_name,
-                                                                std::forward<decltype(field_value)>(field_value),
-                                                                ts...);
-                                            });
-                                    }
-                                    else
-                                    {
-                                        (emitter.emplace(
-                                             field_reflection::field_name<value_type, Is>,
-                                             yyjson::detail::forward_field<Is>(std::forward<decltype(element)>(element)),
-                                             ts...),
-                                         ...);
-                                    }
+                                    (emitter.emplace(
+                                         field_reflection::field_name<value_type, Is>,
+                                         yyjson::detail::forward_field<Is>(std::forward<decltype(element)>(element)),
+                                         ts...),
+                                     ...);
                                     if (yyjson_unlikely(!emitter.success)) [[unlikely]]
                                         return nullptr;
 
@@ -5045,11 +5032,15 @@ namespace yyjson
         requires writer::detail::to_json_with_reflection<T> && (!visitable<T>)
         static auto to_json(writer::object_ref& obj, T&& t, Ts... ts)
         {
+            // The fields are moved one by one out of `t` itself.  `for_each_field` would move them into a
+            // temporary first, and a field that the user's caster references would not outlive the call.
             const auto field_count = detail::reflected_field_count(t);
             obj.assign_reflected_fields(field_count, [&](auto& emitter) {
-                field_reflection::for_each_field(std::move(t), [&](std::string_view field_name, auto&& field_value) {
-                    emitter.emplace(field_name, std::forward<decltype(field_value)>(field_value), ts...);
-                });
+                [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                    (emitter.emplace(field_reflection::field_name<T, Is>, detail::forward_field<Is>(std::move(t)),
+                                     ts...),
+                     ...);
+                }(std::make_index_sequence<field_reflection::field_count<T>>{});
             });
         }
     };
@@ -5292,7 +5283,7 @@ namespace yyjson
         static auto to_json(writer::array_ref& arr, Tuple<Ts...>&& t, Args... args)
         {
             using indices = std::make_index_sequence<std::tuple_size_v<Tuple<Ts...>>>;
-            [&arr, t = std::move(t), args...]<std::size_t... N>(std::index_sequence<N...>) mutable {
+            [&arr, &t, args...]<std::size_t... N>(std::index_sequence<N...>) {
                 (arr.emplace_back_no_iter(std::get<N>(std::move(t)), args...), ...);
             }(indices{});
         }
@@ -5315,7 +5306,7 @@ namespace yyjson
         static auto to_json(writer::object_ref& obj, Tuple<Ts...>&& t, Args... args)
         {
             using indices = std::make_index_sequence<std::tuple_size_v<Tuple<Ts...>>>;
-            [&obj, t = std::move(t), args...]<std::size_t... N>(std::index_sequence<N...>) mutable {
+            [&obj, &t, args...]<std::size_t... N>(std::index_sequence<N...>) {
                 (obj.emplace_no_iter(std::get<0>(std::get<N>(std::move(t))), std::get<1>(std::get<N>(std::move(t))),
                                      args...),
                  ...);

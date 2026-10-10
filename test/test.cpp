@@ -4040,6 +4040,77 @@ TEST(Writer, RvalueRangeOfReflectedStructs)
     EXPECT_EQ(value(std::move(entries)).write(), expected);
 }
 
+struct AddressedName
+{
+    std::string name;
+};
+
+// the objects that the caster below was given, in order
+inline std::vector<const AddressedName*> addressed_names;
+
+template <>
+struct yyjson::caster<AddressedName>
+{
+    // refers to the string without copying it, so the object it was given has to outlive the document
+    template <typename... Ts>
+    static void to_json(writer::value_ref& v, const AddressedName& n, Ts...)
+    {
+        addressed_names.push_back(&n);
+        v = n.name;
+    }
+};
+
+struct AddressedPlain
+{
+    AddressedName n;
+    int k;
+};
+
+struct AddressedOptional
+{
+    AddressedName n;
+    std::optional<int> o;
+};
+
+TEST(Writer, RvalueFieldsGivenToCaster)
+{
+    using namespace yyjson;
+
+    // a caster is given the field of the rvalue itself, not a copy that is gone before the document is written
+    const auto written = [](auto&& json, std::vector<const AddressedName*> expected) {
+        addressed_names.clear();
+        auto result = std::forward<decltype(json)>(json)().write();
+        EXPECT_EQ(addressed_names, expected);
+        return std::string(result);
+    };
+
+    auto plain = AddressedPlain{{"a"}, 1};
+    EXPECT_EQ(written([&] { return object(std::move(plain)); }, {&plain.n}), R"({"n":"a","k":1})");
+    auto optional = AddressedOptional{{"a"}, 1};
+    EXPECT_EQ(written([&] { return object(std::move(optional)); }, {&optional.n}), R"({"n":"a","o":1})");
+    auto optionals = std::vector<AddressedOptional>{{{"a"}, 1}, {{"b"}, std::nullopt}};
+    const auto optional_names = std::vector<const AddressedName*>{&optionals[0].n, &optionals[1].n};
+    EXPECT_EQ(written([&] { return value(std::move(optionals)); }, optional_names), R"([{"n":"a","o":1},{"n":"b"}])");
+    auto map = std::map<std::string, AddressedOptional>{{"k", {{"a"}, 1}}};
+    const auto* map_name = &map.at("k").n;
+    EXPECT_EQ(written([&] { return value(std::move(map)); }, {map_name}), R"({"k":{"n":"a","o":1}})");
+    auto tuple = std::tuple<AddressedName, int>{{"a"}, 1};
+    EXPECT_EQ(written([&] { return value(std::move(tuple)); }, {&std::get<0>(tuple)}), R"(["a",1])");
+    auto tuples = std::vector<std::tuple<AddressedName, int>>{{{"a"}, 1}};
+    const auto* tuple_name = &std::get<0>(tuples[0]);
+    EXPECT_EQ(written([&] { return value(std::move(tuples)); }, {tuple_name}), R"([["a",1]])");
+    auto pairs = std::tuple<std::pair<const char*, AddressedName>, std::pair<const char*, int>>{{"a", {"b"}}, {"c", 1}};
+    EXPECT_EQ(written([&] { return object(std::move(pairs)); }, {&std::get<0>(pairs).second}), R"({"a":"b","c":1})");
+    EXPECT_EQ(written(
+                  [&] {
+                      auto obj = object();
+                      obj.emplace("x", std::move(optional));
+                      return obj;
+                  },
+                  {&optional.n}),
+              R"({"x":{"n":"a","o":1}})");
+}
+
 // NOLINTEND
 #if defined(__GNUC__)
 #pragma GCC diagnostic pop
