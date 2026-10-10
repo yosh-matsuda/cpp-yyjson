@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="258" viewBox="0 0 980 258">
+<rect width="100%" height="100%" fill="#ffffff"/>
+<style>text{font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,sans-serif;fill:#172033}.title{font-size:20px;font-weight:700}.heading{font-size:13px;font-weight:600;fill:#334155}.label{font-size:13px}.value{font-size:12px;fill:#475569}.axis{stroke:#cbd5e1;stroke-width:1}.grid{stroke:#e2e8f0;stroke-width:1}</style>
+<text x="24" y="34" class="title">Typed read: twitter</text>
+<line x1="300" y1="232" x2="852" y2="232" class="axis"/>
+<line x1="300.0" y1="50" x2="300.0" y2="232" class="grid"/>
+<text x="300.0" y="250" class="value" text-anchor="middle">0.000 ms</text>
+<line x1="438.0" y1="50" x2="438.0" y2="232" class="grid"/>
+<text x="438.0" y="250" class="value" text-anchor="middle">0.226 ms</text>
+<line x1="576.0" y1="50" x2="576.0" y2="232" class="grid"/>
+<text x="576.0" y="250" class="value" text-anchor="middle">0.452 ms</text>
+<line x1="714.0" y1="50" x2="714.0" y2="232" class="grid"/>
+<text x="714.0" y="250" class="value" text-anchor="middle">0.677 ms</text>
+<line x1="852.0" y1="50" x2="852.0" y2="232" class="grid"/>
+<text x="852.0" y="250" class="value" text-anchor="middle">0.903 ms</text>
+<text x="24" y="76" class="heading">New allocator / object per read</text>
+<text x="24" y="100" class="label">cpp-yyjson (DOM only)</text>
+<rect x="300" y="89" width="116.4" height="14" rx="2" fill="#2563eb"/>
+<text x="864" y="100" class="value">0.190 ms</text>
+<text x="24" y="124" class="label">Glaze</text>
+<rect x="300" y="113" width="281.3" height="14" rx="2" fill="#0891b2"/>
+<text x="864" y="124" class="value">0.460 ms</text>
+<text x="24" y="148" class="label">cpp-yyjson (DOM + cast)</text>
+<rect x="300" y="137" width="511.1" height="14" rx="2" fill="#2563eb"/>
+<text x="864" y="148" class="value">0.836 ms</text>
+<text x="24" y="174" class="heading">Reused allocator / object</text>
+<text x="24" y="198" class="label">Glaze</text>
+<rect x="300" y="187" width="189.0" height="14" rx="2" fill="#0891b2"/>
+<text x="864" y="198" class="value">0.309 ms</text>
+<text x="24" y="222" class="label">cpp-yyjson (DOM + cast)</text>
+<rect x="300" y="211" width="510.0" height="14" rx="2" fill="#2563eb"/>
+<text x="864" y="222" class="value">0.835 ms</text>
+</svg>
