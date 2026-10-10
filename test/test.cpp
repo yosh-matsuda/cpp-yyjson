@@ -4203,6 +4203,53 @@ TEST(Reader, ReflectedKeyOrder)
     test_key_order<VisitableKeyOrderRecord>();
 }
 
+struct InnerRecord
+{
+    int x = 1;
+    std::vector<int> v = {1, 2};
+    bool operator==(const InnerRecord&) const = default;
+};
+
+struct OuterRecord
+{
+    std::vector<InnerRecord> items;
+    std::optional<InnerRecord> maybe;
+    std::optional<InnerRecord> preset = InnerRecord{5, {5}};
+    bool operator==(const OuterRecord&) const = default;
+};
+
+TEST(Reader, ReflectedStructInContainer)
+{
+    using namespace yyjson;
+
+    const auto check = [](std::string_view json, const OuterRecord& expected) {
+        EXPECT_EQ(cast<OuterRecord>(read(json)), expected) << json;
+        EXPECT_EQ(cast<OuterRecord>(value(read(json))), expected) << json;
+    };
+
+    // each element starts from the defaults of its type
+    check(R"({"items":[{"x":2},{"v":[]},{}],"maybe":{"v":[3]}})",
+          OuterRecord{{{2, {1, 2}}, {1, {}}, {1, {1, 2}}}, InnerRecord{1, {3}}, InnerRecord{5, {5}}});
+
+    // an object replaces the value held by an optional field, not merges into it
+    check(R"({"preset":{"x":7}})", OuterRecord{{}, std::nullopt, InnerRecord{7, {1, 2}}});
+    check(R"({"preset":null})", OuterRecord{});
+
+    // an element that is not an object is an error
+    EXPECT_THROW(cast<OuterRecord>(read(R"({"items":[{"x":2},"s"]})")), bad_cast);
+    EXPECT_THROW(cast<OuterRecord>(read(R"({"maybe":[1]})")), bad_cast);
+    EXPECT_THROW(cast<std::vector<InnerRecord>>(read(R"([{"x":2},null])")), bad_cast);
+    // an error in the middle of an element or an optional that is being filled in place
+    EXPECT_THROW(cast<OuterRecord>(read(R"({"items":[{"x":2},{"x":3,"v":[1,"s"]}]})")), bad_cast);
+    EXPECT_THROW(cast<OuterRecord>(read(R"({"preset":{"x":3,"v":[1,"s"]}})")), bad_cast);
+
+    // the containers on their own
+    EXPECT_EQ(cast<std::vector<InnerRecord>>(read(R"([{"x":2},{}])")),
+              (std::vector<InnerRecord>{{2, {1, 2}}, {1, {1, 2}}}));
+    EXPECT_EQ(cast<std::vector<VisitableRecord>>(read(R"([{"k":"a","i":1}])")),
+              (std::vector<VisitableRecord>{{1, 0.0, "a"}}));
+}
+
 // NOLINTEND
 #if defined(__GNUC__)
 #pragma GCC diagnostic pop

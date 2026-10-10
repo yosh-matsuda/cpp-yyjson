@@ -4857,6 +4857,13 @@ namespace yyjson
         template <typename T, typename Json>
         concept reflected_object_castable = std::default_initializable<T> && (!visitable<T>) &&
                                             (!std::ranges::input_range<T>) && all_fields_castable<Json, T>;
+
+        // `cast<T>` of a value of a read document builds `T()` and assigns the fields from the object,
+        // which can as well be done on an object already in place.
+        template <typename T, typename Json>
+        concept reflected_assignable_in_place =
+            std::same_as<Json, reader::const_value_ref> && (!reader::detail::from_json_val_usr_defined<T>) &&
+            reflected_object_castable<T, reader::const_object_ref>;
     }  // namespace detail
 
     template <typename T>
@@ -4908,7 +4915,22 @@ namespace yyjson
         {
             auto result = T();
 
-            if constexpr (back_insertable<T>)
+            using value_type = std::ranges::range_value_t<T>;
+            if constexpr (back_insertable<T> &&
+                          reflected_assignable_in_place<value_type, std::ranges::range_value_t<Json>> && requires {
+                              { result.emplace_back() } -> std::same_as<value_type&>;
+                          })
+            {
+                reserve_if_possible(result, arr.size());
+                for (const auto& e : arr)
+                {
+                    if (const auto obj = e.as_object(); obj.has_value())
+                        detail::assign_reflected_fields(result.emplace_back(), *obj);
+                    else
+                        result.push_back(cast<value_type>(e));
+                }
+            }
+            else if constexpr (back_insertable<T>)
             {
                 reserve_if_possible(result, arr.size());
                 std::ranges::transform(arr, std::back_inserter(result),
@@ -5221,6 +5243,14 @@ namespace yyjson
         requires castable<Json, T>
         static void from_json(std::optional<T>& field, const Json& json)
         {
+            if constexpr (detail::reflected_assignable_in_place<T, Json>)
+            {
+                if (const auto obj = json.as_object(); obj.has_value())
+                {
+                    detail::assign_reflected_fields(field.emplace(), *obj);
+                    return;
+                }
+            }
             if (!json.is_null() || detail::shared_ptr_like<T>) field = cast<T>(json);
         }
 
