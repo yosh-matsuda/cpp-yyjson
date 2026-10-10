@@ -231,6 +231,18 @@ TYPED_VARIANTS = {
     "typed_read_glaze_single": ("read", "reused", "glaze", "Glaze"),
     "typed_write_cpp_yyjson": ("write", "fresh", "cpp_yyjson", "cpp-yyjson"),
     "typed_write_cpp_yyjson_single": ("write", "reused", "cpp_yyjson", "cpp-yyjson"),
+    "typed_write_cpp_yyjson_direct": (
+        "write",
+        "fresh",
+        "cpp_yyjson",
+        "cpp-yyjson (direct)",
+    ),
+    "typed_write_cpp_yyjson_direct_single": (
+        "write",
+        "reused",
+        "cpp_yyjson",
+        "cpp-yyjson (direct)",
+    ),
     "typed_write_glaze": ("write", "fresh", "glaze", "Glaze"),
     "typed_write_glaze_single": ("write", "reused", "glaze", "Glaze"),
 }

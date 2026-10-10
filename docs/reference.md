@@ -1325,6 +1325,39 @@ auto deserialized = cast<Counter>(read(R"({"name":"b","hits":9})"));
 // -> Counter{.name = "b", .hits = 9}
 ```
 
+### Writing a C++ object to a JSON string directly
+
+`yyjson::write` serializes a C++ object to a JSON string without building a `yyjson::value` first. It accepts every type that `yyjson::value` can be constructed from and follows the same conversion rules, so the result is the same as `value(t).write(flag)`, byte for byte:
+
+```cpp
+json_string write(const T& t, WriteFlag flag = WriteFlag::NoFlag);
+void write(const T& t, std::string& out, WriteFlag flag = WriteFlag::NoFlag);
+```
+
+The first form returns the string in a new buffer, like `value::write`. The second form overwrites `out` and keeps its capacity, so a loop that writes many objects into the same `std::string` stops allocating once the string is large enough. Both throw `yyjson::write_error` in the same cases as `value::write`; the second form leaves `out` empty when it throws.
+
+```cpp
+using namespace yyjson;
+
+struct Point
+{
+    int x;
+    int y;
+};
+
+auto json = write(std::vector<Point>{{1, 2}, {3, 4}});
+// -> [{"x":1,"y":2},{"x":3,"y":4}]
+
+auto out = std::string();
+for (const auto& points : batches)
+{
+    write(points, out, WriteFlag::Pretty);
+    send(out);
+}
+```
+
+Most types are written straight to the string: numbers, strings, `bool`, `nullptr`, ranges, maps, the pre-defined STL casters, structs that the compile-time reflection or the `VISITABLE_STRUCT` macro converts, and the values of `yyjson::reader` and `yyjson::value`. The value that a user-defined `to_json` returns is written directly as well. A user-defined `to_json` that fills a `writer::value_ref`, `writer::array_ref` or `writer::object_ref` needs a document, so the object that it converts is written through a temporary one, while the objects around it are still written directly.
+
 ## Performance best practices
 
 Creating a new `yyjson::value`, `yyjson::array`, or `yyjson::object` is expensive. This is one point we should be aware of when building JSON to maximize performance.

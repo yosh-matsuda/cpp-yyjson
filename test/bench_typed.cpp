@@ -226,6 +226,44 @@ namespace
             finish<T>(state, written);
         }
     };
+
+    // `yyjson::write` writes the object straight to text, without a mutable document.
+    template <typename T>
+    struct typed_write_cpp_yyjson_direct
+    {
+        static void run(benchmark::State& state)
+        {
+            const auto& source = reference_object<T>();
+            auto validated = false;
+            auto written = std::size_t{0};
+            for (auto _ : state)
+            {
+                auto result = yyjson::write(source);
+                written = result.size();
+                if (!validate_written_once<T>(state, validated, result)) break;
+            }
+            finish<T>(state, written);
+        }
+    };
+
+    template <typename T>
+    struct typed_write_cpp_yyjson_direct_single
+    {
+        static void run(benchmark::State& state)
+        {
+            const auto& source = reference_object<T>();
+            auto buffer = std::string();
+            auto validated = false;
+            auto written = std::size_t{0};
+            for (auto _ : state)
+            {
+                yyjson::write(source, buffer);
+                written = buffer.size();
+                if (!validate_written_once<T>(state, validated, buffer)) break;
+            }
+            finish<T>(state, written);
+        }
+    };
 #else
     // Glaze stops at a key it has no member for by default; cpp-yyjson skips it.
     constexpr auto glaze_read_opts = glz::opts{.error_on_unknown_keys = false};
@@ -371,6 +409,14 @@ BENCHMARK(dispatch<typed_write_cpp_yyjson>)
     ->DenseRange(0, typed_dataset_count - 1);
 BENCHMARK(dispatch<typed_write_cpp_yyjson_single>)
     ->Name("typed_write_cpp_yyjson_single")
+    ->Unit(benchmark::kMillisecond)
+    ->DenseRange(0, typed_dataset_count - 1);
+BENCHMARK(dispatch<typed_write_cpp_yyjson_direct>)
+    ->Name("typed_write_cpp_yyjson_direct")
+    ->Unit(benchmark::kMillisecond)
+    ->DenseRange(0, typed_dataset_count - 1);
+BENCHMARK(dispatch<typed_write_cpp_yyjson_direct_single>)
+    ->Name("typed_write_cpp_yyjson_direct_single")
     ->Unit(benchmark::kMillisecond)
     ->DenseRange(0, typed_dataset_count - 1);
 #else
