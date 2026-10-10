@@ -1077,6 +1077,11 @@ namespace yyjson
             concept to_json_obj_usr = to_json_inp_usr<object_ref, T>;
             template <typename T>
             concept to_json_inp_usr_defined = to_json_val_usr<T> || to_json_arr_usr<T> || to_json_obj_usr<T>;
+            // A user caster that only translates T.  The in-place check comes first: for a caster taking
+            // `value_ref&`, GCC 13 tries to convert T to `value_ref` while checking `to_json_usr<T>`, and that
+            // conversion depends on the default caster, which is constrained on this concept.
+            template <typename T>
+            concept to_json_usr_translator = (!to_json_inp_usr_defined<T>) && to_json_usr<T>;
 
             template <typename T>
             concept to_json_def = (!to_json_usr<T>) && requires(T&& t) {
@@ -1231,8 +1236,7 @@ namespace yyjson
             template <typename T>
             concept directly_create_reflected_object =
                 field_reflection::field_namable<std::remove_cvref_t<T>> && (!visitable<std::remove_cvref_t<T>>) &&
-                (!yyjson::detail::std_array<T>) && (!to_json_usr<T>) &&
-                (!to_json_inp_usr_defined<T>) &&
+                (!yyjson::detail::std_array<T>) && (!to_json_inp_usr_defined<T>) && (!to_json_usr<T>) &&
                 directly_create_reflected_object_impl<std::remove_cvref_t<T>>(
                     std::make_index_sequence<field_reflection::field_count<std::remove_cvref_t<T>>>{});
             template <typename T>
@@ -5375,20 +5379,21 @@ namespace yyjson
 #endif
 
         template <copy_string_args... Ts>
-        requires visitable<T> && (!writer::detail::to_json_usr<T>)
+        requires visitable<T> && (!writer::detail::to_json_usr_translator<T>)
         static auto to_json(writer::object_ref& obj, const T& t, Ts... ts)
         {
             visit_struct<T>::to_json_impl(obj, t, ts...);
         }
         template <copy_string_args... Ts>
-        requires visitable<T> && (!writer::detail::to_json_usr<T>)
+        requires visitable<T> && (!writer::detail::to_json_usr_translator<T>)
         static auto to_json(writer::object_ref& obj, T&& t, Ts... ts)
         {
             visit_struct<T>::to_json_impl(obj, std::move(t), ts...);
         }
 
         template <copy_string_args... Ts>
-        requires writer::detail::to_json_with_reflection<T> && (!visitable<T>) && (!writer::detail::to_json_usr<T>)
+        requires writer::detail::to_json_with_reflection<T> && (!visitable<T>) &&
+                 (!writer::detail::to_json_usr_translator<T>)
         static auto to_json(writer::object_ref& obj, const T& t, Ts... ts)
         {
             obj.assign_reflected_fields(detail::reflected_field_count(t), [&](auto& emitter) {
@@ -5398,7 +5403,8 @@ namespace yyjson
             });
         }
         template <copy_string_args... Ts>
-        requires writer::detail::to_json_with_reflection<T> && (!visitable<T>) && (!writer::detail::to_json_usr<T>)
+        requires writer::detail::to_json_with_reflection<T> && (!visitable<T>) &&
+                 (!writer::detail::to_json_usr_translator<T>)
         static auto to_json(writer::object_ref& obj, T&& t, Ts... ts)
         {
             // The fields are moved one by one out of `t` itself.  `for_each_field` would move them into a
