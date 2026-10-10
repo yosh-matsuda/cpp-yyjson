@@ -28,8 +28,13 @@
 
 #if defined(__GNUC__) || defined(__clang__)
 #define CPPYYJSON_ALWAYS_INLINE [[gnu::always_inline]]
+#define CPPYYJSON_COLD [[gnu::cold, gnu::noinline]]
+#elif defined(_MSC_VER)
+#define CPPYYJSON_ALWAYS_INLINE
+#define CPPYYJSON_COLD __declspec(noinline)
 #else
 #define CPPYYJSON_ALWAYS_INLINE
+#define CPPYYJSON_COLD
 #endif
 
 namespace yyjson
@@ -41,6 +46,17 @@ namespace yyjson
     {
         using std::runtime_error::runtime_error;
     };
+
+    namespace detail
+    {
+        // Formats the message out of line, which keeps the casts that may throw small enough to be inlined.
+        template <typename... Args>
+        [[noreturn]] CPPYYJSON_COLD void throw_bad_cast(std::format_string<Args...> fmt, Args&&... args)
+        {
+            throw bad_cast(std::format(fmt, std::forward<Args>(args)...));
+        }
+    }  // namespace detail
+
     class read_error : public std::runtime_error
     {
         yyjson_read_code code_ = YYJSON_READ_SUCCESS;
@@ -4939,8 +4955,8 @@ namespace yyjson
             else  // TODO: fixed size range concept
             {
                 if (arr.size() > std::ranges::size(result))
-                    throw bad_cast(
-                        std::format("the size of JSON array is greater than the size of {}", detail::type_name<T>()));
+                    detail::throw_bad_cast("the size of JSON array is greater than the size of {}",
+                                           detail::type_name<T>());
                 std::ranges::transform(arr, std::ranges::begin(result),
                                        [](const auto& e) { return cast<std::ranges::range_value_t<T>>(e); });
             }
@@ -4969,7 +4985,7 @@ namespace yyjson
             else if constexpr (std::constructible_from<U, std::monostate>)
                 return U(std::monostate());
             else
-                throw bad_cast(std::format("{} is not constructible from JSON null", detail::type_name<U>()));
+                detail::throw_bad_cast("{} is not constructible from JSON null", detail::type_name<U>());
         }
 
         template <typename U = T>
@@ -4978,7 +4994,7 @@ namespace yyjson
             if constexpr (json_scalar_constructible<U, bool>)
                 return U(value);
             else
-                throw bad_cast(std::format("{} is not constructible from JSON bool", detail::type_name<U>()));
+                detail::throw_bad_cast("{} is not constructible from JSON bool", detail::type_name<U>());
         }
 
         template <typename U = T>
@@ -4989,7 +5005,7 @@ namespace yyjson
                 return U(value);
             }
             else
-                throw bad_cast(std::format("{} is not constructible from JSON number", detail::type_name<U>()));
+                detail::throw_bad_cast("{} is not constructible from JSON number", detail::type_name<U>());
         }
 
         template <typename U = T>
@@ -5002,7 +5018,7 @@ namespace yyjson
             else if constexpr (std::constructible_from<U, const char*>)
                 return U(value.data());
             else
-                throw bad_cast(std::format("{} is not constructible from JSON string", detail::type_name<U>()));
+                detail::throw_bad_cast("{} is not constructible from JSON string", detail::type_name<U>());
         }
 
         template <typename U = T>
@@ -5014,15 +5030,15 @@ namespace yyjson
                 {
                     return static_cast<U>(value);
                 }
-                throw bad_cast(std::format("overflow detected: {} is not constructible from JSON integer {}",
-                                           detail::type_name<U>(), value));
+                detail::throw_bad_cast("overflow detected: {} is not constructible from JSON integer {}",
+                                       detail::type_name<U>(), value);
             }
             else if constexpr (json_scalar_constructible<U, std::uint64_t>)
             {
                 return U(value);
             }
             else
-                throw bad_cast(std::format("{} is not constructible from JSON integer", detail::type_name<U>()));
+                detail::throw_bad_cast("{} is not constructible from JSON integer", detail::type_name<U>());
         }
 
         template <typename U = T>
@@ -5034,8 +5050,8 @@ namespace yyjson
                 {
                     return static_cast<U>(value);
                 }
-                throw bad_cast(std::format("overflow detected: {} is not constructible from JSON integer {}",
-                                           detail::type_name<U>(), value));
+                detail::throw_bad_cast("overflow detected: {} is not constructible from JSON integer {}",
+                                       detail::type_name<U>(), value);
             }
             else if constexpr (std::signed_integral<U>)
             {
@@ -5043,15 +5059,15 @@ namespace yyjson
                 {
                     return static_cast<U>(value);
                 }
-                throw bad_cast(std::format("overflow detected: {} is not constructible from JSON integer {}",
-                                           detail::type_name<U>(), value));
+                detail::throw_bad_cast("overflow detected: {} is not constructible from JSON integer {}",
+                                       detail::type_name<U>(), value);
             }
             else if constexpr (json_scalar_constructible<U, std::int64_t>)
             {
                 return U(value);
             }
             else
-                throw bad_cast(std::format("{} is not constructible from JSON integer", detail::type_name<U>()));
+                detail::throw_bad_cast("{} is not constructible from JSON integer", detail::type_name<U>());
         }
 
         template <typename Json>
@@ -5069,8 +5085,7 @@ namespace yyjson
                             return from_json(value);
                         }
                         else
-                            throw bad_cast(
-                                std::format("{} is not constructible from JSON object", detail::type_name<T>()));
+                            detail::throw_bad_cast("{} is not constructible from JSON object", detail::type_name<T>());
                     }
                     else if constexpr (std::same_as<value_type, reader::const_array_ref>)
                     {
@@ -5079,8 +5094,7 @@ namespace yyjson
                             return from_json(value);
                         }
                         else
-                            throw bad_cast(
-                                std::format("{} is not constructible from JSON array", detail::type_name<T>()));
+                            detail::throw_bad_cast("{} is not constructible from JSON array", detail::type_name<T>());
                     }
                     else if constexpr (std::same_as<value_type, std::nullptr_t>)
                     {
@@ -5115,7 +5129,7 @@ namespace yyjson
                     return from_json(*obj);
                 }
                 else
-                    throw bad_cast(std::format("{} is not constructible from JSON object", detail::type_name<T>()));
+                    detail::throw_bad_cast("{} is not constructible from JSON object", detail::type_name<T>());
             }
             else if (const auto arr = json.as_array(); arr.has_value())
             {
@@ -5124,7 +5138,7 @@ namespace yyjson
                     return from_json(*arr);
                 }
                 else
-                    throw bad_cast(std::format("{} is not constructible from JSON array", detail::type_name<T>()));
+                    detail::throw_bad_cast("{} is not constructible from JSON array", detail::type_name<T>());
             }
             else if (json.is_null())
             {
@@ -5150,7 +5164,7 @@ namespace yyjson
             {
                 return from_json_sint(*vsi);
             }
-            throw bad_cast(std::format("{} is not constructible from raw json", detail::type_name<T>()));
+            detail::throw_bad_cast("{} is not constructible from raw json", detail::type_name<T>());
         }
 #if defined(__GNUC__)
 #pragma GCC diagnostic pop
@@ -5313,7 +5327,7 @@ namespace yyjson
             auto result = std::optional<std::variant<Ts...>>();
             ((result = cast_no_except<Ts>(json)).has_value() || ...);
             if (result.has_value()) return *result;
-            throw bad_cast(std::format("{} is not constructible from JSON", detail::type_name<std::variant<Ts...>>()));
+            detail::throw_bad_cast("{} is not constructible from JSON", detail::type_name<std::variant<Ts...>>());
         }
 #if defined(__GNUC__) or defined(__clang__)
 #pragma GCC diagnostic pop
@@ -5389,8 +5403,8 @@ namespace yyjson
                     auto result = Tuple<Ts...>();
 
                     if (obj->size() > std::tuple_size_v<Tuple<Ts...>>)
-                        throw bad_cast(std::format("the size of JSON object is greater than the size of {}",
-                                                   detail::type_name<Tuple<Ts...>>()));
+                        detail::throw_bad_cast("the size of JSON object is greater than the size of {}",
+                                               detail::type_name<Tuple<Ts...>>());
 
                     using indices = std::make_index_sequence<std::tuple_size_v<Tuple<Ts...>>>;
                     auto it = obj->begin();
@@ -5412,8 +5426,8 @@ namespace yyjson
                     auto result = Tuple<Ts...>();
 
                     if (arr->size() > std::tuple_size_v<Tuple<Ts...>>)
-                        throw bad_cast(std::format("the size of JSON array is greater than the size of {}",
-                                                   detail::type_name<Tuple<Ts...>>()));
+                        detail::throw_bad_cast("the size of JSON array is greater than the size of {}",
+                                               detail::type_name<Tuple<Ts...>>());
 
                     using indices = std::make_index_sequence<std::tuple_size_v<Tuple<Ts...>>>;
                     auto it = arr->begin();
@@ -5425,7 +5439,7 @@ namespace yyjson
                 }
             }
 
-            throw bad_cast(std::format("{} is not constructible from JSON", detail::type_name<Tuple<Ts...>>()));
+            detail::throw_bad_cast("{} is not constructible from JSON", detail::type_name<Tuple<Ts...>>());
         }
 
         template <detail::copy_string_args... Args>
