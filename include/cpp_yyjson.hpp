@@ -11,12 +11,17 @@
 #pragma once
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cassert>
+#include <charconv>
+#include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <optional>
 #include <ranges>
 #include <span>
+#include <string>
 #include <tuple>
 #include <variant>
 #include <vector>
@@ -25,6 +30,12 @@
 #include <format>
 #include <string_view>
 #include "field_reflection.hpp"
+
+#if defined(__SSSE3__) || defined(__AVX__)
+#include <tmmintrin.h>
+#elif defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+#include <emmintrin.h>
+#endif
 
 #if defined(__GNUC__) || defined(__clang__)
 #define CPPYYJSON_ALWAYS_INLINE [[gnu::always_inline]]
@@ -650,6 +661,13 @@ namespace yyjson
         };
         template <typename T>
         concept std_array = is_std_array<std::remove_cvref_t<T>>::value;
+
+        // The base of the casters that this library defines for standard types.  `yyjson::write` writes
+        // the types of these casters itself, and only them: a caster that the user specializes for one of
+        // these types has no such base.
+        struct builtin_caster
+        {
+        };
 
         template <typename T>
         struct default_caster;
@@ -1341,6 +1359,8 @@ namespace yyjson
                 std::ranges::input_range<Range> && key_value_like<std::ranges::range_value_t<Range>> &&
                 reader::detail::base_of_value_ref<std::tuple_element_t<1, std::ranges::range_value_t<Range>>> &&
                 (!reader::detail::base_of_value_ref<Range>);
+
+            struct json_value_access;
 
             struct mutable_document_ptrs
             {
@@ -2238,6 +2258,7 @@ namespace yyjson
                 requires abstract_value_template<T>
                 friend class abstract_value;
                 friend struct mutable_document;
+                friend struct json_value_access;
 
                 template <typename T>
                 friend class const_array_base;
@@ -4132,6 +4153,7 @@ namespace yyjson
         class abstract_value_ref
         {
             friend struct writer::detail::mutable_document;
+            friend struct writer::detail::json_value_access;
             friend class array;
             friend class object;
 
@@ -5422,7 +5444,7 @@ namespace yyjson
     };
 
     template <typename T>
-    struct caster<std::shared_ptr<T>>
+    struct caster<std::shared_ptr<T>> : detail::builtin_caster
     {
         static constexpr auto json_value_type = !std::same_as<T, writer::detail::mutable_document_ptrs>;
 
@@ -5458,7 +5480,7 @@ namespace yyjson
     };
 
     template <typename T>
-    struct caster<std::optional<T>>
+    struct caster<std::optional<T>> : detail::builtin_caster
     {
         // A field that holds no value is left out of the JSON object.
         static bool should_omit(const std::optional<T>& t) { return !t.has_value(); }
@@ -5526,7 +5548,7 @@ namespace yyjson
     };
 
     template <typename... Ts>
-    struct caster<std::variant<Ts...>>
+    struct caster<std::variant<Ts...>> : detail::builtin_caster
     {
 #if defined(__GNUC__) or defined(__clang__)
 #pragma GCC diagnostic push
@@ -5591,7 +5613,7 @@ namespace yyjson
 
     template <template <typename...> typename Tuple, typename... Ts>
     requires detail::tuple_like<Tuple<Ts...>>
-    struct caster<Tuple<Ts...>>
+    struct caster<Tuple<Ts...>> : detail::builtin_caster
     {
         template <typename Json>
         requires std::default_initializable<Tuple<Ts...>> &&
@@ -5700,7 +5722,7 @@ namespace yyjson
 
     // specialized casters for std::vector<bool>
     template <>
-    struct caster<std::vector<bool>>
+    struct caster<std::vector<bool>> : detail::builtin_caster
     {
         template <detail::copy_string_args... Ts>
         static auto to_json(writer::array_ref& arr, const std::vector<bool>& bv, Ts...)
@@ -5717,6 +5739,1157 @@ namespace yyjson
             return static_cast<bool>(v);
         }
     };
+
+#if YYJSON_VERSION_HEX >= 0x000A00
+    namespace writer::detail
+    {
+        // The pointer to the yyjson value that a JSON value of this library wraps.
+        struct json_value_access
+        {
+            template <typename DocType>
+            static const yyjson_mut_val* get(const abstract_value<DocType>& v) noexcept
+            {
+                return v.val_;
+            }
+            static const yyjson_val* get(const reader::abstract_value_ref& v) noexcept { return v.val_; }
+        };
+
+        template <typename T>
+        struct is_optional : std::false_type
+        {
+        };
+        template <typename T>
+        struct is_optional<std::optional<T>> : std::true_type
+        {
+        };
+        template <typename T>
+        struct is_variant : std::false_type
+        {
+        };
+        template <typename... Ts>
+        struct is_variant<std::variant<Ts...>> : std::true_type
+        {
+        };
+
+        // The encode types of the yyjson writer, for each byte of a string.  A type above 3 is the first byte
+        // of a sequence of type / 2 bytes.
+        enum : std::uint8_t
+        {
+            enc_cpy_1 = 0,  // copied
+            enc_err_1 = 1,  // not the first byte of a UTF-8 sequence
+            enc_esc_a = 2,  // escaped as '\x'
+            enc_esc_1 = 3,  // escaped as '\u00XX'
+            enc_cpy_2 = 4,
+            enc_esc_2 = 5,
+            enc_cpy_3 = 6,
+            enc_esc_3 = 7,
+            enc_cpy_4 = 8,
+            enc_esc_4 = 9,
+        };
+
+        consteval std::array<std::uint8_t, 256> make_enc_table(bool escape_unicode, bool escape_slashes)
+        {
+            auto table = std::array<std::uint8_t, 256>{};
+            for (std::size_t c = 0; c < 256; ++c)
+            {
+                if (c < 0x20)
+                    table[c] = (c == '\b' || c == '\t' || c == '\n' || c == '\f' || c == '\r') ? enc_esc_a : enc_esc_1;
+                else if (c == '"' || c == '\\' || (c == '/' && escape_slashes))
+                    table[c] = enc_esc_a;
+                else if (c < 0x80)
+                    table[c] = enc_cpy_1;
+                else if (c < 0xC0)
+                    table[c] = enc_err_1;
+                else if (c < 0xE0)
+                    table[c] = escape_unicode ? enc_esc_2 : enc_cpy_2;
+                else if (c < 0xF0)
+                    table[c] = escape_unicode ? enc_esc_3 : enc_cpy_3;
+                else if (c < 0xF8)
+                    table[c] = escape_unicode ? enc_esc_4 : enc_cpy_4;
+                else
+                    table[c] = enc_err_1;
+            }
+            return table;
+        }
+        inline constexpr std::array<std::array<std::uint8_t, 256>, 4> enc_tables = {
+            make_enc_table(false, false), make_enc_table(false, true), make_enc_table(true, false),
+            make_enc_table(true, true)};
+
+        // A struct key that needs no escape under any flag, written with its quotes and colon in one copy.
+        consteval bool is_plain_key(std::string_view name)
+        {
+            for (const auto c : name)
+            {
+                if (c < 0x20 || c > 0x7E || c == '"' || c == '\\' || c == '/') return false;
+            }
+            return true;
+        }
+        template <std::size_t N>
+        consteval std::array<char, N + 3> quote_key(std::string_view name)
+        {
+            auto result = std::array<char, N + 3>{};
+            result[0] = '"';
+            for (std::size_t i = 0; i < N; ++i) result[i + 1] = name[i];
+            result[N + 1] = '"';
+            result[N + 2] = ':';
+            return result;
+        }
+        template <typename U, std::size_t I>
+        struct reflected_key
+        {
+            static constexpr std::string_view name = field_reflection::field_name<U, I>;
+            static constexpr bool plain = is_plain_key(name);
+            static constexpr auto quoted = quote_key<name.size()>(name);
+        };
+        template <typename U, std::size_t I>
+        struct visitable_key
+        {
+            static constexpr std::string_view name = visit_struct<U>::names[I];
+            static constexpr bool plain = is_plain_key(name);
+            static constexpr auto quoted = quote_key<name.size()>(name);
+        };
+
+        // The output of `direct_writer`, grown by `grow` whenever a write needs more than `end - cur` bytes.
+        struct direct_write_buffer
+        {
+            char* beg = nullptr;
+            char* cur = nullptr;
+            char* end = nullptr;
+            void* ctx = nullptr;
+            void (*grow)(direct_write_buffer&, std::size_t) = nullptr;
+        };
+
+        CPPYYJSON_COLD inline void throw_write_error(const char* msg, yyjson_write_code code)
+        {
+            throw write_error(std::format("write JSON error: {}", msg), code);
+        }
+
+        // Writes C++ values as JSON text, with the same output as building a mutable document of them and
+        // writing it with yyjson.
+        class direct_writer
+        {
+            direct_write_buffer& buf_;
+            const std::uint8_t* enc_table_;
+            const char* hex_;
+            yyjson_write_flag flg_;
+            std::size_t level_ = 0;
+            std::size_t spaces_;
+            bool pretty_;
+            bool cpy_;
+            bool esc_;
+            bool inv_;
+
+        public:
+            direct_writer(direct_write_buffer& buf, yyjson_write_flag flg) noexcept
+                : buf_(buf),
+                  enc_table_(enc_tables[((flg & YYJSON_WRITE_ESCAPE_UNICODE) ? 2 : 0) +
+                                        ((flg & YYJSON_WRITE_ESCAPE_SLASHES) ? 1 : 0)]
+                                 .data()),
+                  hex_(
+#if YYJSON_VERSION_HEX >= 0x000D00
+                      (flg & YYJSON_WRITE_LOWERCASE_HEX) ? "0123456789abcdef" :
+#endif
+                                                         "0123456789ABCDEF"),
+                  flg_(flg),
+#if YYJSON_VERSION_HEX >= 0x000700
+                  spaces_((flg & YYJSON_WRITE_PRETTY_TWO_SPACES) ? 2 : 4),
+                  pretty_((flg & (YYJSON_WRITE_PRETTY | YYJSON_WRITE_PRETTY_TWO_SPACES)) != 0),
+#else
+                  spaces_(4),
+                  pretty_((flg & YYJSON_WRITE_PRETTY) != 0),
+#endif
+                  cpy_((flg & (YYJSON_WRITE_ESCAPE_UNICODE | YYJSON_WRITE_ESCAPE_SLASHES)) == 0),
+                  esc_((flg & YYJSON_WRITE_ESCAPE_UNICODE) != 0),
+                  inv_((flg & YYJSON_WRITE_ALLOW_INVALID_UNICODE) != 0)
+            {
+            }
+
+            template <typename T>
+            void write_root(T&& t)
+            {
+                write_value(std::forward<T>(t));
+#if YYJSON_VERSION_HEX >= 0x000900
+                if (flg_ & YYJSON_WRITE_NEWLINE_AT_END)
+                {
+                    ensure(1);
+                    *buf_.cur++ = '\n';
+                }
+#endif
+            }
+
+        private:
+            CPPYYJSON_ALWAYS_INLINE void ensure(std::size_t n)
+            {
+                if (static_cast<std::size_t>(buf_.end - buf_.cur) < n) [[unlikely]]
+                    buf_.grow(buf_, n);
+            }
+            void write_raw(const char* data, std::size_t len)
+            {
+                ensure(len);
+                std::memcpy(buf_.cur, data, len);
+                buf_.cur += len;
+            }
+
+            void write_indent()
+            {
+                const auto n = level_ * spaces_;
+                ensure(n + 2);
+                std::memset(buf_.cur, ' ', n);
+                buf_.cur += n;
+            }
+            void open(char c)
+            {
+                ensure(1);
+                *buf_.cur++ = c;
+                ++level_;
+            }
+            // Writes what goes before an element of the innermost container.
+            CPPYYJSON_ALWAYS_INLINE void next_element(bool& first)
+            {
+                if (pretty_)
+                    next_pretty_element(first);
+                else
+                {
+                    ensure(1);
+                    auto* p = buf_.cur;
+                    *p = ',';
+                    buf_.cur = p + !first;
+                }
+                first = false;
+            }
+            void next_pretty_element(bool first)
+            {
+                ensure(2);
+                if (!first) *buf_.cur++ = ',';
+                *buf_.cur++ = '\n';
+                write_indent();
+            }
+            void close(char c, bool empty)
+            {
+                --level_;
+                if (pretty_ && !empty)
+                {
+                    ensure(1);
+                    *buf_.cur++ = '\n';
+                    write_indent();
+                }
+                ensure(1);
+                *buf_.cur++ = c;
+            }
+            void end_key()
+            {
+                ensure(2);
+                *buf_.cur++ = ':';
+                if (pretty_) *buf_.cur++ = ' ';
+            }
+            // `next_element` and `write_struct_key` in one go.
+            template <typename Key>
+            CPPYYJSON_ALWAYS_INLINE void next_struct_key(bool& first)
+            {
+                if constexpr (Key::plain)
+                {
+                    if (!pretty_)
+                    {
+                        constexpr auto len = Key::quoted.size();
+                        ensure(len + 1);
+                        auto* p = buf_.cur;
+                        *p = ',';
+                        p += !first;
+                        std::memcpy(p, Key::quoted.data(), len);
+                        buf_.cur = p + len;
+                        first = false;
+                        return;
+                    }
+                }
+                next_element(first);
+                write_struct_key<Key>();
+            }
+            template <typename Key>
+            void write_struct_key()
+            {
+                if constexpr (Key::plain)
+                {
+                    constexpr auto len = Key::quoted.size();
+                    ensure(len + 1);
+                    std::memcpy(buf_.cur, Key::quoted.data(), len);
+                    buf_.cur += len;
+                    if (pretty_) *buf_.cur++ = ' ';
+                }
+                else
+                {
+                    write_string(Key::name);
+                    end_key();
+                }
+            }
+
+#pragma region scalars
+            void write_null()
+            {
+                ensure(4);
+                std::memcpy(buf_.cur, "null", 4);
+                buf_.cur += 4;
+            }
+            void write_bool(bool v)
+            {
+                ensure(5);
+                if (v)
+                {
+                    std::memcpy(buf_.cur, "true", 4);
+                    buf_.cur += 4;
+                }
+                else
+                {
+                    std::memcpy(buf_.cur, "false", 5);
+                    buf_.cur += 5;
+                }
+            }
+            static int count_digits(std::uint64_t v) noexcept
+            {
+                // the number of digits from the bit width, one too many below the power of ten
+                static constexpr std::uint8_t bit_digits[] = {
+                    1,  1,  1,  2,  2,  2,  3,  3,  3,  4,  4,  4,  4,  5,  5,  5,  6,  6,  6,  7,  7,  7,
+                    7,  8,  8,  8,  9,  9,  9,  10, 10, 10, 10, 11, 11, 11, 12, 12, 12, 13, 13, 13, 13, 14,
+                    14, 14, 15, 15, 15, 16, 16, 16, 16, 17, 17, 17, 18, 18, 18, 19, 19, 19, 19, 20};
+                static constexpr std::uint64_t powers[] = {0,
+                                                           0,
+                                                           10ull,
+                                                           100ull,
+                                                           1000ull,
+                                                           10000ull,
+                                                           100000ull,
+                                                           1000000ull,
+                                                           10000000ull,
+                                                           100000000ull,
+                                                           1000000000ull,
+                                                           10000000000ull,
+                                                           100000000000ull,
+                                                           1000000000000ull,
+                                                           10000000000000ull,
+                                                           100000000000000ull,
+                                                           1000000000000000ull,
+                                                           10000000000000000ull,
+                                                           100000000000000000ull,
+                                                           1000000000000000000ull,
+                                                           10000000000000000000ull};
+                const auto t = bit_digits[63 - std::countl_zero(v | 1)];
+                return t - (v < powers[t]);
+            }
+            static char* write_u64(char* p, std::uint64_t v) noexcept
+            {
+                static constexpr auto pairs = [] {
+                    auto a = std::array<char, 200>{};
+                    for (auto i = 0; i < 100; ++i)
+                    {
+                        a[i * 2] = static_cast<char>('0' + i / 10);
+                        a[(i * 2) + 1] = static_cast<char>('0' + i % 10);
+                    }
+                    return a;
+                }();
+                const auto n = count_digits(v);
+                auto* q = p + n;
+                while (v >= 100)
+                {
+                    q -= 2;
+                    std::memcpy(q, &pairs[(v % 100) * 2], 2);
+                    v /= 100;
+                }
+                if (v >= 10)
+                    std::memcpy(q - 2, &pairs[v * 2], 2);
+                else
+                    q[-1] = static_cast<char>('0' + v);
+                return p + n;
+            }
+            void write_integer(std::uint64_t v)
+            {
+                ensure(24);
+                buf_.cur = write_u64(buf_.cur, v);
+            }
+            void write_integer(std::int64_t v)
+            {
+                ensure(24);
+                auto* p = buf_.cur;
+                *p = '-';
+                buf_.cur =
+                    write_u64(p + (v < 0), v < 0 ? 0 - static_cast<std::uint64_t>(v) : static_cast<std::uint64_t>(v));
+            }
+            CPPYYJSON_COLD void write_non_finite(double v)
+            {
+                if (flg_ & YYJSON_WRITE_INF_AND_NAN_AS_NULL)
+                    write_null();
+                else if (flg_ & YYJSON_WRITE_ALLOW_INF_AND_NAN)
+                {
+                    if (std::isnan(v))
+                        write_raw("NaN", 3);
+                    else if (std::signbit(v))
+                        write_raw("-Infinity", 9);
+                    else
+                        write_raw("Infinity", 8);
+                }
+                else
+                    throw_write_error("nan or inf number is not allowed", YYJSON_WRITE_ERROR_NAN_OR_INF);
+            }
+            // `val_fmt` is the number format that a yyjson value carries in the upper half of its tag.
+            void write_real(double v, std::uint32_t val_fmt = 0)
+            {
+                constexpr auto flag_shift = 32 - YYJSON_WRITE_FP_FLAG_BITS;
+                constexpr auto prec_shift = 32 - YYJSON_WRITE_FP_PREC_BITS;
+                const auto all_fmt = static_cast<std::uint32_t>(flg_);
+                const auto fmt = val_fmt | all_fmt;
+                auto num_fmt = std::uint32_t{0};
+                auto check = v;
+                if (fmt >> flag_shift) [[unlikely]]
+                {
+                    if (fmt >> prec_shift)
+                    {
+                        const auto val_prec = val_fmt >> prec_shift;
+                        num_fmt = (val_prec != 0 ? val_prec : all_fmt >> prec_shift) << prec_shift;
+                    }
+                    else if (fmt & YYJSON_WRITE_FP_TO_FLOAT)
+                    {
+                        num_fmt = YYJSON_WRITE_FP_TO_FLOAT;
+                        check = static_cast<double>(static_cast<float>(v));
+                    }
+                }
+                if (!std::isfinite(check)) [[unlikely]]
+                    return write_non_finite(check);
+
+                auto num = yyjson_val{};
+                num.tag = YYJSON_TYPE_NUM | YYJSON_SUBTYPE_REAL | (static_cast<std::uint64_t>(num_fmt) << 32);
+                num.uni.f64 = v;
+                ensure(48);
+                buf_.cur = yyjson_write_number(&num, buf_.cur);
+            }
+#pragma endregion scalars
+
+#pragma region strings
+            CPPYYJSON_ALWAYS_INLINE void write_hex4(char* dst, std::uint32_t u) const noexcept
+            {
+                dst[0] = '\\';
+                dst[1] = 'u';
+                dst[2] = hex_[(u >> 12) & 0xF];
+                dst[3] = hex_[(u >> 8) & 0xF];
+                dst[4] = hex_[(u >> 4) & 0xF];
+                dst[5] = hex_[u & 0xF];
+            }
+            // The bytes from `s` in memory order, the first in the lowest bits, as yyjson compares them.
+            static std::uint32_t load_u32(const std::uint8_t* s) noexcept
+            {
+                return static_cast<std::uint32_t>(s[0]) | (static_cast<std::uint32_t>(s[1]) << 8) |
+                       (static_cast<std::uint32_t>(s[2]) << 16) | (static_cast<std::uint32_t>(s[3]) << 24);
+            }
+            static constexpr bool is_utf8_seq2(std::uint32_t u) noexcept
+            {
+                return (u & 0x0000C0E0u) == 0x000080C0u && (u & 0x0000001Eu) != 0;
+            }
+            static constexpr bool is_utf8_seq3(std::uint32_t u) noexcept
+            {
+                const auto t = u & 0x0000200Fu;
+                return (u & 0x00C0C0F0u) == 0x008080E0u && t != 0 && t != 0x0000200Du;
+            }
+            static constexpr bool is_utf8_seq4(std::uint32_t u) noexcept
+            {
+                const auto t = u & 0x00003007u;
+                return (u & 0xC0C0C0F8u) == 0x808080F0u && t != 0 && ((t & 0x00000004u) == 0 || (t & 0x00003003u) == 0);
+            }
+            static std::uint32_t load_utf8(const std::uint8_t* s, int n) noexcept
+            {
+                auto u = std::uint32_t{0};
+                for (auto i = 0; i < n; ++i) u |= static_cast<std::uint32_t>(s[i]) << (8 * i);
+                return u;
+            }
+
+#if defined(__SSSE3__) || defined(__AVX__)
+            // Whether the 16 bytes of `input` are valid UTF-8 after the 16 bytes of `prev`, all but a
+            // sequence that `input` leaves incomplete at its end (the lookup algorithm of
+            // John Keiser and Daniel Lemire, "Validating UTF-8 In Less Than One Instruction Per Byte").
+            static bool is_valid_utf8(__m128i input, __m128i prev) noexcept
+            {
+                constexpr char too_short = 1 << 0;
+                constexpr char too_long = 1 << 1;
+                constexpr char overlong_3 = 1 << 2;
+                constexpr char too_large = 1 << 3;
+                constexpr char surrogate = 1 << 4;
+                constexpr char overlong_2 = 1 << 5;
+                constexpr char too_large_1000 = 1 << 6;
+                constexpr char overlong_4 = 1 << 6;
+                constexpr char two_conts = static_cast<char>(1 << 7);
+                constexpr char carry = too_short | too_long | two_conts;
+                const auto nibble = _mm_set1_epi8(0x0F);
+                const auto prev1 = _mm_alignr_epi8(input, prev, 15);
+                const auto byte_1_high = _mm_shuffle_epi8(
+                    _mm_setr_epi8(too_long, too_long, too_long, too_long, too_long, too_long, too_long, too_long,
+                                  two_conts, two_conts, two_conts, two_conts, too_short | overlong_2, too_short,
+                                  too_short | overlong_3 | surrogate,
+                                  too_short | too_large | too_large_1000 | overlong_4),
+                    _mm_and_si128(_mm_srli_epi16(prev1, 4), nibble));
+                const auto byte_1_low = _mm_shuffle_epi8(
+                    _mm_setr_epi8(carry | overlong_3 | overlong_2 | overlong_4, carry | overlong_2, carry, carry,
+                                  carry | too_large, carry | too_large | too_large_1000,
+                                  carry | too_large | too_large_1000, carry | too_large | too_large_1000,
+                                  carry | too_large | too_large_1000, carry | too_large | too_large_1000,
+                                  carry | too_large | too_large_1000, carry | too_large | too_large_1000,
+                                  carry | too_large | too_large_1000, carry | too_large | too_large_1000 | surrogate,
+                                  carry | too_large | too_large_1000, carry | too_large | too_large_1000),
+                    _mm_and_si128(prev1, nibble));
+                const auto byte_2_high = _mm_shuffle_epi8(
+                    _mm_setr_epi8(too_short, too_short, too_short, too_short, too_short, too_short, too_short,
+                                  too_short,
+                                  too_long | overlong_2 | two_conts | overlong_3 | too_large_1000 | overlong_4,
+                                  too_long | overlong_2 | two_conts | overlong_3 | too_large,
+                                  too_long | overlong_2 | two_conts | surrogate | too_large,
+                                  too_long | overlong_2 | two_conts | surrogate | too_large, too_short, too_short,
+                                  too_short, too_short),
+                    _mm_and_si128(_mm_srli_epi16(input, 4), nibble));
+                const auto special_cases = _mm_and_si128(_mm_and_si128(byte_1_high, byte_1_low), byte_2_high);
+                // the third and the fourth byte of a sequence must be continuation bytes
+                const auto is_third = _mm_subs_epu8(_mm_alignr_epi8(input, prev, 14), _mm_set1_epi8(0xE0 - 0x80));
+                const auto is_fourth = _mm_subs_epu8(_mm_alignr_epi8(input, prev, 13), _mm_set1_epi8(0xF0 - 0x80));
+                const auto must_be_cont = _mm_and_si128(_mm_or_si128(is_third, is_fourth), _mm_set1_epi8(-0x80));
+                const auto error = _mm_xor_si128(must_be_cont, special_cases);
+                return _mm_movemask_epi8(_mm_cmpeq_epi8(error, _mm_setzero_si128())) == 0xFFFF;
+            }
+#endif
+
+            struct string_pos
+            {
+                const std::uint8_t* src;
+                char* dst;
+            };
+
+            // Writes the bytes from `src` that the encode table marks, and returns where the input and the output end.
+            string_pos write_special(const std::uint8_t* src, const std::uint8_t* end, char* dst) const
+            {
+                const auto type = enc_table_[*src];
+                if (end - src < type / 2) return write_invalid(src, dst);
+                switch (type)
+                {
+                    case enc_esc_a:
+                    {
+                        char c = static_cast<char>(*src);
+                        switch (*src)
+                        {
+                            case '\b':
+                                c = 'b';
+                                break;
+                            case '\t':
+                                c = 't';
+                                break;
+                            case '\n':
+                                c = 'n';
+                                break;
+                            case '\f':
+                                c = 'f';
+                                break;
+                            case '\r':
+                                c = 'r';
+                                break;
+                            default:
+                                break;
+                        }
+                        dst[0] = '\\';
+                        dst[1] = c;
+                        dst += 2;
+                        return {src + 1, dst};
+                    }
+                    case enc_esc_1:
+                        write_hex4(dst, *src);
+                        dst += 6;
+                        return {src + 1, dst};
+                    case enc_cpy_2:
+                        if (!is_utf8_seq2(load_utf8(src, 2))) return write_invalid(src, dst);
+                        std::memcpy(dst, src, 2);
+                        dst += 2;
+                        return {src + 2, dst};
+                    case enc_cpy_3:
+                        if (!is_utf8_seq3(load_utf8(src, 3))) return write_invalid(src, dst);
+                        std::memcpy(dst, src, 3);
+                        dst += 3;
+                        return {src + 3, dst};
+                    case enc_cpy_4:
+                        if (!is_utf8_seq4(load_utf8(src, 4))) return write_invalid(src, dst);
+                        std::memcpy(dst, src, 4);
+                        dst += 4;
+                        return {src + 4, dst};
+                    case enc_esc_2:
+                        if (!is_utf8_seq2(load_utf8(src, 2))) return write_invalid(src, dst);
+                        write_hex4(dst, ((src[0] & 0x1Fu) << 6) | (src[1] & 0x3Fu));
+                        dst += 6;
+                        return {src + 2, dst};
+                    case enc_esc_3:
+                        if (!is_utf8_seq3(load_utf8(src, 3))) return write_invalid(src, dst);
+                        write_hex4(dst, ((src[0] & 0x0Fu) << 12) | ((src[1] & 0x3Fu) << 6) | (src[2] & 0x3Fu));
+                        dst += 6;
+                        return {src + 3, dst};
+                    case enc_esc_4:
+                    {
+                        if (!is_utf8_seq4(load_utf8(src, 4))) return write_invalid(src, dst);
+                        const auto u = (((src[0] & 0x07u) << 18) | ((src[1] & 0x3Fu) << 12) | ((src[2] & 0x3Fu) << 6) |
+                                        (src[3] & 0x3Fu)) -
+                                       0x10000u;
+                        write_hex4(dst, (u >> 10) + 0xD800u);
+                        write_hex4(dst + 6, (u & 0x3FFu) + 0xDC00u);
+                        dst += 12;
+                        return {src + 4, dst};
+                    }
+                    default:
+                        return write_invalid(src, dst);
+                }
+            }
+            string_pos write_invalid(const std::uint8_t* src, char* dst) const
+            {
+                if (!inv_) throw_write_error("invalid utf-8 encoding in string", YYJSON_WRITE_ERROR_INVALID_STRING);
+                if (esc_)
+                {
+                    write_hex4(dst, 0xFFFD);
+                    dst += 6;
+                }
+                else
+                {
+                    *dst++ = static_cast<char>(*src);
+                }
+                return {src + 1, dst};
+            }
+
+            void write_string(std::string_view str)
+            {
+                ensure((str.size() * 6) + 2);
+                auto* dst = buf_.cur;
+                const auto* const table = enc_table_;
+                const auto* src = reinterpret_cast<const std::uint8_t*>(str.data());
+                const auto* const end = src + str.size();
+                *dst++ = '"';
+                for (;;)
+                {
+#if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+                    {
+                        const auto ctrl = _mm_set1_epi8(0x20);
+                        const auto quote = _mm_set1_epi8('"');
+                        const auto bslash = _mm_set1_epi8('\\');
+                        const auto slash = _mm_set1_epi8((flg_ & YYJSON_WRITE_ESCAPE_SLASHES) ? '/' : '"');
+#if defined(__SSSE3__) || defined(__AVX__)
+                        // Text that is not ASCII is copied in blocks too, unless it is to be escaped, after
+                        // the blocks are checked to be valid UTF-8.  A sequence that a block leaves
+                        // incomplete, `tail` bytes long, and a block that is not valid are left to the code
+                        // below, which writes them as yyjson does.
+                        const auto copy_utf8 = !esc_;
+                        auto prev = _mm_setzero_si128();
+                        auto tail = 0;
+#endif
+                        while (end - src >= 16)
+                        {
+                            const auto v = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src));
+                            _mm_storeu_si128(reinterpret_cast<__m128i*>(dst), v);
+                            // bytes of 0x80 and above are negative, so the signed compare stops at them too
+                            const auto special =
+                                _mm_or_si128(_mm_or_si128(_mm_cmplt_epi8(v, ctrl), _mm_cmpeq_epi8(v, quote)),
+                                             _mm_or_si128(_mm_cmpeq_epi8(v, bslash), _mm_cmpeq_epi8(v, slash)));
+                            const auto mask = static_cast<unsigned>(_mm_movemask_epi8(special));
+#if defined(__SSSE3__) || defined(__AVX__)
+                            if ((mask | static_cast<unsigned>(tail)) == 0)
+                            {
+                                prev = _mm_setzero_si128();
+                                src += 16;
+                                dst += 16;
+                                continue;
+                            }
+                            const auto high = static_cast<unsigned>(_mm_movemask_epi8(v));
+                            if (copy_utf8 && (mask & ~high) == 0 && is_valid_utf8(v, prev))
+                            {
+                                prev = v;
+                                src += 16;
+                                dst += 16;
+                                tail = src[-1] >= 0xC0 ? 1 : src[-2] >= 0xE0 ? 2 : src[-3] >= 0xF0 ? 3 : 0;
+                                continue;
+                            }
+                            if (tail == 0 && mask != 0)
+                            {
+                                const auto n = std::countr_zero(mask);
+                                src += n;
+                                dst += n;
+                            }
+                            break;
+#else
+                            if (mask == 0)
+                            {
+                                src += 16;
+                                dst += 16;
+                                continue;
+                            }
+                            const auto n = std::countr_zero(mask);
+                            src += n;
+                            dst += n;
+                            break;
+#endif
+                        }
+#if defined(__SSSE3__) || defined(__AVX__)
+                        src -= tail;
+                        dst -= tail;
+#endif
+                    }
+#endif
+                    // the last bytes, or a byte that the table marks
+                    while (end - src >= 4)
+                    {
+                        if (table[src[0]] != enc_cpy_1) goto special;
+                        if (table[src[1]] != enc_cpy_1)
+                        {
+                            *dst++ = static_cast<char>(*src++);
+                            goto special;
+                        }
+                        if (table[src[2]] != enc_cpy_1)
+                        {
+                            std::memcpy(dst, src, 2);
+                            dst += 2;
+                            src += 2;
+                            goto special;
+                        }
+                        if (table[src[3]] != enc_cpy_1)
+                        {
+                            std::memcpy(dst, src, 3);
+                            dst += 3;
+                            src += 3;
+                            goto special;
+                        }
+                        std::memcpy(dst, src, 4);
+                        dst += 4;
+                        src += 4;
+                    }
+                    while (src != end && table[*src] == enc_cpy_1) *dst++ = static_cast<char>(*src++);
+                    if (src == end) break;
+                special:
+                    // stay here while the text is not ASCII, as in CJK text, instead of restarting the scan
+                    do
+                    {
+                        const auto type = table[*src];
+                        if (type == enc_cpy_3 && end - src >= 4 && is_utf8_seq3(load_u32(src)))
+                        {
+                            std::memcpy(dst, src, 4);
+                            dst += 3;
+                            src += 3;
+                        }
+                        else if (type == enc_cpy_2 && end - src >= 2 &&
+                                 is_utf8_seq2(static_cast<std::uint32_t>(src[0]) |
+                                              (static_cast<std::uint32_t>(src[1]) << 8)))
+                        {
+                            std::memcpy(dst, src, 2);
+                            dst += 2;
+                            src += 2;
+                        }
+                        else
+                        {
+                            const auto pos = write_special(src, end, dst);
+                            src = pos.src;
+                            dst = pos.dst;
+                        }
+                    } while (src != end && table[*src] != enc_cpy_1);
+                    if (src == end) break;
+                }
+                *dst++ = '"';
+                buf_.cur = dst;
+            }
+
+            template <typename Val>
+            void write_json_string(const Val* cval)
+            {
+                auto* const val = const_cast<Val*>(cval);
+                const auto str = std::string_view(unsafe_yyjson_get_str(val), unsafe_yyjson_get_len(val));
+                if (cpy_ && unsafe_yyjson_get_subtype(val) != 0)
+                {
+                    ensure(str.size() + 2);
+                    *buf_.cur++ = '"';
+                    std::memcpy(buf_.cur, str.data(), str.size());
+                    buf_.cur += str.size();
+                    *buf_.cur++ = '"';
+                }
+                else
+                {
+                    write_string(str);
+                }
+            }
+#pragma endregion strings
+
+#pragma region JSON values
+            void write_json(const yyjson_mut_val* val)
+            {
+                write_json_value(val, [](const yyjson_mut_val* cctn, auto&& func) {
+                    auto* const ctn = const_cast<yyjson_mut_val*>(cctn);
+                    const auto len = unsafe_yyjson_get_len(ctn);
+                    if (len == 0) return;
+                    if (unsafe_yyjson_get_type(ctn) == YYJSON_TYPE_ARR)
+                    {
+                        const auto* v = static_cast<const yyjson_mut_val*>(ctn->uni.ptr)->next;
+                        for (std::size_t i = 0; i < len; ++i, v = v->next) func(v, nullptr);
+                    }
+                    else
+                    {
+                        const auto* k = static_cast<const yyjson_mut_val*>(ctn->uni.ptr)->next->next;
+                        for (std::size_t i = 0; i < len; ++i, k = k->next->next) func(k, k->next);
+                    }
+                });
+            }
+            void write_json(const yyjson_val* val)
+            {
+                write_json_value(val, [](const yyjson_val* cctn, auto&& func) {
+                    auto* const ctn = const_cast<yyjson_val*>(cctn);
+                    const auto len = unsafe_yyjson_get_len(ctn);
+                    auto* v = ctn + 1;
+                    if (unsafe_yyjson_get_type(ctn) == YYJSON_TYPE_ARR)
+                    {
+                        for (std::size_t i = 0; i < len; ++i, v = unsafe_yyjson_get_next(v)) func(v, nullptr);
+                    }
+                    else
+                    {
+                        for (std::size_t i = 0; i < len; ++i, v = unsafe_yyjson_get_next(v + 1)) func(v, v + 1);
+                    }
+                });
+            }
+            template <typename Val, typename ForEach>
+            void write_json_value(const Val* cval, const ForEach& for_each)
+            {
+                // yyjson before 0.13 takes the values of its accessors as non-const pointers.
+                auto* const val = const_cast<Val*>(cval);
+                if (val == nullptr) [[unlikely]]
+                    throw_write_error("input JSON is NULL", YYJSON_WRITE_ERROR_INVALID_PARAMETER);
+                switch (unsafe_yyjson_get_type(val))
+                {
+                    case YYJSON_TYPE_NULL:
+                        return write_null();
+                    case YYJSON_TYPE_BOOL:
+                        return write_bool(unsafe_yyjson_get_bool(val));
+                    case YYJSON_TYPE_NUM:
+                        switch (unsafe_yyjson_get_subtype(val))
+                        {
+                            case YYJSON_SUBTYPE_UINT:
+                                return write_integer(val->uni.u64);
+                            case YYJSON_SUBTYPE_SINT:
+                                return write_integer(val->uni.i64);
+                            default:
+                                return write_real(val->uni.f64, static_cast<std::uint32_t>(val->tag >> 32));
+                        }
+                    case YYJSON_TYPE_STR:
+                        return write_json_string(val);
+                    case YYJSON_TYPE_RAW:
+                        return write_raw(unsafe_yyjson_get_str(val), unsafe_yyjson_get_len(val));
+                    case YYJSON_TYPE_ARR:
+                    case YYJSON_TYPE_OBJ:
+                    {
+                        const auto is_obj = unsafe_yyjson_get_type(val) == YYJSON_TYPE_OBJ;
+                        open(is_obj ? '{' : '[');
+                        auto first = true;
+                        for_each(val, [&](const Val* key_or_value, const Val* value) {
+                            next_element(first);
+                            if (value == nullptr)
+                            {
+                                write_json_value(key_or_value, for_each);
+                            }
+                            else
+                            {
+                                write_json_value(key_or_value, for_each);
+                                end_key();
+                                write_json_value(value, for_each);
+                            }
+                        });
+                        close(is_obj ? '}' : ']', first);
+                        return;
+                    }
+                    default:
+                        throw_write_error("invalid JSON value type", YYJSON_WRITE_ERROR_INVALID_VALUE_TYPE);
+                }
+            }
+#pragma endregion JSON values
+
+#pragma region C++ values
+            // The same dispatch as `mutable_document::create_value`.
+            template <typename T>
+            void write_value(T&& t)
+            {
+                if constexpr (base_of_value<T> || reader::detail::base_of_value_ref<T>)
+                    write_json(json_value_access::get(t));
+                else if constexpr (create_primitive_callable<T>)
+                    write_primitive(std::forward<T>(t));
+                else if constexpr (create_object_callable<T>)
+                    write_object(std::forward<T>(t));
+                else
+                    write_array(std::forward<T>(t));
+            }
+
+            // The same overloads as `mutable_document::create_primitive`.
+            template <std::same_as<std::nullptr_t> T>
+            void write_primitive(T)
+            {
+                write_null();
+            }
+            template <std::same_as<bool> T>
+            void write_primitive(T v)
+            {
+                write_bool(v);
+            }
+            template <std::unsigned_integral T>
+            requires (!std::same_as<T, bool>)
+            void write_primitive(T v)
+            {
+                write_integer(static_cast<std::uint64_t>(v));
+            }
+            template <std::signed_integral T>
+            void write_primitive(T v)
+            {
+                write_integer(static_cast<std::int64_t>(v));
+            }
+            template <std::floating_point T>
+            void write_primitive(T v)
+            {
+                write_real(static_cast<double>(v));
+            }
+            void write_primitive(const std::string& v) { write_string(v); }
+            void write_primitive(std::string&& v) { write_string(v); }
+            void write_primitive(std::string_view v) { write_string(v); }
+            void write_primitive(const char* v)
+            {
+                if (v == nullptr) [[unlikely]]
+                    throw_write_error("null string", YYJSON_WRITE_ERROR_INVALID_PARAMETER);
+                write_string(v);
+            }
+            template <to_json_inp_defined T>
+            void write_primitive(T&& t)
+            {
+                write_in_place<to_json_input_ref<T>>(std::forward<T>(t));
+            }
+            template <typename T>
+            requires (!to_json_inp_defined<T>) && convertible_to_create_primitive_callable<T>
+            void write_primitive(T&& t)
+            {
+                write_primitive(convert(std::forward<T>(t)));
+            }
+
+            // The same overloads as `mutable_document::create_array`, but those of `to_json(array_ref&)`,
+            // which `write_value` takes for a primitive.
+            template <typename T>
+            requires (!to_json_arr_defined<T>) && convertible_to_create_array_callable<T>
+            void write_array(T&& t)
+            {
+                write_array(convert(std::forward<T>(t)));
+            }
+            template <std::ranges::input_range Range>
+            requires create_value_range<Range> || mutable_value_range<Range> || reader_value_ref_range<Range>
+            void write_array(Range&& range)
+            {
+                open('[');
+                auto first = true;
+                for (auto&& v : std::forward<Range>(range))
+                {
+                    next_element(first);
+                    write_value(forward_element<Range&&>(std::forward<decltype(v)>(v)));
+                }
+                close(']', first);
+            }
+
+            // The same overloads as `mutable_document::create_object`, but those of `to_json(object_ref&)`.
+            template <typename T>
+            requires (!to_json_obj_defined<T>) && convertible_to_create_object_callable<T>
+            void write_object(T&& t)
+            {
+                write_object(convert(std::forward<T>(t)));
+            }
+            template <std::ranges::input_range Range>
+            requires create_value_key_value_range<Range> || mutable_value_key_value_range<Range> ||
+                     reader_value_ref_key_value_range<Range>
+            void write_object(Range&& range)
+            {
+                open('{');
+                auto first = true;
+                for (auto&& v : std::forward<Range>(range))
+                {
+                    next_element(first);
+                    auto&& key = forward_element<Range&&>(std::get<0>(std::forward<decltype(v)>(v)));
+                    // `set_value` stores the key of a range of C++ values, `create_primitive` the others
+                    if constexpr (create_value_key_value_range<Range>)
+                        write_value(std::forward<decltype(key)>(key));
+                    else
+                        write_primitive(std::forward<decltype(key)>(key));
+                    end_key();
+                    write_value(forward_element<Range&&>(std::get<1>(std::forward<decltype(v)>(v))));
+                }
+                close('}', first);
+            }
+
+            template <typename Key, typename Field>
+            void write_field(bool& first, Field&& field)
+            {
+                if constexpr (omittable<Field>)
+                {
+                    if (should_omit_field(field)) return;
+                }
+                next_struct_key<Key>(first);
+                write_value(std::forward<Field>(field));
+            }
+
+            // What `to_json(V&, t)` of the caster of T writes.  The casters of this library are followed
+            // here, and any other is called on a mutable document of its own.
+            template <typename V, typename T>
+            void write_in_place(T&& t)
+            {
+                using U = std::remove_cvref_t<T>;
+                if constexpr (to_json_inp_def<V, T> && visitable<U>)
+                {
+                    open('{');
+                    auto first = true;
+                    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                        constexpr auto& members = visit_struct<U>::members;
+                        if constexpr (std::is_rvalue_reference_v<T&&>)
+                            (write_field<visitable_key<U, Is>>(first, std::move(t.*std::get<Is>(members))), ...);
+                        else
+                            (write_field<visitable_key<U, Is>>(first, t.*std::get<Is>(members)), ...);
+                    }(std::make_index_sequence<visit_struct<U>::field_count>{});
+                    close('}', first);
+                }
+                else if constexpr (to_json_inp_def<V, T>)
+                {
+                    open('{');
+                    auto first = true;
+                    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                        (write_field<reflected_key<U, Is>>(first,
+                                                           yyjson::detail::forward_field<Is>(std::forward<T>(t))),
+                         ...);
+                    }(std::make_index_sequence<field_reflection::field_count<U>>{});
+                    close('}', first);
+                }
+                else if constexpr (std::derived_from<caster<U>, yyjson::detail::builtin_caster> &&
+                                   (yyjson::detail::shared_ptr_like<U> || is_optional<U>::value) &&
+                                   std::same_as<V, value_ref>)
+                {
+                    if (t)
+                        write_value(*std::forward<T>(t));
+                    else
+                        write_null();
+                }
+                else if constexpr (std::derived_from<caster<U>, yyjson::detail::builtin_caster> &&
+                                   is_variant<U>::value && std::same_as<V, value_ref>)
+                {
+                    std::visit([&](auto&& v) { write_value(std::forward<decltype(v)>(v)); }, std::forward<T>(t));
+                }
+                else if constexpr (std::derived_from<caster<U>, yyjson::detail::builtin_caster> &&
+                                   std::same_as<U, std::vector<bool>> && std::same_as<V, array_ref>)
+                {
+                    open('[');
+                    auto first = true;
+                    for (const bool v : t)
+                    {
+                        next_element(first);
+                        write_bool(v);
+                    }
+                    close(']', first);
+                }
+                else if constexpr (std::derived_from<caster<U>, yyjson::detail::builtin_caster> &&
+                                   yyjson::detail::tuple_like<U> && std::same_as<V, array_ref>)
+                {
+                    open('[');
+                    auto first = true;
+                    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                        ((next_element(first), write_value(std::get<Is>(std::forward<T>(t)))), ...);
+                    }(std::make_index_sequence<std::tuple_size_v<U>>{});
+                    close(']', first);
+                }
+                else if constexpr (std::derived_from<caster<U>, yyjson::detail::builtin_caster> &&
+                                   yyjson::detail::tuple_like<U> && std::same_as<V, object_ref>)
+                {
+                    open('{');
+                    auto first = true;
+                    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                        ((next_element(first), write_primitive(std::get<0>(std::get<Is>(std::forward<T>(t)))),
+                          end_key(), write_value(std::get<1>(std::get<Is>(std::forward<T>(t))))),
+                         ...);
+                    }(std::make_index_sequence<std::tuple_size_v<U>>{});
+                    close('}', first);
+                }
+                else
+                {
+                    auto doc = mutable_document();
+                    auto vr = doc.template get_empty_value_ref<V>();
+                    to_json_wrapper(vr, std::forward<T>(t));
+                    write_json(json_value_access::get(vr));
+                }
+            }
+#pragma endregion C++ values
+        };
+
+        inline constexpr std::size_t direct_write_initial_size = 1024;
+
+        inline void grow_malloc_buffer(direct_write_buffer& buf, std::size_t n)
+        {
+            const auto used = static_cast<std::size_t>(buf.cur - buf.beg);
+            const auto size = std::max(static_cast<std::size_t>(buf.end - buf.beg) * 2, used + n);
+            auto* ptr = static_cast<char*>(std::realloc(buf.beg, size));
+            if (ptr == nullptr) throw_write_error("failed to allocate memory", YYJSON_WRITE_ERROR_MEMORY_ALLOCATION);
+            buf.beg = ptr;
+            buf.cur = ptr + used;
+            buf.end = ptr + size;
+        }
+
+        inline void grow_string_buffer(direct_write_buffer& buf, std::size_t n)
+        {
+            auto& str = *static_cast<std::string*>(buf.ctx);
+            const auto used = static_cast<std::size_t>(buf.cur - buf.beg);
+            str.resize(std::max(str.size() * 2, used + n));
+            str.resize(str.capacity());
+            buf.beg = str.data();
+            buf.cur = buf.beg + used;
+            buf.end = buf.beg + str.size();
+        }
+    }  // namespace writer::detail
+
+    // Writes a C++ value as JSON text, without building a mutable document of it.  The text is the same as
+    // `yyjson::value(t).write(write_flag)`.
+    template <typename T>
+    requires writer::detail::create_value_callable<const T&> || writer::detail::base_of_value<T> ||
+             reader::detail::base_of_value_ref<T>
+    [[nodiscard]] json_string write(const T& t, WriteFlag write_flag = WriteFlag::NoFlag)
+    {
+        auto buf = writer::detail::direct_write_buffer{};
+        buf.beg = static_cast<char*>(std::malloc(writer::detail::direct_write_initial_size));
+        if (buf.beg == nullptr)
+            writer::detail::throw_write_error("failed to allocate memory", YYJSON_WRITE_ERROR_MEMORY_ALLOCATION);
+        buf.cur = buf.beg;
+        buf.end = buf.beg + writer::detail::direct_write_initial_size;
+        buf.grow = writer::detail::grow_malloc_buffer;
+        try
+        {
+            writer::detail::direct_writer(buf, to_underlying(write_flag)).write_root(t);
+            if (buf.cur == buf.end) buf.grow(buf, 1);
+        }
+        catch (...)
+        {
+            std::free(buf.beg);
+            throw;
+        }
+        *buf.cur = '\0';
+        return json_string(buf.beg, static_cast<std::size_t>(buf.cur - buf.beg));
+    }
+
+    // Writes a C++ value as JSON text into `out`, whose content is replaced and whose capacity is reused.
+    template <typename T>
+    requires writer::detail::create_value_callable<const T&> || writer::detail::base_of_value<T> ||
+             reader::detail::base_of_value_ref<T>
+    void write(const T& t, std::string& out, WriteFlag write_flag = WriteFlag::NoFlag)
+    {
+        out.resize(std::max(out.capacity(), writer::detail::direct_write_initial_size));
+        auto buf = writer::detail::direct_write_buffer{};
+        buf.beg = out.data();
+        buf.cur = buf.beg;
+        buf.end = buf.beg + out.size();
+        buf.ctx = &out;
+        buf.grow = writer::detail::grow_string_buffer;
+        try
+        {
+            writer::detail::direct_writer(buf, to_underlying(write_flag)).write_root(t);
+        }
+        catch (...)
+        {
+            out.clear();
+            throw;
+        }
+        out.resize(static_cast<std::size_t>(buf.cur - buf.beg));
+    }
+#endif
 }  // namespace yyjson
 
 template <>

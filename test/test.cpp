@@ -3,6 +3,7 @@
 #include <atomic>
 #include <format>
 #include <iostream>
+#include <limits>
 #include <list>
 #include <map>
 #include <numeric>
@@ -4500,6 +4501,245 @@ TEST(Writer, NestedValuesInPlace)
     obj["b"] = std::vector<std::vector<int>>{{1}, {}};
     obj["c"] = record.inner;
     EXPECT_EQ(obj.write(), R"({"a":1,"b":[[1],[]],"c":{"name":"n","ids":[1,2]}})");
+}
+
+namespace
+{
+    // what writing `t` gives, or the error it throws
+    template <typename F>
+    std::string written_or_error(F&& write)
+    {
+        try
+        {
+            return write();
+        }
+        catch (const yyjson::write_error& e)
+        {
+            return std::format("error {}: {}", static_cast<int>(e.code()), e.what());
+        }
+    }
+
+    const auto direct_write_flags = std::vector<yyjson::WriteFlag>{
+        yyjson::WriteFlag::NoFlag,
+        yyjson::WriteFlag::Pretty,
+        yyjson::WriteFlag::PrettyTwoSpaces,
+        yyjson::WriteFlag::EscapeUnicode,
+        yyjson::WriteFlag::EscapeSlashes,
+        yyjson::WriteFlag::AllowInfAndNan,
+        yyjson::WriteFlag::InfAndNanAsNull,
+        yyjson::WriteFlag::AllowInvalidUnicode,
+        yyjson::WriteFlag::NewlineAtEnd,
+        yyjson::WriteFlag::EscapeUnicode | yyjson::WriteFlag::LowercaseHex,
+        yyjson::WriteFlag::Pretty | yyjson::WriteFlag::EscapeUnicode | yyjson::WriteFlag::EscapeSlashes |
+            yyjson::WriteFlag::NewlineAtEnd,
+        yyjson::WriteFlag::AllowInvalidUnicode | yyjson::WriteFlag::EscapeUnicode,
+        static_cast<yyjson::WriteFlag>(YYJSON_WRITE_FP_TO_FIXED(3)),
+        static_cast<yyjson::WriteFlag>(YYJSON_WRITE_FP_TO_FLOAT),
+        static_cast<yyjson::WriteFlag>(YYJSON_WRITE_FP_TO_FIXED(2) | YYJSON_WRITE_PRETTY),
+    };
+
+    // `yyjson::write` gives the bytes, or the error, that writing a mutable document of `t` gives
+    template <typename T>
+    void expect_direct_write(const T& t)
+    {
+        for (const auto flag : direct_write_flags)
+        {
+            const auto expected = written_or_error([&] { return std::string(yyjson::value(t).write(flag)); });
+            EXPECT_EQ(written_or_error([&] { return std::string(yyjson::write(t, flag)); }), expected)
+                << "flag " << static_cast<int>(flag);
+            auto out = std::string("previous");
+            EXPECT_EQ(written_or_error([&] {
+                          yyjson::write(t, out, flag);
+                          return out;
+                      }),
+                      expected)
+                << "flag " << static_cast<int>(flag);
+        }
+    }
+}  // namespace
+
+TEST(DirectWriter, SameAsDocument)
+{
+    using namespace yyjson;
+
+    // scalars
+    expect_direct_write(nullptr);
+    expect_direct_write(true);
+    expect_direct_write(false);
+    expect_direct_write(0);
+    expect_direct_write(-1);
+    expect_direct_write('a');
+    expect_direct_write(std::numeric_limits<std::int64_t>::min());
+    expect_direct_write(std::numeric_limits<std::int64_t>::max());
+    expect_direct_write(std::numeric_limits<std::uint64_t>::max());
+    for (auto i = std::uint64_t{1}; i < std::numeric_limits<std::uint64_t>::max() / 10; i *= 10)
+    {
+        expect_direct_write(i - 1);
+        expect_direct_write(i);
+        expect_direct_write(-static_cast<std::int64_t>(i));
+    }
+    for (const auto d : {0.0, -0.0, 1.0, 1.5, -2.25, 0.1, 1e300, 1e-300, 5e-324, 123456789.125, 3.14159265358979,
+                         std::numeric_limits<double>::max(), std::numeric_limits<double>::infinity(),
+                         -std::numeric_limits<double>::infinity(), std::numeric_limits<double>::quiet_NaN()})
+        expect_direct_write(d);
+    expect_direct_write(1.1F);
+    expect_direct_write(std::numeric_limits<float>::max());
+    expect_direct_write(std::string("text"));
+    expect_direct_write(std::string_view("view"));
+    expect_direct_write("literal");
+
+    // containers
+    expect_direct_write(std::vector<int>{});
+    expect_direct_write(std::vector<int>{1, 2, 3});
+    expect_direct_write(std::vector<std::vector<int>>{{}, {1}, {2, 3}});
+    expect_direct_write(std::list<std::string>{"a", "b"});
+    expect_direct_write(std::array<double, 2>{1.5, -2.0});
+    expect_direct_write(std::map<std::string, int>{});
+    expect_direct_write(std::map<std::string, int>{{"a", 1}, {"b/\"c", 2}});
+    expect_direct_write(std::map<std::string, std::vector<std::map<std::string, double>>>{{"x", {{{"y", 1.0}}, {}}}});
+    expect_direct_write(std::vector<std::pair<std::string, std::vector<int>>>{{"a", {1}}, {"b", {}}});
+    expect_direct_write(std::vector<bool>{});
+    expect_direct_write(std::vector<bool>{true, false, true});
+
+    // the casters of the library
+    expect_direct_write(std::optional<int>());
+    expect_direct_write(std::optional<int>(1));
+    expect_direct_write(std::make_shared<std::string>("shared"));
+    expect_direct_write(std::shared_ptr<int>());
+    expect_direct_write(std::variant<std::monostate, int, std::string>());
+    expect_direct_write(std::variant<std::monostate, int, std::string>("v"));
+    expect_direct_write(std::tuple<>());
+    expect_direct_write(std::tuple<int, std::string, double>(1, "a", 2.5));
+    expect_direct_write(std::pair<std::string, int>("k", 1));
+    expect_direct_write(std::make_tuple(std::make_pair("a", 1), std::make_pair("b", std::vector<int>{2})));
+    expect_direct_write(std::vector<std::tuple<int, std::string>>{{1, "a"}, {2, "b"}});
+    expect_direct_write(std::vector<std::optional<std::vector<int>>>{std::vector<int>{1}, std::nullopt});
+
+    // structs, through the compile-time reflection and VISITABLE_STRUCT
+    expect_direct_write(X{1, std::nullopt, "x"});
+    expect_direct_write(X{1, 2.5, "x"});
+    expect_direct_write(Y{{1, 2.5, "y"}});
+    expect_direct_write(Z{{1, std::nullopt, "z"}});
+    expect_direct_write(std::vector<Z>{{{1, 1.0, "a"}}, {{2, std::nullopt, "b"}}});
+    expect_direct_write(ReflectionRecord{1, 2.0, "k"});
+    expect_direct_write(VisitableRecord{1, 2.0, "k"});
+    expect_direct_write(ManyFields{});
+    expect_direct_write(NullableField{});
+    expect_direct_write(NullableField{1, std::make_shared<int>(2), std::shared_ptr<int>()});
+    expect_direct_write(OmittableRecord());
+    expect_direct_write(OmittableRecord{80, maybe<std::string>("host")});
+    auto counter = CounterRecord();
+    counter.name = "c";
+    counter.hits = 3;
+    expect_direct_write(counter);
+    expect_direct_write(Shape{"s", {}});
+    expect_direct_write(Shape{"s", {1.0, 2.0, true}});
+    expect_direct_write(AddressedPlain{{"n"}, 1});
+    expect_direct_write(AddressedOptional{{"n"}, std::nullopt});
+
+    // the casters of the user
+    expect_direct_write(ObjectCasterPoint{1, 0});
+    expect_direct_write(std::vector<ObjectCasterPoint>{{1, 2}, {0, 0}});
+    expect_direct_write(ArrayCasterPoint{1, 2});
+    expect_direct_write(ValueCasterName{""});
+    expect_direct_write(std::vector<ValueCasterName>{{"a"}, {""}});
+    expect_direct_write(VisitableCasterPoint{1, 2});
+    expect_direct_write(TranslatedPoint{1, 2});
+    expect_direct_write(TranslatedPointHolder{{1, 2}, {{3, 4}}});
+    expect_direct_write(std::map<std::string, TranslatedPoint>{{"p", {1, 2}}});
+    expect_direct_write(NestedWriteRecord{.inner = {"n", {1, 2}},
+                                          .grid = {{1}, {}, {2, 3}},
+                                          .groups = {{"g", {4}}, {"h", {}}},
+                                          .object_point = {0, 5},
+                                          .array_point = {6, 7},
+                                          .value_name = {"v"},
+                                          .empty = {},
+                                          .maybe_ids = std::vector<int>{8},
+                                          .pair = {9, "p"}});
+
+    // JSON values, alone and inside C++ values
+    const auto doc = read(R"({"a":[1,-2,3.5,"s\/\u3042",true,null,{}],"b":{"c":[]},"d":"\ud83d\ude00"})");
+    expect_direct_write(doc);
+    expect_direct_write((*doc.as_object())["a"]);
+    expect_direct_write(std::vector{doc, doc});
+    expect_direct_write(std::map<std::string, reader::const_value_ref>{{"x", (*doc.as_object())["b"]}});
+    auto record = NestedWriteRecord();
+    record.inner.name = "m";
+    const auto mut = value(record);
+    expect_direct_write(mut);
+    expect_direct_write(std::vector{mut});
+    expect_direct_write(std::map<std::string, value>{{"m", mut}, {"n", value(1)}});
+    expect_direct_write(value(std::map<std::string, std::string>{{"k/", "v/\u3042"}}));
+    expect_direct_write(array({1, 2}));
+    expect_direct_write(object({{"a", 1}}));
+    expect_direct_write(value());
+}
+
+TEST(DirectWriter, Strings)
+{
+    using namespace yyjson;
+
+    // every character class of the encoder, at every position of a 16-byte block and across two blocks
+    const auto pieces = std::vector<std::string>{"a", "/", "\"", "\\", "\n", "\x01", "\x1f", "\x7f", "\xc3\xa9",
+                                                 "\xe3\x81\x82", "\xef\xbf\xbf", "\xf0\x9f\x98\x80", "\xf4\x8f\xbf\xbf",
+                                                 // not valid UTF-8
+                                                 "\x80", "\xc0\x80", "\xc3", "\xe3\x81", "\xed\xa0\x80",
+                                                 "\xf4\x90\x80\x80", "\xf0\x9f\x98", "\xff"};
+    for (const auto& piece : pieces)
+    {
+        for (auto before = std::size_t{0}; before < 40; ++before)
+        {
+            expect_direct_write(std::string(before, 'x') + piece);
+            expect_direct_write(std::string(before, 'x') + piece + std::string(20, 'y'));
+            auto cjk = std::string();
+            for (auto i = std::size_t{0}; i < before; ++i) cjk += "\xe3\x81\x82";
+            expect_direct_write(cjk + piece + cjk);
+            expect_direct_write(cjk.substr(0, before) + piece + cjk);
+        }
+    }
+    expect_direct_write(std::string("\0a\0", 3));
+    expect_direct_write(std::vector<std::string>{"", "a", std::string(1000, 'z')});
+    expect_direct_write(std::map<std::string, std::string>{{"\xff", "key is not valid"}, {"\n", "escaped key"}});
+}
+
+TEST(DirectWriter, Buffer)
+{
+    using namespace yyjson;
+
+    // the buffer grows past its initial size
+    const auto large = std::vector<std::string>(1000, std::string(100, 'a'));
+    EXPECT_EQ(std::string(write(large)), std::string(value(large).write()));
+    EXPECT_EQ(std::string(write(large, WriteFlag::Pretty)), std::string(value(large).write(WriteFlag::Pretty)));
+    const auto escaped = std::string(5000, '\n');
+    EXPECT_EQ(std::string(write(escaped)), std::string(value(escaped).write()));
+
+    // the string is overwritten and keeps its capacity
+    auto out = std::string();
+    write(large, out);
+    const auto capacity = out.capacity();
+    write(std::vector<int>{1, 2}, out);
+    EXPECT_EQ(out, "[1,2]");
+    EXPECT_EQ(out.capacity(), capacity);
+
+    // the error of yyjson, and an empty string
+    out = "previous";
+    try
+    {
+        write(std::vector<double>{1.0, std::numeric_limits<double>::quiet_NaN()}, out);
+        FAIL() << "nan was written";
+    }
+    catch (const write_error& e)
+    {
+        EXPECT_EQ(e.code(), YYJSON_WRITE_ERROR_NAN_OR_INF);
+    }
+    EXPECT_TRUE(out.empty());
+    EXPECT_THROW((void)write(std::string("\xff")), write_error);
+    EXPECT_EQ(std::string(write(std::string("\xff"), WriteFlag::AllowInvalidUnicode)), "\"\xff\"");
+
+    // the result is a string that ends with a null character
+    const auto json = write(std::vector<int>{1});
+    EXPECT_EQ(json.size(), 3U);
+    EXPECT_EQ(json.data()[json.size()], '\0');
 }
 
 // NOLINTEND
