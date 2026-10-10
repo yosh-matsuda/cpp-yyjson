@@ -9,6 +9,7 @@
             "description": "Libraries compared in the benchmarks",
             "dependencies": [
                 "benchmark",
+                "glaze",
                 "nlohmann-json",
                 "rapidjson",
                 "simdjson",
