@@ -4680,25 +4680,85 @@ TEST(DirectWriter, Strings)
 {
     using namespace yyjson;
 
-    // every character class of the encoder, at every position of a 16-byte block and across two blocks
+    // every character class of the encoder, at every position of a 16-byte block and across two blocks, and in
+    // the last 40 bytes of a string that is long enough for its last block to be checked again
     const auto pieces = std::vector<std::string>{"a", "/", "\"", "\\", "\n", "\x01", "\x1f", "\x7f", "\xc3\xa9",
                                                  "\xe3\x81\x82", "\xef\xbf\xbf", "\xf0\x9f\x98\x80", "\xf4\x8f\xbf\xbf",
                                                  // not valid UTF-8
                                                  "\x80", "\xc0\x80", "\xc3", "\xe3\x81", "\xed\xa0\x80",
                                                  "\xf4\x90\x80\x80", "\xf0\x9f\x98", "\xff"};
+    auto long_text = std::string();
+    for (auto i = 0; i < 40; ++i) long_text += "\xc3\xa9";
     for (const auto& piece : pieces)
     {
         for (auto before = std::size_t{0}; before < 40; ++before)
         {
             expect_direct_write(std::string(before, 'x') + piece);
+            expect_direct_write(long_text + piece + std::string(before, 'y'));
             expect_direct_write(std::string(before, 'x') + piece + std::string(20, 'y'));
             auto cjk = std::string();
             for (auto i = std::size_t{0}; i < before; ++i) cjk += "\xe3\x81\x82";
             expect_direct_write(cjk + piece + cjk);
             expect_direct_write(cjk.substr(0, before) + piece + cjk);
         }
+        // at every position of the short strings, copied as two words or two blocks that overlap, and of the
+        // strings just longer than those
+        for (auto size = piece.size(); size <= 70; ++size)
+        {
+            for (auto pos = std::size_t{0}; pos + piece.size() <= size; ++pos)
+            {
+                auto text = std::string(pos, 'x') + piece + std::string(size - pos - piece.size(), 'y');
+                expect_direct_write(text);
+                // as a key, and after a string that leaves the output unaligned
+                expect_direct_write(std::map<std::string, std::string>{{text, "v"}});
+                expect_direct_write(std::vector<std::string>{"ab", text, text});
+            }
+        }
+    }
+    // two characters to escape at every distance in a block and across blocks, near the end of the text too
+    const auto escapes = std::vector<std::string>{"\n", "\"", "\x01", "\\"};
+    for (const auto& first : escapes)
+    {
+        for (const auto& second : escapes)
+        {
+            for (auto pos = std::size_t{0}; pos < 40; pos += 3)
+            {
+                for (auto gap = std::size_t{0}; gap < 36; ++gap)
+                {
+                    const auto text = std::string(pos, 'x') + first + std::string(gap, 'y') + second;
+                    expect_direct_write(text + std::string(70, 'z'));
+                    expect_direct_write(text + "\xc3\xa9" + first + std::string(gap % 5, 'z'));
+                }
+            }
+        }
+    }
+    // strings of 35 bytes or more, whose UTF-8 is checked while they are copied in blocks of 32 bytes: a piece at
+    // every position of text that is not ASCII, of ASCII, and of text that is not ASCII after one to three
+    // characters to escape
+    auto cjk_text = std::string();
+    for (auto i = 0; i < 40; ++i) cjk_text += "\xe3\x81\x82";
+    for (const auto& piece : pieces)
+    {
+        for (auto pos = std::size_t{0}; pos <= 100; ++pos)
+        {
+            expect_direct_write(cjk_text.substr(0, pos) + piece + cjk_text.substr(pos));
+            expect_direct_write(std::string(pos, 'x') + piece + std::string(100 - pos, 'y'));
+            for (const auto* const escaped : {"\n", "\n\"", "\n\"\\"})
+                expect_direct_write(escaped + cjk_text.substr(0, pos) + piece + std::string(40, 'z'));
+        }
     }
     expect_direct_write(std::string("\0a\0", 3));
+    for (auto size = std::size_t{1}; size <= 70; ++size)
+    {
+        // a null character at the end, where a word shorter than eight bytes is padded with zeros
+        expect_direct_write(std::string(size - 1, 'a') + std::string(1, '\0'));
+    }
+
+    // the bytes left in the reused string are not read as a part of the output
+    auto out = std::string(1000, '\\');
+    const auto texts = std::vector<std::string>{"", "a", "abcd", "\xe3\x81\x82\xe3\x81\x82", std::string(40, 'b')};
+    yyjson::write(texts, out);
+    EXPECT_EQ(out, std::string(yyjson::value(texts).write()));
     expect_direct_write(std::vector<std::string>{"", "a", std::string(1000, 'z')});
     expect_direct_write(std::map<std::string, std::string>{{"\xff", "key is not valid"}, {"\n", "escaped key"}});
 }
