@@ -6058,61 +6058,90 @@ namespace yyjson
                     buf_.cur += 5;
                 }
             }
-            static int count_digits(std::uint64_t v) noexcept
+            // The integer writer of yyjson: the value is split by 10^8 and 10^4 with multiplications, and the
+            // digits are copied in pairs.
+            static constexpr auto digit_pairs = [] {
+                auto a = std::array<char, 200>{};
+                for (auto i = 0; i < 100; ++i)
+                {
+                    a[i * 2] = static_cast<char>('0' + i / 10);
+                    a[(i * 2) + 1] = static_cast<char>('0' + i % 10);
+                }
+                return a;
+            }();
+            static void write_pair(char* p, std::uint32_t v) noexcept { std::memcpy(p, &digit_pairs[v * 2], 2); }
+            // the first pair, without its leading zero
+            static char* write_first_pair(char* p, std::uint32_t v) noexcept
             {
-                // the number of digits from the bit width, one too many below the power of ten
-                static constexpr std::uint8_t bit_digits[] = {
-                    1,  1,  1,  2,  2,  2,  3,  3,  3,  4,  4,  4,  4,  5,  5,  5,  6,  6,  6,  7,  7,  7,
-                    7,  8,  8,  8,  9,  9,  9,  10, 10, 10, 10, 11, 11, 11, 12, 12, 12, 13, 13, 13, 13, 14,
-                    14, 14, 15, 15, 15, 16, 16, 16, 16, 17, 17, 17, 18, 18, 18, 19, 19, 19, 19, 20};
-                static constexpr std::uint64_t powers[] = {0,
-                                                           0,
-                                                           10ull,
-                                                           100ull,
-                                                           1000ull,
-                                                           10000ull,
-                                                           100000ull,
-                                                           1000000ull,
-                                                           10000000ull,
-                                                           100000000ull,
-                                                           1000000000ull,
-                                                           10000000000ull,
-                                                           100000000000ull,
-                                                           1000000000000ull,
-                                                           10000000000000ull,
-                                                           100000000000000ull,
-                                                           1000000000000000ull,
-                                                           10000000000000000ull,
-                                                           100000000000000000ull,
-                                                           1000000000000000000ull,
-                                                           10000000000000000000ull};
-                const auto t = bit_digits[63 - std::countl_zero(v | 1)];
-                return t - (v < powers[t]);
+                const auto lz = static_cast<std::uint32_t>(v < 10);
+                std::memcpy(p, &digit_pairs[(v * 2) + lz], 2);
+                return p + 2 - lz;
+            }
+            static char* write_u32_len_4(char* p, std::uint32_t v) noexcept
+            {
+                const auto aa = (v * 5243) >> 19;
+                write_pair(p, aa);
+                write_pair(p + 2, v - (aa * 100));
+                return p + 4;
+            }
+            static char* write_u32_len_8(char* p, std::uint32_t v) noexcept
+            {
+                const auto aabb = static_cast<std::uint32_t>((std::uint64_t{v} * 109951163) >> 40);
+                const auto ccdd = v - (aabb * 10000);
+                const auto aa = (aabb * 5243) >> 19;
+                const auto cc = (ccdd * 5243) >> 19;
+                write_pair(p, aa);
+                write_pair(p + 2, aabb - (aa * 100));
+                write_pair(p + 4, cc);
+                write_pair(p + 6, ccdd - (cc * 100));
+                return p + 8;
+            }
+            static char* write_u32_len_1_to_8(char* p, std::uint32_t v) noexcept
+            {
+                if (v < 100) return write_first_pair(p, v);
+                if (v < 10000)
+                {
+                    const auto aa = (v * 5243) >> 19;
+                    p = write_first_pair(p, aa);
+                    write_pair(p, v - (aa * 100));
+                    return p + 2;
+                }
+                if (v < 1000000)
+                {
+                    const auto aa = static_cast<std::uint32_t>((std::uint64_t{v} * 429497) >> 32);
+                    const auto bbcc = v - (aa * 10000);
+                    const auto bb = (bbcc * 5243) >> 19;
+                    p = write_first_pair(p, aa);
+                    write_pair(p, bb);
+                    write_pair(p + 2, bbcc - (bb * 100));
+                    return p + 4;
+                }
+                const auto aabb = static_cast<std::uint32_t>((std::uint64_t{v} * 109951163) >> 40);
+                const auto ccdd = v - (aabb * 10000);
+                const auto aa = (aabb * 5243) >> 19;
+                const auto cc = (ccdd * 5243) >> 19;
+                p = write_first_pair(p, aa);
+                write_pair(p, aabb - (aa * 100));
+                write_pair(p + 2, cc);
+                write_pair(p + 4, ccdd - (cc * 100));
+                return p + 6;
             }
             static char* write_u64(char* p, std::uint64_t v) noexcept
             {
-                static constexpr auto pairs = [] {
-                    auto a = std::array<char, 200>{};
-                    for (auto i = 0; i < 100; ++i)
-                    {
-                        a[i * 2] = static_cast<char>('0' + i / 10);
-                        a[(i * 2) + 1] = static_cast<char>('0' + i % 10);
-                    }
-                    return a;
-                }();
-                const auto n = count_digits(v);
-                auto* q = p + n;
-                while (v >= 100)
+                if (v < 100000000) return write_u32_len_1_to_8(p, static_cast<std::uint32_t>(v));
+                if (v < 100000000ull * 100000000ull)
                 {
-                    q -= 2;
-                    std::memcpy(q, &pairs[(v % 100) * 2], 2);
-                    v /= 100;
+                    const auto high = v / 100000000;
+                    p = write_u32_len_1_to_8(p, static_cast<std::uint32_t>(high));
+                    return write_u32_len_8(p, static_cast<std::uint32_t>(v - (high * 100000000)));
                 }
-                if (v >= 10)
-                    std::memcpy(q - 2, &pairs[v * 2], 2);
-                else
-                    q[-1] = static_cast<char>('0' + v);
-                return p + n;
+                const auto high = v / 100000000;
+                const auto low = static_cast<std::uint32_t>(v - (high * 100000000));
+                // 17 to 20 digits: 5 to 8, then 4, then 8
+                const auto top = static_cast<std::uint32_t>(high / 10000);
+                p = write_u32_len_1_to_8(p, top);
+                p = write_u32_len_4(p, static_cast<std::uint32_t>(high - (std::uint64_t{top} * 10000)));
+                return write_u32_len_8(p, low);
             }
             void write_integer(std::uint64_t v)
             {
