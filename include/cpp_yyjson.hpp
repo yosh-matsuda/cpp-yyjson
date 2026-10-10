@@ -6244,6 +6244,58 @@ namespace yyjson
                 else
                     return put_integer(p, static_cast<std::int64_t>(v));
             }
+            // The longest text of a value that `put_flat` writes, or 0 for a value it does not write: a
+            // floating-point number, or a `std::array` of those without a caster of its own.
+            template <typename T>
+            static consteval std::size_t flat_size()
+            {
+                using U = std::remove_cvref_t<T>;
+                if constexpr (std::floating_point<U>)
+                    return 41;  // `yyjson_write_number` writes up to 40 characters and a null terminator
+                else if constexpr (yyjson::detail::std_array<U>)
+                {
+                    if constexpr (std::tuple_size_v<U> == 0 || to_json_defined<U> || to_json_inp_defined<U> ||
+                                  create_primitive_callable<const U&> || create_object_callable<const U&>)
+                        return 0;
+                    else
+                    {
+                        constexpr auto n = flat_size<typename U::value_type>();
+                        return n == 0 ? 0 : 1 + std::tuple_size_v<U> * (n + 1);
+                    }
+                }
+                else
+                    return 0;
+            }
+            // Writes a value of `flat_size` without checking the space, or returns nullptr for a number that is
+            // not finite.  The caller must have checked that the number format flags are not set.
+            template <typename T>
+            CPPYYJSON_ALWAYS_INLINE static char* put_flat(char* p, const T& v) noexcept
+            {
+                using U = std::remove_cvref_t<T>;
+                if constexpr (std::floating_point<U>)
+                {
+                    const auto d = static_cast<double>(v);
+                    if (!std::isfinite(d)) [[unlikely]]
+                        return nullptr;
+                    auto num = yyjson_val{};
+                    num.tag = YYJSON_TYPE_NUM | YYJSON_SUBTYPE_REAL;
+                    num.uni.f64 = d;
+                    return yyjson_write_number(&num, p);
+                }
+                else
+                {
+                    *p++ = '[';
+                    for (std::size_t i = 0; i < std::tuple_size_v<U>; ++i)
+                    {
+                        if (i != 0) *p++ = ',';
+                        p = put_flat(p, v[i]);
+                        if (p == nullptr) [[unlikely]]
+                            return nullptr;
+                    }
+                    *p++ = ']';
+                    return p;
+                }
+            }
             CPPYYJSON_COLD void write_non_finite(double v)
             {
                 if (flg_ & YYJSON_WRITE_INF_AND_NAN_AS_NULL)
@@ -7187,6 +7239,12 @@ namespace yyjson
             template <std::ranges::input_range Range>
             void write_elements(Range&& range)
             {
+                using E = std::ranges::range_reference_t<Range>;
+                if constexpr (flat_size<E>() != 0)
+                {
+                    if (!pretty_ && !(static_cast<std::uint32_t>(flg_) >> (32 - YYJSON_WRITE_FP_FLAG_BITS)))
+                        return write_flat_elements(std::forward<Range>(range));
+                }
                 open('[');
                 auto first = true;
                 for (auto&& v : std::forward<Range>(range))
@@ -7199,6 +7257,42 @@ namespace yyjson
                         write_value(forward_element<Range&&>(std::forward<decltype(v)>(v)));
                     }
                 }
+                close(']', first);
+            }
+
+            // `write_elements` of values of `flat_size`, minified and without number format flags.  The position
+            // is kept in a local so that it does not go through memory around each number.
+            template <std::ranges::input_range Range>
+            void write_flat_elements(Range&& range)
+            {
+                constexpr auto n = 1 + flat_size<std::ranges::range_reference_t<Range>>();
+                open('[');
+                auto* p = buf_.cur;
+                auto* end = buf_.end;
+                auto first = true;
+                for (auto&& v : range)
+                {
+                    if (static_cast<std::size_t>(end - p) < n) [[unlikely]]
+                    {
+                        buf_.cur = p;
+                        buf_.grow(buf_, n);
+                        p = buf_.cur;
+                        end = buf_.end;
+                    }
+                    *p = ',';
+                    p += !first;
+                    first = false;
+                    if (auto* q = put_flat(p, v)) [[likely]]
+                        p = q;
+                    else
+                    {
+                        buf_.cur = p;
+                        write_value(v);
+                        p = buf_.cur;
+                        end = buf_.end;
+                    }
+                }
+                buf_.cur = p;
                 close(']', first);
             }
 

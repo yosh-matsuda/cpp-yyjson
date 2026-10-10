@@ -4748,6 +4748,62 @@ TEST(DirectWriter, Buffer)
     EXPECT_EQ(json.data()[json.size()], '\0');
 }
 
+template <>
+struct yyjson::caster<std::array<std::int16_t, 2>>
+{
+    static auto to_json(const std::array<std::int16_t, 2>& a) { return std::format("{}:{}", a[0], a[1]); }
+};
+
+template <>
+struct yyjson::caster<std::array<std::uint16_t, 2>>
+{
+    template <typename... Ts>
+    static void to_json(writer::array_ref& arr, const std::array<std::uint16_t, 2>& a, Ts... ts)
+    {
+        arr.emplace_back(a[1], ts...);
+        arr.emplace_back(a[0], ts...);
+    }
+};
+
+TEST(DirectWriter, RangesOfNumbers)
+{
+    using namespace yyjson;
+
+    constexpr auto inf = std::numeric_limits<double>::infinity();
+    constexpr auto nan = std::numeric_limits<double>::quiet_NaN();
+    expect_direct_write(std::vector<double>{});
+    expect_direct_write(std::vector<double>{0.0, -0.0, 1.0, -65.613616999999977, 1e21, 1e-7, 5e-324, 1e300});
+    expect_direct_write(std::vector<double>{1.5, inf, 2.5});
+    expect_direct_write(std::vector<double>{1.5, nan});
+    expect_direct_write(std::vector<float>{1.1F, -0.5F, std::numeric_limits<float>::max()});
+    expect_direct_write(std::vector<std::array<double, 2>>{{1.5, -2.0}, {0.1, 1e-300}});
+    expect_direct_write(std::vector<std::array<double, 2>>{{1.5, -2.0}, {0.25, -inf}, {3.0, 4.0}});
+    expect_direct_write(std::vector<std::array<double, 2>>{{nan, 1.0}});
+    expect_direct_write(std::vector<std::array<float, 3>>{{1.1F, 2.2F, 3.3F}});
+    expect_direct_write(std::vector<std::array<std::array<double, 2>, 2>>{{{{1.0, 2.0}, {3.0, nan}}}, {}});
+    expect_direct_write(std::vector<std::array<std::int64_t, 3>>{
+        {std::numeric_limits<std::int64_t>::min(), 0, std::numeric_limits<std::int64_t>::max()}});
+    expect_direct_write(std::vector<std::array<bool, 2>>{{true, false}});
+    expect_direct_write(std::vector<std::array<std::nullptr_t, 1>>{{nullptr}, {nullptr}});
+    expect_direct_write(std::vector<std::array<int, 0>>{{}, {}});
+    expect_direct_write(std::vector<std::array<std::string, 1>>{{"a"}});
+    expect_direct_write(std::list<std::array<double, 2>>{{1.0, 2.0}});
+
+    // a caster of the array is used, not its elements
+    expect_direct_write(std::vector<std::array<std::int16_t, 2>>{{1, -2}, {3, 4}});
+    expect_direct_write(std::vector<std::array<std::uint16_t, 2>>{{1, 2}, {3, 4}});
+    expect_direct_write(std::vector<std::array<std::array<std::int16_t, 2>, 1>>{{{{5, 6}}}});
+
+    // the buffer grows in the middle of a range, also on an element that is not finite
+    auto points = std::vector<std::array<double, 2>>(3000, {1.0 / 3, -1e300});
+    expect_direct_write(points);
+    points[2000][1] = nan;
+    expect_direct_write(points);
+    auto numbers = std::vector<double>(6000, -1.0 / 3);
+    numbers[4000] = -inf;
+    expect_direct_write(numbers);
+}
+
 // NOLINTEND
 #if defined(__GNUC__)
 #pragma GCC diagnostic pop
