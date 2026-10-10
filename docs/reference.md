@@ -72,6 +72,8 @@ The `read` function takes a JSON string and returns an immutable JSON value. The
 
 If the read option has the [`ReadInsitu`](https://ibireme.github.io/yyjson/doc/doxygen/html/md_doc__a_p_i.html#autotoc_md34) flag, You must specify the JSON string as writable (`std::string&` or `char*`) and its length. This writable string must be padded at least [`YYJSON_PADDING_SIZE`](https://ibireme.github.io/yyjson/doc/doxygen/html/yyjson_8h.html#abbe8e69f634b1a5a78c1dae08b88e0ef) bytes to the end. The length of the JSON string should be unpadded.
 
+To read a JSON string into a C++ object without the immutable JSON value, see [`yyjson::read<T>`](#reading-a-json-string-into-a-c-object-directly).
+
 If the read fails, the `read` function throws `yyjson::read_error`. Its `code()` member function returns the [`yyjson_read_code`](https://ibireme.github.io/yyjson/doc/doxygen/html/yyjson_8h.html) of the failure, so that the caller can tell a failed allocation (`YYJSON_READ_ERROR_MEMORY_ALLOCATION`) from a malformed input. A `read_error` that is constructed from a message alone returns `YYJSON_READ_SUCCESS`.
 
 ### `yyjson::reader::value`
@@ -1324,6 +1326,37 @@ VISITABLE_STRUCT(Counter, name, hits);
 auto deserialized = cast<Counter>(read(R"({"name":"b","hits":9})"));
 // -> Counter{.name = "b", .hits = 9}
 ```
+
+### Reading a JSON string into a C++ object directly
+
+`yyjson::read<T>` reads a JSON string into a C++ object without building a `yyjson::reader::value` first. It accepts every type that `yyjson::cast` can convert a JSON value to and follows the same conversion rules, so the result is the same as `read(json_string, flag).cast<T>()`. So are the exceptions: `yyjson::read_error` when the text is not valid JSON, and `yyjson::bad_cast` when it cannot be converted to `T`.
+
+```cpp
+template <typename T>
+T read(std::string_view json_string, ReadFlag flag = ReadFlag::NoFlag);
+```
+
+```cpp
+using namespace yyjson;
+
+struct Point
+{
+    int x;
+    int y;
+};
+
+auto points = read<std::vector<Point>>(R"([{"x":1,"y":2},{"x":3,"y":4}])");
+// -> {{1, 2}, {3, 4}}
+```
+
+Most types are read straight from the string: numbers, strings, `bool`, `nullptr`, ranges, maps, the pre-defined STL casters except `std::variant`, and structs that the compile-time reflection or the `VISITABLE_STRUCT` macro converts. A user-defined `from_json` and `std::variant` take a JSON value, so the value that they convert is read into a temporary document, while the values around it are still read directly.
+
+The string is read without a document when its root is an array or an object and `flag` is `NoFlag` or `AllowInvalidUnicode`. Otherwise, and whenever the direct read fails, `read<T>` reads the string into a document and casts it, which is how it gives the result and the exception of `cast<T>` in every case. Two things follow from this:
+
+*   A user-defined `from_json` may be called twice for the same JSON value, when the direct read fails after calling it. Do not rely on the number of calls.
+*   A `T` that refers to the JSON value, such as `std::string_view` or a struct with a `std::string_view` field, refers to memory that is freed when `read<T>` returns, as it does after `read(json_string).cast<T>()` on a temporary value. Cast such types from a `yyjson::reader::value` that outlives them instead.
+
+`yyjson::read<T>` is available with yyjson 0.10.0 or later, which includes the bundled backend.
 
 ### Writing a C++ object to a JSON string directly
 

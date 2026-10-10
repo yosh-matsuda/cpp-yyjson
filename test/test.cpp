@@ -4886,6 +4886,447 @@ TEST(DirectWriter, RangesOfNumbers)
     expect_direct_write(numbers);
 }
 
+#if YYJSON_VERSION_HEX >= 0x000A00
+namespace
+{
+    // what reading gives, written back, or the error it throws
+    template <typename F>
+    std::string read_or_error(F&& read)
+    {
+        try
+        {
+            return std::string(yyjson::write(read(), yyjson::WriteFlag::AllowInfAndNan |
+                                                         yyjson::WriteFlag::AllowInvalidUnicode));
+        }
+        catch (const yyjson::read_error& e)
+        {
+            return std::format("read error {}: {}", static_cast<int>(e.code()), e.what());
+        }
+        catch (const yyjson::bad_cast& e)
+        {
+            return std::format("bad cast: {}", e.what());
+        }
+    }
+
+    // what the reader without a document gives, or nothing when it fails, which leaves the text to the
+    // document
+    template <typename T>
+    std::optional<std::string> read_directly(std::string_view json, yyjson::ReadFlag flag)
+    {
+        const auto is_ws = [](char c) { return c == ' ' || c == '\n' || c == '\r' || c == '\t'; };
+        while (!json.empty() && is_ws(json.front())) json.remove_prefix(1);
+        while (!json.empty() && is_ws(json.back())) json.remove_suffix(1);
+        if (json.size() < 2) return std::nullopt;
+        try
+        {
+            const auto t =
+                yyjson::reader::detail::direct_reader(json.data(), json.data() + json.size() - 1, flag).read_root<T>();
+            return read_or_error([&] { return t; });
+        }
+        catch (...)
+        {
+            return std::nullopt;
+        }
+    }
+
+    // `yyjson::read<T>` gives what casting a document gives, and so does the reader without a document when it
+    // reads the text; returns whether it did
+    template <typename T>
+    bool expect_direct_read(std::string_view json, yyjson::ReadFlag flag = yyjson::ReadFlag::NoFlag)
+    {
+        const auto expected = read_or_error([&] { return yyjson::read(json, flag).template cast<T>(); });
+        EXPECT_EQ(read_or_error([&] { return yyjson::read<T>(json, flag); }), expected) << json;
+        const auto direct = read_directly<T>(json, flag);
+        if (direct)
+        {
+            EXPECT_EQ(*direct, expected) << json;
+        }
+        return direct.has_value();
+    }
+}  // namespace
+
+struct KeyLengths
+{
+    int a = 0;
+    int bb = 0;
+    int fifteen_chars_x = 0;
+    int sixteen_chars_xx = 0;
+    int seventeen_chars_x = 0;
+    std::vector<int> v;
+};
+
+struct ReadPoint
+{
+    int x;
+    int y;
+};
+
+template <>
+struct yyjson::caster<ReadPoint>
+{
+    template <typename Json>
+    static ReadPoint from_json(const Json& json)
+    {
+        const auto arr = json.as_array();
+        if (!arr || arr->size() != 2) throw yyjson::bad_cast("not a point");
+        return {cast<int>((*arr)[0]), cast<int>((*arr)[1])};
+    }
+    template <typename... Ts>
+    static void to_json(writer::array_ref& arr, const ReadPoint& p, Ts... ts)
+    {
+        arr.emplace_back(p.x, ts...);
+        arr.emplace_back(p.y, ts...);
+    }
+};
+
+struct ReadRecord
+{
+    std::string name;
+    std::vector<ReadPoint> points;
+    std::variant<std::monostate, int, std::string> tag;
+    std::map<std::string, std::vector<double>> series;
+    std::optional<KeyLengths> keys;
+    std::shared_ptr<std::string> note;
+    std::tuple<int, std::string> pair;
+};
+
+TEST(DirectReader, PowersOfFive)
+{
+    // the table of the reader, computed again as its comment describes
+    using yyjson::reader::detail::pow5_128_max;
+    using yyjson::reader::detail::pow5_128_min;
+    constexpr int words = 28;  // 2^1728, which divided by 5^342 leaves more than the bits needed
+    using big = std::array<std::uint64_t, words>;
+    const auto bit_length = [](const big& a, int used) {
+        for (int i = used - 1; i >= 0; --i)
+        {
+            if (a[static_cast<std::size_t>(i)] != 0)
+                return i * 64 + 64 - std::countl_zero(a[static_cast<std::size_t>(i)]);
+        }
+        return 0;
+    };
+    // the 64 bits from bit `pos`, which may be negative
+    const auto bits_at = [](const big& a, int pos) {
+        const auto word = [&](int i) { return i >= 0 && i < words ? a[static_cast<std::size_t>(i)] : 0; };
+        const int i = pos >= 0 ? pos / 64 : -((-pos + 63) / 64);
+        const int b = pos - i * 64;
+        return word(i) >> b | (b != 0 ? word(i + 1) << (64 - b) : 0);
+    };
+    const auto mul5 = [](big& a, int& used) {
+        auto carry = std::uint64_t{0};
+        for (int i = 0; i < used; ++i)
+        {
+            auto& w = a[static_cast<std::size_t>(i)];
+            const auto lo = (w & 0xFFFFFFFFu) * 5 + carry;
+            const auto hi = (w >> 32) * 5 + (lo >> 32);
+            w = (hi << 32) | (lo & 0xFFFFFFFFu);
+            carry = hi >> 32;
+        }
+        if (carry != 0) a[static_cast<std::size_t>(used++)] = carry;
+    };
+    const auto div5 = [](big& a, int& used) {
+        auto rem = std::uint64_t{0};
+        for (int i = used - 1; i >= 0; --i)
+        {
+            auto& w = a[static_cast<std::size_t>(i)];
+            const auto hi = (rem << 32) | (w >> 32);
+            const auto lo = ((hi % 5) << 32) | (w & 0xFFFFFFFFu);
+            w = ((hi / 5) << 32) | (lo / 5);
+            rem = lo % 5;
+        }
+        if (a[static_cast<std::size_t>(used - 1)] == 0) --used;
+    };
+    auto table = std::vector<std::uint64_t>(2 * (pow5_128_max - pow5_128_min + 1));
+    const auto store = [&](int q, std::uint64_t hi, std::uint64_t lo) {
+        table[static_cast<std::size_t>(2 * (q - pow5_128_min))] = hi;
+        table[static_cast<std::size_t>(2 * (q - pow5_128_min) + 1)] = lo;
+    };
+    auto p = big();
+    p[0] = 1;
+    auto p_used = 1;
+    for (int q = 0; q <= pow5_128_max; ++q, mul5(p, p_used))
+    {
+        const int top = bit_length(p, p_used) - 128;
+        store(q, bits_at(p, top + 64), bits_at(p, top));
+    }
+    // floor(2^b / 5^n) + 1 with b = z + 127 for n <= 27 and b = 2z + 128 beyond, where z is the bit
+    // length of 5^n, truncated to 128 bits: floor(2^b / 5^n) is the quotient of 2^1728 shifted right
+    constexpr int k = (words - 1) * 64;
+    auto f = big();
+    f[words - 1] = 1;
+    auto f_used = words;
+    p = big();
+    p[0] = 1;
+    p_used = 1;
+    for (int n = 1; n <= -pow5_128_min; ++n)
+    {
+        div5(f, f_used);
+        mul5(p, p_used);
+        const int z = bit_length(p, p_used);
+        const int low = k - (n <= 27 ? z + 127 : 2 * z + 128);  // the lowest bit of the quotient
+        const int top = bit_length(f, f_used) - 128;            // the lowest bit kept of it
+        auto hi = bits_at(f, top + 64);
+        auto lo = bits_at(f, top);
+        // adding 1 changes the kept bits only if all the bits below them are ones
+        auto carry = true;
+        for (int i = low; carry && i < top; i += 64)
+        {
+            const int n_bits = std::min(64, top - i);
+            const auto mask = n_bits == 64 ? ~std::uint64_t{0} : (std::uint64_t{1} << n_bits) - 1;
+            carry = (bits_at(f, i) & mask) == mask;
+        }
+        if (carry && ++lo == 0 && ++hi == 0) hi = std::uint64_t{1} << 63;  // 2^128 truncated
+        store(-n, hi, lo);
+    }
+    EXPECT_TRUE(std::ranges::equal(table, yyjson::reader::detail::pow5_128_table));
+}
+
+namespace
+{
+    // whether every real of a JSON array can be converted to I; converting one out of range is undefined
+    template <std::integral I>
+    bool reals_fit(const std::string& json)
+    {
+        try
+        {
+            const auto upper = std::ldexp(1.0, std::numeric_limits<I>::digits);
+            const auto lower = std::is_signed_v<I> ? -upper : -1.0;
+            return std::ranges::all_of(*yyjson::read(json).as_array(), [&](const auto& v) {
+                if (!v.is_real()) return true;
+                const auto x = *v.as_real();
+                return x > lower && x < upper;
+            });
+        }
+        catch (const yyjson::read_error&)
+        {
+            return true;
+        }
+    }
+}  // namespace
+
+TEST(DirectReader, Numbers)
+{
+    using namespace yyjson;
+
+    const auto numbers = std::vector<std::string>{
+        "0", "-0", "1", "-1", "9", "10", "01", "-01", "00", "1.", "1e", "1e+", "-", ".5", "+1", "1.5", "-1.5", "0.0",
+        "-0.0", "1.5e3", "1.5E-3", "1e400", "-1e400", "1e-400", "4.9e-324", "2.2250738585072014e-308",
+        "1.7976931348623157e308", "0.1", "0.30000000000000004", "9007199254740993", "9007199254740993.0",
+        "1.00000000000000011102230246251565404236316680908203125", "123456789012345678901234567890",
+        "2147483647", "2147483648", "-2147483648", "-2147483649", "4294967295", "4294967296",
+        "9223372036854775807", "9223372036854775808", "-9223372036854775808", "-9223372036854775809",
+        "18446744073709551615", "18446744073709551616", "-18446744073709551616", "true", "null", "\"1\"", "1.5.3",
+        "1.5-2", "1..5", "0.5.", "-.5", "1.2345678901234567", "12345678.12345678901", "0.0000000000000001"};
+    for (const auto& number : numbers)
+    {
+        // as the last value, and followed by enough characters for the vector loads of the reader
+        const auto padding = std::string(40, ' ');
+        for (const auto& json : {"[" + number + "]", "[" + number + padding + ",1" + padding + "]"})
+        {
+            expect_direct_read<std::vector<double>>(json);
+            expect_direct_read<std::vector<float>>(json);
+            if (reals_fit<std::int64_t>(json)) expect_direct_read<std::vector<std::int64_t>>(json);
+            if (reals_fit<std::uint64_t>(json)) expect_direct_read<std::vector<std::uint64_t>>(json);
+            if (reals_fit<int>(json)) expect_direct_read<std::vector<int>>(json);
+            if (reals_fit<std::int8_t>(json)) expect_direct_read<std::vector<std::int8_t>>(json);
+            expect_direct_read<std::vector<bool>>(json);
+            expect_direct_read<std::vector<std::optional<double>>>(json);
+        }
+    }
+
+    // every length of the integer part and of the fraction around the bounds of the short form of reals
+    for (auto n1 = 1; n1 <= 10; ++n1)
+    {
+        for (auto n2 = 0; n2 <= 20; ++n2)
+        {
+            for (const auto* sign : {"", "-"})
+            {
+                for (const auto* suffix : {"", "e5", "E-2", "x"})
+                {
+                    auto number = std::string(sign);
+                    for (auto i = 0; i < n1; ++i) number += static_cast<char>('1' + (i * 7 + n2) % 9);
+                    if (n2 > 0) number += '.';
+                    for (auto i = 0; i < n2; ++i) number += static_cast<char>('0' + (i * 3 + n1) % 10);
+                    number += suffix;
+                    const auto padded = "[" + number + "," + std::string(40, ' ') + "1]";
+                    const auto direct = expect_direct_read<std::vector<double>>(padded);
+                    if (*suffix != 'x')
+                    {
+                        EXPECT_TRUE(direct) << padded;
+                    }
+                    expect_direct_read<std::vector<double>>("[" + number + "]");
+                    expect_direct_read<std::vector<std::array<double, 2>>>("[[" + number + "," + number + "]," +
+                                                                           std::string(40, ' ') + "[1,2]]");
+                }
+            }
+        }
+    }
+    // an exponent beyond the range of doubles that leading zeros of the fraction bring back into it, or not
+    for (const auto zeros : {100, 99990, 100000, 999990})
+    {
+        for (const auto* exponent : {"e100", "e99990", "e100000", "e1000000", "e1000300", "e-1000000"})
+        {
+            const auto json = "[0." + std::string(static_cast<std::size_t>(zeros), '0') + "1" + exponent + "]";
+            expect_direct_read<std::vector<double>>(json);
+            expect_direct_read<KeyLengths>(R"({"a":1,"x":)" + json + "}");
+        }
+    }
+}
+
+TEST(DirectReader, Strings)
+{
+    using namespace yyjson;
+
+    // every kind of escape and of invalid text, at every position of a vector load
+    const auto pieces = std::vector<std::string>{
+        "a", "\\\"", "\\\\", "\\/", "\\b", "\\f", "\\n", "\\r", "\\t", "\\u0041", "\\u00e9", "\\u20AC",
+        "\\ud83d\\ude00", "\\ud83d", "\\ude00", "\\uD800\\u0041", "\\u0000", "\\uZZZZ", "\\x", "\\", "\xc3\xa9",
+        "\xe3\x81\x82", "\xf0\x9f\x98\x80", "\xc3", "\xff", "\xed\xa0\x80", "\x01", "\x1f", "\x7f", "\t"};
+    for (const auto& piece : pieces)
+    {
+        for (auto before = std::size_t{0}; before < 40; before += 3)
+        {
+            const auto text = std::string(before, 'x') + piece + std::string(before % 7, 'y');
+            const auto arr = "[\"" + text + "\",\"" + text + "z\"" + std::string(before % 5 * 10, ' ') + "]";
+            const auto obj = "{\"" + text + "\":\"v\",\"k\":\"" + text + "\"}";
+            for (const auto flag : {ReadFlag::NoFlag, ReadFlag::AllowInvalidUnicode})
+            {
+                expect_direct_read<std::vector<std::string>>(arr, flag);
+                expect_direct_read<std::map<std::string, std::string>>(obj, flag);
+            }
+        }
+    }
+    EXPECT_TRUE((expect_direct_read<std::vector<std::string>>(
+        R"(["a\"b\\c\/\b\f\n\r\t\u0041\u00e9\u20ac\ud83d\ude00"])")));
+    EXPECT_TRUE((expect_direct_read<std::vector<std::string>>(R"(["", "a", ""])")));
+    EXPECT_TRUE((expect_direct_read<std::vector<std::string>>("[\"" + std::string(1000, 'z') + "\"]")));
+    EXPECT_TRUE((expect_direct_read<std::map<std::string, int>>(R"({"a\nb":1,"\u0041":2,"a":3,"a":4})")));
+    expect_direct_read<std::vector<std::string>>("[\"a\xff\"]");
+    expect_direct_read<std::vector<std::string>>("[\"a\xff\"]", ReadFlag::AllowInvalidUnicode);
+
+    // the escapes of a value that a struct skips are checked as well
+    for (const auto& piece : pieces)
+    {
+        for (const auto& json : {R"({"a":1,"x":")" + piece + R"("})", R"({"a":1,"x":{")" + piece + R"(":1}})",
+                                 R"({"a":1,"x":[1,")" + piece + R"("]})"})
+        {
+            expect_direct_read<KeyLengths>(json);
+        }
+    }
+}
+
+TEST(DirectReader, Structs)
+{
+    using namespace yyjson;
+
+    for (const auto* json : {
+             R"({"i":1,"j":2.5,"k":"s"})", R"({"k":"s","j":2.5,"i":1})", R"({"i":1})", R"({})",
+             R"({"x":{"y":[1,{"z":null}],"w":"\"}"},"i":1,"q":[[],{}]})", R"({"\u0069":3,"k":"\u0041"})",
+             R"({"i":1,"i":2})", R"( { "i" : 1 , "j" : 2 } )", "{\n  \"i\": 1,\n  \"k\": \"s\"\n}"})
+    {
+        EXPECT_TRUE((expect_direct_read<ReflectionRecord>(json))) << json;
+        EXPECT_TRUE((expect_direct_read<VisitableRecord>(json))) << json;
+        EXPECT_TRUE((expect_direct_read<std::vector<ReflectionRecord>>(std::format("[{},{}]", json, json)))) << json;
+    }
+    for (const auto* json : {R"({"i":"s"})", R"({"i":1.5})", R"({"k":1})", R"({"i":null})", R"({"i":[1]})", R"([1])",
+                             R"({"i":1,})", R"({"i" 1})", R"({"i":1}})", R"({i:1})", R"({"i":1)", R"({"i":tru})"})
+    {
+        expect_direct_read<ReflectionRecord>(json);
+        expect_direct_read<VisitableRecord>(json);
+    }
+
+    auto many = std::string("{");
+    for (auto i = 1; i <= 30; ++i) many += std::format("{}\"f{:02}\":{}", i == 1 ? "" : ",", i, i);
+    EXPECT_TRUE((expect_direct_read<ManyFields>(many + "}")));
+    EXPECT_TRUE((expect_direct_read<ManyFields>(R"({"f30":1,"f01":2,"f15":3,"f16":4})")));
+
+    // the names that the reader compares with the text in one or two loads, and their neighbours
+    for (const auto* key : {"a", "b", "", "bb", "bbb", "fifteen_chars_x", "fifteen_chars_", "fifteen_chars_xy",
+                            "sixteen_chars_xx", "sixteen_chars_x", "sixteen_chars_xxx", "seventeen_chars_x",
+                            "seventeen_chars_", "seventeen_chars_xy", "fifteen_chars_y", "\\u0061", "v"})
+    {
+        for (const auto* after : {"", ",\"a\":7", ",\"bb\":8,\"fifteen_chars_x\":9"})
+        {
+            EXPECT_TRUE((expect_direct_read<KeyLengths>(std::format(R"({{"{}":1{}}})", key, after)) ||
+                        std::string_view(key) == "v"))
+                << key;
+            EXPECT_TRUE((expect_direct_read<KeyLengths>(
+                std::format(R"({{"a":1,"bb":2,"{}":3{}}}{})", key, after, std::string(20, ' '))) ||
+                        std::string_view(key) == "v"))
+                << key;
+        }
+    }
+
+    EXPECT_TRUE((expect_direct_read<X>(R"({"a":1,"b":null,"c":"s"})")));
+    EXPECT_TRUE((expect_direct_read<X>(R"({"a":1,"b":2.5})")));
+    EXPECT_TRUE((expect_direct_read<Z>(R"({"c":"z","a":1})")));
+    EXPECT_TRUE((expect_direct_read<std::vector<Z>>(R"([{"a":1},{"a":2,"b":3}])")));
+    EXPECT_TRUE(
+        (expect_direct_read<NullableField>(R"({"optional_value":null,"nullable_value":null,"tri_state":null})")));
+    EXPECT_TRUE((expect_direct_read<NullableField>(R"({"optional_value":1,"nullable_value":2,"tri_state":3})")));
+    EXPECT_TRUE((expect_direct_read<Shape>(R"({"name":"s","origin":{"x":1,"y":2,"valid":true}})")));
+    EXPECT_TRUE((expect_direct_read<CounterRecord>(R"({"name":"c","hits":3})")));
+}
+
+TEST(DirectReader, Containers)
+{
+    using namespace yyjson;
+
+    EXPECT_TRUE((expect_direct_read<std::vector<int>>("[]")));
+    EXPECT_TRUE((expect_direct_read<std::vector<int>>(" [ 1 , 2 ,3 ] ")));
+    EXPECT_TRUE((expect_direct_read<std::vector<std::vector<int>>>("[[],[1],[2,3]]")));
+    EXPECT_TRUE((expect_direct_read<std::list<std::string>>(R"(["a","b"])")));
+    EXPECT_TRUE((expect_direct_read<std::array<int, 2>>("[1,2]")));
+    expect_direct_read<std::array<int, 2>>("[1]");
+    expect_direct_read<std::array<int, 2>>("[1,2,3]");
+    EXPECT_TRUE((expect_direct_read<std::vector<std::array<double, 2>>>("[[1.5,2],[3,4.25]]")));
+    expect_direct_read<std::vector<std::array<double, 2>>>("[[1.5,2],[3]]");
+    EXPECT_TRUE((expect_direct_read<std::map<std::string, std::vector<double>>>(R"({"a":[1.5],"b":[]})")));
+    EXPECT_TRUE((expect_direct_read<std::unordered_map<std::string, int>>(R"({"a":1,"b":2})")));
+    EXPECT_TRUE((expect_direct_read<std::tuple<int, std::string, double>>(R"([1,"a",2.5])")));
+    expect_direct_read<std::tuple<int, std::string>>(R"([1,"a",2.5])");
+    expect_direct_read<std::vector<std::optional<std::vector<int>>>>("[null,[1]]");
+    EXPECT_TRUE((expect_direct_read<std::vector<std::optional<int>>>("[null,1]")));
+    EXPECT_TRUE((expect_direct_read<std::vector<std::shared_ptr<int>>>("[null,1]")));
+    EXPECT_TRUE((expect_direct_read<std::vector<std::variant<std::monostate, int, std::string>>>(R"([null,1,"s"])")));
+    EXPECT_TRUE((expect_direct_read<std::vector<ReadPoint>>("[[1,2],[3,4]]")));
+    expect_direct_read<std::vector<ReadPoint>>("[[1,2],[3]]");
+    EXPECT_TRUE((expect_direct_read<ReadRecord>(
+        R"({"name":"r","points":[[1,2]],"tag":"t","series":{"s":[0.5]},"keys":{"a":1,"v":[2]},"note":"n",)"
+        R"("pair":[1,"p"]})")));
+    EXPECT_TRUE((expect_direct_read<ReadRecord>(R"({"tag":1,"keys":null,"note":null})")));
+    expect_direct_read<ReadRecord>(R"({"tag":1.5})");
+
+    // the text that the reader leaves to the document, and invalid text
+    for (const auto* json : {"1", "\"s\"", "null", "", " ", "[", "]", "[1,]", "[1 2]", "[1]x", "[1] [2]", "[1]]",
+                             "[tru]", "[nul]", "[1,2", "{\"a\":1,}", "[1/*c*/]", "[\"a\" \"b\"]"})
+    {
+        expect_direct_read<std::vector<int>>(json);
+        expect_direct_read<std::map<std::string, int>>(json);
+        expect_direct_read<std::vector<int>>(json, ReadFlag::AllowComments);
+        expect_direct_read<std::vector<int>>(json, ReadFlag::AllowTrailingCommas);
+    }
+}
+
+TEST(DirectReader, Overloads)
+{
+    using namespace yyjson;
+
+    // `read<T>` reads into a T, and `read` without a type gives a document as before
+    const auto str = std::string("[1,2]");
+    EXPECT_EQ(read<std::vector<int>>(str), (std::vector<int>{1, 2}));
+    EXPECT_EQ(read<std::vector<int>>("[1,2]"), (std::vector<int>{1, 2}));
+    EXPECT_EQ(read<std::vector<int>>(std::string_view(str), ReadFlag::AllowComments), (std::vector<int>{1, 2}));
+    EXPECT_EQ(read<const std::vector<int>>(str), (std::vector<int>{1, 2}));
+    EXPECT_EQ(read(str).cast<std::vector<int>>(), (std::vector<int>{1, 2}));
+    EXPECT_EQ(read("[1,]x", 4, ReadFlag::AllowTrailingCommas).as_array()->size(), 1U);
+    auto alloc = pool_allocator(str);
+    EXPECT_EQ(read(str, alloc).as_array()->size(), 2U);
+    EXPECT_THROW((void)read<std::vector<int>>("[1,"), read_error);
+    EXPECT_THROW((void)read<std::vector<int>>(R"(["a"])"), bad_cast);
+}
+#endif
+
 // NOLINTEND
 #if defined(__GNUC__)
 #pragma GCC diagnostic pop

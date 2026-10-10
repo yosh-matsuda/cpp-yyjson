@@ -31,6 +31,7 @@ Ultra-fast and intuitive C++ JSON reader/writer with yyjson backend.
     *   pre-defined STL casters
     *   user-defined casters in two ways
     *   omission of an empty field and in-place assignment of a field
+    *   reading and writing C++ objects without building a DOM
 *   Minimum overhead compared to yyjson
 *   Object lifetime safety
 
@@ -171,6 +172,19 @@ As shown above, cpp-yyjson provides conversion between JSON value/array/object c
 *   Registration of field names with `VISITABLE_STRUCT` macro.
 *   User-defined casters.
 *   Omission of an empty field with [`should_omit`](docs/reference.md#omitting-a-field-with-no-value), and [in-place assignment](docs/reference.md#in-place-assignment-of-a-field) of a field that cannot be copied.
+
+`yyjson::read<T>` and `yyjson::write` convert between a JSON string and a C++ object without building a JSON value in between. They follow the same rules and give the same results as `read(json).cast<T>()` and `value(t).write()` (see the reference for [reading](docs/reference.md#reading-a-json-string-into-a-c-object-directly) and [writing](docs/reference.md#writing-a-c-object-to-a-json-string-directly)):
+
+```cpp
+struct Point
+{
+    int x;
+    int y;
+};
+
+auto points = read<std::vector<Point>>(R"([{"x":1,"y":2},{"x":3,"y":4}])");  // -> {{1, 2}, {3, 4}}
+auto json = write(points);                                                     // -> [{"x":1,"y":2},{"x":3,"y":4}]
+```
 
 #### Pre-defined STL casters
 
