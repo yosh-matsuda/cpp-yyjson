@@ -40,10 +40,16 @@ KEEP_RAW=
 
 CPP_READ=cpp_yyjson_bench_read
 CPP_WRITE=cpp_yyjson_bench_write
+CPP_TYPED=cpp_yyjson_bench_typed
 C_READ=yyjson_bench_read
 C_WRITE=yyjson_bench_write
+GLAZE_READ=glaze_bench_read
+GLAZE_WRITE=glaze_bench_write
+GLAZE_TYPED=glaze_bench_typed
+ALL_TARGETS=("${CPP_READ}" "${CPP_WRITE}" "${CPP_TYPED}" "${C_READ}" "${C_WRITE}"
+    "${GLAZE_READ}" "${GLAZE_WRITE}" "${GLAZE_TYPED}")
 
-COMPETITOR_FILTER='^(read|write)_(rapidjson|simdjson|nlohmann|c_yyjson)'
+COMPETITOR_FILTER='^(typed_)?(read|write)_(rapidjson|simdjson|nlohmann|c_yyjson|glaze)'
 
 info() { printf '\033[1m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[33mwarning:\033[0m %s\n' "$*" >&2; }
@@ -106,14 +112,21 @@ usage() {
 Usage: docs/benchmark/run_benchmarks.sh [options]
 
 Scope (which benchmarks are measured):
-  --scope cpp            cpp-yyjson rows only, read and write (default, ~15 min)
-  --scope cpp-read       cpp-yyjson read rows only (~9 min)
-  --scope cpp-write      cpp-yyjson write rows only (~6 min)
-  --scope competitors    rapidjson/simdjson/nlohmann-json/yyjson rows only (~40 min)
-  --scope read           every read benchmark, both executables (~40 min)
-  --scope write          every write benchmark, both executables (~15 min)
-  --scope all            everything (~55 min)
-  --filter REGEX         Google Benchmark filter, overrides the scope default
+  --scope cpp            cpp-yyjson rows only, read, write and typed (default, ~17 min)
+  --scope cpp-read       cpp-yyjson read rows only, typed reads included (~10 min)
+  --scope cpp-write      cpp-yyjson write rows only, typed writes included (~7 min)
+  --scope competitors    rapidjson/simdjson/nlohmann-json/yyjson/Glaze rows only (~47 min)
+  --scope read           every generic read benchmark, cpp-yyjson, yyjson and Glaze
+                         executables (~43 min)
+  --scope write          every generic write benchmark, cpp-yyjson, yyjson and Glaze
+                         executables (~18 min)
+  --scope typed          reading into and writing from C++ types, cpp-yyjson and Glaze
+                         (~3 min, estimate)
+  --scope glaze          every Glaze row: generic read, generic write and typed
+                         (~7 min, estimate)
+  --scope all            everything (~60 min)
+  --filter REGEX         Google Benchmark filter, overrides the scope default; an
+                         executable none of whose benchmarks match it is skipped
 
 Repetitions are chosen from the measured spread: every benchmark starts at
 --min-repetitions and is re-measured with more repetitions until the relative standard
@@ -185,24 +198,27 @@ done
 TARGETS=()
 case ${SCOPE} in
     cpp)
-        TARGETS=("${CPP_READ}" "${CPP_WRITE}")
-        [[ ${FILTER_SET} -eq 1 ]] || FILTER='^(read|write)_cpp_yyjson'
+        TARGETS=("${CPP_READ}" "${CPP_WRITE}" "${CPP_TYPED}")
+        [[ ${FILTER_SET} -eq 1 ]] || FILTER='^(typed_)?(read|write)_cpp_yyjson'
         ;;
     cpp-read)
-        TARGETS=("${CPP_READ}")
-        [[ ${FILTER_SET} -eq 1 ]] || FILTER='^read_cpp_yyjson'
+        TARGETS=("${CPP_READ}" "${CPP_TYPED}")
+        [[ ${FILTER_SET} -eq 1 ]] || FILTER='^(typed_)?read_cpp_yyjson'
         ;;
     cpp-write)
-        TARGETS=("${CPP_WRITE}")
-        [[ ${FILTER_SET} -eq 1 ]] || FILTER='^write_cpp_yyjson'
+        TARGETS=("${CPP_WRITE}" "${CPP_TYPED}")
+        [[ ${FILTER_SET} -eq 1 ]] || FILTER='^(typed_)?write_cpp_yyjson'
         ;;
     competitors)
-        TARGETS=("${CPP_READ}" "${CPP_WRITE}" "${C_READ}" "${C_WRITE}")
+        TARGETS=("${CPP_READ}" "${CPP_WRITE}" "${C_READ}" "${C_WRITE}"
+            "${GLAZE_READ}" "${GLAZE_WRITE}" "${GLAZE_TYPED}")
         [[ ${FILTER_SET} -eq 1 ]] || FILTER=${COMPETITOR_FILTER}
         ;;
-    read) TARGETS=("${CPP_READ}" "${C_READ}") ;;
-    write) TARGETS=("${CPP_WRITE}" "${C_WRITE}") ;;
-    all) TARGETS=("${CPP_READ}" "${CPP_WRITE}" "${C_READ}" "${C_WRITE}") ;;
+    read) TARGETS=("${CPP_READ}" "${C_READ}" "${GLAZE_READ}") ;;
+    write) TARGETS=("${CPP_WRITE}" "${C_WRITE}" "${GLAZE_WRITE}") ;;
+    typed) TARGETS=("${CPP_TYPED}" "${GLAZE_TYPED}") ;;
+    glaze) TARGETS=("${GLAZE_READ}" "${GLAZE_WRITE}" "${GLAZE_TYPED}") ;;
+    all) TARGETS=("${ALL_TARGETS[@]}") ;;
     *) fail "unknown scope: ${SCOPE}" ;;
 esac
 
@@ -212,6 +228,15 @@ esac
 
 BIN_DIR="${BUILD_DIR}/test/${CONFIG}"
 [[ -d ${BIN_DIR} ]] || BIN_DIR="${BUILD_DIR}/test"
+
+list_benchmarks() {
+    local target=$1 pattern=$2
+    local args=("./${BIN_DIR}/${target}" --benchmark_list_tests=true)
+    if [[ -n ${pattern} ]]; then
+        args+=("--benchmark_filter=${pattern}")
+    fi
+    "${args[@]}" 2>/dev/null
+}
 
 #
 # PREFLIGHT
@@ -332,6 +357,22 @@ PY
     fi
 fi
 
+# A filter applies to every executable of the scope, and most of them hold only some of
+# the libraries, so an executable none of whose benchmarks it selects is left out rather
+# than started for nothing.
+if [[ -n ${FILTER} ]]; then
+    selected=()
+    for target in "${TARGETS[@]}"; do
+        if [[ -n $(list_benchmarks "${target}" "${FILTER}" || true) ]]; then
+            selected+=("${target}")
+        else
+            printf '  %-20s: no benchmark matches the filter, skipped\n' "${target}"
+        fi
+    done
+    [[ ${#selected[@]} -gt 0 ]] || fail "no benchmark of ${TARGETS[*]} matches ${FILTER}"
+    TARGETS=("${selected[@]}")
+fi
+
 if command -v readelf >/dev/null 2>&1; then
     binary_gcc=$(readelf -p .comment "${BIN_DIR}/${TARGETS[0]}" 2>/dev/null |
         grep -oE 'GCC: \([^)]*\) [0-9.]+' | sed 's/.*) //' | sort -u | paste -sd, -)
@@ -449,7 +490,7 @@ fi
 # machine at the same frequency.  An executable outside the scope keeps all of its
 # rows, and one inside a filtered scope keeps the rows the filter does not select.
 surviving=()
-for target in "${CPP_READ}" "${CPP_WRITE}" "${C_READ}" "${C_WRITE}"; do
+for target in "${ALL_TARGETS[@]}"; do
     keeps_rows=1
     if [[ -z ${FILTER} ]]; then
         for measured in "${TARGETS[@]}"; do
@@ -496,7 +537,7 @@ if [[ ${preflight_failed} -eq 1 ]]; then
 fi
 
 estimate() {
-    python3 - "${SCRIPT_DIR}" "$1" "$2" <<'PY'
+    python3 - "${SCRIPT_DIR}" "$1" "$2" "$3" <<'PY'
 import json
 import math
 import os
@@ -514,7 +555,7 @@ STARTUP = 0.15
 sys.path.insert(0, sys.argv[1])
 from select_repetitions import choose_tier, normalize_tiers, required_repetitions
 
-path, pattern = sys.argv[2], sys.argv[3]
+path, pattern, listed = sys.argv[2], sys.argv[3], int(sys.argv[4])
 minimum = int(os.environ["MIN_REPETITIONS"])
 maximum = int(os.environ["MAX_REPETITIONS"])
 target = float(os.environ["TARGET_PRECISION"]) / 100.0
@@ -527,7 +568,9 @@ try:
     with open(path, encoding="utf-8") as handle:
         data = json.load(handle)
 except OSError:
-    print("0")
+    # Nothing stored yet to take the times and the spread from: assume every benchmark
+    # finishes an iteration within the floor and stops at the minimum repetitions.
+    print(f"{listed * (minimum * MIN_TIME * OVERHEAD + (STARTUP if isolate else 0.0)):.0f}")
     raise SystemExit
 
 matcher = re.compile(pattern) if pattern else None
@@ -564,7 +607,11 @@ export MIN_REPETITIONS MAX_REPETITIONS TARGET_PRECISION ADAPTIVE TIERS ISOLATE
 
 total_estimate=0
 for target in "${TARGETS[@]}"; do
-    seconds=$(estimate "${RESULT_DIR}/${target}.json" "${FILTER}")
+    listed=0
+    if [[ ! -r ${RESULT_DIR}/${target}.json && -x ${BIN_DIR}/${target} ]]; then
+        listed=$(list_benchmarks "${target}" "${FILTER}" | wc -l || true)
+    fi
+    seconds=$(estimate "${RESULT_DIR}/${target}.json" "${FILTER}" "${listed}")
     total_estimate=$((total_estimate + seconds))
 done
 
@@ -636,15 +683,6 @@ run_benchmark_process() {
         args+=("--benchmark_filter=${pattern}")
     fi
     "${wrapper[@]}" "${args[@]}" | tee "${out_log}"
-}
-
-list_benchmarks() {
-    local target=$1 pattern=$2
-    local args=("./${BIN_DIR}/${target}" --benchmark_list_tests=true)
-    if [[ -n ${pattern} ]]; then
-        args+=("--benchmark_filter=${pattern}")
-    fi
-    "${args[@]}" 2>/dev/null
 }
 
 merge_into() {
@@ -768,10 +806,22 @@ if [[ ${DO_PLOT} -eq 1 ]]; then
     if [[ ${missing} -eq 1 ]]; then
         warn "not all result files are present; skipping the charts"
     else
+        # The Glaze and typed results were added later than the others, so the charts are
+        # drawn without them until they have been measured.
+        read_json=("${RESULT_DIR}/${CPP_READ}.json" "${RESULT_DIR}/${C_READ}.json")
+        write_json=("${RESULT_DIR}/${CPP_WRITE}.json" "${RESULT_DIR}/${C_WRITE}.json")
+        typed_json=()
+        [[ ! -f ${RESULT_DIR}/${GLAZE_READ}.json ]] || read_json+=("${RESULT_DIR}/${GLAZE_READ}.json")
+        [[ ! -f ${RESULT_DIR}/${GLAZE_WRITE}.json ]] || write_json+=("${RESULT_DIR}/${GLAZE_WRITE}.json")
+        # A typed chart compares the two libraries, so it waits for both of them.
+        if [[ -f ${RESULT_DIR}/${CPP_TYPED}.json && -f ${RESULT_DIR}/${GLAZE_TYPED}.json ]]; then
+            typed_json=(--typed-json "${RESULT_DIR}/${CPP_TYPED}.json" "${RESULT_DIR}/${GLAZE_TYPED}.json")
+        fi
         info "Regenerating ${IMAGE_DIR}"
         python3 "${SCRIPT_DIR}/plot_benchmarks.py" \
-            --read-json "${RESULT_DIR}/${CPP_READ}.json" "${RESULT_DIR}/${C_READ}.json" \
-            --write-json "${RESULT_DIR}/${CPP_WRITE}.json" "${RESULT_DIR}/${C_WRITE}.json" \
+            --read-json "${read_json[@]}" \
+            --write-json "${write_json[@]}" \
+            "${typed_json[@]}" \
             --output-dir "${IMAGE_DIR}"
     fi
 fi

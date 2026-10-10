@@ -30,6 +30,7 @@ READ_COLORS = {
     "c_yyjson": "#16a34a",
     "rapidjson": "#dc2626",
     "simdjson": "#9333ea",
+    "glaze": "#0891b2",
 }
 
 CONTRACTS = {
@@ -162,6 +163,8 @@ READ_VARIANTS = {
         "simdjson",
         "simdjson On Demand (pad)",
     ),
+    "read_glaze": ("fixed", "fresh", "glaze", "Glaze"),
+    "read_glaze_single": ("fixed", "reused", "glaze", "Glaze"),
 }
 
 WRITE_COLORS = {
@@ -173,6 +176,7 @@ WRITE_COLORS = {
     "yyjson": "#16a34a",
     "rapidjson": "#dc2626",
     "nlohmann-json": "#f97316",
+    "Glaze": "#0891b2",
 }
 
 WRITE_POLICIES = {
@@ -189,6 +193,46 @@ WRITE_DATASET_VARIANTS = {
     "write_rapidjson_dataset": ("fresh", "rapidjson", "rapidjson"),
     "write_rapidjson_single_dataset": ("reused", "rapidjson", "rapidjson"),
     "write_nlohmann_dataset": ("fresh", "nlohmann-json", "nlohmann-json"),
+    "write_glaze_dataset": ("fresh", "Glaze", "Glaze"),
+    "write_glaze_single_dataset": ("reused", "Glaze", "Glaze"),
+}
+
+# The typed benchmarks number their own three datasets.
+TYPED_DATASET_NAMES = {
+    0: "canada",
+    1: "citm_catalog",
+    2: "twitter",
+}
+
+TYPED_COLORS = {
+    "cpp_yyjson": "#2563eb",
+    "glaze": "#0891b2",
+}
+
+TYPED_POLICIES = {
+    "read": {
+        "fresh": "New allocator / object per read",
+        "reused": "Reused allocator / object",
+    },
+    "write": WRITE_POLICIES,
+}
+
+# benchmark name -> (direction, policy, color key, label)
+TYPED_VARIANTS = {
+    "typed_read_cpp_yyjson": ("read", "fresh", "cpp_yyjson", "cpp-yyjson (DOM + cast)"),
+    "typed_read_cpp_yyjson_dom": ("read", "fresh", "cpp_yyjson", "cpp-yyjson (DOM only)"),
+    "typed_read_cpp_yyjson_single": (
+        "read",
+        "reused",
+        "cpp_yyjson",
+        "cpp-yyjson (DOM + cast)",
+    ),
+    "typed_read_glaze": ("read", "fresh", "glaze", "Glaze"),
+    "typed_read_glaze_single": ("read", "reused", "glaze", "Glaze"),
+    "typed_write_cpp_yyjson": ("write", "fresh", "cpp_yyjson", "cpp-yyjson"),
+    "typed_write_cpp_yyjson_single": ("write", "reused", "cpp_yyjson", "cpp-yyjson"),
+    "typed_write_glaze": ("write", "fresh", "glaze", "Glaze"),
+    "typed_write_glaze_single": ("write", "reused", "glaze", "Glaze"),
 }
 
 # The comparisons of the README table: output name -> (title, subtitle,
@@ -580,6 +624,52 @@ def generate_throughput_charts(
         )
 
 
+def collect_typed_charts(
+    times: dict[str, float],
+) -> dict[tuple[str, str], list[tuple[str, list[tuple[str, float, str]]]]]:
+    sections: dict[tuple[str, str, str], list[tuple[str, float, str]]] = defaultdict(
+        list
+    )
+    pattern = re.compile(r"^(typed_[^/]+)/(\d+)$")
+    unknown_names: set[str] = set()
+    unknown_datasets: set[int] = set()
+
+    for name, value in times.items():
+        match = pattern.match(name)
+        if not match or match.group(1) not in TYPED_VARIANTS:
+            unknown_names.add(match.group(1) if match else name)
+            continue
+        dataset_index = int(match.group(2))
+        if dataset_index not in TYPED_DATASET_NAMES:
+            unknown_datasets.add(dataset_index)
+            continue
+        direction, policy, color_key, label = TYPED_VARIANTS[match.group(1)]
+        key = (TYPED_DATASET_NAMES[dataset_index], direction, policy)
+        sections[key].append((label, value, color_key))
+
+    if unknown_names:
+        raise ValueError(
+            "unmapped typed benchmarks: " + ", ".join(sorted(unknown_names))
+        )
+    if unknown_datasets:
+        raise ValueError(
+            "unknown typed dataset indexes: "
+            + ", ".join(str(index) for index in sorted(unknown_datasets))
+        )
+
+    charts: dict[tuple[str, str], list[tuple[str, list[tuple[str, float, str]]]]] = {}
+    for dataset_name in TYPED_DATASET_NAMES.values():
+        for direction, policies in TYPED_POLICIES.items():
+            groups = []
+            for policy, heading in policies.items():
+                rows = sections.get((dataset_name, direction, policy), [])
+                if rows:
+                    groups.append((heading, sorted(rows, key=lambda item: item[1])))
+            if groups:
+                charts[(dataset_name, direction)] = groups
+    return charts
+
+
 def safe_file_name(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", name).strip("_")
 
@@ -672,7 +762,10 @@ def write_svg(
 
 
 def generate_charts(
-    read_json: list[Path], write_json: list[Path], output_dir: Path
+    read_json: list[Path],
+    write_json: list[Path],
+    output_dir: Path,
+    typed_json: list[Path] | None = None,
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -714,6 +807,20 @@ def generate_charts(
             write_times, load_processed_bytes(write_json), "write_", output_dir
         )
 
+    if typed_json:
+        typed_times = load_median_times(typed_json)
+        titles = {"read": "Typed read", "write": "Typed write"}
+        for (dataset_name, direction), groups in collect_typed_charts(
+            typed_times
+        ).items():
+            output = output_dir / f"typed_{direction}_{safe_file_name(dataset_name)}.svg"
+            write_svg(
+                output,
+                f"{titles[direction]}: {nice_title(dataset_name)}",
+                groups,
+                TYPED_COLORS,
+            )
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -732,12 +839,21 @@ def parse_args() -> argparse.Namespace:
         help="Google Benchmark JSON files for write benchmarks",
     )
     parser.add_argument(
+        "--typed-json",
+        type=Path,
+        nargs="+",
+        default=[],
+        help="Google Benchmark JSON files for the typed read/write benchmarks",
+    )
+    parser.add_argument(
         "--output-dir", type=Path, default=Path("docs/benchmark/images")
     )
     args = parser.parse_args()
-    if not args.read_json and not args.write_json:
-        parser.error("at least one of --read-json or --write-json is required")
-    for json_path in [*args.read_json, *args.write_json]:
+    if not args.read_json and not args.write_json and not args.typed_json:
+        parser.error(
+            "at least one of --read-json, --write-json or --typed-json is required"
+        )
+    for json_path in [*args.read_json, *args.write_json, *args.typed_json]:
         if not json_path.is_file():
             parser.error(f"JSON file does not exist: {json_path}")
     return args
@@ -746,7 +862,9 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     try:
-        generate_charts(args.read_json, args.write_json, args.output_dir)
+        generate_charts(
+            args.read_json, args.write_json, args.output_dir, args.typed_json
+        )
     except ValueError as error:
         raise SystemExit(f"error: {error}") from error
 
