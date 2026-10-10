@@ -1232,11 +1232,12 @@ namespace yyjson
             }
 
             // The structs written field by field without their casters: those that have no `to_json` of
-            // the user, which would decide how they are written.
+            // the user, which would decide how they are written.  `std::array` is excluded first: MSVC fails
+            // on the structured binding that `field_namable` tries on it.
             template <typename T>
             concept directly_create_reflected_object =
-                field_reflection::field_namable<std::remove_cvref_t<T>> && (!visitable<std::remove_cvref_t<T>>) &&
-                (!yyjson::detail::std_array<T>) && (!to_json_inp_usr_defined<T>) && (!to_json_usr<T>) &&
+                (!yyjson::detail::std_array<T>) && field_reflection::field_namable<std::remove_cvref_t<T>> &&
+                (!visitable<std::remove_cvref_t<T>>) && (!to_json_inp_usr_defined<T>) && (!to_json_usr<T>) &&
                 directly_create_reflected_object_impl<std::remove_cvref_t<T>>(
                     std::make_index_sequence<field_reflection::field_count<std::remove_cvref_t<T>>>{});
             template <typename T>
