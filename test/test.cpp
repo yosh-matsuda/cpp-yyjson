@@ -4679,17 +4679,21 @@ TEST(DirectWriter, Strings)
 {
     using namespace yyjson;
 
-    // every character class of the encoder, at every position of a 16-byte block and across two blocks
+    // every character class of the encoder, at every position of a 16-byte block and across two blocks, and in
+    // the last 40 bytes of a string that is long enough for its last block to be checked again
     const auto pieces = std::vector<std::string>{"a", "/", "\"", "\\", "\n", "\x01", "\x1f", "\x7f", "\xc3\xa9",
                                                  "\xe3\x81\x82", "\xef\xbf\xbf", "\xf0\x9f\x98\x80", "\xf4\x8f\xbf\xbf",
                                                  // not valid UTF-8
                                                  "\x80", "\xc0\x80", "\xc3", "\xe3\x81", "\xed\xa0\x80",
                                                  "\xf4\x90\x80\x80", "\xf0\x9f\x98", "\xff"};
+    auto long_text = std::string();
+    for (auto i = 0; i < 40; ++i) long_text += "\xc3\xa9";
     for (const auto& piece : pieces)
     {
         for (auto before = std::size_t{0}; before < 40; ++before)
         {
             expect_direct_write(std::string(before, 'x') + piece);
+            expect_direct_write(long_text + piece + std::string(before, 'y'));
             expect_direct_write(std::string(before, 'x') + piece + std::string(20, 'y'));
             auto cjk = std::string();
             for (auto i = std::size_t{0}; i < before; ++i) cjk += "\xe3\x81\x82";
