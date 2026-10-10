@@ -4407,6 +4407,72 @@ TEST(Writer, RangeOfStructsWithCaster)
     EXPECT_EQ(value(VisitableCasterPoint{1, 2}).write(), "[1,2]");
 }
 
+struct NestedWriteInner
+{
+    std::string name;
+    std::vector<int> ids;
+};
+
+struct NestedWriteRecord
+{
+    NestedWriteInner inner;
+    std::vector<std::vector<int>> grid;
+    std::map<std::string, std::vector<int>> groups;
+    ObjectCasterPoint object_point;
+    ArrayCasterPoint array_point;
+    ValueCasterName value_name;
+    std::vector<int> empty;
+    std::optional<std::vector<int>> maybe_ids;
+    std::tuple<int, std::string> pair;
+};
+
+TEST(Writer, NestedValuesInPlace)
+{
+    using namespace yyjson;
+
+    // arrays and objects nested in ranges
+    EXPECT_EQ(value(std::vector<std::vector<std::array<double, 2>>>{{{1.5, 2.5}, {3, 4}}, {}, {{5, 6}}}).write(),
+              "[[[1.5,2.5],[3.0,4.0]],[],[[5.0,6.0]]]");
+    EXPECT_EQ(value(std::vector<std::map<std::string, std::vector<int>>>{{{"a", {1, 2}}, {"b", {}}}, {}}).write(),
+              R"([{"a":[1,2],"b":[]},{}])");
+    EXPECT_EQ(value(std::map<std::string, std::vector<std::vector<int>>>{{"a", {{1}, {}}}, {"b", {}}}).write(),
+              R"({"a":[[1],[]],"b":[]})");
+    EXPECT_EQ(value(std::vector<std::tuple<int, std::string>>{{1, "a"}, {2, "b"}}).write(), R"([[1,"a"],[2,"b"]])");
+    EXPECT_EQ(value(std::vector<std::list<int>>{{1, 2}, {}}).write(), "[[1,2],[]]");
+    EXPECT_EQ(value(std::vector<std::optional<std::vector<int>>>{std::vector<int>{1}, std::nullopt}).write(),
+              "[[1],null]");
+
+    // values that the casters build on the reference they are given
+    EXPECT_EQ(value(std::map<std::string, ObjectCasterPoint>{{"p", {1, 0}}}).write(), R"({"p":{"x":1}})");
+    EXPECT_EQ(value(std::map<std::string, ArrayCasterPoint>{{"p", {1, 2}}}).write(), R"({"p":[1,2]})");
+    EXPECT_EQ(value(std::vector<std::vector<ObjectCasterPoint>>{{{1, 2}}, {}}).write(), R"([[{"x":1,"y":2}],[]])");
+
+    // fields of a reflected struct
+    const auto record = NestedWriteRecord{.inner = {"n", {1, 2}},
+                                          .grid = {{1}, {}, {2, 3}},
+                                          .groups = {{"g", {4}}, {"h", {}}},
+                                          .object_point = {0, 5},
+                                          .array_point = {6, 7},
+                                          .value_name = {"v"},
+                                          .empty = {},
+                                          .maybe_ids = std::vector<int>{8},
+                                          .pair = {9, "p"}};
+    const auto expected =
+        R"({"inner":{"name":"n","ids":[1,2]},"grid":[[1],[],[2,3]],"groups":{"g":[4],"h":[]},)"
+        R"("object_point":{"y":5},"array_point":[6,7],"value_name":"v","empty":[],"maybe_ids":[8],"pair":[9,"p"]})";
+    EXPECT_EQ(object(record).write(), expected);
+    EXPECT_EQ(value(std::vector<NestedWriteRecord>{record, record}).write(),
+              "[" + std::string(expected) + "," + std::string(expected) + "]");
+    EXPECT_EQ(value(std::map<std::string, NestedWriteRecord>{{"r", record}}).write(),
+              R"({"r":)" + std::string(expected) + "}");
+
+    // a value assigned into a document that is already built
+    auto obj = object(std::map<std::string, int>{{"a", 1}});
+    obj["b"] = std::vector<std::vector<int>>{{1}, {}};
+    obj["c"] = record.inner;
+    EXPECT_EQ(obj.write(), R"({"a":1,"b":[[1],[]],"c":{"name":"n","ids":[1,2]}})");
+}
+
 // NOLINTEND
 #if defined(__GNUC__)
 #pragma GCC diagnostic pop

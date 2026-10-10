@@ -1265,21 +1265,12 @@ namespace yyjson
                 std::ranges::input_range<Range> && create_value_callable<std::ranges::range_value_t<Range>> &&
                 (!create_primitive_callable<Range>) && (!convertible_to_create_array_callable<Range>);
 
-            // The types `set_value` stores straight into the value it is handed.  Reserving the
-            // elements of an array up front pays off only for these: anything else is built by
-            // `create_value`, which allocates a value of its own, so the reserved element ends up
-            // holding a copy of its header while the original is left behind.  That is one wasted
-            // value per element, and for an array of tuples it is a fifth of the document.
+            // The types `set_value` stores straight into the value it is handed.
             template <typename T>
             concept set_value_in_place =
                 std::same_as<T, std::nullptr_t> || std::same_as<T, bool> || std::signed_integral<T> ||
                 std::unsigned_integral<T> || std::floating_point<T> || std::same_as<T, const char*> ||
                 std::same_as<T, std::string_view> || std::same_as<T, std::string>;
-
-            template <typename Range>
-            concept reserved_create_value_range =
-                std::ranges::sized_range<Range> &&
-                set_value_in_place<std::remove_cvref_t<std::ranges::range_reference_t<Range>>>;
 
             template <typename Range>
             concept mutable_value_range =
@@ -1296,6 +1287,43 @@ namespace yyjson
                 std::ranges::input_range<Range> &&
                 key_value_like_create_value_callable<std::ranges::range_value_t<Range>> &&
                 (!convertible_to_create_object_callable<Range>);
+
+            template <typename T>
+            struct new_value_in_place;
+
+            // The ranges whose arrays are built with all their elements allocated up front.
+            template <typename Range>
+            concept sized_create_value_range = std::ranges::sized_range<Range> &&
+                                               (directly_create_visitable_object<std::ranges::range_value_t<Range>> ||
+                                                directly_create_reflected_object<std::ranges::range_value_t<Range>> ||
+                                                new_value_in_place<std::ranges::range_reference_t<Range>>::value);
+
+            // Whether an array of T is worth building with its elements reserved up front.  That pays
+            // off only when `mutable_document::set_new_value` builds T on the reserved value: anything
+            // else is built by `create_value`, which allocates a value of its own, so the reserved
+            // element ends up holding a copy of its header while the original is left behind.  Types
+            // with `to_json(array_ref&)` and the like are built in place too, but they are left out:
+            // they gain nothing over appending the value `create_value` makes, and reserving would
+            // put all their headers in one block, away from their children (an array of tuples
+            // writes about 30% slower that way).
+            template <typename T>
+            struct new_value_in_place
+            {
+                static consteval bool get() noexcept
+                {
+                    if constexpr (set_value_in_place<std::remove_cvref_t<T>>)
+                        return true;
+                    else if constexpr (create_primitive_callable<T>)
+                        return false;
+                    else if constexpr (create_object_callable<T>)
+                        return create_value_key_value_range<T>;
+                    else if constexpr (create_value_range<T>)
+                        return sized_create_value_range<T>;
+                    else
+                        return false;
+                }
+                static constexpr bool value = get();
+            };
 
             template <typename Range>
             concept mutable_value_key_value_range =
@@ -1455,18 +1483,9 @@ namespace yyjson
                 auto create_array(Range&& range, Args... args) noexcept
                 {
                     // range<T> -> array
-                    using value_type = std::remove_cvref_t<std::ranges::range_value_t<Range>>;
-                    if constexpr (std::ranges::sized_range<Range> && directly_create_visitable_object<value_type>)
+                    if constexpr (sized_create_value_range<Range>)
                     {
-                        return yyjson_mut_arr_with_visitable_objects(std::forward<Range>(range), args...);
-                    }
-                    else if constexpr (std::ranges::sized_range<Range> && directly_create_reflected_object<value_type>)
-                    {
-                        return yyjson_mut_arr_with_reflected_objects(std::forward<Range>(range), args...);
-                    }
-                    else if constexpr (reserved_create_value_range<Range>)
-                    {
-                        return yyjson_mut_arr_with_range(std::forward<Range>(range), args...);
+                        return yyjson_mut_arr_with_sized_range(nullptr, std::forward<Range>(range), args...);
                     }
                     else
                     {
@@ -1586,7 +1605,7 @@ namespace yyjson
                 auto create_object(Range&& range, Ts... ts) noexcept
                 {
                     // range<T> -> object
-                    return yyjson_mut_obj_with_range(std::forward<Range>(range), ts...);
+                    return yyjson_mut_obj_with_range(nullptr, std::forward<Range>(range), ts...);
                 }
                 template <std::ranges::input_range Range, copy_string_args... Ts>
                 requires mutable_value_key_value_range<Range>
@@ -1810,34 +1829,111 @@ namespace yyjson
                     return;
                 }
 
+                // The same as `set_value` for `dst` that is not linked into the document yet.  An array or
+                // an object is built on `dst` itself, instead of on a value of its own whose header is then
+                // copied into `dst`.  The cases follow the order in which `create_value` picks them.
+                template <create_value_callable T, copy_string_args... Ts>
+                bool set_new_value(yyjson_mut_val* dst, T&& t, Ts... ts) noexcept
+                {
+                    if constexpr (set_value_in_place<std::remove_cvref_t<T>>)
+                    {
+                        return set_value(dst, std::forward<T>(t), ts...);
+                    }
+                    else if constexpr (create_primitive_callable<T> && to_json_inp_defined<T>)
+                    {
+                        // the same as `create_primitive` for T with `to_json`
+                        using reference_type = to_json_input_ref<T>;
+                        if constexpr (base_of_object<reference_type>)
+                            dst->tag = YYJSON_TYPE_OBJ | YYJSON_SUBTYPE_NONE;
+                        else if constexpr (base_of_array<reference_type>)
+                            dst->tag = YYJSON_TYPE_ARR | YYJSON_SUBTYPE_NONE;
+                        else
+                            dst->tag = YYJSON_TYPE_NULL | YYJSON_SUBTYPE_NONE;
+                        auto vr = reference_type(*this, dst);
+                        to_json_wrapper(vr, std::forward<T>(t), ts...);
+                        return true;
+                    }
+                    else if constexpr (!create_primitive_callable<T> && !create_object_callable<T> &&
+                                       create_value_range<T> && sized_create_value_range<T>)
+                    {
+                        return yyjson_mut_arr_with_sized_range(dst, std::forward<T>(t), ts...) != nullptr;
+                    }
+                    else if constexpr (!create_primitive_callable<T> && create_object_callable<T> &&
+                                       create_value_key_value_range<T>)
+                    {
+                        return yyjson_mut_obj_with_range(dst, std::forward<T>(t), ts...) != nullptr;
+                    }
+                    else
+                    {
+                        return set_value(dst, std::forward<T>(t), ts...);
+                    }
+                }
+
+                // Allocates `count` values for the members of a new array or object, and returns its
+                // header: `dst` if it is given, or else a value allocated in front of the members.
+                yyjson_mut_val* allocate_container(yyjson_mut_val* dst, std::size_t count,
+                                                   yyjson_mut_val*& members) noexcept
+                {
+                    auto* doc = ptrs->self;
+                    if (yyjson_unlikely(!doc)) return nullptr;
+                    if (dst == nullptr)
+                    {
+                        dst = unsafe_yyjson_mut_val(doc, 1 + count);
+                        if (yyjson_likely(dst)) members = dst + 1;
+                        return dst;
+                    }
+                    if (count == 0) return dst;
+                    members = unsafe_yyjson_mut_val(doc, count);
+                    return yyjson_likely(members) ? dst : nullptr;
+                }
+
+                // Builds an array of a sized range on `dst`, or on a new value if `dst` is null.
+                template <std::ranges::input_range Range, copy_string_args... Ts>
+                requires sized_create_value_range<Range>
+                yyjson_mut_val* yyjson_mut_arr_with_sized_range(yyjson_mut_val* dst, Range&& range, Ts... ts)
+                {
+                    using value_type = std::remove_cvref_t<std::ranges::range_value_t<Range>>;
+                    if constexpr (directly_create_visitable_object<value_type>)
+                    {
+                        return yyjson_mut_arr_with_visitable_objects(dst, std::forward<Range>(range), ts...);
+                    }
+                    else if constexpr (directly_create_reflected_object<value_type>)
+                    {
+                        return yyjson_mut_arr_with_reflected_objects(dst, std::forward<Range>(range), ts...);
+                    }
+                    else
+                    {
+                        return yyjson_mut_arr_with_range(dst, std::forward<Range>(range), ts...);
+                    }
+                }
+
                 template <std::ranges::input_range Range, copy_string_args... Ts>
                 requires create_value_callable<std::ranges::range_value_t<Range>>
-                yyjson_mut_val* yyjson_mut_arr_with_range(Range&& range, Ts... ts)
+                yyjson_mut_val* yyjson_mut_arr_with_range(yyjson_mut_val* dst, Range&& range, Ts... ts)
                 {
                     const auto count = std::ranges::size(range);
-                    auto* doc = ptrs->self;
-                    if (yyjson_likely(doc &&
-                                      ((0 < count && count < (~static_cast<std::size_t>(0)) / sizeof(yyjson_mut_val)) ||
-                                       count == 0)))
+                    if (yyjson_likely((0 < count && count < (~static_cast<std::size_t>(0)) / sizeof(yyjson_mut_val)) ||
+                                      count == 0))
                     {
-                        auto* arr = unsafe_yyjson_mut_val(doc, 1 + count);
+                        yyjson_mut_val* values = nullptr;
+                        auto* arr = allocate_container(dst, count, values);
                         if (yyjson_likely(arr))
                         {
                             arr->tag = (static_cast<std::uint64_t>(count) << YYJSON_TAG_BIT) | YYJSON_TYPE_ARR;
                             if (count > 0)
                             {
-                                for (auto* val = arr + 1; auto&& v : range)
+                                for (auto* val = values; auto&& v : range)
                                 {
-                                    auto result =
-                                        set_value(val, forward_element<Range&&>(std::forward<decltype(v)>(v)), ts...);
+                                    auto result = set_new_value(
+                                        val, forward_element<Range&&>(std::forward<decltype(v)>(v)), ts...);
                                     if (yyjson_unlikely(!result)) [[unlikely]]
                                         return nullptr;
 
                                     val->next = val + 1;
                                     ++val;
                                 }
-                                arr[count].next = arr + 1;
-                                arr->uni.ptr = arr + count;
+                                values[count - 1].next = values;
+                                arr->uni.ptr = values + count - 1;
                             }
                             return arr;
                         }
@@ -1859,8 +1955,8 @@ namespace yyjson
                             if constexpr (count > 0)
                             {
                                 auto success = true;
-                                ((success = success &&
-                                            set_value(arr + Is + 1, std::get<Is>(std::forward<Tuple>(tuple)), ts...)),
+                                ((success = success && set_new_value(arr + Is + 1,
+                                                                     std::get<Is>(std::forward<Tuple>(tuple)), ts...)),
                                  ...);
                                 if (yyjson_unlikely(!success)) [[unlikely]]
                                     return nullptr;
@@ -1884,22 +1980,21 @@ namespace yyjson
                 }
 
                 template <std::ranges::sized_range Range, copy_string_args... Ts>
-                yyjson_mut_val* yyjson_mut_arr_with_visitable_objects(Range&& range, Ts... ts)
+                yyjson_mut_val* yyjson_mut_arr_with_visitable_objects(yyjson_mut_val* dst, Range&& range, Ts... ts)
                 {
                     using value_type = std::remove_cvref_t<std::ranges::range_value_t<Range>>;
                     constexpr auto field_count = visit_struct<value_type>::field_count;
                     const auto count = std::ranges::size(range);
-                    auto* doc = ptrs->self;
                     constexpr auto max_values = ~static_cast<std::size_t>(0) / sizeof(yyjson_mut_val);
-                    if (yyjson_likely(doc && count <= (max_values - 1) / ((field_count * 2) + 1)))
+                    if (yyjson_likely(count <= (max_values - 1) / ((field_count * 2) + 1)))
                     {
-                        auto* arr = unsafe_yyjson_mut_val(doc, 1 + (count * ((field_count * 2) + 1)));
+                        yyjson_mut_val* values = nullptr;
+                        auto* arr = allocate_container(dst, count * ((field_count * 2) + 1), values);
                         if (yyjson_likely(arr))
                         {
                             arr->tag = (static_cast<std::uint64_t>(count) << YYJSON_TAG_BIT) | YYJSON_TYPE_ARR;
                             if (count > 0)
                             {
-                                auto* values = arr + 1;
                                 auto* fields = values + count;
                                 for (std::size_t i = 0; auto&& v : std::forward<Range>(range))
                                 {
@@ -1929,32 +2024,31 @@ namespace yyjson
                 }
 
                 template <std::ranges::sized_range Range, copy_string_args... Ts>
-                yyjson_mut_val* yyjson_mut_arr_with_reflected_objects(Range&& range, Ts... ts)
+                yyjson_mut_val* yyjson_mut_arr_with_reflected_objects(yyjson_mut_val* dst, Range&& range, Ts... ts)
                 {
                     using value_type = std::remove_cvref_t<std::ranges::range_value_t<Range>>;
                     return yyjson_mut_arr_with_reflected_objects_impl(
-                        std::forward<Range>(range),
+                        dst, std::forward<Range>(range),
                         std::make_index_sequence<field_reflection::field_count<value_type>>{}, ts...);
                 }
 
                 template <std::ranges::sized_range Range, std::size_t... Is, copy_string_args... Ts>
-                yyjson_mut_val* yyjson_mut_arr_with_reflected_objects_impl(Range&& range, std::index_sequence<Is...>,
-                                                                           Ts... ts)
+                yyjson_mut_val* yyjson_mut_arr_with_reflected_objects_impl(yyjson_mut_val* dst, Range&& range,
+                                                                           std::index_sequence<Is...>, Ts... ts)
                 {
                     using value_type = std::remove_cvref_t<std::ranges::range_value_t<Range>>;
                     constexpr auto field_count = sizeof...(Is);
                     const auto count = std::ranges::size(range);
-                    auto* doc = ptrs->self;
                     constexpr auto max_values = ~static_cast<std::size_t>(0) / sizeof(yyjson_mut_val);
-                    if (yyjson_likely(doc && count <= (max_values - 1) / ((field_count * 2) + 1)))
+                    if (yyjson_likely(count <= (max_values - 1) / ((field_count * 2) + 1)))
                     {
-                        auto* arr = unsafe_yyjson_mut_val(doc, 1 + (count * ((field_count * 2) + 1)));
+                        yyjson_mut_val* values = nullptr;
+                        auto* arr = allocate_container(dst, count * ((field_count * 2) + 1), values);
                         if (yyjson_likely(arr))
                         {
                             arr->tag = (static_cast<std::uint64_t>(count) << YYJSON_TAG_BIT) | YYJSON_TYPE_ARR;
                             if (count > 0)
                             {
-                                auto* values = arr + 1;
                                 auto* fields = values + count;
                                 for (std::size_t i = 0; auto&& v : std::forward<Range>(range))
                                 {
@@ -1989,13 +2083,13 @@ namespace yyjson
 
                 template <std::ranges::input_range Range, copy_string_args... Ts>
                 requires key_value_like_create_value_callable<std::ranges::range_value_t<Range>>
-                yyjson_mut_val* yyjson_mut_obj_with_range(Range&& range, Ts... ts)
+                yyjson_mut_val* yyjson_mut_obj_with_range(yyjson_mut_val* dst, Range&& range, Ts... ts)
                 {
                     const auto count = std::ranges::size(range);
-                    auto* doc = ptrs->self;
-                    if (yyjson_likely(doc && count >= 0))
+                    if (yyjson_likely(count >= 0))
                     {
-                        yyjson_mut_val* obj = unsafe_yyjson_mut_val(doc, 1 + count * 2);
+                        yyjson_mut_val* members = nullptr;
+                        yyjson_mut_val* obj = allocate_container(dst, count * 2, members);
                         if (yyjson_likely(obj))
                         {
                             obj->tag = (static_cast<std::uint64_t>(count) << YYJSON_TAG_BIT) | YYJSON_TYPE_OBJ;
@@ -2003,8 +2097,8 @@ namespace yyjson
                             {
                                 for (size_t i = 0; auto&& v : std::forward<Range>(range))
                                 {
-                                    auto* key = obj + (i * 2 + 1);
-                                    auto* val = obj + (i * 2 + 2);
+                                    auto* key = members + (i * 2);
+                                    auto* val = members + (i * 2 + 1);
 
                                     // key
                                     {
@@ -2017,7 +2111,7 @@ namespace yyjson
 
                                     // value
                                     {
-                                        const auto result = set_value(
+                                        const auto result = set_new_value(
                                             val, forward_element<Range&&>(std::get<1>(std::forward<decltype(v)>(v))),
                                             ts...);
                                         if (yyjson_unlikely(!result)) [[unlikely]]
@@ -2029,8 +2123,8 @@ namespace yyjson
                                     ++i;
                                 }
 
-                                obj[count * 2].next = obj + 1;
-                                obj->uni.ptr = obj + (count * 2 - 1);
+                                members[(count * 2) - 1].next = members;
+                                obj->uni.ptr = members + ((count * 2) - 2);
                             }
                             return obj;
                         }
@@ -2078,7 +2172,7 @@ namespace yyjson
                         }
                         else
                         {
-                            success = doc.set_value(val, std::forward<Field>(field), ts...);
+                            success = doc.set_new_value(val, std::forward<Field>(field), ts...);
                             if (!success) [[unlikely]]
                                 return;
                         }
@@ -2104,27 +2198,30 @@ namespace yyjson
                     }
                 }
 
+                // Builds an object of the fields that `func` emits on `obj`, which is left as it is on failure.
                 template <typename Func>
-                yyjson_mut_val* yyjson_mut_obj_with_reflected_fields(std::size_t capacity, Func&& func,
-                                                                     bool exact_count = true)
+                bool set_object_with_reflected_fields(yyjson_mut_val* obj, std::size_t capacity, Func&& func,
+                                                      bool exact_count = true)
                 {
                     auto* doc = ptrs->self;
                     if (yyjson_likely(doc && capacity < (~static_cast<std::size_t>(0)) / (sizeof(yyjson_mut_val) * 2)))
                     {
-                        auto* obj = unsafe_yyjson_mut_val(doc, 1 + (capacity * 2));
-                        if (yyjson_likely(obj))
+                        yyjson_mut_val* fields = nullptr;
+                        if (capacity > 0)
                         {
-                            auto emitter = reflected_field_emitter{*this, obj, obj + 1, capacity};
-                            std::forward<Func>(func)(emitter);
-                            if (yyjson_unlikely(!emitter.success || (exact_count && emitter.count != capacity)))
-                                [[unlikely]]
-                                return nullptr;
-
-                            finish_reflected_object(obj, obj + 1, emitter.count);
-                            return obj;
+                            fields = unsafe_yyjson_mut_val(doc, capacity * 2);
+                            if (yyjson_unlikely(!fields)) return false;
                         }
+                        auto emitter = reflected_field_emitter{*this, obj, fields, capacity};
+                        std::forward<Func>(func)(emitter);
+                        if (yyjson_unlikely(!emitter.success || (exact_count && emitter.count != capacity)))
+                            [[unlikely]]
+                            return false;
+
+                        finish_reflected_object(obj, fields, emitter.count);
+                        return true;
                     }
-                    return nullptr;
+                    return false;
                 }
             };
 
@@ -3844,18 +3941,16 @@ namespace yyjson
                 template <typename Func>
                 void assign_reflected_fields(std::size_t max_count, Func&& func) noexcept
                 {
-                    auto* new_val =
-                        base::doc_.yyjson_mut_obj_with_reflected_fields(max_count, std::forward<Func>(func));
-                    assert(new_val != nullptr);
-                    base::doc_.assign_value(base::val_, new_val);
+                    [[maybe_unused]] const auto success =
+                        base::doc_.set_object_with_reflected_fields(base::val_, max_count, std::forward<Func>(func));
+                    assert(success);
                 }
                 template <typename Func>
                 void assign_reflected_fields_max(std::size_t max_count, Func&& func) noexcept
                 {
-                    auto* new_val =
-                        base::doc_.yyjson_mut_obj_with_reflected_fields(max_count, std::forward<Func>(func), false);
-                    assert(new_val != nullptr);
-                    base::doc_.assign_value(base::val_, new_val);
+                    [[maybe_unused]] const auto success = base::doc_.set_object_with_reflected_fields(
+                        base::val_, max_count, std::forward<Func>(func), false);
+                    assert(success);
                 }
                 template <key_type KeyType, typename T = void>  // penalize overload priority
                 auto emplace(KeyType&& key, std::initializer_list<value> list) noexcept
