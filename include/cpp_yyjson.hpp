@@ -6025,6 +6025,44 @@ namespace yyjson
                 next_element(first);
                 write_struct_key<Key>();
             }
+            // `next_struct_key` and a value of `bounded_size`, with one check of the space.
+            template <typename Key, typename T>
+            CPPYYJSON_ALWAYS_INLINE void write_bounded_field(bool& first, T v)
+            {
+                if (!pretty_)
+                {
+                    constexpr auto len = Key::quoted.size();
+                    ensure(len + 1 + bounded_size<T>());
+                    auto* p = buf_.cur;
+                    *p = ',';
+                    p += !first;
+                    std::memcpy(p, Key::quoted.data(), len);
+                    buf_.cur = put_bounded(p + len, v);
+                    first = false;
+                    return;
+                }
+                next_element(first);
+                write_struct_key<Key>();
+                ensure(bounded_size<T>());
+                buf_.cur = put_bounded(buf_.cur, v);
+            }
+            // `next_element` and a value of `bounded_size`, with one check of the space.
+            template <typename T>
+            CPPYYJSON_ALWAYS_INLINE void write_bounded_element(bool& first, T v)
+            {
+                if (!pretty_)
+                {
+                    ensure(1 + bounded_size<T>());
+                    auto* p = buf_.cur;
+                    *p = ',';
+                    buf_.cur = put_bounded(p + !first, v);
+                    first = false;
+                    return;
+                }
+                next_element(first);
+                ensure(bounded_size<T>());
+                buf_.cur = put_bounded(buf_.cur, v);
+            }
             template <typename Key>
             void write_struct_key()
             {
@@ -6044,25 +6082,30 @@ namespace yyjson
             }
 
 #pragma region scalars
+            CPPYYJSON_ALWAYS_INLINE static char* put_null(char* p) noexcept
+            {
+                std::memcpy(p, "null", 4);
+                return p + 4;
+            }
+            CPPYYJSON_ALWAYS_INLINE static char* put_bool(char* p, bool v) noexcept
+            {
+                if (v)
+                {
+                    std::memcpy(p, "true", 4);
+                    return p + 4;
+                }
+                std::memcpy(p, "false", 5);
+                return p + 5;
+            }
             void write_null()
             {
                 ensure(4);
-                std::memcpy(buf_.cur, "null", 4);
-                buf_.cur += 4;
+                buf_.cur = put_null(buf_.cur);
             }
             void write_bool(bool v)
             {
                 ensure(5);
-                if (v)
-                {
-                    std::memcpy(buf_.cur, "true", 4);
-                    buf_.cur += 4;
-                }
-                else
-                {
-                    std::memcpy(buf_.cur, "false", 5);
-                    buf_.cur += 5;
-                }
+                buf_.cur = put_bool(buf_.cur, v);
             }
             // The integer writer of yyjson: the value is split by 10^8 and 10^4 with multiplications, and the
             // digits are copied in pairs.
@@ -6075,22 +6118,25 @@ namespace yyjson
                 }
                 return a;
             }();
-            static void write_pair(char* p, std::uint32_t v) noexcept { std::memcpy(p, &digit_pairs[v * 2], 2); }
+            CPPYYJSON_ALWAYS_INLINE static void write_pair(char* p, std::uint32_t v) noexcept
+            {
+                std::memcpy(p, &digit_pairs[v * 2], 2);
+            }
             // the first pair, without its leading zero
-            static char* write_first_pair(char* p, std::uint32_t v) noexcept
+            CPPYYJSON_ALWAYS_INLINE static char* write_first_pair(char* p, std::uint32_t v) noexcept
             {
                 const auto lz = static_cast<std::uint32_t>(v < 10);
                 std::memcpy(p, &digit_pairs[(v * 2) + lz], 2);
                 return p + 2 - lz;
             }
-            static char* write_u32_len_4(char* p, std::uint32_t v) noexcept
+            CPPYYJSON_ALWAYS_INLINE static char* write_u32_len_4(char* p, std::uint32_t v) noexcept
             {
                 const auto aa = (v * 5243) >> 19;
                 write_pair(p, aa);
                 write_pair(p + 2, v - (aa * 100));
                 return p + 4;
             }
-            static char* write_u32_len_8(char* p, std::uint32_t v) noexcept
+            CPPYYJSON_ALWAYS_INLINE static char* write_u32_len_8(char* p, std::uint32_t v) noexcept
             {
                 const auto aabb = static_cast<std::uint32_t>((std::uint64_t{v} * 109951163) >> 40);
                 const auto ccdd = v - (aabb * 10000);
@@ -6102,7 +6148,7 @@ namespace yyjson
                 write_pair(p + 6, ccdd - (cc * 100));
                 return p + 8;
             }
-            static char* write_u32_len_1_to_8(char* p, std::uint32_t v) noexcept
+            CPPYYJSON_ALWAYS_INLINE static char* write_u32_len_1_to_8(char* p, std::uint32_t v) noexcept
             {
                 if (v < 100) return write_first_pair(p, v);
                 if (v < 10000)
@@ -6132,7 +6178,7 @@ namespace yyjson
                 write_pair(p + 4, ccdd - (cc * 100));
                 return p + 6;
             }
-            static char* write_u64(char* p, std::uint64_t v) noexcept
+            CPPYYJSON_ALWAYS_INLINE static char* write_u64(char* p, std::uint64_t v) noexcept
             {
                 if (v < 100000000) return write_u32_len_1_to_8(p, static_cast<std::uint32_t>(v));
                 if (v < 100000000ull * 100000000ull)
@@ -6149,18 +6195,54 @@ namespace yyjson
                 p = write_u32_len_4(p, static_cast<std::uint32_t>(high - (std::uint64_t{top} * 10000)));
                 return write_u32_len_8(p, low);
             }
+            CPPYYJSON_ALWAYS_INLINE static char* put_integer(char* p, std::uint64_t v) noexcept
+            {
+                return write_u64(p, v);
+            }
+            CPPYYJSON_ALWAYS_INLINE static char* put_integer(char* p, std::int64_t v) noexcept
+            {
+                *p = '-';
+                return write_u64(p + (v < 0),
+                                 v < 0 ? 0 - static_cast<std::uint64_t>(v) : static_cast<std::uint64_t>(v));
+            }
             void write_integer(std::uint64_t v)
             {
                 ensure(24);
-                buf_.cur = write_u64(buf_.cur, v);
+                buf_.cur = put_integer(buf_.cur, v);
             }
             void write_integer(std::int64_t v)
             {
                 ensure(24);
-                auto* p = buf_.cur;
-                *p = '-';
-                buf_.cur =
-                    write_u64(p + (v < 0), v < 0 ? 0 - static_cast<std::uint64_t>(v) : static_cast<std::uint64_t>(v));
+                buf_.cur = put_integer(buf_.cur, v);
+            }
+            // The longest text of a value that `write_value` writes as null, a boolean or an integer, or 0 for
+            // any other value.
+            template <typename T>
+            static consteval std::size_t bounded_size()
+            {
+                using U = std::remove_cvref_t<T>;
+                if constexpr (std::same_as<U, std::nullptr_t>)
+                    return 4;
+                else if constexpr (std::same_as<U, bool>)
+                    return 5;
+                else if constexpr (std::integral<U>)
+                    return 20;
+                else
+                    return 0;
+            }
+            // Writes such a value without checking the space.
+            template <typename T>
+            CPPYYJSON_ALWAYS_INLINE static char* put_bounded(char* p, T v) noexcept
+            {
+                using U = std::remove_cvref_t<T>;
+                if constexpr (std::same_as<U, std::nullptr_t>)
+                    return put_null(p);
+                else if constexpr (std::same_as<U, bool>)
+                    return put_bool(p, v);
+                else if constexpr (std::unsigned_integral<U>)
+                    return put_integer(p, static_cast<std::uint64_t>(v));
+                else
+                    return put_integer(p, static_cast<std::int64_t>(v));
             }
             CPPYYJSON_COLD void write_non_finite(double v)
             {
@@ -7067,7 +7149,7 @@ namespace yyjson
                 write_string(v);
             }
             template <to_json_inp_defined T>
-            void write_primitive(T&& t)
+            CPPYYJSON_ALWAYS_INLINE void write_primitive(T&& t)
             {
                 write_in_place<to_json_input_ref<T>>(std::forward<T>(t));
             }
@@ -7088,14 +7170,34 @@ namespace yyjson
             }
             template <std::ranges::input_range Range>
             requires create_value_range<Range> || mutable_value_range<Range> || reader_value_ref_range<Range>
-            void write_array(Range&& range)
+            CPPYYJSON_ALWAYS_INLINE void write_array(Range&& range)
+            {
+                if constexpr (requires { std::ranges::empty(range); })
+                {
+                    if (std::ranges::empty(range))
+                    {
+                        ensure(2);
+                        std::memcpy(buf_.cur, "[]", 2);
+                        buf_.cur += 2;
+                        return;
+                    }
+                }
+                write_elements(std::forward<Range>(range));
+            }
+            template <std::ranges::input_range Range>
+            void write_elements(Range&& range)
             {
                 open('[');
                 auto first = true;
                 for (auto&& v : std::forward<Range>(range))
                 {
-                    next_element(first);
-                    write_value(forward_element<Range&&>(std::forward<decltype(v)>(v)));
+                    if constexpr (bounded_size<decltype(v)>() != 0)
+                        write_bounded_element(first, v);
+                    else
+                    {
+                        next_element(first);
+                        write_value(forward_element<Range&&>(std::forward<decltype(v)>(v)));
+                    }
                 }
                 close(']', first);
             }
@@ -7130,44 +7232,58 @@ namespace yyjson
             }
 
             template <typename Key, typename Field>
-            void write_field(bool& first, Field&& field)
+            CPPYYJSON_ALWAYS_INLINE void write_field(bool& first, Field&& field)
             {
                 if constexpr (omittable<Field>)
                 {
                     if (should_omit_field(field)) return;
                 }
-                next_struct_key<Key>(first);
-                write_value(std::forward<Field>(field));
+                if constexpr (Key::plain && bounded_size<Field>() != 0)
+                    write_bounded_field<Key>(first, field);
+                else
+                {
+                    next_struct_key<Key>(first);
+                    write_value(std::forward<Field>(field));
+                }
+            }
+
+            template <typename T, std::size_t... Is>
+            CPPYYJSON_ALWAYS_INLINE void write_visitable_fields(bool& first, T&& t, std::index_sequence<Is...>)
+            {
+                using U = std::remove_cvref_t<T>;
+                constexpr auto& members = visit_struct<U>::members;
+                if constexpr (std::is_rvalue_reference_v<T&&>)
+                    (write_field<visitable_key<U, Is>>(first, std::move(t.*std::get<Is>(members))), ...);
+                else
+                    (write_field<visitable_key<U, Is>>(first, t.*std::get<Is>(members)), ...);
+            }
+            template <typename T, std::size_t... Is>
+            CPPYYJSON_ALWAYS_INLINE void write_reflected_fields(bool& first, T&& t, std::index_sequence<Is...>)
+            {
+                using U = std::remove_cvref_t<T>;
+                (write_field<reflected_key<U, Is>>(first, yyjson::detail::forward_field<Is>(std::forward<T>(t))), ...);
             }
 
             // What `to_json(V&, t)` of the caster of T writes.  The casters of this library are followed
             // here, and any other is called on a mutable document of its own.
             template <typename V, typename T>
-            void write_in_place(T&& t)
+            CPPYYJSON_ALWAYS_INLINE void write_in_place(T&& t)
             {
                 using U = std::remove_cvref_t<T>;
                 if constexpr (to_json_inp_def<V, T> && visitable<U>)
                 {
                     open('{');
                     auto first = true;
-                    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                        constexpr auto& members = visit_struct<U>::members;
-                        if constexpr (std::is_rvalue_reference_v<T&&>)
-                            (write_field<visitable_key<U, Is>>(first, std::move(t.*std::get<Is>(members))), ...);
-                        else
-                            (write_field<visitable_key<U, Is>>(first, t.*std::get<Is>(members)), ...);
-                    }(std::make_index_sequence<visit_struct<U>::field_count>{});
+                    write_visitable_fields(first, std::forward<T>(t),
+                                           std::make_index_sequence<visit_struct<U>::field_count>{});
                     close('}', first);
                 }
                 else if constexpr (to_json_inp_def<V, T>)
                 {
                     open('{');
                     auto first = true;
-                    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                        (write_field<reflected_key<U, Is>>(first,
-                                                           yyjson::detail::forward_field<Is>(std::forward<T>(t))),
-                         ...);
-                    }(std::make_index_sequence<field_reflection::field_count<U>>{});
+                    write_reflected_fields(first, std::forward<T>(t),
+                                           std::make_index_sequence<field_reflection::field_count<U>>{});
                     close('}', first);
                 }
                 else if constexpr (std::derived_from<caster<U>, yyjson::detail::builtin_caster> &&
