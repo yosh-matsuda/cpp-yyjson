@@ -4733,6 +4733,12 @@ TEST(DirectWriter, Buffer)
         EXPECT_EQ(e.code(), YYJSON_WRITE_ERROR_NAN_OR_INF);
     }
     EXPECT_TRUE(out.empty());
+    auto grown = std::vector<double>(1000, 1.5);
+    grown.push_back(std::numeric_limits<double>::quiet_NaN());
+    EXPECT_THROW((void)write(grown), write_error);
+    out = "previous";
+    EXPECT_THROW(write(grown, out), write_error);
+    EXPECT_TRUE(out.empty());
     EXPECT_THROW((void)write(std::string("\xff")), write_error);
     EXPECT_EQ(std::string(write(std::string("\xff"), WriteFlag::AllowInvalidUnicode)), "\"\xff\"");
 

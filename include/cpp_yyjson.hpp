@@ -5883,7 +5883,9 @@ namespace yyjson
         // writing it with yyjson.
         class direct_writer
         {
-            direct_write_buffer& buf_;
+            // A copy of the caller's buffer, one indirection closer, handed back on destruction.
+            direct_write_buffer& out_;
+            direct_write_buffer buf_;
             const std::uint8_t* enc_table_;
             const char* hex_;
             yyjson_write_flag flg_;
@@ -5896,7 +5898,8 @@ namespace yyjson
 
         public:
             direct_writer(direct_write_buffer& buf, yyjson_write_flag flg) noexcept
-                : buf_(buf),
+                : out_(buf),
+                  buf_(buf),
                   enc_table_(enc_tables[((flg & YYJSON_WRITE_ESCAPE_UNICODE) ? 2 : 0) +
                                         ((flg & YYJSON_WRITE_ESCAPE_SLASHES) ? 1 : 0)]
                                  .data()),
@@ -5918,6 +5921,9 @@ namespace yyjson
                   inv_((flg & YYJSON_WRITE_ALLOW_INVALID_UNICODE) != 0)
             {
             }
+            direct_writer(const direct_writer&) = delete;
+            direct_writer& operator=(const direct_writer&) = delete;
+            ~direct_writer() { out_ = buf_; }
 
             template <typename T>
             void write_root(T&& t)
