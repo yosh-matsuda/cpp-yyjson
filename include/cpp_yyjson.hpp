@@ -651,8 +651,25 @@ namespace yyjson
         template <typename T>
         concept std_array = is_std_array<std::remove_cvref_t<T>>::value;
 
+        template <typename T>
+        struct default_caster;
+
+        // Tells whether the field at index I shares no byte with the other fields, which a field marked
+        // `[[no_unique_address]]` may do.  A new object can then be constructed in the place of the field.
+        template <std::size_t I, typename... Fields>
+        CPPYYJSON_ALWAYS_INLINE inline bool has_own_bytes(const Fields&... fields) noexcept
+        {
+            const auto address = [](const auto& f) { return reinterpret_cast<const std::byte*>(std::addressof(f)); };
+            const auto* first = address(std::get<I>(std::tie(fields...)));
+            const auto* last = first + sizeof(std::tuple_element_t<I, std::tuple<Fields...>>);
+            return [&]<std::size_t... Js>(std::index_sequence<Js...>) {
+                return ((Js == I || address(fields) + sizeof(fields) <= first || last <= address(fields)) && ...);
+            }(std::index_sequence_for<Fields...>{});
+        }
+
+        // `replaceable` tells whether a new object may be constructed in the place of the field.
         template <typename Field, typename Json>
-        void assign_reflected_field(Field& field, const Json& value)
+        void assign_reflected_field(Field& field, const Json& value, bool replaceable)
         {
             using field_type = std::remove_cvref_t<Field>;
             if constexpr (requires { caster<field_type>::from_json(field, value); })
@@ -660,6 +677,11 @@ namespace yyjson
                 // A field that cannot be returned by value, such as a proxy or a non-movable type,
                 // is assigned in place. The caster decides which type it casts the JSON value to.
                 caster<field_type>::from_json(field, value);
+            }
+            else if constexpr (requires { default_caster<field_type>::assign_in_place(field, value, replaceable); })
+            {
+                if (!default_caster<field_type>::assign_in_place(field, value, replaceable))
+                    field = cast<field_type>(value);
             }
             else
             {
@@ -772,12 +794,25 @@ namespace yyjson
                 std::array<std::string_view, sizeof...(Is)>{field_reflection::field_name<T, Is>...});
         }(std::make_index_sequence<field_reflection::field_count<T>>{});
 
+        template <std::size_t I, typename T>
+        CPPYYJSON_ALWAYS_INLINE inline bool reflected_field_replaceable(T& t) noexcept
+        {
+            if constexpr (std::is_reference_v<field_reflection::field_type<T, I>>)
+                return false;
+            else
+                return [&]<std::size_t... Js>(std::index_sequence<Js...>) {
+                    return has_own_bytes<I>(field_reflection::get_field<Js>(t)...);
+                }(std::make_index_sequence<field_reflection::field_count<T>>{});
+        }
+
         template <typename T, typename Json>
         void assign_reflected_fields(T& t, const Json& obj)
         {
             assign_fields_by_key(reflected_key_matcher<T>, obj, [&t](std::size_t index, const auto& value) {
                 [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                    (void)((index == Is && (assign_reflected_field(field_reflection::get_field<Is>(t), value), true)) ||
+                    (void)((index == Is && (assign_reflected_field(field_reflection::get_field<Is>(t), value,
+                                                                   reflected_field_replaceable<Is>(t)),
+                                            true)) ||
                            ...);
                 }(std::make_index_sequence<field_reflection::field_count<T>>{});
             });
@@ -791,7 +826,14 @@ namespace yyjson
         {
             assign_fields_by_key(matcher, obj, [&](std::size_t index, const auto& value) {
                 [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                    (void)((index == Is && (assign_reflected_field(t.*std::get<Is>(members), value), true)) || ...);
+                    const auto replaceable = [&]<std::size_t I>(std::integral_constant<std::size_t, I>) {
+                        return has_own_bytes<I>(t.*std::get<Is>(members)...);
+                    };
+                    (void)((index == Is &&
+                            (assign_reflected_field(t.*std::get<Is>(members), value,
+                                                    replaceable(std::integral_constant<std::size_t, Is>{})),
+                             true)) ||
+                           ...);
                 }(std::index_sequence_for<Members...>{});
             });
         }
@@ -878,9 +920,6 @@ namespace yyjson
             else
                 return field_reflection::get_field<I>(t);
         }
-
-        template <typename T>
-        struct default_caster;
     }  // namespace detail
 
     namespace reader
@@ -5070,6 +5109,37 @@ namespace yyjson
             }
             else
                 detail::throw_bad_cast("{} is not constructible from JSON integer", detail::type_name<U>());
+        }
+
+        // Assigns a value of a read document to a field of a struct as `field = cast<T>(json)` does, but
+        // without a temporary T.  Returns false to leave the value to `cast<T>`.  `replaceable` tells
+        // whether a new object may be constructed in the place of the field.
+        template <typename Json>
+        requires std::same_as<Json, reader::const_value_ref> && (!reader::detail::from_json_val_usr_defined<T>)
+        CPPYYJSON_ALWAYS_INLINE static bool assign_in_place(T& field, const Json& json, bool replaceable)
+        {
+            const auto* val = json.val_;
+            if constexpr (std::same_as<T, std::string>)
+            {
+                if (unsafe_yyjson_is_str(val)) [[likely]]
+                {
+                    field.assign(unsafe_yyjson_get_str(val), unsafe_yyjson_get_len(val));
+                    return true;
+                }
+            }
+            else if constexpr (reflected_assignable_in_place<T, Json> && std::is_nothrow_default_constructible_v<T>)
+            {
+                // `cast<T>` starts from `T()`, not from the value that the default member initializer of
+                // the enclosing struct gives to the field.
+                if (const auto obj = json.as_object(); replaceable && obj.has_value())
+                {
+                    std::destroy_at(std::addressof(field));
+                    std::construct_at(std::addressof(field));
+                    detail::assign_reflected_fields(field, *obj);
+                    return true;
+                }
+            }
+            return false;
         }
 
         template <typename Json>

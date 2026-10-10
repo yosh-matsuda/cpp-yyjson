@@ -4250,6 +4250,78 @@ TEST(Reader, ReflectedStructInContainer)
               (std::vector<VisitableRecord>{{1, 0.0, "a"}}));
 }
 
+struct PresetRecord
+{
+    InnerRecord inner = {5, {5}};
+    std::string text = "preset";
+    bool operator==(const PresetRecord&) const = default;
+};
+
+struct VisitablePresetRecord
+{
+    InnerRecord inner = {5, {5}};
+    std::string text = "preset";
+    bool operator==(const VisitablePresetRecord&) const = default;
+};
+
+VISITABLE_STRUCT(VisitablePresetRecord, inner, text);
+
+template <typename T>
+void test_field_in_place()
+{
+    using namespace yyjson;
+
+    const auto check = [](std::string_view json, const T& expected) {
+        EXPECT_EQ(cast<T>(read(json)), expected) << json;
+        EXPECT_EQ(cast<T>(value(read(json))), expected) << json;
+    };
+
+    // a struct field starts from the defaults of its type, not from the default of the enclosing struct
+    check(R"({"inner":{"x":2},"text":"a string longer than the small string buffer"})",
+          T{{2, {1, 2}}, "a string longer than the small string buffer"});
+    check(R"({"inner":{}})", T{{1, {1, 2}}, "preset"});
+    check(R"({})", T{});
+
+    // the last one of duplicate keys replaces the whole field
+    check(R"({"inner":{"v":[3]},"inner":{"x":4},"text":"a","text":""})", T{{4, {1, 2}}, ""});
+
+    // a value of a wrong type is still an error
+    EXPECT_THROW(cast<T>(read(R"({"inner":null})")), bad_cast);
+    EXPECT_THROW(cast<T>(read(R"({"inner":[]})")), bad_cast);
+    EXPECT_THROW(cast<T>(read(R"({"text":1})")), bad_cast);
+    // an error in the middle of a struct that has been reconstructed in place
+    EXPECT_THROW(
+        cast<T>(read(R"({"text":"a string longer than the small string buffer","inner":{"x":2,"v":[1,"s"]}})")),
+        bad_cast);
+}
+
+struct PaddedRecord
+{
+    std::string s;
+    char c = 'a';
+    bool operator==(const PaddedRecord&) const = default;
+};
+
+struct OverlappedRecord
+{
+    // `flag` may be placed in the tail padding of `padded`
+    [[no_unique_address]] PaddedRecord padded;
+    bool flag = false;
+    bool operator==(const OverlappedRecord&) const = default;
+};
+
+TEST(Reader, ReflectedFieldInPlace)
+{
+    using namespace yyjson;
+
+    test_field_in_place<PresetRecord>();
+    test_field_in_place<VisitablePresetRecord>();
+
+    EXPECT_EQ(cast<OverlappedRecord>(read(R"({"flag":true,"padded":{"s":"x","c":98}})")),
+              (OverlappedRecord{{"x", 'b'}, true}));
+    EXPECT_EQ(cast<OverlappedRecord>(read(R"({"flag":true,"padded":{}})")), (OverlappedRecord{{"", 'a'}, true}));
+}
+
 // NOLINTEND
 #if defined(__GNUC__)
 #pragma GCC diagnostic pop
