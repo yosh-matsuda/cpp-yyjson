@@ -75,6 +75,10 @@ if(CPPYYJSON_BUILD_BENCH)
       PRIVATE ${PROJECT_NAME} benchmark::benchmark rapidjson nlohmann_json
       nlohmann_json::nlohmann_json)
 
+  add_executable("${PROJECT_NAME}_bench_typed" bench_typed.cpp)
+  target_link_libraries("${PROJECT_NAME}_bench_typed"
+                        PRIVATE ${PROJECT_NAME} benchmark::benchmark)
+
   # Glaze benchmarks.  Glaze requires C++23, which the rest of the project does
   # not, so its rows are built from the same sources into executables of their
   # own, the way the upstream yyjson rows are.  cpp-yyjson is linked in as the
@@ -88,7 +92,10 @@ if(CPPYYJSON_BUILD_BENCH)
   target_link_libraries(
     glaze_bench_write PRIVATE ${PROJECT_NAME} benchmark::benchmark glaze::glaze
                               rapidjson nlohmann_json nlohmann_json::nlohmann_json)
-  foreach(target glaze_bench_read glaze_bench_write)
+  add_executable(glaze_bench_typed bench_typed.cpp)
+  target_link_libraries(
+    glaze_bench_typed PRIVATE ${PROJECT_NAME} benchmark::benchmark glaze::glaze)
+  foreach(target glaze_bench_read glaze_bench_write glaze_bench_typed)
     target_compile_features(${target} PRIVATE cxx_std_23)
     target_compile_definitions(${target} PRIVATE CPPYYJSON_GLAZE_BENCHMARKS)
   endforeach()
@@ -122,8 +129,8 @@ if(CPPYYJSON_BUILD_BENCH)
   # cannot take part in it; both libraries keep the flags they are shipped with,
   # which is the comparison the benchmarks are about.
   foreach(target "${PROJECT_NAME}_bench_read" "${PROJECT_NAME}_bench_write"
-                 yyjson_bench_read yyjson_bench_write glaze_bench_read
-                 glaze_bench_write)
+                 "${PROJECT_NAME}_bench_typed" yyjson_bench_read yyjson_bench_write
+                 glaze_bench_read glaze_bench_write glaze_bench_typed)
     cpp_yyjson_enable_lto(${target})
     if(NOT MSVC AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64)$")
       target_compile_options(${target} PRIVATE -march=x86-64-v3)
