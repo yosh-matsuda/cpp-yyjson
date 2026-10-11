@@ -43,16 +43,19 @@
 
 #if defined(__GNUC__) || defined(__clang__)
 #define CPPYYJSON_ALWAYS_INLINE [[gnu::always_inline]]
+#define CPPYYJSON_LAMBDA_ALWAYS_INLINE __attribute__((always_inline))
 #define CPPYYJSON_NOINLINE [[gnu::noinline]]
 #define CPPYYJSON_COLD [[gnu::cold, gnu::noinline]]
 #define CPPYYJSON_HOT_NOINLINE [[gnu::hot, gnu::noinline]]
 #elif defined(_MSC_VER)
 #define CPPYYJSON_ALWAYS_INLINE
+#define CPPYYJSON_LAMBDA_ALWAYS_INLINE
 #define CPPYYJSON_NOINLINE __declspec(noinline)
 #define CPPYYJSON_COLD __declspec(noinline)
 #define CPPYYJSON_HOT_NOINLINE __declspec(noinline)
 #else
 #define CPPYYJSON_ALWAYS_INLINE
+#define CPPYYJSON_LAMBDA_ALWAYS_INLINE
 #define CPPYYJSON_NOINLINE
 #define CPPYYJSON_COLD
 #define CPPYYJSON_HOT_NOINLINE
@@ -10577,7 +10580,7 @@ namespace yyjson
                                                      Assign&& assign)
             {
                 auto hint = std::size_t{0};
-                read_members([&] {
+                read_members([&]() CPPYYJSON_LAMBDA_ALWAYS_INLINE {
                     auto index = N;
                     if (hint < N)
                     {
