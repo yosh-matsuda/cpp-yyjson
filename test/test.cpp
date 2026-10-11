@@ -5407,6 +5407,12 @@ TEST(Reader, RealToIntegers)
     EXPECT_THROW((void)read<std::vector<std::uint8_t>>("[1.5,-2.5]"), bad_cast);
     EXPECT_THROW((void)read<std::uint16_t>("1e300"), bad_cast);
 
+    // a number is not the size of a container
+    EXPECT_THROW((void)read("2").cast<std::vector<int>>(), bad_cast);
+    EXPECT_THROW((void)read("-2.5").cast<std::vector<std::string>>(), bad_cast);
+    EXPECT_THROW((void)read("true").cast<std::list<int>>(), bad_cast);
+    EXPECT_THROW((void)read("1e300").cast<std::optional<std::vector<int>>>(), bad_cast);
+    EXPECT_THROW((void)read<std::vector<std::vector<int>>>("[2]"), bad_cast);
 }
 
 TEST(Reader, NullToStrings)

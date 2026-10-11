@@ -5111,11 +5111,25 @@ namespace yyjson
             requires requires(const Json& arr) { cast<std::ranges::range_value_t<T>>(arr.front()); };
         };
 
+        // A container takes a number as its size, which is not the value that the number gives.
+        template <typename T>
+        struct json_scalar_target
+        {
+            using type = T;
+        };
+        template <typename T>
+        struct json_scalar_target<std::optional<T>>
+        {
+            using type = T;
+        };
+
         template <typename T, typename Arg>
 #ifdef _MSC_VER
-        concept json_scalar_constructible = requires { T(std::declval<Arg>()); };
+        concept json_scalar_constructible =
+            (!std::ranges::range<typename json_scalar_target<T>::type>) && requires { T(std::declval<Arg>()); };
 #else
-        concept json_scalar_constructible = std::constructible_from<T, Arg>;
+        concept json_scalar_constructible =
+            (!std::ranges::range<typename json_scalar_target<T>::type>) && std::constructible_from<T, Arg>;
 #endif
 
         template <typename T>
