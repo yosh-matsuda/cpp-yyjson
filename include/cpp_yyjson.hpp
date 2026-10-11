@@ -8373,6 +8373,41 @@ namespace yyjson
         concept builtin_variant = yyjson::detail::variant_json_kinds<T>::is_variant &&
                                   std::derived_from<caster<T>, yyjson::detail::builtin_caster>;
 
+        template <typename T>
+        concept builtin_tuple = yyjson::detail::tuple_like<T> && !yyjson::detail::std_array<T> &&
+                                std::derived_from<caster<T>, yyjson::detail::builtin_caster> &&
+                                requires(const const_value_ref& v) {
+                                    { caster<T>::from_json(v) } -> std::same_as<T>;
+                                };
+
+        // Whether the caster of the tuple T takes a JSON object, a member for each element, and whether it takes
+        // a JSON array, a value for each element.
+        template <typename T>
+        constexpr bool tuple_from_object = []<std::size_t... I>(std::index_sequence<I...>) {
+            if constexpr ((yyjson::detail::key_value_like<std::tuple_element_t<I, T>> && ...))
+                return requires(const const_object_ref& obj) {
+                    (static_cast<std::tuple_element_t<0, std::tuple_element_t<I, T>>>(std::get<0>(*obj.begin())), ...);
+                    (cast<std::tuple_element_t<1, std::tuple_element_t<I, T>>>(std::get<1>(*obj.begin())), ...);
+                };
+            else
+                return false;
+        }(std::make_index_sequence<std::tuple_size_v<T>>{});
+        template <typename T>
+        constexpr bool tuple_from_array = []<std::size_t... I>(std::index_sequence<I...>) {
+            return requires(const const_value_ref& v) { (cast<std::tuple_element_t<I, T>>(v), ...); };
+        }(std::make_index_sequence<std::tuple_size_v<T>>{});
+        // Whether the keys of the members that the tuple T takes are copied, so that the reader can give them
+        // from the text, which does not outlive the result.
+        template <typename T>
+        constexpr bool tuple_copies_keys = []<std::size_t... I>(std::index_sequence<I...>) {
+            if constexpr ((yyjson::detail::key_value_like<std::tuple_element_t<I, T>> && ...))
+                return (std::same_as<std::remove_cv_t<std::tuple_element_t<0, std::tuple_element_t<I, T>>>,
+                                     std::string> &&
+                        ...);
+            else
+                return false;
+        }(std::make_index_sequence<std::tuple_size_v<T>>{});
+
         class direct_reader
         {
             using utf8 = writer::detail::direct_writer;
@@ -8429,6 +8464,22 @@ namespace yyjson
                                         seen{}) ||
                                     ...);
                         }(std::make_index_sequence<std::variant_size_v<T>>{});
+                    else if constexpr (builtin_tuple<T>)
+                        return []<std::size_t... Is>(std::index_sequence<Is...>) {
+                            auto result = false;
+                            if constexpr (tuple_from_object<T>)
+                                result = (!tuple_copies_keys<T> && Loop) ||
+                                         (documents_of_value<std::remove_cv_t<std::tuple_element_t<
+                                                                 1, std::tuple_element_t<Is, T>>>,
+                                                             Loop>(seen{}) ||
+                                          ...);
+                            if constexpr (tuple_from_array<T>)
+                                result = result ||
+                                         (documents_of_value<std::remove_cv_t<std::tuple_element_t<Is, T>>, Loop>(
+                                              seen{}) ||
+                                          ...);
+                            return result;
+                        }(std::make_index_sequence<std::tuple_size_v<T>>{});
                     else if constexpr (from_json_val_usr_defined<T>)
                     {
                         if constexpr (yyjson::detail::shared_ptr_like<T> &&
@@ -9416,6 +9467,115 @@ namespace yyjson
                 return v;
             }
 
+            // Reads the value at `cur_` into `target` as `target = read_value<T>()` does, but writes a string into
+            // the buffer `target` already has.
+            template <typename T>
+            CPPYYJSON_ALWAYS_INLINE void assign_value(T& target)
+            {
+                if constexpr (std::same_as<T, std::string>)
+                {
+                    if (*cur_ == '"')
+                    {
+                        const auto str = scan_string();
+                        if (!str.escaped) [[likely]]
+                            target.assign(str.begin, str.end);
+                        else
+                            unescape(str.begin, str.end, target);
+                        return;
+                    }
+                }
+                target = read_value<T>();
+            }
+
+            // Reads the value at `cur_` into the tuple T as its caster reads it from a document: the members of an
+            // object or the values of an array into the elements in order, leaving those after them
+            // value-initialized.
+            template <typename T>
+            T read_tuple()
+            {
+                constexpr auto size = std::tuple_size_v<T>;
+                auto result = T();
+                // reads the element I if `i` is I
+                const auto element = [&]<std::size_t I>(std::size_t i, auto read) {
+                    if (i == I) read(std::get<I>(result), std::type_identity<std::tuple_element_t<I, T>>{});
+                };
+                const auto each = [&](std::size_t i, auto read) {
+                    [&]<std::size_t... I>(std::index_sequence<I...>) {
+                        (element.template operator()<I>(i, read), ...);
+                    }(std::make_index_sequence<size>{});
+                };
+                if (*cur_ == '{')
+                {
+                    if constexpr (tuple_from_object<T> && tuple_copies_keys<T>)
+                    {
+                        auto i = std::size_t{0};
+                        read_members([&] {
+                            if (i == size) fail();
+                            each(i++, [&]<typename E>(auto& e, std::type_identity<E>) {
+                                using key_type = std::tuple_element_t<0, E>;
+                                using value_type = std::tuple_element_t<1, E>;
+                                if constexpr (std::same_as<key_type, std::string> && !std::is_const_v<value_type> &&
+                                              std::is_move_assignable_v<value_type>)
+                                {
+                                    // the key and the value go straight into the element; constructing E and moving
+                                    // it in copies short strings with `rep movsb` under GCC
+                                    auto& key = std::get<0>(e);
+                                    if (const auto s = read_string(key); s.data() != key.data()) key.assign(s);
+                                    read_colon();
+                                    assign_value(std::get<1>(e));
+                                }
+                                else
+                                {
+                                    auto key = std::string(read_string(scratch_));
+                                    read_colon();
+                                    e = E(std::move(key), read_value<std::remove_cv_t<value_type>>());
+                                }
+                            });
+                        });
+                        return result;
+                    }
+                    else if constexpr (tuple_from_object<T>)
+                        return read_by_document<T>();
+                    else
+                        fail();
+                }
+                if constexpr (tuple_from_array<T>)
+                {
+                    if (*cur_ == '[')
+                    {
+                        const char* const open = cur_;
+                        ++cur_;
+                        skip_ws();
+                        if (*cur_ != ']')
+                        {
+                            for (auto i = std::size_t{0};; ++i)
+                            {
+                                if (i == size) fail();
+                                each(i, [&]<typename E>(auto& e, std::type_identity<E>) {
+                                    if constexpr (!std::is_const_v<E> && std::is_move_assignable_v<E>)
+                                        assign_value(e);
+                                    else
+                                        e = read_value<std::remove_cv_t<E>>();
+                                });
+                                skip_ws();
+                                if (*cur_ == ',')
+                                {
+                                    ++cur_;
+                                    skip_ws();
+                                    continue;
+                                }
+                                if (*cur_ != ']') [[unlikely]]
+                                    fail();
+                                break;
+                            }
+                        }
+                        close(open);
+                        return result;
+                    }
+                }
+                fail();
+            }
+
             // Reads the value at `cur_` as `cast<T>` reads it from a document.
             template <typename T>
             T read_value()
@@ -9430,6 +9590,8 @@ namespace yyjson
                     });
                     return std::move(*result);
                 }
+                else if constexpr (builtin_tuple<T>)
+                    return read_tuple<T>();
                 else if constexpr (from_json_val_usr_defined<T>)
                 {
                     if constexpr (yyjson::detail::shared_ptr_like<T> &&

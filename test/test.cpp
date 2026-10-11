@@ -5710,6 +5710,92 @@ TEST(DirectReader, VariantFields)
     EXPECT_EQ(std::get<1>(yyjson::read<no_default>(R"("s")")), "s");
 }
 
+namespace
+{
+    // The direct reader reads a tuple as the cast from a document does, and whenever the cast succeeds.
+    template <typename... Ts>
+    void expect_direct_tuples(const std::vector<std::string>& values)
+    {
+        const auto succeeds = [](const std::string& json, auto type) {
+            try
+            {
+                (void)yyjson::read(json).template cast<typename decltype(type)::type>();
+                return true;
+            }
+            catch (const std::exception&)
+            {
+                return false;
+            }
+        };
+        for (const auto& value : values)
+        {
+            (
+                [&] {
+                    for (const auto& json : {"[" + value + "]", "[" + value + ", " + value + "]"})
+                    {
+                        EXPECT_EQ(expect_direct_read<std::vector<Ts>>(json),
+                                  succeeds(json, std::type_identity<std::vector<Ts>>{}))
+                            << json << " as " << yyjson::detail::type_name<Ts>();
+                    }
+                    const auto json = R"({"k":)" + value + "}";
+                    EXPECT_EQ((expect_direct_read<std::map<std::string, Ts>>(json)),
+                              (succeeds(json, std::type_identity<std::map<std::string, Ts>>{})))
+                        << json << " as " << yyjson::detail::type_name<Ts>();
+                }(),
+                ...);
+        }
+    }
+}  // namespace
+
+struct WithTuples
+{
+    std::tuple<int, std::string> a;
+    std::vector<std::pair<std::string, double>> b;
+    std::optional<std::tuple<std::pair<std::string, int>>> c;
+};
+
+TEST(DirectReader, Tuples)
+{
+    using yyjson::reader::detail::direct_reader;
+
+    static_assert(!direct_reader::reads_documents_in_loop<std::vector<std::tuple<int, std::string>>>);
+    static_assert(
+        !direct_reader::reads_documents_in_loop<std::vector<std::tuple<std::pair<std::string, ReflectionRecord>>>>);
+    static_assert(direct_reader::reads_documents_in_loop<std::vector<std::tuple<ReadPoint, int>>>);
+    static_assert(direct_reader::reads_documents_in_loop<std::vector<std::tuple<std::pair<std::string_view, int>>>>);
+
+    const auto values = std::vector<std::string>{
+        "[]", "[1]", R"([1,"a"])", R"([1, "a", 2])", R"([1, 2.5, "x"])", R"([1,2.5,"x",4])", R"({})",
+        R"({"a":1})", R"({"a":1,"b":[1,2]})", R"({"a":1,"b":[1,2],"c":3})", R"({"a
+":1, "A":[]})",
+        R"({"a":"s"})", "1", "null", R"("s")", "[[1,2]]", R"([{"i":1,"k":"x"}])", "[null,null]", R"(["a",1])",
+        R"([["a",1],["b",[2]]])", "[1,", R"({"a":1,})", R"([1, 2.5, "x\"y\u0041"])",
+        R"({"a\u0041":1, "a key longer than the small string buffer":[1,2]})",
+        R"([1, 2.5, "a string longer than the small string buffer"])", R"({"\\":1,"k":"v"})"};
+    expect_direct_tuples<std::pair<int, std::string>, std::tuple<int, double, std::string>, std::tuple<int>,
+                         std::tuple<>, std::tuple<std::pair<std::string, int>, std::pair<std::string, std::vector<int>>>,
+                         std::tuple<ReflectionRecord, std::optional<int>>,
+                         std::tuple<std::variant<int, std::string>, std::shared_ptr<int>>,
+                         std::pair<std::tuple<int, int>, std::vector<std::pair<int, int>>>>(values);
+
+    for (const auto* json : {R"({"a":[1,"x"],"b":[["p",1.5],["q",2]],"c":{"k":3}})", R"({"a":[2],"b":[],"c":null})",
+                             R"({"c":{"k":1},"c":{"j":2},"a":[],"a":[3,"y"]})"})
+    {
+        EXPECT_TRUE(expect_direct_read<WithTuples>(json)) << json;
+    }
+    const auto with_tuples = yyjson::read<WithTuples>(R"({"a":[1,"x"],"c":{"k\t":3}})");
+    EXPECT_EQ(with_tuples.a, (std::tuple{1, std::string("x")}));
+    EXPECT_EQ(with_tuples.c, (std::tuple<std::pair<std::string, int>>{{"k\t", 3}}));
+    using string_pair = std::pair<std::string, std::string>;
+    const auto escaped = yyjson::read<std::vector<std::tuple<string_pair, string_pair>>>(
+        R"([{"\u0041 key longer than the small string buffer":"x\"y","k":"z"}, [["k","\\"],["\n",""]]])");
+    ASSERT_EQ(escaped.size(), 2);
+    EXPECT_EQ(std::get<0>(escaped[0]), string_pair("A key longer than the small string buffer", "x\"y"));
+    EXPECT_EQ(std::get<1>(escaped[0]), string_pair("k", "z"));
+    EXPECT_EQ(std::get<0>(escaped[1]), string_pair("k", "\\"));
+    EXPECT_EQ(std::get<1>(escaped[1]), string_pair("\n", ""));
+}
+
 struct ReservedStrings
 {
     std::vector<std::string> v;
