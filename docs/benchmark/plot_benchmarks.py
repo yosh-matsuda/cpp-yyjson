@@ -217,12 +217,15 @@ TYPED_COLORS = {
 TYPED_POLICIES = {
     "read": {
         "fresh": "New allocator / object per read",
-        "reused": "Reused allocator / object",
+        "reused": "Reused allocator",
     },
     "write": WRITE_POLICIES,
 }
 
-# benchmark name -> (direction, policy, color key, label)
+# benchmark name -> (direction, policy, color key, label), or None for a row that is
+# measured but not drawn: Glaze reads into the object of the previous iteration and
+# reuses the capacity of its strings and vectors, which cpp-yyjson has no API for, so
+# that row compares a different feature rather than the same work.
 TYPED_VARIANTS = {
     "typed_read_cpp_yyjson": ("read", "fresh", "cpp_yyjson", "cpp-yyjson (DOM + cast)"),
     "typed_read_cpp_yyjson_dom": ("read", "fresh", "cpp_yyjson", "cpp-yyjson (DOM only)"),
@@ -239,7 +242,7 @@ TYPED_VARIANTS = {
         "cpp-yyjson (direct)",
     ),
     "typed_read_glaze": ("read", "fresh", "glaze", "Glaze"),
-    "typed_read_glaze_single": ("read", "reused", "glaze", "Glaze"),
+    "typed_read_glaze_single": None,
     "typed_write_cpp_yyjson": ("write", "fresh", "cpp_yyjson", "cpp-yyjson"),
     "typed_write_cpp_yyjson_single": ("write", "reused", "cpp_yyjson", "cpp-yyjson"),
     "typed_write_cpp_yyjson_direct": (
@@ -665,6 +668,8 @@ def collect_typed_charts(
         dataset_index = int(match.group(2))
         if dataset_index not in TYPED_DATASET_NAMES:
             unknown_datasets.add(dataset_index)
+            continue
+        if TYPED_VARIANTS[match.group(1)] is None:
             continue
         direction, policy, color_key, label = TYPED_VARIANTS[match.group(1)]
         key = (TYPED_DATASET_NAMES[dataset_index], direction, policy)
