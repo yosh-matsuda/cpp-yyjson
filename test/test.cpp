@@ -5537,6 +5537,57 @@ TEST(Reader, ValueKinds)
     EXPECT_EQ((read("null").cast<std::variant<int, std::optional<std::vector<int>>>>().index()), 1U);
 }
 
+template <>
+struct yyjson::caster<std::array<std::int8_t, 2>>
+{
+    template <typename Json>
+    static std::array<std::int8_t, 2> from_json(const Json& json)
+    {
+        const auto arr = json.as_array();
+        if (!arr || arr->size() != 2) throw yyjson::bad_cast("not a pair");
+        return {cast<std::int8_t>((*arr)[1]), cast<std::int8_t>((*arr)[0])};
+    }
+};
+
+TEST(Reader, RangesOfFixedSizeRanges)
+{
+    using namespace yyjson;
+    using points = std::vector<std::array<double, 2>>;
+
+    // the elements are filled where they are stored, and a short JSON array leaves the rest value-initialized
+    EXPECT_EQ(read("[[1,2.5],[3,4]]").cast<points>(), (points{{1.0, 2.5}, {3.0, 4.0}}));
+    EXPECT_EQ(read("[[1],[]]").cast<points>(), (points{{1.0, 0.0}, {0.0, 0.0}}));
+    for (const auto* json : {"[[1,2,3]]", "[1]", "[null]", R"([[1,"x"]])", R"([{"a":1}])"})
+        EXPECT_THROW((void)read(json).cast<points>(), bad_cast) << json;
+    for (const auto* json : {"[]", "[[1,2.5],[3,4]]", "[[1],[]]", "[[1,2,3]]", "[1]", "[null]", R"([[1,"x"]])"})
+    {
+        expect_direct_read<points>(json);
+        expect_direct_read<std::list<std::array<int, 3>>>(json);
+        expect_direct_read<std::vector<std::array<std::array<int, 2>, 2>>>(json);
+    }
+    EXPECT_TRUE(expect_direct_read<points>("[[1,2.5],[3,4]]"));
+    EXPECT_TRUE(expect_direct_read<points>("[[1],[]]"));
+    EXPECT_TRUE((expect_direct_read<std::list<std::array<int, 3>>>("[[1,2,3],[4]]")));
+    using nested = std::vector<std::array<std::array<int, 2>, 2>>;
+    EXPECT_EQ(read("[[[1,2],[3]]]").cast<nested>(), (nested{{{{1, 2}, {3, 0}}}}));
+
+    // the size of the type decides how the elements are read, not the length of the JSON array
+    auto long_json = std::string("[[");
+    for (auto i = 0; i < 20; ++i) long_json += std::format("{}{}", i == 0 ? "" : ",", i);
+    long_json += "]]";
+    const auto long_arrays = read(long_json).cast<std::vector<std::array<int, 20>>>();
+    ASSERT_EQ(long_arrays.size(), 1U);
+    EXPECT_EQ(long_arrays[0][19], 19);
+    EXPECT_TRUE((expect_direct_read<std::vector<std::array<int, 20>>>(long_json)));
+    expect_direct_read<std::vector<std::array<int, 17>>>(long_json);
+
+    // a caster of the element type is still used
+    using pairs = std::vector<std::array<std::int8_t, 2>>;
+    EXPECT_EQ(read("[[1,2],[3,4]]").cast<pairs>(), (pairs{{2, 1}, {4, 3}}));
+    EXPECT_THROW((void)read("[[1]]").cast<pairs>(), bad_cast);
+    expect_direct_read<pairs>("[[1,2],[3,4]]");
+}
+
 // The index and the JSON text of a variant cast from `json`, or nothing when the cast fails.
 template <typename V, typename Json>
 std::optional<std::pair<std::size_t, std::string>> cast_variant(const Json& json)

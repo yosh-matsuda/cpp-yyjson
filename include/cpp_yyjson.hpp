@@ -5484,6 +5484,13 @@ namespace yyjson
         concept reflected_assignable_in_place =
             std::same_as<Json, reader::const_value_ref> && (!reader::detail::from_json_val_usr_defined<T>) &&
             reflected_object_castable<T, reader::const_object_ref>;
+
+        // A range of fixed size, such as `std::array`, that `default_caster` fills in place from a JSON array of
+        // a read document.
+        template <typename T, typename Json>
+        concept fixed_size_assignable_in_place =
+            std::same_as<Json, reader::const_value_ref> && (!reader::detail::from_json_val_usr_defined<T>) &&
+            (!back_insertable<T>) && std::ranges::sized_range<T> && array_castable_range<T, reader::const_array_ref>;
     }  // namespace detail
 
     template <typename T>
@@ -5550,6 +5557,9 @@ namespace yyjson
                         result.push_back(cast<value_type>(e));
                 }
             }
+            else if constexpr (back_insertable<T> &&
+                               fixed_size_assignable_in_place<value_type, std::ranges::range_value_t<Json>>)
+                return read_fixed_size_elements(arr);
             else if constexpr (back_insertable<T>)
             {
                 reserve_if_possible(result, arr.size());
@@ -5557,15 +5567,50 @@ namespace yyjson
                                        [](const auto& e) { return cast<std::ranges::range_value_t<T>>(e); });
             }
             else  // TODO: fixed size range concept
-            {
-                if (arr.size() > std::ranges::size(result))
-                    detail::throw_bad_cast("the size of JSON array is greater than the size of {}",
-                                           detail::type_name<T>());
-                std::ranges::transform(arr, std::ranges::begin(result),
-                                       [](const auto& e) { return cast<std::ranges::range_value_t<T>>(e); });
-            }
+                assign_fixed_size_range(result, arr);
 
             return result;
+        }
+        // Reads elements such as `std::array` from JSON arrays without dispatching on the type of each.
+        template <typename Json>
+        static auto read_fixed_size_elements(const Json& arr)
+        {
+            using value_type = std::ranges::range_value_t<T>;
+            auto result = T();
+            reserve_if_possible(result, arr.size());
+            for (const auto& e : arr)
+            {
+                if (const auto inner = e.as_array(); inner.has_value())
+                {
+                    auto value = value_type();
+                    default_caster<value_type>::assign_fixed_size_range(value, *inner);
+                    result.push_back(value);
+                }
+                else
+                    result.push_back(cast<value_type>(e));
+            }
+            return result;
+        }
+        template <typename Json>
+        static void assign_fixed_size_range(T& result, const Json& arr)
+        {
+            using value_type = std::ranges::range_value_t<T>;
+            if (arr.size() > std::ranges::size(result))
+                detail::throw_bad_cast("the size of JSON array is greater than the size of {}", detail::type_name<T>());
+            if constexpr (requires { std::tuple_size<T>::value; } && std::tuple_size_v<T> <= 16)
+            {
+                // unrolled over the size of the type, which compilers do not always do for a loop over the
+                // size of the JSON array
+                const auto n = arr.size();
+                auto it = arr.begin();
+                auto out = std::ranges::begin(result);
+                [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                    (void)((Is < n && (*out = cast<value_type>(*it), ++it, ++out, true)) && ...);
+                }(std::make_index_sequence<std::tuple_size_v<T>>{});
+            }
+            else
+                std::ranges::transform(arr, std::ranges::begin(result),
+                                       [](const auto& e) { return cast<value_type>(e); });
         }
 #if defined(__GNUC__)
 #pragma GCC diagnostic push
