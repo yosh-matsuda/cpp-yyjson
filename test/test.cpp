@@ -5379,6 +5379,27 @@ TEST(DirectReader, Overloads)
     EXPECT_THROW((void)read<std::vector<int>>("[1,"), read_error);
     EXPECT_THROW((void)read<std::vector<int>>(R"(["a"])"), bad_cast);
 }
+
+TEST(Reader, NullToStrings)
+{
+    using namespace yyjson;
+
+    // a JSON null is not a C string, even before C++23 where a string converts from `nullptr`
+    const auto null = read("null");
+    EXPECT_THROW((void)null.cast<std::string_view>(), bad_cast);
+    EXPECT_THROW((void)null.cast<std::string>(), bad_cast);
+    EXPECT_EQ(null.cast<std::optional<std::string>>(), std::nullopt);
+    EXPECT_EQ(null.cast<std::optional<std::string_view>>(), std::nullopt);
+    EXPECT_EQ(null.cast<const char*>(), nullptr);
+    EXPECT_EQ(null.cast<std::shared_ptr<std::string>>(), nullptr);
+    EXPECT_FALSE(null.cast<bool>());
+    EXPECT_THROW((void)read<std::string>("null"), bad_cast);
+    EXPECT_EQ(read<std::optional<std::string>>("null"), std::nullopt);
+    EXPECT_EQ((read<std::vector<std::optional<std::string>>>(R"([null,"a"])")),
+              (std::vector<std::optional<std::string>>{std::nullopt, "a"}));
+    EXPECT_EQ((null.cast<std::variant<std::string_view, std::optional<int>>>()),
+              (std::variant<std::string_view, std::optional<int>>(std::nullopt)));
+}
 #endif
 
 // NOLINTEND

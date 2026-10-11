@@ -5224,7 +5224,9 @@ namespace yyjson
         template <typename U = T>
         static U from_json_null()
         {
-            if constexpr (std::constructible_from<U, std::nullptr_t>)
+            // Before C++23 a string type converts from `nullptr` through its `const char*` constructor, which
+            // reads the null pointer as a C string.
+            if constexpr (std::constructible_from<U, std::nullptr_t> && !std::constructible_from<U, std::string_view>)
             {
                 return U(nullptr);
             }
