@@ -8722,6 +8722,23 @@ namespace yyjson
             template <typename T>
             T read_root()
             {
+                if constexpr (!builtin_variant<T> && !builtin_tuple<T> &&
+                              !yyjson::detail::from_json_translator<T>::castable && !from_json_val_usr_defined<T> &&
+                              from_json_def_arr_defined<T> && yyjson::detail::back_insertable<T> &&
+                              reserves_elements<T>)
+                {
+                    if constexpr (std::is_trivially_copyable_v<std::ranges::range_value_t<T>>)
+                    {
+                        // the array that `read_value<T>` reads, given room for its elements
+                        if (*cur_ == '[')
+                        {
+                            auto result = T();
+                            read_array_into<T, true>(result);
+                            if (cur_ != last_ + 1) fail();
+                            return result;
+                        }
+                    }
+                }
                 auto result = read_value<T>();
                 if (cur_ != last_ + 1) fail();
                 return result;
@@ -9958,15 +9975,19 @@ namespace yyjson
                 return 0;
             }
 
+            template <typename T>
+            static constexpr bool reserves_elements = requires(T& t, std::size_t n) {
+                t.reserve(n);
+                { t.capacity() } -> std::convertible_to<std::size_t>;
+            };
+
             // Whether `read_array_into` counts the rest of the elements of an array of T once it has read 512, and
-            // reserves room for them, rather than growing the range, which moves every element read so far.
+            // reserves room for them, rather than growing the range, which moves every element read so far.  The
+            // elements of a trivially copyable type are cheap to move, and most of their arrays are short, so that
+            // only the root array of them is given room, by `read_root`.
             template <typename T>
             static constexpr bool counts_elements =
-                !std::is_trivially_copyable_v<std::ranges::range_value_t<T>> &&
-                requires(T& t, std::size_t n) {
-                    t.reserve(n);
-                    { t.capacity() } -> std::convertible_to<std::size_t>;
-                };
+                !std::is_trivially_copyable_v<std::ranges::range_value_t<T>> && reserves_elements<T>;
 
             // Reserves room in `result` for the rest of the elements of the array that opens at `open`.  The elements
             // of the root array, which ends at `last_`, are estimated from the bytes that those read so far took when
@@ -9974,7 +9995,8 @@ namespace yyjson
             template <typename T>
             void reserve_rest(T& result, const char* open)
             {
-                auto n = count_elements();
+                auto n = std::size_t{0};
+                if constexpr (counts_elements<T>) n = count_elements();
                 if (n == 0 && open == first_)
                 {
                     const auto done = static_cast<std::size_t>(cur_ - open);
@@ -9985,8 +10007,10 @@ namespace yyjson
                 if (n != 0) result.reserve(result.size() + n);
             }
 
-            // Reads the elements of the array at `cur_` into the empty or default-constructed range `result`.
-            template <typename T>
+            // Reads the elements of the array at `cur_` into the empty or default-constructed range `result`.  The
+            // root array of trivially copyable elements is read with `Root`, which estimates the rest of them once
+            // the range is full at 512 or more.
+            template <typename T, bool Root = false>
             void read_array_into(T& result)
             {
                 using value_type = std::ranges::range_value_t<T>;
@@ -10000,11 +10024,20 @@ namespace yyjson
                 }
                 [[maybe_unused]] auto out = std::ranges::begin(result);
                 [[maybe_unused]] auto count = std::size_t{0};
+                [[maybe_unused]] auto estimated = false;
                 for (;;)
                 {
                     if constexpr (yyjson::detail::back_insertable<T>)
                     {
-                        if constexpr (counts_elements<T>)
+                        if constexpr (Root)
+                        {
+                            if (!estimated && result.size() == result.capacity() && result.size() >= 512) [[unlikely]]
+                            {
+                                estimated = true;
+                                reserve_rest(result, open);
+                            }
+                        }
+                        else if constexpr (counts_elements<T>)
                         {
                             if (count++ == 512 && result.size() == result.capacity()) [[unlikely]]
                                 reserve_rest(result, open);

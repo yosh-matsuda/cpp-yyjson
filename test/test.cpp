@@ -5803,6 +5803,14 @@ struct ReservedStrings
     int n = 0;
 };
 
+struct TrivialRecord
+{
+    int a;
+    double b;
+    auto operator<=>(const TrivialRecord&) const = default;
+};
+static_assert(std::is_trivially_copyable_v<TrivialRecord>);
+
 TEST(DirectReader, ReservesRest)
 {
     using yyjson::reader::detail::direct_reader;
@@ -5873,6 +5881,37 @@ TEST(DirectReader, ReservesRest)
     const auto skewed_read = yyjson::read<std::vector<int_or_string>>(skewed);
     EXPECT_EQ(skewed_read.size(), 602);
     EXPECT_LE(skewed_read.capacity() * sizeof(int_or_string), 4 * skewed.size() + 1024 * sizeof(int_or_string));
+
+    // trivially copyable elements are not counted, but estimated in the root array only
+    auto trivial = std::string("[");
+    for (auto i = 0; i < 3000; ++i) trivial += std::format(R"({}{{"a":{},"b":{}.25}})", i == 0 ? "" : ",", i, i);
+    trivial += "]";
+    EXPECT_TRUE(expect_direct_read<std::vector<TrivialRecord>>(trivial));
+    EXPECT_TRUE(expect_direct_read<std::vector<TrivialRecord>>(trivial + " "));
+    EXPECT_TRUE(expect_direct_read<std::vector<std::vector<TrivialRecord>>>("[" + trivial + "," + trivial + "]"));
+    EXPECT_TRUE((expect_direct_read<std::map<std::string, std::vector<TrivialRecord>>>(
+        std::format(R"({{"a":{},"b":{}}})", trivial, trivial))));
+#if defined(__GLIBCXX__) || defined(_LIBCPP_VERSION)
+    const auto trivial_read = yyjson::read<std::vector<TrivialRecord>>(trivial);
+    EXPECT_GE(trivial_read.capacity(), 3000);
+    EXPECT_LT(trivial_read.capacity(), 4096);
+#endif
+    // the estimate is too small when the elements get longer, and too large when they get shorter
+    auto growing = std::string("[");
+    for (auto i = 0; i < 600; ++i) growing += "1,";
+    for (auto i = 0; i < 3000; ++i) growing += "1000000000,";
+    growing += "2]";
+    EXPECT_TRUE(expect_direct_read<std::vector<int>>(growing));
+    EXPECT_EQ(yyjson::read<std::vector<int>>(growing).size(), 3601);
+    auto shrinking = std::string("[");
+    for (auto i = 0; i < 600; ++i) shrinking += "[1000000000,1000000000],";
+    for (auto i = 0; i < 3000; ++i) shrinking += "[1,2],";
+    shrinking += "[3,4]]";
+    EXPECT_TRUE((expect_direct_read<std::vector<std::array<int, 2>>>(shrinking)));
+    const auto shrinking_read = yyjson::read<std::vector<std::array<int, 2>>>(shrinking);
+    EXPECT_EQ(shrinking_read.size(), 3601);
+    EXPECT_LE(shrinking_read.capacity() * sizeof(std::array<int, 2>),
+              4 * shrinking.size() + 1024 * sizeof(std::array<int, 2>));
 }
 
 // Types with a translator `from_json`, which takes a C++ value.  Each of them is also an aggregate that the
