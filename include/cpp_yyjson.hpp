@@ -10048,6 +10048,21 @@ namespace yyjson
                 return t;
             }();
 
+            // The characters of the escapes other than `\\u`, by the character after the backslash.
+            static constexpr auto escaped_chars = []
+            {
+                auto t = std::array<char, 256>();
+                t['"'] = '"';
+                t['\\'] = '\\';
+                t['/'] = '/';
+                t['b'] = '\b';
+                t['f'] = '\f';
+                t['n'] = '\n';
+                t['r'] = '\r';
+                t['t'] = '\t';
+                return t;
+            }();
+
             CPPYYJSON_ALWAYS_INLINE static std::uint32_t read_hex4(const char* p)
             {
                 const auto d0 = hex_digits[static_cast<unsigned char>(p[0])];
@@ -10071,6 +10086,23 @@ namespace yyjson
                     {
                         // `dst` is never ahead of `src`, so a block that fits before `end` fits before the end of
                         // `dst`, and the block is stored before it is known where the next escape is
+#if defined(__AVX2__)
+                        while (end - src >= 32)
+                        {
+                            const auto v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src));
+                            _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst), v);
+                            const auto m = static_cast<std::uint32_t>(
+                                _mm256_movemask_epi8(_mm256_cmpeq_epi8(v, _mm256_set1_epi8('\\'))));
+                            if (m != 0)
+                            {
+                                src += std::countr_zero(m);
+                                dst += std::countr_zero(m);
+                                goto escape;
+                            }
+                            src += 32;
+                            dst += 32;
+                        }
+#endif
 #if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
                         while (end - src >= 16)
                         {
@@ -10141,26 +10173,20 @@ namespace yyjson
                         }
                         continue;
                     }
+                    // the character an escape stands for is looked up rather than chosen by a jump, which text
+                    // with many escapes of different kinds mispredicts
+                    const auto c = escaped_chars[static_cast<unsigned char>(bs[1])];
+                    if (c == 0) [[unlikely]]
+                        fail();
+                    *dst++ = c;
                     src = bs + 2;
-                    switch (bs[1])
-                    {
-                        case '"': *dst++ = '"'; break;
-                        case '\\': *dst++ = '\\'; break;
-                        case '/': *dst++ = '/'; break;
-                        case 'b': *dst++ = '\b'; break;
-                        case 'f': *dst++ = '\f'; break;
-                        case 'n': *dst++ = '\n'; break;
-                        case 'r': *dst++ = '\r'; break;
-                        case 't': *dst++ = '\t'; break;
-                        default: fail();
-                    }
                 }
                 return dst;
             }
 
             CPPYYJSON_HOT_NOINLINE static void unescape_into(const char* src, const char* end, std::string& out)
             {
-                out.resize(static_cast<std::size_t>(end - src));
+                writer::detail::resize_for_overwrite(out, static_cast<std::size_t>(end - src));
                 out.resize(static_cast<std::size_t>(unescape(src, end, out.data()) - out.data()));
             }
 

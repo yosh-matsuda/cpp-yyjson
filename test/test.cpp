@@ -5318,6 +5318,18 @@ TEST(DirectReader, Strings)
     EXPECT_TRUE((expect_direct_read<std::vector<std::string>>(R"(["", "a", ""])")));
     EXPECT_TRUE((expect_direct_read<std::vector<std::string>>("[\"" + std::string(1000, 'z') + "\"]")));
     EXPECT_TRUE((expect_direct_read<std::map<std::string, int>>(R"({"a\nb":1,"\u0041":2,"a":3,"a":4})")));
+    // text of every length between escapes, and a backslash before every character
+    for (auto gap = std::size_t{0}; gap <= 70; ++gap)
+    {
+        EXPECT_TRUE((expect_direct_read<std::vector<std::string>>(
+            "[\"\\n" + std::string(gap, 'x') + "\\t" + std::string(gap, 'y') + "\\u00e9" + std::string(gap, 'z') +
+            "\"]")));
+    }
+    for (auto c = 0; c < 256; ++c)
+    {
+        expect_direct_read<std::vector<std::string>>("[\"" + std::string(40, 'x') + "\\" +
+                                                     std::string(1, static_cast<char>(c)) + "1234\"]");
+    }
     expect_direct_read<std::vector<std::string>>("[\"a\xff\"]");
     expect_direct_read<std::vector<std::string>>("[\"a\xff\"]", ReadFlag::AllowInvalidUnicode);
 
