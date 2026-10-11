@@ -1024,6 +1024,8 @@ auto map = cast<std::unordered_map<std::string, double>>(obj);
 // -> {{"first", 1.5}, {"second", 2.5}, {"third", 3.5}}
 ```
 
+A range of key-value pairs converts to a JSON object, and from one. A key-value pair is any tuple-like type of two elements whose first element is a string, such as `std::pair<std::string, int>`, `std::tuple<std::string, int>` or `std::array<std::string, 2>`, so `std::vector<std::array<std::string, 2>>{{"a", "b"}}` becomes `{"a": "b"}`. A sequence of them, such as `std::vector`, also converts from a JSON array of two-element arrays.
+
 If the conversion fails, the `yyjson::bad_cast` exception is thrown or a compile error occurs. In particular:
 
 *   JSON null does not convert to a string type such as `std::string` or `std::string_view`. Use `std::optional<std::string>` for a string that may be null.

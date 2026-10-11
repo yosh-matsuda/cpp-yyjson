@@ -7,6 +7,7 @@
 #include <list>
 #include <map>
 #include <numeric>
+#include <set>
 #include <tuple>
 #include "cpp_yyjson.hpp"
 
@@ -5586,6 +5587,22 @@ TEST(Reader, RangesOfFixedSizeRanges)
     EXPECT_EQ(read("[[1,2],[3,4]]").cast<pairs>(), (pairs{{2, 1}, {4, 3}}));
     EXPECT_THROW((void)read("[[1]]").cast<pairs>(), bad_cast);
     expect_direct_read<pairs>("[[1,2],[3,4]]");
+
+    // a `std::array` of two strings is a key-value pair, written as a member of a JSON object, and is read back
+    // from one as well as from an array
+    using string_pairs = std::vector<std::array<std::string, 2>>;
+    const auto abcd = string_pairs{{"a", "b"}, {"c", "d"}};
+    EXPECT_EQ(std::string_view(value(abcd).write()), R"({"a":"b","c":"d"})");
+    EXPECT_EQ(read(R"({"a":"b","c":"d"})").cast<string_pairs>(), abcd);
+    EXPECT_EQ(read(R"([["a","b"],["c","d"]])").cast<string_pairs>(), abcd);
+    EXPECT_EQ((read(R"({"c":"d","a":"b"})").cast<std::set<std::array<std::string, 2>>>()),
+              (std::set<std::array<std::string, 2>>(abcd.begin(), abcd.end())));
+    EXPECT_THROW((void)read(R"({"a":1})").cast<string_pairs>(), bad_cast);
+    for (const auto* json : {R"({"a":"b","c":"d"})", R"([["a","b"],["c","d"]])", R"({"a":1})", R"({"a\n":"\u00e9"})"})
+        expect_direct_read<string_pairs>(json);
+    EXPECT_TRUE(expect_direct_read<string_pairs>(R"({"a\n":"\u00e9","c":"d"})"));
+    EXPECT_TRUE(expect_direct_read<string_pairs>(R"([["a","b"],["c"]])"));
+    EXPECT_TRUE((expect_direct_read<std::set<std::array<std::string, 2>>>(R"({"c":"d","a":"b"})")));
 }
 
 // The index and the JSON text of a variant cast from `json`, or nothing when the cast fails.

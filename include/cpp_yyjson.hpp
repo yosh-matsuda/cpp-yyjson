@@ -5403,12 +5403,32 @@ namespace yyjson
             }
         }
 
+        template <typename T>
+        using key_value_mapped_t = std::remove_cvref_t<std::tuple_element_t<1, std::ranges::range_value_t<T>>>;
+
+        // An element of the range T is made from a key and a value either by its constructor, like `std::pair`,
+        // or by aggregate initialization, like `std::array`.
+        template <typename T, typename Key>
+        concept key_value_constructible =
+            std::constructible_from<std::ranges::range_value_t<T>, Key, key_value_mapped_t<T>>;
+        template <typename T, typename Key>
+        concept key_value_aggregate_initializable = requires(Key&& key, key_value_mapped_t<T>&& value) {
+            std::ranges::range_value_t<T>{
+                std::tuple_element_t<0, std::ranges::range_value_t<T>>(std::forward<Key>(key)), std::move(value)};
+        };
+
         template <typename T, typename Json>
         concept object_emplaceable_range =
             std::default_initializable<T> && (!visitable<T>) && std::ranges::input_range<T> && requires {
                 typename std::ranges::range_value_t<T>;
                 requires key_value_like<std::ranges::range_value_t<T>>;
-                requires requires(T t, Json obj) { t.emplace(obj.begin()->first, obj.begin()->second); };
+                requires requires(T t, Json obj, key_value_mapped_t<T> value, std::ranges::range_value_t<T> kv) {
+                    requires (key_value_constructible<T, decltype((obj.begin()->first))> && requires {
+                                 t.emplace(obj.begin()->first, std::move(value));
+                             }) || (key_value_aggregate_initializable<T, decltype((obj.begin()->first))> && requires {
+                                 t.emplace(std::move(kv));
+                             });
+                };
             };
 
         template <typename T, typename Json>
@@ -5416,12 +5436,35 @@ namespace yyjson
             std::default_initializable<T> && (!visitable<T>) && std::ranges::input_range<T> && requires {
                 typename std::ranges::range_value_t<T>;
                 requires key_value_like<std::ranges::range_value_t<T>>;
-                requires requires(T t, Json obj) {
-                    t.emplace_back(obj.begin()->first,
-                                   cast<std::remove_cvref_t<std::tuple_element_t<1, std::ranges::range_value_t<T>>>>(
-                                       obj.begin()->second));
+                requires requires(T t, Json obj, key_value_mapped_t<T> value, std::ranges::range_value_t<T> kv) {
+                    requires (key_value_constructible<T, decltype((obj.begin()->first))> && requires {
+                                 t.emplace_back(obj.begin()->first, std::move(value));
+                             }) || (key_value_aggregate_initializable<T, decltype((obj.begin()->first))> && requires {
+                                 t.emplace_back(std::move(kv));
+                             });
                 };
             };
+
+        // Adds a member of a JSON object to a range satisfying `object_emplaceable_range` (`Back` false) or
+        // `object_back_emplaceable_range` (`Back` true).
+        template <bool Back, typename T, typename Key, typename Value>
+        void emplace_key_value(T& result, Key&& key, Value&& value)
+        {
+            auto emplace = [&result](auto&&... args) {
+                if constexpr (Back)
+                    result.emplace_back(std::forward<decltype(args)>(args)...);
+                else
+                    result.emplace(std::forward<decltype(args)>(args)...);
+            };
+            if constexpr (key_value_constructible<T, Key&&>)
+                emplace(std::forward<Key>(key), std::forward<Value>(value));
+            else
+            {
+                using pair_type = std::ranges::range_value_t<T>;
+                emplace(
+                    pair_type{std::tuple_element_t<0, pair_type>(std::forward<Key>(key)), std::forward<Value>(value)});
+            }
+        }
 
         template <typename T>
         struct is_basic_string : std::false_type
@@ -5511,7 +5554,7 @@ namespace yyjson
             reserve_if_possible(result, obj.size());
             for (auto&& kv : obj)
             {
-                result.emplace(kv.first, cast<value_type>(kv.second));
+                emplace_key_value<false>(result, kv.first, cast<value_type>(kv.second));
             }
             return result;
         }
@@ -5524,7 +5567,7 @@ namespace yyjson
             reserve_if_possible(result, obj.size());
             for (auto&& kv : obj)
             {
-                result.emplace_back(kv.first, cast<value_type>(kv.second));
+                emplace_key_value<true>(result, kv.first, cast<value_type>(kv.second));
             }
             return result;
         }
@@ -10305,10 +10348,8 @@ namespace yyjson
                         // the key is kept in `key_buf` while the value is read if it has escapes
                         const auto key = read_string(key_buf);
                         read_colon();
-                        if constexpr (yyjson::detail::object_emplaceable_range<T, json_object>)
-                            result.emplace(key, read_value<value_type>());
-                        else
-                            result.emplace_back(key, read_value<value_type>());
+                        yyjson::detail::emplace_key_value<!yyjson::detail::object_emplaceable_range<T, json_object>>(
+                            result, key, read_value<value_type>());
                     });
                     return result;
                 }
