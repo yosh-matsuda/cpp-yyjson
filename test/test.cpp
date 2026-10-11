@@ -5296,13 +5296,20 @@ TEST(DirectReader, Strings)
     using namespace yyjson;
 
     // every kind of escape and of invalid text, at every position of a vector load
-    const auto pieces = std::vector<std::string>{
+    auto pieces = std::vector<std::string>{
         "a", "\\\"", "\\\\", "\\/", "\\b", "\\f", "\\n", "\\r", "\\t", "\\u0041", "\\u00e9", "\\u20AC",
         "\\ud83d\\ude00", "\\ud83d", "\\ude00", "\\uD800\\u0041", "\\u0000", "\\uZZZZ", "\\x", "\\", "\xc3\xa9",
-        "\xe3\x81\x82", "\xf0\x9f\x98\x80", "\xc3", "\xff", "\xed\xa0\x80", "\x01", "\x1f", "\x7f", "\t"};
+        "\xe3\x81\x82", "\xf0\x9f\x98\x80", "\xc3", "\xff", "\xed\xa0\x80", "\x01", "\x1f", "\x7f", "\t",
+        "\\u\"", "\\u00\"1", "\\\x01", "\\\xc3\xa9", "\\u3042\\u3044\\u3046\\u3048\\u304a\\u304b\\u304d\\u304f"};
+    // a quote after a run of backslashes ends the string when the run is even, across the end of a vector as well
+    for (const auto run : {1, 2, 3, 4, 15, 16, 17, 31, 32, 33, 63, 64})
+    {
+        pieces.push_back(std::string(static_cast<std::size_t>(run), '\\') + "\"");
+        pieces.push_back(std::string(static_cast<std::size_t>(run), '\\') + "\\u0041");
+    }
     for (const auto& piece : pieces)
     {
-        for (auto before = std::size_t{0}; before < 40; before += 3)
+        for (auto before = std::size_t{0}; before < 40; ++before)
         {
             const auto text = std::string(before, 'x') + piece + std::string(before % 7, 'y');
             const auto arr = "[\"" + text + "\",\"" + text + "z\"" + std::string(before % 5 * 10, ' ') + "]";
@@ -5319,6 +5326,18 @@ TEST(DirectReader, Strings)
     EXPECT_TRUE((expect_direct_read<std::vector<std::string>>(R"(["", "a", ""])")));
     EXPECT_TRUE((expect_direct_read<std::vector<std::string>>("[\"" + std::string(1000, 'z') + "\"]")));
     EXPECT_TRUE((expect_direct_read<std::map<std::string, int>>(R"({"a\nb":1,"\u0041":2,"a":3,"a":4})")));
+    // text of every length between escapes, and a backslash before every character
+    for (auto gap = std::size_t{0}; gap <= 70; ++gap)
+    {
+        EXPECT_TRUE((expect_direct_read<std::vector<std::string>>(
+            "[\"\\n" + std::string(gap, 'x') + "\\t" + std::string(gap, 'y') + "\\u00e9" + std::string(gap, 'z') +
+            "\"]")));
+    }
+    for (auto c = 0; c < 256; ++c)
+    {
+        expect_direct_read<std::vector<std::string>>("[\"" + std::string(40, 'x') + "\\" +
+                                                     std::string(1, static_cast<char>(c)) + "1234\"]");
+    }
     expect_direct_read<std::vector<std::string>>("[\"a\xff\"]");
     expect_direct_read<std::vector<std::string>>("[\"a\xff\"]", ReadFlag::AllowInvalidUnicode);
 
