@@ -4990,6 +4990,18 @@ struct ReadRecord
     std::tuple<int, std::string> pair;
 };
 
+struct ReadChain
+{
+    ReadPoint point;
+    std::shared_ptr<ReadChain> next;
+
+    bool operator==(const ReadChain& other) const
+    {
+        return point.x == other.point.x && point.y == other.point.y &&
+               (next == nullptr ? other.next == nullptr : other.next != nullptr && *next == *other.next);
+    }
+};
+
 TEST(DirectReader, PowersOfFive)
 {
     // the table of the reader, computed again as its comment describes
@@ -5306,6 +5318,48 @@ TEST(DirectReader, Containers)
         expect_direct_read<std::vector<int>>(json, ReadFlag::AllowComments);
         expect_direct_read<std::vector<int>>(json, ReadFlag::AllowTrailingCommas);
     }
+}
+
+TEST(DirectReader, DocumentOfWholeText)
+{
+    using namespace yyjson;
+    using reader::detail::direct_reader;
+
+    // the types that the reader would read through a document for each element of a range or a map are read
+    // through a document of the whole text
+    static_assert(!direct_reader::reads_documents_in_loop<ReflectionRecord>);
+    static_assert(!direct_reader::reads_documents_in_loop<std::vector<ReflectionRecord>>);
+    static_assert(!direct_reader::reads_documents_in_loop<ReadPoint>);
+    static_assert(!direct_reader::reads_documents_in_loop<CounterRecord>);
+    static_assert(!direct_reader::reads_documents_in_loop<std::shared_ptr<ReadPoint>>);
+    static_assert(direct_reader::reads_documents_in_loop<std::vector<ReadPoint>>);
+    static_assert(direct_reader::reads_documents_in_loop<std::map<std::string, ReadPoint>>);
+    static_assert(direct_reader::reads_documents_in_loop<std::vector<CounterRecord>>);
+    static_assert(direct_reader::reads_documents_in_loop<std::vector<std::shared_ptr<ReadPoint>>>);
+    static_assert(direct_reader::reads_documents_in_loop<ReadRecord>);
+    // a recursive type stops at the second visit
+    static_assert(!direct_reader::reads_documents_in_loop<ReadChain>);
+    static_assert(direct_reader::reads_documents_in_loop<std::vector<ReadChain>>);
+
+    expect_direct_read<std::vector<CounterRecord>>(R"([{"name":"a","hits":1},{"hits":2}])");
+    expect_direct_read<std::vector<CounterRecord>>(R"([{"name":"a","hits":"1"}])");
+    expect_direct_read<std::map<std::string, ReadPoint>>(R"({"a":[1,2],"b":[3,4]})");
+    expect_direct_read<std::map<std::string, ReadPoint>>(R"({"a":[1,2],"b":[3]})");
+    expect_direct_read<std::vector<std::shared_ptr<ReadPoint>>>(R"([null,[1,2]])");
+
+    // a recursive type, which cannot be written back
+    for (const auto* json : {R"({"point":[1,2],"next":{"point":[3,4],"next":null}})", R"({"point":[1,2]})"})
+    {
+        const auto expected = read(json).cast<ReadChain>();
+        EXPECT_EQ(read<ReadChain>(json), expected) << json;
+        const auto direct =
+            reader::detail::direct_reader(json, json + std::strlen(json) - 1, ReadFlag::NoFlag).read_root<ReadChain>();
+        EXPECT_EQ(direct, expected) << json;
+        EXPECT_EQ(read<std::vector<ReadChain>>(std::format("[{},{}]", json, json)),
+                  (std::vector<ReadChain>{expected, expected}))
+            << json;
+    }
+    EXPECT_THROW((void)read<std::vector<ReadChain>>(R"([{"point":[1,2],"next":{"point":[3]}}])"), bad_cast);
 }
 
 TEST(DirectReader, Overloads)

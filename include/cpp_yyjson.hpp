@@ -4222,6 +4222,11 @@ namespace yyjson
 
     namespace reader
     {
+        namespace detail
+        {
+            class direct_reader;
+        }
+
         class abstract_value_ref
         {
             friend struct writer::detail::mutable_document;
@@ -4299,6 +4304,7 @@ namespace yyjson
             friend class const_array_ref;
             friend class const_object_iter;
             friend class const_object_ref;
+            friend class detail::direct_reader;
             template <typename T>
             friend struct yyjson::detail::default_caster;
 
@@ -8197,6 +8203,15 @@ namespace yyjson
             ReadFlag flg_;
             bool inv_;
             std::string scratch_;
+            struct free_alc
+            {
+                void operator()(yyjson_alc* alc) const noexcept { yyjson_alc_dyn_free(alc); }
+            };
+            struct free_doc
+            {
+                void operator()(yyjson_doc* doc) const noexcept { yyjson_doc_free(doc); }
+            };
+            std::unique_ptr<yyjson_alc, free_alc> alc_;
 
         public:
             direct_reader(const char* first, const char* last, ReadFlag flg) noexcept
@@ -8207,6 +8222,126 @@ namespace yyjson
                   inv_((flg & ReadFlag::AllowInvalidUnicode) != ReadFlag::NoFlag)
             {
             }
+
+            // Whether reading T calls `with_document` for each element of a range or a map: then a document of the
+            // whole text is cheaper.  The functions follow `read_value`, `read_object`, `read_array_into` and
+            // `read_field`; `Loop` is whether the value is an element, and `Seen` the types on the way there,
+            // where a recursive type stops.
+            template <typename... Ts>
+            struct type_list
+            {
+            };
+            template <typename T, bool Loop>
+            struct seen_type
+            {
+            };
+            template <typename T, bool Loop, typename... Seen>
+            static consteval bool documents_of_value(type_list<Seen...>)
+            {
+                if constexpr ((std::same_as<seen_type<T, Loop>, Seen> || ...))
+                    return false;
+                else
+                {
+                    using seen = type_list<Seen..., seen_type<T, Loop>>;
+                    if constexpr (from_json_val_usr_defined<T>)
+                    {
+                        if constexpr (yyjson::detail::shared_ptr_like<T> &&
+                                      std::derived_from<caster<T>, yyjson::detail::builtin_caster>)
+                            return documents_of_value<std::remove_cv_t<typename T::element_type>, Loop>(seen{});
+                        else
+                            return Loop;
+                    }
+                    else
+                    {
+                        auto result = false;
+                        if constexpr (from_json_def_obj_defined<T>) result = result || documents_of_object<T, Loop>(seen{});
+                        if constexpr (from_json_def_arr_defined<T>) result = result || documents_of_array<T>(seen{});
+                        return result;
+                    }
+                }
+            }
+            template <typename T, bool Loop, typename Seen>
+            static consteval bool documents_of_object(Seen seen)
+            {
+                using json_object = const_object_ref;
+                if constexpr (yyjson::detail::visitable<T> && requires {
+                                  visit_struct<T>::key_matcher;
+                                  visit_struct<T>::members;
+                              })
+                    return documents_of_visitable_fields<T, Loop>(seen);
+                else if constexpr (yyjson::detail::object_emplaceable_range<T, json_object> ||
+                                   yyjson::detail::object_back_emplaceable_range<T, json_object>)
+                    return documents_of_value<
+                        std::remove_cvref_t<std::tuple_element_t<1, std::ranges::range_value_t<T>>>, true>(seen);
+                else if constexpr (yyjson::detail::reflected_object_castable<T, json_object>)
+                    return documents_of_reflected_fields<T, Loop>(seen);
+                else
+                    return Loop;
+            }
+            template <typename T, typename Seen>
+            static consteval bool documents_of_array(Seen seen)
+            {
+                using value_type = std::ranges::range_value_t<T>;
+                auto result = documents_of_value<value_type, true>(seen);
+                if constexpr (yyjson::detail::back_insertable<T>)
+                {
+                    if constexpr (yyjson::detail::reflected_assignable_in_place<value_type, const_value_ref>)
+                        result = result || documents_of_reflected_fields<value_type, true>(seen);
+                    else if constexpr (array_readable_in_place<value_type>)
+                        result = result || documents_of_array<value_type>(seen);
+                }
+                return result;
+            }
+            template <typename F, bool Loop, typename Seen>
+            static consteval bool documents_of_field(Seen seen)
+            {
+                if constexpr (requires(F& field, const const_value_ref& v) { caster<F>::from_json(field, v); })
+                {
+                    if constexpr (is_std_optional<F>::value &&
+                                  std::derived_from<caster<F>, yyjson::detail::builtin_caster>)
+                    {
+                        using value_type = typename F::value_type;
+                        auto result = documents_of_value<value_type, Loop>(seen);
+                        if constexpr (yyjson::detail::reflected_assignable_in_place<value_type, const_value_ref>)
+                            result = result || documents_of_reflected_fields<value_type, Loop>(seen);
+                        return result;
+                    }
+                    else
+                        return Loop;
+                }
+                else
+                {
+                    auto result = documents_of_value<F, Loop>(seen);
+                    if constexpr (yyjson::detail::reflected_assignable_in_place<F, const_value_ref>)
+                        result = result || documents_of_reflected_fields<F, Loop>(seen);
+                    return result;
+                }
+            }
+            template <typename T, bool Loop, typename Seen>
+            static consteval bool documents_of_reflected_fields(Seen seen)
+            {
+                return [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                    return (documents_of_field<std::remove_cvref_t<decltype(field_reflection::get_field<Is>(
+                                                   std::declval<T&>()))>,
+                                               Loop>(seen) ||
+                            ...);
+                }(std::make_index_sequence<field_reflection::field_count<T>>{});
+            }
+            template <typename T, bool Loop, typename Seen>
+            static consteval bool documents_of_visitable_fields(Seen seen)
+            {
+                using members = std::remove_cvref_t<decltype(visit_struct<T>::members)>;
+                return [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                    return (documents_of_field<
+                                std::remove_cvref_t<decltype(std::declval<T&>().*std::get<Is>(visit_struct<T>::members))>,
+                                Loop>(seen) ||
+                            ...);
+                }(std::make_index_sequence<std::tuple_size_v<members>>{});
+            }
+
+        public:
+            template <typename T>
+            static constexpr bool reads_documents_in_loop = documents_of_value<T, false>(type_list<>{});
 
             template <typename T>
             T read_root()
@@ -8982,14 +9117,30 @@ namespace yyjson
 
             // Values ------------------------------------------------------------------------------------------
 
-            // Reads the value at `cur_` through a document of its own, for the casters that take one.
-            template <typename T>
-            T read_by_document()
+            // Calls `f` with the value at `cur_` read into a document of its own, for the casters that take one.
+            // The documents come from an allocator that keeps the memory of the previous one.
+            template <typename F>
+            decltype(auto) with_document(F&& f)
             {
                 const char* const start = cur_;
                 skip_value();
-                const auto doc = reader::read(std::string_view(start, static_cast<std::size_t>(cur_ - start)), flg_);
-                return doc.template cast<T>();
+                if (alc_ == nullptr)
+                {
+                    alc_.reset(yyjson_alc_dyn_new());
+                    if (alc_ == nullptr) throw std::bad_alloc();
+                }
+                auto err = yyjson_read_err();
+                auto* const doc = yyjson_read_opts(const_cast<char*>(start), static_cast<std::size_t>(cur_ - start),
+                                                   to_underlying(flg_), alc_.get(), &err);
+                if (doc == nullptr) fail();
+                const auto guard = std::unique_ptr<yyjson_doc, free_doc>(doc);
+                return std::forward<F>(f)(const_value_ref(yyjson_doc_get_root(doc)));
+            }
+
+            template <typename T>
+            T read_by_document()
+            {
+                return with_document([](const const_value_ref& v) { return v.template cast<T>(); });
             }
 
             // Reads the value at `cur_` as `cast<T>` reads it from a document.
@@ -9255,13 +9406,7 @@ namespace yyjson
                         field = read_value<value_type>();
                     }
                     else
-                    {
-                        const char* const start = cur_;
-                        skip_value();
-                        const auto doc =
-                            reader::read(std::string_view(start, static_cast<std::size_t>(cur_ - start)), flg_);
-                        caster<field_type>::from_json(field, static_cast<const const_value_ref&>(doc));
-                    }
+                        with_document([&](const const_value_ref& v) { caster<field_type>::from_json(field, v); });
                 }
                 else if constexpr (std::same_as<field_type, std::string>)
                 {
@@ -9365,13 +9510,15 @@ namespace yyjson
     // Reads JSON text into a value of type T, with the same result as `yyjson::read(json, read_flag).cast<T>()`
     // and the same exception if it fails, but without building a document for the parts of T that the default
     // casters read.  Those that a `caster` specialization reads, and `std::variant`, are read through a document
-    // of their own.
+    // of their own, and when T holds them in a range or a map, the whole text is read into one document first.
     template <typename T>
     requires (!std::is_reference_v<T>) && castable<reader::const_value_ref, T>
     [[nodiscard]] T read(std::string_view json, ReadFlag read_flag = ReadFlag::NoFlag)
     {
         using U = std::remove_cv_t<T>;
-        if ((to_underlying(read_flag) & ~yyjson_read_flag{YYJSON_READ_ALLOW_INVALID_UNICODE}) == 0) [[likely]]
+        if constexpr (reader::detail::direct_reader::reads_documents_in_loop<U>)
+            return reader::read(json, read_flag).template cast<U>();
+        else if ((to_underlying(read_flag) & ~yyjson_read_flag{YYJSON_READ_ALLOW_INVALID_UNICODE}) == 0) [[likely]]
         {
             const auto* first = json.data();
             const auto* last = json.data() + json.size();
