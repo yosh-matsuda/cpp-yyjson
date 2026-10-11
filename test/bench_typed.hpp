@@ -1,21 +1,25 @@
 // NOLINTBEGIN
 #pragma once
 
-// Models of three benchmark datasets for reading JSON into and writing it from C++ types.
+// Models of the benchmark datasets for reading JSON into and writing it from C++ types.
 //
 // The same aggregates are read and written by cpp-yyjson, through its field-name
 // reflection, and by Glaze, through its own, so both libraries fill the same objects.
 // Members are declared in the order their keys appear in the documents, which is also
-// the order both libraries write them in.  Every key of the documents has a member,
-// except `protected` of a Twitter user, which is a C++ keyword: neither library can
-// rename a reflected member, so both skip that key as unknown when reading and write the
-// member as `protected_`.  Nothing else is skipped, so a library that is fast at skipping
-// values gains little here.
+// the order both libraries write them in.  Every key of the documents has a member.  A
+// key that is not a valid member name, such as `@context` or the C++ keyword `public`,
+// belongs to a member of another name, which `yyjson::field_rename` maps to the key; the
+// Glaze executable gives Glaze the same mapping through `glz::meta<T>::rename_key`.
+// Nothing is skipped, so a library that is fast at skipping values gains little here.
 //
 // A key whose value is always null in the document is a `std::optional`, as is a key
 // that only some of the objects have.  Both libraries leave out an empty optional when
 // writing, so they write the same keys.
 
+#include <cpp_yyjson.hpp>
+#if defined(CPPYYJSON_GLAZE_BENCHMARKS)
+#include <glaze/glaze.hpp>
+#endif
 #include <array>
 #include <cstdint>
 #include <map>
@@ -169,7 +173,7 @@ namespace bench_typed
             std::string description;
             std::optional<std::string> url;
             user_entities_t entities;
-            bool protected_ = false;
+            bool protected_;
             std::int64_t followers_count;
             std::int64_t friends_count;
             std::int64_t listed_count;
@@ -332,5 +336,320 @@ namespace bench_typed
             bool operator==(const document&) const = default;
         };
     }  // namespace twitter
+
+    // poet.json: nine thousand records of three strings, most of them long Chinese texts
+    namespace poet
+    {
+        struct poet_t
+        {
+            std::string desc;
+            std::string name;
+            std::string id;
+            bool operator==(const poet_t&) const = default;
+        };
+
+        using document = std::vector<poet_t>;
+    }  // namespace poet
+
+    // github_events.json: thirty events of seven kinds, whose payloads share one struct in
+    // which a key that only some of the kinds have is a `std::optional`
+    namespace github_events
+    {
+        struct actor_t
+        {
+            std::string gravatar_id;
+            std::string login;
+            std::string avatar_url;
+            std::string url;
+            std::int64_t id;
+            bool operator==(const actor_t&) const = default;
+        };
+
+        struct repo_t
+        {
+            std::string url;
+            std::int64_t id;
+            std::string name;
+            bool operator==(const repo_t&) const = default;
+        };
+
+        struct author_t
+        {
+            std::string email;
+            std::string name;
+            bool operator==(const author_t&) const = default;
+        };
+
+        struct commit_t
+        {
+            std::string url;
+            std::string message;
+            bool distinct;
+            std::string sha;
+            author_t author;
+            bool operator==(const commit_t&) const = default;
+        };
+
+        struct user_t
+        {
+            std::string url;
+            std::string gists_url;
+            std::string gravatar_id;
+            std::string type;
+            std::string avatar_url;
+            std::string subscriptions_url;
+            std::string organizations_url;
+            std::string received_events_url;
+            std::string repos_url;
+            std::string login;
+            std::int64_t id;
+            std::string starred_url;
+            std::string events_url;
+            std::string followers_url;
+            std::string following_url;
+            bool operator==(const user_t&) const = default;
+        };
+
+        struct forkee_t
+        {
+            std::string description;
+            bool fork;
+            std::string url;
+            std::string language;
+            std::string stargazers_url;
+            std::string clone_url;
+            std::string tags_url;
+            std::string full_name;
+            std::string merges_url;
+            std::int64_t forks;
+            bool private_;
+            std::string git_refs_url;
+            std::string archive_url;
+            std::string collaborators_url;
+            user_t owner;
+            std::string languages_url;
+            std::string trees_url;
+            std::string labels_url;
+            std::string html_url;
+            std::string pushed_at;
+            std::string created_at;
+            bool has_issues;
+            std::string forks_url;
+            std::string branches_url;
+            std::string commits_url;
+            std::string notifications_url;
+            std::int64_t open_issues;
+            std::string contents_url;
+            std::string blobs_url;
+            std::string issues_url;
+            std::string compare_url;
+            std::string issue_events_url;
+            std::string name;
+            std::string updated_at;
+            std::string statuses_url;
+            std::int64_t forks_count;
+            std::string assignees_url;
+            std::string ssh_url;
+            bool public_;
+            bool has_wiki;
+            std::string subscribers_url;
+            std::optional<std::string> mirror_url;
+            std::int64_t watchers_count;
+            std::int64_t id;
+            bool has_downloads;
+            std::string git_commits_url;
+            std::string downloads_url;
+            std::string pulls_url;
+            std::optional<std::string> homepage;
+            std::string issue_comment_url;
+            std::string hooks_url;
+            std::string subscription_url;
+            std::string milestones_url;
+            std::string svn_url;
+            std::string events_url;
+            std::string git_tags_url;
+            std::string teams_url;
+            std::string comments_url;
+            std::int64_t open_issues_count;
+            std::string keys_url;
+            std::string git_url;
+            std::string contributors_url;
+            std::int64_t size;
+            std::int64_t watchers;
+            bool operator==(const forkee_t&) const = default;
+        };
+
+        struct pull_request_t
+        {
+            std::optional<std::string> html_url;
+            std::optional<std::string> patch_url;
+            std::optional<std::string> diff_url;
+            bool operator==(const pull_request_t&) const = default;
+        };
+
+        struct issue_t
+        {
+            user_t user;
+            std::string url;
+            // empty in every issue of the document
+            std::vector<std::string> labels;
+            std::string html_url;
+            std::string labels_url;
+            pull_request_t pull_request;
+            std::string created_at;
+            std::optional<std::string> closed_at;
+            std::optional<std::string> milestone;
+            std::string title;
+            std::string body;
+            std::string updated_at;
+            std::int64_t number;
+            std::string state;
+            std::optional<user_t> assignee;
+            std::int64_t id;
+            std::string events_url;
+            std::string comments_url;
+            std::int64_t comments;
+            bool operator==(const issue_t&) const = default;
+        };
+
+        struct comment_t
+        {
+            user_t user;
+            std::string url;
+            std::string issue_url;
+            std::string created_at;
+            std::string body;
+            std::string updated_at;
+            std::int64_t id;
+            bool operator==(const comment_t&) const = default;
+        };
+
+        struct page_t
+        {
+            std::string page_name;
+            std::string html_url;
+            std::string title;
+            std::string sha;
+            std::optional<std::string> summary;
+            std::string action;
+            bool operator==(const page_t&) const = default;
+        };
+
+        struct payload_t
+        {
+            std::optional<std::vector<commit_t>> commits;
+            std::optional<std::int64_t> distinct_size;
+            std::optional<std::string> ref;
+            std::optional<std::int64_t> push_id;
+            std::optional<std::string> head;
+            std::optional<std::string> before;
+            std::optional<std::int64_t> size;
+            std::optional<std::string> description;
+            std::optional<std::string> master_branch;
+            std::optional<std::string> ref_type;
+            std::optional<forkee_t> forkee;
+            std::optional<std::string> action;
+            std::optional<issue_t> issue;
+            std::optional<comment_t> comment;
+            std::optional<std::vector<page_t>> pages;
+            bool operator==(const payload_t&) const = default;
+        };
+
+        struct event_t
+        {
+            std::string type;
+            std::string created_at;
+            actor_t actor;
+            repo_t repo;
+            bool public_;
+            payload_t payload;
+            std::string id;
+            std::optional<actor_t> org;
+            bool operator==(const event_t&) const = default;
+        };
+
+        using document = std::vector<event_t>;
+    }  // namespace github_events
+
+    // gsoc-2018.json: twelve hundred schema.org records keyed by their index, whose keys
+    // include `@context` and `@type`
+    namespace gsoc_2018
+    {
+        struct sponsor_t
+        {
+            std::string type;
+            std::string name;
+            std::string disambiguatingDescription;
+            std::string description;
+            std::string url;
+            std::string logo;
+            bool operator==(const sponsor_t&) const = default;
+        };
+
+        struct author_t
+        {
+            std::string type;
+            std::string name;
+            bool operator==(const author_t&) const = default;
+        };
+
+        struct project_t
+        {
+            std::string context;
+            std::string type;
+            std::string name;
+            std::string description;
+            sponsor_t sponsor;
+            author_t author;
+            bool operator==(const project_t&) const = default;
+        };
+
+        using document = std::map<std::string, project_t>;
+    }  // namespace gsoc_2018
 }  // namespace bench_typed
+
+template <>
+struct yyjson::field_rename<bench_typed::twitter::user_t>
+{
+    static constexpr auto value = yyjson::rename{{"protected_", "protected"}};
+};
+template <>
+struct yyjson::field_rename<bench_typed::github_events::forkee_t>
+{
+    static constexpr auto value = yyjson::rename{{"private_", "private"}, {"public_", "public"}};
+};
+template <>
+struct yyjson::field_rename<bench_typed::github_events::event_t>
+{
+    static constexpr auto value = yyjson::rename{{"public_", "public"}};
+};
+template <>
+struct yyjson::field_rename<bench_typed::gsoc_2018::sponsor_t>
+{
+    static constexpr auto value = yyjson::rename{{"type", "@type"}};
+};
+template <>
+struct yyjson::field_rename<bench_typed::gsoc_2018::author_t>
+{
+    static constexpr auto value = yyjson::rename{{"type", "@type"}};
+};
+template <>
+struct yyjson::field_rename<bench_typed::gsoc_2018::project_t>
+{
+    static constexpr auto value = yyjson::rename{{"context", "@context"}, {"type", "@type"}};
+};
+
+#if defined(CPPYYJSON_GLAZE_BENCHMARKS)
+template <typename T>
+requires requires { yyjson::field_rename<T>::value.pairs; }
+struct glz::meta<T>
+{
+    static constexpr std::string_view rename_key(const std::string_view member)
+    {
+        for (const auto& [name, key] : yyjson::field_rename<T>::value.pairs)
+            if (name == member) return key;
+        return member;
+    }
+};
+#endif
 // NOLINTEND
