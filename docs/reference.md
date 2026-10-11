@@ -1506,7 +1506,7 @@ The string is read without a document when its root is an array or an object and
 *   A user-defined `from_json` may be called twice for the same JSON value, when the direct read fails after calling it. Do not rely on the number of calls.
 *   A `T` that refers to the JSON value, such as `std::string_view` or a struct with a `std::string_view` field, refers to memory that is freed when `read<T>` returns, as it does after `read(json_string).cast<T>()` on a temporary value. Cast such types from a `yyjson::reader::value` that outlives them instead.
 
-`yyjson::read<T>` is available with yyjson 0.10.0 or later, which includes the bundled backend.
+With an external yyjson older than 0.12.0, `read<T>` always reads the string into a document and casts it. The bundled backend is newer and reads directly.
 
 ### Writing a C++ object to a JSON string directly
 
@@ -1540,6 +1540,8 @@ for (const auto& points : batches)
 ```
 
 Most types are written straight to the string: numbers, strings, `bool`, `nullptr`, ranges, maps, the pre-defined STL casters, structs that the compile-time reflection or the `VISITABLE_STRUCT` macro converts, and the values of `yyjson::reader` and `yyjson::value`. The value that a user-defined `to_json` returns is written directly as well, and so is the output of a `to_json` that takes an [emitter](#user-defined-casters). A user-defined `to_json` that fills a `writer::value_ref`, `writer::array_ref` or `writer::object_ref` needs a document, so the object that it converts is written through a temporary one, while the objects around it are still written directly. The writer keeps one document for all of them, and the elements of a range or a map of such objects are built in it together and written at once.
+
+With an external yyjson older than 0.12.0, `write` always builds a document and writes it, as `yyjson::value(t).write(flag)` does. The bundled backend is newer and writes directly.
 
 ## Performance best practices
 
