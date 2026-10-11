@@ -11051,6 +11051,22 @@ namespace yyjson
                     else
                         field = read_value<field_type>();
                 }
+                else if constexpr (std::same_as<field_type, bool> && !from_json_val_usr_defined<bool> &&
+                                   !yyjson::detail::from_json_translator<bool>::castable)
+                {
+                    if (*cur_ == 't')
+                    {
+                        read_literal("true");
+                        field = true;
+                    }
+                    else if (*cur_ == 'f')
+                    {
+                        read_literal("false");
+                        field = false;
+                    }
+                    else
+                        field = read_value<field_type>();
+                }
                 else if constexpr (builtin_variant<field_type>)
                 {
                     read_variant<field_type>([&](auto index, auto&&... args) -> field_type& {

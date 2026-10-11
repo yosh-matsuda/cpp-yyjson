@@ -5071,6 +5071,14 @@ struct EmptyArrays
     bool operator==(const EmptyArrays&) const = default;
 };
 
+struct BoolFields
+{
+    bool a = false;
+    bool b = true;
+    std::optional<bool> c;
+    bool operator==(const BoolFields&) const = default;
+};
+
 struct ReadChain
 {
     ReadPoint point;
@@ -5463,6 +5471,25 @@ TEST(DirectReader, EmptyArrayFields)
     {
         expect_direct_read<EmptyArrays>(json);
         expect_direct_read<std::vector<EmptyArrays>>("[" + std::string(json) + "]");
+    }
+}
+
+TEST(DirectReader, BoolFields)
+{
+    using namespace yyjson;
+
+    for (const auto* json : {R"({"a":true,"b":false,"c":true})", R"({"a":false,"b":true,"c":false})",
+                             R"({"c":null,"b":false })", R"({"b" : false})"})
+    {
+        EXPECT_TRUE((expect_direct_read<BoolFields>(json))) << json;
+        EXPECT_TRUE((expect_direct_read<std::vector<BoolFields>>("[" + std::string(json) + "]"))) << json;
+    }
+    for (const auto* json : {R"({"a":tru})", R"({"a":fals})", R"({"a":true)", R"({"a":false)", R"({"a":t)",
+                             R"({"a":f)", R"({"a":truex})", R"({"a":falsee})", R"({"a":True})", R"({"a":null})",
+                             R"({"a":1})", R"({"a":"true"})", R"({"b":tRue})", R"({"b":fAlse})"})
+    {
+        expect_direct_read<BoolFields>(json);
+        expect_direct_read<std::vector<BoolFields>>("[" + std::string(json) + "]");
     }
 }
 
