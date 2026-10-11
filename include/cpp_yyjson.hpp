@@ -683,6 +683,15 @@ namespace yyjson
         template <typename T>
         concept shared_ptr_like = is_shared_ptr<std::remove_cvref_t<T>>::value;
 
+        template <typename T>
+        struct is_std_optional : std::false_type
+        {
+        };
+        template <typename T>
+        struct is_std_optional<std::optional<T>> : std::true_type
+        {
+        };
+
         // `std::array` is an aggregate as well as a range.  The writer has to treat it as a range, the
         // way the reader does, rather than reflect it into an object of its members.
         template <typename T>
@@ -5424,18 +5433,6 @@ namespace yyjson
                 requires requires(const Json& arr) { cast<std::ranges::range_value_t<T>>(arr.front()); };
             };
 
-        // A container takes a number as its size, which is not the value that the number gives.
-        template <typename T>
-        struct json_scalar_target
-        {
-            using type = T;
-        };
-        template <typename T>
-        struct json_scalar_target<std::optional<T>>
-        {
-            using type = T;
-        };
-
         // A struct is read from a JSON object only, although C++20 lets `T(v)` initialize its first field from
         // any value.
         template <typename T>
@@ -5447,18 +5444,13 @@ namespace yyjson
         template <typename T, typename Arg>
 #ifdef _MSC_VER
         concept json_scalar_constructible =
-            (!std::ranges::range<typename json_scalar_target<T>::type>) && (!json_aggregate<T>) &&
-            (!std::same_as<T, bool> || std::same_as<Arg, bool>) && requires { T(std::declval<Arg>()); };
+            (!std::ranges::range<T>) && (!json_aggregate<T>) && (!std::same_as<T, bool> || std::same_as<Arg, bool>) &&
+            requires { T(std::declval<Arg>()); };
 #else
         concept json_scalar_constructible =
-            (!std::ranges::range<typename json_scalar_target<T>::type>) && (!json_aggregate<T>) &&
-            (!std::same_as<T, bool> || std::same_as<Arg, bool>) && std::constructible_from<T, Arg>;
+            (!std::ranges::range<T>) && (!json_aggregate<T>) && (!std::same_as<T, bool> || std::same_as<Arg, bool>) &&
+            std::constructible_from<T, Arg>;
 #endif
-
-        template <typename T>
-        concept optional_of_integral = requires { typename T::value_type; } &&
-                                       std::same_as<T, std::optional<typename T::value_type>> &&
-                                       std::integral<typename T::value_type>;
 
         // `default_caster<T>::from_json_null` gives a T.
         template <typename T>
@@ -5618,10 +5610,6 @@ namespace yyjson
                 }
                 detail::throw_bad_cast("overflow detected: {} is not constructible from JSON number {}",
                                        detail::type_name<U>(), value);
-            }
-            else if constexpr (optional_of_integral<U>)
-            {
-                return U(from_json_real<typename U::value_type>(value));
             }
             else if constexpr (json_scalar_constructible<U, double>)
             {
@@ -5956,6 +5944,15 @@ namespace yyjson
             if (!json.is_null() || detail::shared_ptr_like<T>) field = cast<T>(json);
         }
 
+        // Null gives no value, and any other JSON value is read as `cast<T>` reads it.
+        template <typename Json>
+        requires castable<Json, T>
+        static std::optional<T> from_json(const Json& json)
+        {
+            if (json.is_null() && !detail::shared_ptr_like<T>) return std::nullopt;
+            return cast<T>(json);
+        }
+
         template <detail::copy_string_args... Ts>
         requires requires(writer::value_ref& v, T t) {
             v = t;
@@ -6070,6 +6067,8 @@ namespace yyjson
                     return variant_json_kinds<T>::template value<Json>();
                 else if constexpr (shared_ptr_like<T>)
                     return json_kind_null | accepted_json_kinds<typename is_shared_ptr<T>::value_type, Json>();
+                else if constexpr (is_std_optional<T>::value)
+                    return json_kind_null | accepted_json_kinds<typename T::value_type, Json>();
                 else if constexpr (tuple_like<T>)
                     return json_kind_array | json_kind_object;
                 else
@@ -8723,15 +8722,6 @@ namespace yyjson
         };
         static_assert(std::size(pow5_128_table) == 2 * (pow5_128_max - pow5_128_min + 1));
 
-        template <typename T>
-        struct is_std_optional : std::false_type
-        {
-        };
-        template <typename T>
-        struct is_std_optional<std::optional<T>> : std::true_type
-        {
-        };
-
         // Reads JSON text into C++ values as `cast<T>` reads them from a document, without the document.  The
         // root is an object or an array whose closing bracket is the last character other than white space, so
         // that every scan for a character that ends a token stops at that bracket at the latest; only strings
@@ -8854,6 +8844,9 @@ namespace yyjson
                         if constexpr (yyjson::detail::shared_ptr_like<T> &&
                                       std::derived_from<caster<T>, yyjson::detail::builtin_caster>)
                             return documents_of_value<std::remove_cv_t<typename T::element_type>, Loop>(seen{});
+                        else if constexpr (is_std_optional<T>::value &&
+                                           std::derived_from<caster<T>, yyjson::detail::builtin_caster>)
+                            return documents_of_value<typename T::value_type, Loop>(seen{});
                         else
                             return Loop;
                     }
@@ -10132,6 +10125,19 @@ namespace yyjson
                         }
                         return std::make_shared<typename T::element_type>(
                             read_value<std::remove_cv_t<typename T::element_type>>());
+                    }
+                    else if constexpr (is_std_optional<T>::value &&
+                                       std::derived_from<caster<T>, yyjson::detail::builtin_caster>)
+                    {
+                        if constexpr (!yyjson::detail::shared_ptr_like<typename T::value_type>)
+                        {
+                            if (*cur_ == 'n')
+                            {
+                                read_literal("null");
+                                return std::nullopt;
+                            }
+                        }
+                        return T(read_value<typename T::value_type>());
                     }
                     else
                         return read_by_document<T>();

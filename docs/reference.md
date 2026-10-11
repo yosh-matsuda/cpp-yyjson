@@ -1052,7 +1052,7 @@ Several casters from/to STL classes to JSON are pre-defined in the library for c
 *   `std::tuple`-like
 *   `std::vector<bool>` (specialized)
 
-For reflected object fields, `std::optional` represents field presence: fields with `std::nullopt` are omitted when serialized, and JSON null is ignored when deserializing into the optional field. If JSON null is a value to be preserved, use `std::shared_ptr` instead.
+For reflected object fields, `std::optional` represents field presence: fields with `std::nullopt` are omitted when serialized, and JSON null is ignored when deserializing into the optional field. If JSON null is a value to be preserved, use `std::shared_ptr` instead. Any other `std::optional<T>`, such as the root or an element of an array, is deserialized from JSON null into `std::nullopt` and from any other value as `T` is.
 
 ```cpp
 using namespace yyjson;

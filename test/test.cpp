@@ -5512,11 +5512,29 @@ TEST(Reader, ValueKinds)
         expect_direct_read<std::vector<bool>>(json);
     }
     EXPECT_EQ((read("1").cast<std::variant<bool, int>>().index()), 1U);
+    EXPECT_EQ(read("null").cast<std::optional<bool>>(), std::nullopt);
 
     // a string is read from a JSON string only, while another range of characters is read from an array
     EXPECT_THROW((void)read("[104,105]").cast<std::string>(), bad_cast);
     expect_direct_read<std::vector<std::string>>("[[104,105]]");
     EXPECT_EQ(read("[104,105]").cast<std::vector<char>>(), (std::vector<char>{'h', 'i'}));
+
+    // `std::optional<T>` is read from null or from what T is read from, also outside of a struct
+    EXPECT_THROW((void)read("4294967297").cast<std::optional<int>>(), bad_cast);
+    EXPECT_THROW((void)read("-1").cast<std::optional<unsigned>>(), bad_cast);
+    EXPECT_EQ(read("[1,2]").cast<std::optional<std::vector<int>>>(), (std::vector<int>{1, 2}));
+    EXPECT_EQ(read("null").cast<std::optional<std::vector<int>>>(), std::nullopt);
+    EXPECT_EQ(read(R"({"a":3})").cast<std::optional<SingleField>>()->a, 3);
+    const auto pointer = read("null").cast<std::optional<std::shared_ptr<int>>>();
+    ASSERT_TRUE(pointer.has_value());
+    EXPECT_EQ(*pointer, nullptr);
+    EXPECT_TRUE(expect_direct_read<std::vector<std::optional<std::vector<int>>>>("[null,[1,2],[]]"));
+    EXPECT_TRUE(expect_direct_read<std::vector<std::optional<SingleField>>>(R"([null,{"a":3}])"));
+    EXPECT_TRUE(expect_direct_read<std::vector<std::optional<std::shared_ptr<int>>>>("[null,1]"));
+    expect_direct_read<std::vector<std::optional<std::vector<int>>>>(R"([[1],"x"])");
+    expect_direct_read<std::vector<std::optional<int>>>("[4294967297]");
+    EXPECT_EQ((read("[1]").cast<std::variant<int, std::optional<std::vector<int>>>>().index()), 1U);
+    EXPECT_EQ((read("null").cast<std::variant<int, std::optional<std::vector<int>>>>().index()), 1U);
 }
 
 // The index and the JSON text of a variant cast from `json`, or nothing when the cast fails.
