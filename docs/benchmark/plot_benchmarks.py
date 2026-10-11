@@ -197,11 +197,16 @@ WRITE_DATASET_VARIANTS = {
     "write_glaze_single_dataset": ("reused", "Glaze", "Glaze"),
 }
 
-# The typed benchmarks number their own three datasets.
+# The typed benchmarks number their own datasets, in the order of `typed_datasets` in
+# test/bench_typed.cpp.
 TYPED_DATASET_NAMES = {
     0: "canada",
     1: "citm_catalog",
     2: "twitter",
+    3: "twitterescaped",
+    4: "poet",
+    5: "github_events",
+    6: "gsoc-2018",
 }
 
 TYPED_COLORS = {

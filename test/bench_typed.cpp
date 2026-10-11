@@ -24,57 +24,60 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <tuple>
+#include <utility>
 #include "bench_data.hpp"
 #include "bench_typed.hpp"
 
 namespace
 {
-    template <typename T>
-    struct typed_dataset;
-    template <>
-    struct typed_dataset<bench_typed::canada::document>
+    // The rows take the dataset as their argument, so that they are named `<row>/<index>`
+    // and labelled with the path like the other benchmarks.  A dataset is a document and
+    // the type it is read into; twitter and twitterescaped share the type.
+    template <std::size_t Index, typename T>
+    struct typed_dataset_of
     {
-        static constexpr auto path = json_file_paths[0];
+        using type = T;
+        static constexpr auto path = json_file_paths[Index];
     };
-    template <>
-    struct typed_dataset<bench_typed::citm_catalog::document>
-    {
-        static constexpr auto path = json_file_paths[1];
+    constexpr auto typed_datasets = std::tuple{
+        typed_dataset_of<0, bench_typed::canada::document>{},
+        typed_dataset_of<1, bench_typed::citm_catalog::document>{},
+        typed_dataset_of<8, bench_typed::twitter::document>{},
+        typed_dataset_of<9, bench_typed::twitter::document>{},
+        typed_dataset_of<7, bench_typed::poet::document>{},
+        typed_dataset_of<3, bench_typed::github_events::document>{},
+        typed_dataset_of<4, bench_typed::gsoc_2018::document>{},
     };
-    template <>
-    struct typed_dataset<bench_typed::twitter::document>
-    {
-        static constexpr auto path = json_file_paths[8];
-    };
+    constexpr auto typed_dataset_count = static_cast<int>(std::tuple_size_v<decltype(typed_datasets)>);
 
-    // The rows take the dataset as their argument, in this order, so that they are named
-    // `<row>/<index>` and labelled with the path like the other benchmarks.
     template <template <typename> typename Bench>
     void dispatch(benchmark::State& state)
     {
-        switch (state.range(0))
-        {
-            case 0:
-                Bench<bench_typed::canada::document>::run(state);
-                break;
-            case 1:
-                Bench<bench_typed::citm_catalog::document>::run(state);
-                break;
-            case 2:
-                Bench<bench_typed::twitter::document>::run(state);
-                break;
-            default:
-                state.SkipWithError("unknown dataset");
-                break;
-        }
+        const auto found = [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+            return ((state.range(0) == static_cast<std::int64_t>(Is)
+                         ? (Bench<std::tuple_element_t<Is, decltype(typed_datasets)>>::run(state), true)
+                         : false) ||
+                    ...);
+        }(std::make_index_sequence<typed_dataset_count>{});
+        if (!found) state.SkipWithError("unknown dataset");
     }
-    constexpr auto typed_dataset_count = 3;
 
-    template <typename T>
+    template <typename D>
     const std::string& typed_json()
     {
-        static const auto json = read_file(std::string(typed_dataset<T>::path));
+        static const auto json = read_file(std::string(D::path));
         return json;
+    }
+
+    // `yyjson::object` and `yyjson::array` build a document of an object or an array root.
+    template <typename T>
+    auto cpp_yyjson_document(const T& t)
+    {
+        if constexpr (std::ranges::range<T> && !requires { typename T::mapped_type; })
+            return yyjson::array(t);
+        else
+            return yyjson::object(t);
     }
 
     // cpp-yyjson is the reference both executables check against: the cpp-yyjson rows
@@ -88,37 +91,37 @@ namespace
         return yyjson::cast<T>(v);
     }
 
-    template <typename T>
-    const T& reference_object()
+    template <typename D>
+    const typename D::type& reference_object()
     {
-        static const auto object = cpp_yyjson_read_typed<T>(typed_json<T>());
+        static const auto object = cpp_yyjson_read_typed<typename D::type>(typed_json<D>());
         return object;
     }
 
-    template <typename T>
-    bool validate_read_once(benchmark::State& state, bool& validated, const T& result)
+    template <typename D>
+    bool validate_read_once(benchmark::State& state, bool& validated, const typename D::type& result)
     {
         if (validated) return true;
-        validated = result == reference_object<T>();
+        validated = result == reference_object<D>();
         if (!validated) state.SkipWithError("the object read differs from the reference");
         return validated;
     }
 
-    template <typename T>
+    template <typename D>
     bool validate_written_once(benchmark::State& state, bool& validated, std::string_view result)
     {
         if (validated) return true;
         state.PauseTiming();
-        validated = cpp_yyjson_read_typed<T>(result) == reference_object<T>();
+        validated = cpp_yyjson_read_typed<typename D::type>(result) == reference_object<D>();
         if (!validated) state.SkipWithError("the JSON written does not read back into the same object");
         state.ResumeTiming();
         return validated;
     }
 
-    template <typename T>
+    template <typename D>
     void finish(benchmark::State& state, std::size_t bytes)
     {
-        state.SetLabel(std::string(typed_dataset<T>::path));
+        state.SetLabel(std::string(D::path));
         state.SetBytesProcessed(static_cast<std::int64_t>(state.iterations() * bytes));
     }
 
@@ -129,31 +132,31 @@ namespace
     }
 
 #if !defined(CPPYYJSON_GLAZE_BENCHMARKS)
-    template <typename T>
+    template <typename D>
     struct typed_read_cpp_yyjson
     {
         static void run(benchmark::State& state)
         {
-            const auto& json = typed_json<T>();
+            const auto& json = typed_json<D>();
             auto validated = false;
             for (auto _ : state)
             {
                 const auto start = std::chrono::steady_clock::now();
-                auto result = cpp_yyjson_read_typed<T>(json);
+                auto result = cpp_yyjson_read_typed<typename D::type>(json);
                 state.SetIterationTime(seconds_since(start));
-                if (!validate_read_once(state, validated, result)) break;
+                if (!validate_read_once<D>(state, validated, result)) break;
             }
-            finish<T>(state, json.size());
+            finish<D>(state, json.size());
         }
     };
 
-    template <typename T>
+    template <typename D>
     struct typed_read_cpp_yyjson_single
     {
         static void run(benchmark::State& state)
         {
             using namespace yyjson;
-            const auto& json = typed_json<T>();
+            const auto& json = typed_json<D>();
             auto alloc = reader::pool_allocator(json);
             // Fault the pool in outside the timed loop, as read_cpp_yyjson_single does.
             std::ignore = read(json, alloc);
@@ -163,21 +166,21 @@ namespace
                 const auto start = std::chrono::steady_clock::now();
                 auto result = [&] {
                     const auto v = read(json, alloc);
-                    return cast<T>(v);
+                    return cast<typename D::type>(v);
                 }();
                 state.SetIterationTime(seconds_since(start));
-                if (!validate_read_once(state, validated, result)) break;
+                if (!validate_read_once<D>(state, validated, result)) break;
             }
-            finish<T>(state, json.size());
+            finish<D>(state, json.size());
         }
     };
 
-    template <typename T>
+    template <typename D>
     struct typed_read_cpp_yyjson_dom
     {
         static void run(benchmark::State& state)
         {
-            const auto& json = typed_json<T>();
+            const auto& json = typed_json<D>();
             for (auto _ : state)
             {
                 const auto start = std::chrono::steady_clock::now();
@@ -187,90 +190,90 @@ namespace
                 }
                 state.SetIterationTime(seconds_since(start));
             }
-            finish<T>(state, json.size());
+            finish<D>(state, json.size());
         }
     };
 
-    template <typename T>
+    template <typename D>
     struct typed_read_cpp_yyjson_direct
     {
         static void run(benchmark::State& state)
         {
-            const auto& json = typed_json<T>();
+            const auto& json = typed_json<D>();
             auto validated = false;
             for (auto _ : state)
             {
                 const auto start = std::chrono::steady_clock::now();
-                auto result = yyjson::read<T>(json);
+                auto result = yyjson::read<typename D::type>(json);
                 state.SetIterationTime(seconds_since(start));
-                if (!validate_read_once(state, validated, result)) break;
+                if (!validate_read_once<D>(state, validated, result)) break;
             }
-            finish<T>(state, json.size());
+            finish<D>(state, json.size());
         }
     };
 
-    template <typename T>
+    template <typename D>
     struct typed_write_cpp_yyjson
     {
         static void run(benchmark::State& state)
         {
-            const auto& source = reference_object<T>();
+            const auto& source = reference_object<D>();
             auto validated = false;
             auto written = std::size_t{0};
             for (auto _ : state)
             {
-                auto result = yyjson::object(source).write();
+                auto result = cpp_yyjson_document(source).write();
                 written = result.size();
-                if (!validate_written_once<T>(state, validated, result)) break;
+                if (!validate_written_once<D>(state, validated, result)) break;
             }
-            finish<T>(state, written);
+            finish<D>(state, written);
         }
     };
 
-    template <typename T>
+    template <typename D>
     struct typed_write_cpp_yyjson_single
     {
         static void run(benchmark::State& state)
         {
-            const auto& source = reference_object<T>();
+            const auto& source = reference_object<D>();
             auto alc = yyjson::dynamic_allocator();
             auto validated = false;
             auto written = std::size_t{0};
             for (auto _ : state)
             {
-                auto result = yyjson::object(source).write(alc);
+                auto result = cpp_yyjson_document(source).write(alc);
                 written = result.size();
-                if (!validate_written_once<T>(state, validated, result)) break;
+                if (!validate_written_once<D>(state, validated, result)) break;
             }
-            finish<T>(state, written);
+            finish<D>(state, written);
         }
     };
 
     // `yyjson::write` writes the object straight to text, without a mutable document.
-    template <typename T>
+    template <typename D>
     struct typed_write_cpp_yyjson_direct
     {
         static void run(benchmark::State& state)
         {
-            const auto& source = reference_object<T>();
+            const auto& source = reference_object<D>();
             auto validated = false;
             auto written = std::size_t{0};
             for (auto _ : state)
             {
                 auto result = yyjson::write(source);
                 written = result.size();
-                if (!validate_written_once<T>(state, validated, result)) break;
+                if (!validate_written_once<D>(state, validated, result)) break;
             }
-            finish<T>(state, written);
+            finish<D>(state, written);
         }
     };
 
-    template <typename T>
+    template <typename D>
     struct typed_write_cpp_yyjson_direct_single
     {
         static void run(benchmark::State& state)
         {
-            const auto& source = reference_object<T>();
+            const auto& source = reference_object<D>();
             auto buffer = std::string();
             auto validated = false;
             auto written = std::size_t{0};
@@ -278,9 +281,9 @@ namespace
             {
                 yyjson::write(source, buffer);
                 written = buffer.size();
-                if (!validate_written_once<T>(state, validated, buffer)) break;
+                if (!validate_written_once<D>(state, validated, buffer)) break;
             }
-            finish<T>(state, written);
+            finish<D>(state, written);
         }
     };
 #else
@@ -293,17 +296,17 @@ namespace
         bool escape_control_characters = true;
     };
 
-    template <typename T>
+    template <typename D>
     struct typed_read_glaze
     {
         static void run(benchmark::State& state)
         {
-            const auto& json = typed_json<T>();
+            const auto& json = typed_json<D>();
             auto validated = false;
             for (auto _ : state)
             {
                 const auto start = std::chrono::steady_clock::now();
-                auto result = T{};
+                auto result = typename D::type{};
                 const auto ec = glz::read<glaze_read_opts>(result, json);
                 state.SetIterationTime(seconds_since(start));
                 if (ec)
@@ -311,9 +314,9 @@ namespace
                     state.SkipWithError(glz::format_error(ec, json).c_str());
                     break;
                 }
-                if (!validate_read_once(state, validated, result)) break;
+                if (!validate_read_once<D>(state, validated, result)) break;
             }
-            finish<T>(state, json.size());
+            finish<D>(state, json.size());
         }
     };
 
@@ -321,13 +324,13 @@ namespace
     // and vector in it, which is what a program that reads the same kind of document over
     // and over can do with Glaze.  cpp-yyjson returns a new object from every cast, so its
     // `single` row reuses the parser memory instead.
-    template <typename T>
+    template <typename D>
     struct typed_read_glaze_single
     {
         static void run(benchmark::State& state)
         {
-            const auto& json = typed_json<T>();
-            auto result = T{};
+            const auto& json = typed_json<D>();
+            auto result = typename D::type{};
             std::ignore = glz::read<glaze_read_opts>(result, json);
             auto validated = false;
             for (auto _ : state)
@@ -340,30 +343,30 @@ namespace
                     state.SkipWithError(glz::format_error(ec, json).c_str());
                     break;
                 }
-                if (!validate_read_once(state, validated, result)) break;
+                if (!validate_read_once<D>(state, validated, result)) break;
             }
-            finish<T>(state, json.size());
+            finish<D>(state, json.size());
         }
     };
 
-    template <typename T>
-    const T& glaze_source_object()
+    template <typename D>
+    const typename D::type& glaze_source_object()
     {
         static const auto object = [] {
-            auto result = T{};
-            if (glz::read<glaze_read_opts>(result, typed_json<T>()))
+            auto result = typename D::type{};
+            if (glz::read<glaze_read_opts>(result, typed_json<D>()))
                 throw std::runtime_error("glaze failed to read the dataset");
             return result;
         }();
         return object;
     }
 
-    template <typename T>
+    template <typename D>
     struct typed_write_glaze
     {
         static void run(benchmark::State& state)
         {
-            const auto& source = glaze_source_object<T>();
+            const auto& source = glaze_source_object<D>();
             auto validated = false;
             auto written = std::size_t{0};
             for (auto _ : state)
@@ -375,18 +378,18 @@ namespace
                     break;
                 }
                 written = result->size();
-                if (!validate_written_once<T>(state, validated, *result)) break;
+                if (!validate_written_once<D>(state, validated, *result)) break;
             }
-            finish<T>(state, written);
+            finish<D>(state, written);
         }
     };
 
-    template <typename T>
+    template <typename D>
     struct typed_write_glaze_single
     {
         static void run(benchmark::State& state)
         {
-            const auto& source = glaze_source_object<T>();
+            const auto& source = glaze_source_object<D>();
             auto buffer = std::string();
             auto validated = false;
             auto written = std::size_t{0};
@@ -398,9 +401,9 @@ namespace
                     break;
                 }
                 written = buffer.size();
-                if (!validate_written_once<T>(state, validated, buffer)) break;
+                if (!validate_written_once<D>(state, validated, buffer)) break;
             }
-            finish<T>(state, written);
+            finish<D>(state, written);
         }
     };
 #endif
