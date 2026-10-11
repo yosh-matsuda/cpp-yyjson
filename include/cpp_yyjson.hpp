@@ -2447,7 +2447,9 @@ namespace yyjson
                         success = doc.set_value(key, field_name, ts...);
                         if (!success) [[unlikely]]
                             return;
+#if YYJSON_VERSION_HEX >= 0x000800
                         if constexpr (NoEsc) key->tag |= YYJSON_SUBTYPE_NOESC;
+#endif
 
                         if constexpr (base_of_value<Field>)
                         {
@@ -5044,7 +5046,8 @@ namespace yyjson
         }
 
 #pragma region read
-        [[nodiscard]] inline read_error make_read_error(const char* str, std::size_t len, const yyjson_read_err& err)
+        [[nodiscard]] inline read_error make_read_error([[maybe_unused]] const char* str,
+                                                        [[maybe_unused]] std::size_t len, const yyjson_read_err& err)
         {
 #if YYJSON_VERSION_HEX >= 0x000A00
             auto line = std::size_t{0};
@@ -5791,7 +5794,8 @@ namespace yyjson
         requires std::same_as<Json, reader::const_value_ref> && (!reader::detail::from_json_val_usr_defined<T>)
         CPPYYJSON_ALWAYS_INLINE static bool assign_in_place(T& field, const Json& json, bool replaceable)
         {
-            const auto* val = json.val_;
+            // `unsafe_yyjson_*` take a non-const pointer before yyjson 0.13
+            auto* val = const_cast<yyjson_val*>(json.val_);
             if constexpr (std::same_as<T, std::string>)
             {
                 if (unsafe_yyjson_is_str(val)) [[likely]]
@@ -5824,7 +5828,7 @@ namespace yyjson
                 // Checks first the JSON type that T is usually read from, and converts it in the same way
                 // as `inspect` below does.  The value is read from the tag directly, since returning it
                 // through `std::optional` makes the compiler spill it to the stack.
-                const auto* val = json.val_;
+                auto* val = const_cast<yyjson_val*>(json.val_);
                 if constexpr (std::same_as<T, bool>)
                 {
                     if (unsafe_yyjson_is_bool(val)) [[likely]]
@@ -6426,7 +6430,7 @@ namespace yyjson
         }
     };
 
-#if YYJSON_VERSION_HEX >= 0x000A00
+#if YYJSON_VERSION_HEX >= 0x000C00
     namespace reader::detail
     {
         class direct_reader;
@@ -8825,9 +8829,31 @@ namespace yyjson
         }
         out.resize(static_cast<std::size_t>(buf.cur - buf.beg));
     }
+#else
+    // yyjson before 0.12 lacks `yyjson_write_number`, which the direct writer writes numbers with, so the text is
+    // written through a document.
+    template <typename T>
+    requires writer::detail::create_value_callable<const T&> || writer::detail::base_of_value<T> ||
+             reader::detail::base_of_value_ref<T>
+    [[nodiscard]] json_string write(const T& t, WriteFlag write_flag = WriteFlag::NoFlag)
+    {
+        if constexpr (writer::detail::base_of_value<T> || reader::detail::base_of_value_ref<T>)
+            return t.write(write_flag);
+        else
+            return value(t).write(write_flag);
+    }
+
+    template <typename T>
+    requires writer::detail::create_value_callable<const T&> || writer::detail::base_of_value<T> ||
+             reader::detail::base_of_value_ref<T>
+    void write(const T& t, std::string& out, WriteFlag write_flag = WriteFlag::NoFlag)
+    {
+        out.clear();
+        out.append(write(t, write_flag));
+    }
 #endif
 
-#if YYJSON_VERSION_HEX >= 0x000A00
+#if YYJSON_VERSION_HEX >= 0x000C00
     namespace reader::detail
     {
         // Thrown by the direct reader at text that is not valid JSON and at a value that the type cannot be cast
@@ -11134,6 +11160,13 @@ namespace yyjson
         }
         return reader::read(json, read_flag).template cast<U>();
     }
+#else
+    template <typename T>
+    requires (!std::is_reference_v<T>) && castable<reader::const_value_ref, T>
+    [[nodiscard]] T read(std::string_view json, ReadFlag read_flag = ReadFlag::NoFlag)
+    {
+        return reader::read(json, read_flag).template cast<std::remove_cv_t<T>>();
+    }
 #endif
 
     namespace writer::detail
@@ -11150,7 +11183,7 @@ namespace yyjson
     {
         friend struct writer::detail::emitter_access;
         friend class array_emitter;
-#if YYJSON_VERSION_HEX >= 0x000A00
+#if YYJSON_VERSION_HEX >= 0x000C00
         friend class writer::detail::direct_writer;
 
         writer::detail::direct_writer* direct_ = nullptr;
@@ -11197,7 +11230,7 @@ namespace yyjson
         requires detail::key_type<std::remove_cvref_t<Key>>
         void emplace(Key&& key, T&& t, Ts... ts)
         {
-#if YYJSON_VERSION_HEX >= 0x000A00
+#if YYJSON_VERSION_HEX >= 0x000C00
             if (direct_ != nullptr)
             {
                 write_key(std::forward<Key>(key));
@@ -11223,7 +11256,7 @@ namespace yyjson
     {
         friend struct writer::detail::emitter_access;
         friend class object_emitter;
-#if YYJSON_VERSION_HEX >= 0x000A00
+#if YYJSON_VERSION_HEX >= 0x000C00
         friend class writer::detail::direct_writer;
 
         writer::detail::direct_writer* direct_ = nullptr;
@@ -11249,7 +11282,7 @@ namespace yyjson
         template <writer::detail::emplaceable T, detail::copy_string_args... Ts>
         void emplace_back(T&& t, Ts... ts)
         {
-#if YYJSON_VERSION_HEX >= 0x000A00
+#if YYJSON_VERSION_HEX >= 0x000C00
             if (direct_ != nullptr)
             {
                 direct_->next_element(first_);
@@ -11263,7 +11296,7 @@ namespace yyjson
         template <std::invocable<object_emitter&> Func>
         void emplace_back_object(Func&& func)
         {
-#if YYJSON_VERSION_HEX >= 0x000A00
+#if YYJSON_VERSION_HEX >= 0x000C00
             if (direct_ != nullptr)
             {
                 direct_->next_element(first_);
@@ -11285,7 +11318,7 @@ namespace yyjson
         template <std::invocable<array_emitter&> Func>
         void emplace_back_array(Func&& func)
         {
-#if YYJSON_VERSION_HEX >= 0x000A00
+#if YYJSON_VERSION_HEX >= 0x000C00
             if (direct_ != nullptr)
             {
                 direct_->next_element(first_);
@@ -11309,7 +11342,7 @@ namespace yyjson
     requires detail::key_type<std::remove_cvref_t<Key>>
     void object_emitter::emplace_object(Key&& key, Func&& func, Ts... ts)
     {
-#if YYJSON_VERSION_HEX >= 0x000A00
+#if YYJSON_VERSION_HEX >= 0x000C00
         if (direct_ != nullptr)
         {
             write_key(std::forward<Key>(key));
@@ -11331,7 +11364,7 @@ namespace yyjson
     requires detail::key_type<std::remove_cvref_t<Key>>
     void object_emitter::emplace_array(Key&& key, Func&& func, Ts... ts)
     {
-#if YYJSON_VERSION_HEX >= 0x000A00
+#if YYJSON_VERSION_HEX >= 0x000C00
         if (direct_ != nullptr)
         {
             write_key(std::forward<Key>(key));
