@@ -5061,6 +5061,16 @@ struct ReadRecord
     std::tuple<int, std::string> pair;
 };
 
+struct EmptyArrays
+{
+    std::vector<int> v = {1, 2};
+    std::set<int> s = {3};
+    std::list<std::string> l = {"x"};
+    std::map<std::string, int> m = {{"k", 4}};
+    std::vector<std::vector<int>> nested = {{5}};
+    bool operator==(const EmptyArrays&) const = default;
+};
+
 struct ReadChain
 {
     ReadPoint point;
@@ -5434,6 +5444,25 @@ TEST(DirectReader, Containers)
         expect_direct_read<std::map<std::string, int>>(json);
         expect_direct_read<std::vector<int>>(json, ReadFlag::AllowComments);
         expect_direct_read<std::vector<int>>(json, ReadFlag::AllowTrailingCommas);
+    }
+}
+
+TEST(DirectReader, EmptyArrayFields)
+{
+    using namespace yyjson;
+
+    // fields whose default values are not empty
+    for (const auto* json : {R"({"v":[],"s":[],"l":[],"nested":[]})", "{\"v\":[ ],\"s\":[\n],\"nested\":[[]]}",
+                             R"({"v":[1],"s":[2,3],"m":{"a":1},"nested":[[],[6]]})", R"({"v":[] })"})
+    {
+        EXPECT_TRUE((expect_direct_read<EmptyArrays>(json))) << json;
+        EXPECT_TRUE((expect_direct_read<std::vector<EmptyArrays>>("[" + std::string(json) + "]"))) << json;
+    }
+    for (const auto* json : {R"({"v":[]x})", R"({"v":[])", R"({"v":[)", R"({"v":[})", R"({"v":[],})", R"({"v":{}})",
+                             R"({"v":null})", R"({"s":[1,]})", R"({"m":[]})"})
+    {
+        expect_direct_read<EmptyArrays>(json);
+        expect_direct_read<std::vector<EmptyArrays>>("[" + std::string(json) + "]");
     }
 }
 

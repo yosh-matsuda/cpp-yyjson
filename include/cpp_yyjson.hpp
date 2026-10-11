@@ -10766,6 +10766,13 @@ namespace yyjson
                 !from_json_val_usr_defined<T> && from_json_def_arr_defined<T> && std::ranges::range<T> &&
                 std::is_default_constructible_v<T>;
 
+            // Whether a field of type T, which `read_value` reads from an array with `read_array`, is cleared for an
+            // empty array.
+            template <typename T>
+            static constexpr bool clearable_array_field =
+                !builtin_variant<T> && !builtin_tuple<T> && !yyjson::detail::from_json_translator<T>::castable &&
+                !from_json_val_usr_defined<T> && from_json_def_arr_defined<T> && requires(T& t) { t.clear(); };
+
             // Counts the elements from `cur_` to the end of the array that `cur_` is in, or returns 0 if one of them
             // is an array or an object or the array does not end before `last_`.  A count across nested containers
             // costs as much as the moves that it saves.
@@ -11058,6 +11065,17 @@ namespace yyjson
                         std::destroy_at(std::addressof(field));
                         std::construct_at(std::addressof(field));
                         read_reflected_fields(field);
+                    }
+                    else
+                        field = read_value<field_type>();
+                }
+                else if constexpr (clearable_array_field<field_type>)
+                {
+                    // an empty array, of which there are many in some documents, without a call
+                    if (*cur_ == '[' && cur_ != last_ && cur_[1] == ']')
+                    {
+                        field.clear();
+                        close(cur_++);
                     }
                     else
                         field = read_value<field_type>();
