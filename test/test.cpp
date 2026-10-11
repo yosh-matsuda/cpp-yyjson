@@ -5173,6 +5173,31 @@ TEST(DirectReader, Numbers)
             }
         }
     }
+    // integers of every length as elements of an array, which read one or two digits apart from longer ones, followed
+    // by each character that ends or continues them
+    for (auto n = 1; n <= 21; ++n)
+    {
+        for (const auto* sign : {"", "-"})
+        {
+            for (const auto* next : {",", "]", " ,", "x,", ".,", ".5,", "e1,", "0,"})
+            {
+                auto number = std::string(sign);
+                for (auto i = 0; i < n; ++i) number += static_cast<char>('1' + (i * 5 + n) % 9);
+                for (const auto& json : {"[" + number + next + "1," + std::string(40, ' ') + "2]",
+                                         "[" + number + next + "1]"})
+                {
+                    expect_direct_read<std::vector<double>>(json);
+                    if (reals_fit<std::int64_t>(json))
+                    {
+                        expect_direct_read<std::vector<std::int64_t>>(json);
+                        expect_direct_read<std::array<std::int64_t, 3>>(json);
+                    }
+                    if (reals_fit<std::uint64_t>(json)) expect_direct_read<std::vector<std::uint64_t>>(json);
+                    if (reals_fit<std::int8_t>(json)) expect_direct_read<std::vector<std::int8_t>>(json);
+                }
+            }
+        }
+    }
     // an exponent beyond the range of doubles that leading zeros of the fraction bring back into it, or not
     for (const auto zeros : {100, 99990, 100000, 999990})
     {
