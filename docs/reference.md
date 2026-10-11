@@ -1092,6 +1092,8 @@ auto var = cast<std::variant<std::monostate, int, std::string>>(val);   // deser
 // -> "a"
 ```
 
+A `std::variant` is deserialized into the first of its alternatives, in the order of the template arguments, that the JSON value converts to. An alternative that never converts from the kind of the JSON value, such as `std::vector<double>` from a number, is skipped without trying it, while an alternative with a user-defined `from_json` is always tried.
+
 For a multi-type JSON array or object, using the caster for `std::tuple` is valuable and efficient.
 
 ```cpp

@@ -5435,6 +5435,111 @@ TEST(Reader, NullToStrings)
     EXPECT_EQ((null.cast<std::variant<std::string_view, std::optional<int>>>()),
               (std::variant<std::string_view, std::optional<int>>(std::nullopt)));
 }
+
+// The index and the JSON text of a variant cast from `json`, or nothing when the cast fails.
+template <typename V, typename Json>
+std::optional<std::pair<std::size_t, std::string>> cast_variant(const Json& json)
+{
+    try
+    {
+        const auto v = yyjson::cast<V>(json);
+        return std::pair(v.index(), std::string(yyjson::value(v).write(yyjson::WriteFlag::AllowInfAndNan)));
+    }
+    catch (const yyjson::bad_cast&)
+    {
+        return std::nullopt;
+    }
+}
+
+// The same as `cast_variant`, by trying every alternative in order as the variant caster did before
+// it skipped the alternatives that do not accept the kind of the JSON value.
+template <typename V, typename Json>
+std::optional<std::pair<std::size_t, std::string>> cast_variant_trying_all(const Json& json)
+{
+    auto result = std::optional<V>();
+    [&]<typename... Ts>(std::type_identity<std::variant<Ts...>>) {
+        ((result = [&]() -> std::optional<V> {
+              try
+              {
+                  return V(yyjson::cast<Ts>(json));
+              }
+              catch (...)
+              {
+                  return std::nullopt;
+              }
+          }())
+             .has_value() ||
+         ...);
+    }(std::type_identity<V>{});
+    if (!result.has_value()) return std::nullopt;
+    return std::pair(result->index(), std::string(yyjson::value(*result).write(yyjson::WriteFlag::AllowInfAndNan)));
+}
+
+template <typename... Vs>
+void expect_variants_as_trying_all(std::string_view json, yyjson::ReadFlag flag = yyjson::ReadFlag::NoFlag)
+{
+    const auto doc = yyjson::read(json, flag);
+    const auto arr = *doc.as_array();
+    for (const auto& e : arr)
+    {
+        const auto copy = yyjson::value(e);
+        (
+            [&] {
+                EXPECT_EQ(cast_variant<Vs>(e), cast_variant_trying_all<Vs>(e))
+                    << yyjson::detail::type_name<Vs>() << " from " << e.write();
+                EXPECT_EQ(cast_variant<Vs>(copy), cast_variant_trying_all<Vs>(copy))
+                    << yyjson::detail::type_name<Vs>() << " from a copy of " << e.write();
+            }(),
+            ...);
+    }
+}
+
+TEST(Reader, VariantSkipsAlternatives)
+{
+    using namespace yyjson;
+    using yyjson::detail::accepted_json_kinds;
+    using yyjson::reader::const_value_ref;
+    using namespace yyjson::detail;
+
+    // the kinds of JSON values from which a type may be cast
+    constexpr auto numbers = json_kind_uint | json_kind_sint | json_kind_real;
+    static_assert(accepted_json_kinds<int, const_value_ref>() == (numbers | json_kind_bool));
+    static_assert(accepted_json_kinds<const double, const_value_ref>() == (numbers | json_kind_bool));
+    static_assert(accepted_json_kinds<std::nullptr_t, const_value_ref>() == json_kind_null);
+    static_assert(accepted_json_kinds<std::array<int, 2>, const_value_ref>() == json_kind_array);
+    static_assert(accepted_json_kinds<std::map<std::string, int>, const_value_ref>() == json_kind_object);
+    static_assert(accepted_json_kinds<std::shared_ptr<std::array<int, 2>>, const_value_ref>() ==
+                  (json_kind_null | json_kind_array));
+    static_assert(accepted_json_kinds<std::variant<std::array<int, 2>, std::map<std::string, int>>,
+                                      const_value_ref>() == (json_kind_array | json_kind_object));
+    static_assert(accepted_json_kinds<std::pair<int, int>, const_value_ref>() == (json_kind_array | json_kind_object));
+    static_assert(accepted_json_kinds<ReadPoint, const_value_ref>() == json_kind_all);
+    static_assert(accepted_json_kinds<std::array<int, 2>, writer::const_value_ref>() == json_kind_array);
+    static_assert(accepted_json_kinds<std::array<int, 2>, reader::const_array_ref>() == json_kind_all);
+
+    // the alternative that a variant holds is the same as when every alternative is tried in order
+    constexpr auto values = std::string_view(
+        R"([null,true,false,0,1,-1,300,-300,1.5,-2.5,1e300,18446744073709551615,-9223372036854775808,)"
+        R"("","s","1",[],[1],[1,2],[1.5,"a"],["a","b"],[[1,2]],{},{"a":1},{"x":1,"y":2},{"a":1,"b":2.0,"c":"x"}])");
+    expect_variants_as_trying_all<
+        std::variant<int, double>, std::variant<double, int>, std::variant<bool, int>,
+        std::variant<std::uint8_t, std::string>, std::variant<std::monostate, int, std::string>,
+        std::variant<std::array<int, 2>, double>, std::variant<std::optional<int>, std::string>,
+        std::variant<std::optional<std::array<int, 2>>, std::array<double, 3>>,
+        std::variant<std::shared_ptr<int>, std::vector<std::string>>,
+        std::variant<ReadRecord, int>,
+        std::variant<ReadPoint, int, std::vector<double>>,
+        std::variant<std::variant<int, std::string>, std::vector<std::variant<double, std::string>>>,
+        std::variant<std::nullptr_t, std::string_view, float>,
+        std::variant<std::array<int, 2>, std::map<std::string, int>, std::string_view>>(values);
+    expect_variants_as_trying_all<std::variant<std::vector<int>, std::string, double>,
+                                  std::variant<std::nullptr_t, bool, std::string>>(values, ReadFlag::NumberAsRaw);
+
+    using int_or_double = std::variant<std::array<int, 2>, int, double>;
+    EXPECT_EQ(read(R"([1.5])").cast<std::vector<int_or_double>>(), (std::vector<int_or_double>{1}));
+    using array_or_map = std::variant<std::array<int, 2>, std::map<std::string, int>>;
+    EXPECT_THROW((void)read("1").cast<array_or_map>(), bad_cast);
+}
 #endif
 
 // NOLINTEND

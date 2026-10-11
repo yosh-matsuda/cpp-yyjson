@@ -5137,6 +5137,13 @@ namespace yyjson
                                        std::same_as<T, std::optional<typename T::value_type>> &&
                                        std::integral<typename T::value_type>;
 
+        // `default_caster<T>::from_json_null` gives a T.
+        template <typename T>
+        concept json_null_constructible = (std::constructible_from<T, std::nullptr_t> &&
+                                           !std::constructible_from<T, std::string_view>) ||
+                                          std::constructible_from<T, std::nullopt_t> ||
+                                          std::constructible_from<T, std::monostate>;
+
         template <typename T, typename Json>
         concept reflected_object_castable = std::default_initializable<T> && (!visitable<T>) &&
                                             (!std::ranges::input_range<T>) && all_fields_castable<Json, T>;
@@ -5665,6 +5672,115 @@ namespace yyjson
         }
     };
 
+    namespace detail
+    {
+        // The kinds of JSON values, as bits of a mask.
+        enum json_kind : std::uint8_t
+        {
+            json_kind_null = 1U << 0U,
+            json_kind_bool = 1U << 1U,
+            json_kind_uint = 1U << 2U,
+            json_kind_sint = 1U << 3U,
+            json_kind_real = 1U << 4U,
+            json_kind_string = 1U << 5U,
+            json_kind_array = 1U << 6U,
+            json_kind_object = 1U << 7U,
+            json_kind_all = 0xFFU,
+        };
+
+        template <typename Json>
+        concept json_value_of_document =
+            std::same_as<Json, reader::const_value_ref> || writer::detail::base_of_const_value<Json>;
+
+        // The kind of a JSON value, or every kind for a raw value and for a JSON type other than a value
+        // of a document.
+        template <typename Json>
+        std::uint8_t json_kind_of(const Json& json) noexcept
+        {
+            if constexpr (json_value_of_document<Json>)
+            {
+                if (json.is_real()) return json_kind_real;
+                if (json.is_uint()) return json_kind_uint;
+                if (json.is_sint()) return json_kind_sint;
+                if (json.is_string()) return json_kind_string;
+                if (json.is_object()) return json_kind_object;
+                if (json.is_array()) return json_kind_array;
+                if (json.is_null()) return json_kind_null;
+                if (json.is_bool()) return json_kind_bool;
+            }
+            return json_kind_all;
+        }
+
+        template <typename T>
+        struct variant_json_kinds
+        {
+            static constexpr bool is_variant = false;
+        };
+
+        // The kinds of JSON values from which `cast<T>(json)` may succeed.  Every kind that it does not
+        // reject at compile time is included, so that a kind left out is one that always fails.
+        template <typename T, typename Json>
+        consteval std::uint8_t accepted_json_kinds()
+        {
+            if constexpr (!json_value_of_document<Json>)
+            {
+                return json_kind_all;
+            }
+            else if constexpr (!std::same_as<T, std::remove_cvref_t<T>>)
+            {
+                return accepted_json_kinds<std::remove_cvref_t<T>, Json>();
+            }
+            else if constexpr (requires(const Json& json) {
+                                   { caster<T>::from_json(json) } -> std::same_as<T>;
+                               })
+            {
+                if constexpr (!std::derived_from<caster<T>, builtin_caster>)
+                    return json_kind_all;
+                else if constexpr (variant_json_kinds<T>::is_variant)
+                    return variant_json_kinds<T>::template value<Json>();
+                else if constexpr (shared_ptr_like<T>)
+                    return json_kind_null | accepted_json_kinds<typename is_shared_ptr<T>::value_type, Json>();
+                else if constexpr (tuple_like<T>)
+                    return json_kind_array | json_kind_object;
+                else
+                    return json_kind_all;
+            }
+            else
+            {
+                // the rules of `default_caster<T>::from_json` for a value
+                auto kinds = 0U;
+                if constexpr (writer::detail::from_json_def_obj_defined<T> ||
+                              reader::detail::from_json_def_obj_defined<T>)
+                    kinds |= json_kind_object;
+                if constexpr (writer::detail::from_json_def_arr_defined<T> ||
+                              reader::detail::from_json_def_arr_defined<T>)
+                    kinds |= json_kind_array;
+                if constexpr (json_null_constructible<T>) kinds |= json_kind_null;
+                if constexpr (json_scalar_constructible<T, bool>) kinds |= json_kind_bool;
+                if constexpr (json_scalar_constructible<T, double>) kinds |= json_kind_real;
+                if constexpr (std::integral<T> || json_scalar_constructible<T, std::uint64_t>)
+                    kinds |= json_kind_uint;
+                if constexpr (std::integral<T> || json_scalar_constructible<T, std::int64_t>)
+                    kinds |= json_kind_sint;
+                if constexpr (std::constructible_from<T, std::string_view> ||
+                              std::constructible_from<T, std::string> || std::constructible_from<T, const char*>)
+                    kinds |= json_kind_string;
+                return static_cast<std::uint8_t>(kinds);
+            }
+        }
+
+        template <typename... Ts>
+        struct variant_json_kinds<std::variant<Ts...>>
+        {
+            static constexpr bool is_variant = true;
+            template <typename Json>
+            static consteval std::uint8_t value()
+            {
+                return static_cast<std::uint8_t>((0U | ... | accepted_json_kinds<Ts, Json>()));
+            }
+        };
+    }  // namespace detail
+
     template <typename... Ts>
     struct caster<std::variant<Ts...>> : detail::builtin_caster
     {
@@ -5672,12 +5788,19 @@ namespace yyjson
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-value"
 #endif
+        // Tries the alternatives in order, and skips those that cannot be cast from the kind of the JSON
+        // value, which saves throwing and catching an exception for each of them.
         template <typename Json>
         static std::variant<Ts...> from_json(const Json& json)
         {
+            static constexpr auto kinds = std::array<std::uint8_t, sizeof...(Ts)>{
+                detail::accepted_json_kinds<Ts, Json>()...};
+            const auto kind = detail::json_kind_of(json);
             auto result = std::optional<std::variant<Ts...>>();
-            ((result = cast_no_except<Ts>(json)).has_value() || ...);
-            if (result.has_value()) return *result;
+            [&]<std::size_t... I>(std::index_sequence<I...>) {
+                (((kinds[I] & kind) != 0 && cast_no_except<Ts>(json, result)) || ...);
+            }(std::index_sequence_for<Ts...>{});
+            if (result.has_value()) return std::move(*result);
             detail::throw_bad_cast("{} is not constructible from JSON", detail::type_name<std::variant<Ts...>>());
         }
 #if defined(__GNUC__) or defined(__clang__)
@@ -5715,16 +5838,18 @@ namespace yyjson
         }
 
     private:
+        // `result` is empty, and holds the variant constructed from `cast<T>(json)` unless the cast fails.
         template <typename T, typename Json>
-        static std::optional<T> cast_no_except(const Json& json)
+        static bool cast_no_except(const Json& json, std::optional<std::variant<Ts...>>& result)
         {
             try
             {
-                return cast<T>(json);
+                result.emplace(cast<T>(json));
+                return true;
             }
             catch (...)
             {
-                return std::nullopt;
+                return false;
             }
         }
     };
