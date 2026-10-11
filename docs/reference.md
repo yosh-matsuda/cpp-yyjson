@@ -1356,7 +1356,7 @@ for (const auto& points : batches)
 }
 ```
 
-Most types are written straight to the string: numbers, strings, `bool`, `nullptr`, ranges, maps, the pre-defined STL casters, structs that the compile-time reflection or the `VISITABLE_STRUCT` macro converts, and the values of `yyjson::reader` and `yyjson::value`. The value that a user-defined `to_json` returns is written directly as well. A user-defined `to_json` that fills a `writer::value_ref`, `writer::array_ref` or `writer::object_ref` needs a document, so the object that it converts is written through a temporary one, while the objects around it are still written directly.
+Most types are written straight to the string: numbers, strings, `bool`, `nullptr`, ranges, maps, the pre-defined STL casters, structs that the compile-time reflection or the `VISITABLE_STRUCT` macro converts, and the values of `yyjson::reader` and `yyjson::value`. The value that a user-defined `to_json` returns is written directly as well. A user-defined `to_json` that fills a `writer::value_ref`, `writer::array_ref` or `writer::object_ref` needs a document, so the object that it converts is written through a temporary one, while the objects around it are still written directly. The writer keeps one document for all of them, and the elements of a range or a map of such objects are built in it together and written at once.
 
 ## Performance best practices
 

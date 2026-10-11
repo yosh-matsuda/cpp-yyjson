@@ -4675,6 +4675,53 @@ TEST(DirectWriter, SameAsDocument)
     expect_direct_write(value());
 }
 
+struct CasterSample
+{
+    std::string label;
+    double value;
+};
+
+template <>
+struct yyjson::caster<CasterSample>
+{
+    template <typename... Ts>
+    static void to_json(writer::object_ref& obj, const CasterSample& v, Ts... ts)
+    {
+        obj.emplace("label", v.label, ts...);
+        obj.emplace("value", v.value, ts...);
+    }
+};
+
+struct CasterSamples
+{
+    std::vector<CasterSample> values;
+    std::map<std::string, CasterSample> named;
+    std::vector<ArrayCasterPoint> points;
+};
+
+TEST(DirectWriter, CastersOnDocument)
+{
+    using namespace yyjson;
+
+    // the elements of a range that a caster builds on a document are written from one document of them all, at
+    // the top and nested, where pretty printing indents them
+    const auto values =
+        std::vector<CasterSample>{{"a", 1.5}, {"b/\n\u3042", -0.0}, {std::string(3000, 'x'), 1e300}};
+    expect_direct_write(values);
+    expect_direct_write(std::vector<CasterSample>{});
+    expect_direct_write(std::map<std::string, CasterSample>{{"k", {"v", 2.0}}, {"l", {"w", 0.5}}});
+    const auto samples = CasterSamples{values, {{"k", {"v", 2.0}}}, {{1, 2}, {3, 4}}};
+    expect_direct_write(samples);
+    expect_direct_write(std::vector<CasterSamples>{samples, {}});
+
+    // the text grows past the size that yyjson estimates, and its errors are those of the document
+    expect_direct_write(std::vector<CasterSample>(200, {std::string(500, '\n'), 0.5}));
+    expect_direct_write(std::vector<CasterSample>{{"nan", std::numeric_limits<double>::quiet_NaN()}});
+    expect_direct_write(
+        std::map<std::string, CasterSample>{{"inf", {"inf", std::numeric_limits<double>::infinity()}}});
+    expect_direct_write(CasterSamples{{{"nan", std::numeric_limits<double>::quiet_NaN()}}, {}, {}});
+}
+
 TEST(DirectWriter, Strings)
 {
     using namespace yyjson;
