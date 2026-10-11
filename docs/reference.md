@@ -1199,7 +1199,7 @@ struct yyjson::caster<X>
 };
 ```
 
-The `from_json` template function has a JSON value as an argument template and must return type `X`. It has a second form, which writes into an object that the caller owns; [In-place assignment of a field](#in-place-assignment-of-a-field) gives it.
+The `from_json` template function has a JSON value as an argument template and must return type `X`. It has a second form, which writes into an object that the caller owns; [In-place assignment of a field](#in-place-assignment-of-a-field) gives it. A non-template `from_json` that takes a C++ value instead of a JSON value is a [translator](#translator-from_json).
 
 For the `to_json` function, there are two ways. The first way is to define a *translator* for a *value_constructible* type and return it. The return type must be `value_constructible`:
 
@@ -1237,6 +1237,55 @@ struct yyjson::caster<X>
 The first argument type is a target JSON class to create. There are 3 options, `writer::object_ref&`, `writer::array_ref&` and `writer::value_ref&`; if you want to convert the class `X` to JSON array, the first argument should be `writer::array_ref&`.
 
 The casters are applied recursively to convert from/to JSON classes including custom casters. It is not always necessary to implement both `from_json` and `to_json` functions, and the two conversions do not have to be symmetric. A caster also decides whether a field of its type appears in a JSON object at all; [Omitting a field with no value](#omitting-a-field-with-no-value) gives that.
+
+### Translator `from_json`
+
+`from_json` can also be the reverse of a translator `to_json`. It is then a non-template function that takes a C++ value rather than a JSON value, and the library casts the JSON value to the type of the parameter before calling it:
+
+```cpp
+struct Color
+{
+    int r, g, b;
+};
+
+template <>
+struct yyjson::caster<Color>
+{
+    // "#rrggbb"
+    static Color from_json(std::string_view hex)
+    {
+        if (hex.size() != 7 || hex[0] != '#') throw yyjson::bad_cast("Color is not constructible from JSON");
+        const auto byte = [&](std::size_t i) { return std::stoi(std::string(hex.substr(i, 2)), nullptr, 16); };
+        return {byte(1), byte(3), byte(5)};
+    }
+    template <typename... Ts>
+    static std::string to_json(const Color& c, Ts...)
+    {
+        return std::format("#{:02x}{:02x}{:02x}", c.r, c.g, c.b);
+    }
+};
+
+auto colors = read<std::vector<Color>>(R"(["#ff8000","#000000"])");
+// -> {{255, 128, 0}, {0, 0, 0}}
+```
+
+`cast<Color>(json)` is then `caster<Color>::from_json(cast<std::string_view>(json))`. The parameter can have any type that `cast` converts a JSON value to, such as a struct or a range of structs that mirrors the JSON and is converted to `X` afterwards, or another type with a translator. It can be taken by value, by `const&` or by `&&`, and a non-const lvalue reference is given the value that was read. A `std::string_view` refers to the JSON string only during the call.
+
+The translator also has an in-place form, which writes into an object that the caller owns, like the [in-place assignment of a field](#in-place-assignment-of-a-field):
+
+```cpp
+static void from_json(X& field, U value);
+```
+
+A field of a struct is given to this form, and any other value is read as `X()` given to it, if `X` is default constructible and movable. When the caster has both forms, a field takes the in-place form and any other value the form that returns.
+
+The library finds the type of the parameter from the type of the function, which brings these rules:
+
+*   There is one function of each form. Two functions of the same form, such as `from_json(int)` and `from_json(double)`, or a function template named `from_json` in the same caster, leave the caster without a translator, and the caster is used as if it had none.
+*   A function whose parameter is a JSON value, such as `const reader::const_value_ref&`, has the form that takes a JSON value. When the caster has such a function as well as a translator, the function that takes a JSON value is used.
+*   A parameter of type `X` is a compile error.
+
+Unlike a `from_json` that takes a JSON value, a translator is read by `yyjson::read<T>` without a temporary document: the library reads the parameter from the string and converts it.
 
 ### Omitting a field with no value
 
@@ -1309,7 +1358,8 @@ The two forms answer different questions. The first form makes a new object, and
 A field is read in this order:
 
 1.  `caster<field_type>::from_json(field, json)`, the second form, if the caster has it. `std::optional` uses this form to keep the value of the field when the JSON value is null.
-2.  `cast<field_type>`, which calls `caster<field_type>::from_json(json)` if the caster has that form, and a pre-defined conversion otherwise.
+2.  `caster<field_type>::from_json(field, cast<U>(json))`, the in-place form of a [translator `from_json`](#translator-from_json), if the caster has it.
+3.  `cast<field_type>`, which calls `caster<field_type>::from_json(json)` if the caster has that form, and a pre-defined conversion otherwise.
 
 The struct that holds such a field must still be copyable or movable, because the deserialization returns the struct by value. Write the copy or move operations by hand when a field does not have them:
 
@@ -1357,7 +1407,7 @@ auto points = read<std::vector<Point>>(R"([{"x":1,"y":2},{"x":3,"y":4}])");
 // -> {{1, 2}, {3, 4}}
 ```
 
-Most types are read straight from the string: numbers, strings, `bool`, `nullptr`, ranges, maps, the pre-defined STL casters, and structs that the compile-time reflection or the `VISITABLE_STRUCT` macro converts. A `std::variant` tries its alternatives on the string in the same order as the cast tries them on a value. A tuple-like type, such as `std::tuple` or `std::pair`, is read from an array or an object as its caster reads it from a value; only a tuple of key-value pairs whose keys are not `std::string` is read like a user-defined `from_json` below. A user-defined `from_json` takes a JSON value, so the value that it converts is read into a temporary document, while the values around it are still read directly. When `T` holds such values as the elements of a range or a map, also as an alternative of a `std::variant`, a temporary document for each element would cost more than one document for the whole string, so `read<T>` then reads the string into a document and casts it, as `read(json_string, flag).cast<T>()` does.
+Most types are read straight from the string: numbers, strings, `bool`, `nullptr`, ranges, maps, the pre-defined STL casters, and structs that the compile-time reflection or the `VISITABLE_STRUCT` macro converts. A `std::variant` tries its alternatives on the string in the same order as the cast tries them on a value. A tuple-like type, such as `std::tuple` or `std::pair`, is read from an array or an object as its caster reads it from a value; only a tuple of key-value pairs whose keys are not `std::string` is read like a user-defined `from_json` below. A [translator `from_json`](#translator-from_json) is read as its parameter type and then converted. A user-defined `from_json` that takes a JSON value is given one, so the value that it converts is read into a temporary document, while the values around it are still read directly. When `T` holds such values as the elements of a range or a map, also as an alternative of a `std::variant`, a temporary document for each element would cost more than one document for the whole string, so `read<T>` then reads the string into a document and casts it, as `read(json_string, flag).cast<T>()` does.
 
 The string is read without a document when its root is an array or an object and `flag` is `NoFlag` or `AllowInvalidUnicode`. Otherwise, and whenever the direct read fails, `read<T>` reads the string into a document and casts it, which is how it gives the result and the exception of `cast<T>` in every case. Two things follow from this:
 

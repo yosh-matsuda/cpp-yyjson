@@ -5874,6 +5874,237 @@ TEST(DirectReader, ReservesRest)
     EXPECT_EQ(skewed_read.size(), 602);
     EXPECT_LE(skewed_read.capacity() * sizeof(int_or_string), 4 * skewed.size() + 1024 * sizeof(int_or_string));
 }
+
+// Types with a translator `from_json`, which takes a C++ value.  Each of them is also an aggregate that the
+// default caster would read from an object.
+struct Rgb
+{
+    int r = 0, g = 0, b = 0;
+    bool operator==(const Rgb&) const = default;
+};
+struct Polyline
+{
+    std::vector<ReadPoint> points;
+};
+struct Meters
+{
+    double value = 0;
+};
+struct BothForms
+{
+    int value = 0;
+    int via = 0;
+};
+struct TakesLvalue
+{
+    std::string name;
+};
+struct SameFormTwice
+{
+    int a = 0;
+};
+struct WithJsonForm
+{
+    int a = 0;
+};
+struct Theme
+{
+    Rgb accent;
+};
+struct Painted
+{
+    Rgb color;
+    std::optional<Rgb> border;
+    Meters width;
+    BothForms both;
+    std::vector<Rgb> palette;
+};
+
+template <>
+struct yyjson::caster<Rgb>
+{
+    // "#rrggbb"
+    static Rgb from_json(std::string_view hex)
+    {
+        if (hex.size() != 7 || hex[0] != '#') throw std::invalid_argument("not a color");
+        const auto byte = [&](std::size_t i) { return std::stoi(std::string(hex.substr(i, 2)), nullptr, 16); };
+        return {byte(1), byte(3), byte(5)};
+    }
+    template <typename... Ts>
+    static std::string to_json(const Rgb& c, Ts...)
+    {
+        return std::format("#{:02x}{:02x}{:02x}", c.r, c.g, c.b);
+    }
+};
+template <>
+struct yyjson::caster<Polyline>
+{
+    static Polyline from_json(std::vector<std::array<double, 2>>&& points)
+    {
+        auto result = Polyline();
+        for (const auto& [x, y] : points) result.points.push_back({static_cast<int>(x), static_cast<int>(y)});
+        return result;
+    }
+    template <typename... Ts>
+    static auto to_json(const Polyline& p, Ts...)
+    {
+        auto result = std::vector<std::array<double, 2>>();
+        for (const auto& [x, y] : p.points) result.push_back({static_cast<double>(x), static_cast<double>(y)});
+        return result;
+    }
+};
+template <>
+struct yyjson::caster<Meters>
+{
+    static void from_json(Meters& m, double v) noexcept { m.value = v; }
+    template <typename... Ts>
+    static double to_json(const Meters& m, Ts...)
+    {
+        return m.value;
+    }
+};
+template <>
+struct yyjson::caster<BothForms>
+{
+    static BothForms from_json(int v) noexcept { return {v, 1}; }
+    static void from_json(BothForms& b, const int& v) { b = {v, 2}; }
+    template <typename... Ts>
+    static int to_json(const BothForms& b, Ts...)
+    {
+        return b.value * 10 + b.via;
+    }
+};
+template <>
+struct yyjson::caster<TakesLvalue>
+{
+    static TakesLvalue from_json(std::string& s) { return {std::move(s)}; }
+    template <typename... Ts>
+    static const std::string& to_json(const TakesLvalue& t, Ts...)
+    {
+        return t.name;
+    }
+};
+template <>
+struct yyjson::caster<SameFormTwice>
+{
+    // two functions of the same form leave the caster without a translator
+    static SameFormTwice from_json(int) { return {-1}; }
+    static SameFormTwice from_json(double) { return {-2}; }
+};
+template <>
+struct yyjson::caster<WithJsonForm>
+{
+    static WithJsonForm from_json(const yyjson::reader::const_value_ref& v) { return {v.cast<int>() + 100}; }
+    static WithJsonForm from_json(int) { return {-1}; }
+    template <typename... Ts>
+    static int to_json(const WithJsonForm& w, Ts...)
+    {
+        return w.a;
+    }
+};
+template <>
+struct yyjson::caster<Theme>
+{
+    static Theme from_json(const Rgb& accent) { return {accent}; }
+    template <typename... Ts>
+    static const Rgb& to_json(const Theme& t, Ts...)
+    {
+        return t.accent;
+    }
+};
+
+static_assert(yyjson::detail::from_json_translator<Rgb>::castable);
+static_assert(yyjson::detail::from_json_translator<Meters>::castable);
+static_assert(yyjson::detail::from_json_translator<Meters>::in_place);
+static_assert(!yyjson::detail::from_json_translator<Rgb>::in_place);
+static_assert(yyjson::detail::from_json_translator<BothForms>::returns &&
+              yyjson::detail::from_json_translator<BothForms>::in_place);
+static_assert(!yyjson::detail::from_json_translator<SameFormTwice>::returns);
+static_assert(!yyjson::detail::from_json_translator<WithJsonForm>::castable);
+static_assert(std::same_as<yyjson::detail::from_json_source<Polyline>, std::vector<std::array<double, 2>>>);
+static_assert(std::same_as<yyjson::detail::from_json_in_place_source<BothForms>, int>);
+static_assert(!yyjson::detail::from_json_translator<std::optional<int>>::castable);
+static_assert(!yyjson::detail::from_json_translator<std::tuple<int>>::castable);
+
+TEST(Reader, TranslatorFromJson)
+{
+    using yyjson::reader::detail::direct_reader;
+
+    // read directly, without a document for each element
+    static_assert(!direct_reader::reads_documents_in_loop<std::vector<Rgb>>);
+    static_assert(!direct_reader::reads_documents_in_loop<std::vector<Polyline>>);
+    static_assert(!direct_reader::reads_documents_in_loop<std::vector<Painted>>);
+
+    EXPECT_EQ(yyjson::read(R"("#10a0ff")").cast<Rgb>(), (Rgb{16, 160, 255}));
+    EXPECT_EQ(yyjson::read<std::vector<Rgb>>(R"(["#10a0ff", "#\u0030\u00301122"])"),
+              (std::vector<Rgb>{{16, 160, 255}, {0, 17, 34}}));
+    // the default caster of the aggregate is no longer used
+    EXPECT_THROW(yyjson::read(R"({"r":1,"g":2,"b":3})").cast<Rgb>(), yyjson::bad_cast);
+    EXPECT_THROW((void)yyjson::read<std::vector<Rgb>>(R"([{"r":1,"g":2,"b":3}])"), yyjson::bad_cast);
+    EXPECT_THROW((void)yyjson::read<std::vector<Rgb>>(R"(["#1"])"), std::invalid_argument);
+
+    const auto polyline = yyjson::read<std::vector<Polyline>>("[[[1,2],[3,4]],[]]");
+    ASSERT_EQ(polyline.size(), 2);
+    ASSERT_EQ(polyline[0].points.size(), 2);
+    EXPECT_EQ(polyline[0].points[1].y, 4);
+
+    EXPECT_EQ(yyjson::read("2.5").cast<Meters>().value, 2.5);
+    EXPECT_EQ(yyjson::read<std::vector<Meters>>("[1, 2.5]")[1].value, 2.5);
+
+    // a value takes the form that returns, and a field the form in place
+    EXPECT_EQ(yyjson::read("[3]").cast<std::vector<BothForms>>()[0].via, 1);
+    EXPECT_EQ(yyjson::read<std::vector<BothForms>>("[3]")[0].via, 1);
+    const auto painted_json = R"({"color":"#000001","border":"#000002","width":3,"both":4,"palette":["#000005"]})";
+    for (const auto& painted : {yyjson::read(painted_json).cast<Painted>(), yyjson::read<Painted>(painted_json)})
+    {
+        EXPECT_EQ(painted.color, (Rgb{0, 0, 1}));
+        EXPECT_EQ(painted.border, (Rgb{0, 0, 2}));
+        EXPECT_EQ(painted.width.value, 3);
+        EXPECT_EQ(painted.both.value, 4);
+        EXPECT_EQ(painted.both.via, 2);
+        EXPECT_EQ(painted.palette, (std::vector<Rgb>{{0, 0, 5}}));
+    }
+
+    EXPECT_EQ(yyjson::read<std::vector<TakesLvalue>>(R"(["a string longer than the small string buffer"])")[0].name,
+              "a string longer than the small string buffer");
+    EXPECT_EQ(yyjson::read(R"({"a":1})").cast<SameFormTwice>().a, 1);
+    EXPECT_EQ(yyjson::read<std::vector<SameFormTwice>>(R"([{"a":1}])")[0].a, 1);
+    EXPECT_EQ(yyjson::read("1").cast<WithJsonForm>().a, 101);
+    EXPECT_EQ(yyjson::read<std::vector<WithJsonForm>>("[1]")[0].a, 101);
+    EXPECT_EQ(yyjson::read<std::vector<Theme>>(R"(["#000102"])")[0].accent, (Rgb{0, 1, 2}));
+
+    using rgb_or_int = std::variant<int, Rgb>;
+    EXPECT_EQ(yyjson::read<std::vector<rgb_or_int>>(R"([1, "#000003"])"), (std::vector<rgb_or_int>{1, Rgb{0, 0, 3}}));
+
+    // texts that fail are left to the document by the reader without one, which has to give the same error
+    for (const auto* json : {R"(["#10a0ff", "#\u0030\u00301122"])", "[]"})
+    {
+        EXPECT_TRUE(expect_direct_read<std::vector<Rgb>>(json)) << json;
+        EXPECT_TRUE(expect_direct_read<std::vector<Theme>>(json)) << json;
+        EXPECT_TRUE(expect_direct_read<std::vector<rgb_or_int>>(json)) << json;
+    }
+    EXPECT_TRUE(expect_direct_read<std::vector<rgb_or_int>>("[1]"));
+    for (const auto* json : {R"([{"r":1}])", "[1]"})
+    {
+        expect_direct_read<std::vector<Rgb>>(json);
+        expect_direct_read<std::vector<Theme>>(json);
+    }
+    expect_direct_read<std::vector<rgb_or_int>>(R"([{"r":1}])");
+    EXPECT_TRUE(expect_direct_read<std::vector<Polyline>>("[[[1,2],[3,4]],[]]"));
+    expect_direct_read<std::vector<Polyline>>("[[[1,2,3]]]");
+    expect_direct_read<std::vector<Polyline>>("[1]");
+    EXPECT_TRUE(expect_direct_read<std::vector<Meters>>("[1, 2.5]"));
+    EXPECT_TRUE(expect_direct_read<std::vector<BothForms>>("[1, 2.5]"));
+    EXPECT_TRUE(expect_direct_read<std::vector<WithJsonForm>>("[1, 2.5]"));
+    expect_direct_read<std::vector<Meters>>(R"(["1"])");
+    expect_direct_read<std::vector<BothForms>>(R"(["1"])");
+    expect_direct_read<std::vector<WithJsonForm>>(R"(["1"])");
+    for (const auto* json : {painted_json, R"({"border":null,"both":1.5})", "{}"})
+    {
+        EXPECT_TRUE(expect_direct_read<Painted>(json)) << json;
+    }
+    expect_direct_read<Painted>(R"({"width":"1"})");
+}
 #endif
 
 // NOLINTEND
