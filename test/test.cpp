@@ -5380,6 +5380,35 @@ TEST(DirectReader, Overloads)
     EXPECT_THROW((void)read<std::vector<int>>(R"(["a"])"), bad_cast);
 }
 
+TEST(Reader, RealToIntegers)
+{
+    using namespace yyjson;
+
+    // a real number is truncated toward zero into an integer, and fails if the result does not fit
+    EXPECT_EQ(read("1.5").cast<int>(), 1);
+    EXPECT_EQ(read("-1.5").cast<int>(), -1);
+    EXPECT_EQ(read("-0.5").cast<unsigned>(), 0U);
+    EXPECT_EQ(read("255.9").cast<std::uint8_t>(), 255);
+    EXPECT_EQ(read("-128.9").cast<std::int8_t>(), -128);
+    EXPECT_EQ(read("-9223372036854775808.0").cast<std::int64_t>(), std::numeric_limits<std::int64_t>::min());
+    EXPECT_EQ(read("1.8446744073709550e19").cast<std::uint64_t>(), 18446744073709549568ULL);
+    EXPECT_THROW((void)read("256.0").cast<std::uint8_t>(), bad_cast);
+    EXPECT_THROW((void)read("-1.0").cast<std::uint8_t>(), bad_cast);
+    EXPECT_THROW((void)read("-129.0").cast<std::int8_t>(), bad_cast);
+    EXPECT_THROW((void)read("9223372036854775808.0").cast<std::int64_t>(), bad_cast);
+    EXPECT_THROW((void)read("18446744073709551616.0").cast<std::uint64_t>(), bad_cast);
+    EXPECT_THROW((void)read("1e300").cast<int>(), bad_cast);
+    EXPECT_THROW((void)read("NaN", ReadFlag::AllowInfAndNan).cast<int>(), bad_cast);
+    EXPECT_THROW((void)read("-Infinity", ReadFlag::AllowInfAndNan).cast<long>(), bad_cast);
+    EXPECT_TRUE(read("0.5").cast<bool>());
+    EXPECT_EQ(read("-1.5").cast<std::optional<int>>(), -1);
+    EXPECT_THROW((void)read("1e300").cast<std::optional<int>>(), bad_cast);
+    EXPECT_EQ(read<std::vector<int>>("[1.5,-2.5]"), (std::vector<int>{1, -2}));
+    EXPECT_THROW((void)read<std::vector<std::uint8_t>>("[1.5,-2.5]"), bad_cast);
+    EXPECT_THROW((void)read<std::uint16_t>("1e300"), bad_cast);
+
+}
+
 TEST(Reader, NullToStrings)
 {
     using namespace yyjson;

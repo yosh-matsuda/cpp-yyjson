@@ -5118,6 +5118,11 @@ namespace yyjson
         concept json_scalar_constructible = std::constructible_from<T, Arg>;
 #endif
 
+        template <typename T>
+        concept optional_of_integral = requires { typename T::value_type; } &&
+                                       std::same_as<T, std::optional<typename T::value_type>> &&
+                                       std::integral<typename T::value_type>;
+
         template <typename T, typename Json>
         concept reflected_object_castable = std::default_initializable<T> && (!visitable<T>) &&
                                             (!std::ranges::input_range<T>) && all_fields_castable<Json, T>;
@@ -5250,7 +5255,23 @@ namespace yyjson
         template <typename U = T>
         static U from_json_real(double value)
         {
-            if constexpr (json_scalar_constructible<U, double>)
+            if constexpr (std::integral<U> && !std::same_as<U, bool>)
+            {
+                // the value is truncated toward zero, as the conversion does, if it fits in U
+                constexpr auto upper = std::numeric_limits<U>::max() / 2 * 2.0 + 2.0;
+                constexpr auto lower = std::signed_integral<U> ? -upper : 0.0;
+                if (const auto t = std::trunc(value); t >= lower && t < upper)
+                {
+                    return static_cast<U>(t);
+                }
+                detail::throw_bad_cast("overflow detected: {} is not constructible from JSON number {}",
+                                       detail::type_name<U>(), value);
+            }
+            else if constexpr (optional_of_integral<U>)
+            {
+                return U(from_json_real<typename U::value_type>(value));
+            }
+            else if constexpr (json_scalar_constructible<U, double>)
             {
                 return U(value);
             }
