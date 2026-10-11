@@ -7996,11 +7996,18 @@ namespace yyjson
 #if YYJSON_VERSION_HEX >= 0x000A00
     namespace reader::detail
     {
-        // Thrown by the direct reader at anything that it does not read as a document and its cast would: text
-        // that is not valid JSON, a value that the type cannot be cast from, a number or an escape that it leaves
-        // to yyjson.  `read<T>` then reads the text into a document and casts it, which gives the result or the
-        // exception that the cast gives.
+        // Thrown by the direct reader at text that is not valid JSON and at a value that the type cannot be cast
+        // from.  `read<T>` then reads the text into a document and casts it, which gives the result or the
+        // exception that the cast gives, as it does for any other exception.
         struct direct_read_failure
+        {
+        };
+
+        // Thrown by the direct reader at text that it leaves to yyjson, which a document may read: a number
+        // whose exponent has 6 digits or more, a number of 128 characters or more if yyjson is built without
+        // its fast conversion of reals, and nesting deeper than it skips.  A `std::variant` lets it through
+        // instead of trying the next alternative, which the cast from a document may not take.
+        struct direct_read_unsupported
         {
         };
 
@@ -8355,6 +8362,10 @@ namespace yyjson
         // root is an object or an array whose closing bracket is the last character other than white space, so
         // that every scan for a character that ends a token stops at that bracket at the latest; only strings
         // and literals, which end in characters that may be missing, check the bound.
+        template <typename T>
+        concept builtin_variant = yyjson::detail::variant_json_kinds<T>::is_variant &&
+                                  std::derived_from<caster<T>, yyjson::detail::builtin_caster>;
+
         class direct_reader
         {
             using utf8 = writer::detail::direct_writer;
@@ -8405,7 +8416,13 @@ namespace yyjson
                 else
                 {
                     using seen = type_list<Seen..., seen_type<T, Loop>>;
-                    if constexpr (from_json_val_usr_defined<T>)
+                    if constexpr (builtin_variant<T>)
+                        return []<std::size_t... Is>(std::index_sequence<Is...>) {
+                            return (documents_of_value<std::remove_cv_t<std::variant_alternative_t<Is, T>>, Loop>(
+                                        seen{}) ||
+                                    ...);
+                        }(std::make_index_sequence<std::variant_size_v<T>>{});
+                    else if constexpr (from_json_val_usr_defined<T>)
                     {
                         if constexpr (yyjson::detail::shared_ptr_like<T> &&
                                       std::derived_from<caster<T>, yyjson::detail::builtin_caster>)
@@ -8515,6 +8532,7 @@ namespace yyjson
 
         private:
             [[noreturn]] CPPYYJSON_COLD static void fail() { throw direct_read_failure{}; }
+            [[noreturn]] CPPYYJSON_COLD static void unsupported() { throw direct_read_unsupported{}; }
 
             CPPYYJSON_ALWAYS_INLINE static bool is_digit(char c) noexcept
             {
@@ -8906,7 +8924,7 @@ namespace yyjson
                     {
                         e = e * 10 + (*p - '0');
                         if (e >= 100000) [[unlikely]]
-                            fail();
+                            unsupported();
                     }
                     exp10 += neg_exp ? -e : e;
                 }
@@ -8942,7 +8960,7 @@ namespace yyjson
                 const auto* p = cur_;
                 while (p != last_ && (is_digit(*p) || *p == '-' || *p == '+' || *p == '.' || (*p | 0x20) == 'e')) ++p;
                 const auto len = static_cast<std::size_t>(p - cur_);
-                if (len >= sizeof(buf)) fail();
+                if (len >= sizeof(buf)) unsupported();
                 std::memcpy(buf, cur_, len);
                 buf[len] = '\0';
                 const auto* end = yyjson_read_number(buf, &val, 0, nullptr, nullptr);
@@ -9224,7 +9242,7 @@ namespace yyjson
                                 ++cur_;
                                 break;
                             }
-                            if (depth == sizeof(stack)) fail();
+                            if (depth == sizeof(stack)) unsupported();
                             stack[depth++] = '}';
                             if (*cur_ != '"') fail();
                             skip_string();
@@ -9241,7 +9259,7 @@ namespace yyjson
                                 ++cur_;
                                 break;
                             }
-                            if (depth == sizeof(stack)) fail();
+                            if (depth == sizeof(stack)) unsupported();
                             stack[depth++] = ']';
                             continue;
                         case '"': skip_string(); break;
@@ -9305,11 +9323,107 @@ namespace yyjson
                 return with_document([](const const_value_ref& v) { return v.template cast<T>(); });
             }
 
+            // The kinds of JSON values that the value at `cur_` may be, from its first character.
+            std::uint8_t kind_at() const noexcept
+            {
+                using namespace yyjson::detail;
+                switch (*cur_)
+                {
+                    case '{': return json_kind_object;
+                    case '[': return json_kind_array;
+                    case '"': return json_kind_string;
+                    case 't':
+                    case 'f': return json_kind_bool;
+                    case 'n': return json_kind_null;
+                    default: return json_kind_uint | json_kind_sint | json_kind_real;
+                }
+            }
+
+            // Reads the value at `cur_` into the first alternative of the variant T that `cast` takes from a document,
+            // trying each from the start of the value again.  `make(std::in_place_index<I>, args...)` constructs the
+            // variant with the alternative I from `args`, or emplaces it into the variant that an earlier call
+            // constructed, and returns the variant, which holds any value if the read fails.
+            template <typename T, typename Make>
+            void read_variant(Make&& make)
+            {
+                const char* const start = cur_;
+                const auto kind = kind_at();
+                const auto found = [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                    static constexpr auto kinds = std::array<std::uint8_t, sizeof...(Is)>{
+                        yyjson::detail::accepted_json_kinds<std::variant_alternative_t<Is, T>, const_value_ref>()...};
+                    return (((kinds[Is] & kind) != 0 && read_alternative<T, Is>(make, start)) || ...);
+                }(std::make_index_sequence<std::variant_size_v<T>>{});
+                if (!found) fail();
+            }
+
+            template <typename T, std::size_t I, typename Make>
+            bool read_alternative(Make& make, const char* start)
+            {
+                using alternative = std::remove_cv_t<std::variant_alternative_t<I, T>>;
+                constexpr auto index = std::in_place_index<I>;
+                try
+                {
+                    if constexpr (std::same_as<alternative, std::string>)
+                    {
+                        if (*cur_ == '"')
+                        {
+                            const auto s = scan_string();
+                            if (!s.escaped) [[likely]]
+                                make(index, s.begin, s.end);
+                            else
+                            {
+                                auto str = std::string();
+                                unescape(s.begin, s.end, str);
+                                make(index, std::move(str));
+                            }
+                            return true;
+                        }
+                    }
+                    else if constexpr (yyjson::detail::reflected_assignable_in_place<alternative, const_value_ref>)
+                    {
+                        if (*cur_ == '{')
+                        {
+                            read_reflected_fields(std::get<I>(make(index)));
+                            return true;
+                        }
+                    }
+                    make(index, read_value<alternative>());
+                    return true;
+                }
+                catch (const direct_read_unsupported&)
+                {
+                    throw;
+                }
+                catch (...)
+                {
+                    cur_ = start;
+                    return false;
+                }
+            }
+
+            // Emplaces the alternative I into `v`.
+            template <typename T, std::size_t I, typename... Args>
+            CPPYYJSON_ALWAYS_INLINE static T& emplace_alternative(T& v, std::in_place_index_t<I>, Args&&... args)
+            {
+                v.template emplace<I>(std::forward<Args>(args)...);
+                return v;
+            }
+
             // Reads the value at `cur_` as `cast<T>` reads it from a document.
             template <typename T>
             T read_value()
             {
-                if constexpr (from_json_val_usr_defined<T>)
+                if constexpr (builtin_variant<T>)
+                {
+                    auto result = std::optional<T>();
+                    read_variant<T>([&](auto index, auto&&... args) -> T& {
+                        if (result.has_value())
+                            return emplace_alternative(*result, index, std::forward<decltype(args)>(args)...);
+                        return result.emplace(index, std::forward<decltype(args)>(args)...);
+                    });
+                    return std::move(*result);
+                }
+                else if constexpr (from_json_val_usr_defined<T>)
                 {
                     if constexpr (yyjson::detail::shared_ptr_like<T> &&
                                   std::derived_from<caster<T>, yyjson::detail::builtin_caster>)
@@ -9505,6 +9619,20 @@ namespace yyjson
                             else
                                 result.push_back(read_value<value_type>());
                         }
+                        else if constexpr (builtin_variant<value_type> && requires {
+                                               { result.emplace_back() } -> std::same_as<value_type&>;
+                                           })
+                        {
+                            // the variant is constructed in place, as moving it costs as much as reading it
+                            auto made = false;
+                            read_variant<value_type>([&](auto index, auto&&... args) -> value_type& {
+                                if (made)
+                                    return emplace_alternative(result.back(), index,
+                                                               std::forward<decltype(args)>(args)...);
+                                made = true;
+                                return result.emplace_back(index, std::forward<decltype(args)>(args)...);
+                            });
+                        }
                         else
                             result.push_back(read_value<value_type>());
                     }
@@ -9565,6 +9693,15 @@ namespace yyjson
                                 return;
                             }
                         }
+                        if constexpr (builtin_variant<value_type>)
+                        {
+                            read_variant<value_type>([&](auto index, auto&&... args) -> value_type& {
+                                if (field.has_value())
+                                    return emplace_alternative(*field, index, std::forward<decltype(args)>(args)...);
+                                return field.emplace(index, std::forward<decltype(args)>(args)...);
+                            });
+                            return;
+                        }
                         field = read_value<value_type>();
                     }
                     else
@@ -9576,6 +9713,12 @@ namespace yyjson
                         read_string_into(field);
                     else
                         field = read_value<field_type>();
+                }
+                else if constexpr (builtin_variant<field_type>)
+                {
+                    read_variant<field_type>([&](auto index, auto&&... args) -> field_type& {
+                        return emplace_alternative(field, index, std::forward<decltype(args)>(args)...);
+                    });
                 }
                 else if constexpr (yyjson::detail::reflected_assignable_in_place<field_type, const_value_ref> &&
                                    std::is_nothrow_default_constructible_v<field_type>)
@@ -9671,8 +9814,8 @@ namespace yyjson
 
     // Reads JSON text into a value of type T, with the same result as `yyjson::read(json, read_flag).cast<T>()`
     // and the same exception if it fails, but without building a document for the parts of T that the default
-    // casters read.  Those that a `caster` specialization reads, and `std::variant`, are read through a document
-    // of their own, and when T holds them in a range or a map, the whole text is read into one document first.
+    // casters read.  Those that a `caster` specialization reads are read through a document of their own, and
+    // when T holds them in a range or a map, the whole text is read into one document first.
     template <typename T>
     requires (!std::is_reference_v<T>) && castable<reader::const_value_ref, T>
     [[nodiscard]] T read(std::string_view json, ReadFlag read_flag = ReadFlag::NoFlag)

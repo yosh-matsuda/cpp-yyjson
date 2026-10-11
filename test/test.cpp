@@ -5540,6 +5540,142 @@ TEST(Reader, VariantSkipsAlternatives)
     using array_or_map = std::variant<std::array<int, 2>, std::map<std::string, int>>;
     EXPECT_THROW((void)read("1").cast<array_or_map>(), bad_cast);
 }
+
+namespace
+{
+    // The direct reader reads a variant in a range to the same alternative as the cast from a document, and
+    // whenever the cast succeeds unless the value is one that the reader leaves to the document.
+    template <typename... Vs>
+    void expect_direct_variants(const std::vector<std::string>& values, bool supported = true)
+    {
+        const auto succeeds = [](const std::string& json, auto type) {
+            try
+            {
+                (void)yyjson::read(json).template cast<typename decltype(type)::type>();
+                return true;
+            }
+            catch (const std::exception&)
+            {
+                return false;
+            }
+        };
+        for (const auto& value : values)
+        {
+            for (const auto& json : {"[" + value + "]", "[" + value + ", " + value + "]"})
+            {
+                (
+                    [&] {
+                        const auto direct = expect_direct_read<std::vector<Vs>>(json);
+                        if (supported)
+                        {
+                            EXPECT_EQ(direct, succeeds(json, std::type_identity<std::vector<Vs>>{}))
+                                << json << " as " << yyjson::detail::type_name<Vs>();
+                        }
+                    }(),
+                    ...);
+            }
+        }
+    }
+}  // namespace
+
+TEST(DirectReader, Variants)
+{
+    using namespace yyjson;
+    using reader::detail::direct_reader;
+
+    static_assert(!direct_reader::reads_documents_in_loop<std::vector<std::variant<double, std::vector<double>>>>);
+    static_assert(direct_reader::reads_documents_in_loop<std::vector<std::variant<int, ReadPoint>>>);
+
+    const auto values = std::vector<std::string>{
+        "null", "true", "false", "0", "1", "-1", "300", "-300", "1.5", "-2.5", "1e300", "18446744073709551615",
+        "-9223372036854775808", R"("")", R"("s")", R"("1")", "[]", "[1]", "[1,2]", R"([1.5,"a"])",
+        R"(["a","b"])", "[[1,2]]", "[1,2,", "{}", R"({"a":1})", R"({"x":1,"y":2})", R"({"a":1,"b":2.0,"c":"x"})",
+        R"({"i":"s"})", R"({"i":1,"k":"s"})", R"({"k":1})", "tru", R"("a)"};
+    expect_direct_variants<
+        std::variant<int, double>, std::variant<double, int>, std::variant<bool, int>,
+        std::variant<std::uint8_t, std::string>, std::variant<std::monostate, int, std::string>,
+        std::variant<std::array<int, 2>, double>, std::variant<std::optional<int>, std::string>,
+        std::variant<std::optional<std::array<int, 2>>, std::array<double, 3>>,
+        std::variant<std::shared_ptr<int>, std::vector<std::string>>, std::variant<ReadPoint, int, std::vector<double>>,
+        std::variant<std::variant<int, std::string>, std::vector<std::variant<double, std::string>>>,
+        std::variant<std::nullptr_t, float, std::string>,
+        std::variant<std::array<int, 2>, std::map<std::string, int>, std::string>,
+        std::variant<std::vector<int>, std::vector<std::string>>>(values);
+    // a struct is constructed from a number by aggregate initialization, which does not check 1e300 against its
+    // first field
+    auto fitting = values;
+    std::erase(fitting, "1e300");
+    expect_direct_variants<std::variant<ReflectionRecord, std::map<std::string, std::string>>>(fitting);
+    expect_direct_variants<std::variant<int, double>, std::variant<std::string, double>,
+                           std::variant<std::vector<int>, std::vector<double>>,
+                           std::variant<ReflectionRecord, std::map<std::string, double>>>(
+        {"0e100000", "[1,0e100000]", R"({"j":0e100000})", R"({"x":0e100000,"i":1})"}, false);
+
+    // an alternative that the reader cannot tell from the text does not pass to the next one, which the cast
+    // from a document would not take
+    using record_or_chain = std::variant<ReflectionRecord, ReadChain>;
+    auto json = std::string(R"({"i":1,"next":)");
+    for (auto i = 0; i < 70; ++i) json += R"({"next":)";
+    json += "null" + std::string(71, '}');
+    EXPECT_EQ(read(json).cast<record_or_chain>().index(), 0);
+    EXPECT_EQ(read<record_or_chain>(json).index(), 0);
+    EXPECT_THROW((void)direct_reader(json.data(), json.data() + json.size() - 1, ReadFlag::NoFlag)
+                     .read_root<record_or_chain>(),
+                 reader::detail::direct_read_unsupported);
+}
+
+struct NoDefaultValue
+{
+    explicit NoDefaultValue(int v) : v(v) {}
+    int v;
+};
+
+template <>
+struct yyjson::caster<NoDefaultValue>
+{
+    template <typename Json>
+    static NoDefaultValue from_json(const Json& json)
+    {
+        return NoDefaultValue(cast<int>(json));
+    }
+    static int to_json(const NoDefaultValue& x) { return x.v; }
+};
+
+struct VariantFields
+{
+    std::variant<int, std::string> a;
+    std::optional<std::variant<double, std::vector<int>>> b;
+    std::variant<std::monostate, ReflectionRecord, std::vector<std::string>> c;
+};
+
+TEST(DirectReader, VariantFields)
+{
+    for (const auto* json : {R"({"a":1,"b":2.5,"c":{"i":1,"j":2,"k":"s"}})", R"({"a":"s","b":[1,2],"c":["x","y"]})",
+                             R"({"a":"s","b":null,"c":null})", R"({"c":["x"],"a":"\u0041\n","b":[]})",
+                             R"({"c":{"i":1},"c":["a"],"b":1,"b":null,"a":"x","a":2})", R"({})"})
+    {
+        EXPECT_TRUE(expect_direct_read<VariantFields>(json));
+        EXPECT_TRUE(expect_direct_read<std::vector<VariantFields>>(std::format("[{},{}]", json, json)));
+    }
+    for (const auto* json : {R"({"b":[1,"x"]})", R"({"a":[1]})", R"({"c":{"i":"x"}})", R"({"c":1})",
+                             R"({"b":{"a":1}})"})
+    {
+        expect_direct_read<VariantFields>(json);
+        expect_direct_read<std::vector<VariantFields>>(std::format("[{}]", json));
+    }
+
+    // a variant whose first alternative has no default constructor
+    using no_default = std::variant<NoDefaultValue, std::string>;
+    static_assert(!std::is_default_constructible_v<no_default>);
+    for (const auto* json : {"1", R"("s")", "[1]", "null"})
+    {
+        expect_direct_read<no_default>(json);
+        expect_direct_read<std::vector<no_default>>(std::format("[{},{}]", json, json));
+        expect_direct_read<std::map<std::string, no_default>>(std::format(R"({{"k":{}}})", json));
+    }
+    EXPECT_EQ(std::get<0>(yyjson::read<no_default>("2")).v, 2);
+    EXPECT_EQ(std::get<1>(yyjson::read<no_default>(R"("s")")), "s");
+}
 #endif
 
 // NOLINTEND
