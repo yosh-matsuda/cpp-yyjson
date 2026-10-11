@@ -7008,16 +7008,25 @@ namespace yyjson
                 else
                 {
                     *p++ = '[';
-                    for (std::size_t i = 0; i < std::tuple_size_v<U>; ++i)
-                    {
-                        if (i != 0) *p++ = ',';
-                        p = put_flat(p, v[i]);
-                        if (p == nullptr) [[unlikely]]
-                            return nullptr;
-                    }
+                    // unrolled: GCC keeps a loop of two iterations for `std::array<double, 2>`
+                    p = put_flat_elements(p, v, std::make_index_sequence<std::tuple_size_v<U>>{});
+                    if (p == nullptr) [[unlikely]]
+                        return nullptr;
                     *p++ = ']';
                     return p;
                 }
+            }
+            template <typename T, std::size_t... Is>
+            CPPYYJSON_ALWAYS_INLINE static char* put_flat_elements(char* p, const T& v,
+                                                                   std::index_sequence<Is...>) noexcept
+            {
+                const auto put = [&p, &v]<std::size_t I>(std::integral_constant<std::size_t, I>)
+                                     CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                    if constexpr (I != 0) *p++ = ',';
+                    p = put_flat(p, v[I]);
+                    return p != nullptr;
+                };
+                return (put(std::integral_constant<std::size_t, Is>{}) && ...) ? p : nullptr;
             }
             CPPYYJSON_COLD void write_non_finite(double v)
             {
