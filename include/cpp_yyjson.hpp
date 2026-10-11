@@ -5660,10 +5660,12 @@ namespace yyjson
 #pragma GCC diagnostic ignored "-Wnonnull"
 #pragma GCC diagnostic ignored "-Wconversion"
 #pragma GCC diagnostic ignored "-Wfloat-conversion"
-#pragma GCC diagnostic ignored "-Wimplicit-float-conversion"
 #pragma GCC diagnostic ignored "-Wfloat-equal"
 #pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+#if defined(__clang__)
+#pragma GCC diagnostic ignored "-Wimplicit-float-conversion"
 #pragma GCC diagnostic ignored "-Wshorten-64-to-32"
+#endif
 #endif
         template <typename U = T>
         static U from_json_null()
