@@ -5226,7 +5226,7 @@ TEST(DirectReader, Numbers)
         {
             for (const auto* sign : {"", "-"})
             {
-                for (const auto* suffix : {"", "e5", "E-2", "x"})
+                for (const auto* suffix : {"", "e5", "E-2", "x", ".7"})
                 {
                     auto number = std::string(sign);
                     for (auto i = 0; i < n1; ++i) number += static_cast<char>('1' + (i * 7 + n2) % 9);
@@ -5235,7 +5235,7 @@ TEST(DirectReader, Numbers)
                     number += suffix;
                     const auto padded = "[" + number + "," + std::string(40, ' ') + "1]";
                     const auto direct = expect_direct_read<std::vector<double>>(padded);
-                    if (*suffix != 'x')
+                    if (*suffix != 'x' && *suffix != '.')
                     {
                         EXPECT_TRUE(direct) << padded;
                     }

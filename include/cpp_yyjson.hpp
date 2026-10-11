@@ -9571,9 +9571,11 @@ namespace yyjson
                 const auto n1 = std::countr_zero(other >> i0);
                 const auto f0 = i0 + n1 + 1;
                 const auto n2 = std::countr_zero(other >> f0);
+                // `end` is never before `f0 + n2`, and a second point puts it after.  Testing equality instead
+                // would let GCC take `f0 + n2` for `end`, which waits for the lengths again.
                 if (static_cast<unsigned>(n1) - 1u >= 8u || s[f0 - 1] != '.' || static_cast<unsigned>(n2) - 1u >= 16u ||
                     n1 + n2 > 19 ||
-                    (s[f0 + n2] | 0x20) == 'e' || (n1 > 1 && s[i0] == '0') || end != f0 + n2) [[unlikely]]
+                    (s[f0 + n2] | 0x20) == 'e' || (n1 > 1 && s[i0] == '0') || end > f0 + n2) [[unlikely]]
                     return false;
                 const auto load = [](const char* p) {
                     auto w = std::uint64_t{0};
