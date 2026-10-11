@@ -7313,19 +7313,31 @@ namespace yyjson
             // Nonzero bytes where the bytes of `input` are not valid UTF-8 after the bytes of `prev`, all but a
             // sequence that `input` leaves incomplete at its end.
             template <typename B>
-            static typename B::type utf8_error(typename B::type input, typename B::type prev) noexcept
+            static typename B::type utf8_error(typename B::type input, typename B::type prev1,
+                                               typename B::type prev2, typename B::type prev3) noexcept
             {
                 using t = utf8_tables;
                 const auto nibble = B::set1(0x0F);
-                const auto prev1 = B::template prev<1>(input, prev);
                 const auto special_cases = B::and_(B::and_(B::shuffle(B::table(t::byte_1_high), B::high_nibble(prev1)),
                                                            B::shuffle(B::table(t::byte_1_low), B::and_(prev1, nibble))),
                                                    B::shuffle(B::table(t::byte_2_high), B::high_nibble(input)));
                 // the third and the fourth byte of a sequence must be continuation bytes
-                const auto is_third = B::subs_u(B::template prev<2>(input, prev), B::set1(0xE0 - 0x80));
-                const auto is_fourth = B::subs_u(B::template prev<3>(input, prev), B::set1(0xF0 - 0x80));
+                const auto is_third = B::subs_u(prev2, B::set1(0xE0 - 0x80));
+                const auto is_fourth = B::subs_u(prev3, B::set1(0xF0 - 0x80));
                 const auto must_be_cont = B::and_(B::or_(is_third, is_fourth), B::set1(-0x80));
                 return B::xor_(must_be_cont, special_cases);
+            }
+            template <typename B>
+            static typename B::type utf8_error(typename B::type input, typename B::type prev) noexcept
+            {
+                return utf8_error<B>(input, B::template prev<1>(input, prev), B::template prev<2>(input, prev),
+                                     B::template prev<3>(input, prev));
+            }
+            // The same for the block at `p`, with the three bytes before it in the same text.
+            template <typename B>
+            static typename B::type utf8_error_at(const std::uint8_t* p) noexcept
+            {
+                return utf8_error<B>(B::load(p), B::load(p - 1), B::load(p - 2), B::load(p - 3));
             }
 
             // Whether the text from `src` to `end`, of 16 bytes or more, is valid UTF-8.  It is checked apart from
@@ -7339,16 +7351,16 @@ namespace yyjson
                 auto error32 = block32::zero();
                 if (end - src >= 64)
                 {
-                    for (; end - src > 32; src += 32)
+                    // The bytes before a block are loaded again rather than shifted in from the block before,
+                    // which leaves the shuffle unit to the table lookups.
+                    error32 = utf8_error<block32>(block32::load(src), prev32);
+                    for (src += 32; end - src > 32; src += 32)
                     {
-                        const auto v = block32::load(src);
-                        error32 = block32::or_(error32, utf8_error<block32>(v, prev32));
-                        prev32 = v;
+                        error32 = block32::or_(error32, utf8_error_at<block32>(src));
                     }
-                    // the last 32 bytes again, after the 32 bytes before them, and no incomplete sequence at the end
-                    const auto v = block32::load(end - 32);
-                    error32 = block32::or_(error32, utf8_error<block32>(v, block32::load(end - 64)));
-                    error32 = block32::or_(error32, block32::subs_u(v, block32::incomplete_limit()));
+                    // the last 32 bytes again, and no incomplete sequence at the end
+                    error32 = block32::or_(error32, utf8_error_at<block32>(end - 32));
+                    error32 = block32::or_(error32, block32::subs_u(block32::load(end - 32), block32::incomplete_limit()));
                     return !block32::any(error32);
                 }
                 for (; end - src >= 32; src += 32)
