@@ -4796,16 +4796,32 @@ TEST(DirectWriter, Strings)
             expect_direct_write(cjk + piece + cjk);
             expect_direct_write(cjk.substr(0, before) + piece + cjk);
         }
-        // at every position of the strings that are copied as their first and their last block, which overlap
-        for (auto size = std::size_t{15}; size <= 66; ++size)
+        // at every position of the short strings, copied as two words or two blocks that overlap, and of the
+        // strings just longer than those
+        for (auto size = piece.size(); size <= 70; ++size)
         {
             for (auto pos = std::size_t{0}; pos + piece.size() <= size; ++pos)
             {
-                expect_direct_write(std::string(pos, 'x') + piece + std::string(size - pos - piece.size(), 'y'));
+                auto text = std::string(pos, 'x') + piece + std::string(size - pos - piece.size(), 'y');
+                expect_direct_write(text);
+                // as a key, and after a string that leaves the output unaligned
+                expect_direct_write(std::map<std::string, std::string>{{text, "v"}});
+                expect_direct_write(std::vector<std::string>{"ab", text, text});
             }
         }
     }
     expect_direct_write(std::string("\0a\0", 3));
+    for (auto size = std::size_t{1}; size <= 70; ++size)
+    {
+        // a null character at the end, where a word shorter than eight bytes is padded with zeros
+        expect_direct_write(std::string(size - 1, 'a') + std::string(1, '\0'));
+    }
+
+    // the bytes left in the reused string are not read as a part of the output
+    auto out = std::string(1000, '\\');
+    const auto texts = std::vector<std::string>{"", "a", "abcd", "\xe3\x81\x82\xe3\x81\x82", std::string(40, 'b')};
+    yyjson::write(texts, out);
+    EXPECT_EQ(out, std::string(yyjson::value(texts).write()));
     expect_direct_write(std::vector<std::string>{"", "a", std::string(1000, 'z')});
     expect_direct_write(std::map<std::string, std::string>{{"\xff", "key is not valid"}, {"\n", "escaped key"}});
 }

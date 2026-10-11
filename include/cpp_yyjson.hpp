@@ -7509,6 +7509,104 @@ namespace yyjson
                 return true;
             }
 
+            // The same for a string of 1 to 15 bytes, with words of 8 bytes or of 4 checked in one block.  A string
+            // of 1 to 3 bytes is read as its first, its middle and its last byte, which repeat the others.
+            CPPYYJSON_ALWAYS_INLINE bool copy_two_words(const std::uint8_t* src, std::size_t n, char* dst) const noexcept
+            {
+                using B = block16;
+                // bytes of 0x80 and above are negative, so the signed compare finds them too
+                const auto special = [&](B::type v)
+                { return B::movemask(B::or_(B::lt(v, B::set1(0x20)), B::eq(B::shuffle(punct_table<B>(), v), v))); };
+                if (n >= 8)
+                {
+                    const auto first = load_word<std::uint64_t>(src);
+                    const auto last = load_word<std::uint64_t>(src + n - 8);
+                    if (special(_mm_set_epi64x(static_cast<long long>(last), static_cast<long long>(first))) != 0)
+                        return false;
+                    std::memcpy(dst, &first, 8);
+                    std::memcpy(dst + n - 8, &last, 8);
+                    return true;
+                }
+                if (n < 4)
+                {
+                    const auto word = load_tiny(src, n);
+                    if ((special(_mm_cvtsi32_si128(static_cast<int>(word))) & 0x7) != 0) return false;
+                    // the bytes after the string are overwritten by the quote and what follows
+                    std::memcpy(dst, &word, 4);
+                    return true;
+                }
+                const auto first = load_word<std::uint32_t>(src);
+                const auto last = load_word<std::uint32_t>(src + n - 4);
+                // the zeros after the words are NUL, which is to be escaped
+                if ((special(_mm_set_epi32(0, 0, static_cast<int>(last), static_cast<int>(first))) & 0xFF) != 0)
+                    return false;
+                std::memcpy(dst, &first, 4);
+                std::memcpy(dst + n - 4, &last, 4);
+                return true;
+            }
+            // The bytes of a string of 1 to 3 bytes in order, then its last byte again up to the third byte.
+            CPPYYJSON_ALWAYS_INLINE static std::uint32_t load_tiny(const std::uint8_t* src, std::size_t n) noexcept
+            {
+                return src[0] | (static_cast<std::uint32_t>(src[n >> 1]) << 8) |
+                       (static_cast<std::uint32_t>(src[n - 1]) << 16);
+            }
+            // Writes a string of 4 to 15 bytes that `copy_two_words` did not copy, after the quote at `dst`.  Text
+            // that is not ASCII is copied as it is if valid UTF-8 is not to be escaped, without the loops of
+            // `write_string_rest`, as the names in CJK text mostly are.
+            CPPYYJSON_NOINLINE void write_short_string(std::string_view str, char* dst)
+            {
+                using B = block16;
+                const auto* const src = reinterpret_cast<const std::uint8_t*>(str.data());
+                const auto n = str.size();
+                if (!esc_)
+                {
+                    // the string in order, followed by NUL
+                    alignas(16) static constexpr auto order = []
+                    {
+                        auto t = std::array<std::array<char, 16>, 16>{};
+                        for (auto k = 4; k < 16; ++k)
+                        {
+                            const auto word = k >= 8 ? 8 : 4;
+                            for (auto i = 0; i < 16; ++i)
+                            {
+                                t[k][i] = i < word ? static_cast<char>(i)
+                                          : i < k  ? static_cast<char>(i + 2 * word - k)
+                                                   : static_cast<char>(0x80);
+                            }
+                        }
+                        return t;
+                    }();
+                    auto first = std::uint64_t{};
+                    auto last = std::uint64_t{};
+                    auto v = B::type{};
+                    if (n >= 8)
+                    {
+                        first = load_word<std::uint64_t>(src);
+                        last = load_word<std::uint64_t>(src + n - 8);
+                        v = _mm_set_epi64x(static_cast<long long>(last), static_cast<long long>(first));
+                    }
+                    else
+                    {
+                        first = load_word<std::uint32_t>(src);
+                        last = load_word<std::uint32_t>(src + n - 4);
+                        v = _mm_set_epi32(0, 0, static_cast<int>(last), static_cast<int>(first));
+                    }
+                    const auto text = B::shuffle(v, B::table(order[n].data()));
+                    // the ASCII bytes to escape, but the NUL after the string; the bytes of 0x80 and above are left
+                    // out of the compare
+                    const auto special = B::movemask(B::or_(B::eq(B::min_u(text, B::set1(0x1F)), text),
+                                                            B::eq(B::shuffle(punct_table<B>(), text), text))) &
+                                         ((1u << n) - 1);
+                    // the NUL after the string makes a sequence that it leaves incomplete invalid
+                    if (special == 0 && (inv_ || !B::any(utf8_error<B>(text, B::zero()))))
+                    {
+                        B::store(dst, text);
+                        return finish_string(dst + n);
+                    }
+                }
+                write_string_rest(str, dst);
+            }
+
             CPPYYJSON_ALWAYS_INLINE void finish_string(char* dst) noexcept
             {
                 *dst++ = '"';
@@ -7596,6 +7694,47 @@ namespace yyjson
                 // 16 bytes more than the escapes need, for the words that are stored as a whole
                 ensure((str.size() * 6) + 18);
                 auto* dst = buf_.cur;
+                *dst++ = '"';
+#if defined(__SSSE3__) || defined(__AVX__)
+                // A string of up to two blocks with only ASCII to copy, like most URLs and names, is copied as its
+                // first and its last block, which overlap, without the loops of `write_string_rest` and the
+                // registers they save.  Blocks of 32 bytes are left out of line: inlined, they make the callers
+                // align their stack to 32 bytes and give up a register for it.
+                {
+                    const auto* const src = reinterpret_cast<const std::uint8_t*>(str.data());
+                    const auto n = str.size();
+                    if (n >= 16 && n <= 32)
+                    {
+                        if (copy_two_blocks<block16>(src, src + n, dst)) return finish_string(dst + n);
+                    }
+                    else if (n >= 1 && n < 16)
+                    {
+                        if (copy_two_words(src, n, dst)) return finish_string(dst + n);
+                        if (n >= 4) return write_short_string(str, dst);
+                    }
+#if defined(__AVX2__)
+                    else if (n > 32 && n <= 64)
+                    {
+                        return write_medium_string(str, dst);
+                    }
+#endif
+                }
+#endif
+                write_string_rest(str, dst);
+            }
+#if defined(__AVX2__)
+            // Writes a string of 33 to 64 bytes after the quote at `dst`.
+            CPPYYJSON_NOINLINE void write_medium_string(std::string_view str, char* dst)
+            {
+                const auto* const src = reinterpret_cast<const std::uint8_t*>(str.data());
+                const auto n = str.size();
+                if (copy_two_blocks<block32>(src, src + n, dst)) return finish_string(dst + n);
+                write_string_rest(str, dst);
+            }
+#endif
+            // Writes the string after the quote at `dst`, which `buf_.cur` is still before.
+            CPPYYJSON_NOINLINE void write_string_rest(std::string_view str, char* dst)
+            {
                 const auto* const table = enc_table_;
                 const auto* src = reinterpret_cast<const std::uint8_t*>(str.data());
                 const auto* const end = src + str.size();
@@ -7604,25 +7743,6 @@ namespace yyjson
                 // be valid UTF-8, in which case the code below writes it as yyjson does.
                 auto copy_utf8 = !esc_;
                 const auto* const begin = src;
-#endif
-                *dst++ = '"';
-#if defined(__SSSE3__) || defined(__AVX__)
-                // A string of up to two blocks with only ASCII to copy, like most URLs and names, is copied as its
-                // first and its last block, which overlap, without the loops below.
-                {
-                    const auto n = str.size();
-#if defined(__AVX2__)
-                    if (n >= 32 && n <= 64)
-                    {
-                        if (copy_two_blocks<block32>(src, end, dst)) return finish_string(dst + n);
-                    }
-                    else
-#endif
-                        if (n >= 16 && n <= 32)
-                    {
-                        if (copy_two_blocks<block16>(src, end, dst)) return finish_string(dst + n);
-                    }
-                }
 #endif
                 for (;;)
                 {
