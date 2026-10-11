@@ -5432,7 +5432,6 @@ TEST(Reader, RealToIntegers)
     EXPECT_THROW((void)read("1e300").cast<int>(), bad_cast);
     EXPECT_THROW((void)read("NaN", ReadFlag::AllowInfAndNan).cast<int>(), bad_cast);
     EXPECT_THROW((void)read("-Infinity", ReadFlag::AllowInfAndNan).cast<long>(), bad_cast);
-    EXPECT_TRUE(read("0.5").cast<bool>());
     EXPECT_EQ(read("-1.5").cast<std::optional<int>>(), -1);
     EXPECT_THROW((void)read("1e300").cast<std::optional<int>>(), bad_cast);
     EXPECT_EQ(read<std::vector<int>>("[1.5,-2.5]"), (std::vector<int>{1, -2}));
@@ -5459,13 +5458,65 @@ TEST(Reader, NullToStrings)
     EXPECT_EQ(null.cast<std::optional<std::string_view>>(), std::nullopt);
     EXPECT_EQ(null.cast<const char*>(), nullptr);
     EXPECT_EQ(null.cast<std::shared_ptr<std::string>>(), nullptr);
-    EXPECT_FALSE(null.cast<bool>());
     EXPECT_THROW((void)read<std::string>("null"), bad_cast);
     EXPECT_EQ(read<std::optional<std::string>>("null"), std::nullopt);
     EXPECT_EQ((read<std::vector<std::optional<std::string>>>(R"([null,"a"])")),
               (std::vector<std::optional<std::string>>{std::nullopt, "a"}));
     EXPECT_EQ((null.cast<std::variant<std::string_view, std::optional<int>>>()),
               (std::variant<std::string_view, std::optional<int>>(std::nullopt)));
+}
+
+namespace
+{
+    struct SingleField
+    {
+        int a = 0;
+    };
+    struct StringFirst
+    {
+        std::string s;
+        int n = 0;
+    };
+}  // namespace
+
+TEST(Reader, ValueKinds)
+{
+    using namespace yyjson;
+
+    // a struct is read from a JSON object only, although C++20 initializes its first field by `T(v)`
+    for (const auto* json : {"5", "2.5", "1e300", "-1", "\"x\"", "null", "true"})
+    {
+        EXPECT_THROW((void)read(json).cast<SingleField>(), bad_cast) << json;
+        EXPECT_THROW((void)read(json).cast<StringFirst>(), bad_cast) << json;
+    }
+    EXPECT_EQ(read(R"({"a":5})").cast<SingleField>().a, 5);
+    for (const auto* json : {"[5]", "[2.5]", "[1e300]", R"(["x"])", "[null]"})
+    {
+        expect_direct_read<std::vector<SingleField>>(json);
+        expect_direct_read<std::vector<StringFirst>>(json);
+    }
+    EXPECT_TRUE(expect_direct_read<std::vector<SingleField>>(R"([{"a":5}])"));
+    EXPECT_EQ((read("5").cast<std::variant<SingleField, int>>().index()), 1U);
+    EXPECT_EQ((read(R"("x")").cast<std::variant<StringFirst, std::string>>().index()), 1U);
+
+    // bool is read from true and false only, although C++ converts numbers, pointers and null to it
+    for (const auto* json : {"0", "1", "2.5", "\"\"", "\"false\"", "null"})
+        EXPECT_THROW((void)read(json).cast<bool>(), bad_cast) << json;
+    EXPECT_TRUE(read("true").cast<bool>());
+    EXPECT_FALSE(read("false").cast<bool>());
+    EXPECT_TRUE(expect_direct_read<std::list<bool>>("[true,false]"));
+    expect_direct_read<std::vector<bool>>("[true,false]");
+    for (const auto* json : {"[0]", "[1]", "[0.5]", R"(["false"])", "[null]"})
+    {
+        expect_direct_read<std::list<bool>>(json);
+        expect_direct_read<std::vector<bool>>(json);
+    }
+    EXPECT_EQ((read("1").cast<std::variant<bool, int>>().index()), 1U);
+
+    // a string is read from a JSON string only, while another range of characters is read from an array
+    EXPECT_THROW((void)read("[104,105]").cast<std::string>(), bad_cast);
+    expect_direct_read<std::vector<std::string>>("[[104,105]]");
+    EXPECT_EQ(read("[104,105]").cast<std::vector<char>>(), (std::vector<char>{'h', 'i'}));
 }
 
 // The index and the JSON text of a variant cast from `json`, or nothing when the cast fails.

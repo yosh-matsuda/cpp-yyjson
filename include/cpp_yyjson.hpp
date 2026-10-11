@@ -5406,12 +5406,23 @@ namespace yyjson
                 };
             };
 
-        template <typename T, typename Json>
-        concept array_castable_range = std::ranges::range<T> && std::default_initializable<T> && requires {
-            typename std::ranges::range_value_t<T>;
-            requires std::ranges::output_range<T, std::ranges::range_value_t<T>>;
-            requires requires(const Json& arr) { cast<std::ranges::range_value_t<T>>(arr.front()); };
+        template <typename T>
+        struct is_basic_string : std::false_type
+        {
         };
+        template <typename... Ts>
+        struct is_basic_string<std::basic_string<Ts...>> : std::true_type
+        {
+        };
+
+        // A string is a range of characters, but is read from a JSON string only.
+        template <typename T, typename Json>
+        concept array_castable_range =
+            (!is_basic_string<T>::value) && std::ranges::range<T> && std::default_initializable<T> && requires {
+                typename std::ranges::range_value_t<T>;
+                requires std::ranges::output_range<T, std::ranges::range_value_t<T>>;
+                requires requires(const Json& arr) { cast<std::ranges::range_value_t<T>>(arr.front()); };
+            };
 
         // A container takes a number as its size, which is not the value that the number gives.
         template <typename T>
@@ -5425,13 +5436,23 @@ namespace yyjson
             using type = T;
         };
 
+        // A struct is read from a JSON object only, although C++20 lets `T(v)` initialize its first field from
+        // any value.
+        template <typename T>
+        concept json_aggregate = std::is_class_v<T> && std::is_aggregate_v<T> && (!std::same_as<T, std::monostate>);
+
+        // T is constructed from a JSON scalar given as Arg, which is not done when the result is not the value
+        // of the scalar: a container takes a number as its size and a struct as its first field, and C++
+        // converts numbers, pointers and null to `bool`, which is read from JSON true and false only.
         template <typename T, typename Arg>
 #ifdef _MSC_VER
         concept json_scalar_constructible =
-            (!std::ranges::range<typename json_scalar_target<T>::type>) && requires { T(std::declval<Arg>()); };
+            (!std::ranges::range<typename json_scalar_target<T>::type>) && (!json_aggregate<T>) &&
+            (!std::same_as<T, bool> || std::same_as<Arg, bool>) && requires { T(std::declval<Arg>()); };
 #else
         concept json_scalar_constructible =
-            (!std::ranges::range<typename json_scalar_target<T>::type>) && std::constructible_from<T, Arg>;
+            (!std::ranges::range<typename json_scalar_target<T>::type>) && (!json_aggregate<T>) &&
+            (!std::same_as<T, bool> || std::same_as<Arg, bool>) && std::constructible_from<T, Arg>;
 #endif
 
         template <typename T>
@@ -5441,10 +5462,17 @@ namespace yyjson
 
         // `default_caster<T>::from_json_null` gives a T.
         template <typename T>
-        concept json_null_constructible = (std::constructible_from<T, std::nullptr_t> &&
-                                           !std::constructible_from<T, std::string_view>) ||
-                                          std::constructible_from<T, std::nullopt_t> ||
-                                          std::constructible_from<T, std::monostate>;
+        concept json_null_constructible =
+            (!json_aggregate<T>) && (!std::same_as<T, bool>) &&
+            ((std::constructible_from<T, std::nullptr_t> && !std::constructible_from<T, std::string_view>) ||
+             std::constructible_from<T, std::nullopt_t> || std::constructible_from<T, std::monostate>);
+
+        // `default_caster<T>::from_json_string` gives a T.
+        template <typename T>
+        concept json_string_constructible =
+            (!json_aggregate<T>) && (!std::same_as<T, bool>) &&
+            (std::constructible_from<T, std::string_view> || std::constructible_from<T, std::string> ||
+             std::constructible_from<T, const char*>);
 
         template <typename T, typename Json>
         concept reflected_object_castable = std::default_initializable<T> && (!visitable<T>) &&
@@ -5554,16 +5582,17 @@ namespace yyjson
         {
             // Before C++23 a string type converts from `nullptr` through its `const char*` constructor, which
             // reads the null pointer as a C string.
-            if constexpr (std::constructible_from<U, std::nullptr_t> && !std::constructible_from<U, std::string_view>)
+            if constexpr (!json_null_constructible<U>)
+                detail::throw_bad_cast("{} is not constructible from JSON null", detail::type_name<U>());
+            else if constexpr (std::constructible_from<U, std::nullptr_t> &&
+                               !std::constructible_from<U, std::string_view>)
             {
                 return U(nullptr);
             }
             else if constexpr (std::constructible_from<U, std::nullopt_t>)
                 return U(std::nullopt);
-            else if constexpr (std::constructible_from<U, std::monostate>)
-                return U(std::monostate());
             else
-                detail::throw_bad_cast("{} is not constructible from JSON null", detail::type_name<U>());
+                return U(std::monostate());
         }
 
         template <typename U = T>
@@ -5605,20 +5634,20 @@ namespace yyjson
         template <typename U = T>
         static U from_json_string(std::string_view value)
         {
-            if constexpr (std::constructible_from<U, std::string_view>)
+            if constexpr (!json_string_constructible<U>)
+                detail::throw_bad_cast("{} is not constructible from JSON string", detail::type_name<U>());
+            else if constexpr (std::constructible_from<U, std::string_view>)
                 return U(value);
             else if constexpr (std::constructible_from<U, std::string>)
                 return U(std::string(value));
-            else if constexpr (std::constructible_from<U, const char*>)
-                return U(value.data());
             else
-                detail::throw_bad_cast("{} is not constructible from JSON string", detail::type_name<U>());
+                return U(value.data());
         }
 
         template <typename U = T>
         static U from_json_uint(std::uint64_t value)
         {
-            if constexpr (std::integral<U>)
+            if constexpr (std::integral<U> && !std::same_as<U, bool>)
             {
                 if (value <= std::numeric_limits<U>::max())
                 {
@@ -5638,7 +5667,7 @@ namespace yyjson
         template <typename U = T>
         static U from_json_sint(std::int64_t value)
         {
-            if constexpr (std::unsigned_integral<U>)
+            if constexpr (std::unsigned_integral<U> && !std::same_as<U, bool>)
             {
                 if (value >= 0 && static_cast<std::uint64_t>(value) <= std::numeric_limits<U>::max())
                 {
@@ -5722,8 +5751,7 @@ namespace yyjson
                         return from_json_uint(unsafe_yyjson_get_uint(val));
                     if (unsafe_yyjson_is_sint(val)) return from_json_sint(unsafe_yyjson_get_sint(val));
                 }
-                else if constexpr (std::constructible_from<T, std::string_view> ||
-                                   std::constructible_from<T, std::string>)
+                else if constexpr (json_string_constructible<T>)
                 {
                     if (unsafe_yyjson_is_str(val)) [[likely]]
                         return from_json_string(
@@ -6064,13 +6092,13 @@ namespace yyjson
                 if constexpr (json_null_constructible<T>) kinds |= json_kind_null;
                 if constexpr (json_scalar_constructible<T, bool>) kinds |= json_kind_bool;
                 if constexpr (json_scalar_constructible<T, double>) kinds |= json_kind_real;
-                if constexpr (std::integral<T> || json_scalar_constructible<T, std::uint64_t>)
+                if constexpr ((std::integral<T> && !std::same_as<T, bool>) ||
+                              json_scalar_constructible<T, std::uint64_t>)
                     kinds |= json_kind_uint;
-                if constexpr (std::integral<T> || json_scalar_constructible<T, std::int64_t>)
+                if constexpr ((std::integral<T> && !std::same_as<T, bool>) ||
+                              json_scalar_constructible<T, std::int64_t>)
                     kinds |= json_kind_sint;
-                if constexpr (std::constructible_from<T, std::string_view> ||
-                              std::constructible_from<T, std::string> || std::constructible_from<T, const char*>)
-                    kinds |= json_kind_string;
+                if constexpr (json_string_constructible<T>) kinds |= json_kind_string;
                 return static_cast<std::uint8_t>(kinds);
             }
         }
