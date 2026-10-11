@@ -5259,7 +5259,7 @@ TEST(DirectReader, Numbers)
         {
             for (const auto* sign : {"", "-"})
             {
-                for (const auto* suffix : {"", "e5", "E-2", "x"})
+                for (const auto* suffix : {"", "e5", "E-2", "x", ".7"})
                 {
                     auto number = std::string(sign);
                     for (auto i = 0; i < n1; ++i) number += static_cast<char>('1' + (i * 7 + n2) % 9);
@@ -5268,13 +5268,38 @@ TEST(DirectReader, Numbers)
                     number += suffix;
                     const auto padded = "[" + number + "," + std::string(40, ' ') + "1]";
                     const auto direct = expect_direct_read<std::vector<double>>(padded);
-                    if (*suffix != 'x')
+                    if (*suffix != 'x' && *suffix != '.')
                     {
                         EXPECT_TRUE(direct) << padded;
                     }
                     expect_direct_read<std::vector<double>>("[" + number + "]");
                     expect_direct_read<std::vector<std::array<double, 2>>>("[[" + number + "," + number + "]," +
                                                                            std::string(40, ' ') + "[1,2]]");
+                }
+            }
+        }
+    }
+    // integers of every length as elements of an array, which read one or two digits apart from longer ones, followed
+    // by each character that ends or continues them
+    for (auto n = 1; n <= 21; ++n)
+    {
+        for (const auto* sign : {"", "-"})
+        {
+            for (const auto* next : {",", "]", " ,", "x,", ".,", ".5,", "e1,", "0,"})
+            {
+                auto number = std::string(sign);
+                for (auto i = 0; i < n; ++i) number += static_cast<char>('1' + (i * 5 + n) % 9);
+                for (const auto& json : {"[" + number + next + "1," + std::string(40, ' ') + "2]",
+                                         "[" + number + next + "1]"})
+                {
+                    expect_direct_read<std::vector<double>>(json);
+                    if (reals_fit<std::int64_t>(json))
+                    {
+                        expect_direct_read<std::vector<std::int64_t>>(json);
+                        expect_direct_read<std::array<std::int64_t, 3>>(json);
+                    }
+                    if (reals_fit<std::uint64_t>(json)) expect_direct_read<std::vector<std::uint64_t>>(json);
+                    if (reals_fit<std::int8_t>(json)) expect_direct_read<std::vector<std::int8_t>>(json);
                 }
             }
         }

@@ -9576,9 +9576,11 @@ namespace yyjson
                 const auto n1 = std::countr_zero(other >> i0);
                 const auto f0 = i0 + n1 + 1;
                 const auto n2 = std::countr_zero(other >> f0);
+                // `end` is never before `f0 + n2`, and a second point puts it after.  Testing equality instead
+                // would let GCC take `f0 + n2` for `end`, which waits for the lengths again.
                 if (static_cast<unsigned>(n1) - 1u >= 8u || s[f0 - 1] != '.' || static_cast<unsigned>(n2) - 1u >= 16u ||
                     n1 + n2 > 19 ||
-                    (s[f0 + n2] | 0x20) == 'e' || (n1 > 1 && s[i0] == '0') || end != f0 + n2) [[unlikely]]
+                    (s[f0 + n2] | 0x20) == 'e' || (n1 > 1 && s[i0] == '0') || end > f0 + n2) [[unlikely]]
                     return false;
                 const auto load = [](const char* p) {
                     auto w = std::uint64_t{0};
@@ -9606,8 +9608,11 @@ namespace yyjson
 #endif
 
             // Reads a number and hands it to `f` as yyjson types it: a non-negative integer that fits in 64 bits
-            // as `std::uint64_t`, a negative one that fits as `std::int64_t`, anything else as `double`.
-            template <typename F>
+            // as `std::uint64_t`, a negative one that fits as `std::int64_t`, anything else as `double`.  With
+            // `InArray`, for an element of an array of numbers, an integer part of one or two digits moves the
+            // position by a constant on a predicted branch, so that the next element does not wait until the
+            // digits are counted.  Elsewhere the numbers are apart, and the branch only mispredicts.
+            template <bool InArray = false, typename F>
             CPPYYJSON_ALWAYS_INLINE decltype(auto) read_number(F&& f)
             {
                 const char* p = cur_;
@@ -9626,12 +9631,28 @@ namespace yyjson
                 {
                     if (std::endian::native == std::endian::little && last_ - p >= 8) [[likely]]
                     {
-                        auto k = read_digits8(p, v);
-                        if (k == 8 && last_ - p >= 8)
+                        auto w = std::uint64_t{0};
+                        std::memcpy(&w, p, sizeof(w));
+                        const auto other =
+                            ((w + 0x4646464646464646u) | (w - 0x3030303030303030u)) & 0x8080808080808080u;
+                        if (!InArray || (other & 0x808000u) == 0)
                         {
-                            auto w = std::uint64_t{0};
-                            k = read_digits8(p, w);
-                            v = v * pow10_u32[k] + w;
+                            if (auto k = read_digits8(p, v); k == 8 && last_ - p >= 8)
+                            {
+                                auto w2 = std::uint64_t{0};
+                                k = read_digits8(p, w2);
+                                v = v * pow10_u32[k] + w2;
+                            }
+                        }
+                        else if (other & 0x8000u)
+                        {
+                            v = w & 0x0F;
+                            ++p;
+                        }
+                        else
+                        {
+                            v = (w & 0x0F) * 10 + ((w >> 8) & 0x0F);
+                            p += 2;
                         }
                     }
                     else
@@ -10518,6 +10539,23 @@ namespace yyjson
             template <typename T>
             T read_value()
             {
+                return read_value_inline<T, false>();
+            }
+
+            // `read_value` for an element of an array, inlined into the loop for a number.
+            template <typename T>
+            CPPYYJSON_ALWAYS_INLINE T read_element()
+            {
+                if constexpr (std::is_arithmetic_v<T>)
+                    return read_value_inline<T, true>();
+                else
+                    return read_value<T>();
+            }
+
+            // The body of `read_value`, where `InArray` is for an element of an array (see `read_number`).
+            template <typename T, bool InArray>
+            CPPYYJSON_ALWAYS_INLINE T read_value_inline()
+            {
                 if constexpr (builtin_variant<T>)
                 {
                     auto result = std::optional<T>();
@@ -10606,7 +10644,7 @@ namespace yyjson
                                     return number(d);
                             }
 #endif
-                            return read_number(number);
+                            return read_number<InArray>(number);
                     }
                 }
             }
@@ -10868,7 +10906,7 @@ namespace yyjson
                             });
                         }
                         else
-                            result.push_back(read_value<value_type>());
+                            result.push_back(read_element<value_type>());
                     }
                     else
                     {
