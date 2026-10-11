@@ -94,6 +94,40 @@ jobs:
         cmake --build ${{ github.workspace }}/build --config Release --clean-first
         ctest --test-dir ${{ github.workspace }}/build -C Release
 
+  upstream-yyjson-build:
+    strategy:
+      fail-fast: false
+      matrix:
+        yyjson: [ "0.6.0", "0.7.0", "0.8.0", "0.9.0", "0.10.0", "0.11.1", "0.12.0", "0.13.0" ]
+        compiler: [ { name: "GCC 13", c: "gcc-13", cxx: "g++-13" }, { name: "LLVM 18", c: "clang-18", cxx: "clang++-18" } ]
+    name: Ubuntu - ${{ matrix.compiler.name }} - upstream yyjson ${{ matrix.yyjson }}
+    runs-on: ubuntu-24.04
+
+    env:
+      triplet: x64-linux
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install yyjson
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ninja-build
+        git clone --depth 1 --branch ${{ matrix.yyjson }} https://github.com/ibireme/yyjson.git ${{ runner.temp }}/yyjson
+        cmake -S ${{ runner.temp }}/yyjson -B ${{ runner.temp }}/yyjson/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_INSTALL_PREFIX=${{ runner.temp }}/yyjson-install
+        cmake --build ${{ runner.temp }}/yyjson/build
+        cmake --install ${{ runner.temp }}/yyjson/build
+
+    - name: Build and test
+      run: |
+        export CC=${{ matrix.compiler.c }} CXX=${{ matrix.compiler.cxx }}
+        rm -rf ${{ github.workspace }}/build
+        cmake -B ${{ github.workspace }}/build -DCMAKE_TOOLCHAIN_FILE=$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=${{ env.triplet }} -DCMAKE_C_COMPILER=${{ matrix.compiler.c }} -DCMAKE_CXX_COMPILER=${{ matrix.compiler.cxx }} -DCPPYYJSON_USE_BUNDLED_YYJSON=OFF -DCMAKE_PREFIX_PATH=${{ runner.temp }}/yyjson-install -G "Ninja Multi-Config"
+        cmake --build ${{ github.workspace }}/build --config Debug --clean-first
+        ctest --test-dir ${{ github.workspace }}/build -C Debug
+        cmake --build ${{ github.workspace }}/build --config Release --clean-first
+        ctest --test-dir ${{ github.workspace }}/build -C Release
+
   macos-build:
     strategy:
       fail-fast: false
