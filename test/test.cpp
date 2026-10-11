@@ -4810,6 +4810,23 @@ TEST(DirectWriter, Strings)
             }
         }
     }
+    // two characters to escape at every distance in a block and across blocks, near the end of the text too
+    const auto escapes = std::vector<std::string>{"\n", "\"", "\x01", "\\"};
+    for (const auto& first : escapes)
+    {
+        for (const auto& second : escapes)
+        {
+            for (auto pos = std::size_t{0}; pos < 40; pos += 3)
+            {
+                for (auto gap = std::size_t{0}; gap < 36; ++gap)
+                {
+                    const auto text = std::string(pos, 'x') + first + std::string(gap, 'y') + second;
+                    expect_direct_write(text + std::string(70, 'z'));
+                    expect_direct_write(text + "\xc3\xa9" + first + std::string(gap % 5, 'z'));
+                }
+            }
+        }
+    }
     expect_direct_write(std::string("\0a\0", 3));
     for (auto size = std::size_t{1}; size <= 70; ++size)
     {

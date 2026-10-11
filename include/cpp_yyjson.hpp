@@ -7457,9 +7457,19 @@ namespace yyjson
                             dst += size;
                             continue;
                         }
-                        const auto n = std::countr_zero(mask);
-                        src += n;
-                        dst = write_ascii_escape(dst + n, *src++);
+                        // the characters to escape later in the block are found in `rest`, without waiting for a
+                        // load and a compare after each of them
+                        auto rest = mask;
+                        auto n = std::countr_zero(rest);
+                        while (true)
+                        {
+                            src += n;
+                            dst = write_ascii_escape(dst + n, *src++);
+                            rest = (rest >> n) >> 1;
+                            if (rest == 0 || end - src < width) break;
+                            B::store(dst, B::load(src));
+                            n = std::countr_zero(rest);
+                        }
                     }
                     multi = multi || B::movemask(bytes) != 0;
                     src_ref = src;
