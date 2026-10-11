@@ -8462,12 +8462,33 @@ namespace yyjson
             buf.end = ptr + size;
         }
 
+        // Resizes `str` to `n` characters, keeping the first of them, and leaves those after its old size
+        // uninitialized where the standard library allows it.  Filling the reused capacity of an output string
+        // with zeros, only to overwrite it, costs a large part of writing it.
+        template <typename S>
+        void resize_for_overwrite(S& str, std::size_t n)
+        {
+            [[maybe_unused]] constexpr auto keep = [](char*, std::size_t m) noexcept { return m; };
+#if defined(__cpp_lib_string_resize_and_overwrite)
+            str.resize_and_overwrite(n, keep);
+#else
+            if constexpr (requires { str.__resize_and_overwrite(n, keep); })
+                str.__resize_and_overwrite(n, keep);  // libstdc++
+            else if constexpr (requires { str._Resize_and_overwrite(n, keep); })
+                str._Resize_and_overwrite(n, keep);  // MSVC
+            else if constexpr (requires { str.__resize_default_init(n); })
+                str.__resize_default_init(n);  // libc++
+            else
+                str.resize(n);
+#endif
+        }
+
         inline void grow_string_buffer(direct_write_buffer& buf, std::size_t n)
         {
             auto& str = *static_cast<std::string*>(buf.ctx);
             const auto used = static_cast<std::size_t>(buf.cur - buf.beg);
-            str.resize(std::max(str.size() * 2, used + n));
-            str.resize(str.capacity());
+            resize_for_overwrite(str, std::max(str.size() * 2, used + n));
+            resize_for_overwrite(str, str.capacity());
             buf.beg = str.data();
             buf.cur = buf.beg + used;
             buf.end = buf.beg + str.size();
@@ -8508,7 +8529,7 @@ namespace yyjson
              reader::detail::base_of_value_ref<T>
     void write(const T& t, std::string& out, WriteFlag write_flag = WriteFlag::NoFlag)
     {
-        out.resize(std::max(out.capacity(), writer::detail::direct_write_initial_size));
+        writer::detail::resize_for_overwrite(out, std::max(out.capacity(), writer::detail::direct_write_initial_size));
         auto buf = writer::detail::direct_write_buffer{};
         buf.beg = out.data();
         buf.cur = buf.beg;
