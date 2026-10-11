@@ -5054,7 +5054,8 @@ namespace yyjson
         }
 
 #pragma region read
-        [[nodiscard]] inline read_error make_read_error(const char* str, std::size_t len, const yyjson_read_err& err)
+        [[nodiscard]] inline read_error make_read_error([[maybe_unused]] const char* str,
+                                                        [[maybe_unused]] std::size_t len, const yyjson_read_err& err)
         {
 #if YYJSON_VERSION_HEX >= 0x000A00
             auto line = std::size_t{0};
@@ -5801,7 +5802,8 @@ namespace yyjson
         requires std::same_as<Json, reader::const_value_ref> && (!reader::detail::from_json_val_usr_defined<T>)
         CPPYYJSON_ALWAYS_INLINE static bool assign_in_place(T& field, const Json& json, bool replaceable)
         {
-            const auto* val = json.val_;
+            // `unsafe_yyjson_*` take a non-const pointer before yyjson 0.13
+            auto* val = const_cast<yyjson_val*>(json.val_);
             if constexpr (std::same_as<T, std::string>)
             {
                 if (unsafe_yyjson_is_str(val)) [[likely]]
@@ -5834,7 +5836,7 @@ namespace yyjson
                 // Checks first the JSON type that T is usually read from, and converts it in the same way
                 // as `inspect` below does.  The value is read from the tag directly, since returning it
                 // through `std::optional` makes the compiler spill it to the stack.
-                const auto* val = json.val_;
+                auto* val = const_cast<yyjson_val*>(json.val_);
                 if constexpr (std::same_as<T, bool>)
                 {
                     if (unsafe_yyjson_is_bool(val)) [[likely]]
