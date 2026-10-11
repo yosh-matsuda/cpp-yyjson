@@ -4796,6 +4796,14 @@ TEST(DirectWriter, Strings)
             expect_direct_write(cjk + piece + cjk);
             expect_direct_write(cjk.substr(0, before) + piece + cjk);
         }
+        // at every position of the strings that are copied as their first and their last block, which overlap
+        for (auto size = std::size_t{15}; size <= 66; ++size)
+        {
+            for (auto pos = std::size_t{0}; pos + piece.size() <= size; ++pos)
+            {
+                expect_direct_write(std::string(pos, 'x') + piece + std::string(size - pos - piece.size(), 'y'));
+            }
+        }
     }
     expect_direct_write(std::string("\0a\0", 3));
     expect_direct_write(std::vector<std::string>{"", "a", std::string(1000, 'z')});

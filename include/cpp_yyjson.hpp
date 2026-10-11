@@ -7448,6 +7448,33 @@ namespace yyjson
                 src_ref = src;
                 dst_ref = dst;
             }
+
+            // Copies the `B::width` bytes from `src` and those before `end` if they are ASCII none of which is to
+            // be escaped.
+            template <typename B>
+            CPPYYJSON_ALWAYS_INLINE bool copy_two_blocks(const std::uint8_t* src, const std::uint8_t* end,
+                                                         char* dst) const noexcept
+            {
+                const auto ctrl = B::set1(0x20);
+                const auto quote = B::set1('"');
+                const auto bslash = B::set1('\\');
+                const auto slash = B::set1((flg_ & YYJSON_WRITE_ESCAPE_SLASHES) ? '/' : '"');
+                const auto first = B::load(src);
+                const auto last = B::load(end - B::width);
+                // bytes of 0x80 and above are negative, so the signed compare finds them too
+                const auto special = [&](typename B::type v)
+                { return B::or_(B::or_(B::lt(v, ctrl), B::eq(v, quote)), B::or_(B::eq(v, bslash), B::eq(v, slash))); };
+                if (B::movemask(B::or_(special(first), special(last))) != 0) return false;
+                B::store(dst, first);
+                B::store(dst + (end - src) - B::width, last);
+                return true;
+            }
+
+            CPPYYJSON_ALWAYS_INLINE void finish_string(char* dst) noexcept
+            {
+                *dst++ = '"';
+                buf_.cur = dst;
+            }
 #endif
 
             struct string_pos
@@ -7540,6 +7567,24 @@ namespace yyjson
                 const auto* const begin = src;
 #endif
                 *dst++ = '"';
+#if defined(__SSSE3__) || defined(__AVX__)
+                // A string of up to two blocks with only ASCII to copy, like most URLs and names, is copied as its
+                // first and its last block, which overlap, without the loops below.
+                {
+                    const auto n = str.size();
+#if defined(__AVX2__)
+                    if (n >= 32 && n <= 64)
+                    {
+                        if (copy_two_blocks<block32>(src, end, dst)) return finish_string(dst + n);
+                    }
+                    else
+#endif
+                        if (n >= 16 && n <= 32)
+                    {
+                        if (copy_two_blocks<block16>(src, end, dst)) return finish_string(dst + n);
+                    }
+                }
+#endif
                 for (;;)
                 {
 #if defined(__SSSE3__) || defined(__AVX__)
