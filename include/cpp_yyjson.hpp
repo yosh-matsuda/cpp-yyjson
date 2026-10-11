@@ -9581,6 +9581,99 @@ namespace yyjson
                 !from_json_val_usr_defined<T> && from_json_def_arr_defined<T> && std::ranges::range<T> &&
                 std::is_default_constructible_v<T>;
 
+            // Counts the elements from `cur_` to the end of the array that `cur_` is in, or returns 0 if one of them
+            // is an array or an object or the array does not end before `last_`.  A count across nested containers
+            // costs as much as the moves that it saves.
+            std::size_t count_elements() const noexcept
+            {
+                auto n = std::size_t{1};
+                auto quoted = false;
+                auto escaped = false;
+                // returns 1 at the end of the array, -1 at a container, and 0 otherwise
+                const auto step = [&](char c) {
+                    if (quoted)
+                    {
+                        if (escaped)
+                            escaped = false;
+                        else if (c == '\\')
+                            escaped = true;
+                        else if (c == '"')
+                            quoted = false;
+                        return 0;
+                    }
+                    switch (c)
+                    {
+                        case '"': quoted = true; return 0;
+                        case ',': ++n; return 0;
+                        case ']': return 1;
+                        case '[':
+                        case '{': return -1;
+                        default: return 0;
+                    }
+                };
+                const char* p = cur_;
+#if defined(__AVX2__)
+                for (; last_ - p >= 32; p += 32)
+                {
+                    const auto v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(p));
+                    const auto mask = [v](char c) {
+                        return static_cast<std::uint32_t>(
+                            _mm256_movemask_epi8(_mm256_cmpeq_epi8(v, _mm256_set1_epi8(c))));
+                    };
+                    if (escaped || mask('\\') != 0) [[unlikely]]
+                    {
+                        for (auto i = 0; i < 32; ++i)
+                            if (const auto r = step(p[i]); r != 0) return r > 0 ? n : 0;
+                        continue;
+                    }
+                    // the characters inside strings, with the opening quotes and without the closing ones
+                    auto inside = mask('"');
+                    inside ^= inside << 1;
+                    inside ^= inside << 2;
+                    inside ^= inside << 4;
+                    inside ^= inside << 8;
+                    inside ^= inside << 16;
+                    if (quoted) inside = ~inside;
+                    quoted = (inside >> 31) != 0;
+                    const auto commas = mask(',') & ~inside;
+                    if (((mask('[') | mask('{')) & ~inside) != 0) return 0;
+                    if (const auto close = mask(']') & ~inside; close != 0)
+                        return n + static_cast<std::size_t>(std::popcount(commas & ((close & (0 - close)) - 1)));
+                    n += static_cast<std::size_t>(std::popcount(commas));
+                }
+#endif
+                for (; p <= last_; ++p)
+                    if (const auto r = step(*p); r != 0) return r > 0 ? n : 0;
+                return 0;
+            }
+
+            // Whether `read_array_into` counts the rest of the elements of an array of T once it has read 512, and
+            // reserves room for them, rather than growing the range, which moves every element read so far.
+            template <typename T>
+            static constexpr bool counts_elements =
+                !std::is_trivially_copyable_v<std::ranges::range_value_t<T>> &&
+                requires(T& t, std::size_t n) {
+                    t.reserve(n);
+                    { t.capacity() } -> std::convertible_to<std::size_t>;
+                };
+
+            // Reserves room in `result` for the rest of the elements of the array that opens at `open`.  The elements
+            // of the root array, which ends at `last_`, are estimated from the bytes that those read so far took when
+            // they cannot be counted, as long as the room stays within four times the bytes left to read.
+            template <typename T>
+            void reserve_rest(T& result, const char* open)
+            {
+                auto n = count_elements();
+                if (n == 0 && open == first_)
+                {
+                    const auto done = static_cast<std::size_t>(cur_ - open);
+                    const auto rest = static_cast<std::size_t>(last_ - cur_);
+                    n = result.size() * rest / done;
+                    n = std::min(n + n / 16, rest * 4 / sizeof(std::ranges::range_value_t<T>));
+                }
+                if (n != 0) result.reserve(result.size() + n);
+            }
+
             // Reads the elements of the array at `cur_` into the empty or default-constructed range `result`.
             template <typename T>
             void read_array_into(T& result)
@@ -9600,6 +9693,11 @@ namespace yyjson
                 {
                     if constexpr (yyjson::detail::back_insertable<T>)
                     {
+                        if constexpr (counts_elements<T>)
+                        {
+                            if (count++ == 512 && result.size() == result.capacity()) [[unlikely]]
+                                reserve_rest(result, open);
+                        }
                         if constexpr (yyjson::detail::reflected_assignable_in_place<value_type, const_value_ref> &&
                                       requires {
                                           { result.emplace_back() } -> std::same_as<value_type&>;

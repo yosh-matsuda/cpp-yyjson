@@ -5676,6 +5676,85 @@ TEST(DirectReader, VariantFields)
     EXPECT_EQ(std::get<0>(yyjson::read<no_default>("2")).v, 2);
     EXPECT_EQ(std::get<1>(yyjson::read<no_default>(R"("s")")), "s");
 }
+
+struct ReservedStrings
+{
+    std::vector<std::string> v;
+    std::vector<std::string> w;
+    int n = 0;
+};
+
+TEST(DirectReader, ReservesRest)
+{
+    using yyjson::reader::detail::direct_reader;
+
+    // strings that hide brackets, commas, quotes and backslashes at every offset of the blocks that the count
+    // compares at once
+    auto seed = std::uint32_t{1};
+    const auto next = [&seed](std::uint32_t n) {
+        seed = seed * 1664525 + 1013904223;
+        return (seed >> 8) % n;
+    };
+    const auto pieces = std::array<std::string_view, 12>{
+        ",", "]", "[", "{", "}", R"(\")", R"(\\)", R"(\n)", "a", R"(\u0041)", " ", R"(\\\")"};
+    auto json = std::string("[");
+    for (auto i = 0; i < 1500; ++i)
+    {
+        if (i != 0) json += next(3) == 0 ? " , " : ",";
+        json += '"';
+        for (auto k = next(24); k != 0; --k) json += pieces[next(pieces.size())];
+        json += '"';
+    }
+    json += "]";
+
+    const auto expected = yyjson::read(json).cast<std::vector<std::string>>();
+    ASSERT_EQ(expected.size(), 1500);
+    const auto strings = direct_reader(json.data(), json.data() + json.size() - 1, yyjson::ReadFlag::NoFlag)
+                             .read_root<std::vector<std::string>>();
+    EXPECT_EQ(strings, expected);
+    EXPECT_EQ(yyjson::read<std::vector<std::string>>(json), expected);
+
+    const auto object = std::format(R"({{"v":{},"w":["a"],"n":1}})", json);
+    const auto fields = yyjson::read<ReservedStrings>(object);
+    EXPECT_EQ(fields.v, expected);
+    EXPECT_EQ(fields.w, std::vector<std::string>{"a"});
+    EXPECT_EQ(fields.n, 1);
+    EXPECT_TRUE(expect_direct_read<ReservedStrings>(object));
+#if defined(__GLIBCXX__) || defined(_LIBCPP_VERSION)
+    // the range doubles up to 512 elements and then takes the exact count
+    EXPECT_EQ(strings.capacity(), strings.size());
+    EXPECT_EQ(fields.v.capacity(), fields.v.size());
+#endif
+
+    // the elements of an array with containers in it are not counted, but estimated in the root array
+    using string_or_ints = std::variant<std::string, std::vector<int>>;
+    auto mixed = json.substr(0, json.size() - 1) + ",[1,2]," + json.substr(1);
+    EXPECT_TRUE(expect_direct_read<std::vector<string_or_ints>>(mixed));
+    EXPECT_EQ(yyjson::read<std::vector<string_or_ints>>(mixed).size(), 3001);
+    EXPECT_TRUE(expect_direct_read<std::vector<std::vector<std::string>>>("[" + json + "," + json + "]"));
+    auto nested = std::string("[");
+    for (auto i = 0; i < 2000; ++i) nested += i == 0 ? "[" + std::to_string(i) + "]" : ",[" + std::to_string(i) + "]";
+    nested += "]";
+    expect_direct_read<std::vector<std::vector<std::string>>>(nested);
+    EXPECT_TRUE(expect_direct_read<std::vector<std::vector<int>>>(nested));
+    EXPECT_TRUE(expect_direct_read<std::vector<std::vector<int>>>(nested + " "));
+    EXPECT_TRUE((expect_direct_read<std::map<std::string, std::vector<std::vector<int>>>>(
+        std::format(R"({{"a":{},"b":{}}})", nested, nested))));
+    auto records = std::string("[");
+    for (auto i = 0; i < 1000; ++i) records += std::format(R"({}{{"i":{},"k":"{}"}})", i == 0 ? "" : ",", i, i);
+    records += "]";
+    EXPECT_TRUE(expect_direct_read<std::vector<ReflectionRecord>>(records));
+
+    // a long element after short ones takes no more room than the bytes left allow
+    using int_or_string = std::variant<int, std::string, std::vector<int>>;
+    auto skewed = std::string("[");
+    for (auto i = 0; i < 600; ++i) skewed += "1,";
+    skewed += "[1],\"" + std::string(100000, 'x') + "\"]";
+    EXPECT_TRUE(expect_direct_read<std::vector<int_or_string>>(skewed));
+    const auto skewed_read = yyjson::read<std::vector<int_or_string>>(skewed);
+    EXPECT_EQ(skewed_read.size(), 602);
+    EXPECT_LE(skewed_read.capacity() * sizeof(int_or_string), 4 * skewed.size() + 1024 * sizeof(int_or_string));
+}
 #endif
 
 // NOLINTEND
