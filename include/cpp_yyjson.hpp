@@ -7479,6 +7479,115 @@ namespace yyjson
                 (write_field<reflected_key<U, Is>>(first, yyjson::detail::forward_field<Is>(std::forward<T>(t))), ...);
             }
 
+            // Whether the writer checks a key of type K for `next_plain_key`.
+            template <typename K>
+            static constexpr bool plain_key_candidate =
+                std::same_as<K, std::string> || std::same_as<K, std::string_view> || std::same_as<K, const char*> ||
+                std::same_as<K, char*>;
+            // `next_element`, a key and its colon with one check of the space, also for `extra` bytes after
+            // them, when the key needs no escape; otherwise nothing is written and false is returned.
+            CPPYYJSON_ALWAYS_INLINE bool next_plain_key(bool& first, std::string_view key, std::size_t extra)
+            {
+                // longer keys go to `write_string`, which copies them in blocks
+                constexpr std::size_t max_plain_key = 32;
+                const auto n = key.size();
+                if (pretty_ || n > max_plain_key) return false;
+                ensure(n + 4 + extra);
+                auto* p = buf_.cur;
+                *p = ',';
+                p += !first;
+                *p++ = '"';
+                if (!copy_plain_key(p, key.data(), n)) [[unlikely]]
+                    return false;
+                p[n] = '"';
+                p[n + 1] = ':';
+                buf_.cur = p + n + 2;
+                first = false;
+                return true;
+            }
+            // Copies up to 32 bytes in words that overlap, and tells whether none of them needs an escape under
+            // any flag, as `is_plain_key` tells for a struct key.
+            CPPYYJSON_ALWAYS_INLINE static bool copy_plain_key(char* dst, const char* src, std::size_t n) noexcept
+            {
+                const auto* const s = reinterpret_cast<const std::uint8_t*>(src);
+                auto found = std::uint64_t{0};
+                if (n >= 8)
+                {
+                    const auto a = load_word<std::uint64_t>(s);
+                    const auto b = load_word<std::uint64_t>(s + n - 8);
+                    if (n > 16)
+                    {
+                        const auto c = load_word<std::uint64_t>(s + 8);
+                        const auto d = load_word<std::uint64_t>(s + n - 16);
+                        std::memcpy(dst + 8, &c, 8);
+                        std::memcpy(dst + n - 16, &d, 8);
+                        found = special_bytes(c, '/') | special_bytes(d, '/');
+                    }
+                    std::memcpy(dst, &a, 8);
+                    std::memcpy(dst + n - 8, &b, 8);
+                    found |= special_bytes(a, '/') | special_bytes(b, '/');
+                }
+                else if (n >= 4)
+                {
+                    const auto a = load_word<std::uint32_t>(s);
+                    const auto b = load_word<std::uint32_t>(s + n - 4);
+                    std::memcpy(dst, &a, 4);
+                    std::memcpy(dst + n - 4, &b, 4);
+                    found = special_bytes(a, '/') | special_bytes(b, '/');
+                }
+                else if (n != 0)
+                {
+                    // the first, middle and last bytes are all the bytes of a key this short
+                    const auto a = std::uint32_t{s[0]};
+                    const auto b = std::uint32_t{s[n / 2]};
+                    const auto c = std::uint32_t{s[n - 1]};
+                    dst[0] = static_cast<char>(a);
+                    dst[n / 2] = static_cast<char>(b);
+                    dst[n - 1] = static_cast<char>(c);
+                    found = special_bytes(a | (b << 8) | (c << 16) | (std::uint32_t{'a'} << 24), '/');
+                }
+                return found == 0;
+            }
+            // A key and its value, the element of a tuple that the caster writes as a member of an object.
+            template <typename M>
+            CPPYYJSON_ALWAYS_INLINE void write_tuple_member(bool& first, M&& m)
+            {
+                using K = std::remove_cvref_t<std::tuple_element_t<0, std::remove_cvref_t<M>>>;
+                using V = decltype(std::get<1>(std::forward<M>(m)));
+                if constexpr (plain_key_candidate<K>)
+                {
+                    const auto& key = std::get<0>(m);
+                    auto written = false;
+                    if constexpr (std::is_pointer_v<K>)
+                        written = key != nullptr && next_plain_key(first, key, bounded_size<V>());
+                    else
+                        written = next_plain_key(first, key, bounded_size<V>());
+                    if (written)
+                    {
+                        if constexpr (bounded_size<V>() != 0)
+                            buf_.cur = put_bounded(buf_.cur, std::get<1>(std::forward<M>(m)));
+                        else
+                            write_value(std::get<1>(std::forward<M>(m)));
+                        return;
+                    }
+                }
+                next_element(first);
+                write_primitive(std::get<0>(std::forward<M>(m)));
+                end_key();
+                write_value(std::get<1>(std::forward<M>(m)));
+            }
+            // Function templates rather than lambdas, which GCC leaves out of line.
+            template <typename T, std::size_t... Is>
+            CPPYYJSON_ALWAYS_INLINE void write_tuple_members(bool& first, T&& t, std::index_sequence<Is...>)
+            {
+                (write_tuple_member(first, std::get<Is>(std::forward<T>(t))), ...);
+            }
+            template <typename T, std::size_t... Is>
+            CPPYYJSON_ALWAYS_INLINE void write_tuple_elements(bool& first, T&& t, std::index_sequence<Is...>)
+            {
+                ((next_element(first), write_value(std::get<Is>(std::forward<T>(t)))), ...);
+            }
+
             // Whether `write_value` builds T in the mutable document: the last branch of `write_in_place`.
             template <typename T>
             static consteval bool written_in_document()
@@ -7554,9 +7663,7 @@ namespace yyjson
                 {
                     open('[');
                     auto first = true;
-                    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                        ((next_element(first), write_value(std::get<Is>(std::forward<T>(t)))), ...);
-                    }(std::make_index_sequence<std::tuple_size_v<U>>{});
+                    write_tuple_elements(first, std::forward<T>(t), std::make_index_sequence<std::tuple_size_v<U>>{});
                     close(']', first);
                 }
                 else if constexpr (std::derived_from<caster<U>, yyjson::detail::builtin_caster> &&
@@ -7564,11 +7671,7 @@ namespace yyjson
                 {
                     open('{');
                     auto first = true;
-                    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                        ((next_element(first), write_primitive(std::get<0>(std::get<Is>(std::forward<T>(t)))),
-                          end_key(), write_value(std::get<1>(std::get<Is>(std::forward<T>(t))))),
-                         ...);
-                    }(std::make_index_sequence<std::tuple_size_v<U>>{});
+                    write_tuple_members(first, std::forward<T>(t), std::make_index_sequence<std::tuple_size_v<U>>{});
                     close('}', first);
                 }
                 else

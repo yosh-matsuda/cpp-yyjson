@@ -4699,6 +4699,37 @@ struct CasterSamples
     std::vector<ArrayCasterPoint> points;
 };
 
+TEST(DirectWriter, TupleKeys)
+{
+    // every byte at the start, the middle and the end of keys around the lengths at which the writer copies a
+    // key in words of another size, or gives it to the string writer
+    for (auto c = 0; c < 256; ++c)
+    {
+        auto keys = std::vector<std::string>();
+        for (const auto n : {1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 24, 31, 32, 33})
+        {
+            for (const auto i : {0, n / 2, n - 1})
+            {
+                auto key = std::string(static_cast<std::size_t>(n), 'k');
+                key[static_cast<std::size_t>(i)] = static_cast<char>(c);
+                keys.push_back(std::move(key));
+            }
+        }
+        using members = std::tuple<std::pair<std::string, int>, std::pair<std::string_view, bool>,
+                                   std::pair<const char*, std::string>, std::pair<std::string, double>>;
+        auto tuples = std::vector<members>();
+        tuples.emplace_back(std::pair<std::string, int>("", 0), std::pair<std::string_view, bool>("", true),
+                            std::pair<const char*, std::string>("", ""), std::pair<std::string, double>("", 0.5));
+        for (const auto& key : keys)
+        {
+            tuples.emplace_back(std::pair<std::string, int>(key, 1), std::pair<std::string_view, bool>(key, false),
+                                std::pair<const char*, std::string>(key.c_str(), key),
+                                std::pair<std::string, double>(key, 1.5));
+        }
+        expect_direct_write(tuples);
+    }
+}
+
 TEST(DirectWriter, CastersOnDocument)
 {
     using namespace yyjson;
