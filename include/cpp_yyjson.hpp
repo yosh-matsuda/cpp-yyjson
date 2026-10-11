@@ -5615,9 +5615,9 @@ namespace yyjson
             {
                 if (const auto inner = e.as_array(); inner.has_value())
                 {
-                    auto value = value_type();
-                    default_caster<value_type>::assign_fixed_size_range(value, *inner);
-                    result.push_back(value);
+                    auto element = value_type();
+                    default_caster<value_type>::assign_fixed_size_range(element, *inner);
+                    result.push_back(element);
                 }
                 else
                     result.push_back(cast<value_type>(e));
@@ -5650,10 +5650,12 @@ namespace yyjson
 #pragma GCC diagnostic ignored "-Wnonnull"
 #pragma GCC diagnostic ignored "-Wconversion"
 #pragma GCC diagnostic ignored "-Wfloat-conversion"
-#pragma GCC diagnostic ignored "-Wimplicit-float-conversion"
 #pragma GCC diagnostic ignored "-Wfloat-equal"
 #pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+#if defined(__clang__)
+#pragma GCC diagnostic ignored "-Wimplicit-float-conversion"
 #pragma GCC diagnostic ignored "-Wshorten-64-to-32"
+#endif
 #endif
         template <typename U = T>
         static U from_json_null()
@@ -6814,7 +6816,7 @@ namespace yyjson
             // digits are copied in pairs.
             static constexpr auto digit_pairs = [] {
                 auto a = std::array<char, 200>{};
-                for (auto i = 0; i < 100; ++i)
+                for (auto i = std::size_t{0}; i < 100; ++i)
                 {
                     a[i * 2] = static_cast<char>('0' + i / 10);
                     a[(i * 2) + 1] = static_cast<char>('0' + i % 10);
@@ -8199,8 +8201,8 @@ namespace yyjson
                     else
                         write_json_scalar(v);
                 };
-                for_each(val, [&](const Val* key_or_value, const Val* value) {
-                    if (value == nullptr)
+                for_each(val, [&](const Val* key_or_value, const Val* member_value) {
+                    if (member_value == nullptr)
                     {
                         next_element(first);
                         write_element(key_or_value);
@@ -8231,7 +8233,7 @@ namespace yyjson
                         write_json_scalar(key);
                         end_key();
                     }
-                    write_element(value);
+                    write_element(member_value);
                 });
                 close(is_obj ? '}' : ']', first);
             }
@@ -9574,7 +9576,8 @@ namespace yyjson
                 const auto n1 = std::countr_zero(other >> i0);
                 const auto f0 = i0 + n1 + 1;
                 const auto n2 = std::countr_zero(other >> f0);
-                if (n1 - 1u >= 8u || s[f0 - 1] != '.' || n2 - 1u >= 16u || n1 + n2 > 19 ||
+                if (static_cast<unsigned>(n1) - 1u >= 8u || s[f0 - 1] != '.' || static_cast<unsigned>(n2) - 1u >= 16u ||
+                    n1 + n2 > 19 ||
                     (s[f0 + n2] | 0x20) == 'e' || (n1 > 1 && s[i0] == '0') || end != f0 + n2) [[unlikely]]
                     return false;
                 const auto load = [](const char* p) {
@@ -10023,8 +10026,8 @@ namespace yyjson
             {
                 auto t = std::array<std::int8_t, 256>();
                 t.fill(-1);
-                for (auto c = 0; c < 10; ++c) t['0' + c] = static_cast<std::int8_t>(c);
-                for (auto c = 0; c < 6; ++c)
+                for (auto c = std::size_t{0}; c < 10; ++c) t['0' + c] = static_cast<std::int8_t>(c);
+                for (auto c = std::size_t{0}; c < 6; ++c)
                     t['a' + c] = t['A' + c] = static_cast<std::int8_t>(10 + c);
                 return t;
             }();
@@ -11113,7 +11116,7 @@ namespace yyjson
         }
 #endif
         writer::object_ref* object_ = nullptr;
-        explicit object_emitter(writer::object_ref& object) noexcept : object_(&object) {}
+        explicit object_emitter(writer::object_ref& obj) noexcept : object_(&obj) {}
         writer::object_ref& document_object() const
         {
 #if YYJSON_VERSION_HEX >= 0x000C00
@@ -11173,7 +11176,7 @@ namespace yyjson
         explicit array_emitter(writer::detail::direct_writer& writer) noexcept : direct_(&writer) {}
 #endif
         writer::array_ref* array_ = nullptr;
-        explicit array_emitter(writer::array_ref& array) noexcept : array_(&array) {}
+        explicit array_emitter(writer::array_ref& arr) noexcept : array_(&arr) {}
         writer::array_ref& document_array() const
         {
 #if YYJSON_VERSION_HEX >= 0x000C00
@@ -11219,8 +11222,8 @@ namespace yyjson
                 return;
             }
 #endif
-            auto object = document_array().emplace_back(empty_object);
-            auto child = object_emitter(object);
+            auto obj = document_array().emplace_back(empty_object);
+            auto child = object_emitter(obj);
             std::forward<Func>(func)(child);
         }
         // Appends an array, whose elements `func(array_emitter&)` appends.
@@ -11241,8 +11244,8 @@ namespace yyjson
                 return;
             }
 #endif
-            auto array = document_array().emplace_back(empty_array);
-            auto child = array_emitter(array);
+            auto arr = document_array().emplace_back(empty_array);
+            auto child = array_emitter(arr);
             std::forward<Func>(func)(child);
         }
     };
@@ -11265,8 +11268,8 @@ namespace yyjson
             return;
         }
 #endif
-        auto object = document_object().emplace(std::forward<Key>(key), empty_object, ts...);
-        auto child = object_emitter(object);
+        auto obj = document_object().emplace(std::forward<Key>(key), empty_object, ts...);
+        auto child = object_emitter(obj);
         std::forward<Func>(func)(child);
     }
     template <typename Key, std::invocable<array_emitter&> Func, detail::copy_string_args... Ts>
@@ -11287,8 +11290,8 @@ namespace yyjson
             return;
         }
 #endif
-        auto array = document_object().emplace(std::forward<Key>(key), empty_array, ts...);
-        auto child = array_emitter(array);
+        auto arr = document_object().emplace(std::forward<Key>(key), empty_array, ts...);
+        auto child = array_emitter(arr);
         std::forward<Func>(func)(child);
     }
 }  // namespace yyjson

@@ -24,9 +24,9 @@ namespace field_reflection
     namespace detail
     {
 
-#if defined(__GNUC__) || defined(__clang__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wundefined-inline"
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wundefined-inline"
 #endif
         template <typename T, std::size_t = 0>
         struct any_lref
@@ -84,8 +84,8 @@ namespace field_reflection
             requires std::is_base_of_v<U, T>
             constexpr operator U() const&& noexcept;  // NOLINT
         };
-#if defined(__GNUC__) || defined(__clang__)
-#pragma GCC diagnostic pop
+#if defined(__clang__)
+#pragma clang diagnostic pop
 #endif
 
         template <typename T, std::size_t ArgNum>
