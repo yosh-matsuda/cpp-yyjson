@@ -5125,6 +5125,24 @@ struct ReadRecord
     std::tuple<int, std::string> pair;
 };
 
+struct EmptyArrays
+{
+    std::vector<int> v = {1, 2};
+    std::set<int> s = {3};
+    std::list<std::string> l = {"x"};
+    std::map<std::string, int> m = {{"k", 4}};
+    std::vector<std::vector<int>> nested = {{5}};
+    bool operator==(const EmptyArrays&) const = default;
+};
+
+struct BoolFields
+{
+    bool a = false;
+    bool b = true;
+    std::optional<bool> c;
+    bool operator==(const BoolFields&) const = default;
+};
+
 struct ReadChain
 {
     ReadPoint point;
@@ -5499,6 +5517,141 @@ TEST(DirectReader, Containers)
         expect_direct_read<std::vector<int>>(json, ReadFlag::AllowComments);
         expect_direct_read<std::vector<int>>(json, ReadFlag::AllowTrailingCommas);
     }
+}
+
+TEST(DirectReader, EmptyArrayFields)
+{
+    using namespace yyjson;
+
+    // fields whose default values are not empty
+    for (const auto* json : {R"({"v":[],"s":[],"l":[],"nested":[]})", "{\"v\":[ ],\"s\":[\n],\"nested\":[[]]}",
+                             R"({"v":[1],"s":[2,3],"m":{"a":1},"nested":[[],[6]]})", R"({"v":[] })"})
+    {
+        EXPECT_TRUE((expect_direct_read<EmptyArrays>(json))) << json;
+        EXPECT_TRUE((expect_direct_read<std::vector<EmptyArrays>>("[" + std::string(json) + "]"))) << json;
+    }
+    for (const auto* json : {R"({"v":[]x})", R"({"v":[])", R"({"v":[)", R"({"v":[})", R"({"v":[],})", R"({"v":{}})",
+                             R"({"v":null})", R"({"s":[1,]})", R"({"m":[]})"})
+    {
+        expect_direct_read<EmptyArrays>(json);
+        expect_direct_read<std::vector<EmptyArrays>>("[" + std::string(json) + "]");
+    }
+}
+
+TEST(DirectReader, BoolFields)
+{
+    using namespace yyjson;
+
+    for (const auto* json : {R"({"a":true,"b":false,"c":true})", R"({"a":false,"b":true,"c":false})",
+                             R"({"c":null,"b":false })", R"({"b" : false})"})
+    {
+        EXPECT_TRUE((expect_direct_read<BoolFields>(json))) << json;
+        EXPECT_TRUE((expect_direct_read<std::vector<BoolFields>>("[" + std::string(json) + "]"))) << json;
+    }
+    for (const auto* json : {R"({"a":tru})", R"({"a":fals})", R"({"a":true)", R"({"a":false)", R"({"a":t)",
+                             R"({"a":f)", R"({"a":truex})", R"({"a":falsee})", R"({"a":True})", R"({"a":null})",
+                             R"({"a":1})", R"({"a":"true"})", R"({"b":tRue})", R"({"b":fAlse})"})
+    {
+        expect_direct_read<BoolFields>(json);
+        expect_direct_read<std::vector<BoolFields>>("[" + std::string(json) + "]");
+    }
+}
+
+TEST(DirectReader, Indentation)
+{
+    using namespace yyjson;
+
+    // the white space before the keys and the elements, which the reader predicts to be as long as the one before
+    // the previous key or element: the same run, runs of other lengths around the size of a vector register, other
+    // white space characters, and a character that is not white space within the predicted run
+    auto state = std::uint32_t{12345};
+    const auto next = [&](std::uint32_t n) {
+        state = state * 1103515245u + 12345u;
+        return (state >> 16) % n;
+    };
+    const auto make_run = [&](std::size_t length) {
+        auto run = std::string();
+        for (auto i = std::size_t{0}; i < length; ++i) run += i == 0 ? '\n' : " \t\r "[next(4)];
+        return run;
+    };
+    for (auto round = 0; round < 400; ++round)
+    {
+        auto run = make_run(next(40));
+        // whether each of the object, the strings and the records is valid
+        bool valid[3] = {true, true, true};
+        const auto ws = [&](int text) {
+            const auto choice = next(20);
+            if (choice < 12) return run;
+            if (choice < 19) run = make_run(choice < 16 ? next(40) : run.size() + next(3) - (run.empty() ? 0 : 1));
+            else if (!run.empty())
+            {
+                auto broken = run;
+                broken[next(static_cast<std::uint32_t>(broken.size()))] = 'x';
+                valid[text] = false;
+                return broken;
+            }
+            return run;
+        };
+        const auto count = 1 + next(6);
+        auto object = std::string("{");
+        auto strings = std::string("[");
+        auto records = std::string("[");
+        for (auto i = 0u; i < count; ++i)
+        {
+            const auto* comma = i == 0 ? "" : ",";
+            object += std::format("{}{}\"{}\":{}", comma, ws(0), "iju"[next(3)], i);
+            strings += std::format("{}{}\"s{}\"", comma, ws(1), i);
+            records += std::format("{}{}{{{}\"i\":{},", comma, ws(2), ws(2), i);
+            records += std::format("{}\"k\":\"t\"{}}}", ws(2), ws(2));
+        }
+        object += ws(0) + "}";
+        strings += ws(1) + "]";
+        records += ws(2) + "]";
+        EXPECT_EQ((expect_direct_read<std::map<std::string, int>>(object)), valid[0] || !reads_directly) << object;
+        EXPECT_EQ((expect_direct_read<ReflectionRecord>(object)), valid[0] || !reads_directly) << object;
+        EXPECT_EQ((expect_direct_read<std::vector<std::string>>(strings)), valid[1] || !reads_directly) << strings;
+        EXPECT_EQ((expect_direct_read<std::vector<ReflectionRecord>>(records)), valid[2] || !reads_directly)
+            << records;
+    }
+}
+
+TEST(DirectReader, MapMemberOrder)
+{
+    using namespace yyjson;
+
+    // members in the order of the map, the reverse, a mix, and duplicate keys, whose first value is kept
+    constexpr auto n = 150;
+    auto orders = std::vector<std::vector<std::pair<std::string, int>>>(5);
+    for (auto i = 0; i < n; ++i)
+    {
+        orders[0].emplace_back(std::to_string(i), i);
+        orders[1].emplace_back(std::to_string(n - 1 - i), i);
+        orders[2].emplace_back(std::to_string(i * 37 % n), i);
+        orders[3].emplace_back(std::format("k{:03}", i), i);
+        orders[4].emplace_back(std::to_string(i % 7 * 3 % 10), i);
+    }
+    auto run = [&]<typename T>(std::type_identity<T>) {
+        for (const auto& members : orders)
+        {
+            auto json = std::string("{");
+            auto expected = T();
+            for (const auto& [key, value] : members)
+            {
+                json += std::format(R"({}"{}":{})", json.size() == 1 ? "" : ",", key, value);
+                expected.emplace(key, value);
+            }
+            json += "}";
+            EXPECT_EQ(read(json).cast<T>(), expected) << json;
+            EXPECT_EQ(read<T>(json), expected) << json;
+        }
+    };
+    run(std::type_identity<std::map<std::string, int>>());
+    run(std::type_identity<std::map<std::string, int, std::greater<>>>());
+    run(std::type_identity<std::multimap<std::string, int>>());
+    run(std::type_identity<std::unordered_map<std::string, int>>());
+    static_assert(detail::hinted_map<std::map<std::string, int>>);
+    static_assert(!detail::hinted_map<std::multimap<std::string, int>>);
+    static_assert(!detail::hinted_map<std::unordered_map<std::string, int>>);
 }
 
 TEST(DirectReader, DocumentOfWholeText)
@@ -6203,6 +6356,14 @@ struct ReservedStrings
     int n = 0;
 };
 
+struct TrivialRecord
+{
+    int a;
+    double b;
+    auto operator<=>(const TrivialRecord&) const = default;
+};
+static_assert(std::is_trivially_copyable_v<TrivialRecord>);
+
 TEST(DirectReader, ReservesRest)
 {
     // strings that hide brackets, commas, quotes and backslashes at every offset of the blocks that the count
@@ -6276,6 +6437,37 @@ TEST(DirectReader, ReservesRest)
     const auto skewed_read = yyjson::read<std::vector<int_or_string>>(skewed);
     EXPECT_EQ(skewed_read.size(), 602);
     EXPECT_LE(skewed_read.capacity() * sizeof(int_or_string), 4 * skewed.size() + 1024 * sizeof(int_or_string));
+
+    // trivially copyable elements are not counted, but estimated in the root array only
+    auto trivial = std::string("[");
+    for (auto i = 0; i < 3000; ++i) trivial += std::format(R"({}{{"a":{},"b":{}.25}})", i == 0 ? "" : ",", i, i);
+    trivial += "]";
+    EXPECT_TRUE(expect_direct_read<std::vector<TrivialRecord>>(trivial));
+    EXPECT_TRUE(expect_direct_read<std::vector<TrivialRecord>>(trivial + " "));
+    EXPECT_TRUE(expect_direct_read<std::vector<std::vector<TrivialRecord>>>("[" + trivial + "," + trivial + "]"));
+    EXPECT_TRUE((expect_direct_read<std::map<std::string, std::vector<TrivialRecord>>>(
+        std::format(R"({{"a":{},"b":{}}})", trivial, trivial))));
+#if defined(__GLIBCXX__) || defined(_LIBCPP_VERSION)
+    const auto trivial_read = yyjson::read<std::vector<TrivialRecord>>(trivial);
+    EXPECT_GE(trivial_read.capacity(), 3000);
+    EXPECT_LT(trivial_read.capacity(), 4096);
+#endif
+    // the estimate is too small when the elements get longer, and too large when they get shorter
+    auto growing = std::string("[");
+    for (auto i = 0; i < 600; ++i) growing += "1,";
+    for (auto i = 0; i < 3000; ++i) growing += "1000000000,";
+    growing += "2]";
+    EXPECT_TRUE(expect_direct_read<std::vector<int>>(growing));
+    EXPECT_EQ(yyjson::read<std::vector<int>>(growing).size(), 3601);
+    auto shrinking = std::string("[");
+    for (auto i = 0; i < 600; ++i) shrinking += "[1000000000,1000000000],";
+    for (auto i = 0; i < 3000; ++i) shrinking += "[1,2],";
+    shrinking += "[3,4]]";
+    EXPECT_TRUE((expect_direct_read<std::vector<std::array<int, 2>>>(shrinking)));
+    const auto shrinking_read = yyjson::read<std::vector<std::array<int, 2>>>(shrinking);
+    EXPECT_EQ(shrinking_read.size(), 3601);
+    EXPECT_LE(shrinking_read.capacity() * sizeof(std::array<int, 2>),
+              4 * shrinking.size() + 1024 * sizeof(std::array<int, 2>));
 }
 
 // Types with a translator `from_json`, which takes a C++ value.  Each of them is also an aggregate that the

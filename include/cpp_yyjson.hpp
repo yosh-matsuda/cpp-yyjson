@@ -1029,10 +1029,15 @@ namespace yyjson
             return field_key_matcher<sizeof...(Is)>(std::array<std::string_view, sizeof...(Is)>{field_key<T, Is>...});
         }(std::make_index_sequence<field_reflection::field_count<T>>{});
 
+        // Only a field of a struct type is replaced by a new object, and comparing the addresses of all fields
+        // for any other costs a struct of many fields more than the field itself when the compiler does not
+        // fold `field_reflection::get_field` away.
         template <std::size_t I, typename T>
         CPPYYJSON_ALWAYS_INLINE inline bool reflected_field_replaceable(T& t) noexcept
         {
-            if constexpr (std::is_reference_v<field_reflection::field_type<T, I>>)
+            using field_type = field_reflection::field_type<T, I>;
+            if constexpr (std::is_reference_v<field_type> || !std::is_class_v<field_type> ||
+                          !std::is_aggregate_v<field_type> || !std::is_nothrow_default_constructible_v<field_type>)
                 return false;
             else
                 return [&]<std::size_t... Js>(std::index_sequence<Js...>) {
@@ -5438,14 +5443,42 @@ namespace yyjson
                 };
             };
 
-        // Adds a member of a JSON object to a range satisfying `object_emplaceable_range` (`Back` false) or
-        // `object_back_emplaceable_range` (`Back` true).
-        template <bool Back, typename T, typename Key, typename Value>
-        void emplace_key_value(T& result, Key&& key, Value&& value)
+        // A map of unique keys in an order, into which `emplace_key_value` adds a member next to the one added
+        // before it.  The members of an object that are in the order of the map, as its writer puts them, or whose
+        // keys are numbers of the same length counting up, are then added without a search.
+        template <typename T>
+        concept hinted_map = requires { typename T::key_compare; } &&
+                             requires(T& t, std::ranges::range_value_t<T> kv, typename T::const_iterator hint) {
+                                 { t.insert(std::move(kv)) } -> std::same_as<std::pair<typename T::iterator, bool>>;
+                                 { t.emplace_hint(hint, std::move(kv)) } -> std::same_as<typename T::iterator>;
+                             };
+
+        // Where `emplace_key_value` adds the next member to T, and an empty placeholder unless T is a `hinted_map`.
+        template <typename T>
+        struct emplace_position
         {
-            auto emplace = [&result](auto&&... args) {
+            struct type
+            {
+            };
+            static type first(T&) noexcept { return {}; }
+        };
+        template <hinted_map T>
+        struct emplace_position<T>
+        {
+            using type = typename T::const_iterator;
+            static type first(T& t) noexcept { return t.cend(); }
+        };
+
+        // Adds a member of a JSON object to a range satisfying `object_emplaceable_range` (`Back` false) or
+        // `object_back_emplaceable_range` (`Back` true), at `position` if T is a `hinted_map`.
+        template <bool Back, typename T, typename Key, typename Value>
+        void emplace_key_value(T& result, typename emplace_position<T>::type& position, Key&& key, Value&& value)
+        {
+            auto emplace = [&](auto&&... args) {
                 if constexpr (Back)
                     result.emplace_back(std::forward<decltype(args)>(args)...);
+                else if constexpr (hinted_map<T>)
+                    position = std::next(result.emplace_hint(position, std::forward<decltype(args)>(args)...));
                 else
                     result.emplace(std::forward<decltype(args)>(args)...);
             };
@@ -5554,9 +5587,10 @@ namespace yyjson
             using value_type = std::remove_cvref_t<std::tuple_element_t<1, std::ranges::range_value_t<T>>>;
             auto result = T();
             reserve_if_possible(result, obj.size());
+            auto position = emplace_position<T>::first(result);
             for (auto&& kv : obj)
             {
-                emplace_key_value<false>(result, kv.first, cast<value_type>(kv.second));
+                emplace_key_value<false>(result, position, kv.first, cast<value_type>(kv.second));
             }
             return result;
         }
@@ -5567,9 +5601,10 @@ namespace yyjson
             using value_type = std::remove_cvref_t<std::tuple_element_t<1, std::ranges::range_value_t<T>>>;
             auto result = T();
             reserve_if_possible(result, obj.size());
+            auto position = emplace_position<T>::first(result);
             for (auto&& kv : obj)
             {
-                emplace_key_value<true>(result, kv.first, cast<value_type>(kv.second));
+                emplace_key_value<true>(result, position, kv.first, cast<value_type>(kv.second));
             }
             return result;
         }
@@ -9434,6 +9469,23 @@ namespace yyjson
             template <typename T>
             T read_root()
             {
+                if constexpr (!builtin_variant<T> && !builtin_tuple<T> &&
+                              !yyjson::detail::from_json_translator<T>::castable && !from_json_val_usr_defined<T> &&
+                              from_json_def_arr_defined<T> && yyjson::detail::back_insertable<T> &&
+                              reserves_elements<T>)
+                {
+                    if constexpr (std::is_trivially_copyable_v<std::ranges::range_value_t<T>>)
+                    {
+                        // the array that `read_value<T>` reads, given room for its elements
+                        if (*cur_ == '[')
+                        {
+                            auto result = T();
+                            read_array_into<T, true>(result);
+                            if (cur_ != last_ + 1) fail();
+                            return result;
+                        }
+                    }
+                }
                 auto result = read_value<T>();
                 if (cur_ != last_ + 1) fail();
                 return result;
@@ -9481,38 +9533,88 @@ namespace yyjson
                 return skip_ws_span(cur, last);
             }
 
+            // Skips the white space before the first key of an object or the first element of an array, and returns
+            // its length if the later ones may be predicted to follow a run of the same length, as they do in the
+            // indentation of a pretty-printed text.
+            CPPYYJSON_ALWAYS_INLINE std::uint32_t skip_ws_measured() noexcept
+            {
+                const char* const start = cur_;
+                skip_ws_before_key();
+                const auto run = static_cast<std::uint32_t>(cur_ - start);
+                return run < ws_block_size ? run : 0;
+            }
+
+            // Skips the white space before a key or an element that is predicted to be `run` characters long,
+            // checking the prediction with a branch so that the read of the key does not wait for the length to be
+            // computed.  A wrong prediction measures the run and predicts it for the next one.
+            CPPYYJSON_ALWAYS_INLINE void skip_ws_like(std::uint32_t& run) noexcept
+            {
+                if (static_cast<unsigned char>(*cur_) > ' ') [[likely]]
+                    return;
+#if defined(__AVX2__) || defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+                if (run != 0 && last_ - cur_ >= ws_block_size)
+                {
+                    // `run` characters of white space followed by one that is not
+                    const auto expected = (std::uint64_t{1} << run) - 1;
+                    if ((ws_block_mask(cur_) & (expected << 1 | 1)) == expected) [[likely]]
+                    {
+                        cur_ += run;
+                        return;
+                    }
+                }
+                const char* const start = cur_;
+                cur_ = skip_ws_span(cur_, last_);
+                run = cur_ - start < ws_block_size ? static_cast<std::uint32_t>(cur_ - start) : 0;
+#else
+                static_cast<void>(run);
+                cur_ = skip_ws_span(cur_, last_);
+#endif
+            }
+
+#if defined(__AVX2__)
+            static constexpr std::ptrdiff_t ws_block_size = 32;
+
+            // Returns the mask of the white space characters among the 32 bytes at `cur`.
+            CPPYYJSON_ALWAYS_INLINE static std::uint32_t ws_block_mask(const char* cur) noexcept
+            {
+                const auto v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(cur));
+                // the white space characters at the indices of their low nibbles
+                const auto table = _mm256_setr_epi8(' ', 0, 0, 0, 0, 0, 0, 0, 0, '\t', '\n', 0, 0, '\r', 0, 0, ' ', 0,
+                                                    0, 0, 0, 0, 0, 0, 0, '\t', '\n', 0, 0, '\r', 0, 0);
+                const auto ws = _mm256_cmpeq_epi8(_mm256_shuffle_epi8(table, v), v);
+                return static_cast<std::uint32_t>(_mm256_movemask_epi8(ws));
+            }
+#elif defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+            static constexpr std::ptrdiff_t ws_block_size = 16;
+
+            // Returns the mask of the white space characters among the 16 bytes at `cur`.
+            CPPYYJSON_ALWAYS_INLINE static std::uint32_t ws_block_mask(const char* cur) noexcept
+            {
+                const auto v = _mm_loadu_si128(reinterpret_cast<const __m128i*>(cur));
+                const auto ws = _mm_or_si128(
+                    _mm_or_si128(_mm_cmpeq_epi8(v, _mm_set1_epi8(' ')), _mm_cmpeq_epi8(v, _mm_set1_epi8('\n'))),
+                    _mm_or_si128(_mm_cmpeq_epi8(v, _mm_set1_epi8('\r')), _mm_cmpeq_epi8(v, _mm_set1_epi8('\t'))));
+                return static_cast<std::uint32_t>(_mm_movemask_epi8(ws));
+            }
+#else
+            static constexpr std::ptrdiff_t ws_block_size = 1;
+#endif
+
             CPPYYJSON_ALWAYS_INLINE static const char* skip_ws_span(const char* cur, const char* last) noexcept
             {
-#if defined(__AVX2__)
-                while (last - cur >= 32)
+#if defined(__AVX2__) || defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+                while (last - cur >= ws_block_size)
                 {
-                    const auto v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(cur));
-                    // the white space characters at the indices of their low nibbles
-                    const auto table = _mm256_setr_epi8(' ', 0, 0, 0, 0, 0, 0, 0, 0, '\t', '\n', 0, 0, '\r', 0, 0, ' ',
-                                                        0, 0, 0, 0, 0, 0, 0, 0, '\t', '\n', 0, 0, '\r', 0, 0);
-                    const auto ws = _mm256_cmpeq_epi8(_mm256_shuffle_epi8(table, v), v);
-                    const auto m = ~static_cast<std::uint32_t>(_mm256_movemask_epi8(ws));
+                    constexpr auto all = static_cast<std::uint32_t>((std::uint64_t{1} << ws_block_size) - 1);
+                    const auto m = ~ws_block_mask(cur) & all;
                     if (m != 0)
                     {
                         return cur + std::countr_zero(m);
                     }
-                    cur += 32;
+                    cur += ws_block_size;
                 }
-#elif defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
-                while (last - cur >= 16)
-                {
-                    const auto v = _mm_loadu_si128(reinterpret_cast<const __m128i*>(cur));
-                    const auto ws = _mm_or_si128(_mm_or_si128(_mm_cmpeq_epi8(v, _mm_set1_epi8(' ')),
-                                                              _mm_cmpeq_epi8(v, _mm_set1_epi8('\n'))),
-                                                 _mm_or_si128(_mm_cmpeq_epi8(v, _mm_set1_epi8('\r')),
-                                                              _mm_cmpeq_epi8(v, _mm_set1_epi8('\t'))));
-                    const auto m = ~static_cast<std::uint32_t>(_mm_movemask_epi8(ws)) & 0xFFFFu;
-                    if (m != 0)
-                    {
-                        return cur + std::countr_zero(m);
-                    }
-                    cur += 16;
-                }
+#else
+                static_cast<void>(last);
 #endif
                 while (is_ws(*cur)) ++cur;
                 return cur;
@@ -10262,7 +10364,9 @@ namespace yyjson
                 return buf;
             }
 
-            CPPYYJSON_ALWAYS_INLINE void read_string_into(std::string& out)
+            // Out of line: inlined into the reader of every string field, it made the readers of large structs
+            // too large for the micro-op cache, and the instruction fetch cost more than the call.
+            CPPYYJSON_NOINLINE void read_string_into(std::string& out)
             {
                 const auto s = scan_string();
                 if (!s.escaped) [[likely]]
@@ -10696,7 +10800,7 @@ namespace yyjson
             {
                 const char* const open = cur_;
                 ++cur_;
-                skip_ws_before_key();
+                auto indent = skip_ws_measured();
                 if (*cur_ == '}')
                 {
                     close(open);
@@ -10711,7 +10815,7 @@ namespace yyjson
                     if (*cur_ == ',')
                     {
                         ++cur_;
-                        skip_ws_before_key();
+                        skip_ws_like(indent);
                         continue;
                     }
                     if (*cur_ != '}') [[unlikely]]
@@ -10747,12 +10851,13 @@ namespace yyjson
                     using value_type = std::remove_cvref_t<std::tuple_element_t<1, std::ranges::range_value_t<T>>>;
                     auto result = T();
                     auto key_buf = std::string();
+                    auto position = yyjson::detail::emplace_position<T>::first(result);
                     read_members([&] {
                         // the key is kept in `key_buf` while the value is read if it has escapes
                         const auto key = read_string(key_buf);
                         read_colon();
                         yyjson::detail::emplace_key_value<!yyjson::detail::object_emplaceable_range<T, json_object>>(
-                            result, key, read_value<value_type>());
+                            result, position, key, read_value<value_type>());
                     });
                     return result;
                 }
@@ -10780,6 +10885,13 @@ namespace yyjson
             static constexpr bool array_readable_in_place =
                 !from_json_val_usr_defined<T> && from_json_def_arr_defined<T> && std::ranges::range<T> &&
                 std::is_default_constructible_v<T>;
+
+            // Whether a field of type T, which `read_value` reads from an array with `read_array`, is cleared for an
+            // empty array.
+            template <typename T>
+            static constexpr bool clearable_array_field =
+                !builtin_variant<T> && !builtin_tuple<T> && !yyjson::detail::from_json_translator<T>::castable &&
+                !from_json_val_usr_defined<T> && from_json_def_arr_defined<T> && requires(T& t) { t.clear(); };
 
             // Counts the elements from `cur_` to the end of the array that `cur_` is in, or returns 0 if one of them
             // is an array or an object or the array does not end before `last_`.  A count across nested containers
@@ -10847,15 +10959,19 @@ namespace yyjson
                 return 0;
             }
 
+            template <typename T>
+            static constexpr bool reserves_elements = requires(T& t, std::size_t n) {
+                t.reserve(n);
+                { t.capacity() } -> std::convertible_to<std::size_t>;
+            };
+
             // Whether `read_array_into` counts the rest of the elements of an array of T once it has read 512, and
-            // reserves room for them, rather than growing the range, which moves every element read so far.
+            // reserves room for them, rather than growing the range, which moves every element read so far.  The
+            // elements of a trivially copyable type are cheap to move, and most of their arrays are short, so that
+            // only the root array of them is given room, by `read_root`.
             template <typename T>
             static constexpr bool counts_elements =
-                !std::is_trivially_copyable_v<std::ranges::range_value_t<T>> &&
-                requires(T& t, std::size_t n) {
-                    t.reserve(n);
-                    { t.capacity() } -> std::convertible_to<std::size_t>;
-                };
+                !std::is_trivially_copyable_v<std::ranges::range_value_t<T>> && reserves_elements<T>;
 
             // Reserves room in `result` for the rest of the elements of the array that opens at `open`.  The elements
             // of the root array, which ends at `last_`, are estimated from the bytes that those read so far took when
@@ -10863,7 +10979,8 @@ namespace yyjson
             template <typename T>
             void reserve_rest(T& result, const char* open)
             {
-                auto n = count_elements();
+                auto n = std::size_t{0};
+                if constexpr (counts_elements<T>) n = count_elements();
                 if (n == 0 && open == first_)
                 {
                     const auto done = static_cast<std::size_t>(cur_ - open);
@@ -10874,14 +10991,24 @@ namespace yyjson
                 if (n != 0) result.reserve(result.size() + n);
             }
 
-            // Reads the elements of the array at `cur_` into the empty or default-constructed range `result`.
-            template <typename T>
+            // Reads the elements of the array at `cur_` into the empty or default-constructed range `result`.  The
+            // root array of trivially copyable elements is read with `Root`, which estimates the rest of them once
+            // the range is full at 512 or more.
+            template <typename T, bool Root = false>
             void read_array_into(T& result)
             {
                 using value_type = std::ranges::range_value_t<T>;
                 const char* const open = cur_;
                 ++cur_;
-                skip_ws();
+                // numbers and tuples, which are rarely put on lines of their own, are read in a tighter loop without
+                // the prediction
+                constexpr auto predicted =
+                    !std::is_arithmetic_v<value_type> && !requires { std::tuple_size<value_type>::value; };
+                auto indent = std::uint32_t{0};
+                if constexpr (predicted)
+                    indent = skip_ws_measured();
+                else
+                    skip_ws();
                 if (*cur_ == ']')
                 {
                     close(open);
@@ -10889,11 +11016,20 @@ namespace yyjson
                 }
                 [[maybe_unused]] auto out = std::ranges::begin(result);
                 [[maybe_unused]] auto count = std::size_t{0};
+                [[maybe_unused]] auto estimated = false;
                 for (;;)
                 {
                     if constexpr (yyjson::detail::back_insertable<T>)
                     {
-                        if constexpr (counts_elements<T>)
+                        if constexpr (Root)
+                        {
+                            if (!estimated && result.size() == result.capacity() && result.size() >= 512) [[unlikely]]
+                            {
+                                estimated = true;
+                                reserve_rest(result, open);
+                            }
+                        }
+                        else if constexpr (counts_elements<T>)
                         {
                             if (count++ == 512 && result.size() == result.capacity()) [[unlikely]]
                                 reserve_rest(result, open);
@@ -10961,7 +11097,10 @@ namespace yyjson
                     if (*cur_ == ',')
                     {
                         ++cur_;
-                        skip_ws();
+                        if constexpr (predicted)
+                            skip_ws_like(indent);
+                        else
+                            skip_ws();
                         continue;
                     }
                     if (*cur_ != ']') [[unlikely]]
@@ -11032,6 +11171,22 @@ namespace yyjson
                     else
                         field = read_value<field_type>();
                 }
+                else if constexpr (std::same_as<field_type, bool> && !from_json_val_usr_defined<bool> &&
+                                   !yyjson::detail::from_json_translator<bool>::castable)
+                {
+                    if (*cur_ == 't')
+                    {
+                        read_literal("true");
+                        field = true;
+                    }
+                    else if (*cur_ == 'f')
+                    {
+                        read_literal("false");
+                        field = false;
+                    }
+                    else
+                        field = read_value<field_type>();
+                }
                 else if constexpr (builtin_variant<field_type>)
                 {
                     read_variant<field_type>([&](auto index, auto&&... args) -> field_type& {
@@ -11046,6 +11201,17 @@ namespace yyjson
                         std::destroy_at(std::addressof(field));
                         std::construct_at(std::addressof(field));
                         read_reflected_fields(field);
+                    }
+                    else
+                        field = read_value<field_type>();
+                }
+                else if constexpr (clearable_array_field<field_type>)
+                {
+                    // an empty array, of which there are many in some documents, without a call
+                    if (*cur_ == '[' && cur_ != last_ && cur_[1] == ']')
+                    {
+                        field.clear();
+                        close(cur_++);
                     }
                     else
                         field = read_value<field_type>();
@@ -11096,8 +11262,9 @@ namespace yyjson
             template <typename T>
             void read_reflected_fields(T& t)
             {
-                read_fields(yyjson::detail::reflected_key_matcher<T>, [&](std::size_t index) {
-                    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                constexpr auto& matcher = yyjson::detail::reflected_key_matcher<T>;
+                read_fields(matcher, [&](std::size_t index) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                    [&]<std::size_t... Is>(std::index_sequence<Is...>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
                         (void)((index == Is && (read_field(field_reflection::get_field<Is>(t),
                                                            yyjson::detail::reflected_field_replaceable<Is>(t)),
                                                 true)) ||
@@ -11110,8 +11277,8 @@ namespace yyjson
             void read_visitable_fields(T& t)
             {
                 constexpr auto& members = visit_struct<T>::members;
-                read_fields(visit_struct<T>::key_matcher, [&](std::size_t index) {
-                    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                read_fields(visit_struct<T>::key_matcher, [&](std::size_t index) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                    [&]<std::size_t... Is>(std::index_sequence<Is...>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
                         const auto replaceable = [&]<std::size_t I>(std::integral_constant<std::size_t, I>) {
                             return yyjson::detail::has_own_bytes<I>(t.*std::get<Is>(members)...);
                         };
