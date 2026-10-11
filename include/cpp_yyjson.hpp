@@ -7172,6 +7172,7 @@ namespace yyjson
                 static type eq(type a, type b) noexcept { return _mm_cmpeq_epi8(a, b); }
                 static type lt(type a, type b) noexcept { return _mm_cmplt_epi8(a, b); }
                 static type subs_u(type a, type b) noexcept { return _mm_subs_epu8(a, b); }
+                static type min_u(type a, type b) noexcept { return _mm_min_epu8(a, b); }
                 static type shuffle(type t, type i) noexcept { return _mm_shuffle_epi8(t, i); }
                 static type high_nibble(type v) noexcept { return _mm_and_si128(_mm_srli_epi16(v, 4), set1(0x0F)); }
                 // the bytes of `input` moved up by N, with the last N of `prev` before them
@@ -7225,6 +7226,7 @@ namespace yyjson
                 static type eq(type a, type b) noexcept { return _mm256_cmpeq_epi8(a, b); }
                 static type lt(type a, type b) noexcept { return _mm256_cmpgt_epi8(b, a); }
                 static type subs_u(type a, type b) noexcept { return _mm256_subs_epu8(a, b); }
+                static type min_u(type a, type b) noexcept { return _mm256_min_epu8(a, b); }
                 static type shuffle(type t, type i) noexcept { return _mm256_shuffle_epi8(t, i); }
                 static type high_nibble(type v) noexcept
                 {
@@ -7398,6 +7400,18 @@ namespace yyjson
                 return !block16::any(error);
             }
 
+            // Equal to the bytes of a block only at `"`, `\\` and, if it is escaped, `/`, which differ in their low
+            // four bits, or at NUL: the shuffle gives 0 for the bytes of 0x80 and above.
+            template <typename B>
+            CPPYYJSON_ALWAYS_INLINE typename B::type punct_table() const noexcept
+            {
+                alignas(16) static constexpr char with_slash[16] = {0, 0, '"', 0, 0, 0, 0, 0,
+                                                                    0, 0, 0,   0, '\\', 0, 0, '/'};
+                alignas(16) static constexpr char without_slash[16] = {0, 0, '"', 0, 0, 0, 0, 0,
+                                                                       0, 0, 0,   0, '\\', 0, 0, 0};
+                return B::table((flg_ & YYJSON_WRITE_ESCAPE_SLASHES) ? with_slash : without_slash);
+            }
+
             // Copies the string in blocks of `B::width` bytes, and writes the ASCII characters to escape in
             // between.  Text that is not ASCII is copied too if `copy_utf8`, without being checked, and sets
             // `multi`; otherwise the copy stops at it.
@@ -7410,60 +7424,66 @@ namespace yyjson
                 auto src = src_ref;
                 auto dst = dst_ref;
                 const auto ctrl = B::set1(0x20);
-                const auto quote = B::set1('"');
-                const auto bslash = B::set1('\\');
-                const auto slash = B::set1((flg_ & YYJSON_WRITE_ESCAPE_SLASHES) ? '/' : '"');
-                while (Tail ? src != end : end - src >= width)
+                const auto punct = punct_table<B>();
+                const auto load = [&](std::ptrdiff_t& size)
                 {
-                    auto v = typename B::type{};
-                    auto size = std::ptrdiff_t{width};
                     if constexpr (Tail)
                     {
-                        if (end - src >= width)
-                        {
-                            v = B::load(src);
-                        }
-                        else
+                        if (end - src < width)
                         {
                             size = end - src;
-                            v = B::load_tail(end, size);
+                            return B::load_tail(end, size);
                         }
                     }
-                    else
+                    return B::load(src);
+                };
+                if (copy_utf8)
+                {
+                    // the bytes of 0x80 and above are left out of the compare, and only whether there are any is
+                    // kept
+                    const auto ctrl_max = B::set1(0x1F);
+                    auto bytes = B::zero();
+                    while (Tail ? src != end : end - src >= width)
                     {
-                        v = B::load(src);
+                        auto size = std::ptrdiff_t{width};
+                        const auto v = load(size);
+                        B::store(dst, v);
+                        bytes = B::or_(bytes, v);
+                        const auto mask =
+                            B::movemask(B::or_(B::eq(B::min_u(v, ctrl_max), v), B::eq(B::shuffle(punct, v), v)));
+                        if (mask == 0)
+                        {
+                            src += size;
+                            dst += size;
+                            continue;
+                        }
+                        const auto n = std::countr_zero(mask);
+                        src += n;
+                        dst = write_ascii_escape(dst + n, *src++);
                     }
+                    multi = multi || B::movemask(bytes) != 0;
+                    src_ref = src;
+                    dst_ref = dst;
+                    return;
+                }
+                while (Tail ? src != end : end - src >= width)
+                {
+                    auto size = std::ptrdiff_t{width};
+                    const auto v = load(size);
                     B::store(dst, v);
                     // bytes of 0x80 and above are negative, so the signed compare stops at them too
-                    const auto mask = B::movemask(
-                        B::or_(B::or_(B::lt(v, ctrl), B::eq(v, quote)), B::or_(B::eq(v, bslash), B::eq(v, slash))));
+                    const auto mask = B::movemask(B::or_(B::lt(v, ctrl), B::eq(B::shuffle(punct, v), v)));
                     if (mask == 0)
                     {
                         src += size;
                         dst += size;
                         continue;
                     }
-                    const auto high = B::movemask(v);
-                    // the ASCII bytes to escape
-                    const auto stop = mask & ~high;
-                    if (copy_utf8)
-                    {
-                        multi = multi || high != 0;
-                        if (stop == 0)
-                        {
-                            src += size;
-                            dst += size;
-                            continue;
-                        }
-                        const auto n = std::countr_zero(stop);
-                        src += n;
-                        dst = write_ascii_escape(dst + n, *src++);
-                        continue;
-                    }
                     const auto n = std::countr_zero(mask);
                     src += n;
                     dst += n;
-                    if (((stop >> n) & 1u) == 0) break;
+                    // a byte of 0x80 or above, or an ASCII character to escape
+                    if (*src >= 0x80) break;
                     dst = write_ascii_escape(dst, *src++);
                 }
                 src_ref = src;
@@ -7477,14 +7497,12 @@ namespace yyjson
                                                          char* dst) const noexcept
             {
                 const auto ctrl = B::set1(0x20);
-                const auto quote = B::set1('"');
-                const auto bslash = B::set1('\\');
-                const auto slash = B::set1((flg_ & YYJSON_WRITE_ESCAPE_SLASHES) ? '/' : '"');
+                const auto punct = punct_table<B>();
                 const auto first = B::load(src);
                 const auto last = B::load(end - B::width);
                 // bytes of 0x80 and above are negative, so the signed compare finds them too
                 const auto special = [&](typename B::type v)
-                { return B::or_(B::or_(B::lt(v, ctrl), B::eq(v, quote)), B::or_(B::eq(v, bslash), B::eq(v, slash))); };
+                { return B::or_(B::lt(v, ctrl), B::eq(B::shuffle(punct, v), v)); };
                 if (B::movemask(B::or_(special(first), special(last))) != 0) return false;
                 B::store(dst, first);
                 B::store(dst + (end - src) - B::width, last);
