@@ -2695,7 +2695,9 @@ TEST(Reader, Allocator)
     auto json_str = "[1,2,3,4,5]"sv;
 
     auto h_alloc = reader::pool_allocator(json_str);
+#if YYJSON_VERSION_HEX >= 0x000800
     auto d_alloc = dynamic_allocator();
+#endif
     auto s_alloc_s = reader::stack_pool_allocator<10>();
     auto s_alloc_l = reader::stack_pool_allocator<512>();
 
@@ -2707,6 +2709,7 @@ TEST(Reader, Allocator)
     }
     EXPECT_EQ(1, h_alloc.ptr().use_count());
 
+#if YYJSON_VERSION_HEX >= 0x000800
     {
         auto json = read(json_str, d_alloc);
         auto result = json.write();
@@ -2714,6 +2717,7 @@ TEST(Reader, Allocator)
         EXPECT_EQ(2, d_alloc.ptr().use_count());
     }
     EXPECT_EQ(1, d_alloc.ptr().use_count());
+#endif
 
     try
     {
@@ -2741,6 +2745,7 @@ TEST(Reader, Allocator)
     }
     EXPECT_EQ(1, h_alloc.ptr().use_count());
 
+#if YYJSON_VERSION_HEX >= 0x000800
     {
         auto json = read(json_str, d_alloc);
         auto result = json.write(d_alloc);
@@ -2748,6 +2753,7 @@ TEST(Reader, Allocator)
         EXPECT_EQ(3, d_alloc.ptr().use_count());
     }
     EXPECT_EQ(1, d_alloc.ptr().use_count());
+#endif
 
     {
         auto json = read(json_str, s_alloc_l);
@@ -2775,12 +2781,14 @@ TEST(Reader, Allocator)
         auto invalid_json = "[\n,]"sv;
         try
         {
-            static_cast<void>(read(invalid_json, d_alloc));
+            static_cast<void>(read(invalid_json, s_alloc_l));
             FAIL() << "Expected read_error";
         }
         catch (const read_error& err)
         {
+#if YYJSON_VERSION_HEX >= 0x000A00
             EXPECT_NE(std::string_view(err.what()).find("line 2, column"), std::string_view::npos);
+#endif
             EXPECT_EQ(YYJSON_READ_ERROR_UNEXPECTED_CHARACTER, err.code());
         }
     }
@@ -2789,7 +2797,7 @@ TEST(Reader, Allocator)
         struct failing_allocator
         {
             yyjson_alc alc = {.malloc = [](void*, std::size_t) -> void* { return nullptr; },
-                              .realloc = [](void*, void*, std::size_t, std::size_t) -> void* { return nullptr; },
+                              .realloc = [](void*, void*, auto...) -> void* { return nullptr; },
                               .free = [](void*, void*) {},
                               .ctx = nullptr};
             yyjson_alc* ptr() { return &alc; }
@@ -4524,20 +4532,28 @@ namespace
     const auto direct_write_flags = std::vector<yyjson::WriteFlag>{
         yyjson::WriteFlag::NoFlag,
         yyjson::WriteFlag::Pretty,
+#if YYJSON_VERSION_HEX >= 0x000700
         yyjson::WriteFlag::PrettyTwoSpaces,
+#endif
         yyjson::WriteFlag::EscapeUnicode,
         yyjson::WriteFlag::EscapeSlashes,
         yyjson::WriteFlag::AllowInfAndNan,
         yyjson::WriteFlag::InfAndNanAsNull,
         yyjson::WriteFlag::AllowInvalidUnicode,
+#if YYJSON_VERSION_HEX >= 0x000900
         yyjson::WriteFlag::NewlineAtEnd,
-        yyjson::WriteFlag::EscapeUnicode | yyjson::WriteFlag::LowercaseHex,
         yyjson::WriteFlag::Pretty | yyjson::WriteFlag::EscapeUnicode | yyjson::WriteFlag::EscapeSlashes |
             yyjson::WriteFlag::NewlineAtEnd,
+#endif
+#if YYJSON_VERSION_HEX >= 0x000D00
+        yyjson::WriteFlag::EscapeUnicode | yyjson::WriteFlag::LowercaseHex,
+#endif
         yyjson::WriteFlag::AllowInvalidUnicode | yyjson::WriteFlag::EscapeUnicode,
+#if YYJSON_VERSION_HEX >= 0x000B00
         static_cast<yyjson::WriteFlag>(YYJSON_WRITE_FP_TO_FIXED(3)),
         static_cast<yyjson::WriteFlag>(YYJSON_WRITE_FP_TO_FLOAT),
         static_cast<yyjson::WriteFlag>(YYJSON_WRITE_FP_TO_FIXED(2) | YYJSON_WRITE_PRETTY),
+#endif
     };
 
     // `yyjson::write` gives the bytes, or the error, that writing a mutable document of `t` gives
@@ -4888,7 +4904,6 @@ TEST(DirectWriter, RangesOfNumbers)
     expect_direct_write(numbers);
 }
 
-#if YYJSON_VERSION_HEX >= 0x000A00
 namespace
 {
     // what reading gives, written back, or the error it throws
@@ -4912,9 +4927,17 @@ namespace
 
     // what the reader without a document gives, or nothing when it fails, which leaves the text to the
     // document
+#if YYJSON_VERSION_HEX >= 0x000C00
+    constexpr auto reads_directly = true;
+#else
+    // `yyjson::read<T>` casts a document before yyjson 0.12
+    constexpr auto reads_directly = false;
+#endif
+
     template <typename T>
     std::optional<std::string> read_directly(std::string_view json, yyjson::ReadFlag flag)
     {
+#if YYJSON_VERSION_HEX >= 0x000C00
         const auto is_ws = [](char c) { return c == ' ' || c == '\n' || c == '\r' || c == '\t'; };
         while (!json.empty() && is_ws(json.front())) json.remove_prefix(1);
         while (!json.empty() && is_ws(json.back())) json.remove_suffix(1);
@@ -4929,6 +4952,11 @@ namespace
         {
             return std::nullopt;
         }
+#else
+        static_cast<void>(json);
+        static_cast<void>(flag);
+        return std::nullopt;
+#endif
     }
 
     // `yyjson::read<T>` gives what casting a document gives, and so does the reader without a document when it
@@ -4943,7 +4971,7 @@ namespace
         {
             EXPECT_EQ(*direct, expected) << json;
         }
-        return direct.has_value();
+        return direct.has_value() || !reads_directly;
     }
 }  // namespace
 
@@ -5004,6 +5032,7 @@ struct ReadChain
     }
 };
 
+#if YYJSON_VERSION_HEX >= 0x000C00
 TEST(DirectReader, PowersOfFive)
 {
     // the table of the reader, computed again as its comment describes
@@ -5094,6 +5123,7 @@ TEST(DirectReader, PowersOfFive)
     }
     EXPECT_TRUE(std::ranges::equal(table, yyjson::reader::detail::pow5_128_table));
 }
+#endif
 
 namespace
 {
@@ -5357,6 +5387,7 @@ TEST(DirectReader, Containers)
 TEST(DirectReader, DocumentOfWholeText)
 {
     using namespace yyjson;
+#if YYJSON_VERSION_HEX >= 0x000C00
     using reader::detail::direct_reader;
 
     // the types that the reader would read through a document for each element of a range or a map are read
@@ -5374,6 +5405,7 @@ TEST(DirectReader, DocumentOfWholeText)
     // a recursive type stops at the second visit
     static_assert(!direct_reader::reads_documents_in_loop<ReadChain>);
     static_assert(direct_reader::reads_documents_in_loop<std::vector<ReadChain>>);
+#endif
 
     expect_direct_read<std::vector<CounterRecord>>(R"([{"name":"a","hits":1},{"hits":2}])");
     expect_direct_read<std::vector<CounterRecord>>(R"([{"name":"a","hits":"1"}])");
@@ -5381,7 +5413,8 @@ TEST(DirectReader, DocumentOfWholeText)
     expect_direct_read<std::map<std::string, ReadPoint>>(R"({"a":[1,2],"b":[3]})");
     expect_direct_read<std::vector<std::shared_ptr<ReadPoint>>>(R"([null,[1,2]])");
 
-    // a recursive type, which cannot be written back
+    // a recursive type, which cannot be written back; clang casts it only after the `static_assert`s above
+#if YYJSON_VERSION_HEX >= 0x000C00
     for (const auto* json : {R"({"point":[1,2],"next":{"point":[3,4],"next":null}})", R"({"point":[1,2]})"})
     {
         const auto expected = read(json).cast<ReadChain>();
@@ -5394,6 +5427,7 @@ TEST(DirectReader, DocumentOfWholeText)
             << json;
     }
     EXPECT_THROW((void)read<std::vector<ReadChain>>(R"([{"point":[1,2],"next":{"point":[3]}}])"), bad_cast);
+#endif
 }
 
 TEST(DirectReader, Overloads)
@@ -5806,11 +5840,9 @@ TEST(Reader, TupleLongerThanJson)
     EXPECT_EQ(fields.t, (std::pair{1, 0}));
     EXPECT_EQ(fields.v, (pairs{{"a", 1}, {}}));
     EXPECT_EQ(fields.y, 5);
-#if YYJSON_VERSION_HEX >= 0x000A00
     const auto direct = yyjson::read<Fields>(R"({"t":[1],"u":[],"v":{"a":1},"y":5,"z":"s"})");
     EXPECT_EQ(direct.t, (std::pair{1, 0}));
     EXPECT_EQ(direct.v, (pairs{{"a", 1}, {}}));
-#endif
 }
 
 namespace
@@ -5838,7 +5870,7 @@ namespace
                 (
                     [&] {
                         const auto direct = expect_direct_read<std::vector<Vs>>(json);
-                        if (supported)
+                        if (supported && reads_directly)
                         {
                             EXPECT_EQ(direct, succeeds(json, std::type_identity<std::vector<Vs>>{}))
                                 << json << " as " << yyjson::detail::type_name<Vs>();
@@ -5853,10 +5885,12 @@ namespace
 TEST(DirectReader, Variants)
 {
     using namespace yyjson;
+#if YYJSON_VERSION_HEX >= 0x000C00
     using reader::detail::direct_reader;
 
     static_assert(!direct_reader::reads_documents_in_loop<std::vector<std::variant<double, std::vector<double>>>>);
     static_assert(direct_reader::reads_documents_in_loop<std::vector<std::variant<int, ReadPoint>>>);
+#endif
 
     const auto values = std::vector<std::string>{
         "null", "true", "false", "0", "1", "-1", "300", "-300", "1.5", "-2.5", "1e300", "18446744073709551615",
@@ -5883,6 +5917,7 @@ TEST(DirectReader, Variants)
                            std::variant<ReflectionRecord, std::map<std::string, double>>>(
         {"0e100000", "[1,0e100000]", R"({"j":0e100000})", R"({"x":0e100000,"i":1})"}, false);
 
+#if YYJSON_VERSION_HEX >= 0x000C00
     // an alternative that the reader cannot tell from the text does not pass to the next one, which the cast
     // from a document would not take
     using record_or_chain = std::variant<ReflectionRecord, ReadChain>;
@@ -5894,6 +5929,7 @@ TEST(DirectReader, Variants)
     EXPECT_THROW((void)direct_reader(json.data(), json.data() + json.size() - 1, ReadFlag::NoFlag)
                      .read_root<record_or_chain>(),
                  reader::detail::direct_read_unsupported);
+#endif
 }
 
 struct NoDefaultValue
@@ -5972,14 +6008,20 @@ namespace
                 [&] {
                     for (const auto& json : {"[" + value + "]", "[" + value + ", " + value + "]"})
                     {
-                        EXPECT_EQ(expect_direct_read<std::vector<Ts>>(json),
-                                  succeeds(json, std::type_identity<std::vector<Ts>>{}))
-                            << json << " as " << yyjson::detail::type_name<Ts>();
+                        const auto direct = expect_direct_read<std::vector<Ts>>(json);
+                        if (reads_directly)
+                        {
+                            EXPECT_EQ(direct, succeeds(json, std::type_identity<std::vector<Ts>>{}))
+                                << json << " as " << yyjson::detail::type_name<Ts>();
+                        }
                     }
                     const auto json = R"({"k":)" + value + "}";
-                    EXPECT_EQ((expect_direct_read<std::map<std::string, Ts>>(json)),
-                              (succeeds(json, std::type_identity<std::map<std::string, Ts>>{})))
-                        << json << " as " << yyjson::detail::type_name<Ts>();
+                    const auto direct = expect_direct_read<std::map<std::string, Ts>>(json);
+                    if (reads_directly)
+                    {
+                        EXPECT_EQ(direct, (succeeds(json, std::type_identity<std::map<std::string, Ts>>{})))
+                            << json << " as " << yyjson::detail::type_name<Ts>();
+                    }
                 }(),
                 ...);
         }
@@ -5995,6 +6037,7 @@ struct WithTuples
 
 TEST(DirectReader, Tuples)
 {
+#if YYJSON_VERSION_HEX >= 0x000C00
     using yyjson::reader::detail::direct_reader;
 
     static_assert(!direct_reader::reads_documents_in_loop<std::vector<std::tuple<int, std::string>>>);
@@ -6002,6 +6045,7 @@ TEST(DirectReader, Tuples)
         !direct_reader::reads_documents_in_loop<std::vector<std::tuple<std::pair<std::string, ReflectionRecord>>>>);
     static_assert(direct_reader::reads_documents_in_loop<std::vector<std::tuple<ReadPoint, int>>>);
     static_assert(direct_reader::reads_documents_in_loop<std::vector<std::tuple<std::pair<std::string_view, int>>>>);
+#endif
 
     const auto values = std::vector<std::string>{
         "[]", "[1]", R"([1,"a"])", R"([1, "a", 2])", R"([1, 2.5, "x"])", R"([1,2.5,"x",4])", R"({})",
@@ -6052,8 +6096,6 @@ static_assert(std::is_trivially_copyable_v<TrivialRecord>);
 
 TEST(DirectReader, ReservesRest)
 {
-    using yyjson::reader::detail::direct_reader;
-
     // strings that hide brackets, commas, quotes and backslashes at every offset of the blocks that the count
     // compares at once
     auto seed = std::uint32_t{1};
@@ -6075,9 +6117,12 @@ TEST(DirectReader, ReservesRest)
 
     const auto expected = yyjson::read(json).cast<std::vector<std::string>>();
     ASSERT_EQ(expected.size(), 1500);
-    const auto strings = direct_reader(json.data(), json.data() + json.size() - 1, yyjson::ReadFlag::NoFlag)
-                             .read_root<std::vector<std::string>>();
+#if YYJSON_VERSION_HEX >= 0x000C00
+    const auto strings =
+        yyjson::reader::detail::direct_reader(json.data(), json.data() + json.size() - 1, yyjson::ReadFlag::NoFlag)
+            .read_root<std::vector<std::string>>();
     EXPECT_EQ(strings, expected);
+#endif
     EXPECT_EQ(yyjson::read<std::vector<std::string>>(json), expected);
 
     const auto object = std::format(R"({{"v":{},"w":["a"],"n":1}})", json);
@@ -6088,7 +6133,9 @@ TEST(DirectReader, ReservesRest)
     EXPECT_TRUE(expect_direct_read<ReservedStrings>(object));
 #if defined(__GLIBCXX__) || defined(_LIBCPP_VERSION)
     // the range doubles up to 512 elements and then takes the exact count
+#if YYJSON_VERSION_HEX >= 0x000C00
     EXPECT_EQ(strings.capacity(), strings.size());
+#endif
     EXPECT_EQ(fields.v.capacity(), fields.v.size());
 #endif
 
@@ -6306,12 +6353,14 @@ static_assert(!yyjson::detail::from_json_translator<std::tuple<int>>::castable);
 
 TEST(Reader, TranslatorFromJson)
 {
+#if YYJSON_VERSION_HEX >= 0x000C00
     using yyjson::reader::detail::direct_reader;
 
     // read directly, without a document for each element
     static_assert(!direct_reader::reads_documents_in_loop<std::vector<Rgb>>);
     static_assert(!direct_reader::reads_documents_in_loop<std::vector<Polyline>>);
     static_assert(!direct_reader::reads_documents_in_loop<std::vector<Painted>>);
+#endif
 
     EXPECT_EQ(yyjson::read(R"("#10a0ff")").cast<Rgb>(), (Rgb{16, 160, 255}));
     EXPECT_EQ(yyjson::read<std::vector<Rgb>>(R"(["#10a0ff", "#\u0030\u00301122"])"),
@@ -6673,7 +6722,6 @@ TEST(Writer, Emitter)
     // an invalid string gives the error of the document
     expect_direct_write(EmittedShape{"\xff", {}, {"\xc3"}, {{"\x80", 1}}});
 }
-#endif
 
 // NOLINTEND
 #if defined(__GNUC__)
