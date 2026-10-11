@@ -9375,38 +9375,88 @@ namespace yyjson
                 return skip_ws_span(cur, last);
             }
 
+            // Skips the white space before the first key of an object or the first element of an array, and returns
+            // its length if the later ones may be predicted to follow a run of the same length, as they do in the
+            // indentation of a pretty-printed text.
+            CPPYYJSON_ALWAYS_INLINE std::uint32_t skip_ws_measured() noexcept
+            {
+                const char* const start = cur_;
+                skip_ws_before_key();
+                const auto run = static_cast<std::uint32_t>(cur_ - start);
+                return run < ws_block_size ? run : 0;
+            }
+
+            // Skips the white space before a key or an element that is predicted to be `run` characters long,
+            // checking the prediction with a branch so that the read of the key does not wait for the length to be
+            // computed.  A wrong prediction measures the run and predicts it for the next one.
+            CPPYYJSON_ALWAYS_INLINE void skip_ws_like(std::uint32_t& run) noexcept
+            {
+                if (static_cast<unsigned char>(*cur_) > ' ') [[likely]]
+                    return;
+#if defined(__AVX2__) || defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+                if (run != 0 && last_ - cur_ >= ws_block_size)
+                {
+                    // `run` characters of white space followed by one that is not
+                    const auto expected = (std::uint64_t{1} << run) - 1;
+                    if ((ws_block_mask(cur_) & (expected << 1 | 1)) == expected) [[likely]]
+                    {
+                        cur_ += run;
+                        return;
+                    }
+                }
+                const char* const start = cur_;
+                cur_ = skip_ws_span(cur_, last_);
+                run = cur_ - start < ws_block_size ? static_cast<std::uint32_t>(cur_ - start) : 0;
+#else
+                static_cast<void>(run);
+                cur_ = skip_ws_span(cur_, last_);
+#endif
+            }
+
+#if defined(__AVX2__)
+            static constexpr std::ptrdiff_t ws_block_size = 32;
+
+            // Returns the mask of the white space characters among the 32 bytes at `cur`.
+            CPPYYJSON_ALWAYS_INLINE static std::uint32_t ws_block_mask(const char* cur) noexcept
+            {
+                const auto v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(cur));
+                // the white space characters at the indices of their low nibbles
+                const auto table = _mm256_setr_epi8(' ', 0, 0, 0, 0, 0, 0, 0, 0, '\t', '\n', 0, 0, '\r', 0, 0, ' ', 0,
+                                                    0, 0, 0, 0, 0, 0, 0, '\t', '\n', 0, 0, '\r', 0, 0);
+                const auto ws = _mm256_cmpeq_epi8(_mm256_shuffle_epi8(table, v), v);
+                return static_cast<std::uint32_t>(_mm256_movemask_epi8(ws));
+            }
+#elif defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+            static constexpr std::ptrdiff_t ws_block_size = 16;
+
+            // Returns the mask of the white space characters among the 16 bytes at `cur`.
+            CPPYYJSON_ALWAYS_INLINE static std::uint32_t ws_block_mask(const char* cur) noexcept
+            {
+                const auto v = _mm_loadu_si128(reinterpret_cast<const __m128i*>(cur));
+                const auto ws = _mm_or_si128(
+                    _mm_or_si128(_mm_cmpeq_epi8(v, _mm_set1_epi8(' ')), _mm_cmpeq_epi8(v, _mm_set1_epi8('\n'))),
+                    _mm_or_si128(_mm_cmpeq_epi8(v, _mm_set1_epi8('\r')), _mm_cmpeq_epi8(v, _mm_set1_epi8('\t'))));
+                return static_cast<std::uint32_t>(_mm_movemask_epi8(ws));
+            }
+#else
+            static constexpr std::ptrdiff_t ws_block_size = 1;
+#endif
+
             CPPYYJSON_ALWAYS_INLINE static const char* skip_ws_span(const char* cur, const char* last) noexcept
             {
-#if defined(__AVX2__)
-                while (last - cur >= 32)
+#if defined(__AVX2__) || defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+                while (last - cur >= ws_block_size)
                 {
-                    const auto v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(cur));
-                    // the white space characters at the indices of their low nibbles
-                    const auto table = _mm256_setr_epi8(' ', 0, 0, 0, 0, 0, 0, 0, 0, '\t', '\n', 0, 0, '\r', 0, 0, ' ',
-                                                        0, 0, 0, 0, 0, 0, 0, 0, '\t', '\n', 0, 0, '\r', 0, 0);
-                    const auto ws = _mm256_cmpeq_epi8(_mm256_shuffle_epi8(table, v), v);
-                    const auto m = ~static_cast<std::uint32_t>(_mm256_movemask_epi8(ws));
+                    constexpr auto all = static_cast<std::uint32_t>((std::uint64_t{1} << ws_block_size) - 1);
+                    const auto m = ~ws_block_mask(cur) & all;
                     if (m != 0)
                     {
                         return cur + std::countr_zero(m);
                     }
-                    cur += 32;
+                    cur += ws_block_size;
                 }
-#elif defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
-                while (last - cur >= 16)
-                {
-                    const auto v = _mm_loadu_si128(reinterpret_cast<const __m128i*>(cur));
-                    const auto ws = _mm_or_si128(_mm_or_si128(_mm_cmpeq_epi8(v, _mm_set1_epi8(' ')),
-                                                              _mm_cmpeq_epi8(v, _mm_set1_epi8('\n'))),
-                                                 _mm_or_si128(_mm_cmpeq_epi8(v, _mm_set1_epi8('\r')),
-                                                              _mm_cmpeq_epi8(v, _mm_set1_epi8('\t'))));
-                    const auto m = ~static_cast<std::uint32_t>(_mm_movemask_epi8(ws)) & 0xFFFFu;
-                    if (m != 0)
-                    {
-                        return cur + std::countr_zero(m);
-                    }
-                    cur += 16;
-                }
+#else
+                static_cast<void>(last);
 #endif
                 while (is_ws(*cur)) ++cur;
                 return cur;
@@ -10562,7 +10612,7 @@ namespace yyjson
             {
                 const char* const open = cur_;
                 ++cur_;
-                skip_ws_before_key();
+                auto indent = skip_ws_measured();
                 if (*cur_ == '}')
                 {
                     close(open);
@@ -10577,7 +10627,7 @@ namespace yyjson
                     if (*cur_ == ',')
                     {
                         ++cur_;
-                        skip_ws_before_key();
+                        skip_ws_like(indent);
                         continue;
                     }
                     if (*cur_ != '}') [[unlikely]]
@@ -10754,7 +10804,15 @@ namespace yyjson
                 using value_type = std::ranges::range_value_t<T>;
                 const char* const open = cur_;
                 ++cur_;
-                skip_ws();
+                // numbers and tuples, which are rarely put on lines of their own, are read in a tighter loop without
+                // the prediction
+                constexpr auto predicted =
+                    !std::is_arithmetic_v<value_type> && !requires { std::tuple_size<value_type>::value; };
+                auto indent = std::uint32_t{0};
+                if constexpr (predicted)
+                    indent = skip_ws_measured();
+                else
+                    skip_ws();
                 if (*cur_ == ']')
                 {
                     close(open);
@@ -10843,7 +10901,10 @@ namespace yyjson
                     if (*cur_ == ',')
                     {
                         ++cur_;
-                        skip_ws();
+                        if constexpr (predicted)
+                            skip_ws_like(indent);
+                        else
+                            skip_ws();
                         continue;
                     }
                     if (*cur_ != ']') [[unlikely]]

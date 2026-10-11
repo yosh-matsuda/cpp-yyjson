@@ -5408,6 +5408,64 @@ TEST(DirectReader, Containers)
     }
 }
 
+TEST(DirectReader, Indentation)
+{
+    using namespace yyjson;
+
+    // the white space before the keys and the elements, which the reader predicts to be as long as the one before
+    // the previous key or element: the same run, runs of other lengths around the size of a vector register, other
+    // white space characters, and a character that is not white space within the predicted run
+    auto state = std::uint32_t{12345};
+    const auto next = [&](std::uint32_t n) {
+        state = state * 1103515245u + 12345u;
+        return (state >> 16) % n;
+    };
+    const auto make_run = [&](std::size_t length) {
+        auto run = std::string();
+        for (auto i = std::size_t{0}; i < length; ++i) run += i == 0 ? '\n' : " \t\r "[next(4)];
+        return run;
+    };
+    for (auto round = 0; round < 400; ++round)
+    {
+        auto run = make_run(next(40));
+        // whether each of the object, the strings and the records is valid
+        bool valid[3] = {true, true, true};
+        const auto ws = [&](int text) {
+            const auto choice = next(20);
+            if (choice < 12) return run;
+            if (choice < 19) run = make_run(choice < 16 ? next(40) : run.size() + next(3) - (run.empty() ? 0 : 1));
+            else if (!run.empty())
+            {
+                auto broken = run;
+                broken[next(static_cast<std::uint32_t>(broken.size()))] = 'x';
+                valid[text] = false;
+                return broken;
+            }
+            return run;
+        };
+        const auto count = 1 + next(6);
+        auto object = std::string("{");
+        auto strings = std::string("[");
+        auto records = std::string("[");
+        for (auto i = 0u; i < count; ++i)
+        {
+            const auto* comma = i == 0 ? "" : ",";
+            object += std::format("{}{}\"{}\":{}", comma, ws(0), "iju"[next(3)], i);
+            strings += std::format("{}{}\"s{}\"", comma, ws(1), i);
+            records += std::format("{}{}{{{}\"i\":{},", comma, ws(2), ws(2), i);
+            records += std::format("{}\"k\":\"t\"{}}}", ws(2), ws(2));
+        }
+        object += ws(0) + "}";
+        strings += ws(1) + "]";
+        records += ws(2) + "]";
+        EXPECT_EQ((expect_direct_read<std::map<std::string, int>>(object)), valid[0] || !reads_directly) << object;
+        EXPECT_EQ((expect_direct_read<ReflectionRecord>(object)), valid[0] || !reads_directly) << object;
+        EXPECT_EQ((expect_direct_read<std::vector<std::string>>(strings)), valid[1] || !reads_directly) << strings;
+        EXPECT_EQ((expect_direct_read<std::vector<ReflectionRecord>>(records)), valid[2] || !reads_directly)
+            << records;
+    }
+}
+
 TEST(DirectReader, DocumentOfWholeText)
 {
     using namespace yyjson;
