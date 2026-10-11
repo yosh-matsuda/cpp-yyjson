@@ -6144,6 +6144,160 @@ TEST(Reader, TranslatorFromJson)
     }
     expect_direct_read<Painted>(R"({"width":"1"})");
 }
+
+struct RenamedRecord
+{
+    std::string context;
+    std::string type;
+    int id = 0;
+    std::vector<int> list;
+    bool operator==(const RenamedRecord&) const = default;
+};
+template <>
+struct yyjson::field_rename<RenamedRecord>
+{
+    static constexpr auto value = yyjson::rename{{"context", "@context"}, {"type", "a/b\"c, longer than 16"}};
+};
+
+struct VisitableRenamed
+{
+    std::string context;
+    std::string type;
+    int id = 0;
+    std::vector<int> list;
+    bool operator==(const VisitableRenamed&) const = default;
+};
+VISITABLE_STRUCT(VisitableRenamed, (context, "@context"), (type, "a/b\"c, longer than 16"), id, list);
+
+struct VisitableTraitRenamed
+{
+    std::string context;
+    std::string type;
+    int id = 0;
+    std::vector<int> list;
+    bool operator==(const VisitableTraitRenamed&) const = default;
+};
+template <>
+struct yyjson::field_rename<VisitableTraitRenamed>
+{
+    static constexpr auto value = yyjson::rename{{"type", "a/b\"c, longer than 16"}, {"context", "@context"}};
+};
+VISITABLE_STRUCT(VisitableTraitRenamed, context, type, id, list);
+
+struct SwappedKeys
+{
+    int a = 0;
+    int b = 0;
+    bool operator==(const SwappedKeys&) const = default;
+};
+template <>
+struct yyjson::field_rename<SwappedKeys>
+{
+    static constexpr auto value = yyjson::rename{{"a", "b"}, {"b", "a"}};
+};
+
+struct VisitableSwappedKeys
+{
+    int a = 0;
+    int b = 0;
+    bool operator==(const VisitableSwappedKeys&) const = default;
+};
+VISITABLE_STRUCT(VisitableSwappedKeys, (a, "b"), (b, "a"));
+
+struct HoldsRenamed
+{
+    RenamedRecord reflected;
+    std::vector<VisitableRenamed> visitable;
+    std::map<std::string, VisitableTraitRenamed> by_name;
+    bool operator==(const HoldsRenamed&) const = default;
+};
+
+namespace
+{
+    using key_array = std::array<std::string_view, 2>;
+    constexpr auto members_ab = key_array{"a", "b"};
+    consteval auto renamed_keys(const key_array& keys, const auto& pairs)
+    {
+        return yyjson::detail::make_field_keys(members_ab, keys, pairs);
+    }
+    using enum yyjson::detail::field_key_error;
+    static_assert(renamed_keys(members_ab, yyjson::rename{{"b", "x"}}.pairs).keys == key_array{"a", "x"});
+    static_assert(renamed_keys(members_ab, yyjson::rename{{"c", "x"}}.pairs).error == unknown_member);
+    static_assert(renamed_keys(members_ab, yyjson::rename{{"a", "x"}, {"a", "y"}}.pairs).error == duplicate_member);
+    static_assert(renamed_keys(members_ab, yyjson::rename{{"a", "b"}}.pairs).error == duplicate_key);
+    static_assert(renamed_keys(key_array{"x", "b"}, yyjson::rename{{"b", "y"}}.pairs).error == renamed_twice);
+    static_assert(yyjson::detail::make_field_keys(members_ab, key_array{"b", "b"}).error == duplicate_key);
+    // a `VISITABLE_STRUCT` listing a member twice compiles as before, unless it names keys
+    static_assert(yyjson::detail::make_field_keys(key_array{"a", "a"}, key_array{"a", "a"}).error == none);
+}  // namespace
+
+TEST(Reader, FieldRename)
+{
+    static_assert(yyjson::detail::field_key<RenamedRecord, 0> == "@context");
+    static_assert(yyjson::detail::field_key<RenamedRecord, 2> == "id");
+    static_assert(yyjson::visit_struct<VisitableRenamed>::names[1] == "a/b\"c, longer than 16");
+    static_assert(yyjson::visit_struct<VisitableTraitRenamed>::names[0] == "@context");
+
+    const auto json = R"({"@context":"c","a/b\"c, longer than 16":"t","id":1,"list":[1,2],"context":"x","type":"y"})";
+    const auto check = [&]<typename T>(std::type_identity<T>) {
+        for (const auto& t : {yyjson::read(json).cast<T>(), yyjson::read<T>(json)})
+        {
+            EXPECT_EQ(t.context, "c");
+            EXPECT_EQ(t.type, "t");
+            EXPECT_EQ(t.id, 1);
+            EXPECT_EQ(t.list, (std::vector<int>{1, 2}));
+        }
+        EXPECT_EQ(yyjson::read<T>(R"({"\u0040context":"c","a\/b\"c, longer than 16":"t"})").type, "t");
+        EXPECT_TRUE(expect_direct_read<T>(json));
+        EXPECT_TRUE(expect_direct_read<T>(R"({"\u0040context":"c","a\/b\"c, longer than 16":"t"})"));
+        EXPECT_TRUE(expect_direct_read<T>(R"({"id":2,"@context":"c"})"));
+        EXPECT_TRUE(expect_direct_read<std::vector<T>>(std::string("[") + json + "," + json + "]"));
+        expect_direct_read<T>(R"({"@context":1})");
+    };
+    check(std::type_identity<RenamedRecord>{});
+    check(std::type_identity<VisitableRenamed>{});
+    check(std::type_identity<VisitableTraitRenamed>{});
+
+    const auto* swapped = R"({"a":1,"b":2})";
+    EXPECT_EQ(yyjson::read(swapped).cast<SwappedKeys>(), (SwappedKeys{2, 1}));
+    EXPECT_EQ(yyjson::read<SwappedKeys>(swapped), (SwappedKeys{2, 1}));
+    EXPECT_EQ(yyjson::read<VisitableSwappedKeys>(swapped), (VisitableSwappedKeys{2, 1}));
+    EXPECT_TRUE(expect_direct_read<SwappedKeys>(swapped));
+    EXPECT_TRUE(expect_direct_read<VisitableSwappedKeys>(swapped));
+
+    const auto holds_json =
+        std::string(R"({"reflected":)") + json + R"(,"visitable":[)" + json + R"(],"by_name":{"k":)" + json + "}}";
+    EXPECT_TRUE(expect_direct_read<HoldsRenamed>(holds_json));
+    EXPECT_EQ(yyjson::read<HoldsRenamed>(holds_json).by_name.at("k").type, "t");
+}
+
+TEST(Writer, FieldRename)
+{
+    const auto expected = R"({"@context":"c","a/b\"c, longer than 16":"t","id":1,"list":[1,2]})";
+    const auto check = [&]<typename T>(const T& t) {
+        EXPECT_EQ(std::string(yyjson::value(t).write()), expected);
+        EXPECT_EQ(std::string(yyjson::object(t).write()), expected);
+        EXPECT_EQ(std::string(yyjson::object(T(t)).write()), expected);
+        EXPECT_EQ(std::string(yyjson::write(t)), expected);
+        EXPECT_EQ(std::string(yyjson::write(t, yyjson::WriteFlag::EscapeSlashes)),
+                  R"({"@context":"c","a\/b\"c, longer than 16":"t","id":1,"list":[1,2]})");
+        expect_direct_write(t);
+        expect_direct_write(std::vector<T>{t, t});
+        EXPECT_EQ(yyjson::read<T>(std::string(yyjson::write(t))), t);
+    };
+    check(RenamedRecord{"c", "t", 1, {1, 2}});
+    check(VisitableRenamed{"c", "t", 1, {1, 2}});
+    check(VisitableTraitRenamed{"c", "t", 1, {1, 2}});
+
+    EXPECT_EQ(std::string(yyjson::write(SwappedKeys{1, 2})), R"({"b":1,"a":2})");
+    EXPECT_EQ(std::string(yyjson::value(SwappedKeys{1, 2}).write()), R"({"b":1,"a":2})");
+    EXPECT_EQ(std::string(yyjson::write(VisitableSwappedKeys{1, 2})), R"({"b":1,"a":2})");
+    EXPECT_EQ(std::string(yyjson::value(VisitableSwappedKeys{1, 2}).write()), R"({"b":1,"a":2})");
+
+    const auto holds = HoldsRenamed{{"c", "t", 1, {1, 2}}, {{"c", "t", 1, {}}}, {{"k", {"c", "t", 1, {3}}}}};
+    expect_direct_write(holds);
+    EXPECT_EQ(yyjson::read<HoldsRenamed>(std::string(yyjson::write(holds))), holds);
+}
 #endif
 
 // NOLINTEND

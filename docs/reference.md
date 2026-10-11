@@ -1167,6 +1167,41 @@ auto deserialized = cast<X>(serialized);
 // -> X{.a = 1, .b = std::nullopt, .c = "default"}
 ```
 
+### JSON keys other than field names
+
+A JSON key that is not a valid C++ identifier, such as `@context`, can still be read into and written from a field. Specialize `yyjson::field_rename` for the type and list the fields to rename as pairs of the member name and the JSON key:
+
+```cpp
+struct Project
+{
+    std::string context;
+    std::string type;
+    std::string name;
+};
+
+template <>
+struct yyjson::field_rename<Project>
+{
+    static constexpr auto value = yyjson::rename{{"context", "@context"}, {"type", "@type"}};
+};
+
+auto project = yyjson::read<Project>(R"({"@context":"https://schema.org","@type":"Project","name":"x"})");
+// -> Project{.context = "https://schema.org", .type = "Project", .name = "x"}
+auto json = yyjson::write(project);
+// -> {"@context":"https://schema.org","@type":"Project","name":"x"}
+```
+
+The `VISITABLE_STRUCT` macro takes the same pairs in parentheses instead of a member name:
+
+```cpp
+VISITABLE_STRUCT(Project, (context, "@context"), (type, "@type"), name);
+```
+
+*   A field that is not listed keeps its member name as the key.
+*   The keys are used everywhere the field names are: by `cast`, `object(t)` and `value(t)`, and by `yyjson::read<T>` and `yyjson::write`. A JSON key is compared after unescaping, so `"\u0040context"` is read into `context` as well, and a key is escaped as the write flags require.
+*   `yyjson::field_rename` works both for a struct that the compile-time reflection converts and for one that the `VISITABLE_STRUCT` macro registers. For the latter, declare the specialization before the macro, and do not combine it with pairs in the macro.
+*   A pair that names a member which does not exist or is not registered, a member named twice, and two fields that end up with the same key all fail to compile with a `static_assert`.
+
 ### User-defined casters
 
 The most flexible way to convert C++ types to/from JSON is to define custom casters. The custom conversion always has the highest priority among the other conversions. To define a custom caster, specialize the `yyjson::caster` struct template and implement the `from_json` and/or `to_json` template functions.

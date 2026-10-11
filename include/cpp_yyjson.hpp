@@ -389,6 +389,30 @@ namespace yyjson
     {
     };
 
+    // Gives fields of a reflected or `VISITABLE_STRUCT` type JSON keys other than their member names.  A
+    // specialization defines `static constexpr auto value = yyjson::rename{{"member", "key"}, ...};`.
+    template <typename T>
+    struct field_rename
+    {
+    };
+
+    // Pairs of a member name and the JSON key of that member, for `field_rename`.
+    template <std::size_t N>
+    struct rename
+    {
+        std::array<std::pair<std::string_view, std::string_view>, N> pairs;
+
+        template <std::size_t... M>
+        requires (sizeof...(M) == N)
+        consteval rename(const std::string_view (&... entries)[M])  // NOLINT(google-explicit-constructor)
+            : pairs{std::pair<std::string_view, std::string_view>{entries[0], entries[M - 1]}...}
+        {
+            static_assert(((M == 2) && ...), "each entry of yyjson::rename must be {\"member\", \"key\"}");
+        }
+    };
+    template <std::size_t... M>
+    rename(const std::string_view (&... entries)[M]) -> rename<sizeof...(M)>;
+
     template <typename T>
     struct caster
     {
@@ -725,6 +749,107 @@ namespace yyjson
             }
         }
 
+        template <typename T>
+        concept has_field_rename = requires { field_rename<T>::value.pairs; };
+
+        enum class field_key_error
+        {
+            none,
+            unknown_member,
+            duplicate_member,
+            duplicate_key,
+            renamed_twice,
+        };
+
+        template <std::size_t N>
+        struct field_key_table
+        {
+            std::array<std::string_view, N> keys;
+            field_key_error error = field_key_error::none;
+        };
+
+        // Duplicate keys are reported only when a key was given, so that a `VISITABLE_STRUCT` listing a member
+        // twice still compiles as it did.
+        template <std::size_t N>
+        consteval field_key_table<N> check_duplicate_keys(const field_key_table<N>& table, bool renamed)
+        {
+            if (!renamed) return table;
+            for (std::size_t i = 0; i < N; ++i)
+            {
+                for (std::size_t j = i + 1; j < N; ++j)
+                {
+                    if (table.keys[i] == table.keys[j]) return {table.keys, field_key_error::duplicate_key};
+                }
+            }
+            return table;
+        }
+
+        template <std::size_t N>
+        consteval field_key_table<N> make_field_keys(const std::array<std::string_view, N>& members,
+                                                     const std::array<std::string_view, N>& keys)
+        {
+            return check_duplicate_keys(field_key_table<N>{keys}, keys != members);
+        }
+
+        template <std::size_t N, typename Pairs>
+        consteval field_key_table<N> make_field_keys(const std::array<std::string_view, N>& members,
+                                                     const std::array<std::string_view, N>& keys, const Pairs& renames)
+        {
+            if (keys != members) return {keys, field_key_error::renamed_twice};
+            auto table = field_key_table<N>{keys};
+            auto done = std::array<bool, N>{};
+            for (const auto& [member, key] : renames)
+            {
+                std::size_t i = 0;
+                while (i < N && members[i] != member) ++i;
+                if (i == N) return {keys, field_key_error::unknown_member};
+                if (done[i]) return {keys, field_key_error::duplicate_member};
+                done[i] = true;
+                table.keys[i] = key;
+            }
+            return check_duplicate_keys(table, true);
+        }
+
+        // The JSON keys of the fields of T.  `Source::members` are the member names and `Source::keys` the
+        // keys before `field_rename`, which differ from the member names only where `VISITABLE_STRUCT`
+        // gives a member its key.
+        template <typename T, typename Source>
+        struct field_keys
+        {
+            static constexpr auto table = [] {
+                if constexpr (has_field_rename<T>)
+                    return make_field_keys(Source::members, Source::keys, field_rename<T>::value.pairs);
+                else
+                    return make_field_keys(Source::members, Source::keys);
+            }();
+            static_assert(table.error != field_key_error::unknown_member,
+                          "yyjson::field_rename names a member that does not exist");
+            static_assert(table.error != field_key_error::duplicate_member,
+                          "yyjson::field_rename names the same member twice");
+            static_assert(table.error != field_key_error::duplicate_key, "two fields have the same JSON key");
+            static_assert(table.error != field_key_error::renamed_twice,
+                          "a VISITABLE_STRUCT that gives its members keys cannot have a yyjson::field_rename");
+            static constexpr auto value = table.keys;
+        };
+
+        template <typename T>
+        struct reflected_field_names
+        {
+            static constexpr auto members = []<std::size_t... Is>(std::index_sequence<Is...>) {
+                return std::array<std::string_view, sizeof...(Is)>{field_reflection::field_name<T, Is>...};
+            }(std::make_index_sequence<field_reflection::field_count<T>>{});
+            static constexpr auto keys = members;
+        };
+
+        // The JSON key of field I of a reflected struct.
+        template <typename T, std::size_t I>
+        inline constexpr std::string_view field_key = [] {
+            if constexpr (has_field_rename<T>)
+                return std::string_view(field_keys<T, reflected_field_names<T>>::value[I]);
+            else
+                return std::string_view(field_reflection::field_name<T, I>);
+        }();
+
         // Finds the field that a JSON key names.  Keys usually come in the order that the fields are
         // declared, so the field after the last one found and the field after that, which follows a
         // missing or unknown key, are tried first.  Any other key is looked up among the names of its
@@ -876,8 +1001,7 @@ namespace yyjson
 
         template <typename T>
         inline constexpr auto reflected_key_matcher = []<std::size_t... Is>(std::index_sequence<Is...>) {
-            return field_key_matcher<sizeof...(Is)>(
-                std::array<std::string_view, sizeof...(Is)>{field_reflection::field_name<T, Is>...});
+            return field_key_matcher<sizeof...(Is)>(std::array<std::string_view, sizeof...(Is)>{field_key<T, Is>...});
         }(std::make_index_sequence<field_reflection::field_count<T>>{});
 
         template <std::size_t I, typename T>
@@ -2162,8 +2286,8 @@ namespace yyjson
                                     auto emitter = reflected_field_emitter{*this, obj, field_values, field_count};
                                     auto&& element = forward_element<Range&&>(std::forward<decltype(v)>(v));
                                     (emitter.template emplace<yyjson::detail::is_plain_key(
-                                         field_reflection::field_name<value_type, Is>)>(
-                                         field_reflection::field_name<value_type, Is>,
+                                         yyjson::detail::field_key<value_type, Is>)>(
+                                         yyjson::detail::field_key<value_type, Is>,
                                          yyjson::detail::forward_field<Is>(std::forward<decltype(element)>(element)),
                                          ts...),
                                      ...);
@@ -4200,7 +4324,7 @@ namespace yyjson
                 return field_reflection::field_namable<T>&&
                 requires (const T& t)
                 {
-                    (std::declval<object_ref&>().emplace(field_reflection::field_name<T, Is>,
+                    (std::declval<object_ref&>().emplace(yyjson::detail::field_key<T, Is>,
                                                          field_reflection::get_field<Is>(t)),
                      ...);
                 };
@@ -5675,8 +5799,8 @@ namespace yyjson
         {
             obj.assign_reflected_fields(detail::reflected_field_count(t), [&](auto& emitter) {
                 [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                    (emitter.template emplace<detail::is_plain_key(field_reflection::field_name<T, Is>)>(
-                         field_reflection::field_name<T, Is>, detail::forward_field<Is>(t), ts...),
+                    (emitter.template emplace<detail::is_plain_key(detail::field_key<T, Is>)>(
+                         detail::field_key<T, Is>, detail::forward_field<Is>(t), ts...),
                      ...);
                 }(std::make_index_sequence<field_reflection::field_count<T>>{});
             });
@@ -5691,8 +5815,8 @@ namespace yyjson
             const auto field_count = detail::reflected_field_count(t);
             obj.assign_reflected_fields(field_count, [&](auto& emitter) {
                 [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                    (emitter.template emplace<detail::is_plain_key(field_reflection::field_name<T, Is>)>(
-                         field_reflection::field_name<T, Is>, detail::forward_field<Is>(std::move(t)), ts...),
+                    (emitter.template emplace<detail::is_plain_key(detail::field_key<T, Is>)>(
+                         detail::field_key<T, Is>, detail::forward_field<Is>(std::move(t)), ts...),
                      ...);
                 }(std::make_index_sequence<field_reflection::field_count<T>>{});
             });
@@ -6231,7 +6355,7 @@ namespace yyjson
         template <typename U, std::size_t I>
         struct reflected_key
         {
-            static constexpr std::string_view name = field_reflection::field_name<U, I>;
+            static constexpr std::string_view name = yyjson::detail::field_key<U, I>;
             static constexpr bool plain = is_plain_key(name);
             static constexpr auto quoted = quote_key<name.size()>(name);
         };
@@ -10393,53 +10517,79 @@ struct std::formatter<T>
 #define CPPYYJSON_FOR_EACH(FUNC, ...) \
     CPPYYJSON_CONCAT(CPPYYJSON_FOR_EACH_IMPL_, CPPYYJSON_VA_ARGS_SIZE(__VA_ARGS__))(FUNC, __VA_ARGS__)
 
-#define VISITABLE_STRUCT_IMPL1(X) std::string_view(#X),
-#define VISITABLE_STRUCT_IMPL2(X) \
-    emitter.template emplace<yyjson::detail::is_plain_key(#X)>(std::string_view(#X), t.X, ts...);
-#define VISITABLE_STRUCT_IMPL3(X) \
-    emitter.template emplace<yyjson::detail::is_plain_key(#X)>(std::string_view(#X), std::move(t.X), ts...);
-#define VISITABLE_STRUCT_IMPL4(X) &class_type::X,
-#define VISITABLE_STRUCT(CLASS, ...)                                                                  \
-    static_assert(std::default_initializable<CLASS>, #CLASS " is not default initializable");         \
-    template <>                                                                                       \
-    struct yyjson::visit_struct<CLASS> : public std::true_type                                        \
-    {                                                                                                 \
-        using class_type = CLASS;                                                                     \
-        static constexpr auto field_count = CPPYYJSON_VA_ARGS_SIZE(__VA_ARGS__);                      \
-        static constexpr std::array names{CPPYYJSON_FOR_EACH(VISITABLE_STRUCT_IMPL1, __VA_ARGS__)};   \
-        static constexpr std::tuple members{CPPYYJSON_FOR_EACH(VISITABLE_STRUCT_IMPL4, __VA_ARGS__)}; \
-        static constexpr yyjson::detail::field_key_matcher key_matcher{names};                        \
-        template <typename Object>                                                                    \
-        static auto from_json_impl(const Object& obj)                                                 \
-        {                                                                                             \
-            auto result = CLASS();                                                                    \
-            yyjson::detail::assign_visitable_fields(result, key_matcher, members, obj);               \
-            return result;                                                                            \
-        }                                                                                             \
-        template <typename Emitter, typename... Ts>                                                   \
-        requires (!std::same_as<std::remove_cvref_t<Emitter>, yyjson::writer::object_ref>)            \
-        static auto to_json_impl(Emitter& emitter, const CLASS& t, Ts... ts)                          \
-        {                                                                                             \
-            CPPYYJSON_FOR_EACH(VISITABLE_STRUCT_IMPL2, __VA_ARGS__)                                   \
-        }                                                                                             \
-        template <typename Emitter, typename... Ts>                                                   \
-        requires (!std::same_as<std::remove_cvref_t<Emitter>, yyjson::writer::object_ref>)            \
-        static auto to_json_impl(Emitter& emitter, CLASS&& t, Ts... ts)                               \
-        {                                                                                             \
-            CPPYYJSON_FOR_EACH(VISITABLE_STRUCT_IMPL3, __VA_ARGS__)                                   \
-        }                                                                                             \
-        template <typename... Ts>                                                                     \
-        static auto to_json_impl(writer::object_ref& obj, const CLASS& t, Ts... ts)                   \
-        {                                                                                             \
-            obj.assign_reflected_fields_max(CPPYYJSON_VA_ARGS_SIZE(__VA_ARGS__), [&](auto& emitter) { \
-                CPPYYJSON_FOR_EACH(VISITABLE_STRUCT_IMPL2, __VA_ARGS__)                               \
-            });                                                                                       \
-        }                                                                                             \
-        template <typename... Ts>                                                                     \
-        static auto to_json_impl(writer::object_ref& obj, CLASS&& t, Ts... ts)                        \
-        {                                                                                             \
-            obj.assign_reflected_fields_max(CPPYYJSON_VA_ARGS_SIZE(__VA_ARGS__), [&](auto& emitter) { \
-                CPPYYJSON_FOR_EACH(VISITABLE_STRUCT_IMPL3, __VA_ARGS__)                               \
-            });                                                                                       \
-        }                                                                                             \
+// An argument of `VISITABLE_STRUCT` is a member name or a parenthesized pair of a member name and its JSON key.
+#define CPPYYJSON_VISITABLE_PROBE(...) ~, 1
+#define CPPYYJSON_VISITABLE_SECOND(_1, _2, ...) _2
+#define CPPYYJSON_VISITABLE_IS_PAIR_IMPL(...) CPPYYJSON_VISITABLE_SECOND(__VA_ARGS__, 0, ~)
+#define CPPYYJSON_VISITABLE_IS_PAIR(X) CPPYYJSON_VISITABLE_IS_PAIR_IMPL(CPPYYJSON_VISITABLE_PROBE X)
+#define CPPYYJSON_VISITABLE_MEMBER_0(X) X
+#define CPPYYJSON_VISITABLE_MEMBER_1(X) CPPYYJSON_VISITABLE_PAIR_MEMBER X
+#define CPPYYJSON_VISITABLE_PAIR_MEMBER(MEMBER, KEY) MEMBER
+#define CPPYYJSON_VISITABLE_MEMBER_NAME_0(X) #X
+#define CPPYYJSON_VISITABLE_MEMBER_NAME_1(X) CPPYYJSON_VISITABLE_PAIR_MEMBER_NAME X
+#define CPPYYJSON_VISITABLE_PAIR_MEMBER_NAME(MEMBER, KEY) #MEMBER
+#define CPPYYJSON_VISITABLE_KEY_0(X) #X
+#define CPPYYJSON_VISITABLE_KEY_1(X) CPPYYJSON_VISITABLE_PAIR_KEY X
+#define CPPYYJSON_VISITABLE_PAIR_KEY(MEMBER, KEY) KEY
+#define CPPYYJSON_VISITABLE_SELECT(NAME, X) CPPYYJSON_CONCAT(NAME, CPPYYJSON_VISITABLE_IS_PAIR(X))(X)
+
+#define VISITABLE_STRUCT_IMPL1(X) std::string_view(CPPYYJSON_VISITABLE_SELECT(CPPYYJSON_VISITABLE_MEMBER_NAME_, X)),
+#define VISITABLE_STRUCT_IMPL2(X) std::string_view(CPPYYJSON_VISITABLE_SELECT(CPPYYJSON_VISITABLE_KEY_, X)),
+#define VISITABLE_STRUCT_IMPL4(X) &class_type::CPPYYJSON_VISITABLE_SELECT(CPPYYJSON_VISITABLE_MEMBER_, X),
+#define VISITABLE_STRUCT(CLASS, ...)                                                                                 \
+    static_assert(std::default_initializable<CLASS>, #CLASS " is not default initializable");                        \
+    template <>                                                                                                      \
+    struct yyjson::visit_struct<CLASS> : public std::true_type                                                       \
+    {                                                                                                                \
+        using class_type = CLASS;                                                                                    \
+        static constexpr auto field_count = CPPYYJSON_VA_ARGS_SIZE(__VA_ARGS__);                                     \
+        struct field_names                                                                                           \
+        {                                                                                                            \
+            static constexpr std::array<std::string_view, field_count> members{                                      \
+                CPPYYJSON_FOR_EACH(VISITABLE_STRUCT_IMPL1, __VA_ARGS__)};                                            \
+            static constexpr std::array<std::string_view, field_count> keys{                                         \
+                CPPYYJSON_FOR_EACH(VISITABLE_STRUCT_IMPL2, __VA_ARGS__)};                                            \
+        };                                                                                                           \
+        static constexpr auto names = yyjson::detail::field_keys<CLASS, field_names>::value;                         \
+        static constexpr std::tuple members{CPPYYJSON_FOR_EACH(VISITABLE_STRUCT_IMPL4, __VA_ARGS__)};                \
+        static constexpr yyjson::detail::field_key_matcher key_matcher{names};                                       \
+        template <typename Object>                                                                                   \
+        static auto from_json_impl(const Object& obj)                                                                \
+        {                                                                                                            \
+            auto result = CLASS();                                                                                   \
+            yyjson::detail::assign_visitable_fields(result, key_matcher, members, obj);                              \
+            return result;                                                                                           \
+        }                                                                                                            \
+        template <typename Emitter, typename T, typename... Ts>                                                      \
+        static void emplace_fields(Emitter& emitter, T&& t, Ts... ts)                                                \
+        {                                                                                                            \
+            [&]<std::size_t... Is>(std::index_sequence<Is...>) {                                                     \
+                (emitter.template emplace<yyjson::detail::is_plain_key(names[Is])>(                                  \
+                     names[Is], std::forward<T>(t).*std::get<Is>(members), ts...),                                   \
+                 ...);                                                                                               \
+            }(std::make_index_sequence<field_count>{});                                                              \
+        }                                                                                                            \
+        template <typename Emitter, typename... Ts>                                                                  \
+        requires (!std::same_as<std::remove_cvref_t<Emitter>, yyjson::writer::object_ref>)                           \
+        static auto to_json_impl(Emitter& emitter, const CLASS& t, Ts... ts)                                         \
+        {                                                                                                            \
+            emplace_fields(emitter, t, ts...);                                                                       \
+        }                                                                                                            \
+        template <typename Emitter, typename... Ts>                                                                  \
+        requires (!std::same_as<std::remove_cvref_t<Emitter>, yyjson::writer::object_ref>)                           \
+        static auto to_json_impl(Emitter& emitter, CLASS&& t, Ts... ts)                                              \
+        {                                                                                                            \
+            emplace_fields(emitter, std::move(t), ts...);                                                            \
+        }                                                                                                            \
+        template <typename... Ts>                                                                                    \
+        static auto to_json_impl(writer::object_ref& obj, const CLASS& t, Ts... ts)                                  \
+        {                                                                                                            \
+            obj.assign_reflected_fields_max(field_count, [&](auto& emitter) { emplace_fields(emitter, t, ts...); }); \
+        }                                                                                                            \
+        template <typename... Ts>                                                                                    \
+        static auto to_json_impl(writer::object_ref& obj, CLASS&& t, Ts... ts)                                       \
+        {                                                                                                            \
+            obj.assign_reflected_fields_max(field_count,                                                             \
+                                            [&](auto& emitter) { emplace_fields(emitter, std::move(t), ts...); });   \
+        }                                                                                                            \
     }
