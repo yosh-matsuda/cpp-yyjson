@@ -3632,7 +3632,7 @@ TEST(Readme, Example)
         // reflection
         auto reflectable = X{1, std::nullopt, "x"};
         auto serialized5 = object(reflectable);
-        auto deserialized5 = cast<X>(serialized);
+        auto deserialized5 = cast<X>(serialized5);
 
         // visitable
         auto visitable = Z{1, std::nullopt, "z"};
