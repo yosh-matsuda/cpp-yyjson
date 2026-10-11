@@ -11126,8 +11126,9 @@ namespace yyjson
             template <typename T>
             void read_reflected_fields(T& t)
             {
-                read_fields(yyjson::detail::reflected_key_matcher<T>, [&](std::size_t index) {
-                    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                constexpr auto& matcher = yyjson::detail::reflected_key_matcher<T>;
+                read_fields(matcher, [&](std::size_t index) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                    [&]<std::size_t... Is>(std::index_sequence<Is...>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
                         (void)((index == Is && (read_field(field_reflection::get_field<Is>(t),
                                                            yyjson::detail::reflected_field_replaceable<Is>(t)),
                                                 true)) ||
@@ -11140,8 +11141,8 @@ namespace yyjson
             void read_visitable_fields(T& t)
             {
                 constexpr auto& members = visit_struct<T>::members;
-                read_fields(visit_struct<T>::key_matcher, [&](std::size_t index) {
-                    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                read_fields(visit_struct<T>::key_matcher, [&](std::size_t index) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                    [&]<std::size_t... Is>(std::index_sequence<Is...>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
                         const auto replaceable = [&]<std::size_t I>(std::integral_constant<std::size_t, I>) {
                             return yyjson::detail::has_own_bytes<I>(t.*std::get<Is>(members)...);
                         };
