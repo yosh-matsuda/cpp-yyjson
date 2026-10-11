@@ -1019,10 +1019,15 @@ namespace yyjson
             return field_key_matcher<sizeof...(Is)>(std::array<std::string_view, sizeof...(Is)>{field_key<T, Is>...});
         }(std::make_index_sequence<field_reflection::field_count<T>>{});
 
+        // Only a field of a struct type is replaced by a new object, and comparing the addresses of all fields
+        // for any other costs a struct of many fields more than the field itself when the compiler does not
+        // fold `field_reflection::get_field` away.
         template <std::size_t I, typename T>
         CPPYYJSON_ALWAYS_INLINE inline bool reflected_field_replaceable(T& t) noexcept
         {
-            if constexpr (std::is_reference_v<field_reflection::field_type<T, I>>)
+            using field_type = field_reflection::field_type<T, I>;
+            if constexpr (std::is_reference_v<field_type> || !std::is_class_v<field_type> ||
+                          !std::is_aggregate_v<field_type> || !std::is_nothrow_default_constructible_v<field_type>)
                 return false;
             else
                 return [&]<std::size_t... Js>(std::index_sequence<Js...>) {
