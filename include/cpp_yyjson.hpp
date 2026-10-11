@@ -9610,6 +9610,21 @@ namespace yyjson
                             else
                                 result.push_back(read_value<value_type>());
                         }
+                        else if constexpr (std::same_as<value_type, std::string> && requires {
+                                               { result.emplace_back() } -> std::same_as<value_type&>;
+                                           })
+                        {
+                            if (*cur_ == '"')
+                            {
+                                const auto str = scan_string();
+                                if (!str.escaped) [[likely]]
+                                    result.emplace_back(str.begin, str.end);
+                                else
+                                    unescape(str.begin, str.end, result.emplace_back());
+                            }
+                            else
+                                result.push_back(read_value<value_type>());
+                        }
                         else if constexpr (array_readable_in_place<value_type> && requires {
                                                { result.emplace_back() } -> std::same_as<value_type&>;
                                            })
