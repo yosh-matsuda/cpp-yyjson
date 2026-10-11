@@ -45,14 +45,17 @@
 #define CPPYYJSON_ALWAYS_INLINE [[gnu::always_inline]]
 #define CPPYYJSON_NOINLINE [[gnu::noinline]]
 #define CPPYYJSON_COLD [[gnu::cold, gnu::noinline]]
+#define CPPYYJSON_HOT_NOINLINE [[gnu::hot, gnu::noinline]]
 #elif defined(_MSC_VER)
 #define CPPYYJSON_ALWAYS_INLINE
 #define CPPYYJSON_NOINLINE __declspec(noinline)
 #define CPPYYJSON_COLD __declspec(noinline)
+#define CPPYYJSON_HOT_NOINLINE __declspec(noinline)
 #else
 #define CPPYYJSON_ALWAYS_INLINE
 #define CPPYYJSON_NOINLINE
 #define CPPYYJSON_COLD
+#define CPPYYJSON_HOT_NOINLINE
 #endif
 
 namespace yyjson
@@ -9401,76 +9404,135 @@ namespace yyjson
                 bool escaped;
             };
 
-            // Finds the end of the string that starts at `cur_`, checks its characters and moves past it.
+            // The characters of a block of W bytes that follow an odd run of the backslashes in `bs`, and in
+            // `next` whether the character after the block is one.  A run that starts at an even position has odd
+            // length exactly when the character after it is at an odd position, and adding the starts of the
+            // runs to the runs carries a bit to that character.
+            template <int W>
+            CPPYYJSON_ALWAYS_INLINE static std::uint32_t escaped_characters(std::uint32_t bs,
+                                                                             std::uint32_t& next) noexcept
+            {
+                constexpr auto even = std::uint64_t{0x5555'5555'5555'5555};
+                const auto runs = std::uint64_t{bs};
+                const auto starts = runs & ~(runs << 1);
+                const auto even_ends = (runs + (starts & even)) & ~runs;
+                const auto odd_ends = (runs + (starts & ~even)) & ~runs;
+                const auto escaped = (even_ends & ~even) | (odd_ends & even);
+                next = static_cast<std::uint32_t>(escaped >> W) & 1u;
+                return static_cast<std::uint32_t>(escaped);
+            }
+
+            // Finds the end of the string that starts at `cur_`, checks its characters other than the escapes,
+            // which `unescape` checks for every reader of an escaped string, and moves past it.
             CPPYYJSON_NOINLINE scanned_string scan_string()
             {
                 const char* const begin = cur_ + 1;
                 const char* p = begin;
                 auto high = 0u;
-                auto escaped = false;
-                for (;;)
-                {
+                auto backslashes = 0u;
 #if defined(__AVX2__)
-                    while (last_ - p >= 32)
+                while (last_ - p >= 32)
+                {
+                    const auto v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(p));
+                    const auto bs = _mm256_cmpeq_epi8(v, _mm256_set1_epi8('\\'));
+                    const auto special = static_cast<std::uint32_t>(_mm256_movemask_epi8(_mm256_or_si256(
+                        _mm256_or_si256(_mm256_cmpeq_epi8(v, _mm256_set1_epi8('"')), bs),
+                        _mm256_cmpeq_epi8(_mm256_max_epu8(v, _mm256_set1_epi8(0x1F)), _mm256_set1_epi8(0x1F)))));
+                    const auto h = static_cast<std::uint32_t>(_mm256_movemask_epi8(v));
+                    if (special == 0) [[likely]]
                     {
-                        const auto v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(p));
-                        const auto special = _mm256_or_si256(
-                            _mm256_or_si256(_mm256_cmpeq_epi8(v, _mm256_set1_epi8('"')),
-                                            _mm256_cmpeq_epi8(v, _mm256_set1_epi8('\\'))),
-                            _mm256_cmpeq_epi8(_mm256_max_epu8(v, _mm256_set1_epi8(0x1F)), _mm256_set1_epi8(0x1F)));
-                        const auto m = static_cast<std::uint32_t>(_mm256_movemask_epi8(special));
-                        const auto h = static_cast<std::uint32_t>(_mm256_movemask_epi8(v));
+                        high |= h;
+                        p += 32;
+                        continue;
+                    }
+                    const auto b = static_cast<std::uint32_t>(_mm256_movemask_epi8(bs));
+                    auto m = special & ~b;
+                    if (b != 0) [[unlikely]]
+                    {
+                        auto next = 0u;
+                        m &= ~escaped_characters<32>(b, next);
                         if (m == 0)
                         {
+                            // the character escaped by the last backslash is passed over with the block, and if
+                            // it is `last_`, the string has no end
                             high |= h;
-                            p += 32;
+                            backslashes = 1;
+                            p += 32 + next;
+                            if (p > last_) [[unlikely]]
+                                fail();
                             continue;
                         }
-                        high |= h & (m ^ (m - 1));
-                        p += std::countr_zero(m);
-                        goto special;
+                        backslashes |= b & (m ^ (m - 1));
                     }
+                    high |= h & (m ^ (m - 1));
+                    p += std::countr_zero(m);
+                    goto found;
+                }
 #endif
 #if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
-                    while (last_ - p >= 16)
+                while (last_ - p >= 16)
+                {
+                    const auto v = _mm_loadu_si128(reinterpret_cast<const __m128i*>(p));
+                    const auto bs = _mm_cmpeq_epi8(v, _mm_set1_epi8('\\'));
+                    const auto special = static_cast<std::uint32_t>(_mm_movemask_epi8(_mm_or_si128(
+                        _mm_or_si128(_mm_cmpeq_epi8(v, _mm_set1_epi8('"')), bs),
+                        _mm_cmpeq_epi8(_mm_max_epu8(v, _mm_set1_epi8(0x1F)), _mm_set1_epi8(0x1F)))));
+                    const auto h = static_cast<std::uint32_t>(_mm_movemask_epi8(v));
+                    if (special == 0) [[likely]]
                     {
-                        const auto v = _mm_loadu_si128(reinterpret_cast<const __m128i*>(p));
-                        const auto special =
-                            _mm_or_si128(_mm_or_si128(_mm_cmpeq_epi8(v, _mm_set1_epi8('"')),
-                                                      _mm_cmpeq_epi8(v, _mm_set1_epi8('\\'))),
-                                         _mm_cmpeq_epi8(_mm_max_epu8(v, _mm_set1_epi8(0x1F)), _mm_set1_epi8(0x1F)));
-                        const auto m = static_cast<std::uint32_t>(_mm_movemask_epi8(special));
-                        const auto h = static_cast<std::uint32_t>(_mm_movemask_epi8(v));
+                        high |= h;
+                        p += 16;
+                        continue;
+                    }
+                    const auto b = static_cast<std::uint32_t>(_mm_movemask_epi8(bs));
+                    auto m = special & ~b;
+                    if (b != 0) [[unlikely]]
+                    {
+                        auto next = 0u;
+                        m &= ~escaped_characters<16>(b, next);
                         if (m == 0)
                         {
+                            // the character escaped by the last backslash is passed over with the block, and if
+                            // it is `last_`, the string has no end
                             high |= h;
-                            p += 16;
+                            backslashes = 1;
+                            p += 16 + next;
+                            if (p > last_) [[unlikely]]
+                                fail();
                             continue;
                         }
-                        high |= h & (m ^ (m - 1));
-                        p += std::countr_zero(m);
-                        goto special;
+                        backslashes |= b & (m ^ (m - 1));
                     }
-#endif
-                    for (;; ++p)
-                    {
-                        if (p == last_) [[unlikely]]
-                            fail();
-                        const auto c = static_cast<unsigned char>(*p);
-                        if (c == '"' || c == '\\' || c < 0x20) break;
-                        high |= c & 0x80u;
-                    }
-                special:
-                    if (*p == '"') break;
-                    if (*p != '\\' || last_ - p < 2) [[unlikely]]
-                        fail();
-                    escaped = true;
-                    p += 2;
+                    high |= h & (m ^ (m - 1));
+                    p += std::countr_zero(m);
+                    goto found;
                 }
+#endif
+                for (;; ++p)
+                {
+                    if (p == last_) [[unlikely]]
+                        fail();
+                    const auto c = static_cast<unsigned char>(*p);
+                    if (c == '"') break;
+                    if (c < 0x20) [[unlikely]]
+                        fail();
+                    if (c == '\\')
+                    {
+                        backslashes = 1;
+                        if (++p == last_) [[unlikely]]
+                            fail();
+                    }
+                    high |= c & 0x80u;
+                }
+#if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+            found:
+#endif
+                if (*p != '"') [[unlikely]]
+                    fail();
                 cur_ = p + 1;
                 if (high != 0 && !inv_ && !is_valid_utf8(begin, p)) [[unlikely]]
                     fail();
-                return {begin, p, escaped};
+                return {begin, p, backslashes != 0};
             }
 
             static bool is_valid_utf8(const char* first, const char* last) noexcept
@@ -9509,38 +9571,109 @@ namespace yyjson
                 return true;
             }
 
-            static std::uint32_t read_hex4(const char* p)
+            static constexpr auto hex_digits = []
             {
-                auto u = std::uint32_t{0};
-                for (auto i = 0; i < 4; ++i)
-                {
-                    const auto c = static_cast<unsigned char>(p[i]);
-                    std::uint32_t d;
-                    if (c - 0x30u < 10u)
-                        d = c - '0';
-                    else if ((c | 0x20u) - 'a' < 6u)
-                        d = (c | 0x20u) - 'a' + 10;
-                    else
-                        fail();
-                    u = u << 4 | d;
-                }
-                return u;
+                auto t = std::array<std::int8_t, 256>();
+                t.fill(-1);
+                for (auto c = 0; c < 10; ++c) t['0' + c] = static_cast<std::int8_t>(c);
+                for (auto c = 0; c < 6; ++c)
+                    t['a' + c] = t['A' + c] = static_cast<std::int8_t>(10 + c);
+                return t;
+            }();
+
+            CPPYYJSON_ALWAYS_INLINE static std::uint32_t read_hex4(const char* p)
+            {
+                const auto d0 = hex_digits[static_cast<unsigned char>(p[0])];
+                const auto d1 = hex_digits[static_cast<unsigned char>(p[1])];
+                const auto d2 = hex_digits[static_cast<unsigned char>(p[2])];
+                const auto d3 = hex_digits[static_cast<unsigned char>(p[3])];
+                if ((d0 | d1 | d2 | d3) < 0) [[unlikely]]
+                    fail();
+                return static_cast<std::uint32_t>(d0 << 12 | d1 << 8 | d2 << 4 | d3);
             }
 
             // Writes the content of a string with escapes to `dst`, which has room for `end - src` characters,
             // and returns the end of what it wrote.  No escape is shorter than the character it stands for.  A
             // surrogate that is not part of a pair, which yyjson rejects or reads according to the flags, is left
             // to yyjson.
-            CPPYYJSON_COLD static char* unescape(const char* src, const char* end, char* dst)
+            CPPYYJSON_HOT_NOINLINE static char* unescape(const char* src, const char* end, char* dst)
             {
                 while (src != end)
                 {
-                    const auto* bs =
-                        static_cast<const char*>(std::memchr(src, '\\', static_cast<std::size_t>(end - src)));
-                    if (bs == nullptr) bs = end;
-                    std::memcpy(dst, src, static_cast<std::size_t>(bs - src));
-                    dst += bs - src;
-                    if (bs == end) break;
+                    if (*src != '\\')
+                    {
+                        // `dst` is never ahead of `src`, so a block that fits before `end` fits before the end of
+                        // `dst`, and the block is stored before it is known where the next escape is
+#if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+                        while (end - src >= 16)
+                        {
+                            const auto v = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src));
+                            _mm_storeu_si128(reinterpret_cast<__m128i*>(dst), v);
+                            const auto m = static_cast<std::uint32_t>(
+                                _mm_movemask_epi8(_mm_cmpeq_epi8(v, _mm_set1_epi8('\\'))));
+                            if (m != 0)
+                            {
+                                src += std::countr_zero(m);
+                                dst += std::countr_zero(m);
+                                goto escape;
+                            }
+                            src += 16;
+                            dst += 16;
+                        }
+#endif
+                        while (src != end && *src != '\\') *dst++ = *src++;
+                        if (src == end) break;
+                    }
+#if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+                escape:
+#endif
+                    const auto* const bs = src;
+                    if (bs[1] == 'u') [[likely]]
+                    {
+                        if (end - bs < 6) [[unlikely]]
+                            fail();
+                        const auto u = read_hex4(bs + 2);
+                        src = bs + 6;
+                        if ((u & 0xF800) == 0xD800) [[unlikely]]
+                        {
+                            if ((u & 0xFC00) == 0xDC00 || end - src < 6 || src[0] != '\\' || src[1] != 'u') fail();
+                            const auto lo = read_hex4(src + 2);
+                            if ((lo & 0xFC00) != 0xDC00) fail();
+                            const auto c = 0x10000 + ((u - 0xD800) << 10) + (lo - 0xDC00);
+                            *dst++ = static_cast<char>(0xF0 | (c >> 18));
+                            *dst++ = static_cast<char>(0x80 | ((c >> 12) & 0x3F));
+                            *dst++ = static_cast<char>(0x80 | ((c >> 6) & 0x3F));
+                            *dst++ = static_cast<char>(0x80 | (c & 0x3F));
+                            src += 6;
+                            continue;
+                        }
+                        if constexpr (std::endian::native == std::endian::little)
+                        {
+                            // the six characters of the escape leave room for four bytes, of which the code point
+                            // takes one to three, chosen without a branch since text mixes them
+                            const auto one = u;
+                            const auto two = (0xC0 | u >> 6) | (0x80 | (u & 0x3F)) << 8;
+                            const auto three =
+                                (0xE0 | u >> 12) | (0x80 | (u >> 6 & 0x3F)) << 8 | (0x80 | (u & 0x3F)) << 16;
+                            const auto bytes = u < 0x80 ? one : u < 0x800 ? two : three;
+                            std::memcpy(dst, &bytes, 4);
+                            dst += 1 + (u >= 0x80) + (u >= 0x800);
+                        }
+                        else if (u < 0x80)
+                            *dst++ = static_cast<char>(u);
+                        else if (u < 0x800)
+                        {
+                            *dst++ = static_cast<char>(0xC0 | (u >> 6));
+                            *dst++ = static_cast<char>(0x80 | (u & 0x3F));
+                        }
+                        else
+                        {
+                            *dst++ = static_cast<char>(0xE0 | (u >> 12));
+                            *dst++ = static_cast<char>(0x80 | ((u >> 6) & 0x3F));
+                            *dst++ = static_cast<char>(0x80 | (u & 0x3F));
+                        }
+                        continue;
+                    }
                     src = bs + 2;
                     switch (bs[1])
                     {
@@ -9552,53 +9685,24 @@ namespace yyjson
                         case 'n': *dst++ = '\n'; break;
                         case 'r': *dst++ = '\r'; break;
                         case 't': *dst++ = '\t'; break;
-                        case 'u':
-                        {
-                            if (end - bs < 6) fail();
-                            auto u = read_hex4(bs + 2);
-                            src = bs + 6;
-                            if ((u & 0xFC00) == 0xD800)
-                            {
-                                if (end - src < 6 || src[0] != '\\' || src[1] != 'u') fail();
-                                const auto lo = read_hex4(src + 2);
-                                if ((lo & 0xFC00) != 0xDC00) fail();
-                                u = 0x10000 + ((u - 0xD800) << 10) + (lo - 0xDC00);
-                                src += 6;
-                            }
-                            else if ((u & 0xFC00) == 0xDC00)
-                                fail();
-                            if (u < 0x80)
-                                *dst++ = static_cast<char>(u);
-                            else if (u < 0x800)
-                            {
-                                *dst++ = static_cast<char>(0xC0 | (u >> 6));
-                                *dst++ = static_cast<char>(0x80 | (u & 0x3F));
-                            }
-                            else if (u < 0x10000)
-                            {
-                                *dst++ = static_cast<char>(0xE0 | (u >> 12));
-                                *dst++ = static_cast<char>(0x80 | ((u >> 6) & 0x3F));
-                                *dst++ = static_cast<char>(0x80 | (u & 0x3F));
-                            }
-                            else
-                            {
-                                *dst++ = static_cast<char>(0xF0 | (u >> 18));
-                                *dst++ = static_cast<char>(0x80 | ((u >> 12) & 0x3F));
-                                *dst++ = static_cast<char>(0x80 | ((u >> 6) & 0x3F));
-                                *dst++ = static_cast<char>(0x80 | (u & 0x3F));
-                            }
-                            break;
-                        }
                         default: fail();
                     }
                 }
                 return dst;
             }
 
-            CPPYYJSON_COLD static void unescape(const char* src, const char* end, std::string& out)
+            CPPYYJSON_HOT_NOINLINE static void unescape_into(const char* src, const char* end, std::string& out)
             {
                 out.resize(static_cast<std::size_t>(end - src));
                 out.resize(static_cast<std::size_t>(unescape(src, end, out.data()) - out.data()));
+            }
+
+            // Calls of a cold function count as never taken where the readers are inlined, which keeps the inlining
+            // of the readers as it is for text without escapes.  GCC would also optimize what only a cold function
+            // calls for size, so the work is left to functions marked hot.
+            CPPYYJSON_COLD static void unescape(const char* src, const char* end, std::string& out)
+            {
+                unescape_into(src, end, out);
             }
 
             // Moves past the string at `cur_` and checks its escapes, which only `unescape` does.
