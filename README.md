@@ -170,7 +170,8 @@ As shown above, cpp-yyjson provides conversion between JSON value/array/object c
 *   Pre-defined STL casters (e.g., `std::optional`, `std::shared_ptr`, `std::variant`, `std::tuple` ([C++23 tuple-like](https://wg21.link/P2165R4))).
 *   Conversion using compile-time reflection of struct/class if it is available.
 *   Registration of field names with `VISITABLE_STRUCT` macro.
-*   User-defined casters.
+*   [JSON keys other than field names](docs/reference.md#json-keys-other-than-field-names), such as `@context`, with `yyjson::field_rename`.
+*   User-defined casters, including [emitters](docs/reference.md#user-defined-casters) that write the members of an object or an array in order.
 *   Omission of an empty field with [`should_omit`](docs/reference.md#omitting-a-field-with-no-value), and [in-place assignment](docs/reference.md#in-place-assignment-of-a-field) of a field that cannot be copied.
 
 `yyjson::read<T>` and `yyjson::write` convert between a JSON string and a C++ object without building a JSON value in between. They follow the same rules and give the same results as `read(json).cast<T>()` and `value(t).write()` (see the reference for [reading](docs/reference.md#reading-a-json-string-into-a-c-object-directly) and [writing](docs/reference.md#writing-a-c-object-to-a-json-string-directly)):

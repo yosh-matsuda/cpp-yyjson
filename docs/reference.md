@@ -1236,7 +1236,7 @@ struct yyjson::caster<X>
 
 The `from_json` template function has a JSON value as an argument template and must return type `X`. It has a second form, which writes into an object that the caller owns; [In-place assignment of a field](#in-place-assignment-of-a-field) gives it. A non-template `from_json` that takes a C++ value instead of a JSON value is a [translator](#translator-from_json).
 
-For the `to_json` function, there are two ways. The first way is to define a *translator* for a *value_constructible* type and return it. The return type must be `value_constructible`:
+For the `to_json` function, there are three ways. The first way is to define a *translator* for a *value_constructible* type and return it. The return type must be `value_constructible`:
 
 ```cpp
 template <>
@@ -1271,7 +1271,57 @@ struct yyjson::caster<X>
 
 The first argument type is a target JSON class to create. There are 3 options, `writer::object_ref&`, `writer::array_ref&` and `writer::value_ref&`; if you want to convert the class `X` to JSON array, the first argument should be `writer::array_ref&`.
 
+The third way writes the members in order through an *emitter*, which only appends. The first argument is `yyjson::object_emitter&` to write a JSON object or `yyjson::array_emitter&` to write a JSON array:
+
+```cpp
+struct Shape
+{
+    std::string kind;
+    std::optional<double> radius;
+    std::vector<std::string> tags;
+};
+
+template <>
+struct yyjson::caster<Shape>
+{
+    template <typename... Ts>
+    static void to_json(yyjson::object_emitter& out, const Shape& s, Ts... ts)
+    {
+        out.emplace("kind", s.kind, ts...);
+        if (s.radius) out.emplace("r", *s.radius, ts...);
+        out.emplace_array("tags", [&](yyjson::array_emitter& tags) {
+            for (const auto& t : s.tags) tags.emplace_back(t, ts...);
+        });
+    }
+};
+
+auto json = write(Shape{"circle", 1.5, {"a", "b"}});
+// -> {"kind":"circle","r":1.5,"tags":["a","b"]}
+```
+
+| `object_emitter` | `array_emitter` |
+| --- | --- |
+| `emplace(key, value, ts...)` | `emplace_back(value, ts...)` |
+| `emplace_object(key, [](object_emitter&) {...}, ts...)` | `emplace_back_object([](object_emitter&) {...})` |
+| `emplace_array(key, [](array_emitter&) {...}, ts...)` | `emplace_back_array([](array_emitter&) {...})` |
+
+The value is anything that `yyjson::value` can be constructed from, so the casters apply to it recursively, and the function given to `emplace_object` or `emplace_array` fills the nested object or array. A member is written when it is emplaced, so an emitter cannot remove, replace or read what it wrote, and it does not check for a duplicate key, like `writer::object_ref::emplace`. A caster that needs any of these keeps the `writer::object_ref&` form. The emitter is used with `yyjson::value`, `yyjson::object` and the other ways to build a document, where it adds the members to the document, and with [`yyjson::write`](#writing-a-c-object-to-a-json-string-directly), where it writes them straight to the string. `copy_string` in `ts...` makes the document copy the strings it is given, as it does for `writer::object_ref`; `yyjson::write` copies them anyway.
+
+A caster is given an emitter only when its `to_json` takes none of the three reference types above. A template such as `template <typename V> static void to_json(V& out, const X& x)` is therefore still given `writer::object_ref&`.
+
 The casters are applied recursively to convert from/to JSON classes including custom casters. It is not always necessary to implement both `from_json` and `to_json` functions, and the two conversions do not have to be symmetric. A caster also decides whether a field of its type appears in a JSON object at all; [Omitting a field with no value](#omitting-a-field-with-no-value) gives that.
+
+The form of a caster decides whether [`yyjson::read<T>`](#reading-a-json-string-into-a-c-object-directly) and [`yyjson::write`](#writing-a-c-object-to-a-json-string-directly) convert the type without a temporary document. Every form gives the same result as `cast` and `value`; the table only shows which ones are faster with `read<T>` and `write`:
+
+| What the caster does | Form | Direct read | Direct write |
+| --- | --- | --- | --- |
+| Converts a value, such as an enum to and from a string | [translator `from_json`](#translator-from_json) and a translator `to_json` | yes | yes |
+| Gives a struct JSON keys other than its field names | [`field_rename` or `VISITABLE_STRUCT`](#json-keys-other-than-field-names), with no caster | yes | yes |
+| Converts between two shapes of data | translator `from_json` and `to_json` through an intermediate struct | yes | yes |
+| Writes members depending on the value | `to_json` with an emitter | — | yes |
+| Reads or writes the JSON value itself | `from_json(const Json&)`, `to_json` with `writer::object_ref&`, `writer::array_ref&` or `writer::value_ref&` | no | no |
+
+A type whose caster has no direct form is converted through a temporary document, as those sections describe. The forms that use a document are not deprecated: only they can read the JSON value freely or change the document after adding to it.
 
 ### Translator `from_json`
 
@@ -1482,7 +1532,7 @@ for (const auto& points : batches)
 }
 ```
 
-Most types are written straight to the string: numbers, strings, `bool`, `nullptr`, ranges, maps, the pre-defined STL casters, structs that the compile-time reflection or the `VISITABLE_STRUCT` macro converts, and the values of `yyjson::reader` and `yyjson::value`. The value that a user-defined `to_json` returns is written directly as well. A user-defined `to_json` that fills a `writer::value_ref`, `writer::array_ref` or `writer::object_ref` needs a document, so the object that it converts is written through a temporary one, while the objects around it are still written directly. The writer keeps one document for all of them, and the elements of a range or a map of such objects are built in it together and written at once.
+Most types are written straight to the string: numbers, strings, `bool`, `nullptr`, ranges, maps, the pre-defined STL casters, structs that the compile-time reflection or the `VISITABLE_STRUCT` macro converts, and the values of `yyjson::reader` and `yyjson::value`. The value that a user-defined `to_json` returns is written directly as well, and so is the output of a `to_json` that takes an [emitter](#user-defined-casters). A user-defined `to_json` that fills a `writer::value_ref`, `writer::array_ref` or `writer::object_ref` needs a document, so the object that it converts is written through a temporary one, while the objects around it are still written directly. The writer keeps one document for all of them, and the elements of a range or a map of such objects are built in it together and written at once.
 
 ## Performance best practices
 

@@ -6298,6 +6298,142 @@ TEST(Writer, FieldRename)
     expect_direct_write(holds);
     EXPECT_EQ(yyjson::read<HoldsRenamed>(std::string(yyjson::write(holds))), holds);
 }
+
+// An aggregate, which its caster writes through emitters instead of reflection.
+struct EmittedShape
+{
+    std::string kind;
+    std::optional<double> radius;
+    std::vector<std::string> tags;
+    std::map<std::string, int> counts;
+};
+template <>
+struct yyjson::caster<EmittedShape>
+{
+    template <typename... Ts>
+    static void to_json(yyjson::object_emitter& out, const EmittedShape& s, Ts... ts)
+    {
+        out.emplace("kind", s.kind, ts...);
+        if (s.radius) out.emplace("r", *s.radius, ts...);
+        out.emplace_array("tags", [&](yyjson::array_emitter& tags) {
+            for (const auto& t : s.tags) tags.emplace_back(t, ts...);
+        });
+        out.emplace_object("counts", [&](yyjson::object_emitter& counts) {
+            for (const auto& [k, v] : s.counts) counts.emplace(k, v, ts...);
+        });
+        out.emplace("a/b\"c\u00e9", std::string_view("v/\u00e9"), ts...);
+        out.emplace(std::string("runtime ") + s.kind, s.tags.size(), ts...);
+        out.emplace_array("nested", [&](yyjson::array_emitter& a) {
+            a.emplace_back_object([&](yyjson::object_emitter& o) { o.emplace("k", s.kind, ts...); });
+            a.emplace_back_array([&](yyjson::array_emitter& b) {
+                b.emplace_back(nullptr);
+                b.emplace_back(s.tags, ts...);
+            });
+            a.emplace_back_object([](yyjson::object_emitter&) {});
+            a.emplace_back_array([](yyjson::array_emitter&) {});
+        });
+    }
+};
+// The elements of an array, by a caster that takes no `copy_string`.
+struct EmittedPair
+{
+    int first;
+    double second;
+    friend bool operator==(const EmittedPair&, const EmittedPair&) = default;
+};
+template <>
+struct yyjson::caster<EmittedPair>
+{
+    static void to_json(yyjson::array_emitter& out, const EmittedPair& p)
+    {
+        out.emplace_back(p.first);
+        out.emplace_back(p.second);
+    }
+};
+// A caster that takes `copy_string` only.
+struct EmittedName
+{
+    std::string name;
+};
+template <>
+struct yyjson::caster<EmittedName>
+{
+    static void to_json(yyjson::object_emitter& out, const EmittedName& n, yyjson::copy_string_t)
+    {
+        out.emplace("name", n.name, yyjson::copy_string);
+    }
+};
+// A caster whose `to_json` takes any reference is given an `object_ref` as before.
+struct AnyRefCaster
+{
+    int v;
+};
+template <>
+struct yyjson::caster<AnyRefCaster>
+{
+    inline static bool given_object_ref = false;
+    template <typename V>
+    static void to_json(V& out, const AnyRefCaster& a)
+    {
+        given_object_ref = std::same_as<V, yyjson::writer::object_ref>;
+        if constexpr (std::same_as<V, yyjson::writer::object_ref>) out.emplace("v", a.v);
+    }
+};
+struct HoldsEmitted
+{
+    EmittedShape shape;
+    std::vector<EmittedShape> shapes;
+    std::map<std::string, EmittedPair> pairs;
+    std::optional<EmittedPair> maybe;
+    std::vector<EmittedName> names;
+    AnyRefCaster any;
+};
+
+TEST(Writer, Emitter)
+{
+    const auto shape = EmittedShape{"circle", 1.5, {"a", "b/c"}, {{"x", 1}, {"y", 2}}};
+    const auto shape_json = std::string(
+        R"({"kind":"circle","r":1.5,"tags":["a","b/c"],"counts":{"x":1,"y":2},)"
+        R"("a/b\"c)" "\u00e9" R"(":"v/)" "\u00e9" R"(",)"
+        R"("runtime circle":2,"nested":[{"k":"circle"},[null,["a","b/c"]],{},[]]})");
+    EXPECT_EQ(std::string(yyjson::value(shape).write()), shape_json);
+    EXPECT_EQ(std::string(yyjson::object(shape).write()), shape_json);
+    EXPECT_EQ(std::string(yyjson::write(shape)), shape_json);
+    expect_direct_write(shape);
+    expect_direct_write(EmittedShape{});
+    expect_direct_write(std::vector<EmittedShape>{shape, {}, shape});
+
+    EXPECT_EQ(std::string(yyjson::array(EmittedPair{1, 2.5}).write()), "[1,2.5]");
+    EXPECT_EQ(std::string(yyjson::write(EmittedPair{1, 2.5})), "[1,2.5]");
+    expect_direct_write(std::vector<EmittedPair>{{1, 2.5}, {3, 4}});
+    EXPECT_EQ(std::string(yyjson::write(EmittedName{"n"})), R"({"name":"n"})");
+    EXPECT_EQ(std::string(yyjson::write(AnyRefCaster{1})), R"({"v":1})");
+    EXPECT_TRUE(yyjson::caster<AnyRefCaster>::given_object_ref);
+    yyjson::caster<AnyRefCaster>::given_object_ref = false;
+    EXPECT_EQ(std::string(yyjson::value(AnyRefCaster{1}).write()), R"({"v":1})");
+    EXPECT_TRUE(yyjson::caster<AnyRefCaster>::given_object_ref);
+
+    const auto holds = HoldsEmitted{shape, {shape, {}}, {{"p", {1, 2}}}, EmittedPair{3, 4}, {{"a"}, {"b"}}, {5}};
+    expect_direct_write(holds);
+    expect_direct_write(HoldsEmitted{});
+
+    // members of a mutable document
+    auto obj = yyjson::object();
+    obj.emplace("shape", shape);
+    obj.emplace("pair", EmittedPair{1, 2});
+    EXPECT_EQ(std::string(obj.write()), std::string(R"({"shape":)") + shape_json + R"(,"pair":[1,2.0]})");
+
+    // `copy_string` reaches the emitter, so that the document outlives the strings it was given
+    auto copied =
+        yyjson::value(EmittedShape{std::string(40, 'k'), {}, {std::string(40, 't')}, {}}, yyjson::copy_string);
+    const auto json = std::string(copied.write());
+    EXPECT_EQ((*yyjson::read(json).as_object())["kind"].as_string(), std::string(40, 'k'));
+    auto copied_name = yyjson::value(EmittedName{std::string(40, 'n')});
+    EXPECT_EQ(std::string(copied_name.write()), R"({"name":")" + std::string(40, 'n') + R"("})");
+
+    // an invalid string gives the error of the document
+    expect_direct_write(EmittedShape{"\xff", {}, {"\xc3"}, {{"\x80", 1}}});
+}
 #endif
 
 // NOLINTEND

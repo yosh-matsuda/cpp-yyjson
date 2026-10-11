@@ -1120,7 +1120,7 @@ namespace yyjson
 
         // A struct key that needs no escape under any flag.  The direct writer copies it with its quotes and
         // colon, and a mutable document marks it `YYJSON_SUBTYPE_NOESC` so that yyjson copies it as well.
-        consteval bool is_plain_key(std::string_view name)
+        constexpr bool is_plain_key(std::string_view name)
         {
             for (const auto c : name)
             {
@@ -1192,6 +1192,9 @@ namespace yyjson
             concept base_of_value_ref = requires(Derived d) { [](const abstract_value_ref&) {}(d); };
         }  // namespace detail
     }  // namespace reader
+
+    class object_emitter;
+    class array_emitter;
 
     namespace writer
     {
@@ -1277,25 +1280,48 @@ namespace yyjson
             template <typename T>
             concept to_json_usr = to_json_usr_ext<T> || to_json_usr_noext<T> || to_json_usr_only_ext<T>;
 
+            // The first parameters of the `to_json` that writes into a value given to the caster.
+            template <typename V>
+            concept to_json_inp_target = std::same_as<V, value_ref> || std::same_as<V, array_ref> ||
+                                         std::same_as<V, object_ref> || std::same_as<V, object_emitter> ||
+                                         std::same_as<V, array_emitter>;
             template <typename V, typename T>
-            concept to_json_inp_usr_noext =
-                (std::same_as<V, value_ref> || std::same_as<V, array_ref> || std::same_as<V, object_ref>) &&
-                requires(V& v, T&& t) { caster<std::remove_cvref_t<T>>::to_json(v, std::forward<T>(t)); };
+            concept to_json_inp_usr_noext = to_json_inp_target<V> && requires(V& v, T&& t) {
+                caster<std::remove_cvref_t<T>>::to_json(v, std::forward<T>(t));
+            };
             template <typename V, typename T>
-            concept to_json_inp_usr_only_ext =
-                (std::same_as<V, value_ref> || std::same_as<V, array_ref> || std::same_as<V, object_ref>) &&
-                requires(V& v, T&& t) { caster<std::remove_cvref_t<T>>::to_json(v, std::forward<T>(t), copy_string); };
+            concept to_json_inp_usr_only_ext = to_json_inp_target<V> && requires(V& v, T&& t) {
+                caster<std::remove_cvref_t<T>>::to_json(v, std::forward<T>(t), copy_string);
+            };
             template <typename V, typename T>
             concept to_json_inp_usr_ext = to_json_inp_usr_noext<V, T> && to_json_inp_usr_only_ext<V, T>;
             template <typename V, typename T>
             concept to_json_inp_usr =
                 to_json_inp_usr_ext<V, T> || to_json_inp_usr_noext<V, T> || to_json_inp_usr_only_ext<V, T>;
             template <typename T>
+            concept to_json_ref_usr_defined =
+                to_json_inp_usr<value_ref, T> || to_json_inp_usr<array_ref, T> || to_json_inp_usr<object_ref, T>;
+            // A caster that writes T through an emitter.  One that also takes a reference, such as a template
+            // taking any `V&`, keeps being given the reference.
+            template <typename T>
+            concept to_json_obj_emit = (!to_json_ref_usr_defined<T>) && to_json_inp_usr<object_emitter, T>;
+            template <typename T>
+            concept to_json_arr_emit =
+                (!to_json_ref_usr_defined<T>) && (!to_json_obj_emit<T>) && to_json_inp_usr<array_emitter, T>;
+            // The emitter that the caster of T takes instead of the reference V, or void.
+            template <typename V, typename T>
+            using to_json_emitter =
+                std::conditional_t<std::same_as<V, object_ref> && to_json_obj_emit<T>, object_emitter,
+                                   std::conditional_t<std::same_as<V, array_ref> && to_json_arr_emit<T>,
+                                                      array_emitter, void>>;
+            template <typename V, typename T>
+            concept to_json_emit_usr = !std::is_void_v<to_json_emitter<V, T>>;
+            template <typename T>
             concept to_json_val_usr = to_json_inp_usr<value_ref, T>;
             template <typename T>
-            concept to_json_arr_usr = to_json_inp_usr<array_ref, T>;
+            concept to_json_arr_usr = to_json_inp_usr<array_ref, T> || to_json_arr_emit<T>;
             template <typename T>
-            concept to_json_obj_usr = to_json_inp_usr<object_ref, T>;
+            concept to_json_obj_usr = to_json_inp_usr<object_ref, T> || to_json_obj_emit<T>;
             template <typename T>
             concept to_json_inp_usr_defined = to_json_val_usr<T> || to_json_arr_usr<T> || to_json_obj_usr<T>;
             // A user caster that only translates T.  The in-place check comes first: for a caster taking
@@ -1312,7 +1338,7 @@ namespace yyjson
 
             template <typename V, typename T>
             concept to_json_inp_def =
-                (!to_json_inp_usr<V, T>) &&
+                (!to_json_inp_usr<V, T>) && (!to_json_emit_usr<V, T>) &&
                 (std::same_as<V, value_ref> || std::same_as<V, array_ref> || std::same_as<V, object_ref>) &&
                 requires(V& v, T&& t) {
                     default_caster<std::remove_cvref_t<T>>::to_json(v, std::forward<T>(t), copy_string);
@@ -1393,6 +1419,24 @@ namespace yyjson
             auto to_json_wrapper(V& v, T&& t, Ts...)
             {
                 return caster<std::remove_cvref_t<T>>::to_json(v, std::forward<T>(t), copy_string);
+            }
+
+            // Makes the emitters, whose constructors are private.
+            struct emitter_access
+            {
+                template <typename E, typename Target>
+                static E make(Target& target) noexcept
+                {
+                    return E(target);
+                }
+            };
+            // A caster taking an emitter is given one that writes into the reference.
+            template <typename V, typename T, copy_string_args... Ts>
+            requires to_json_emit_usr<V, T>
+            void to_json_wrapper(V& v, T&& t, Ts... ts)
+            {
+                auto emitter = emitter_access::make<to_json_emitter<V, T>>(v);
+                to_json_wrapper(emitter, std::forward<T>(t), ts...);
             }
             template <to_json_defined T, copy_string_args... Ts>
             auto convert(T&& t, Ts... ts)
@@ -6387,6 +6431,8 @@ namespace yyjson
         class direct_writer
         {
             friend class reader::detail::direct_reader;
+            friend class yyjson::object_emitter;
+            friend class yyjson::array_emitter;
 
             // A copy of the caller's buffer, one indirection closer, handed back on destruction.
             direct_write_buffer& out_;
@@ -6532,6 +6578,28 @@ namespace yyjson
                 }
                 next_element(first);
                 write_struct_key<Key>();
+            }
+            // `next_element` and a key known only at run time, written as `next_struct_key` writes a plain key.
+            CPPYYJSON_ALWAYS_INLINE void next_key(bool& first, std::string_view key)
+            {
+                if (!pretty_ && is_plain_key(key))
+                {
+                    ensure(key.size() + 4);
+                    auto* p = buf_.cur;
+                    *p = ',';
+                    p += !first;
+                    *p++ = '"';
+                    std::memcpy(p, key.data(), key.size());
+                    p += key.size();
+                    *p++ = '"';
+                    *p++ = ':';
+                    buf_.cur = p;
+                    first = false;
+                    return;
+                }
+                next_element(first);
+                write_string(key);
+                end_key();
             }
             // `next_struct_key` and a value of `bounded_size`, with one check of the space.
             template <typename Key, typename T>
@@ -8095,7 +8163,7 @@ namespace yyjson
                 {
                     using V = to_json_input_ref<T>;
                     constexpr auto builtin = std::derived_from<caster<U>, yyjson::detail::builtin_caster>;
-                    return !(to_json_inp_def<V, T> ||
+                    return !(to_json_inp_def<V, T> || to_json_emit_usr<V, T> ||
                              (builtin && (yyjson::detail::shared_ptr_like<U> || is_optional<U>::value) &&
                               std::same_as<V, value_ref>) ||
                              (builtin && is_variant<U>::value && std::same_as<V, value_ref>) ||
@@ -8168,6 +8236,15 @@ namespace yyjson
                     auto first = true;
                     write_tuple_members(first, std::forward<T>(t), std::make_index_sequence<std::tuple_size_v<U>>{});
                     close('}', first);
+                }
+                else if constexpr (to_json_emit_usr<V, T>)
+                {
+                    using E = to_json_emitter<V, T>;
+                    constexpr auto is_object = std::same_as<E, object_emitter>;
+                    open(is_object ? '{' : '[');
+                    auto emitter = emitter_access::make<E>(*this);
+                    to_json_wrapper(emitter, std::forward<T>(t));
+                    close(is_object ? '}' : ']', emitter.first_);
                 }
                 else
                 {
@@ -10427,6 +10504,191 @@ namespace yyjson
         return reader::read(json, read_flag).template cast<U>();
     }
 #endif
+
+    namespace writer::detail
+    {
+        template <typename T>
+        concept emplaceable = create_value_callable<T> || base_of_value<T> || reader::detail::base_of_value_ref<T>;
+    }
+
+    // Appends the members of a JSON object for `caster<T>::to_json(yyjson::object_emitter&, const T&, ...)`.
+    // `yyjson::value(t)` and the other writers through a document get them added to the object in the document,
+    // and `yyjson::write(t)` gets them written to the JSON text directly.  Nothing written can be read back,
+    // replaced or removed.
+    class object_emitter
+    {
+        friend struct writer::detail::emitter_access;
+        friend class array_emitter;
+#if YYJSON_VERSION_HEX >= 0x000A00
+        friend class writer::detail::direct_writer;
+
+        writer::detail::direct_writer* direct_ = nullptr;
+        bool first_ = true;
+        explicit object_emitter(writer::detail::direct_writer& writer) noexcept : direct_(&writer) {}
+        template <typename Key>
+        CPPYYJSON_ALWAYS_INLINE void write_key(Key&& key)
+        {
+            // a string literal, whose check for escapes the compiler can do
+            if constexpr (std::is_array_v<std::remove_cvref_t<Key>>)
+                direct_->next_key(first_, std::string_view(key));
+            else
+            {
+                direct_->next_element(first_);
+                direct_->write_primitive(std::forward<Key>(key));
+                direct_->end_key();
+            }
+        }
+#endif
+        writer::object_ref* object_ = nullptr;
+        explicit object_emitter(writer::object_ref& object) noexcept : object_(&object) {}
+        template <typename Key, typename T, typename... Ts>
+        void emplace_in_document(Key&& key, T&& t, Ts... ts)
+        {
+            object_->emplace_no_iter(std::forward<Key>(key), std::forward<T>(t), ts...);
+        }
+
+    public:
+        object_emitter(const object_emitter&) = delete;
+        object_emitter& operator=(const object_emitter&) = delete;
+
+        // Appends the member of `key` and `t`, written as `yyjson::value(t, ts...)`.  Without `copy_string`, a
+        // document refers to the strings of `key` and `t`, as it does in `writer::object_ref::emplace`.
+        template <typename Key, writer::detail::emplaceable T, detail::copy_string_args... Ts>
+        requires detail::key_type<std::remove_cvref_t<Key>>
+        void emplace(Key&& key, T&& t, Ts... ts)
+        {
+#if YYJSON_VERSION_HEX >= 0x000A00
+            if (direct_ != nullptr)
+            {
+                write_key(std::forward<Key>(key));
+                direct_->write_value(std::forward<T>(t));
+                return;
+            }
+#endif
+            emplace_in_document(std::forward<Key>(key), std::forward<T>(t), ts...);
+        }
+        // Appends the member of `key` and an object, whose members `func(object_emitter&)` appends.
+        template <typename Key, std::invocable<object_emitter&> Func, detail::copy_string_args... Ts>
+        requires detail::key_type<std::remove_cvref_t<Key>>
+        void emplace_object(Key&& key, Func&& func, Ts... ts);
+        // Appends the member of `key` and an array, whose elements `func(array_emitter&)` appends.
+        template <typename Key, std::invocable<array_emitter&> Func, detail::copy_string_args... Ts>
+        requires detail::key_type<std::remove_cvref_t<Key>>
+        void emplace_array(Key&& key, Func&& func, Ts... ts);
+    };
+
+    // Appends the elements of a JSON array for `caster<T>::to_json(yyjson::array_emitter&, const T&, ...)`, as
+    // `object_emitter` does the members of an object.
+    class array_emitter
+    {
+        friend struct writer::detail::emitter_access;
+        friend class object_emitter;
+#if YYJSON_VERSION_HEX >= 0x000A00
+        friend class writer::detail::direct_writer;
+
+        writer::detail::direct_writer* direct_ = nullptr;
+        bool first_ = true;
+        explicit array_emitter(writer::detail::direct_writer& writer) noexcept : direct_(&writer) {}
+#endif
+        writer::array_ref* array_ = nullptr;
+        explicit array_emitter(writer::array_ref& array) noexcept : array_(&array) {}
+
+    public:
+        array_emitter(const array_emitter&) = delete;
+        array_emitter& operator=(const array_emitter&) = delete;
+
+        // Appends `t`, written as `yyjson::value(t, ts...)`.
+        template <writer::detail::emplaceable T, detail::copy_string_args... Ts>
+        void emplace_back(T&& t, Ts... ts)
+        {
+#if YYJSON_VERSION_HEX >= 0x000A00
+            if (direct_ != nullptr)
+            {
+                direct_->next_element(first_);
+                direct_->write_value(std::forward<T>(t));
+                return;
+            }
+#endif
+            array_->emplace_back_no_iter(std::forward<T>(t), ts...);
+        }
+        // Appends an object, whose members `func(object_emitter&)` appends.
+        template <std::invocable<object_emitter&> Func>
+        void emplace_back_object(Func&& func)
+        {
+#if YYJSON_VERSION_HEX >= 0x000A00
+            if (direct_ != nullptr)
+            {
+                direct_->next_element(first_);
+                direct_->open('{');
+                auto child = object_emitter(*direct_);
+                std::forward<Func>(func)(child);
+                direct_->close('}', child.first_);
+                return;
+            }
+#endif
+            auto object = array_->emplace_back(empty_object);
+            auto child = object_emitter(object);
+            std::forward<Func>(func)(child);
+        }
+        // Appends an array, whose elements `func(array_emitter&)` appends.
+        template <std::invocable<array_emitter&> Func>
+        void emplace_back_array(Func&& func)
+        {
+#if YYJSON_VERSION_HEX >= 0x000A00
+            if (direct_ != nullptr)
+            {
+                direct_->next_element(first_);
+                direct_->open('[');
+                auto child = array_emitter(*direct_);
+                std::forward<Func>(func)(child);
+                direct_->close(']', child.first_);
+                return;
+            }
+#endif
+            auto array = array_->emplace_back(empty_array);
+            auto child = array_emitter(array);
+            std::forward<Func>(func)(child);
+        }
+    };
+
+    template <typename Key, std::invocable<object_emitter&> Func, detail::copy_string_args... Ts>
+    requires detail::key_type<std::remove_cvref_t<Key>>
+    void object_emitter::emplace_object(Key&& key, Func&& func, Ts... ts)
+    {
+#if YYJSON_VERSION_HEX >= 0x000A00
+        if (direct_ != nullptr)
+        {
+            write_key(std::forward<Key>(key));
+            direct_->open('{');
+            auto child = object_emitter(*direct_);
+            std::forward<Func>(func)(child);
+            direct_->close('}', child.first_);
+            return;
+        }
+#endif
+        auto object = object_->emplace(std::forward<Key>(key), empty_object, ts...);
+        auto child = object_emitter(object);
+        std::forward<Func>(func)(child);
+    }
+    template <typename Key, std::invocable<array_emitter&> Func, detail::copy_string_args... Ts>
+    requires detail::key_type<std::remove_cvref_t<Key>>
+    void object_emitter::emplace_array(Key&& key, Func&& func, Ts... ts)
+    {
+#if YYJSON_VERSION_HEX >= 0x000A00
+        if (direct_ != nullptr)
+        {
+            write_key(std::forward<Key>(key));
+            direct_->open('[');
+            auto child = array_emitter(*direct_);
+            std::forward<Func>(func)(child);
+            direct_->close(']', child.first_);
+            return;
+        }
+#endif
+        auto array = object_->emplace(std::forward<Key>(key), empty_array, ts...);
+        auto child = array_emitter(array);
+        std::forward<Func>(func)(child);
+    }
 }  // namespace yyjson
 
 template <>
