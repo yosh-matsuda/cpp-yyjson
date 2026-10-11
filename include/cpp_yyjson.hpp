@@ -690,6 +690,23 @@ namespace yyjson
 
         template <typename T>
         struct default_caster;
+        // Whether `caster<T>` or `default_caster<T>` has a `from_json` that reads a `T` from the JSON reference
+        // `Json`.  The reader and the writer each name the four forms that they use.
+        template <typename T, typename Json>
+        concept caster_from_json = requires(const Json& v) {
+            { caster<T>::from_json(v) } -> std::same_as<T>;
+        };
+        template <typename T, typename Json>
+        concept default_caster_from_json = requires(const Json& v) {
+            { default_caster<T>::from_json(v) } -> std::same_as<T>;
+        };
+
+        // The translator forms of `caster<T>::from_json`, which take a C++ value rather than a JSON value.
+        template <typename T>
+        struct from_json_translator;
+        // `caster<T>::from_json` in the form that it has, existing or translator.
+        template <typename T, typename Json>
+        T user_from_json(const Json& json);
 
         // Tells whether the field at index I shares no byte with the other fields, which a field marked
         // `[[no_unique_address]]` may do.  A new object can then be constructed in the place of the field.
@@ -714,6 +731,10 @@ namespace yyjson
                 // A field that cannot be returned by value, such as a proxy or a non-movable type,
                 // is assigned in place. The caster decides which type it casts the JSON value to.
                 caster<field_type>::from_json(field, value);
+            }
+            else if constexpr (from_json_translator<field_type>::in_place)
+            {
+                from_json_translator<field_type>::assign_from_json(field, value);
             }
             else if constexpr (requires { default_caster<field_type>::assign_in_place(field, value, replaceable); })
             {
@@ -1045,25 +1066,14 @@ namespace yyjson
             using namespace yyjson::detail;  // NOLINT
 
             template <typename T>
-            concept from_json_val_usr_defined =  // clang-format off
-                    requires(const const_value_ref& v) {
-                        {caster<T>::from_json(v)} -> std::same_as<T>;
-                    };  // clang-format on
+            concept from_json_val_usr_defined =
+                caster_from_json<T, const_value_ref> || yyjson::detail::from_json_translator<T>::castable;
             template <typename T>
-            concept from_json_def_val_defined =  // clang-format off
-                    requires(const const_value_ref& v) {
-                        {default_caster<T>::from_json(v)} -> std::same_as<T>;
-                    };  // clang-format on
+            concept from_json_def_val_defined = default_caster_from_json<T, const_value_ref>;
             template <typename T>
-            concept from_json_def_obj_defined =  // clang-format off
-                    requires(const const_object_ref& v) {
-                        {default_caster<T>::from_json(v)} -> std::same_as<T>;
-                    };  // clang-format on
+            concept from_json_def_obj_defined = default_caster_from_json<T, const_object_ref>;
             template <typename T>
-            concept from_json_def_arr_defined =  // clang-format off
-                    requires(const const_array_ref& v) {
-                        {default_caster<T>::from_json(v)} -> std::same_as<T>;
-                    };  // clang-format on
+            concept from_json_def_arr_defined = default_caster_from_json<T, const_array_ref>;
 
             template <class Derived>
             concept base_of_value_ref = requires(Derived d) { [](const abstract_value_ref&) {}(d); };
@@ -1287,17 +1297,14 @@ namespace yyjson
             }
 
             template <typename T>
-            concept from_json_val_usr_defined =  // clang-format off
-                    requires(const const_value_ref& v) { {caster<T>::from_json(v)} -> std::same_as<T>; };  // clang-format on
+            concept from_json_val_usr_defined =
+                caster_from_json<T, const_value_ref> || yyjson::detail::from_json_translator<T>::castable;
             template <typename T>
-            concept from_json_def_val_defined =  // clang-format off
-                    requires(const const_value_ref& v) { {default_caster<T>::from_json(v)} -> std::same_as<T>; };  // clang-format on
+            concept from_json_def_val_defined = default_caster_from_json<T, const_value_ref>;
             template <typename T>
-            concept from_json_def_obj_defined =  // clang-format off
-                    requires(const const_object_ref& v) { {default_caster<T>::from_json(v)} -> std::same_as<T>; };  // clang-format on
+            concept from_json_def_obj_defined = default_caster_from_json<T, const_object_ref>;
             template <typename T>
-            concept from_json_def_arr_defined =  // clang-format off
-                    requires(const const_array_ref& v) { {default_caster<T>::from_json(v)} -> std::same_as<T>; };  // clang-format on
+            concept from_json_def_arr_defined = default_caster_from_json<T, const_array_ref>;
 #pragma endregion caster
 
             template <typename T, typename DocType = mutable_document>
@@ -2551,7 +2558,7 @@ namespace yyjson
                 requires from_json_val_usr_defined<U>
                 U cast() const
                 {
-                    return caster<U>::from_json(const_value_ref(doc_, val_));
+                    return yyjson::detail::user_from_json<U>(const_value_ref(doc_, val_));
                 }
                 template <typename T, typename U = std::remove_cvref_t<T>>
                 requires from_json_def_val_defined<U> && (!from_json_val_usr_defined<U>)
@@ -3029,7 +3036,7 @@ namespace yyjson
                 requires from_json_val_usr_defined<U>
                 U cast() const
                 {
-                    return caster<U>::from_json(const_value_ref(*this));
+                    return yyjson::detail::user_from_json<U>(const_value_ref(*this));
                 }
                 template <typename T, typename U = std::remove_cvref_t<T>>
                 requires from_json_def_arr_defined<U> && (!from_json_val_usr_defined<U>)
@@ -3784,7 +3791,7 @@ namespace yyjson
                 requires from_json_val_usr_defined<U>
                 U cast() const
                 {
-                    return caster<U>::from_json(const_value_ref(*this));
+                    return yyjson::detail::user_from_json<U>(const_value_ref(*this));
                 }
                 template <typename T, typename U = std::remove_cvref_t<T>>
                 requires from_json_def_obj_defined<U> && (!from_json_val_usr_defined<U>)
@@ -4413,7 +4420,7 @@ namespace yyjson
             requires detail::from_json_val_usr_defined<U>
             U cast() const
             {
-                return caster<U>::from_json(*this);
+                return yyjson::detail::user_from_json<U>(*this);
             }
             template <typename T, typename U = std::remove_cvref_t<T>>
             requires detail::from_json_def_val_defined<U> && (!detail::from_json_val_usr_defined<U>)
@@ -4515,7 +4522,7 @@ namespace yyjson
             requires detail::from_json_val_usr_defined<U>
             U cast() const
             {
-                return caster<U>::from_json(const_value_ref(base::val_));
+                return yyjson::detail::user_from_json<U>(const_value_ref(base::val_));
             }
             template <typename T, typename U = std::remove_cvref_t<T>>
             requires detail::from_json_def_arr_defined<U> && (!detail::from_json_val_usr_defined<U>)
@@ -4647,7 +4654,7 @@ namespace yyjson
             requires detail::from_json_val_usr_defined<U>
             U cast() const
             {
-                return caster<U>::from_json(const_value_ref(base::val_));
+                return yyjson::detail::user_from_json<U>(const_value_ref(base::val_));
             }
             template <typename T, typename U = std::remove_cvref_t<T>>
             requires detail::from_json_def_obj_defined<U> && (!detail::from_json_val_usr_defined<U>)
@@ -5063,10 +5070,129 @@ namespace yyjson
         { yyjson::cast<T>(json) };
     };
 
+    namespace detail
+    {
+        // The parameter U of `T caster<T>::from_json(U)` and of `void caster<T>::from_json(T&, U)`, deduced from
+        // the functions named `from_json`: the deduction succeeds only when exactly one non-template function
+        // has the form.
+        template <typename T, typename U>
+        U from_json_return_form(T (*)(U));
+        template <typename T, typename U>
+        U from_json_in_place_form(void (*)(T&, U));
+
+        template <typename T>
+        struct from_json_return_param
+        {
+        };
+        template <typename T>
+        requires requires { from_json_return_form<T>(&caster<T>::from_json); }
+        struct from_json_return_param<T>
+        {
+            using type = decltype(from_json_return_form<T>(&caster<T>::from_json));
+        };
+        template <typename T>
+        struct from_json_in_place_param
+        {
+        };
+        template <typename T>
+        requires requires { from_json_in_place_form<T>(&caster<T>::from_json); }
+        struct from_json_in_place_param<T>
+        {
+            using type = decltype(from_json_in_place_form<T>(&caster<T>::from_json));
+        };
+
+        // A `from_json` that takes a JSON value has the form of the casters that existed before translators.
+        template <typename U>
+        concept translator_param =
+            !(json_value<std::remove_cvref_t<U>> || json_object<std::remove_cvref_t<U>> ||
+              json_array<std::remove_cvref_t<U>>);
+        template <typename T>
+        concept from_json_return_translator =
+            requires { typename from_json_return_param<T>::type; } &&
+            translator_param<typename from_json_return_param<T>::type>;
+        template <typename T>
+        concept from_json_in_place_translator =
+            requires { typename from_json_in_place_param<T>::type; } &&
+            translator_param<typename from_json_in_place_param<T>::type>;
+
+        template <typename T>
+        struct from_json_translator
+        {
+            static constexpr bool returns = from_json_return_translator<T>;
+            // `void from_json(T&, U)`, which a field of a struct is given in place
+            static constexpr bool in_place = from_json_in_place_translator<T>;
+            // `cast<T>` takes the caster of a `from_json(const const_value_ref&)` that also exists
+            static constexpr bool castable =
+                !requires(const reader::const_value_ref& v) {
+                    { caster<T>::from_json(v) } -> std::same_as<T>;
+                } && (returns || (in_place && std::default_initializable<T> && std::move_constructible<T>));
+
+            // Converts the value that `cast<source>` has read.
+            template <typename S>
+            static T convert(S&& s)
+            {
+                if constexpr (returns)
+                {
+                    using U = typename from_json_return_param<T>::type;
+                    static_assert(!std::same_as<std::remove_cvref_t<U>, T>, "caster<T>::from_json cannot take a T");
+                    return caster<T>::from_json(param<U>(s));
+                }
+                else
+                {
+                    T t{};
+                    assign(t, std::forward<S>(s));
+                    return t;
+                }
+            }
+            template <typename S>
+            static void assign(T& t, S&& s)
+            {
+                using U = typename from_json_in_place_param<T>::type;
+                static_assert(!std::same_as<std::remove_cvref_t<U>, T>, "caster<T>::from_json cannot take a T");
+                caster<T>::from_json(t, param<U>(s));
+            }
+
+            template <typename Json>
+            static void assign_from_json(T& t, const Json& json);
+
+        private:
+            // A non-const lvalue reference is given the value read, and any other parameter is given an rvalue.
+            template <typename U, typename S>
+            static decltype(auto) param(S& s) noexcept
+            {
+                return static_cast<std::conditional_t<std::is_reference_v<U>, U, std::remove_cvref_t<U>&&>>(s);
+            }
+        };
+
+        // The type that `cast<T>` reads for the translator of T and gives to `from_json`, and the type that the
+        // in-place form takes.
+        template <typename T>
+        using from_json_source = std::remove_cvref_t<typename std::conditional_t<
+            from_json_return_translator<T>, from_json_return_param<T>, from_json_in_place_param<T>>::type>;
+        template <typename T>
+        using from_json_in_place_source = std::remove_cvref_t<typename from_json_in_place_param<T>::type>;
+
+        template <typename T>
+        template <typename Json>
+        void from_json_translator<T>::assign_from_json(T& t, const Json& json)
+        {
+            assign(t, cast<from_json_in_place_source<T>>(json));
+        }
+
+        template <typename T, typename Json>
+        T user_from_json(const Json& json)
+        {
+            if constexpr (from_json_translator<T>::castable)
+                return from_json_translator<T>::convert(cast<from_json_source<T>>(json));
+            else
+                return caster<T>::from_json(json);
+        }
+    }  // namespace detail
+
     template <typename Json, typename T>
     concept field_assignable = castable<Json, T> || requires(T& field, const Json& json) {
         caster<std::remove_cvref_t<T>>::from_json(field, json);
-    };
+    } || detail::from_json_translator<std::remove_cvref_t<T>>::in_place;
 
     template <json_object Json, field_reflection::field_namable T>
     constexpr bool all_fields_castable_impl()
@@ -5862,6 +5988,10 @@ namespace yyjson
                     return json_kind_array | json_kind_object;
                 else
                     return json_kind_all;
+            }
+            else if constexpr (from_json_translator<T>::castable)
+            {
+                return accepted_json_kinds<from_json_source<T>, Json>();
             }
             else
             {
@@ -8940,6 +9070,8 @@ namespace yyjson
                                           ...);
                             return result;
                         }(std::make_index_sequence<std::tuple_size_v<T>>{});
+                    else if constexpr (yyjson::detail::from_json_translator<T>::castable)
+                        return documents_of_value<yyjson::detail::from_json_source<T>, Loop>(seen{});
                     else if constexpr (from_json_val_usr_defined<T>)
                     {
                         if constexpr (yyjson::detail::shared_ptr_like<T> &&
@@ -9009,6 +9141,8 @@ namespace yyjson
                     else
                         return Loop;
                 }
+                else if constexpr (yyjson::detail::from_json_translator<F>::in_place)
+                    return documents_of_value<yyjson::detail::from_json_in_place_source<F>, Loop>(seen);
                 else
                 {
                     auto result = documents_of_value<F, Loop>(seen);
@@ -10055,6 +10189,9 @@ namespace yyjson
                 }
                 else if constexpr (builtin_tuple<T>)
                     return read_tuple<T>();
+                else if constexpr (yyjson::detail::from_json_translator<T>::castable)
+                    return yyjson::detail::from_json_translator<T>::convert(
+                        read_value<yyjson::detail::from_json_source<T>>());
                 else if constexpr (from_json_val_usr_defined<T>)
                 {
                     if constexpr (yyjson::detail::shared_ptr_like<T> &&
@@ -10463,6 +10600,9 @@ namespace yyjson
                     else
                         with_document([&](const const_value_ref& v) { caster<field_type>::from_json(field, v); });
                 }
+                else if constexpr (yyjson::detail::from_json_translator<field_type>::in_place)
+                    yyjson::detail::from_json_translator<field_type>::assign(
+                        field, read_value<yyjson::detail::from_json_in_place_source<field_type>>());
                 else if constexpr (std::same_as<field_type, std::string>)
                 {
                     if (*cur_ == '"') [[likely]]
