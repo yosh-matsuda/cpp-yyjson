@@ -5495,6 +5495,45 @@ TEST(DirectReader, Indentation)
     }
 }
 
+TEST(DirectReader, MapMemberOrder)
+{
+    using namespace yyjson;
+
+    // members in the order of the map, the reverse, a mix, and duplicate keys, whose first value is kept
+    constexpr auto n = 150;
+    auto orders = std::vector<std::vector<std::pair<std::string, int>>>(5);
+    for (auto i = 0; i < n; ++i)
+    {
+        orders[0].emplace_back(std::to_string(i), i);
+        orders[1].emplace_back(std::to_string(n - 1 - i), i);
+        orders[2].emplace_back(std::to_string(i * 37 % n), i);
+        orders[3].emplace_back(std::format("k{:03}", i), i);
+        orders[4].emplace_back(std::to_string(i % 7 * 3 % 10), i);
+    }
+    auto run = [&]<typename T>(std::type_identity<T>) {
+        for (const auto& members : orders)
+        {
+            auto json = std::string("{");
+            auto expected = T();
+            for (const auto& [key, value] : members)
+            {
+                json += std::format(R"({}"{}":{})", json.size() == 1 ? "" : ",", key, value);
+                expected.emplace(key, value);
+            }
+            json += "}";
+            EXPECT_EQ(read(json).cast<T>(), expected) << json;
+            EXPECT_EQ(read<T>(json), expected) << json;
+        }
+    };
+    run(std::type_identity<std::map<std::string, int>>());
+    run(std::type_identity<std::map<std::string, int, std::greater<>>>());
+    run(std::type_identity<std::multimap<std::string, int>>());
+    run(std::type_identity<std::unordered_map<std::string, int>>());
+    static_assert(detail::hinted_map<std::map<std::string, int>>);
+    static_assert(!detail::hinted_map<std::multimap<std::string, int>>);
+    static_assert(!detail::hinted_map<std::unordered_map<std::string, int>>);
+}
+
 TEST(DirectReader, DocumentOfWholeText)
 {
     using namespace yyjson;

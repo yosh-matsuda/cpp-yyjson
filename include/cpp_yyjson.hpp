@@ -5448,14 +5448,42 @@ namespace yyjson
                 };
             };
 
-        // Adds a member of a JSON object to a range satisfying `object_emplaceable_range` (`Back` false) or
-        // `object_back_emplaceable_range` (`Back` true).
-        template <bool Back, typename T, typename Key, typename Value>
-        void emplace_key_value(T& result, Key&& key, Value&& value)
+        // A map of unique keys in an order, into which `emplace_key_value` adds a member next to the one added
+        // before it.  The members of an object that are in the order of the map, as its writer puts them, or whose
+        // keys are numbers of the same length counting up, are then added without a search.
+        template <typename T>
+        concept hinted_map = requires { typename T::key_compare; } &&
+                             requires(T& t, std::ranges::range_value_t<T> kv, typename T::const_iterator hint) {
+                                 { t.insert(std::move(kv)) } -> std::same_as<std::pair<typename T::iterator, bool>>;
+                                 { t.emplace_hint(hint, std::move(kv)) } -> std::same_as<typename T::iterator>;
+                             };
+
+        // Where `emplace_key_value` adds the next member to T, and an empty placeholder unless T is a `hinted_map`.
+        template <typename T>
+        struct emplace_position
         {
-            auto emplace = [&result](auto&&... args) {
+            struct type
+            {
+            };
+            static type first(T&) noexcept { return {}; }
+        };
+        template <hinted_map T>
+        struct emplace_position<T>
+        {
+            using type = typename T::const_iterator;
+            static type first(T& t) noexcept { return t.cend(); }
+        };
+
+        // Adds a member of a JSON object to a range satisfying `object_emplaceable_range` (`Back` false) or
+        // `object_back_emplaceable_range` (`Back` true), at `position` if T is a `hinted_map`.
+        template <bool Back, typename T, typename Key, typename Value>
+        void emplace_key_value(T& result, typename emplace_position<T>::type& position, Key&& key, Value&& value)
+        {
+            auto emplace = [&](auto&&... args) {
                 if constexpr (Back)
                     result.emplace_back(std::forward<decltype(args)>(args)...);
+                else if constexpr (hinted_map<T>)
+                    position = std::next(result.emplace_hint(position, std::forward<decltype(args)>(args)...));
                 else
                     result.emplace(std::forward<decltype(args)>(args)...);
             };
@@ -5564,9 +5592,10 @@ namespace yyjson
             using value_type = std::remove_cvref_t<std::tuple_element_t<1, std::ranges::range_value_t<T>>>;
             auto result = T();
             reserve_if_possible(result, obj.size());
+            auto position = emplace_position<T>::first(result);
             for (auto&& kv : obj)
             {
-                emplace_key_value<false>(result, kv.first, cast<value_type>(kv.second));
+                emplace_key_value<false>(result, position, kv.first, cast<value_type>(kv.second));
             }
             return result;
         }
@@ -5577,9 +5606,10 @@ namespace yyjson
             using value_type = std::remove_cvref_t<std::tuple_element_t<1, std::ranges::range_value_t<T>>>;
             auto result = T();
             reserve_if_possible(result, obj.size());
+            auto position = emplace_position<T>::first(result);
             for (auto&& kv : obj)
             {
-                emplace_key_value<true>(result, kv.first, cast<value_type>(kv.second));
+                emplace_key_value<true>(result, position, kv.first, cast<value_type>(kv.second));
             }
             return result;
         }
@@ -10701,12 +10731,13 @@ namespace yyjson
                     using value_type = std::remove_cvref_t<std::tuple_element_t<1, std::ranges::range_value_t<T>>>;
                     auto result = T();
                     auto key_buf = std::string();
+                    auto position = yyjson::detail::emplace_position<T>::first(result);
                     read_members([&] {
                         // the key is kept in `key_buf` while the value is read if it has escapes
                         const auto key = read_string(key_buf);
                         read_colon();
                         yyjson::detail::emplace_key_value<!yyjson::detail::object_emplaceable_range<T, json_object>>(
-                            result, key, read_value<value_type>());
+                            result, position, key, read_value<value_type>());
                     });
                     return result;
                 }
