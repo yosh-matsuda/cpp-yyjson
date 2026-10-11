@@ -5475,12 +5475,20 @@ namespace yyjson
         {
         };
 
+        // A set, whose elements are its keys, is not an output range and is filled with `insert`.  A map has
+        // key-value pairs as its elements and is read from a JSON object.
+        template <typename T>
+        concept insertable_set = std::ranges::range<T> && requires(T& t, std::ranges::range_value_t<T> v) {
+            requires std::same_as<typename T::key_type, std::ranges::range_value_t<T>>;
+            t.insert(t.end(), std::move(v));
+        };
+
         // A string is a range of characters, but is read from a JSON string only.
         template <typename T, typename Json>
         concept array_castable_range =
             (!is_basic_string<T>::value) && std::ranges::range<T> && std::default_initializable<T> && requires {
                 typename std::ranges::range_value_t<T>;
-                requires std::ranges::output_range<T, std::ranges::range_value_t<T>>;
+                requires std::ranges::output_range<T, std::ranges::range_value_t<T>> || insertable_set<T>;
                 requires requires(const Json& arr) { cast<std::ranges::range_value_t<T>>(arr.front()); };
             };
 
@@ -5533,7 +5541,8 @@ namespace yyjson
         template <typename T, typename Json>
         concept fixed_size_assignable_in_place =
             std::same_as<Json, reader::const_value_ref> && (!reader::detail::from_json_val_usr_defined<T>) &&
-            (!back_insertable<T>) && std::ranges::sized_range<T> && array_castable_range<T, reader::const_array_ref>;
+            (!back_insertable<T>) && (!insertable_set<T>) && std::ranges::sized_range<T> &&
+            array_castable_range<T, reader::const_array_ref>;
     }  // namespace detail
 
     template <typename T>
@@ -5608,6 +5617,12 @@ namespace yyjson
                 reserve_if_possible(result, arr.size());
                 std::ranges::transform(arr, std::back_inserter(result),
                                        [](const auto& e) { return cast<std::ranges::range_value_t<T>>(e); });
+            }
+            else if constexpr (insertable_set<T>)
+            {
+                // the end is the right hint for the elements of a sorted set, which are written in order
+                reserve_if_possible(result, arr.size());
+                for (const auto& e : arr) result.insert(result.end(), cast<value_type>(e));
             }
             else  // TODO: fixed size range concept
                 assign_fixed_size_range(result, arr);
@@ -10565,6 +10580,8 @@ namespace yyjson
                         else
                             result.push_back(read_element<value_type>());
                     }
+                    else if constexpr (yyjson::detail::insertable_set<T>)
+                        result.insert(result.end(), read_element<value_type>());
                     else
                     {
                         if (count++ == std::ranges::size(result)) fail();

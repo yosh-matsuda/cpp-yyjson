@@ -9,6 +9,7 @@
 #include <numeric>
 #include <set>
 #include <tuple>
+#include <unordered_set>
 #include "cpp_yyjson.hpp"
 
 #if defined(__GNUC__)
@@ -5603,6 +5604,75 @@ TEST(Reader, RangesOfFixedSizeRanges)
     EXPECT_TRUE(expect_direct_read<string_pairs>(R"({"a\n":"\u00e9","c":"d"})"));
     EXPECT_TRUE(expect_direct_read<string_pairs>(R"([["a","b"],["c"]])"));
     EXPECT_TRUE((expect_direct_read<std::set<std::array<std::string, 2>>>(R"({"c":"d","a":"b"})")));
+}
+
+struct SetFields
+{
+    std::set<int> s;
+    std::unordered_set<std::string> u;
+    std::optional<std::multiset<int>> m;
+    bool operator==(const SetFields&) const = default;
+};
+
+TEST(Reader, Sets)
+{
+    using namespace yyjson;
+
+    // a set is written as a JSON array and read back from one, keeping the duplicates only in a multiset
+    EXPECT_EQ(std::string_view(value(std::set<int>{3, 1, 2}).write()), "[1,2,3]");
+    EXPECT_EQ(read("[3,1,2,1]").cast<std::set<int>>(), (std::set<int>{1, 2, 3}));
+    EXPECT_EQ(read("[3,1,2,1]").cast<std::multiset<int>>(), (std::multiset<int>{1, 1, 2, 3}));
+    EXPECT_EQ(read("[3,1,2,1]").cast<std::unordered_set<int>>(), (std::unordered_set<int>{1, 2, 3}));
+    EXPECT_EQ(read(R"(["b","a"])").cast<std::set<std::string>>(), (std::set<std::string>{"a", "b"}));
+    EXPECT_EQ(read("[]").cast<std::set<int>>(), std::set<int>());
+    for (const auto* json : {R"([1,"x"])", R"({"a":1})", "1", "null", "[[1]]"})
+        EXPECT_THROW((void)read(json).cast<std::set<int>>(), bad_cast) << json;
+
+    // the reader without a document gives the same, and reads every valid text itself
+    for (const auto* json : {"[]", "[3,1,2,1]", "[1,2,3]"})
+    {
+        EXPECT_TRUE(expect_direct_read<std::set<int>>(json));
+        EXPECT_TRUE(expect_direct_read<std::multiset<int>>(json));
+        EXPECT_TRUE(expect_direct_read<std::unordered_multiset<int>>(json));
+    }
+    for (const auto* json : {R"([1,"x"])", R"({"a":1})", "1", "null"})
+    {
+        expect_direct_read<std::set<int>>(json);
+        expect_direct_read<std::multiset<int>>(json);
+        expect_direct_read<std::unordered_multiset<int>>(json);
+    }
+    EXPECT_TRUE(expect_direct_read<std::unordered_set<std::string>>(R"(["b","a","b\n"])"));
+    EXPECT_TRUE(expect_direct_read<std::set<double>>("[2.5,1e300,-0.0]"));
+
+    // nested in ranges, maps, optionals, structs and variants
+    using nested = std::vector<std::set<int>>;
+    EXPECT_EQ(read("[[2,1],[],[3,3]]").cast<nested>(), (nested{{1, 2}, {}, {3}}));
+    EXPECT_TRUE(expect_direct_read<nested>("[[2,1],[],[3,3]]"));
+    EXPECT_TRUE(expect_direct_read<std::set<std::vector<int>>>("[[2,1],[],[3,3]]"));
+    EXPECT_TRUE(expect_direct_read<std::set<std::set<int>>>("[[2,1],[],[3,3]]"));
+    for (const auto* json : {"[[1],2]", "[[1],null]"})
+    {
+        expect_direct_read<nested>(json);
+        expect_direct_read<std::set<std::vector<int>>>(json);
+        expect_direct_read<std::set<std::set<int>>>(json);
+    }
+    EXPECT_TRUE((expect_direct_read<std::map<std::string, std::set<int>>>(R"({"a":[2,1],"b":[]})")));
+    EXPECT_TRUE(expect_direct_read<std::optional<std::set<int>>>("[2,1]"));
+    expect_direct_read<std::optional<std::set<int>>>("null");
+
+    const auto fields = SetFields{{1, 2}, {"a"}, std::multiset<int>{1, 1}};
+    const auto fields_json = std::string(value(fields).write());
+    EXPECT_EQ(read(fields_json).cast<SetFields>(), fields);
+    EXPECT_TRUE(expect_direct_read<SetFields>(fields_json));
+    EXPECT_TRUE(expect_direct_read<SetFields>(R"({"s":[2,1,2],"u":[],"m":null})"));
+    expect_direct_read<SetFields>(R"({"s":{}})");
+
+    using set_or_int = std::variant<int, std::set<int>>;
+    EXPECT_EQ(read("[2,1]").cast<set_or_int>(), set_or_int(std::set<int>{1, 2}));
+    EXPECT_EQ(read("2").cast<set_or_int>(), set_or_int(2));
+    EXPECT_TRUE(expect_direct_read<set_or_int>("[2,1]"));
+    expect_direct_read<set_or_int>("2");
+    expect_direct_read<set_or_int>(R"(["x"])");
 }
 
 // The index and the JSON text of a variant cast from `json`, or nothing when the cast fails.
