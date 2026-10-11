@@ -1112,6 +1112,8 @@ auto tpl_obj2 = cast<decltype(tpl_obj)>(json_obj);          // deserialize
 // -> {{"number", 1.5}, {"error", nullptr}, {"text", "abc"}}
 ```
 
+A JSON array or object with more elements than the tuple throws `yyjson::bad_cast`, and one with fewer leaves the remaining elements of the tuple value-initialized, as a `std::array` does.
+
 ### Automatic casting with compile-time reflection
 
 The compile-time reflection is supported to automatically convert C++ struct/class to JSON object and vice versa. This feature is provided by using [field-reflection](https://github.com/yosh-matsuda/field-reflection) and is included in this library.

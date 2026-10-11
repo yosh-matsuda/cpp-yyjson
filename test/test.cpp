@@ -5541,6 +5541,39 @@ TEST(Reader, VariantSkipsAlternatives)
     EXPECT_THROW((void)read("1").cast<array_or_map>(), bad_cast);
 }
 
+TEST(Reader, TupleLongerThanJson)
+{
+    using namespace yyjson;
+
+    // the elements that the JSON value does not have are value-initialized, as those of a `std::array` are,
+    // instead of being read from the values that follow it
+    const auto doc = read(R"({"t":[1],"u":[],"v":{"a":1},"y":5,"z":"s"})");
+    const auto obj = *doc.as_object();
+    EXPECT_EQ((cast<std::pair<int, int>>(obj["t"])), (std::pair{1, 0}));
+    EXPECT_EQ((cast<std::tuple<int, int, std::string>>(obj["t"])), (std::tuple{1, 0, std::string()}));
+    EXPECT_EQ((cast<std::tuple<double, std::string>>(obj["u"])), (std::tuple{0.0, std::string()}));
+    using pairs = std::tuple<std::pair<std::string, int>, std::pair<std::string, int>>;
+    EXPECT_EQ((cast<pairs>(obj["v"])), (pairs{{"a", 1}, {}}));
+    EXPECT_EQ((cast<std::array<int, 2>>(obj["t"])), (std::array{1, 0}));
+
+    struct Fields
+    {
+        std::pair<int, int> t;
+        std::tuple<double, std::string> u;
+        pairs v;
+        int y;
+    };
+    const auto fields = doc.cast<Fields>();
+    EXPECT_EQ(fields.t, (std::pair{1, 0}));
+    EXPECT_EQ(fields.v, (pairs{{"a", 1}, {}}));
+    EXPECT_EQ(fields.y, 5);
+#if YYJSON_VERSION_HEX >= 0x000A00
+    const auto direct = yyjson::read<Fields>(R"({"t":[1],"u":[],"v":{"a":1},"y":5,"z":"s"})");
+    EXPECT_EQ(direct.t, (std::pair{1, 0}));
+    EXPECT_EQ(direct.v, (pairs{{"a", 1}, {}}));
+#endif
+}
+
 namespace
 {
     // The direct reader reads a variant in a range to the same alternative as the cast from a document, and

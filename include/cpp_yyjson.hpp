@@ -5882,13 +5882,16 @@ namespace yyjson
                         detail::throw_bad_cast("the size of JSON object is greater than the size of {}",
                                                detail::type_name<Tuple<Ts...>>());
 
+                    // the elements after those of the JSON value are left value-initialized
                     using indices = std::make_index_sequence<std::tuple_size_v<Tuple<Ts...>>>;
                     auto it = obj->begin();
-                    [&result, &it]<std::size_t... N>(std::index_sequence<N...>) {
-                        (((std::get<N>(result) = std::tuple_element_t<N, Tuple<Ts...>>(
-                               static_cast<std::tuple_element_t<0, Ts>>(std::get<0>(*it)),
-                               cast<std::tuple_element_t<1, Ts>>(std::get<1>(*it)))),
-                          ++it),
+                    const auto size = obj->size();
+                    [&result, &it, size]<std::size_t... N>(std::index_sequence<N...>) {
+                        ((N < size ? (void)(std::get<N>(result) = std::tuple_element_t<N, Tuple<Ts...>>(
+                                                static_cast<std::tuple_element_t<0, Ts>>(std::get<0>(*it)),
+                                                cast<std::tuple_element_t<1, Ts>>(std::get<1>(*it))),
+                                            ++it)
+                                   : void()),
                          ...);
                     }(indices{});
 
@@ -5905,10 +5908,14 @@ namespace yyjson
                         detail::throw_bad_cast("the size of JSON array is greater than the size of {}",
                                                detail::type_name<Tuple<Ts...>>());
 
+                    // the elements after those of the JSON value are left value-initialized
                     using indices = std::make_index_sequence<std::tuple_size_v<Tuple<Ts...>>>;
                     auto it = arr->begin();
-                    [&result, &it]<std::size_t... N>(std::index_sequence<N...>) {
-                        ((std::get<N>(result) = cast<std::tuple_element_t<N, Tuple<Ts...>>>(*(it++))), ...);
+                    const auto size = arr->size();
+                    [&result, &it, size]<std::size_t... N>(std::index_sequence<N...>) {
+                        ((N < size ? (void)(std::get<N>(result) = cast<std::tuple_element_t<N, Tuple<Ts...>>>(*(it++)))
+                                   : void()),
+                         ...);
                     }(indices{});
 
                     return result;
