@@ -11431,36 +11431,137 @@ namespace yyjson
                 });
             }
 
+            // A set of the addresses of map nodes, by open addressing in one block.
+            class node_set
+            {
+                std::vector<const void*> slots_;
+                std::size_t size_ = 0;
+                int shift_ = 0;
+
+                [[nodiscard]] std::size_t slot(const void* p) const noexcept
+                {
+                    return static_cast<std::size_t>(
+                        (static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(p)) * 0x9E3779B97F4A7C15ULL) >>
+                        shift_);
+                }
+
+                void reserve(std::size_t n)
+                {
+                    const auto capacity = std::bit_ceil(std::max<std::size_t>(16, n * 2));
+                    auto old = std::exchange(slots_, std::vector<const void*>(capacity));
+                    shift_ = 64 - std::countr_zero(capacity);
+                    size_ = 0;
+                    for (const auto* p : old)
+                        if (p != nullptr) insert(p);
+                }
+
+            public:
+                explicit node_set(std::size_t n) { reserve(n); }
+
+                // Adds `p` and returns true, or returns false if `p` is in the set.
+                bool insert(const void* p)
+                {
+                    if ((size_ + 1) * 2 > slots_.size()) reserve(slots_.size());
+                    for (auto i = slot(p);; i = (i + 1) & (slots_.size() - 1))
+                    {
+                        if (slots_[i] == p) return false;
+                        if (slots_[i] == nullptr)
+                        {
+                            slots_[i] = p;
+                            ++size_;
+                            return true;
+                        }
+                    }
+                }
+
+                [[nodiscard]] bool contains(const void* p) const noexcept
+                {
+                    for (auto i = slot(p);; i = (i + 1) & (slots_.size() - 1))
+                    {
+                        if (slots_[i] == p) return true;
+                        if (slots_[i] == nullptr) return false;
+                    }
+                }
+            };
+
             // Reads the members of the object at `cur_` into `result`, reading the value of a key that `result`
-            // has over the old value and dropping the keys that the object does not have.
+            // has over the old value and dropping the keys that the object does not have.  A key that the object
+            // has twice keeps its first value, as `read<T>` keeps it.
             template <typename T>
             void read_map_over(T& result)
             {
                 using value_type = std::remove_cvref_t<std::tuple_element_t<1, std::ranges::range_value_t<T>>>;
-                auto old = T();
-                old.swap(result);
                 auto key_buf = std::string();
                 auto lookup = std::string();
-                auto position = yyjson::detail::emplace_position<T>::first(result);
-                auto next = old.begin();
-                read_members([&] {
-                    const auto key = read_string(key_buf);
-                    read_colon();
-                    // the members are usually in the order of the previous document
-                    auto it = next != old.end() && next->first == key ? next : old.find(lookup.assign(key));
-                    if (it != old.end())
-                    {
+                if constexpr (yyjson::detail::hinted_map<T>)
+                {
+                    // While the members name the keys in the order of the map, their values are read in place and
+                    // [begin, ahead) are the members named so far.  After a member out of that order, `ahead` stays
+                    // and `named` holds the nodes from `ahead` on that a member has named.
+                    auto ahead = result.begin();
+                    auto named = std::optional<node_set>();
+                    auto next = result.end();
+                    read_members([&] {
+                        const auto key = read_string(key_buf);
+                        read_colon();
+                        if (!named) [[likely]]
+                        {
+                            if (ahead != result.end() && ahead->first == key)
+                            {
+                                read_value_into(ahead->second);
+                                ++ahead;
+                                return;
+                            }
+                            // a key before `ahead` is either new or named before
+                            lookup.assign(key);
+                            if (ahead == result.end() || result.key_comp()(lookup, ahead->first))
+                            {
+                                result.emplace_hint(ahead, lookup, read_value<value_type>());
+                                return;
+                            }
+                            named.emplace(result.size());
+                            next = ahead;
+                        }
+                        auto it = next != result.end() && next->first == key ? next : result.find(lookup.assign(key));
+                        if (it == result.end())
+                        {
+                            named->insert(&*result.emplace(lookup, read_value<value_type>()).first);
+                            return;
+                        }
                         next = std::next(it);
-                        auto node = old.extract(it);
-                        read_value_into(node.mapped());
-                        if constexpr (yyjson::detail::hinted_map<T>)
-                            position = std::next(result.insert(position, std::move(node)));
+                        if (result.key_comp()(it->first, ahead->first) || !named->insert(&*it))
+                            std::ignore = read_value<value_type>();
                         else
-                            result.insert(std::move(node));
-                    }
+                            read_value_into(it->second);
+                    });
+                    if (!named)
+                        result.erase(ahead, result.end());
                     else
-                        yyjson::detail::emplace_key_value<false>(result, position, key, read_value<value_type>());
-                });
+                        for (auto it = ahead; it != result.end();)
+                            it = named->contains(&*it) ? std::next(it) : result.erase(it);
+                }
+                else
+                {
+                    auto old = T();
+                    old.swap(result);
+                    auto position = yyjson::detail::emplace_position<T>::first(result);
+                    auto next = old.begin();
+                    read_members([&] {
+                        const auto key = read_string(key_buf);
+                        read_colon();
+                        // the members are usually in the order of the previous document
+                        auto it = next != old.end() && next->first == key ? next : old.find(lookup.assign(key));
+                        if (it != old.end())
+                        {
+                            next = std::next(it);
+                            auto node = old.extract(it);
+                            read_value_into(node.mapped());
+                            result.insert(std::move(node));
+                        }
+                        else
+                            yyjson::detail::emplace_key_value<false>(result, position, key, read_value<value_type>());
+                    });
+                }
             }
 
             // Reads the elements of the array at `cur_` over those of `result`, appending or erasing the rest.
