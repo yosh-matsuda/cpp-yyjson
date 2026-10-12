@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <bitset>
 #include <cassert>
 #include <charconv>
 #include <cmath>
@@ -5569,6 +5570,38 @@ namespace yyjson
             std::same_as<Json, reader::const_value_ref> && (!reader::detail::from_json_val_usr_defined<T>) &&
             (!back_insertable<T>) && (!insertable_set<T>) && std::ranges::sized_range<T> &&
             array_castable_range<T, reader::const_array_ref>;
+
+        template <typename M>
+        struct member_pointee;
+        template <typename M, typename C>
+        struct member_pointee<M C::*>
+        {
+            using type = M;
+        };
+
+        // Whether every field of a reflected or visitable struct can be move-assigned, so that `read_into` and
+        // `merge_into` can assign a field over its old value.
+        template <typename T>
+        consteval bool fields_move_assignable()
+        {
+            if constexpr (visitable<T>)
+            {
+                using members = std::remove_cv_t<decltype(visit_struct<T>::members)>;
+                return []<std::size_t... Is>(std::index_sequence<Is...>) {
+                    return (std::is_move_assignable_v<
+                                typename member_pointee<std::tuple_element_t<Is, members>>::type> &&
+                            ...);
+                }(std::make_index_sequence<std::tuple_size_v<members>>{});
+            }
+            else if constexpr (field_reflection::field_namable<T>)
+            {
+                return []<std::size_t... Is>(std::index_sequence<Is...>) {
+                    return (std::is_move_assignable_v<field_reflection::field_type<T, Is>> && ...);
+                }(std::make_index_sequence<field_reflection::field_count<T>>{});
+            }
+            else
+                return false;
+        }
     }  // namespace detail
 
     template <typename T>
@@ -8888,6 +8921,184 @@ namespace yyjson
     }
 #endif
 
+    namespace reader::detail
+    {
+        // A field that a caster reads over its old value, which `read_into` and `merge_into` reset to its value in
+        // `T()` first, so that the caster sees the value that it sees when the struct is read anew.
+        template <typename Field>
+        concept reads_over_old_value =
+            yyjson::detail::from_json_translator<Field>::in_place ||
+            (requires(Field& field, const const_value_ref& v) { caster<Field>::from_json(field, v); } &&
+             !(yyjson::detail::is_std_optional<Field>::value &&
+               std::derived_from<caster<Field>, yyjson::detail::builtin_caster>));
+
+        // A struct that the default caster reads field by field and whose fields can all be move-assigned, so
+        // that `read_into` reads over its fields and `merge_into` merges an object into them.
+        template <typename T>
+        concept struct_mergeable =
+            (!yyjson::detail::from_json_translator<T>::castable) && (!from_json_val_usr_defined<T>) &&
+            std::is_default_constructible_v<T> && std::is_move_assignable_v<T> &&
+            (yyjson::detail::reflected_assignable_in_place<T, const_value_ref> ||
+             (yyjson::detail::visitable<T> && requires {
+                 visit_struct<T>::key_matcher;
+                 visit_struct<T>::members;
+             })) &&
+            yyjson::detail::fields_move_assignable<T>();
+
+        // A map with unique string keys, whose values `merge_into` merges into and whose members it erases at
+        // null.
+        template <typename T>
+        concept map_mergeable =
+            (!yyjson::detail::from_json_translator<T>::castable) && (!from_json_val_usr_defined<T>) &&
+            yyjson::detail::object_emplaceable_range<T, const_object_ref> && requires(T& t, const std::string& key) {
+                requires std::same_as<typename T::key_type, std::string>;
+                requires std::default_initializable<typename T::mapped_type>;
+                requires std::is_move_assignable_v<typename T::mapped_type>;
+                { t.try_emplace(key).first->second } -> std::same_as<typename T::mapped_type&>;
+                t.erase(t.find(key));
+            };
+
+        // A value that `merge_into` merges a JSON object into: a struct, a map, or an optional of either, which
+        // gets a value first if it has none.  Any other value is replaced.
+        template <typename T>
+        concept mergeable =
+            struct_mergeable<T> || map_mergeable<T> ||
+            (yyjson::detail::is_std_optional<T>::value &&
+             std::derived_from<caster<T>, yyjson::detail::builtin_caster> &&
+             (struct_mergeable<typename T::value_type> || map_mergeable<typename T::value_type>));
+
+        template <typename T>
+        CPPYYJSON_ALWAYS_INLINE inline constexpr const auto& struct_key_matcher() noexcept
+        {
+            if constexpr (yyjson::detail::visitable<T>)
+                return visit_struct<T>::key_matcher;
+            else
+                return yyjson::detail::reflected_key_matcher<T>;
+        }
+
+        template <typename T>
+        inline constexpr std::size_t struct_field_count = [] {
+            if constexpr (yyjson::detail::visitable<T>)
+                return std::tuple_size_v<std::remove_cvref_t<decltype(visit_struct<T>::members)>>;
+            else
+                return field_reflection::field_count<T>;
+        }();
+
+        template <std::size_t I, typename T>
+        CPPYYJSON_ALWAYS_INLINE inline constexpr auto& struct_field(T& t) noexcept
+        {
+            if constexpr (yyjson::detail::visitable<T>)
+                return t.*std::get<I>(visit_struct<T>::members);
+            else
+                return field_reflection::get_field<I>(t);
+        }
+
+        // Calls `f(std::integral_constant<std::size_t, I>())` for the field I of T that `index` names.
+        template <typename T, typename F>
+        CPPYYJSON_ALWAYS_INLINE inline void with_struct_field(std::size_t index, F&& f)
+        {
+            [&]<std::size_t... Is>(std::index_sequence<Is...>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                (void)((index == Is && (f(std::integral_constant<std::size_t, Is>{}), true)) || ...);
+            }(std::make_index_sequence<struct_field_count<T>>{});
+        }
+
+        // The value of `T()`, built at its first use, which gives a field the value that a JSON object without
+        // its key gives it.  It is built again when a field that was moved from it is needed again.
+        template <typename T>
+        class struct_defaults
+        {
+            std::optional<T> defaults_;
+            std::bitset<struct_field_count<T>> moved_;
+
+        public:
+            template <std::size_t I>
+            void reset(T& t)
+            {
+                if (!defaults_.has_value() || moved_[I])
+                {
+                    defaults_.emplace();
+                    moved_.reset();
+                }
+                moved_.set(I);
+                struct_field<I>(t) = std::move(struct_field<I>(*defaults_));
+            }
+        };
+
+        template <typename T>
+        void merge_from(T& t, const const_value_ref& v);
+
+        // Merges a JSON object into the fields of `t` that its keys name, as `merge_from` does.
+        template <typename T>
+        void merge_struct_from(T& t, const const_object_ref& obj)
+        {
+            auto defaults = struct_defaults<T>();
+            yyjson::detail::assign_fields_by_key(
+                struct_key_matcher<T>(), obj, [&](std::size_t index, const const_value_ref& value) {
+                    with_struct_field<T>(index, [&]<std::size_t I>(std::integral_constant<std::size_t, I>) {
+                        auto& field = struct_field<I>(t);
+                        using field_type = std::remove_cvref_t<decltype(field)>;
+                        if (value.is_null())
+                        {
+                            defaults.template reset<I>(t);
+                            return;
+                        }
+                        if constexpr (reads_over_old_value<field_type>)
+                            defaults.template reset<I>(t);
+                        else if constexpr (mergeable<field_type>)
+                        {
+                            if (value.is_object())
+                            {
+                                merge_from(field, value);
+                                return;
+                            }
+                        }
+                        yyjson::detail::assign_reflected_field(field, value, false);
+                    });
+                });
+        }
+
+        template <typename T>
+        void merge_map_from(T& t, const const_object_ref& obj)
+        {
+            auto key = std::string();
+            for (auto&& [k, value] : obj)
+            {
+                key.assign(k);
+                if (value.is_null())
+                {
+                    if (const auto it = t.find(key); it != t.end()) t.erase(it);
+                }
+                else
+                    merge_from(t.try_emplace(key).first->second, value);
+            }
+        }
+
+        // Merges a value of a document into `t` as a JSON Merge Patch (RFC 7386) merges it into a JSON value:
+        // an object is merged into a struct or a map member by member, where null gives a field its value in
+        // `T()` and erases a key of a map, and any other value replaces `t` as `cast<T>` reads it.
+        template <typename T>
+        void merge_from(T& t, const const_value_ref& v)
+        {
+            if constexpr (mergeable<T>)
+            {
+                if (const auto obj = v.as_object(); obj.has_value())
+                {
+                    if constexpr (struct_mergeable<T>)
+                        merge_struct_from(t, *obj);
+                    else if constexpr (map_mergeable<T>)
+                        merge_map_from(t, *obj);
+                    else
+                    {
+                        if (!t.has_value()) t.emplace();
+                        merge_from(*t, v);
+                    }
+                    return;
+                }
+            }
+            t = v.template cast<T>();
+        }
+    }  // namespace reader::detail
+
 #if YYJSON_VERSION_HEX >= 0x000C00
     namespace reader::detail
     {
@@ -9296,6 +9507,7 @@ namespace yyjson
             const char* last_;   // the closing bracket of the root
             ReadFlag flg_;
             bool inv_;
+            bool into_ = false;
             std::string scratch_;
             struct free_alc
             {
@@ -9315,6 +9527,27 @@ namespace yyjson
                   flg_(flg),
                   inv_((flg & ReadFlag::AllowInvalidUnicode) != ReadFlag::NoFlag)
             {
+            }
+
+            // Finds the brackets of the root of `json` between white space, and returns whether this reader reads
+            // it: the root is an object or an array, and no flag but `ReadFlag::AllowInvalidUnicode` is given.
+            CPPYYJSON_ALWAYS_INLINE static bool find_root(std::string_view json, ReadFlag flg, const char*& first,
+                                                          const char*& last) noexcept
+            {
+                if ((to_underlying(flg) & ~yyjson_read_flag{YYJSON_READ_ALLOW_INVALID_UNICODE}) != 0) [[unlikely]]
+                    return false;
+                first = json.data();
+                last = json.data() + json.size();
+                while (first != last && is_ws(*first)) ++first;
+                while (first != last && is_ws(last[-1])) --last;
+                if (last - first < 2 || !((*first == '{' && last[-1] == '}') || (*first == '[' && last[-1] == ']')))
+                    return false;
+#if YYJSON_READER_DEPTH_LIMIT
+                // yyjson rejects the text, and this reader would not count the depth
+                if (!within_depth_limit(first, last)) return false;
+#endif
+                --last;
+                return true;
             }
 
             // Whether reading T calls `with_document` for each element of a range or a map: then a document of the
@@ -9491,6 +9724,22 @@ namespace yyjson
                 return result;
             }
 
+            template <typename T>
+            void read_root_into(T& t)
+            {
+                into_ = true;
+                read_value_into(t);
+                if (cur_ != last_ + 1) fail();
+            }
+
+            template <typename T>
+            void merge_root(T& t)
+            {
+                into_ = true;
+                merge_value(t);
+                if (cur_ != last_ + 1) fail();
+            }
+
         private:
             [[noreturn]] CPPYYJSON_COLD static void fail() { throw direct_read_failure{}; }
             [[noreturn]] CPPYYJSON_COLD static void unsupported() { throw direct_read_unsupported{}; }
@@ -9504,6 +9753,36 @@ namespace yyjson
             {
                 return c == ' ' || c == '\n' || c == '\r' || c == '\t';
             }
+
+#if YYJSON_READER_DEPTH_LIMIT
+            // Whether the containers of the text are nested no deeper than `YYJSON_READER_DEPTH_LIMIT`, counting the
+            // root, as yyjson checks them.  The text is not checked otherwise.
+            static bool within_depth_limit(const char* first, const char* last) noexcept
+            {
+                auto depth = std::size_t{0};
+                for (auto in_string = false; first != last; ++first)
+                {
+                    if (in_string)
+                    {
+                        if (*first == '\\')
+                        {
+                            if (++first == last) break;
+                        }
+                        else if (*first == '"')
+                            in_string = false;
+                    }
+                    else if (*first == '"')
+                        in_string = true;
+                    else if (*first == '[' || *first == '{')
+                    {
+                        if (++depth > std::size_t{YYJSON_READER_DEPTH_LIMIT}) return false;
+                    }
+                    else if ((*first == ']' || *first == '}') && depth != 0)
+                        --depth;
+                }
+                return true;
+            }
+#endif
 
             // Skips white space, of which there is usually none or a single space, and otherwise a line break
             // and the indentation of the next line.
@@ -11110,6 +11389,389 @@ namespace yyjson
                 }
             }
 
+            template <typename T>
+            static constexpr bool array_reusable =
+                !builtin_variant<T> && !builtin_tuple<T> && !yyjson::detail::from_json_translator<T>::castable &&
+                !from_json_val_usr_defined<T> && from_json_def_arr_defined<T> && yyjson::detail::back_insertable<T> &&
+                std::ranges::random_access_range<T> && requires(T& t) {
+                    requires std::is_move_assignable_v<std::ranges::range_value_t<T>>;
+                    t.erase(t.begin(), t.end());
+                    { t.emplace_back() } -> std::same_as<std::ranges::range_value_t<T>&>;
+                };
+
+            // A map with unique keys whose nodes `read_into` moves from the old map to the new one, keeping the
+            // values to be read over.
+            template <typename T>
+            static constexpr bool map_reusable =
+                !yyjson::detail::from_json_translator<T>::castable && !from_json_val_usr_defined<T> &&
+                yyjson::detail::object_emplaceable_range<T, const_object_ref> &&
+                requires(T& t, typename T::node_type node) {
+                    requires std::same_as<typename T::key_type, std::string>;
+                    requires std::is_move_assignable_v<typename T::mapped_type>;
+                    typename T::insert_return_type;
+                    t.extract(t.begin());
+                    t.insert(std::move(node));
+                };
+
+            // Reads the value at `cur_` into `t`, reusing the objects in it.
+            template <typename T>
+            CPPYYJSON_ALWAYS_INLINE void read_value_into(T& t)
+            {
+                if constexpr (struct_mergeable<T>)
+                {
+                    if (*cur_ == '{')
+                    {
+                        read_struct_over(t);
+                        return;
+                    }
+                }
+                else if constexpr (array_reusable<T>)
+                {
+                    if (*cur_ == '[')
+                    {
+                        read_array_over(t);
+                        return;
+                    }
+                }
+                else if constexpr (map_reusable<T>)
+                {
+                    if (*cur_ == '{')
+                    {
+                        read_map_over(t);
+                        return;
+                    }
+                }
+                else if constexpr (std::same_as<T, std::string>)
+                {
+                    if (*cur_ == '"')
+                    {
+                        read_string_into(t);
+                        return;
+                    }
+                }
+                else if constexpr (std::is_arithmetic_v<T>)
+                {
+                    t = read_element<T>();
+                    return;
+                }
+                t = read_value<T>();
+            }
+
+            // Reads the object at `cur_` over the fields of `t`, and resets those that it does not have to their
+            // values in `T()`.
+            template <typename T>
+            void read_struct_over(T& t)
+            {
+                constexpr auto n = struct_field_count<T>;
+                auto seen = std::bitset<n>();
+                read_fields(struct_key_matcher<T>(), [&](std::size_t index) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                    const auto first = !seen[index];
+                    seen.set(index);
+                    with_struct_field<T>(index, [&]<std::size_t I>(std::integral_constant<std::size_t, I>)
+                                                    CPPYYJSON_LAMBDA_ALWAYS_INLINE { read_field_over<I>(t, first); });
+                });
+                if (!seen.all()) [[unlikely]]
+                {
+                    auto defaults = T();
+                    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                        ((seen[Is] || (struct_field<Is>(t) = std::move(struct_field<Is>(defaults)), true)), ...);
+                    }(std::make_index_sequence<n>{});
+                }
+            }
+
+            // Reads a field as `read_field` does, but on its first key in the object resets first what
+            // `read_field` would keep of the old value to its value in `T()`: everything for a caster that reads
+            // over it, and an optional for a null.
+            template <std::size_t I, typename T>
+            CPPYYJSON_ALWAYS_INLINE void read_field_over(T& t, bool first)
+            {
+                auto& field = struct_field<I>(t);
+                using field_type = std::remove_cvref_t<decltype(field)>;
+                if constexpr (reads_over_old_value<field_type>)
+                {
+                    if (first)
+                    {
+                        auto defaults = T();
+                        field = std::move(struct_field<I>(defaults));
+                    }
+                }
+                else if constexpr (is_std_optional<field_type>::value)
+                {
+                    if (first && *cur_ == 'n')
+                    {
+                        // most optionals are empty in `T()`, which is told once per field instead of building
+                        // `T()` for every null
+                        static const auto empty_by_default = [] {
+                            auto defaults = T();
+                            return !struct_field<I>(defaults).has_value();
+                        }();
+                        if (empty_by_default)
+                            field.reset();
+                        else [[unlikely]]
+                            reset_field<I>(t);
+                    }
+                }
+                read_field(field, false);
+            }
+
+            template <std::size_t I, typename T>
+            CPPYYJSON_COLD static void reset_field(T& t)
+            {
+                auto defaults = T();
+                struct_field<I>(t) = std::move(struct_field<I>(defaults));
+            }
+
+            // Merges the value at `cur_` into `t` as `merge_from` merges a value of a document.
+            template <typename T>
+            void merge_value(T& t)
+            {
+                if constexpr (mergeable<T>)
+                {
+                    if (*cur_ == '{')
+                    {
+                        if constexpr (struct_mergeable<T>)
+                            merge_struct(t);
+                        else if constexpr (map_mergeable<T>)
+                            merge_map(t);
+                        else
+                        {
+                            if (!t.has_value()) t.emplace();
+                            merge_value(*t);
+                        }
+                        return;
+                    }
+                }
+                read_value_into(t);
+            }
+
+            template <typename T>
+            void merge_struct(T& t)
+            {
+                auto defaults = struct_defaults<T>();
+                read_fields(struct_key_matcher<T>(), [&](std::size_t index) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                    with_struct_field<T>(index, [&]<std::size_t I>(std::integral_constant<std::size_t, I>)
+                                                    CPPYYJSON_LAMBDA_ALWAYS_INLINE { merge_field<I>(t, defaults); });
+                });
+            }
+
+            template <std::size_t I, typename T>
+            CPPYYJSON_ALWAYS_INLINE void merge_field(T& t, struct_defaults<T>& defaults)
+            {
+                auto& field = struct_field<I>(t);
+                using field_type = std::remove_cvref_t<decltype(field)>;
+                if (*cur_ == 'n')
+                {
+                    read_literal("null");
+                    defaults.template reset<I>(t);
+                    return;
+                }
+                if constexpr (reads_over_old_value<field_type>)
+                    defaults.template reset<I>(t);
+                else if constexpr (mergeable<field_type>)
+                {
+                    if (*cur_ == '{')
+                    {
+                        merge_value(field);
+                        return;
+                    }
+                }
+                read_field(field, false);
+            }
+
+            template <typename T>
+            void merge_map(T& t)
+            {
+                auto key_buf = std::string();
+                auto lookup = std::string();
+                auto next = t.begin();
+                read_members([&] {
+                    const auto key = read_string(key_buf);
+                    read_colon();
+                    // the members are usually in the order of the map, as in a document written from it
+                    auto it = next != t.end() && next->first == key ? next : t.find(lookup.assign(key));
+                    if (*cur_ == 'n')
+                    {
+                        read_literal("null");
+                        if (it != t.end()) next = t.erase(it);
+                        return;
+                    }
+                    // `find` has put the key into `lookup` when it is not in the map
+                    if (it == t.end()) it = t.try_emplace(next, lookup);
+                    next = std::next(it);
+                    merge_value(it->second);
+                });
+            }
+
+            // A set of the addresses of map nodes, by open addressing in one block.
+            class node_set
+            {
+                std::vector<const void*> slots_;
+                std::size_t size_ = 0;
+                int shift_ = 0;
+
+                [[nodiscard]] std::size_t slot(const void* p) const noexcept
+                {
+                    return static_cast<std::size_t>(
+                        (static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(p)) * 0x9E3779B97F4A7C15ULL) >>
+                        shift_);
+                }
+
+                void reserve(std::size_t n)
+                {
+                    const auto capacity = std::bit_ceil(std::max<std::size_t>(16, n * 2));
+                    auto old = std::exchange(slots_, std::vector<const void*>(capacity));
+                    shift_ = 64 - std::countr_zero(capacity);
+                    size_ = 0;
+                    for (const auto* p : old)
+                        if (p != nullptr) insert(p);
+                }
+
+            public:
+                explicit node_set(std::size_t n) { reserve(n); }
+
+                // Adds `p` and returns true, or returns false if `p` is in the set.
+                bool insert(const void* p)
+                {
+                    if ((size_ + 1) * 2 > slots_.size()) reserve(slots_.size());
+                    for (auto i = slot(p);; i = (i + 1) & (slots_.size() - 1))
+                    {
+                        if (slots_[i] == p) return false;
+                        if (slots_[i] == nullptr)
+                        {
+                            slots_[i] = p;
+                            ++size_;
+                            return true;
+                        }
+                    }
+                }
+
+                [[nodiscard]] bool contains(const void* p) const noexcept
+                {
+                    for (auto i = slot(p);; i = (i + 1) & (slots_.size() - 1))
+                    {
+                        if (slots_[i] == p) return true;
+                        if (slots_[i] == nullptr) return false;
+                    }
+                }
+            };
+
+            // Reads the members of the object at `cur_` into `result`, reading the value of a key that `result`
+            // has over the old value and dropping the keys that the object does not have.  A key that the object
+            // has twice keeps its first value, as `read<T>` keeps it.
+            template <typename T>
+            void read_map_over(T& result)
+            {
+                using value_type = std::remove_cvref_t<std::tuple_element_t<1, std::ranges::range_value_t<T>>>;
+                auto key_buf = std::string();
+                auto lookup = std::string();
+                if constexpr (yyjson::detail::hinted_map<T>)
+                {
+                    // While the members name the keys in the order of the map, their values are read in place and
+                    // [begin, ahead) are the members named so far.  After a member out of that order, `ahead` stays
+                    // and `named` holds the nodes from `ahead` on that a member has named.
+                    auto ahead = result.begin();
+                    auto named = std::optional<node_set>();
+                    auto next = result.end();
+                    read_members([&] {
+                        const auto key = read_string(key_buf);
+                        read_colon();
+                        if (!named) [[likely]]
+                        {
+                            if (ahead != result.end() && ahead->first == key)
+                            {
+                                read_value_into(ahead->second);
+                                ++ahead;
+                                return;
+                            }
+                            // a key before `ahead` is either new or named before
+                            lookup.assign(key);
+                            if (ahead == result.end() || result.key_comp()(lookup, ahead->first))
+                            {
+                                result.emplace_hint(ahead, lookup, read_value<value_type>());
+                                return;
+                            }
+                            named.emplace(result.size());
+                            next = ahead;
+                        }
+                        auto it = next != result.end() && next->first == key ? next : result.find(lookup.assign(key));
+                        if (it == result.end())
+                        {
+                            named->insert(&*result.emplace(lookup, read_value<value_type>()).first);
+                            return;
+                        }
+                        next = std::next(it);
+                        if (result.key_comp()(it->first, ahead->first) || !named->insert(&*it))
+                            std::ignore = read_value<value_type>();
+                        else
+                            read_value_into(it->second);
+                    });
+                    if (!named)
+                        result.erase(ahead, result.end());
+                    else
+                        for (auto it = ahead; it != result.end();)
+                            it = named->contains(&*it) ? std::next(it) : result.erase(it);
+                }
+                else
+                {
+                    auto old = T();
+                    old.swap(result);
+                    auto position = yyjson::detail::emplace_position<T>::first(result);
+                    auto next = old.begin();
+                    read_members([&] {
+                        const auto key = read_string(key_buf);
+                        read_colon();
+                        // the members are usually in the order of the previous document
+                        auto it = next != old.end() && next->first == key ? next : old.find(lookup.assign(key));
+                        if (it != old.end())
+                        {
+                            next = std::next(it);
+                            auto node = old.extract(it);
+                            read_value_into(node.mapped());
+                            result.insert(std::move(node));
+                        }
+                        else
+                            yyjson::detail::emplace_key_value<false>(result, position, key, read_value<value_type>());
+                    });
+                }
+            }
+
+            // Reads the elements of the array at `cur_` over those of `result`, appending or erasing the rest.
+            template <typename T>
+            void read_array_over(T& result)
+            {
+                using value_type = std::ranges::range_value_t<T>;
+                const char* const open = cur_;
+                ++cur_;
+                skip_ws();
+                auto i = std::size_t{0};
+                const auto size = static_cast<std::size_t>(std::ranges::size(result));
+                if (*cur_ != ']')
+                {
+                    for (;;)
+                    {
+                        if (i < size)
+                            read_value_into(result[i]);
+                        else if constexpr (std::is_arithmetic_v<value_type>)
+                            result.push_back(read_element<value_type>());
+                        else
+                            read_value_into(result.emplace_back());
+                        ++i;
+                        skip_ws();
+                        if (*cur_ == ',')
+                        {
+                            ++cur_;
+                            skip_ws();
+                            continue;
+                        }
+                        if (*cur_ != ']') [[unlikely]]
+                            fail();
+                        break;
+                    }
+                }
+                close(open);
+                if (i < size) result.erase(result.begin() + static_cast<std::ptrdiff_t>(i), result.end());
+            }
+
             // Assigns the value at `cur_` to a field of a struct as `assign_reflected_field` assigns it from a
             // document.
             template <typename Field>
@@ -11126,6 +11788,14 @@ namespace yyjson
                         {
                             if (*cur_ == '{')
                             {
+                                if constexpr (struct_mergeable<value_type>)
+                                {
+                                    if (into_ && field.has_value())
+                                    {
+                                        read_struct_over(*field);
+                                        return;
+                                    }
+                                }
                                 read_reflected_fields(field.emplace());
                                 return;
                             }
@@ -11196,6 +11866,14 @@ namespace yyjson
                 else if constexpr (yyjson::detail::reflected_assignable_in_place<field_type, const_value_ref> &&
                                    std::is_nothrow_default_constructible_v<field_type>)
                 {
+                    if constexpr (struct_mergeable<field_type>)
+                    {
+                        if (*cur_ == '{' && into_)
+                        {
+                            read_struct_over(field);
+                            return;
+                        }
+                    }
                     if (*cur_ == '{' && replaceable)
                     {
                         std::destroy_at(std::addressof(field));
@@ -11213,6 +11891,20 @@ namespace yyjson
                         field.clear();
                         close(cur_++);
                     }
+                    else if constexpr (array_reusable<field_type>)
+                    {
+                        if (into_ && *cur_ == '[')
+                            read_array_over(field);
+                        else
+                            field = read_value<field_type>();
+                    }
+                    else
+                        field = read_value<field_type>();
+                }
+                else if constexpr (map_reusable<field_type> || struct_mergeable<field_type>)
+                {
+                    if (into_)
+                        read_value_into(field);
                     else
                         field = read_value<field_type>();
                 }
@@ -11290,17 +11982,13 @@ namespace yyjson
                 });
             }
         };
-
-        CPPYYJSON_ALWAYS_INLINE inline bool is_json_ws(char c) noexcept
-        {
-            return c == ' ' || c == '\n' || c == '\r' || c == '\t';
-        }
     }  // namespace reader::detail
 
     // Reads JSON text into a value of type T, with the same result as `yyjson::read(json, read_flag).cast<T>()`
     // and the same exception if it fails, but without building a document for the parts of T that the default
     // casters read.  Those that a `caster` specialization reads are read through a document of their own, and
-    // when T holds them in a range or a map, the whole text is read into one document first.
+    // when T holds them in a range or a map, the whole text is read into one document first.  If reading without
+    // a document fails, the text is read into a document for the exception, unless it is `std::bad_alloc`.
     template <typename T>
     requires (!std::is_reference_v<T>) && castable<reader::const_value_ref, T>
     [[nodiscard]] T read(std::string_view json, ReadFlag read_flag = ReadFlag::NoFlag)
@@ -11308,17 +11996,19 @@ namespace yyjson
         using U = std::remove_cv_t<T>;
         if constexpr (reader::detail::direct_reader::reads_documents_in_loop<U>)
             return reader::read(json, read_flag).template cast<U>();
-        else if ((to_underlying(read_flag) & ~yyjson_read_flag{YYJSON_READ_ALLOW_INVALID_UNICODE}) == 0) [[likely]]
+        else
         {
-            const auto* first = json.data();
-            const auto* last = json.data() + json.size();
-            while (first != last && reader::detail::is_json_ws(*first)) ++first;
-            while (first != last && reader::detail::is_json_ws(last[-1])) --last;
-            if (last - first >= 2 && ((*first == '{' && last[-1] == '}') || (*first == '[' && last[-1] == ']')))
+            const char* first;
+            const char* last;
+            if (reader::detail::direct_reader::find_root(json, read_flag, first, last)) [[likely]]
             {
                 try
                 {
-                    return reader::detail::direct_reader(first, last - 1, read_flag).read_root<U>();
+                    return reader::detail::direct_reader(first, last, read_flag).read_root<U>();
+                }
+                catch (const std::bad_alloc&)
+                {
+                    throw;
                 }
                 catch (...)
                 {
@@ -11327,12 +12017,94 @@ namespace yyjson
         }
         return reader::read(json, read_flag).template cast<U>();
     }
+
+
+    // Reads JSON text into `t`, with the same result as `t = yyjson::read<T>(json, read_flag)`, but reads over the
+    // strings, the elements of the ranges and the values of the maps that `t` already has, so that a program that
+    // reads documents of the same shape over and over reuses their memory.  If it fails, `t` is left valid but
+    // with unspecified contents.
+    template <typename T>
+    requires (!std::is_const_v<T>) && castable<reader::const_value_ref, T> && std::is_move_assignable_v<T>
+    void read_into(std::string_view json, T& t, ReadFlag read_flag = ReadFlag::NoFlag)
+    {
+        if constexpr (reader::detail::direct_reader::reads_documents_in_loop<T>)
+            t = reader::read(json, read_flag).template cast<T>();
+        else
+        {
+            const char* first;
+            const char* last;
+            if (reader::detail::direct_reader::find_root(json, read_flag, first, last)) [[likely]]
+            {
+                try
+                {
+                    reader::detail::direct_reader(first, last, read_flag).read_root_into(t);
+                    return;
+                }
+                catch (const std::bad_alloc&)
+                {
+                    throw;
+                }
+                catch (...)
+                {
+                }
+            }
+            t = reader::read(json, read_flag).template cast<T>();
+        }
+    }
+
+    // Merges JSON text into `t` as a JSON Merge Patch (RFC 7386) merges it into a JSON value.  A JSON object is
+    // merged into a struct, a map with string keys, or an optional of either, which gets a value first if it
+    // has none: each member merges its value into the field or the value of the map that its key names, where
+    // null gives the field its value in `T()` and erases the key from the map.  Any other value replaces the
+    // value, as `yyjson::read_into` reads it.  Fields and keys that the object does not have are kept.  If it
+    // fails, `t` is left valid but with unspecified contents.
+    template <typename T>
+    requires (!std::is_const_v<T>) && castable<reader::const_value_ref, T> && std::is_move_assignable_v<T>
+    void merge_into(std::string_view json, T& t, ReadFlag read_flag = ReadFlag::NoFlag)
+    {
+        if constexpr (!reader::detail::direct_reader::reads_documents_in_loop<T>)
+        {
+            const char* first;
+            const char* last;
+            if (reader::detail::direct_reader::find_root(json, read_flag, first, last)) [[likely]]
+            {
+                try
+                {
+                    reader::detail::direct_reader(first, last, read_flag).merge_root(t);
+                    return;
+                }
+                catch (const std::bad_alloc&)
+                {
+                    throw;
+                }
+                catch (...)
+                {
+                }
+            }
+        }
+        // merging the same patch again gives the same result, whatever part of it was merged before
+        reader::detail::merge_from(t, reader::read(json, read_flag));
+    }
 #else
     template <typename T>
     requires (!std::is_reference_v<T>) && castable<reader::const_value_ref, T>
     [[nodiscard]] T read(std::string_view json, ReadFlag read_flag = ReadFlag::NoFlag)
     {
         return reader::read(json, read_flag).template cast<std::remove_cv_t<T>>();
+    }
+
+    template <typename T>
+    requires (!std::is_const_v<T>) && castable<reader::const_value_ref, T> && std::is_move_assignable_v<T>
+    void read_into(std::string_view json, T& t, ReadFlag read_flag = ReadFlag::NoFlag)
+    {
+        t = reader::read(json, read_flag).template cast<T>();
+    }
+
+    template <typename T>
+    requires (!std::is_const_v<T>) && castable<reader::const_value_ref, T> && std::is_move_assignable_v<T>
+    void merge_into(std::string_view json, T& t, ReadFlag read_flag = ReadFlag::NoFlag)
+    {
+        reader::detail::merge_from(t, reader::read(json, read_flag));
     }
 #endif
 
