@@ -11411,17 +11411,23 @@ namespace yyjson
             void merge_map(T& t)
             {
                 auto key_buf = std::string();
-                auto key = std::string();
+                auto lookup = std::string();
+                auto next = t.begin();
                 read_members([&] {
-                    key.assign(read_string(key_buf));
+                    const auto key = read_string(key_buf);
                     read_colon();
+                    // the members are usually in the order of the map, as in a document written from it
+                    auto it = next != t.end() && next->first == key ? next : t.find(lookup.assign(key));
                     if (*cur_ == 'n')
                     {
                         read_literal("null");
-                        if (const auto it = t.find(key); it != t.end()) t.erase(it);
+                        if (it != t.end()) next = t.erase(it);
+                        return;
                     }
-                    else
-                        merge_value(t.try_emplace(key).first->second);
+                    // `find` has put the key into `lookup` when it is not in the map
+                    if (it == t.end()) it = t.try_emplace(next, lookup);
+                    next = std::next(it);
+                    merge_value(it->second);
                 });
             }
 

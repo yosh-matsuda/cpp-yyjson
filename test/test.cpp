@@ -7302,6 +7302,28 @@ TEST(MergeInto, Rfc7386Examples)
     EXPECT_EQ(expect_merge_into(std::optional<strings>(), R"({"a":"b","c":null})"), R"({"a":"b"})");
 }
 
+TEST(MergeInto, MapMemberOrder)
+{
+    // members in the order of the map, out of it, erasing and inserting next to the predicted one, and repeated
+    using ordered = std::map<std::string, int>;
+    const auto start = ordered{{"a", 1}, {"b", 2}, {"c", 3}, {"d", 4}};
+    EXPECT_EQ(expect_merge_into(start, R"({"a":5,"b":6,"c":7,"d":8})"), R"({"a":5,"b":6,"c":7,"d":8})");
+    EXPECT_EQ(expect_merge_into(start, R"({"d":5,"c":6,"b":7,"a":8})"), R"({"a":8,"b":7,"c":6,"d":5})");
+    EXPECT_EQ(expect_merge_into(start, R"({"a":null,"b":null,"c":9})"), R"({"c":9,"d":4})");
+    EXPECT_EQ(expect_merge_into(start, R"({"a":0,"bb":1,"c":null,"d":2,"e":3})"),
+              R"({"a":0,"b":2,"bb":1,"d":2,"e":3})");
+    EXPECT_EQ(expect_merge_into(start, R"({"x":1,"a":null,"x":null,"a":2,"b":null,"b":3})"),
+              R"({"a":2,"b":3,"c":3,"d":4})");
+    EXPECT_EQ(expect_merge_into(ordered{}, R"({"b":1,"a":2,"c":null})"), R"({"a":2,"b":1})");
+    using unordered = std::unordered_map<std::string, int>;
+    const auto merged_unordered = [](std::string_view json) {
+        auto u = unordered{{"a", 1}, {"b", 2}, {"c", 3}};
+        yyjson::merge_into(json, u);
+        return ordered(u.begin(), u.end());
+    };
+    EXPECT_EQ(merged_unordered(R"({"c":null,"a":5,"d":6,"b":null})"), (ordered{{"a", 5}, {"d", 6}}));
+}
+
 TEST(MergeInto, Structs)
 {
     const auto full = full_into_record();
