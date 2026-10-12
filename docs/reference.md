@@ -1508,6 +1508,54 @@ The string is read without a document when its root is an array or an object and
 
 With an external yyjson older than 0.12.0, `read<T>` always reads the string into a document and casts it. The bundled backend is newer and reads directly.
 
+### Reading a JSON string into an existing C++ object
+
+`yyjson::read_into` and `yyjson::merge_into` read a JSON string into an object that the program already has. Both read the string directly as `read<T>` does, with the same fallback to a document, and reuse the memory of the object: a string is assigned over the old one, the elements of a range are read over the old elements, and the values of a map keep their nodes. A program that reads documents of the same shape over and over then allocates almost nothing after the first one.
+
+```cpp
+template <typename T>
+void read_into(std::string_view json_string, T& t, ReadFlag flag = ReadFlag::NoFlag);
+
+template <typename T>
+void merge_into(std::string_view json_string, T& t, ReadFlag flag = ReadFlag::NoFlag);
+```
+
+`read_into` gives `t` the same value as `t = read<T>(json_string, flag)`: a field that the JSON object does not have gets its value in `T()`, a key of a map that the JSON object does not have is erased, and a range gets exactly the elements of the JSON array.
+
+`merge_into` applies the JSON string to `t` as a [JSON Merge Patch (RFC 7386)](https://www.rfc-editor.org/rfc/rfc7386) applies it to a JSON value. A JSON object is merged into a struct that the compile-time reflection or the `VISITABLE_STRUCT` macro converts, into a map with unique `std::string` keys, or into a `std::optional` of either, which gets a value first if it has none. Each member of the object is merged into the field or the value of the map that its key names:
+
+*   `null` gives a field its value in `T()` and erases a key from a map.
+*   A JSON object is merged in the same way, and a key that a map does not have yet is added with a default value first.
+*   Any other value replaces the field or the value of the map, as `read_into` reads it. A JSON array therefore replaces a range as a whole.
+
+Fields and keys that the object does not name keep their values. A member that appears twice is applied twice, in order.
+
+```cpp
+using namespace yyjson;
+
+struct Config
+{
+    std::string name;
+    int retries = 3;
+    std::map<std::string, int> limits;
+};
+
+auto config = Config{"a", 5, {{"cpu", 2}, {"memory", 4}}};
+merge_into(R"({"retries":null,"limits":{"cpu":8,"memory":null,"disk":1}})", config);
+// -> {"a", 3, {{"cpu", 8}, {"disk", 1}}}
+read_into(R"({"name":"b"})", config);
+// -> {"b", 3, {}}
+```
+
+Some fields are not merged but replaced, with their value in `T()` first:
+
+*   A field converted by a user-defined caster, a [translator `from_json`](#translator-from_json) or an [in-place assignment](#in-place-assignment-of-a-field), since the caster reads the whole value.
+*   A struct with a field that cannot be move-assigned, such as `std::atomic`, which is read as `read<T>` reads it.
+
+If either function throws, `t` is left valid but with unspecified contents. Merging the same JSON string again gives the same result as merging it once, which is how `merge_into` falls back to a document after a direct read that failed halfway.
+
+With an external yyjson older than 0.12.0, `read_into` assigns the result of `read<T>` and so reuses no memory, and `merge_into` merges a document into `t`.
+
 ### Writing a C++ object to a JSON string directly
 
 `yyjson::write` serializes a C++ object to a JSON string without building a `yyjson::value` first. It accepts every type that `yyjson::value` can be constructed from and follows the same conversion rules, so the result is the same as `value(t).write(flag)`, byte for byte:

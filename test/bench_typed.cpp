@@ -213,6 +213,45 @@ namespace
     };
 
     template <typename D>
+    struct typed_read_cpp_yyjson_direct_into
+    {
+        static void run(benchmark::State& state)
+        {
+            const auto& json = typed_json<D>();
+            auto result = yyjson::read<typename D::type>(json);
+            auto validated = false;
+            for (auto _ : state)
+            {
+                const auto start = std::chrono::steady_clock::now();
+                yyjson::read_into(json, result);
+                state.SetIterationTime(seconds_since(start));
+                if (!validate_read_once<D>(state, validated, result)) break;
+            }
+            finish<D>(state, json.size());
+        }
+    };
+
+    // what Glaze does when it reads into an object that it read before (`typed_read_glaze_single`)
+    template <typename D>
+    struct typed_read_cpp_yyjson_direct_merge
+    {
+        static void run(benchmark::State& state)
+        {
+            const auto& json = typed_json<D>();
+            auto result = yyjson::read<typename D::type>(json);
+            auto validated = false;
+            for (auto _ : state)
+            {
+                const auto start = std::chrono::steady_clock::now();
+                yyjson::merge_into(json, result);
+                state.SetIterationTime(seconds_since(start));
+                if (!validate_read_once<D>(state, validated, result)) break;
+            }
+            finish<D>(state, json.size());
+        }
+    };
+
+    template <typename D>
     struct typed_write_cpp_yyjson
     {
         static void run(benchmark::State& state)
@@ -322,8 +361,8 @@ namespace
 
     // Reading into the object of the previous iteration reuses the capacity of every string
     // and vector in it, which is what a program that reads the same kind of document over
-    // and over can do with Glaze.  cpp-yyjson returns a new object from every cast, so its
-    // `single` row reuses the parser memory instead.
+    // and over can do with Glaze.  Glaze keeps the fields that the document lacks, as
+    // `yyjson::merge_into` does, so `typed_read_cpp_yyjson_direct_merge` is its counterpart.
     template <typename D>
     struct typed_read_glaze_single
     {
@@ -427,6 +466,16 @@ BENCHMARK(dispatch<typed_read_cpp_yyjson_dom>)
     ->UseManualTime();
 BENCHMARK(dispatch<typed_read_cpp_yyjson_direct>)
     ->Name("typed_read_cpp_yyjson_direct")
+    ->Unit(benchmark::kMillisecond)
+    ->DenseRange(0, typed_dataset_count - 1)
+    ->UseManualTime();
+BENCHMARK(dispatch<typed_read_cpp_yyjson_direct_into>)
+    ->Name("typed_read_cpp_yyjson_direct_into")
+    ->Unit(benchmark::kMillisecond)
+    ->DenseRange(0, typed_dataset_count - 1)
+    ->UseManualTime();
+BENCHMARK(dispatch<typed_read_cpp_yyjson_direct_merge>)
+    ->Name("typed_read_cpp_yyjson_direct_merge")
     ->Unit(benchmark::kMillisecond)
     ->DenseRange(0, typed_dataset_count - 1)
     ->UseManualTime();

@@ -218,14 +218,14 @@ TYPED_POLICIES = {
     "read": {
         "fresh": "New allocator / object per read",
         "reused": "Reused allocator",
+        "object": "Reused result object",
     },
     "write": WRITE_POLICIES,
 }
 
 # benchmark name -> (direction, policy, color key, label), or None for a row that is
-# measured but not drawn: Glaze reads into the object of the previous iteration and
-# reuses the capacity of its strings and vectors, which cpp-yyjson has no API for, so
-# that row compares a different feature rather than the same work.
+# measured but not drawn.  The "object" rows read into the object of the previous
+# iteration and reuse the capacity of its strings and vectors.
 TYPED_VARIANTS = {
     "typed_read_cpp_yyjson": ("read", "fresh", "cpp_yyjson", "cpp-yyjson (DOM + cast)"),
     "typed_read_cpp_yyjson_dom": ("read", "fresh", "cpp_yyjson", "cpp-yyjson (DOM only)"),
@@ -241,8 +241,20 @@ TYPED_VARIANTS = {
         "cpp_yyjson",
         "cpp-yyjson (direct)",
     ),
+    "typed_read_cpp_yyjson_direct_into": (
+        "read",
+        "object",
+        "cpp_yyjson",
+        "cpp-yyjson (read_into)",
+    ),
+    "typed_read_cpp_yyjson_direct_merge": (
+        "read",
+        "object",
+        "cpp_yyjson",
+        "cpp-yyjson (merge_into)",
+    ),
     "typed_read_glaze": ("read", "fresh", "glaze", "Glaze"),
-    "typed_read_glaze_single": None,
+    "typed_read_glaze_single": ("read", "object", "glaze", "Glaze"),
     "typed_write_cpp_yyjson": ("write", "fresh", "cpp_yyjson", "cpp-yyjson"),
     "typed_write_cpp_yyjson_single": ("write", "reused", "cpp_yyjson", "cpp-yyjson"),
     "typed_write_cpp_yyjson_direct": (

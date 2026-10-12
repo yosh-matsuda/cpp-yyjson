@@ -187,6 +187,8 @@ auto points = read<std::vector<Point>>(R"([{"x":1,"y":2},{"x":3,"y":4}])");  // 
 auto json = write(points);                                                     // -> [{"x":1,"y":2},{"x":3,"y":4}]
 ```
 
+`yyjson::read_into` reads into an existing object with the result of `read<T>` and reuses the memory of its strings and containers, and `yyjson::merge_into` merges a JSON string into it as a [JSON Merge Patch](https://www.rfc-editor.org/rfc/rfc7386) (see [reading into an existing object](docs/reference.md#reading-a-json-string-into-an-existing-c-object)).
+
 #### Pre-defined STL casters
 
 ```cpp
