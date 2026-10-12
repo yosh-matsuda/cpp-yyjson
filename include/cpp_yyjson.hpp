@@ -1122,6 +1122,46 @@ namespace yyjson
         template <typename T>
         concept visitable = visit_struct<T>::value;
 
+        template <typename... Ts>
+        struct type_list
+        {
+        };
+        template <typename T, typename List>
+        constexpr bool type_list_has = false;
+        template <typename T, typename... Ts>
+        constexpr bool type_list_has<T, type_list<Ts...>> = (std::is_same_v<T, Ts> || ...);
+        template <typename... As, typename... Bs>
+        auto operator+(type_list<As...>, type_list<Bs...>) -> type_list<As..., Bs...>;
+
+        // The nodes of a graph of types that are reachable from some of them, each node `N` leading to those in
+        // the `type_list` `typename N::edges`.  The nodes are visited once each, in a left fold over the edges
+        // that carries the visited nodes along, so that a graph whose paths branch and join again takes as many
+        // steps as it has edges, and the depth of the instantiations is that of the walk.
+        template <typename Visited, typename N, bool Seen = type_list_has<N, Visited>>
+        struct closure_visit
+        {
+            using type = Visited;
+        };
+        template <typename Visited>
+        struct closure_state
+        {
+            using visited = Visited;
+        };
+        template <typename Visited, typename N>
+        auto operator<<(closure_state<Visited>, std::type_identity<N>)
+            -> closure_state<typename closure_visit<Visited, N>::type>;
+        template <typename Visited, typename... Ns>
+        auto closure_walk(closure_state<Visited>, type_list<Ns...>)
+            -> decltype((closure_state<Visited>{} << ... << std::type_identity<Ns>{}));
+        template <typename... Vs, typename N>
+        struct closure_visit<type_list<Vs...>, N, false>
+        {
+            using type = typename decltype(closure_walk(closure_state<type_list<Vs..., N>>{},
+                                                        typename N::edges{}))::visited;
+        };
+        template <typename Nodes>
+        using closure_t = typename decltype(closure_walk(closure_state<type_list<>>{}, Nodes{}))::visited;
+
         template <typename T>
         concept back_insertable =
             std::ranges::range<T> && requires(T& t, std::ranges::range_value_t<T> v) { t.push_back(v); };
@@ -9412,153 +9452,191 @@ namespace yyjson
             }
 
             // Whether reading T calls `with_document` for each element of a range or a map: then a document of the
-            // whole text is cheaper.  The functions follow `read_value`, `read_object`, `read_array_into` and
-            // `read_field`; `Loop` is whether the value is an element, and `Seen` the types on the way there,
-            // where a recursive type stops.
-            template <typename... Ts>
-            struct type_list
+            // whole text is cheaper.  The nodes follow `read_value`, `read_object`, `read_array_into` and
+            // `read_field`, and `Loop` is whether the value is an element.  A node is `local` if it calls
+            // `with_document` itself, and T reads documents in a loop if a node that it reaches is.
+            template <bool Local, typename Edges = yyjson::detail::type_list<>>
+            struct node
             {
+                static constexpr bool local = Local;
+                using edges = Edges;
             };
             template <typename T, bool Loop>
-            struct seen_type
+            struct value_node;
+            template <typename T, bool Loop>
+            struct object_node;
+            template <typename T>
+            struct array_node;
+            template <typename F, bool Loop>
+            struct field_node;
+            template <typename T, bool Loop>
+            struct reflected_fields_node;
+            template <typename T, bool Loop>
+            struct visitable_fields_node;
+
+            template <typename T, bool Loop>
+            static consteval auto value_node_of()
             {
-            };
-            template <typename T, bool Loop, typename... Seen>
-            static consteval bool documents_of_value(type_list<Seen...>)
-            {
-                if constexpr ((std::same_as<seen_type<T, Loop>, Seen> || ...))
-                    return false;
-                else
-                {
-                    using seen = type_list<Seen..., seen_type<T, Loop>>;
-                    if constexpr (builtin_variant<T>)
-                        return []<std::size_t... Is>(std::index_sequence<Is...>) {
-                            return (documents_of_value<std::remove_cv_t<std::variant_alternative_t<Is, T>>, Loop>(
-                                        seen{}) ||
-                                    ...);
-                        }(std::make_index_sequence<std::variant_size_v<T>>{});
-                    else if constexpr (builtin_tuple<T>)
-                        return []<std::size_t... Is>(std::index_sequence<Is...>) {
-                            auto result = false;
+                using yyjson::detail::type_list;
+                if constexpr (builtin_variant<T>)
+                    return []<std::size_t... Is>(std::index_sequence<Is...>) {
+                        return node<false,
+                                    type_list<value_node<std::remove_cv_t<std::variant_alternative_t<Is, T>>, Loop>...>>{};
+                    }(std::make_index_sequence<std::variant_size_v<T>>{});
+                else if constexpr (builtin_tuple<T>)
+                    return []<std::size_t... Is>(std::index_sequence<Is...>) {
+                        constexpr auto members = [] {
                             if constexpr (tuple_from_object<T>)
-                                result = (!tuple_copies_keys<T> && Loop) ||
-                                         (documents_of_value<std::remove_cv_t<std::tuple_element_t<
-                                                                 1, std::tuple_element_t<Is, T>>>,
-                                                             Loop>(seen{}) ||
-                                          ...);
+                                return type_list<value_node<
+                                    std::remove_cv_t<std::tuple_element_t<1, std::tuple_element_t<Is, T>>>, Loop>...>{};
+                            else
+                                return type_list<>{};
+                        };
+                        constexpr auto elements = [] {
                             if constexpr (tuple_from_array<T>)
-                                result = result ||
-                                         (documents_of_value<std::remove_cv_t<std::tuple_element_t<Is, T>>, Loop>(
-                                              seen{}) ||
-                                          ...);
-                            return result;
-                        }(std::make_index_sequence<std::tuple_size_v<T>>{});
-                    else if constexpr (yyjson::detail::from_json_translator<T>::castable)
-                        return documents_of_value<yyjson::detail::from_json_source<T>, Loop>(seen{});
-                    else if constexpr (from_json_val_usr_defined<T>)
-                    {
-                        if constexpr (yyjson::detail::shared_ptr_like<T> &&
-                                      std::derived_from<caster<T>, yyjson::detail::builtin_caster>)
-                            return documents_of_value<std::remove_cv_t<typename T::element_type>, Loop>(seen{});
-                        else if constexpr (is_std_optional<T>::value &&
-                                           std::derived_from<caster<T>, yyjson::detail::builtin_caster>)
-                            return documents_of_value<typename T::value_type, Loop>(seen{});
-                        else
-                            return Loop;
-                    }
+                                return type_list<value_node<std::remove_cv_t<std::tuple_element_t<Is, T>>, Loop>...>{};
+                            else
+                                return type_list<>{};
+                        };
+                        return node<tuple_from_object<T> && !tuple_copies_keys<T> && Loop,
+                                    decltype(members() + elements())>{};
+                    }(std::make_index_sequence<std::tuple_size_v<T>>{});
+                else if constexpr (yyjson::detail::from_json_translator<T>::castable)
+                    return node<false, type_list<value_node<yyjson::detail::from_json_source<T>, Loop>>>{};
+                else if constexpr (from_json_val_usr_defined<T>)
+                {
+                    if constexpr (yyjson::detail::shared_ptr_like<T> &&
+                                  std::derived_from<caster<T>, yyjson::detail::builtin_caster>)
+                        return node<false, type_list<value_node<std::remove_cv_t<typename T::element_type>, Loop>>>{};
+                    else if constexpr (is_std_optional<T>::value &&
+                                       std::derived_from<caster<T>, yyjson::detail::builtin_caster>)
+                        return node<false, type_list<value_node<typename T::value_type, Loop>>>{};
                     else
-                    {
-                        auto result = false;
-                        if constexpr (from_json_def_obj_defined<T>) result = result || documents_of_object<T, Loop>(seen{});
-                        if constexpr (from_json_def_arr_defined<T>) result = result || documents_of_array<T>(seen{});
-                        return result;
-                    }
+                        return node<Loop>{};
                 }
+                else
+                    return node<false,
+                                decltype(std::conditional_t<from_json_def_obj_defined<T>,
+                                                            type_list<object_node<T, Loop>>, type_list<>>{} +
+                                         std::conditional_t<from_json_def_arr_defined<T>, type_list<array_node<T>>,
+                                                            type_list<>>{})>{};
             }
-            template <typename T, bool Loop, typename Seen>
-            static consteval bool documents_of_object(Seen seen)
+            template <typename T, bool Loop>
+            static consteval auto object_node_of()
             {
+                using yyjson::detail::type_list;
                 using json_object = const_object_ref;
                 if constexpr (yyjson::detail::visitable<T> && requires {
                                   visit_struct<T>::key_matcher;
                                   visit_struct<T>::members;
                               })
-                    return documents_of_visitable_fields<T, Loop>(seen);
+                    return node<false, type_list<visitable_fields_node<T, Loop>>>{};
                 else if constexpr (yyjson::detail::object_emplaceable_range<T, json_object> ||
                                    yyjson::detail::object_back_emplaceable_range<T, json_object>)
-                    return documents_of_value<
-                        std::remove_cvref_t<std::tuple_element_t<1, std::ranges::range_value_t<T>>>, true>(seen);
+                    return node<false, type_list<value_node<
+                                           std::remove_cvref_t<std::tuple_element_t<1, std::ranges::range_value_t<T>>>,
+                                           true>>>{};
                 else if constexpr (yyjson::detail::reflected_object_castable<T, json_object>)
-                    return documents_of_reflected_fields<T, Loop>(seen);
+                    return node<false, type_list<reflected_fields_node<T, Loop>>>{};
                 else
-                    return Loop;
+                    return node<Loop>{};
             }
-            template <typename T, typename Seen>
-            static consteval bool documents_of_array(Seen seen)
+            template <typename T>
+            static consteval auto array_node_of()
             {
+                using yyjson::detail::type_list;
                 using value_type = std::ranges::range_value_t<T>;
-                auto result = documents_of_value<value_type, true>(seen);
-                if constexpr (yyjson::detail::back_insertable<T>)
-                {
-                    if constexpr (yyjson::detail::reflected_assignable_in_place<value_type, const_value_ref>)
-                        result = result || documents_of_reflected_fields<value_type, true>(seen);
-                    else if constexpr (array_readable_in_place<value_type>)
-                        result = result || documents_of_array<value_type>(seen);
-                }
-                return result;
+                if constexpr (yyjson::detail::back_insertable<T> &&
+                              yyjson::detail::reflected_assignable_in_place<value_type, const_value_ref>)
+                    return node<false, type_list<value_node<value_type, true>, reflected_fields_node<value_type, true>>>{};
+                else if constexpr (yyjson::detail::back_insertable<T> && array_readable_in_place<value_type>)
+                    return node<false, type_list<value_node<value_type, true>, array_node<value_type>>>{};
+                else
+                    return node<false, type_list<value_node<value_type, true>>>{};
             }
-            template <typename F, bool Loop, typename Seen>
-            static consteval bool documents_of_field(Seen seen)
+            template <typename F, bool Loop>
+            static consteval auto field_node_of()
             {
+                using yyjson::detail::type_list;
                 if constexpr (requires(F& field, const const_value_ref& v) { caster<F>::from_json(field, v); })
                 {
                     if constexpr (is_std_optional<F>::value &&
                                   std::derived_from<caster<F>, yyjson::detail::builtin_caster>)
                     {
                         using value_type = typename F::value_type;
-                        auto result = documents_of_value<value_type, Loop>(seen);
                         if constexpr (yyjson::detail::reflected_assignable_in_place<value_type, const_value_ref>)
-                            result = result || documents_of_reflected_fields<value_type, Loop>(seen);
-                        return result;
+                            return node<false, type_list<value_node<value_type, Loop>,
+                                                         reflected_fields_node<value_type, Loop>>>{};
+                        else
+                            return node<false, type_list<value_node<value_type, Loop>>>{};
                     }
                     else
-                        return Loop;
+                        return node<Loop>{};
                 }
                 else if constexpr (yyjson::detail::from_json_translator<F>::in_place)
-                    return documents_of_value<yyjson::detail::from_json_in_place_source<F>, Loop>(seen);
+                    return node<false, type_list<value_node<yyjson::detail::from_json_in_place_source<F>, Loop>>>{};
+                else if constexpr (yyjson::detail::reflected_assignable_in_place<F, const_value_ref>)
+                    return node<false, type_list<value_node<F, Loop>, reflected_fields_node<F, Loop>>>{};
                 else
-                {
-                    auto result = documents_of_value<F, Loop>(seen);
-                    if constexpr (yyjson::detail::reflected_assignable_in_place<F, const_value_ref>)
-                        result = result || documents_of_reflected_fields<F, Loop>(seen);
-                    return result;
-                }
+                    return node<false, type_list<value_node<F, Loop>>>{};
             }
-            template <typename T, bool Loop, typename Seen>
-            static consteval bool documents_of_reflected_fields(Seen seen)
+            template <typename T, bool Loop>
+            static consteval auto reflected_fields_node_of()
             {
-                return [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                    return (documents_of_field<std::remove_cvref_t<decltype(field_reflection::get_field<Is>(
-                                                   std::declval<T&>()))>,
-                                               Loop>(seen) ||
-                            ...);
+                return []<std::size_t... Is>(std::index_sequence<Is...>) {
+                    return node<false, yyjson::detail::type_list<field_node<
+                                           std::remove_cvref_t<decltype(field_reflection::get_field<Is>(
+                                               std::declval<T&>()))>,
+                                           Loop>...>>{};
                 }(std::make_index_sequence<field_reflection::field_count<T>>{});
             }
-            template <typename T, bool Loop, typename Seen>
-            static consteval bool documents_of_visitable_fields(Seen seen)
+            template <typename T, bool Loop>
+            static consteval auto visitable_fields_node_of()
             {
                 using members = std::remove_cvref_t<decltype(visit_struct<T>::members)>;
-                return [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                    return (documents_of_field<
-                                std::remove_cvref_t<decltype(std::declval<T&>().*std::get<Is>(visit_struct<T>::members))>,
-                                Loop>(seen) ||
-                            ...);
+                return []<std::size_t... Is>(std::index_sequence<Is...>) {
+                    return node<false, yyjson::detail::type_list<field_node<
+                                           std::remove_cvref_t<decltype(std::declval<T&>().*
+                                                                        std::get<Is>(visit_struct<T>::members))>,
+                                           Loop>...>>{};
                 }(std::make_index_sequence<std::tuple_size_v<members>>{});
+            }
+
+            template <typename T, bool Loop>
+            struct value_node : decltype(value_node_of<T, Loop>())
+            {
+            };
+            template <typename T, bool Loop>
+            struct object_node : decltype(object_node_of<T, Loop>())
+            {
+            };
+            template <typename T>
+            struct array_node : decltype(array_node_of<T>())
+            {
+            };
+            template <typename F, bool Loop>
+            struct field_node : decltype(field_node_of<F, Loop>())
+            {
+            };
+            template <typename T, bool Loop>
+            struct reflected_fields_node : decltype(reflected_fields_node_of<T, Loop>())
+            {
+            };
+            template <typename T, bool Loop>
+            struct visitable_fields_node : decltype(visitable_fields_node_of<T, Loop>())
+            {
+            };
+
+            template <typename... Ns>
+            static consteval bool any_local(yyjson::detail::type_list<Ns...>)
+            {
+                return (Ns::local || ...);
             }
 
         public:
             template <typename T>
-            static constexpr bool reads_documents_in_loop = documents_of_value<T, false>(type_list<>{});
+            static constexpr bool reads_documents_in_loop =
+                any_local(yyjson::detail::closure_t<yyjson::detail::type_list<value_node<T, false>>>{});
 
             template <typename T>
             T read_root()
