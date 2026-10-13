@@ -6223,6 +6223,69 @@ TEST(DirectReader, Variants)
 #endif
 }
 
+struct IntList
+{
+    std::vector<int> v;
+    bool operator==(const IntList&) const = default;
+};
+
+template <>
+struct yyjson::caster<IntList>
+{
+    static IntList from_json(std::vector<int> v) { return IntList{std::move(v)}; }
+    static const std::vector<int>& to_json(const IntList& x) { return x.v; }
+};
+
+TEST(DirectReader, VariantChecksNestedValues)
+{
+    using namespace yyjson::detail;
+
+    // the values that a variant checks before it tries an alternative that another may follow
+    static_assert(may_reject_nested<std::vector<int>>());
+    static_assert(may_reject_nested<std::optional<std::vector<std::string>>>());
+    static_assert(may_reject_nested<std::map<std::string, int>>());
+    static_assert(may_reject_nested<std::vector<std::vector<int>>>());
+    static_assert(may_reject_nested<IntList>());
+    static_assert(!may_reject_nested<std::vector<ReadPoint>>());
+    static_assert(!may_reject_nested<std::optional<int>>());
+    static_assert(!may_reject_nested<ReadRecord>());
+    static_assert(!may_reject_nested<std::string>());
+
+    // only the first element or value is checked, so that one after it that does not fit still fails the
+    // alternative
+    const auto values = std::vector<std::string>{
+        "null", "[]", "[1]", R"(["a"])", R"([1,"a"])", R"(["a",1])", "[1.5]", "[-1]", "[null]", "[[]]", "[[1]]",
+        R"([["a"]])", R"([[1],["a"]])", R"([["a"],[1]])", "{}", R"({"a":1})", R"({"a":"x"})", R"({"a":1,"b":"x"})",
+        R"({"a":[1]})", R"({"a":["x"]})", R"([1,2)", R"(["a)"};
+    using vector_or_strings = std::variant<std::vector<int>, std::vector<std::string>>;
+    using strings_or_vector = std::variant<std::vector<std::string>, std::vector<int>>;
+    using nested = std::variant<std::vector<std::vector<int>>, std::vector<std::vector<std::string>>>;
+    using maps = std::variant<std::map<std::string, int>, std::map<std::string, std::string>>;
+    using maps_of_vectors =
+        std::variant<std::map<std::string, std::vector<int>>, std::map<std::string, std::vector<std::string>>>;
+    using optional_or_strings = std::variant<std::optional<std::vector<int>>, std::vector<std::string>>;
+    using pairs_or_strings = std::variant<std::vector<std::pair<std::string, int>>, std::vector<std::string>>;
+    using optionals_or_strings = std::variant<std::vector<std::optional<int>>, std::vector<std::string>>;
+    using bytes_or_ints = std::variant<std::vector<std::uint8_t>, std::vector<int>>;
+    using translated_or_strings = std::variant<IntList, std::vector<std::string>>;
+    auto doc_values = std::string("[");
+    for (const auto& value : values)
+    {
+        if (value.starts_with("[1,2") || value.starts_with("[\"a")) continue;
+        doc_values += value + ",";
+    }
+    doc_values.back() = ']';
+    expect_variants_as_trying_all<vector_or_strings, strings_or_vector, nested, maps, maps_of_vectors,
+                                  optional_or_strings, pairs_or_strings, optionals_or_strings, bytes_or_ints,
+                                  translated_or_strings,
+                                  std::variant<std::shared_ptr<std::vector<int>>, std::vector<std::string>>>(
+        doc_values);
+    expect_direct_variants<vector_or_strings, strings_or_vector, nested, maps, maps_of_vectors, optional_or_strings,
+                           pairs_or_strings, optionals_or_strings, bytes_or_ints, translated_or_strings>(values);
+    EXPECT_EQ(yyjson::read<vector_or_strings>(R"(["a","b"])"), vector_or_strings(std::vector<std::string>{"a", "b"}));
+    EXPECT_EQ(yyjson::read<maps>(R"({"a":"x"})"), maps(std::map<std::string, std::string>{{"a", "x"}}));
+}
+
 struct NoDefaultValue
 {
     explicit NoDefaultValue(int v) : v(v) {}

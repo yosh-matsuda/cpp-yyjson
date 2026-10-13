@@ -6540,6 +6540,134 @@ namespace yyjson
             }
         };
 
+        // The values nested in a JSON value that `cast<T>` reads as types of their own, which `may_cast<T>` checks
+        // in turn: the value of an optional or a shared pointer that is not null, the source of a translator, the
+        // first element of a range read from an array, and the first value of a map read from an object.  The
+        // values of a struct, a tuple, a variant and a user-defined caster are not checked.
+        template <typename T, bool Elements, bool Values>
+        struct nested_cast_types
+        {
+            using element_type = void;
+            using value_type = void;
+        };
+        template <typename T, bool Values>
+        struct nested_cast_types<T, true, Values> : nested_cast_types<T, false, Values>
+        {
+            using element_type = std::ranges::range_value_t<T>;
+        };
+        template <typename T>
+        struct nested_cast_types<T, false, true>
+        {
+            using element_type = void;
+            using value_type = std::remove_cvref_t<std::tuple_element_t<1, std::ranges::range_value_t<T>>>;
+        };
+        template <typename T>
+        struct nested_casts
+        {
+            using json = reader::const_value_ref;
+            static constexpr bool builtin_cast = requires(const json& v) {
+                { caster<T>::from_json(v) } -> std::same_as<T>;
+            };
+            static constexpr bool inner = builtin_cast && std::derived_from<caster<T>, builtin_caster> &&
+                                          (shared_ptr_like<T> || is_std_optional<T>::value);
+            static constexpr bool source = !builtin_cast && from_json_translator<T>::castable && !recursive_type<T>;
+            static constexpr bool elements =
+                !builtin_cast && !from_json_translator<T>::castable && array_castable_range<T, reader::const_array_ref>;
+            static constexpr bool values =
+                !builtin_cast && !from_json_translator<T>::castable &&
+                (object_emplaceable_range<T, reader::const_object_ref> ||
+                 object_back_emplaceable_range<T, reader::const_object_ref>);
+            // the types of the elements and of the values, or void
+            using element_type = typename nested_cast_types<T, elements, values>::element_type;
+            using value_type = typename nested_cast_types<T, elements, values>::value_type;
+        };
+
+        template <typename T>
+        consteval bool may_reject_nested();
+
+        // Whether `may_cast<T>` may be false for a value of a document.
+        template <typename T>
+        consteval bool may_reject()
+        {
+            return accepted_json_kinds<T, reader::const_value_ref>() != json_kind_all || may_reject_nested<T>();
+        }
+
+        // Whether `may_cast<T>` may be false for a value of a kind that T accepts.
+        template <typename T>
+        consteval bool may_reject_nested()
+        {
+            using n = nested_casts<T>;
+            if constexpr (n::inner)
+            {
+                if constexpr (shared_ptr_like<T>)
+                    return may_reject_nested<std::remove_cv_t<typename T::element_type>>();
+                else
+                    return may_reject_nested<typename T::value_type>();
+            }
+            else if constexpr (n::source)
+                return may_reject_nested<from_json_source<T>>();
+            else
+            {
+                auto result = false;
+                if constexpr (n::elements) result = result || may_reject<typename n::element_type>();
+                if constexpr (n::values) result = result || may_reject<typename n::value_type>();
+                return result;
+            }
+        }
+
+        // False if `cast<T>(json)` fails for the kind of `json` or of a value nested in it as `nested_casts` lists,
+        // without reading the values.  A variant checks an alternative with it before trying to cast, which saves
+        // throwing and catching an exception for an alternative that fails.  Checking every element would save it
+        // for a range whose later elements differ too, but would read each range of the alternative twice.
+        template <typename T, typename Json>
+        bool may_cast(const Json& json, std::uint8_t kind)
+        {
+            using n = nested_casts<T>;
+            if ((accepted_json_kinds<T, Json>() & kind) == 0) return false;
+            if constexpr (!json_value_of_document<Json> || !may_reject_nested<T>())
+                return true;
+            else if constexpr (n::inner)
+            {
+                if (kind == json_kind_null) return true;
+                if constexpr (shared_ptr_like<T>)
+                    return may_cast<std::remove_cv_t<typename T::element_type>>(json, kind);
+                else
+                    return may_cast<typename T::value_type>(json, kind);
+            }
+            else if constexpr (n::source)
+                return may_cast<from_json_source<T>>(json, kind);
+            else
+            {
+                if constexpr (n::elements)
+                {
+                    if constexpr (may_reject<typename n::element_type>())
+                    {
+                        if (kind == json_kind_array)
+                        {
+                            const auto arr = json.as_array();
+                            if (arr->empty()) return true;
+                            const auto e = arr->front();
+                            return may_cast<typename n::element_type>(e, json_kind_of(e));
+                        }
+                    }
+                }
+                if constexpr (n::values)
+                {
+                    if constexpr (may_reject<typename n::value_type>())
+                    {
+                        if (kind == json_kind_object)
+                        {
+                            const auto obj = json.as_object();
+                            if (obj->empty()) return true;
+                            const auto v = obj->begin()->second;
+                            return may_cast<typename n::value_type>(v, json_kind_of(v));
+                        }
+                    }
+                }
+                return true;
+            }
+        }
+
         // An alternative that holds the variant again is writable if the others are: checking it would depend
         // on itself.
         template <typename T, typename Variant>
@@ -6629,11 +6757,20 @@ namespace yyjson
         {
             static constexpr auto kinds = std::array<std::uint8_t, sizeof...(Ts)>{
                 detail::accepted_json_kinds<Ts, Json>()...};
+            // the kinds that an alternative after each accepts, whose kinds a value has to be checked against
+            static constexpr auto later = [] {
+                auto result = std::array<std::uint8_t, sizeof...(Ts)>{};
+                for (auto i = sizeof...(Ts) - 1; i > 0; --i)
+                    result[i - 1] = static_cast<std::uint8_t>(result[i] | kinds[i]);
+                return result;
+            }();
             const auto kind = detail::json_kind_of(json);
             const auto rereads = detail::variant_reread_guard<std::variant<Ts...>, Json>(kind);
             auto result = std::optional<std::variant<Ts...>>();
             [&]<std::size_t... I>(std::index_sequence<I...>) {
-                (((kinds[I] & kind) != 0 && cast_no_except<I>(json, result, rereads)) || ...);
+                (((kinds[I] & kind) != 0 && ((later[I] & kind) == 0 || may_cast<I>(json, kind, rereads)) &&
+                  cast_no_except<I>(json, result, rereads)) ||
+                 ...);
             }(std::index_sequence_for<Ts...>{});
             if (result.has_value()) return std::move(*result);
             detail::throw_bad_cast("{} is not constructible from JSON", detail::type_name<std::variant<Ts...>>());
@@ -6673,6 +6810,23 @@ namespace yyjson
         }
 
     private:
+        // `detail::may_cast` for the alternative I, which is checked before it is cast when another alternative
+        // may be tried.  False fails the alternative as `cast_no_except` does.
+        template <std::size_t I, typename Json, typename Guard>
+        static bool may_cast(const Json& json, std::uint8_t kind, const Guard& rereads)
+        {
+            using T = std::variant_alternative_t<I, std::variant<Ts...>>;
+            if constexpr (detail::may_reject_nested<std::remove_cvref_t<T>>())
+            {
+                if (!detail::may_cast<std::remove_cvref_t<T>>(json, kind))
+                {
+                    if (rereads.template stops_after<I>()) detail::throw_variant_reread_limit<std::variant<Ts...>, T>();
+                    return false;
+                }
+            }
+            return true;
+        }
+
         // `result` is empty, and holds the variant constructed from `cast<T>(json)` unless the cast fails.
         template <std::size_t I, typename Json, typename Guard>
         static bool cast_no_except(const Json& json, std::optional<std::variant<Ts...>>& result, const Guard& rereads)
@@ -11052,6 +11206,78 @@ namespace yyjson
                 }
             }
 
+            // `may_cast<T>` for the value at `cur_` in a document, leaving `cur_` anywhere in the value.
+            template <typename T>
+            bool may_read()
+            {
+                namespace d = yyjson::detail;
+                using n = d::nested_casts<T>;
+                constexpr auto kinds = d::accepted_json_kinds<T, const_value_ref>();
+                constexpr auto numbers = d::json_kind_uint | d::json_kind_sint | d::json_kind_real;
+                const auto kind = kind_at();
+                if constexpr ((kinds & numbers) != 0 && (kinds & numbers) != numbers)
+                {
+                    if (kind == numbers)
+                        return (read_number([](auto v) -> std::uint8_t {
+                                    if constexpr (std::same_as<decltype(v), std::uint64_t>)
+                                        return d::json_kind_uint;
+                                    else if constexpr (std::same_as<decltype(v), std::int64_t>)
+                                        return d::json_kind_sint;
+                                    else
+                                        return d::json_kind_real;
+                                }) &
+                                kinds) != 0;
+                }
+                if ((kinds & kind) == 0) return false;
+                if constexpr (!d::may_reject_nested<T>())
+                    return true;
+                else if constexpr (n::inner)
+                {
+                    if (kind == d::json_kind_null) return true;
+                    if constexpr (d::shared_ptr_like<T>)
+                        return may_read<std::remove_cv_t<typename T::element_type>>();
+                    else
+                        return may_read<typename T::value_type>();
+                }
+                else if constexpr (n::source)
+                    return may_read<d::from_json_source<T>>();
+                else
+                {
+                    if constexpr (n::elements)
+                    {
+                        if constexpr (d::may_reject<typename n::element_type>())
+                        {
+                            if (kind == d::json_kind_array)
+                            {
+                                ++cur_;
+                                skip_ws();
+                                return *cur_ == ']' || may_read<typename n::element_type>();
+                            }
+                        }
+                    }
+                    if constexpr (n::values)
+                    {
+                        if constexpr (d::may_reject<typename n::value_type>())
+                        {
+                            if (kind == d::json_kind_object)
+                            {
+                                ++cur_;
+                                skip_ws();
+                                if (*cur_ == '}') return true;
+                                if (*cur_ != '"') [[unlikely]]
+                                    fail();
+                                skip_string();
+                                skip_ws();
+                                expect(':');
+                                skip_ws();
+                                return may_read<typename n::value_type>();
+                            }
+                        }
+                    }
+                    return true;
+                }
+            }
+
             // Reads the value at `cur_` into the first alternative of the variant T that `cast` takes from a document,
             // trying each from the start of the value again.  `make(std::in_place_index<I>, args...)` constructs the
             // variant with the alternative I from `args`, or emplaces it into the variant that an earlier call
@@ -11065,18 +11291,42 @@ namespace yyjson
                 const auto found = [&]<std::size_t... Is>(std::index_sequence<Is...>) {
                     static constexpr auto kinds = std::array<std::uint8_t, sizeof...(Is)>{
                         yyjson::detail::accepted_json_kinds<std::variant_alternative_t<Is, T>, const_value_ref>()...};
-                    return (((kinds[Is] & kind) != 0 && read_alternative<T, Is>(make, start, rereads)) || ...);
+                    // the kinds that an alternative after each accepts, as in `caster<std::variant>`
+                    static constexpr auto later = [] {
+                        auto result = std::array<std::uint8_t, sizeof...(Is)>{};
+                        for (auto i = sizeof...(Is) - 1; i > 0; --i)
+                            result[i - 1] = static_cast<std::uint8_t>(result[i] | kinds[i]);
+                        return result;
+                    }();
+                    return (((kinds[Is] & kind) != 0 &&
+                             read_alternative<T, Is>(make, start, (later[Is] & kind) != 0, rereads)) ||
+                            ...);
                 }(std::make_index_sequence<std::variant_size_v<T>>{});
                 if (!found) fail();
             }
 
+            // With `check`, when another alternative may be tried, the value is checked with `may_read` first.
             template <typename T, std::size_t I, typename Make, typename Guard>
-            bool read_alternative(Make& make, const char* start, const Guard& rereads)
+            bool read_alternative(Make& make, const char* start, bool check, const Guard& rereads)
             {
                 using alternative = std::remove_cv_t<std::variant_alternative_t<I, T>>;
                 constexpr auto index = std::in_place_index<I>;
                 try
                 {
+                    if constexpr (yyjson::detail::may_reject_nested<alternative>())
+                    {
+                        if (check)
+                        {
+                            const auto matches = may_read<alternative>();
+                            cur_ = start;
+                            if (!matches)
+                            {
+                                if (rereads.template stops_after<I>())
+                                    yyjson::detail::throw_variant_reread_limit<T, alternative>();
+                                return false;
+                            }
+                        }
+                    }
                     if constexpr (yyjson::detail::default_string<alternative>)
                     {
                         if (*cur_ == '"')
