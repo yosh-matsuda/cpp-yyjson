@@ -7898,6 +7898,139 @@ TEST(MergeInto, Roots)
     EXPECT_EQ(counters.by_name.at("a").hits, 2);
 }
 
+// C array fields, which are read and written as JSON arrays by the rules of `std::array` fields
+struct CArrayInner
+{
+    int x = 7;
+    std::string s;
+};
+
+struct CArrays
+{
+    int a[3] = {1, 2, 3};
+    double m[2][3] = {};
+    char c[4] = {};
+    std::string s[2];
+    CArrayInner in[2];
+    std::optional<int> o[2];
+};
+
+// the same fields as `std::array`
+struct StdArrays
+{
+    std::array<int, 3> a = {1, 2, 3};
+    std::array<std::array<double, 3>, 2> m = {};
+    std::array<char, 4> c = {};
+    std::array<std::string, 2> s;
+    std::array<CArrayInner, 2> in;
+    std::array<std::optional<int>, 2> o;
+};
+
+struct VisitableCArrays
+{
+    int a[2] = {};
+    char c[2][2] = {};
+};
+VISITABLE_STRUCT(VisitableCArrays, a, c);
+
+struct RecursiveCArray
+{
+    std::vector<RecursiveCArray> v[2];
+};
+static_assert(yyjson::detail::recursive_type<RecursiveCArray>);
+
+TEST(Reflection, CArrayFields)
+{
+    using yyjson::bad_cast;
+    const auto* full_json =
+        R"({"a":[4,5,6],"m":[[1.5,2.0,3.0],[4.0,5.0,6.0]],"c":[97,98,0,100],"s":["x","y"],)"
+        R"("in":[{"x":1,"s":"p"},{"x":2,"s":""}],"o":[1,null]})";
+    const auto full = yyjson::read<CArrays>(full_json);
+    const auto full_std = yyjson::read<StdArrays>(full_json);
+    EXPECT_EQ(full.m[1][2], 6.0);
+    EXPECT_EQ(full.c[3], 'd');
+    EXPECT_EQ(full.in[0].s, "p");
+    EXPECT_FALSE(full.o[1].has_value());
+
+    // `char[N]` is an array of integers, as `std::array<char, N>` is, not a string
+    EXPECT_EQ(written(full), full_json);
+    EXPECT_EQ(written(full), written(full_std));
+    EXPECT_EQ(std::string(yyjson::value(full).write()), full_json);
+    EXPECT_EQ(std::string(yyjson::object(full).write()), full_json);
+    EXPECT_EQ(std::string(yyjson::value(CArrays(full)).write()), full_json);
+    EXPECT_EQ(std::string(yyjson::write(CArrays(full))), full_json);
+    EXPECT_EQ(std::string(yyjson::value(std::vector<CArrays>{full}).write()), std::format("[{}]", full_json));
+    expect_direct_write(full);
+    expect_direct_write(std::vector<CArrays>{full, CArrays()});
+    EXPECT_EQ(written(yyjson::read(full_json).cast<CArrays>()), full_json);
+    EXPECT_TRUE(expect_direct_read<CArrays>(full_json));
+    EXPECT_TRUE(expect_direct_read<std::vector<CArrays>>(std::format("[{},{{}}]", full_json)));
+
+    // a shorter JSON array value-initializes the rest, a longer one or any other value throws `bad_cast`, and
+    // `read_into` and `merge_into` replace the array, all as for `std::array`
+    const auto same_errors = [](std::string s) { return s.starts_with("bad cast") ? std::string("bad cast") : s; };
+    for (const auto* json :
+         {R"({})", R"({"a":[9],"m":[[1],[2,3]],"c":[97],"s":["x"],"in":[{"x":1}],"o":[1]})",
+          R"({"a":[],"m":[],"c":[],"s":[],"in":[],"o":[]})", R"({"a":[1,2,3,4]})", R"({"m":[[1,2,3,4]]})",
+          R"({"m":[[1],[2],[3]]})", R"({"a":1})", R"({"a":null})", R"({"a":"abc"})", R"({"c":"abc"})",
+          R"({"a":{"0":1}})", R"({"m":[1,2]})", R"({"a":["x"]})", R"({"c":[300]})", R"({"in":[1]})",
+          R"({"s":null,"o":null})"})
+    {
+        EXPECT_EQ(same_errors(read_or_error([&] { return yyjson::read(json).cast<CArrays>(); })),
+                  same_errors(read_or_error([&] { return yyjson::read(json).cast<StdArrays>(); })))
+            << json;
+        EXPECT_EQ(same_errors(read_or_error([&] { return yyjson::read<CArrays>(json); })),
+                  same_errors(read_or_error([&] { return yyjson::read<StdArrays>(json); })))
+            << json;
+        expect_direct_read<CArrays>(json);
+        expect_read_into(full, json);
+        EXPECT_EQ(same_errors(read_or_error([&] {
+                      auto t = full;
+                      yyjson::read_into(json, t);
+                      return t;
+                  })),
+                  same_errors(read_or_error([&] {
+                      auto t = full_std;
+                      yyjson::read_into(json, t);
+                      return t;
+                  })))
+            << json;
+        EXPECT_EQ(same_errors(expect_merge_into(full, json)), same_errors(expect_merge_into(full_std, json)))
+            << json;
+    }
+
+    auto t = full;
+    yyjson::read_into(R"({"a":[9],"m":[[8]]})", t);
+    EXPECT_EQ(written(t), R"({"a":[9,0,0],"m":[[8.0,0.0,0.0],[0.0,0.0,0.0]],"c":[0,0,0,0],"s":["",""],)"
+                          R"("in":[{"x":7,"s":""},{"x":7,"s":""}],"o":[null,null]})");
+    t = full;
+    yyjson::merge_into(R"({"a":[9],"s":null,"in":[{"s":"q"}]})", t);
+    EXPECT_EQ(written(t), R"({"a":[9,0,0],"m":[[1.5,2.0,3.0],[4.0,5.0,6.0]],"c":[97,98,0,100],"s":["",""],)"
+                          R"("in":[{"x":7,"s":"q"},{"x":7,"s":""}],"o":[1,null]})");
+    EXPECT_THROW((void)yyjson::read<CArrays>(R"({"a":[1,2,3,4]})"), bad_cast);
+    EXPECT_THROW((void)yyjson::read(R"({"m":[[1],[2],[3]]})").cast<CArrays>(), bad_cast);
+    EXPECT_THROW(yyjson::read_into(R"({"a":1})", t), bad_cast);
+    EXPECT_THROW(yyjson::merge_into(R"({"c":"abc"})", t), bad_cast);
+
+    // a struct of `VISITABLE_STRUCT`
+    const auto* visitable_json = R"({"a":[1,2],"c":[[97,98],[99,0]]})";
+    const auto visitable = yyjson::read<VisitableCArrays>(visitable_json);
+    EXPECT_EQ(visitable.c[1][0], 'c');
+    EXPECT_EQ(written(visitable), visitable_json);
+    EXPECT_EQ(std::string(yyjson::value(visitable).write()), visitable_json);
+    EXPECT_EQ(written(yyjson::read(visitable_json).cast<VisitableCArrays>()), visitable_json);
+    expect_direct_write(visitable);
+    EXPECT_TRUE(expect_direct_read<VisitableCArrays>(R"({"a":[1],"c":[[97]]})"));
+    expect_direct_read<VisitableCArrays>(R"({"a":[1,2,3]})");
+    expect_read_into(visitable, R"({"c":[[1]]})");
+    EXPECT_EQ(expect_merge_into(visitable, R"({"c":[[1]]})"), R"({"a":[1,2],"c":[[1,0],[0,0]]})");
+
+    // the element type of a C array leads back to the struct
+    const auto* recursive_json = R"({"v":[[{"v":[[],[{"v":[[],[]]}]]}],[]]})";
+    EXPECT_EQ(written(yyjson::read<RecursiveCArray>(recursive_json)), recursive_json);
+    EXPECT_TRUE(expect_direct_read<RecursiveCArray>(recursive_json));
+}
+
 // Recursive types, which reach themselves through their fields
 struct RecTree
 {

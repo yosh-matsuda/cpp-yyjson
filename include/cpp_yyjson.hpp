@@ -728,6 +728,11 @@ namespace yyjson
         template <typename T>
         concept std_array = is_std_array<std::remove_cvref_t<T>>::value;
 
+        // A C array, as a field of a struct, is read and written as `std::array` is.  It can be neither returned
+        // nor assigned as a whole, so that it is read in place, element by element.
+        template <typename T>
+        concept c_array = std::is_bounded_array_v<std::remove_cvref_t<T>>;
+
         // The base of the casters that this library defines for standard types.  `yyjson::write` writes
         // the types of these casters itself, and only them: a caster that the user specializes for one of
         // these types has no such base.
@@ -819,7 +824,9 @@ namespace yyjson
             static auto nodes(type_list<Us...>) -> type_list<type_node<std::remove_cvref_t<Us>>...>;
             static consteval auto edges_of()
             {
-                if constexpr (!std::is_class_v<T> || !requires { sizeof(T); })
+                if constexpr (std::is_array_v<T>)
+                    return decltype(nodes(type_list<std::remove_all_extents_t<T>>{})){};
+                else if constexpr (!std::is_class_v<T> || !requires { sizeof(T); })
                     return type_list<>{};
                 else if constexpr (visitable<T>)
                     return []<std::size_t... Is>(std::index_sequence<Is...>) {
@@ -928,12 +935,66 @@ namespace yyjson
             }(std::index_sequence_for<Fields...>{});
         }
 
+        // `dst = std::move(src)`, element by element for a C array.
+        template <typename F>
+        CPPYYJSON_ALWAYS_INLINE inline void move_field(F& dst, F& src)
+        {
+            if constexpr (std::is_array_v<F>)
+            {
+                for (std::size_t i = 0; i < std::extent_v<F>; ++i) move_field(dst[i], src[i]);
+            }
+            else
+                dst = std::move(src);
+        }
+
+        // Gives the elements that a JSON array shorter than a C array does not have the value that `T()` gives
+        // them, as `cast<std::array<T, N>>` does.
+        template <typename F>
+        void value_initialize(F& f)
+        {
+            if constexpr (std::is_array_v<F>)
+            {
+                for (auto& e : f) value_initialize(e);
+            }
+            else
+                f = F();
+        }
+
+        // Reads a C array from a JSON array as `cast<std::array<T, N>>` reads it.
+        template <typename F, typename Json>
+        void assign_c_array(F& field, const Json& json)
+        {
+            using element_type = std::remove_extent_t<F>;
+            constexpr auto size = std::extent_v<F>;
+            const auto arr = json.as_array();
+            if (!arr.has_value())
+                throw_bad_cast("a C array of {} is not constructible from JSON other than array",
+                               type_name<std::remove_all_extents_t<F>>());
+            if (arr->size() > size)
+                throw_bad_cast("the size of JSON array is greater than the size of a C array of {}",
+                               type_name<std::remove_all_extents_t<F>>());
+            auto i = std::size_t{0};
+            for (const auto& e : *arr)
+            {
+                if constexpr (std::is_array_v<element_type>)
+                    assign_c_array(field[i], e);
+                else
+                    field[i] = cast<element_type>(e);
+                ++i;
+            }
+            for (; i < size; ++i) value_initialize(field[i]);
+        }
+
         // `replaceable` tells whether a new object may be constructed in the place of the field.
         template <typename Field, typename Json>
         void assign_reflected_field(Field& field, const Json& value, bool replaceable)
         {
             using field_type = std::remove_cvref_t<Field>;
-            if constexpr (requires { caster<field_type>::from_json(field, value); })
+            if constexpr (c_array<field_type>)
+            {
+                assign_c_array(field, value);
+            }
+            else if constexpr (requires { caster<field_type>::from_json(field, value); })
             {
                 // A field that cannot be returned by value, such as a proxy or a non-movable type,
                 // is assigned in place. The caster decides which type it casts the JSON value to.
@@ -1339,13 +1400,40 @@ namespace yyjson
             return true;
         }
 
-        // Field I of an object, as an rvalue reference when the object is an rvalue.  `field_reflection::get_field`
-        // returns a field of an rvalue by value instead, which would construct one more object per field.
+        // A C array of `char` as a field, which the writer would take for a string that ends with a NUL, as the
+        // integers that `std::array<char, N>` is written as.
+        template <typename F>
+        concept char_c_array =
+            c_array<F> && std::same_as<std::remove_cv_t<std::remove_all_extents_t<std::remove_reference_t<F>>>, char>;
+        template <typename F>
+        auto char_array_elements(const F& f) noexcept
+        {
+            if constexpr (std::rank_v<F> == 1)
+                return std::span<const char, std::extent_v<F>>(f);
+            else
+                return [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                    return std::array{char_array_elements(f[Is])...};
+                }(std::make_index_sequence<std::extent_v<F>>{});
+        }
+        template <typename F>
+        CPPYYJSON_ALWAYS_INLINE inline decltype(auto) writable_field(F&& f) noexcept
+        {
+            if constexpr (char_c_array<F>)
+                return char_array_elements(f);
+            else
+                return std::forward<F>(f);
+        }
+
+        // Field I of an object, as an rvalue reference when the object is an rvalue, or as `writable_field` gives a C
+        // array of `char`.  `field_reflection::get_field` returns a field of an rvalue by value instead, which would
+        // construct one more object per field.
         template <std::size_t I, typename T>
         decltype(auto) forward_field(T&& t) noexcept
         {
             using field_type = field_reflection::field_type<std::remove_cvref_t<T>, I>;
-            if constexpr (std::is_rvalue_reference_v<T&&> && !std::is_reference_v<field_type>)
+            if constexpr (char_c_array<field_type>)
+                return char_array_elements(field_reflection::get_field<I>(t));
+            else if constexpr (std::is_rvalue_reference_v<T&&> && !std::is_reference_v<field_type>)
                 return std::move(field_reflection::get_field<I>(t));
             else
                 return field_reflection::get_field<I>(t);
@@ -5660,10 +5748,13 @@ namespace yyjson
         }
     }  // namespace detail
 
+    // A C array is assigned element by element, so that its elements, not the array, must be castable.
     template <typename Json, typename T>
-    concept field_assignable = castable<Json, T> || requires(T& field, const Json& json) {
-        caster<std::remove_cvref_t<T>>::from_json(field, json);
-    } || detail::from_json_translator<std::remove_cvref_t<T>>::in_place;
+    concept field_assignable =
+        (detail::c_array<T> && castable<Json, std::remove_all_extents_t<std::remove_cvref_t<T>>>) ||
+        (!detail::c_array<T> && (castable<Json, T> || requires(T& field, const Json& json) {
+             caster<std::remove_cvref_t<T>>::from_json(field, json);
+         } || detail::from_json_translator<std::remove_cvref_t<T>>::in_place));
 
     template <json_object Json, yyjson::detail::reflectable T>
     constexpr bool all_fields_castable_impl()
@@ -5877,8 +5968,8 @@ namespace yyjson
             using type = M;
         };
 
-        // Whether every field of a reflected or visitable struct can be move-assigned, so that `read_into` and
-        // `merge_into` can assign a field over its old value.
+        // Whether every field of a reflected or visitable struct, or every element of a C array field, can be
+        // move-assigned, so that `read_into` and `merge_into` can assign a field over its old value.
         template <typename T>
         consteval bool fields_move_assignable()
         {
@@ -5886,15 +5977,16 @@ namespace yyjson
             {
                 using members = std::remove_cv_t<decltype(visit_struct<T>::members)>;
                 return []<std::size_t... Is>(std::index_sequence<Is...>) {
-                    return (std::is_move_assignable_v<
-                                typename member_pointee<std::tuple_element_t<Is, members>>::type> &&
+                    return (std::is_move_assignable_v<std::remove_all_extents_t<
+                                typename member_pointee<std::tuple_element_t<Is, members>>::type>> &&
                             ...);
                 }(std::make_index_sequence<std::tuple_size_v<members>>{});
             }
             else if constexpr (yyjson::detail::reflectable<T>)
             {
                 return []<std::size_t... Is>(std::index_sequence<Is...>) {
-                    return (std::is_move_assignable_v<field_reflection::field_type<T, Is>> && ...);
+                    return (std::is_move_assignable_v<std::remove_all_extents_t<field_reflection::field_type<T, Is>>> &&
+                            ...);
                 }(std::make_index_sequence<field_reflection::field_count<T>>{});
             }
             else
@@ -9004,9 +9096,12 @@ namespace yyjson
                 using U = std::remove_cvref_t<T>;
                 constexpr auto& members = visit_struct<U>::members;
                 if constexpr (std::is_rvalue_reference_v<T&&>)
-                    (write_field<visitable_key<U, Is>>(first, std::move(t.*std::get<Is>(members))), ...);
+                    (write_field<visitable_key<U, Is>>(
+                         first, yyjson::detail::writable_field(std::move(t.*std::get<Is>(members)))),
+                     ...);
                 else
-                    (write_field<visitable_key<U, Is>>(first, t.*std::get<Is>(members)), ...);
+                    (write_field<visitable_key<U, Is>>(first, yyjson::detail::writable_field(t.*std::get<Is>(members))),
+                     ...);
             }
             template <typename T, std::size_t... Is>
             CPPYYJSON_ALWAYS_INLINE void write_reflected_fields(bool& first, T&& t, std::index_sequence<Is...>)
@@ -9358,10 +9453,11 @@ namespace yyjson
         // `T()` first, so that the caster sees the value that it sees when the struct is read anew.
         template <typename Field>
         concept reads_over_old_value =
-            yyjson::detail::from_json_translator<Field>::in_place ||
-            (requires(Field& field, const const_value_ref& v) { caster<Field>::from_json(field, v); } &&
-             !(yyjson::detail::is_std_optional<Field>::value &&
-               std::derived_from<caster<Field>, yyjson::detail::builtin_caster>));
+            (!std::is_array_v<Field>) &&
+            (yyjson::detail::from_json_translator<Field>::in_place ||
+             (requires(Field& field, const const_value_ref& v) { caster<Field>::from_json(field, v); } &&
+              !(yyjson::detail::is_std_optional<Field>::value &&
+                std::derived_from<caster<Field>, yyjson::detail::builtin_caster>)));
 
         // A struct that the default caster reads field by field and whose fields can all be move-assigned, so
         // that `read_into` reads over its fields and `merge_into` merges an object into them.
@@ -9393,10 +9489,11 @@ namespace yyjson
         // gets a value first if it has none.  Any other value is replaced.
         template <typename T>
         concept mergeable =
-            struct_mergeable<T> || map_mergeable<T> ||
-            (yyjson::detail::is_std_optional<T>::value &&
-             std::derived_from<caster<T>, yyjson::detail::builtin_caster> &&
-             (struct_mergeable<typename T::value_type> || map_mergeable<typename T::value_type>));
+            (!std::is_array_v<T>) &&
+            (struct_mergeable<T> || map_mergeable<T> ||
+             (yyjson::detail::is_std_optional<T>::value &&
+              std::derived_from<caster<T>, yyjson::detail::builtin_caster> &&
+              (struct_mergeable<typename T::value_type> || map_mergeable<typename T::value_type>)));
 
         template <typename T>
         CPPYYJSON_ALWAYS_INLINE inline constexpr const auto& struct_key_matcher() noexcept
@@ -9451,7 +9548,7 @@ namespace yyjson
                     moved_.reset();
                 }
                 moved_.set(I);
-                struct_field<I>(t) = std::move(struct_field<I>(*defaults_));
+                yyjson::detail::move_field(struct_field<I>(t), struct_field<I>(*defaults_));
             }
         };
 
@@ -10103,7 +10200,9 @@ namespace yyjson
             static consteval auto field_part()
             {
                 using yyjson::detail::type_list;
-                if constexpr (requires(F& field, const const_value_ref& v) { caster<F>::from_json(field, v); })
+                if constexpr (std::is_array_v<F>)
+                    return node<false, type_list<value_node<std::remove_cv_t<std::remove_all_extents_t<F>>, true>>>{};
+                else if constexpr (requires(F& field, const const_value_ref& v) { caster<F>::from_json(field, v); })
                 {
                     if constexpr (is_std_optional<F>::value &&
                                   std::derived_from<caster<F>, yyjson::detail::builtin_caster>)
@@ -12096,7 +12195,9 @@ namespace yyjson
                 {
                     auto defaults = T();
                     [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                        ((seen[Is] || (struct_field<Is>(t) = std::move(struct_field<Is>(defaults)), true)), ...);
+                        ((seen[Is] || (yyjson::detail::move_field(struct_field<Is>(t), struct_field<Is>(defaults)),
+                                       true)),
+                         ...);
                     }(std::make_index_sequence<n>{});
                 }
             }
@@ -12395,13 +12496,54 @@ namespace yyjson
                 if (i < size) result.erase(result.begin() + static_cast<std::ptrdiff_t>(i), result.end());
             }
 
+            // Reads the array at `cur_` into a C array as `assign_c_array` reads it from a document.
+            template <typename F>
+            void read_c_array(F& field)
+            {
+                using element_type = std::remove_extent_t<F>;
+                constexpr auto size = std::extent_v<F>;
+                if (*cur_ != '[') [[unlikely]]
+                    fail();
+                const char* const open = cur_;
+                ++cur_;
+                skip_ws();
+                auto i = std::size_t{0};
+                if (*cur_ != ']')
+                {
+                    for (;;)
+                    {
+                        if (i == size) [[unlikely]]
+                            fail();
+                        if constexpr (std::is_array_v<element_type>)
+                            read_c_array(field[i]);
+                        else
+                            field[i] = read_element<element_type>();
+                        ++i;
+                        skip_ws();
+                        if (*cur_ == ',')
+                        {
+                            ++cur_;
+                            skip_ws();
+                            continue;
+                        }
+                        if (*cur_ != ']') [[unlikely]]
+                            fail();
+                        break;
+                    }
+                }
+                close(open);
+                for (; i < size; ++i) yyjson::detail::value_initialize(field[i]);
+            }
+
             // Assigns the value at `cur_` to a field of a struct as `assign_reflected_field` assigns it from a
             // document.
             template <typename Field>
             CPPYYJSON_ALWAYS_INLINE void read_field(Field& field, bool replaceable)
             {
                 using field_type = std::remove_cvref_t<Field>;
-                if constexpr (requires(const const_value_ref& v) { caster<field_type>::from_json(field, v); })
+                if constexpr (std::is_array_v<field_type>)
+                    read_c_array(field);
+                else if constexpr (requires(const const_value_ref& v) { caster<field_type>::from_json(field, v); })
                 {
                     if constexpr (is_std_optional<field_type>::value &&
                                   std::derived_from<caster<field_type>, yyjson::detail::builtin_caster>)
@@ -13102,7 +13244,7 @@ struct std::formatter<T>
         {                                                                                                            \
             [&]<std::size_t... Is>(std::index_sequence<Is...>) {                                                     \
                 (emitter.template emplace<yyjson::detail::is_plain_key(names[Is])>(                                  \
-                     names[Is], std::forward<T>(t).*std::get<Is>(members), ts...),                                   \
+                     names[Is], yyjson::detail::writable_field(std::forward<T>(t).*std::get<Is>(members)), ts...),   \
                  ...);                                                                                               \
             }(std::make_index_sequence<field_count>{});                                                              \
         }                                                                                                            \
