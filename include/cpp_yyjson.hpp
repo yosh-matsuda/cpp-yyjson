@@ -9993,16 +9993,18 @@ namespace yyjson
             };
             template <typename T, bool Loop>
             struct value_node;
-            template <typename T, bool Loop>
-            struct object_node;
             template <typename T>
             struct array_node;
-            template <typename F, bool Loop>
-            struct field_node;
             template <typename T, bool Loop>
-            struct reflected_fields_node;
-            template <typename T, bool Loop>
-            struct visitable_fields_node;
+            struct fields_node;
+
+            // The object, the array and the fields that a value reads in its own place are parts joined into the
+            // node of the value, not nodes of their own: the walk, whose cost grows with the square of the nodes,
+            // then takes about one node for each type.  A field read in place leads to the node of its type, which
+            // reads the same fields.
+            template <bool... Locals, typename... Edges>
+            static auto join(node<Locals, Edges>...)
+                -> node<(false || ... || Locals), decltype((yyjson::detail::type_list<>{} + ... + Edges{}))>;
 
             template <typename T, bool Loop>
             static consteval auto value_node_of()
@@ -10050,47 +10052,53 @@ namespace yyjson
                         return node<Loop>{};
                 }
                 else
-                    return node<false,
-                                decltype(std::conditional_t<from_json_def_obj_defined<T>,
-                                                            type_list<object_node<T, Loop>>, type_list<>>{} +
-                                         std::conditional_t<from_json_def_arr_defined<T>, type_list<array_node<T>>,
-                                                            type_list<>>{})>{};
+                    return decltype(join(object_part<T, Loop>(), array_part<T>())){};
             }
             template <typename T, bool Loop>
-            static consteval auto object_node_of()
+            static consteval auto object_part()
             {
                 using yyjson::detail::type_list;
                 using json_object = const_object_ref;
-                if constexpr (yyjson::detail::visitable<T> && requires {
+                if constexpr (!from_json_def_obj_defined<T>)
+                    return node<false>{};
+                else if constexpr (yyjson::detail::visitable<T> && requires {
                                   visit_struct<T>::key_matcher;
                                   visit_struct<T>::members;
                               })
-                    return node<false, type_list<visitable_fields_node<T, Loop>>>{};
+                    return visitable_fields_part<T, Loop>();
                 else if constexpr (yyjson::detail::object_emplaceable_range<T, json_object> ||
                                    yyjson::detail::object_back_emplaceable_range<T, json_object>)
                     return node<false, type_list<value_node<
                                            std::remove_cvref_t<std::tuple_element_t<1, std::ranges::range_value_t<T>>>,
                                            true>>>{};
                 else if constexpr (yyjson::detail::reflected_object_castable<T, json_object>)
-                    return node<false, type_list<reflected_fields_node<T, Loop>>>{};
+                    return reflected_fields_part<T, Loop>();
                 else
                     return node<Loop>{};
             }
             template <typename T>
-            static consteval auto array_node_of()
+            static consteval auto array_part()
+            {
+                if constexpr (from_json_def_arr_defined<T>)
+                    return array_part_of_range<T>();
+                else
+                    return node<false>{};
+            }
+            template <typename T>
+            static consteval auto array_part_of_range()
             {
                 using yyjson::detail::type_list;
                 using value_type = std::ranges::range_value_t<T>;
                 if constexpr (yyjson::detail::back_insertable<T> &&
                               yyjson::detail::reflected_assignable_in_place<value_type, const_value_ref>)
-                    return node<false, type_list<value_node<value_type, true>, reflected_fields_node<value_type, true>>>{};
+                    return in_place_node<value_type, true>();
                 else if constexpr (yyjson::detail::back_insertable<T> && array_readable_in_place<value_type>)
                     return node<false, type_list<value_node<value_type, true>, array_node<value_type>>>{};
                 else
                     return node<false, type_list<value_node<value_type, true>>>{};
             }
             template <typename F, bool Loop>
-            static consteval auto field_node_of()
+            static consteval auto field_part()
             {
                 using yyjson::detail::type_list;
                 if constexpr (requires(F& field, const const_value_ref& v) { caster<F>::from_json(field, v); })
@@ -10100,8 +10108,7 @@ namespace yyjson
                     {
                         using value_type = typename F::value_type;
                         if constexpr (yyjson::detail::reflected_assignable_in_place<value_type, const_value_ref>)
-                            return node<false, type_list<value_node<value_type, Loop>,
-                                                         reflected_fields_node<value_type, Loop>>>{};
+                            return in_place_node<value_type, Loop>();
                         else
                             return node<false, type_list<value_node<value_type, Loop>>>{};
                     }
@@ -10117,29 +10124,41 @@ namespace yyjson
                                     type_list<value_node<yyjson::detail::from_json_in_place_source<F>, Loop>>>{};
                 }
                 else if constexpr (yyjson::detail::reflected_assignable_in_place<F, const_value_ref>)
-                    return node<false, type_list<value_node<F, Loop>, reflected_fields_node<F, Loop>>>{};
+                    return in_place_node<F, Loop>();
                 else
                     return node<false, type_list<value_node<F, Loop>>>{};
             }
+            // A struct that is read field by field in place: the node of its value leads to the same fields,
+            // unless it reads the struct through a translator instead.
             template <typename T, bool Loop>
-            static consteval auto reflected_fields_node_of()
+            static consteval auto in_place_node()
+            {
+                using yyjson::detail::type_list;
+                if constexpr (yyjson::detail::from_json_translator<T>::castable)
+                    return node<false, type_list<value_node<T, Loop>, fields_node<T, Loop>>>{};
+                else
+                    return node<false, type_list<value_node<T, Loop>>>{};
+            }
+            template <typename T, bool Loop>
+            static consteval auto reflected_fields_part()
             {
                 return []<std::size_t... Is>(std::index_sequence<Is...>) {
-                    return node<false, yyjson::detail::type_list<field_node<
-                                           std::remove_cvref_t<decltype(field_reflection::get_field<Is>(
-                                               std::declval<T&>()))>,
-                                           Loop>...>>{};
+                    return decltype(join(
+                        node<false>{},
+                        field_part<std::remove_cvref_t<decltype(field_reflection::get_field<Is>(std::declval<T&>()))>,
+                                   Loop>()...)){};
                 }(std::make_index_sequence<field_reflection::field_count<T>>{});
             }
             template <typename T, bool Loop>
-            static consteval auto visitable_fields_node_of()
+            static consteval auto visitable_fields_part()
             {
                 using members = std::remove_cvref_t<decltype(visit_struct<T>::members)>;
                 return []<std::size_t... Is>(std::index_sequence<Is...>) {
-                    return node<false, yyjson::detail::type_list<field_node<
-                                           std::remove_cvref_t<decltype(std::declval<T&>().*
-                                                                        std::get<Is>(visit_struct<T>::members))>,
-                                           Loop>...>>{};
+                    return decltype(join(
+                        node<false>{},
+                        field_part<std::remove_cvref_t<decltype(std::declval<T&>().*
+                                                                std::get<Is>(visit_struct<T>::members))>,
+                                   Loop>()...)){};
                 }(std::make_index_sequence<std::tuple_size_v<members>>{});
             }
 
@@ -10147,24 +10166,12 @@ namespace yyjson
             struct value_node : decltype(value_node_of<T, Loop>())
             {
             };
-            template <typename T, bool Loop>
-            struct object_node : decltype(object_node_of<T, Loop>())
-            {
-            };
             template <typename T>
-            struct array_node : decltype(array_node_of<T>())
-            {
-            };
-            template <typename F, bool Loop>
-            struct field_node : decltype(field_node_of<F, Loop>())
+            struct array_node : decltype(array_part<T>())
             {
             };
             template <typename T, bool Loop>
-            struct reflected_fields_node : decltype(reflected_fields_node_of<T, Loop>())
-            {
-            };
-            template <typename T, bool Loop>
-            struct visitable_fields_node : decltype(visitable_fields_node_of<T, Loop>())
+            struct fields_node : decltype(reflected_fields_part<T, Loop>())
             {
             };
 
