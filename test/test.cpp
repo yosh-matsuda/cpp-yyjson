@@ -4776,6 +4776,28 @@ struct CasterSamples
     std::vector<ArrayCasterPoint> points;
 };
 
+struct CasterSampleField
+{
+    int id;
+    CasterSample sample;
+};
+
+struct MovedInSample
+{
+    int value;
+};
+
+template <>
+struct yyjson::caster<MovedInSample>
+{
+    static void to_json(writer::value_ref& v, const MovedInSample& s) { v = object{{"value", s.value}}; }
+};
+
+struct MovedInSampleField
+{
+    MovedInSample sample;
+};
+
 TEST(DirectWriter, TupleKeys)
 {
     // every byte at the start, the middle and the end of keys around the lengths at which the writer copies a
@@ -4828,6 +4850,19 @@ TEST(DirectWriter, CastersOnDocument)
     expect_direct_write(
         std::map<std::string, CasterSample>{{"inf", {"inf", std::numeric_limits<double>::infinity()}}});
     expect_direct_write(CasterSamples{{{"nan", std::numeric_limits<double>::quiet_NaN()}}, {}, {}});
+
+    // the document is freed once it holds a megabyte or many documents that values were moved in from, and the
+    // values that follow are built in a new one
+    auto fields = std::vector<CasterSampleField>();
+    for (auto i = 0; i < 20000; ++i)
+        fields.push_back({i, {std::string(300, static_cast<char>('a' + i % 26)), i * 0.25}});
+    expect_direct_write(fields);
+    auto ranges = std::vector<std::vector<CasterSample>>();
+    for (auto i = 0; i < 400; ++i) ranges.emplace_back(50, CasterSample{std::string(300, 'r'), i * 0.5});
+    expect_direct_write(ranges);
+    auto moved = std::vector<MovedInSampleField>();
+    for (auto i = 0; i < 300; ++i) moved.push_back({{i}});
+    expect_direct_write(moved);
 }
 
 TEST(DirectWriter, Strings)

@@ -7185,8 +7185,8 @@ namespace yyjson
             bool cpy_;
             bool esc_;
             bool inv_;
-            // The document that the casters which take a mutable value build their values in, kept for the
-            // whole write so that its memory is allocated once.
+            // The document that the casters which take a mutable value build their values in, kept from one value
+            // to the next so that its memory is not allocated for each, until it holds a megabyte.
             std::optional<mutable_document> doc_;
 
         public:
@@ -8639,6 +8639,18 @@ namespace yyjson
                 if (text != buf_.cur) std::memmove(buf_.cur, text, len);
                 buf_.cur += len;
             }
+            // Writes a value built in `doc_`, and frees the document once its pools have grown past a megabyte or
+            // it holds many documents that values were moved in from: it would otherwise keep every value built in
+            // it until the end of the write.
+            void write_in_document(const yyjson_mut_val* val)
+            {
+                write_json(val);
+                const auto& ptrs = *doc_->ptrs;
+                const auto* const doc = ptrs.self;
+                if ((doc != nullptr && doc->val_pool.chunk_size + doc->str_pool.chunk_size > (std::size_t{1} << 20)) ||
+                    ptrs.children.size() > 64) [[unlikely]]
+                    doc_.reset();
+            }
             void write_json(const yyjson_mut_val* val)
             {
                 if (yyjson_writes_here()) return write_json_by_yyjson(val, yyjson_mut_val_write_opts);
@@ -8863,7 +8875,7 @@ namespace yyjson
                     if (yyjson_writes_here())
                     {
                         if (!doc_) doc_.emplace();
-                        return write_json(doc_->create_array(std::forward<Range>(range)));
+                        return write_in_document(doc_->create_array(std::forward<Range>(range)));
                     }
                 }
                 if constexpr (flat_size<E>() != 0)
@@ -8942,7 +8954,7 @@ namespace yyjson
                     if (yyjson_writes_here())
                     {
                         if (!doc_) doc_.emplace();
-                        return write_json(doc_->create_object(std::forward<Range>(range)));
+                        return write_in_document(doc_->create_object(std::forward<Range>(range)));
                     }
                 }
                 open('{');
@@ -9204,7 +9216,7 @@ namespace yyjson
                     if (!doc_) doc_.emplace();
                     auto vr = doc_->template get_empty_value_ref<V>();
                     to_json_wrapper(vr, std::forward<T>(t));
-                    write_json(json_value_access::get(vr));
+                    write_in_document(json_value_access::get(vr));
                 }
             }
 #pragma endregion C++ values
