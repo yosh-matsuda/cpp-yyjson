@@ -352,6 +352,7 @@ To use the upstream yyjson instead, configure with `-DCPPYYJSON_USE_BUNDLED_YYJS
     *   LLVM 17-22
     *   AppleClang 16 (Xcode 16.2), 17 (Xcode 26.3), and 21 (Xcode 26.6)
     *   MSVC `cl` and `clang-cl` on `windows-2022` and `windows-2025`
+*   C++26 is supported with GCC 16 and `-std=c++26 -freflection`; its static reflection also converts structs with base classes or more than 100 fields ([details](docs/reference.md#automatic-casting-with-compile-time-reflection))
 *   [yyjson](https://github.com/ibireme/yyjson) 0.6.0 or later, only when the external backend is used instead of the [bundled](#bundled-backend) one; 0.12.0 or later lets the data binding API skip the document
 
 ## Installation
