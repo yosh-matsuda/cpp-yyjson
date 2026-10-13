@@ -5870,7 +5870,12 @@ TEST(Reader, ValueKinds)
     EXPECT_TRUE(read("true").cast<bool>());
     EXPECT_FALSE(read("false").cast<bool>());
     EXPECT_TRUE(expect_direct_read<std::list<bool>>("[true,false]"));
-    expect_direct_read<std::vector<bool>>("[true,false]");
+    // `std::vector<bool>`, whose proxy reference is not assignable through a const reference in C++20
+    EXPECT_EQ(read("[true,false,true]").cast<std::vector<bool>>(), (std::vector<bool>{true, false, true}));
+    EXPECT_TRUE(expect_direct_read<std::vector<bool>>("[true,false,true]") || YYJSON_VERSION_HEX < 0x000C00);
+    EXPECT_TRUE(expect_direct_read<std::vector<bool>>("[]") || YYJSON_VERSION_HEX < 0x000C00);
+    EXPECT_TRUE(expect_direct_read<std::vector<std::vector<bool>>>("[[true],[],[false,true]]") ||
+                YYJSON_VERSION_HEX < 0x000C00);
     for (const auto* json : {"[0]", "[1]", "[0.5]", R"(["false"])", "[null]"})
     {
         expect_direct_read<std::list<bool>>(json);
@@ -7580,6 +7585,8 @@ TEST(ReadInto, Roots)
     // ranges and maps at the root, and documents that the reader without a document does not read
     expect_read_into(std::vector<int>{1, 2, 3}, "[4,5]");
     expect_read_into(std::vector<int>{1}, "[4,5,6]");
+    expect_read_into(std::vector<bool>{true, true, true}, "[false,true]");
+    expect_read_into(std::vector<bool>{false}, "[true,false,true]");
     expect_read_into(std::vector<std::string>{"a", "b"}, R"(["c"])");
     expect_read_into(std::vector<IntoInner>(3), R"([{"a":2}])");
     expect_read_into(std::map<std::string, int>{{"x", 1}, {"y", 2}}, R"({"y":5})");
@@ -8229,7 +8236,7 @@ struct DiffInner
     double d = 0;
     std::string s;
     std::optional<std::int64_t> o;
-    std::deque<bool> flags;
+    std::vector<bool> flags;
 };
 
 struct DiffRecord

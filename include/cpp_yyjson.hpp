@@ -5805,7 +5805,10 @@ namespace yyjson
         concept array_castable_range =
             (!is_basic_string<T>::value) && std::ranges::range<T> && std::default_initializable<T> && requires {
                 typename std::ranges::range_value_t<T>;
-                requires std::ranges::output_range<T, std::ranges::range_value_t<T>> || insertable_set<T>;
+                // `std::vector<bool>` is not an output range in C++20, whose proxy reference cannot be assigned
+                // through a const reference, but it is back insertable
+                requires std::ranges::output_range<T, std::ranges::range_value_t<T>> || back_insertable<T> ||
+                             insertable_set<T>;
                 requires requires(const Json& arr) { cast<std::ranges::range_value_t<T>>(arr.front()); };
             };
 
