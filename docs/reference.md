@@ -1533,10 +1533,9 @@ auto points = read<std::vector<Point>>(R"([{"x":1,"y":2},{"x":3,"y":4}])");
 
 Most types are read straight from the string: numbers, strings, `bool`, `nullptr`, ranges, maps, the pre-defined STL casters, and structs that the compile-time reflection or the `VISITABLE_STRUCT` macro converts. A `std::variant` tries its alternatives on the string in the same order as the cast tries them on a value. A tuple-like type, such as `std::tuple` or `std::pair`, is read from an array or an object as its caster reads it from a value; only a tuple of key-value pairs whose keys are not `std::string` is read like a user-defined `from_json` below. A [translator `from_json`](#translator-from_json) is read as its parameter type and then converted. A user-defined `from_json` that takes a JSON value is given one, so the value that it converts is read into a temporary document, while the values around it are still read directly. When `T` holds such values as the elements of a range or a map, also as an alternative of a `std::variant`, a temporary document for each element would cost more than one document for the whole string, so `read<T>` then reads the string into a document and casts it, as `read(json_string, flag).cast<T>()` does.
 
-The string is read without a document when its root is an array or an object and `flag` is `NoFlag` or `AllowInvalidUnicode`. Otherwise, and whenever the direct read fails, `read<T>` reads the string into a document and casts it, which is how it gives the result and the exception of `cast<T>` in every case. Two things follow from this:
+The string is read without a document when its root is an array or an object and `flag` is `NoFlag` or `AllowInvalidUnicode`. Otherwise, and whenever the direct read fails, `read<T>` reads the string into a document and casts it, which is how it gives the result and the exception of `cast<T>` in every case. A user-defined `from_json` may therefore be called twice for the same JSON value, when the direct read fails after calling it. Do not rely on the number of calls.
 
-*   A user-defined `from_json` may be called twice for the same JSON value, when the direct read fails after calling it. Do not rely on the number of calls.
-*   A `T` that refers to the JSON value, such as `std::string_view` or a struct with a `std::string_view` field, refers to memory that is freed when `read<T>` returns, as it does after `read(json_string).cast<T>()` on a temporary value. Cast such types from a `yyjson::reader::value` that outlives them instead.
+A `T` that would refer to the JSON value, such as `std::string_view`, `const char*` or a struct or a range that holds one, is a compile error for `read<T>`, `read_into` and `merge_into`, because the string or the document that it would point into does not outlive the call. Use `std::string`, or cast such types from a `yyjson::reader::value` that outlives them. The parameter of a [translator `from_json`](#translator-from_json) may still be a `std::string_view`, which is valid during the call.
 
 With an external yyjson older than 0.12.0, `read<T>` always reads the string into a document and casts it. The bundled backend is newer and reads directly.
 
@@ -1597,7 +1596,7 @@ json_string write(const T& t, WriteFlag flag = WriteFlag::NoFlag);
 void write(const T& t, std::string& out, WriteFlag flag = WriteFlag::NoFlag);
 ```
 
-The first form returns the string in a new buffer, like `value::write`. The second form overwrites `out` and keeps its capacity, so a loop that writes many objects into the same `std::string` stops allocating once the string is large enough. Both throw `yyjson::write_error` in the same cases as `value::write`; the second form leaves `out` empty when it throws.
+The first form returns the string in a new buffer, like `value::write`. The second form overwrites `out` and keeps its capacity, so a loop that writes many objects into the same `std::string` stops allocating once the string is large enough. Both throw `yyjson::write_error` in the same cases as `value::write`; the second form leaves `out` empty when it throws. `t` must not refer to `out`, neither as `out` itself nor through a `std::string_view` or a pointer into it, because the second form overwrites `out` while it reads `t`.
 
 ```cpp
 using namespace yyjson;
