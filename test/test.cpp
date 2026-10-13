@@ -4420,6 +4420,63 @@ TEST(Writer, RangeOfStructsWithCaster)
     EXPECT_EQ(value(VisitableCasterPoint{1, 2}).write(), "[1,2]");
 }
 
+struct ThrowingTranslated
+{
+    int v;
+};
+
+template <>
+struct yyjson::caster<ThrowingTranslated>
+{
+    static int to_json(const ThrowingTranslated& t)
+    {
+        if (t.v < 0) throw std::invalid_argument("negative");
+        return t.v;
+    }
+};
+
+struct ThrowingArray
+{
+    int v;
+};
+
+template <>
+struct yyjson::caster<ThrowingArray>
+{
+    template <typename... Ts>
+    static void to_json(writer::array_ref& arr, const ThrowingArray& t, Ts... ts)
+    {
+        if (t.v < 0) throw std::invalid_argument("negative");
+        arr.emplace_back(t.v, ts...);
+    }
+};
+
+TEST(Writer, ThrowingCaster)
+{
+    using namespace yyjson;
+
+    // an exception of a caster reaches the caller of every function that writes or builds a value
+    const auto translated = std::vector<ThrowingTranslated>{{1}, {-1}};
+    const auto arrays = std::vector<ThrowingArray>{{1}, {-1}};
+    const auto map = std::map<std::string, ThrowingTranslated>{{"a", {-1}}};
+    EXPECT_THROW((void)value(translated), std::invalid_argument);
+    EXPECT_THROW((void)value(arrays), std::invalid_argument);
+    EXPECT_THROW((void)array(arrays), std::invalid_argument);
+    EXPECT_THROW((void)object(map), std::invalid_argument);
+    EXPECT_THROW((void)write(translated), std::invalid_argument);
+    EXPECT_THROW((void)write(arrays), std::invalid_argument);
+    EXPECT_THROW((void)write(map), std::invalid_argument);
+    auto arr = array();
+    EXPECT_THROW(arr.emplace_back(ThrowingTranslated{-1}), std::invalid_argument);
+    EXPECT_THROW(arr.emplace_back(arrays), std::invalid_argument);
+    EXPECT_THROW(arr.emplace_front(ThrowingArray{-1}), std::invalid_argument);
+    EXPECT_THROW(arr.emplace(0, ThrowingArray{-1}), std::invalid_argument);
+    auto obj = object();
+    EXPECT_THROW(obj.emplace("k", ThrowingTranslated{-1}), std::invalid_argument);
+    EXPECT_THROW(obj.try_emplace("k", ThrowingArray{-1}), std::invalid_argument);
+    EXPECT_THROW(obj["k"] = ThrowingTranslated{-1}, std::invalid_argument);
+}
+
 struct TranslatedPoint
 {
     int x;
