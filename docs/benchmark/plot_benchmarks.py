@@ -30,7 +30,7 @@ READ_COLORS = {
     "c_yyjson": "#16a34a",
     "rapidjson": "#dc2626",
     "simdjson": "#9333ea",
-    "glaze": "#0891b2",
+    "glaze": "#ca8a04",
 }
 
 CONTRACTS = {
@@ -176,7 +176,7 @@ WRITE_COLORS = {
     "yyjson": "#16a34a",
     "rapidjson": "#dc2626",
     "nlohmann-json": "#f97316",
-    "Glaze": "#0891b2",
+    "Glaze": "#ca8a04",
 }
 
 WRITE_POLICIES = {
@@ -211,70 +211,49 @@ TYPED_DATASET_NAMES = {
 
 TYPED_COLORS = {
     "cpp_yyjson": "#2563eb",
-    "glaze": "#0891b2",
+    "cpp_yyjson_dom": "#93c5fd",
+    "glaze": "#ca8a04",
 }
 
 TYPED_POLICIES = {
     "read": {
         "fresh": "New allocator / object per read",
-        "reused": "Reused allocator",
         "object": "Reused result object",
     },
     "write": WRITE_POLICIES,
 }
 
 # benchmark name -> (direction, policy, color key, label), or None for a row that is
-# measured but not drawn.  The "object" rows read into the object of the previous
-# iteration and reuse the capacity of its strings and vectors.
+# measured but not drawn.  The charts compare the data binding API of cpp-yyjson and its
+# DOM API, which reads a document and casts it or builds one and writes it, with Glaze;
+# the DOM read alone and the DOM read with a reused allocator have no Glaze counterpart.
+# The "object" rows read into the object of the previous iteration and reuse the
+# capacity of its strings and vectors.
 TYPED_VARIANTS = {
-    "typed_read_cpp_yyjson": ("read", "fresh", "cpp_yyjson", "cpp-yyjson (DOM + cast)"),
-    "typed_read_cpp_yyjson_dom": ("read", "fresh", "cpp_yyjson", "cpp-yyjson (DOM only)"),
-    "typed_read_cpp_yyjson_single": (
-        "read",
-        "reused",
-        "cpp_yyjson",
-        "cpp-yyjson (DOM + cast)",
-    ),
-    "typed_read_cpp_yyjson_direct": (
-        "read",
-        "fresh",
-        "cpp_yyjson",
-        "cpp-yyjson (direct)",
-    ),
-    "typed_read_cpp_yyjson_direct_into": (
-        "read",
-        "object",
-        "cpp_yyjson",
-        "cpp-yyjson (read_into)",
-    ),
-    "typed_read_cpp_yyjson_direct_merge": (
-        "read",
-        "object",
-        "cpp_yyjson",
-        "cpp-yyjson (merge_into)",
-    ),
-    "typed_read_glaze": ("read", "fresh", "glaze", "Glaze"),
-    "typed_read_glaze_single": ("read", "object", "glaze", "Glaze"),
-    "typed_write_cpp_yyjson": ("write", "fresh", "cpp_yyjson", "cpp-yyjson"),
-    "typed_write_cpp_yyjson_single": ("write", "reused", "cpp_yyjson", "cpp-yyjson"),
-    "typed_write_cpp_yyjson_direct": (
-        "write",
-        "fresh",
-        "cpp_yyjson",
-        "cpp-yyjson (direct)",
-    ),
-    "typed_write_cpp_yyjson_direct_single": (
+    "typed_read_cpp_yyjson": ("read", "fresh", "cpp_yyjson_dom", "cpp-yyjson DOM: read + cast<T>"),
+    "typed_read_cpp_yyjson_dom": None,
+    "typed_read_cpp_yyjson_single": None,
+    "typed_read_cpp_yyjson_direct": ("read", "fresh", "cpp_yyjson", "cpp-yyjson read<T>"),
+    "typed_read_cpp_yyjson_direct_into": ("read", "object", "cpp_yyjson", "cpp-yyjson read_into"),
+    "typed_read_cpp_yyjson_direct_merge": ("read", "object", "cpp_yyjson", "cpp-yyjson merge_into"),
+    "typed_read_glaze": ("read", "fresh", "glaze", "Glaze glz::read"),
+    "typed_read_glaze_single": ("read", "object", "glaze", "Glaze glz::read"),
+    "typed_write_cpp_yyjson": ("write", "fresh", "cpp_yyjson_dom", "cpp-yyjson DOM: value(t).write()"),
+    "typed_write_cpp_yyjson_single": (
         "write",
         "reused",
-        "cpp_yyjson",
-        "cpp-yyjson (direct)",
+        "cpp_yyjson_dom",
+        "cpp-yyjson DOM: value(t).write(alc)",
     ),
-    "typed_write_glaze": ("write", "fresh", "glaze", "Glaze"),
-    "typed_write_glaze_single": ("write", "reused", "glaze", "Glaze"),
+    "typed_write_cpp_yyjson_direct": ("write", "fresh", "cpp_yyjson", "cpp-yyjson write(t)"),
+    "typed_write_cpp_yyjson_direct_single": ("write", "reused", "cpp_yyjson", "cpp-yyjson write(t, out)"),
+    "typed_write_glaze": ("write", "fresh", "glaze", "Glaze glz::write"),
+    "typed_write_glaze_single": ("write", "reused", "glaze", "Glaze glz::write"),
 }
 
-# The comparisons of the README table: output name -> (title, subtitle,
-# [(benchmark, color key, legend label)], colors).  The first benchmark is cpp-yyjson.
+# The comparisons of the README tables: output name -> (title, subtitle,
+# [(benchmark, color key, legend label)], colors, datasets).  The first benchmark is
+# cpp-yyjson.
 THROUGHPUT_CHARTS = {
     "read_throughput": (
         "Read throughput per document",
@@ -290,6 +269,7 @@ THROUGHPUT_CHARTS = {
             ("read_rapidjson", "rapidjson", "rapidjson"),
         ],
         READ_COLORS,
+        DATASET_NAMES,
     ),
     "write_throughput": (
         "Write throughput per document",
@@ -301,6 +281,29 @@ THROUGHPUT_CHARTS = {
             ("write_nlohmann_dataset", "nlohmann-json", "nlohmann-json"),
         ],
         WRITE_COLORS,
+        DATASET_NAMES,
+    ),
+    "typed_read_throughput": (
+        "Read throughput into C++ types",
+        "New result object per read; higher is better",
+        [
+            ("typed_read_cpp_yyjson_direct", "cpp_yyjson", "cpp-yyjson read<T>"),
+            ("typed_read_cpp_yyjson", "cpp_yyjson_dom", "cpp-yyjson DOM: read + cast<T>"),
+            ("typed_read_glaze", "glaze", "Glaze glz::read"),
+        ],
+        TYPED_COLORS,
+        TYPED_DATASET_NAMES,
+    ),
+    "typed_write_throughput": (
+        "Write throughput from C++ types",
+        "New output buffer per write; higher is better",
+        [
+            ("typed_write_cpp_yyjson_direct", "cpp_yyjson", "cpp-yyjson write(t)"),
+            ("typed_write_cpp_yyjson", "cpp_yyjson_dom", "cpp-yyjson DOM: value(t).write()"),
+            ("typed_write_glaze", "glaze", "Glaze glz::write"),
+        ],
+        TYPED_COLORS,
+        TYPED_DATASET_NAMES,
     ),
 }
 
@@ -530,6 +533,7 @@ def collect_throughput(
     times: dict[str, float],
     processed_bytes: dict[str, float],
     benchmarks: list[str],
+    datasets: dict[int, str],
 ) -> list[tuple[str, list[float]]]:
     # Every library is divided into the size cpp-yyjson reports, so the bars of a
     # document keep the time ratios of the README table even where the libraries
@@ -537,7 +541,7 @@ def collect_throughput(
     documents = []
     missing = []
     baseline = benchmarks[0]
-    for index, dataset_name in DATASET_NAMES.items():
+    for index, dataset_name in datasets.items():
         size = processed_bytes.get(f"{baseline}/{index}")
         if size is None:
             continue
@@ -648,11 +652,14 @@ def generate_throughput_charts(
     output_dir: Path,
 ) -> None:
     for name, chart in THROUGHPUT_CHARTS.items():
-        title, subtitle, benchmarks, colors = chart
+        title, subtitle, benchmarks, colors, datasets = chart
         if not name.startswith(prefix):
             continue
         documents = collect_throughput(
-            times, processed_bytes, [benchmark for benchmark, _, _ in benchmarks]
+            times,
+            processed_bytes,
+            [benchmark for benchmark, _, _ in benchmarks],
+            datasets,
         )
         if not documents:
             continue
@@ -860,6 +867,9 @@ def generate_charts(
                 groups,
                 TYPED_COLORS,
             )
+        generate_throughput_charts(
+            typed_times, load_processed_bytes(typed_json), "typed_", output_dir
+        )
 
 
 def parse_args() -> argparse.Namespace:
