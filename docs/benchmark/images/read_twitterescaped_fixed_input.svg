@@ -15,8 +15,8 @@
 <text x="852.0" y="562" class="value" text-anchor="middle">1.11 ms</text>
 <text x="24" y="76" class="heading">New parser / allocator per parse</text>
 <text x="24" y="100" class="label">cpp-yyjson (copy + in-situ)</text>
-<rect x="300" y="89" width="151.9" height="14" rx="2" fill="#2563eb"/>
-<text x="864" y="100" class="value">0.307 ms</text>
+<rect x="300" y="89" width="151.2" height="14" rx="2" fill="#2563eb"/>
+<text x="864" y="100" class="value">0.305 ms</text>
 <text x="24" y="124" class="label">cpp-yyjson</text>
 <rect x="300" y="113" width="152.1" height="14" rx="2" fill="#2563eb"/>
 <text x="864" y="124" class="value">0.307 ms</text>
@@ -46,8 +46,8 @@
 <rect x="300" y="331" width="152.6" height="14" rx="2" fill="#2563eb"/>
 <text x="864" y="342" class="value">0.308 ms</text>
 <text x="24" y="366" class="label">cpp-yyjson</text>
-<rect x="300" y="355" width="152.6" height="14" rx="2" fill="#2563eb"/>
-<text x="864" y="366" class="value">0.308 ms</text>
+<rect x="300" y="355" width="152.8" height="14" rx="2" fill="#2563eb"/>
+<text x="864" y="366" class="value">0.309 ms</text>
 <text x="24" y="390" class="label">yyjson (copy + in-situ)</text>
 <rect x="300" y="379" width="184.0" height="14" rx="2" fill="#16a34a"/>
 <text x="864" y="390" class="value">0.372 ms</text>

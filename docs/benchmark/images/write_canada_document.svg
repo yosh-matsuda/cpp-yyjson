@@ -14,12 +14,12 @@
 <line x1="852.0" y1="50" x2="852.0" y2="280" class="grid"/>
 <text x="852.0" y="298" class="value" text-anchor="middle">7.64 ms</text>
 <text x="24" y="76" class="heading">New output buffer per write</text>
-<text x="24" y="100" class="label">yyjson</text>
-<rect x="300" y="89" width="183.3" height="14" rx="2" fill="#16a34a"/>
-<text x="864" y="100" class="value">2.54 ms</text>
-<text x="24" y="124" class="label">cpp-yyjson</text>
-<rect x="300" y="113" width="184.7" height="14" rx="2" fill="#2563eb"/>
-<text x="864" y="124" class="value">2.56 ms</text>
+<text x="24" y="100" class="label">cpp-yyjson</text>
+<rect x="300" y="89" width="135.2" height="14" rx="2" fill="#2563eb"/>
+<text x="864" y="100" class="value">1.87 ms</text>
+<text x="24" y="124" class="label">yyjson</text>
+<rect x="300" y="113" width="183.3" height="14" rx="2" fill="#16a34a"/>
+<text x="864" y="124" class="value">2.54 ms</text>
 <text x="24" y="148" class="label">rapidjson</text>
 <rect x="300" y="137" width="474.0" height="14" rx="2" fill="#dc2626"/>
 <text x="864" y="148" class="value">6.56 ms</text>
@@ -27,12 +27,12 @@
 <rect x="300" y="161" width="511.1" height="14" rx="2" fill="#f97316"/>
 <text x="864" y="172" class="value">7.08 ms</text>
 <text x="24" y="198" class="heading">Reused output buffer</text>
-<text x="24" y="222" class="label">yyjson</text>
-<rect x="300" y="211" width="183.1" height="14" rx="2" fill="#16a34a"/>
-<text x="864" y="222" class="value">2.54 ms</text>
-<text x="24" y="246" class="label">cpp-yyjson</text>
-<rect x="300" y="235" width="184.7" height="14" rx="2" fill="#2563eb"/>
-<text x="864" y="246" class="value">2.56 ms</text>
+<text x="24" y="222" class="label">cpp-yyjson</text>
+<rect x="300" y="211" width="135.6" height="14" rx="2" fill="#2563eb"/>
+<text x="864" y="222" class="value">1.88 ms</text>
+<text x="24" y="246" class="label">yyjson</text>
+<rect x="300" y="235" width="183.1" height="14" rx="2" fill="#16a34a"/>
+<text x="864" y="246" class="value">2.54 ms</text>
 <text x="24" y="270" class="label">rapidjson</text>
 <rect x="300" y="259" width="471.8" height="14" rx="2" fill="#dc2626"/>
 <text x="864" y="270" class="value">6.53 ms</text>
