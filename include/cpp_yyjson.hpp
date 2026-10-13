@@ -5537,6 +5537,11 @@ namespace yyjson
         template <typename T>
         using from_json_in_place_source = std::remove_cvref_t<typename from_json_in_place_param<T>::type>;
 
+        // A source of a translator that can hold more than one string borrowed from the JSON read.
+        template <typename S>
+        concept borrows_strings = std::is_class_v<S> && (!std::same_as<S, std::string_view>) &&
+                                  (type_reaches<std::string_view, S> || type_reaches<const char*, S>);
+
         template <typename T>
         template <typename Json>
         void from_json_translator<T>::assign_from_json(T& t, const Json& json)
@@ -5992,8 +5997,10 @@ namespace yyjson
                 return U(value);
             else if constexpr (std::constructible_from<U, std::string>)
                 return U(std::string(value));
+            else if constexpr (std::same_as<U, const char*>)
+                return value.data();  // a string of a read document, which ends with a NUL
             else
-                return U(value.data());
+                return U(std::string(value).c_str());
         }
 
         template <typename U = T>
@@ -9658,6 +9665,7 @@ namespace yyjson
             bool inv_;
             bool into_ = false;
             std::string scratch_;
+            std::string c_string_;  // the source of a translator that takes a `const char*`
             struct free_alc
             {
                 void operator()(yyjson_alc* alc) const noexcept { yyjson_alc_dyn_free(alc); }
@@ -9729,7 +9737,12 @@ namespace yyjson
                                     decltype(members() + elements())>{};
                     }(std::make_index_sequence<std::tuple_size_v<T>>{});
                 else if constexpr (yyjson::detail::from_json_translator<T>::castable)
-                    return node<false, type_list<value_node<yyjson::detail::from_json_source<T>, Loop>>>{};
+                {
+                    if constexpr (yyjson::detail::borrows_strings<yyjson::detail::from_json_source<T>>)
+                        return node<Loop>{};
+                    else
+                        return node<false, type_list<value_node<yyjson::detail::from_json_source<T>, Loop>>>{};
+                }
                 else if constexpr (from_json_val_usr_defined<T>)
                 {
                     if constexpr (yyjson::detail::shared_ptr_like<T> &&
@@ -9801,7 +9814,13 @@ namespace yyjson
                         return node<Loop>{};
                 }
                 else if constexpr (yyjson::detail::from_json_translator<F>::in_place)
-                    return node<false, type_list<value_node<yyjson::detail::from_json_in_place_source<F>, Loop>>>{};
+                {
+                    if constexpr (yyjson::detail::borrows_strings<yyjson::detail::from_json_in_place_source<F>>)
+                        return node<Loop>{};
+                    else
+                        return node<false,
+                                    type_list<value_node<yyjson::detail::from_json_in_place_source<F>, Loop>>>{};
+                }
                 else if constexpr (yyjson::detail::reflected_assignable_in_place<F, const_value_ref>)
                     return node<false, type_list<value_node<F, Loop>, reflected_fields_node<F, Loop>>>{};
                 else
@@ -10898,6 +10917,19 @@ namespace yyjson
                 return with_document([](const const_value_ref& v) { return v.template cast<T>(); });
             }
 
+            // Calls `f` with the source of a translator read from the value at `cur_`.  A source that can hold
+            // more than one borrowed string is read from a document, which keeps them all while `f` runs, because
+            // this reader unescapes every string into the same buffer.
+            template <typename S, typename F>
+            decltype(auto) with_source(F&& f)
+            {
+                if constexpr (yyjson::detail::borrows_strings<S>)
+                    return with_document(
+                        [&](const const_value_ref& v) -> decltype(auto) { return f(v.template cast<S>()); });
+                else
+                    return f(read_value<S>());
+            }
+
             // The kinds of JSON values that the value at `cur_` may be, from its first character.
             std::uint8_t kind_at() const noexcept
             {
@@ -11136,8 +11168,9 @@ namespace yyjson
                 else if constexpr (yyjson::detail::from_json_translator<T>::castable)
                 {
                     [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<T>();
-                    return yyjson::detail::from_json_translator<T>::convert(
-                        read_value<yyjson::detail::from_json_source<T>>());
+                    return with_source<yyjson::detail::from_json_source<T>>([](auto&& source) {
+                        return yyjson::detail::from_json_translator<T>::convert(std::move(source));
+                    });
                 }
                 else if constexpr (from_json_val_usr_defined<T>)
                 {
@@ -11197,6 +11230,12 @@ namespace yyjson
                                 auto result = std::string();
                                 read_string_into(result);
                                 return result;
+                            }
+                            else if constexpr (std::same_as<T, const char*>)
+                            {
+                                // the strings of the text do not end with a NUL
+                                c_string_.assign(read_string(scratch_));
+                                return c_string_.c_str();
                             }
                             else
                                 return dc::from_json_string(read_string(scratch_));
@@ -11983,8 +12022,9 @@ namespace yyjson
                 else if constexpr (yyjson::detail::from_json_translator<field_type>::in_place)
                 {
                     [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<field_type>();
-                    yyjson::detail::from_json_translator<field_type>::assign(
-                        field, read_value<yyjson::detail::from_json_in_place_source<field_type>>());
+                    with_source<yyjson::detail::from_json_in_place_source<field_type>>([&](auto&& source) {
+                        yyjson::detail::from_json_translator<field_type>::assign(field, std::move(source));
+                    });
                 }
                 else if constexpr (std::same_as<field_type, std::string>)
                 {

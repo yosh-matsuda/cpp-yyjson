@@ -6667,6 +6667,103 @@ TEST(Reader, TranslatorFromJson)
     expect_direct_read<Painted>(R"({"width":"1"})");
 }
 
+// a translator of a C string, and a type that only a C string constructs
+struct CName
+{
+    std::string s;
+    bool operator==(const CName&) const = default;
+};
+struct CStringOnly
+{
+    std::string s;
+    CStringOnly() = default;
+    explicit CStringOnly(const char* p) : s(p) {}
+    bool operator==(const CStringOnly&) const = default;
+};
+// translators whose sources hold more than one borrowed string
+struct ViewPair
+{
+    std::string first;
+    std::string second;
+    bool operator==(const ViewPair&) const = default;
+};
+struct ViewList
+{
+    std::vector<std::string> items;
+    bool operator==(const ViewList&) const = default;
+};
+struct ViewListInPlace
+{
+    std::vector<std::string> items;
+    bool operator==(const ViewListInPlace&) const = default;
+};
+struct BorrowingFields
+{
+    CName name;
+    CStringOnly only;
+    ViewPair pair;
+    ViewListInPlace in_place;
+    bool operator==(const BorrowingFields&) const = default;
+};
+template <>
+struct yyjson::caster<CName>
+{
+    static CName from_json(const char* p) { return {p}; }
+};
+template <>
+struct yyjson::caster<ViewPair>
+{
+    static ViewPair from_json(std::pair<std::string_view, std::string_view> p)
+    {
+        return {std::string(p.first), std::string(p.second)};
+    }
+};
+template <>
+struct yyjson::caster<ViewList>
+{
+    static ViewList from_json(const std::vector<std::string_view>& v) { return {{v.begin(), v.end()}}; }
+};
+template <>
+struct yyjson::caster<ViewListInPlace>
+{
+    static void from_json(ViewListInPlace& t, const std::vector<std::string_view>& v) { t.items.assign(v.begin(), v.end()); }
+};
+
+static_assert(yyjson::detail::borrows_strings<std::vector<std::string_view>>);
+static_assert(yyjson::detail::borrows_strings<std::pair<std::string_view, int>>);
+static_assert(yyjson::detail::borrows_strings<std::vector<const char*>>);
+static_assert(!yyjson::detail::borrows_strings<std::string_view>);
+static_assert(!yyjson::detail::borrows_strings<const char*>);
+static_assert(!yyjson::detail::borrows_strings<std::vector<std::string>>);
+
+TEST(Reader, BorrowedTranslatorSources)
+{
+    // the strings of the text end with a quote, and the escaped ones are unescaped into one buffer
+    const auto json = std::string_view(
+        R"({"name":"a\"b","only":"c\u0064","pair":["e\n","f\t"],"in_place":["g\"","h\\","i"]})");
+    const auto expected = BorrowingFields{{"a\"b"}, CStringOnly("cd"), {"e\n", "f\t"}, {{"g\"", "h\\", "i"}}};
+    EXPECT_EQ(yyjson::read(json).cast<BorrowingFields>(), expected);
+    EXPECT_EQ(yyjson::read<BorrowingFields>(json), expected);
+    const auto names = std::string_view(R"(["ab","c\u0064",""])");
+    EXPECT_EQ(yyjson::read<std::vector<CName>>(names), (std::vector<CName>{{"ab"}, {"cd"}, {""}}));
+    EXPECT_EQ(yyjson::read<std::vector<CStringOnly>>(names),
+              (std::vector<CStringOnly>{CStringOnly("ab"), CStringOnly("cd"), CStringOnly("")}));
+    EXPECT_EQ(yyjson::read<std::vector<ViewList>>(R"([["a\n","b\t"],[],["c"]])"),
+              (std::vector<ViewList>{{{"a\n", "b\t"}}, {}, {{"c"}}}));
+    EXPECT_EQ(yyjson::read<std::vector<ViewPair>>(R"([["a\n","b\t"]])"), (std::vector<ViewPair>{{"a\n", "b\t"}}));
+#if YYJSON_VERSION_HEX >= 0x000C00
+    using yyjson::reader::detail::direct_reader;
+    static_assert(!direct_reader::reads_documents_in_loop<std::vector<CName>>);
+    static_assert(!direct_reader::reads_documents_in_loop<std::vector<CStringOnly>>);
+    static_assert(direct_reader::reads_documents_in_loop<std::vector<ViewList>>);
+    const auto read_directly = [](std::string_view text) {
+        return direct_reader(text.data(), text.data() + text.size() - 1, yyjson::ReadFlag::NoFlag)
+            .read_root<BorrowingFields>();
+    };
+    EXPECT_EQ(read_directly(json), expected);
+#endif
+}
+
 struct RenamedRecord
 {
     std::string context;
