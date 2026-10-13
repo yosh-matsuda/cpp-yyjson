@@ -39,6 +39,11 @@ add_executable("${PROJECT_NAME}_test" test.cpp)
 target_link_libraries("${PROJECT_NAME}_test"
                       PRIVATE ${PROJECT_NAME} GTest::gtest GTest::gtest_main)
 
+# a caster of the user for a type that the library reads by itself applies to the whole program
+add_executable("${PROJECT_NAME}_test_user_casters" test_user_casters.cpp)
+target_link_libraries("${PROJECT_NAME}_test_user_casters"
+                      PRIVATE ${PROJECT_NAME} GTest::gtest GTest::gtest_main)
+
 # the depth limit configures the backend as well, which is compiled here with it
 if(CPPYYJSON_USE_BUNDLED_YYJSON)
   add_executable("${PROJECT_NAME}_test_depth_limit" test_depth_limit.cpp
@@ -57,6 +62,7 @@ endif()
 # add google test
 include(GoogleTest)
 gtest_discover_tests("${PROJECT_NAME}_test" DISCOVERY_MODE PRE_TEST)
+gtest_discover_tests("${PROJECT_NAME}_test_user_casters" DISCOVERY_MODE PRE_TEST)
 if(CPPYYJSON_USE_BUNDLED_YYJSON)
   gtest_discover_tests("${PROJECT_NAME}_test_depth_limit" DISCOVERY_MODE
                        PRE_TEST)

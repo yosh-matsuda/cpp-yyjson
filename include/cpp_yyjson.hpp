@@ -905,6 +905,8 @@ namespace yyjson
         // `caster<T>::from_json` in the form that it has, existing or translator.
         template <typename T, typename Json>
         T user_from_json(const Json& json);
+        template <typename T>
+        constexpr bool assert_from_json_usable() noexcept;
 
         // Tells whether the field at index I shares no byte with the other fields, which a field marked
         // `[[no_unique_address]]` may do.  A new object can then be constructed in the place of the field.
@@ -2924,6 +2926,7 @@ namespace yyjson
                 requires from_json_def_val_defined<U> && (!from_json_val_usr_defined<U>)
                 U cast() const
                 {
+                    yyjson::detail::assert_from_json_usable<U>();
                     return default_caster<U>::from_json(const_value_ref(doc_, val_));
                 }
                 template <typename T>
@@ -3402,6 +3405,7 @@ namespace yyjson
                 requires from_json_def_arr_defined<U> && (!from_json_val_usr_defined<U>)
                 U cast() const
                 {
+                    yyjson::detail::assert_from_json_usable<U>();
                     return default_caster<U>::from_json(const_array_ref(*this));
                 }
                 template <typename T>
@@ -4157,6 +4161,7 @@ namespace yyjson
                 requires from_json_def_obj_defined<U> && (!from_json_val_usr_defined<U>)
                 U cast() const
                 {
+                    yyjson::detail::assert_from_json_usable<U>();
                     return default_caster<U>::from_json(const_object_ref(*this));
                 }
                 template <typename T>
@@ -4789,6 +4794,7 @@ namespace yyjson
             requires detail::from_json_def_val_defined<U> && (!detail::from_json_val_usr_defined<U>)
             U cast() const
             {
+                yyjson::detail::assert_from_json_usable<U>();
                 return detail::default_caster<U>::from_json(*this);
             }
 
@@ -4891,6 +4897,7 @@ namespace yyjson
             requires detail::from_json_def_arr_defined<U> && (!detail::from_json_val_usr_defined<U>)
             U cast() const
             {
+                yyjson::detail::assert_from_json_usable<U>();
                 return detail::default_caster<U>::from_json(*this);
             }
             template <typename T>
@@ -5023,6 +5030,7 @@ namespace yyjson
             requires detail::from_json_def_obj_defined<U> && (!detail::from_json_val_usr_defined<U>)
             U cast() const
             {
+                yyjson::detail::assert_from_json_usable<U>();
                 return detail::default_caster<U>::from_json(*this);
             }
             template <typename T>
@@ -5536,6 +5544,97 @@ namespace yyjson
         template <typename T>
         using from_json_in_place_source = std::remove_cvref_t<typename from_json_in_place_param<T>::type>;
 
+        // A source of a translator that can hold more than one string borrowed from the JSON read.
+        template <typename S>
+        concept borrows_strings = std::is_class_v<S> && (!std::same_as<S, std::string_view>) &&
+                                  (type_reaches<std::string_view, S> || type_reaches<const char*, S>);
+
+        // Whether `caster<T>` has a member named `from_json`, of any form: the name is then ambiguous in a class
+        // derived from the caster and from another class that has it.
+        struct from_json_name_probe
+        {
+            static void from_json();
+        };
+        template <typename T>
+        struct from_json_name_lookup : caster<T>, from_json_name_probe
+        {
+        };
+        template <typename T>
+        concept caster_names_from_json = std::is_class_v<caster<T>> && (!std::is_final_v<caster<T>>) &&
+                                         !requires { &from_json_name_lookup<T>::from_json; };
+
+        // T is read by this library rather than by a `from_json` of the user, in any form.
+        template <typename T>
+        concept reads_by_default = !caster_names_from_json<T> || std::derived_from<caster<T>, builtin_caster>;
+        // A `std::string` that the reader without a document can read straight into its buffer.
+        template <typename T>
+        concept default_string = std::same_as<T, std::string> && reads_by_default<T>;
+
+        // A node of the graph of `type_node` that ends at the types that a caster of the user reads, which leads
+        // to the types whose values a value read from JSON holds.
+        template <typename T>
+        struct read_type_node;
+        template <typename... Us>
+        auto read_type_nodes(type_list<type_node<Us>...>) -> type_list<read_type_node<Us>...>;
+        template <typename T>
+        struct read_type_edges
+        {
+            using type = decltype(read_type_nodes(typename type_node<T>::edges{}));
+        };
+        template <typename T>
+        struct read_type_node
+        {
+            using edges = typename std::conditional_t<
+                caster_names_from_json<T> && !std::derived_from<caster<T>, builtin_caster>,
+                std::type_identity<type_list<>>, read_type_edges<T>>::type;
+        };
+
+        // A value of T read from JSON can hold a string that points into the JSON or into a document, which
+        // `yyjson::read<T>` frees before it returns.
+        template <typename T>
+        concept reads_borrowed_strings =
+            type_list_has<read_type_node<std::string_view>, closure_t<type_list<read_type_node<T>>>> ||
+            type_list_has<read_type_node<const char*>, closure_t<type_list<read_type_node<T>>>>;
+        template <typename T>
+        constexpr void assert_reads_owned_strings() noexcept
+        {
+            static_assert(!reads_borrowed_strings<std::remove_cv_t<T>>,
+                          "T cannot hold a std::string_view or a const char*, which would point into JSON text or "
+                          "a document that does not outlive the call: use std::string, or cast a document that the "
+                          "program keeps");
+        }
+
+        // `caster<T>` names `from_json` but no form of it can be called, as when the translator form is overloaded
+        // or a template, or takes another parameter: T would then be read as if the caster had no `from_json`.
+        template <typename T>
+        concept from_json_unusable =
+            caster_names_from_json<T> && (!std::derived_from<caster<T>, builtin_caster>) &&
+            (!from_json_translator<T>::returns) && (!from_json_translator<T>::in_place) &&
+            !requires(const reader::const_value_ref& v) { caster<T>::from_json(v); } &&
+            !requires(const writer::detail::const_value_ref& w) { caster<T>::from_json(w); } &&
+            !requires(T& t, const reader::const_value_ref& v) { caster<T>::from_json(t, v); } &&
+            !requires(T& t, const writer::detail::const_value_ref& w) { caster<T>::from_json(t, w); };
+        template <typename T>
+        constexpr bool assert_from_json_usable() noexcept
+        {
+            static_assert(!from_json_unusable<T>,
+                          "caster<T>::from_json cannot be called: declare one non-template `T from_json(U)` or "
+                          "`void from_json(T&, U)`, or a `from_json` that takes a JSON value");
+            return true;
+        }
+        template <typename... Ts>
+        constexpr void assert_from_json_usable(type_list<read_type_node<Ts>...>) noexcept
+        {
+            [[maybe_unused]] constexpr auto all = (assert_from_json_usable<Ts>() && ...);
+        }
+        // Every type that is read for a value of T, which a `caster` of the user reads or this library does, has a
+        // `from_json` that can be called if its caster names one.
+        template <typename T>
+        constexpr void assert_reads_through_casters() noexcept
+        {
+            assert_from_json_usable(closure_t<type_list<read_type_node<std::remove_cv_t<T>>>>{});
+        }
+
         template <typename T>
         template <typename Json>
         void from_json_translator<T>::assign_from_json(T& t, const Json& json)
@@ -5746,19 +5845,20 @@ namespace yyjson
                                             (!std::ranges::input_range<T>) && all_fields_castable<Json, T>;
 
         // `cast<T>` of a value of a read document builds `T()` and assigns the fields from the object,
-        // which can as well be done on an object already in place.
+        // which can as well be done on an object already in place.  A T whose caster names a `from_json` that
+        // cannot be called is left to `cast<T>`, which rejects it.
         template <typename T, typename Json>
         concept reflected_assignable_in_place =
             std::same_as<Json, reader::const_value_ref> && (!reader::detail::from_json_val_usr_defined<T>) &&
-            reflected_object_castable<T, reader::const_object_ref>;
+            (!from_json_unusable<T>) && reflected_object_castable<T, reader::const_object_ref>;
 
         // A range of fixed size, such as `std::array`, that `default_caster` fills in place from a JSON array of
         // a read document.
         template <typename T, typename Json>
         concept fixed_size_assignable_in_place =
             std::same_as<Json, reader::const_value_ref> && (!reader::detail::from_json_val_usr_defined<T>) &&
-            (!back_insertable<T>) && (!insertable_set<T>) && std::ranges::sized_range<T> &&
-            array_castable_range<T, reader::const_array_ref>;
+            (!from_json_unusable<T>) && (!back_insertable<T>) && (!insertable_set<T>) &&
+            std::ranges::sized_range<T> && array_castable_range<T, reader::const_array_ref>;
 
         template <typename M>
         struct member_pointee;
@@ -5991,8 +6091,10 @@ namespace yyjson
                 return U(value);
             else if constexpr (std::constructible_from<U, std::string>)
                 return U(std::string(value));
+            else if constexpr (std::same_as<U, const char*>)
+                return value.data();  // a string of a read document, which ends with a NUL
             else
-                return U(value.data());
+                return U(std::string(value).c_str());
         }
 
         template <typename U = T>
@@ -9780,6 +9882,7 @@ namespace yyjson
             bool inv_;
             bool into_ = false;
             std::string scratch_;
+            std::string c_string_;  // the source of a translator that takes a `const char*`
             struct free_alc
             {
                 void operator()(yyjson_alc* alc) const noexcept { yyjson_alc_dyn_free(alc); }
@@ -9897,7 +10000,12 @@ namespace yyjson
                 else if constexpr (builtin_tuple<T>)
                     return typename tuple_part<T, Loop>::type{};
                 else if constexpr (yyjson::detail::from_json_translator<T>::castable)
-                    return node<false, type_list<value_node<yyjson::detail::from_json_source<T>, Loop>>>{};
+                {
+                    if constexpr (yyjson::detail::borrows_strings<yyjson::detail::from_json_source<T>>)
+                        return node<Loop>{};
+                    else
+                        return node<false, type_list<value_node<yyjson::detail::from_json_source<T>, Loop>>>{};
+                }
                 else if constexpr (from_json_val_usr_defined<T>)
                 {
                     if constexpr (yyjson::detail::shared_ptr_like<T> &&
@@ -9974,7 +10082,13 @@ namespace yyjson
                         return node<Loop>{};
                 }
                 else if constexpr (yyjson::detail::from_json_translator<F>::in_place)
-                    return node<false, type_list<value_node<yyjson::detail::from_json_in_place_source<F>, Loop>>>{};
+                {
+                    if constexpr (yyjson::detail::borrows_strings<yyjson::detail::from_json_in_place_source<F>>)
+                        return node<Loop>{};
+                    else
+                        return node<false,
+                                    type_list<value_node<yyjson::detail::from_json_in_place_source<F>, Loop>>>{};
+                }
                 else if constexpr (yyjson::detail::reflected_assignable_in_place<F, const_value_ref>)
                     return in_place_node<F, Loop>();
                 else
@@ -11104,6 +11218,19 @@ namespace yyjson
                 return with_document([](const const_value_ref& v) { return v.template cast<T>(); });
             }
 
+            // Calls `f` with the source of a translator read from the value at `cur_`.  A source that can hold
+            // more than one borrowed string is read from a document, which keeps them all while `f` runs, because
+            // this reader unescapes every string into the same buffer.
+            template <typename S, typename F>
+            decltype(auto) with_source(F&& f)
+            {
+                if constexpr (yyjson::detail::borrows_strings<S>)
+                    return with_document(
+                        [&](const const_value_ref& v) -> decltype(auto) { return f(v.template cast<S>()); });
+                else
+                    return f(read_value<S>());
+            }
+
             // The kinds of JSON values that the value at `cur_` may be, from its first character.
             std::uint8_t kind_at() const noexcept
             {
@@ -11145,7 +11272,7 @@ namespace yyjson
                 constexpr auto index = std::in_place_index<I>;
                 try
                 {
-                    if constexpr (std::same_as<alternative, std::string>)
+                    if constexpr (yyjson::detail::default_string<alternative>)
                     {
                         if (*cur_ == '"')
                         {
@@ -11202,7 +11329,7 @@ namespace yyjson
             template <typename T>
             CPPYYJSON_ALWAYS_INLINE void assign_value(T& target)
             {
-                if constexpr (std::same_as<T, std::string>)
+                if constexpr (yyjson::detail::default_string<T>)
                 {
                     if (*cur_ == '"')
                     {
@@ -11342,8 +11469,9 @@ namespace yyjson
                 else if constexpr (yyjson::detail::from_json_translator<T>::castable)
                 {
                     [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<T>();
-                    return yyjson::detail::from_json_translator<T>::convert(
-                        read_value<yyjson::detail::from_json_source<T>>());
+                    return with_source<yyjson::detail::from_json_source<T>>([](auto&& source) {
+                        return yyjson::detail::from_json_translator<T>::convert(std::move(source));
+                    });
                 }
                 else if constexpr (from_json_val_usr_defined<T>)
                 {
@@ -11403,6 +11531,12 @@ namespace yyjson
                                 auto result = std::string();
                                 read_string_into(result);
                                 return result;
+                            }
+                            else if constexpr (std::same_as<T, const char*>)
+                            {
+                                // the strings of the text do not end with a NUL
+                                c_string_.assign(read_string(scratch_));
+                                return c_string_.c_str();
                             }
                             else
                                 return dc::from_json_string(read_string(scratch_));
@@ -11673,7 +11807,7 @@ namespace yyjson
                             else
                                 result.push_back(read_value<value_type>());
                         }
-                        else if constexpr (std::same_as<value_type, std::string> && requires {
+                        else if constexpr (yyjson::detail::default_string<value_type> && requires {
                                                { result.emplace_back() } -> std::same_as<value_type&>;
                                            })
                         {
@@ -11791,7 +11925,7 @@ namespace yyjson
                         return;
                     }
                 }
-                else if constexpr (std::same_as<T, std::string>)
+                else if constexpr (yyjson::detail::default_string<T>)
                 {
                     if (*cur_ == '"')
                     {
@@ -12160,7 +12294,7 @@ namespace yyjson
                                 return;
                             }
                         }
-                        if constexpr (std::same_as<value_type, std::string>)
+                        if constexpr (yyjson::detail::default_string<value_type>)
                         {
                             if (*cur_ == '"')
                             {
@@ -12189,18 +12323,18 @@ namespace yyjson
                 else if constexpr (yyjson::detail::from_json_translator<field_type>::in_place)
                 {
                     [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<field_type>();
-                    yyjson::detail::from_json_translator<field_type>::assign(
-                        field, read_value<yyjson::detail::from_json_in_place_source<field_type>>());
+                    with_source<yyjson::detail::from_json_in_place_source<field_type>>([&](auto&& source) {
+                        yyjson::detail::from_json_translator<field_type>::assign(field, std::move(source));
+                    });
                 }
-                else if constexpr (std::same_as<field_type, std::string>)
+                else if constexpr (yyjson::detail::default_string<field_type>)
                 {
                     if (*cur_ == '"') [[likely]]
                         read_string_into(field);
                     else
                         field = read_value<field_type>();
                 }
-                else if constexpr (std::same_as<field_type, bool> && !from_json_val_usr_defined<bool> &&
-                                   !yyjson::detail::from_json_translator<bool>::castable)
+                else if constexpr (std::same_as<field_type, bool> && yyjson::detail::reads_by_default<bool>)
                 {
                     if (*cur_ == 't')
                     {
@@ -12353,6 +12487,8 @@ namespace yyjson
     requires (!std::is_reference_v<T>) && castable<reader::const_value_ref, T>
     [[nodiscard]] T read(std::string_view json, ReadFlag read_flag = ReadFlag::NoFlag)
     {
+        yyjson::detail::assert_reads_owned_strings<T>();
+        yyjson::detail::assert_reads_through_casters<T>();
         using U = std::remove_cv_t<T>;
         if constexpr (reader::detail::direct_reader::reads_documents_in_loop<U>)
             return reader::read(json, read_flag).template cast<U>();
@@ -12387,6 +12523,8 @@ namespace yyjson
     requires (!std::is_const_v<T>) && castable<reader::const_value_ref, T> && std::is_move_assignable_v<T>
     void read_into(std::string_view json, T& t, ReadFlag read_flag = ReadFlag::NoFlag)
     {
+        yyjson::detail::assert_reads_owned_strings<T>();
+        yyjson::detail::assert_reads_through_casters<T>();
         if constexpr (reader::detail::direct_reader::reads_documents_in_loop<T>)
             t = reader::read(json, read_flag).template cast<T>();
         else
@@ -12422,6 +12560,8 @@ namespace yyjson
     requires (!std::is_const_v<T>) && castable<reader::const_value_ref, T> && std::is_move_assignable_v<T>
     void merge_into(std::string_view json, T& t, ReadFlag read_flag = ReadFlag::NoFlag)
     {
+        yyjson::detail::assert_reads_owned_strings<T>();
+        yyjson::detail::assert_reads_through_casters<T>();
         if constexpr (!reader::detail::direct_reader::reads_documents_in_loop<T>)
         {
             const char* first;
@@ -12450,6 +12590,8 @@ namespace yyjson
     requires (!std::is_reference_v<T>) && castable<reader::const_value_ref, T>
     [[nodiscard]] T read(std::string_view json, ReadFlag read_flag = ReadFlag::NoFlag)
     {
+        yyjson::detail::assert_reads_owned_strings<T>();
+        yyjson::detail::assert_reads_through_casters<T>();
         return reader::read(json, read_flag).template cast<std::remove_cv_t<T>>();
     }
 
@@ -12457,6 +12599,8 @@ namespace yyjson
     requires (!std::is_const_v<T>) && castable<reader::const_value_ref, T> && std::is_move_assignable_v<T>
     void read_into(std::string_view json, T& t, ReadFlag read_flag = ReadFlag::NoFlag)
     {
+        yyjson::detail::assert_reads_owned_strings<T>();
+        yyjson::detail::assert_reads_through_casters<T>();
         t = reader::read(json, read_flag).template cast<T>();
     }
 
@@ -12464,6 +12608,8 @@ namespace yyjson
     requires (!std::is_const_v<T>) && castable<reader::const_value_ref, T> && std::is_move_assignable_v<T>
     void merge_into(std::string_view json, T& t, ReadFlag read_flag = ReadFlag::NoFlag)
     {
+        yyjson::detail::assert_reads_owned_strings<T>();
+        yyjson::detail::assert_reads_through_casters<T>();
         reader::detail::merge_from(t, reader::read(json, read_flag));
     }
 #endif

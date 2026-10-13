@@ -6569,6 +6569,18 @@ struct SameFormTwice
 {
     int a = 0;
 };
+struct ConstrainedTemplate
+{
+    int a = 0;
+};
+struct TakesTwoParameters
+{
+    int a = 0;
+};
+struct TemplateJsonForm
+{
+    int a = 0;
+};
 struct WithJsonForm
 {
     int a = 0;
@@ -6653,9 +6665,33 @@ struct yyjson::caster<TakesLvalue>
 template <>
 struct yyjson::caster<SameFormTwice>
 {
-    // two functions of the same form leave the caster without a translator
+    // two functions of the same form leave the caster without a translator, which cannot be read then
     static SameFormTwice from_json(int) { return {-1}; }
     static SameFormTwice from_json(double) { return {-2}; }
+};
+template <>
+struct yyjson::caster<ConstrainedTemplate>
+{
+    template <std::integral U>
+    static ConstrainedTemplate from_json(U u)
+    {
+        return {static_cast<int>(u)};
+    }
+};
+template <>
+struct yyjson::caster<TakesTwoParameters>
+{
+    static TakesTwoParameters from_json(int a, int b) { return {a + b}; }
+};
+template <>
+struct yyjson::caster<TemplateJsonForm>
+{
+    // a template that accepts a JSON value is the form that takes one
+    template <typename Json>
+    static TemplateJsonForm from_json(const Json& json)
+    {
+        return {json.template cast<int>() + 200};
+    }
 };
 template <>
 struct yyjson::caster<WithJsonForm>
@@ -6735,9 +6771,9 @@ TEST(Reader, TranslatorFromJson)
 
     EXPECT_EQ(yyjson::read<std::vector<TakesLvalue>>(R"(["a string longer than the small string buffer"])")[0].name,
               "a string longer than the small string buffer");
-    EXPECT_EQ(yyjson::read(R"({"a":1})").cast<SameFormTwice>().a, 1);
-    EXPECT_EQ(yyjson::read<std::vector<SameFormTwice>>(R"([{"a":1}])")[0].a, 1);
     EXPECT_EQ(yyjson::read("1").cast<WithJsonForm>().a, 101);
+    EXPECT_EQ(yyjson::read("1").cast<TemplateJsonForm>().a, 201);
+    EXPECT_EQ(yyjson::read<std::vector<TemplateJsonForm>>("[1]")[0].a, 201);
     EXPECT_EQ(yyjson::read<std::vector<WithJsonForm>>("[1]")[0].a, 101);
     EXPECT_EQ(yyjson::read<std::vector<Theme>>(R"(["#000102"])")[0].accent, (Rgb{0, 1, 2}));
 
@@ -6772,6 +6808,172 @@ TEST(Reader, TranslatorFromJson)
         EXPECT_TRUE(expect_direct_read<Painted>(json)) << json;
     }
     expect_direct_read<Painted>(R"({"width":"1"})");
+}
+
+// a translator of a C string, and a type that only a C string constructs
+struct CName
+{
+    std::string s;
+    bool operator==(const CName&) const = default;
+};
+struct CStringOnly
+{
+    std::string s;
+    CStringOnly() = default;
+    explicit CStringOnly(const char* p) : s(p) {}
+    bool operator==(const CStringOnly&) const = default;
+};
+// translators whose sources hold more than one borrowed string
+struct ViewPair
+{
+    std::string first;
+    std::string second;
+    bool operator==(const ViewPair&) const = default;
+};
+struct ViewList
+{
+    std::vector<std::string> items;
+    bool operator==(const ViewList&) const = default;
+};
+struct ViewListInPlace
+{
+    std::vector<std::string> items;
+    bool operator==(const ViewListInPlace&) const = default;
+};
+struct BorrowingFields
+{
+    CName name;
+    CStringOnly only;
+    ViewPair pair;
+    ViewListInPlace in_place;
+    bool operator==(const BorrowingFields&) const = default;
+};
+template <>
+struct yyjson::caster<CName>
+{
+    static CName from_json(const char* p) { return {p}; }
+};
+template <>
+struct yyjson::caster<ViewPair>
+{
+    static ViewPair from_json(std::pair<std::string_view, std::string_view> p)
+    {
+        return {std::string(p.first), std::string(p.second)};
+    }
+};
+template <>
+struct yyjson::caster<ViewList>
+{
+    static ViewList from_json(const std::vector<std::string_view>& v) { return {{v.begin(), v.end()}}; }
+};
+template <>
+struct yyjson::caster<ViewListInPlace>
+{
+    static void from_json(ViewListInPlace& t, const std::vector<std::string_view>& v)
+    {
+        t.items.assign(v.begin(), v.end());
+    }
+};
+
+static_assert(yyjson::detail::borrows_strings<std::vector<std::string_view>>);
+static_assert(yyjson::detail::borrows_strings<std::pair<std::string_view, int>>);
+static_assert(yyjson::detail::borrows_strings<std::vector<const char*>>);
+static_assert(!yyjson::detail::borrows_strings<std::string_view>);
+static_assert(!yyjson::detail::borrows_strings<const char*>);
+static_assert(!yyjson::detail::borrows_strings<std::vector<std::string>>);
+
+// what `yyjson::read<T>` cannot give
+struct HoldsView
+{
+    std::string_view s;
+};
+struct HoldsCString
+{
+    std::vector<std::optional<const char*>> v;
+};
+// a caster that reads into the view, which it takes from a string that lives on
+struct InternedView
+{
+    std::string_view s;
+};
+template <>
+struct yyjson::caster<InternedView>
+{
+    static InternedView from_json(const std::string& s) { return {*interned().insert(s).first}; }
+    static std::set<std::string>& interned()
+    {
+        static auto set = std::set<std::string>();
+        return set;
+    }
+};
+// a caster that only writes
+struct WrittenView
+{
+    std::string_view s;
+};
+template <>
+struct yyjson::caster<WrittenView>
+{
+    template <typename... Ts>
+    static std::string_view to_json(const WrittenView& w, Ts...)
+    {
+        return w.s;
+    }
+};
+static_assert(yyjson::detail::reads_borrowed_strings<std::string_view>);
+static_assert(yyjson::detail::reads_borrowed_strings<const char*>);
+static_assert(yyjson::detail::reads_borrowed_strings<std::map<std::string_view, int>>);
+static_assert(yyjson::detail::reads_borrowed_strings<HoldsView>);
+static_assert(yyjson::detail::reads_borrowed_strings<HoldsCString>);
+static_assert(yyjson::detail::reads_borrowed_strings<std::vector<WrittenView>>);
+static_assert(!yyjson::detail::reads_borrowed_strings<std::vector<InternedView>>);
+static_assert(!yyjson::detail::reads_borrowed_strings<BorrowingFields>);
+static_assert(!yyjson::detail::reads_borrowed_strings<std::map<std::string, std::vector<std::string>>>);
+static_assert(yyjson::detail::caster_names_from_json<Rgb>);
+static_assert(yyjson::detail::caster_names_from_json<SameFormTwice>);
+// `read<T>` and `cast<T>` of these are compile errors
+static_assert(yyjson::detail::from_json_unusable<SameFormTwice>);
+static_assert(yyjson::detail::from_json_unusable<ConstrainedTemplate>);
+static_assert(yyjson::detail::from_json_unusable<TakesTwoParameters>);
+static_assert(!yyjson::detail::from_json_unusable<Rgb>);
+static_assert(!yyjson::detail::from_json_unusable<Meters>);
+static_assert(!yyjson::detail::from_json_unusable<BothForms>);
+static_assert(!yyjson::detail::from_json_unusable<WithJsonForm>);
+static_assert(!yyjson::detail::from_json_unusable<TemplateJsonForm>);
+static_assert(!yyjson::detail::from_json_unusable<HoldsView>);
+static_assert(!yyjson::detail::from_json_unusable<std::string>);
+static_assert(!yyjson::detail::caster_names_from_json<WrittenView>);
+static_assert(!yyjson::detail::caster_names_from_json<HoldsView>);
+
+TEST(Reader, BorrowedTranslatorSources)
+{
+    // the strings of the text end with a quote, and the escaped ones are unescaped into one buffer
+    const auto json = std::string_view(
+        R"({"name":"a\"b","only":"c\u0064","pair":["e\n","f\t"],"in_place":["g\"","h\\","i"]})");
+    const auto expected = BorrowingFields{{"a\"b"}, CStringOnly("cd"), {"e\n", "f\t"}, {{"g\"", "h\\", "i"}}};
+    EXPECT_EQ(yyjson::read(json).cast<BorrowingFields>(), expected);
+    EXPECT_EQ(yyjson::read<BorrowingFields>(json), expected);
+    const auto names = std::string_view(R"(["ab","c\u0064",""])");
+    EXPECT_EQ(yyjson::read<std::vector<CName>>(names), (std::vector<CName>{{"ab"}, {"cd"}, {""}}));
+    EXPECT_EQ(yyjson::read<std::vector<CStringOnly>>(names),
+              (std::vector<CStringOnly>{CStringOnly("ab"), CStringOnly("cd"), CStringOnly("")}));
+    EXPECT_EQ(yyjson::read<std::vector<ViewList>>(R"([["a\n","b\t"],[],["c"]])"),
+              (std::vector<ViewList>{{{"a\n", "b\t"}}, {}, {{"c"}}}));
+    EXPECT_EQ(yyjson::read<std::vector<ViewPair>>(R"([["a\n","b\t"]])"), (std::vector<ViewPair>{{"a\n", "b\t"}}));
+    const auto interned = yyjson::read<std::vector<InternedView>>(R"(["a string longer than the small buffer","b"])");
+    EXPECT_EQ(interned[0].s, "a string longer than the small buffer");
+    EXPECT_EQ(interned[1].s, "b");
+#if YYJSON_VERSION_HEX >= 0x000C00
+    using yyjson::reader::detail::direct_reader;
+    static_assert(!direct_reader::reads_documents_in_loop<std::vector<CName>>);
+    static_assert(!direct_reader::reads_documents_in_loop<std::vector<CStringOnly>>);
+    static_assert(direct_reader::reads_documents_in_loop<std::vector<ViewList>>);
+    const auto read_directly = [](std::string_view text) {
+        return direct_reader(text.data(), text.data() + text.size() - 1, yyjson::ReadFlag::NoFlag)
+            .read_root<BorrowingFields>();
+    };
+    EXPECT_EQ(read_directly(json), expected);
+#endif
 }
 
 struct RenamedRecord
