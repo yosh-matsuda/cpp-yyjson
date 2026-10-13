@@ -890,6 +890,16 @@ namespace yyjson
 
         template <typename T>
         struct default_caster;
+        // Whether `caster<T>` or `default_caster<T>` has a `from_json` that reads a `T` from the JSON reference
+        // `Json`.  The reader and the writer each name the four forms that they use.
+        template <typename T, typename Json>
+        concept caster_from_json = requires(const Json& v) {
+            { caster<T>::from_json(v) } -> std::same_as<T>;
+        };
+        template <typename T, typename Json>
+        concept default_caster_from_json = requires(const Json& v) {
+            { default_caster<T>::from_json(v) } -> std::same_as<T>;
+        };
 
         // The translator forms of `caster<T>::from_json`, which take a C++ value rather than a JSON value.
         template <typename T>
@@ -1363,25 +1373,14 @@ namespace yyjson
             using namespace yyjson::detail;  // NOLINT
 
             template <typename T>
-            concept from_json_val_usr_defined =  // clang-format off
-                    requires(const const_value_ref& v) {
-                        {caster<T>::from_json(v)} -> std::same_as<T>;
-                    } || yyjson::detail::from_json_translator<T>::castable;  // clang-format on
+            concept from_json_val_usr_defined =
+                caster_from_json<T, const_value_ref> || yyjson::detail::from_json_translator<T>::castable;
             template <typename T>
-            concept from_json_def_val_defined =  // clang-format off
-                    requires(const const_value_ref& v) {
-                        {default_caster<T>::from_json(v)} -> std::same_as<T>;
-                    };  // clang-format on
+            concept from_json_def_val_defined = default_caster_from_json<T, const_value_ref>;
             template <typename T>
-            concept from_json_def_obj_defined =  // clang-format off
-                    requires(const const_object_ref& v) {
-                        {default_caster<T>::from_json(v)} -> std::same_as<T>;
-                    };  // clang-format on
+            concept from_json_def_obj_defined = default_caster_from_json<T, const_object_ref>;
             template <typename T>
-            concept from_json_def_arr_defined =  // clang-format off
-                    requires(const const_array_ref& v) {
-                        {default_caster<T>::from_json(v)} -> std::same_as<T>;
-                    };  // clang-format on
+            concept from_json_def_arr_defined = default_caster_from_json<T, const_array_ref>;
 
             template <class Derived>
             concept base_of_value_ref = requires(Derived d) { [](const abstract_value_ref&) {}(d); };
@@ -1649,18 +1648,14 @@ namespace yyjson
             }
 
             template <typename T>
-            concept from_json_val_usr_defined =  // clang-format off
-                    requires(const const_value_ref& v) { {caster<T>::from_json(v)} -> std::same_as<T>; } ||
-                    yyjson::detail::from_json_translator<T>::castable;  // clang-format on
+            concept from_json_val_usr_defined =
+                caster_from_json<T, const_value_ref> || yyjson::detail::from_json_translator<T>::castable;
             template <typename T>
-            concept from_json_def_val_defined =  // clang-format off
-                    requires(const const_value_ref& v) { {default_caster<T>::from_json(v)} -> std::same_as<T>; };  // clang-format on
+            concept from_json_def_val_defined = default_caster_from_json<T, const_value_ref>;
             template <typename T>
-            concept from_json_def_obj_defined =  // clang-format off
-                    requires(const const_object_ref& v) { {default_caster<T>::from_json(v)} -> std::same_as<T>; };  // clang-format on
+            concept from_json_def_obj_defined = default_caster_from_json<T, const_object_ref>;
             template <typename T>
-            concept from_json_def_arr_defined =  // clang-format off
-                    requires(const const_array_ref& v) { {default_caster<T>::from_json(v)} -> std::same_as<T>; };  // clang-format on
+            concept from_json_def_arr_defined = default_caster_from_json<T, const_array_ref>;
 #pragma endregion caster
 
             template <typename T, typename DocType = mutable_document>
