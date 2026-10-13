@@ -11786,7 +11786,7 @@ namespace yyjson
             // Whether `read_array_into` counts the rest of the elements of an array of T once it has read 512, and
             // reserves room for them, rather than growing the range, which moves every element read so far.  The
             // elements of a trivially copyable type are cheap to move, and most of their arrays are short, so that
-            // only the root array of them is given room, by `read_root`.
+            // only the root array of them is given room for the rest, by `read_root`.
             template <typename T>
             static constexpr bool counts_elements =
                 !std::is_trivially_copyable_v<std::ranges::range_value_t<T>> && reserves_elements<T>;
@@ -11835,6 +11835,14 @@ namespace yyjson
                 [[maybe_unused]] auto out = std::ranges::begin(result);
                 [[maybe_unused]] auto count = std::size_t{0};
                 [[maybe_unused]] auto estimated = false;
+                // a nested array of trivially copyable elements, which is mostly short, is given the room of glibc's
+                // smallest block at once, as growing it from one element took three allocations for `[1,2,3]` and
+                // counting its elements first was slower still
+                if constexpr (!Root && yyjson::detail::back_insertable<T> && reserves_elements<T> &&
+                              std::is_trivially_copyable_v<value_type>)
+                {
+                    if (result.capacity() == 0) result.reserve(std::max<std::size_t>(1, 24 / sizeof(value_type)));
+                }
                 for (;;)
                 {
                     if constexpr (yyjson::detail::back_insertable<T>)
