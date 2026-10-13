@@ -10776,6 +10776,13 @@ namespace yyjson
                 void operator()(yyjson_doc* doc) const noexcept { yyjson_doc_free(doc); }
             };
             std::unique_ptr<yyjson_alc, free_alc> alc_;
+            // The copy of the text that `read_local_document` reads documents from in place: `local_[0]` is the
+            // character at `local_from_` of the text, and the copy is the text from `local_used_` to `local_to_`.
+            std::unique_ptr<char[]> local_;
+            const char* local_from_ = nullptr;
+            const char* local_to_ = nullptr;
+            const char* local_used_ = nullptr;
+            std::size_t local_chunk_ = 4096;
 
         public:
             direct_reader(const char* first, const char* last, ReadFlag flg) noexcept
@@ -12236,24 +12243,82 @@ namespace yyjson
 
             // Values ------------------------------------------------------------------------------------------
 
-            // Calls `f` with the value at `cur_` read into a document of its own, for the casters that take one.
-            // The documents come from an allocator that keeps the memory of the previous one.
-            template <typename F>
-            decltype(auto) with_document(F&& f)
+            // Reads the value at `cur_` into a document and moves past it.  yyjson reads the value in place from a
+            // copy of the text.  The copy has room for the rest of the text and is filled a chunk at a time as far
+            // as the values reach, so the values that follow find their text already copied.  A value that may not
+            // end within the chunk is read again from a chunk four times as long, which the next values start with.
+            // yyjson writes into the part of the copy that holds the value, so that part is copied again before a
+            // value earlier in the text is read.
+            yyjson_doc* read_local_document()
             {
-                const char* const start = cur_;
-                skip_value();
+                const char* const p = cur_;
+                // a value in the root ends before its closing bracket, which only the root itself reaches
+                const char* const end = p == first_ ? last_ + 1 : last_;
                 if (alc_ == nullptr)
                 {
                     alc_.reset(yyjson_alc_dyn_new());
                     if (alc_ == nullptr) throw std::bad_alloc();
                 }
-                auto err = yyjson_read_err();
-                auto* const doc = yyjson_read_opts(const_cast<char*>(start), static_cast<std::size_t>(cur_ - start),
-                                                   to_underlying(flg_), alc_.get(), &err);
-                if (doc == nullptr) fail();
-                const auto guard = std::unique_ptr<yyjson_doc, free_doc>(doc);
-                return std::forward<F>(f)(const_value_ref(yyjson_doc_get_root(doc)));
+                if (local_ == nullptr || p < local_from_)
+                {
+                    local_ = std::make_unique_for_overwrite<char[]>(static_cast<std::size_t>(last_ + 1 - p) +
+                                                                    YYJSON_PADDING_SIZE);
+                    local_from_ = local_to_ = local_used_ = p;
+                }
+                // the copy from `local_used_` to `local_to_` is the text
+                char* const copy = local_.get() + (p - local_from_);
+                if (p > local_to_)
+                    local_to_ = local_used_ = p;
+                else if (p < local_used_)
+                {
+                    std::memcpy(copy, p, static_cast<std::size_t>(local_used_ - p));
+                    local_used_ = p;
+                }
+                for (auto chunk = local_chunk_;;)
+                {
+                    if (const char* const to = p + std::min(chunk, static_cast<std::size_t>(end - p)); to > local_to_)
+                    {
+                        std::memcpy(local_.get() + (local_to_ - local_from_), local_to_,
+                                    static_cast<std::size_t>(to - local_to_));
+                        local_to_ = to;
+                    }
+                    const auto len = static_cast<std::size_t>(local_to_ - p);
+                    auto err = yyjson_read_err();
+                    auto* const doc = yyjson_read_opts(
+                        copy, len, to_underlying(flg_) | YYJSON_READ_INSITU | YYJSON_READ_STOP_WHEN_DONE, alc_.get(),
+                        &err);
+                    if (doc != nullptr)
+                    {
+                        const auto read = yyjson_doc_get_read_size(doc);
+                        // a number that the chunk cuts short reads as a shorter number
+                        if (read < len || local_to_ == end)
+                        {
+                            local_used_ = p + read;
+                            local_chunk_ = chunk;
+                            cur_ = p + read;
+                            return doc;
+                        }
+                        yyjson_doc_free(doc);
+                    }
+                    else if (err.code == YYJSON_READ_ERROR_MEMORY_ALLOCATION)
+                        throw std::bad_alloc();
+                    if (local_to_ == end)
+                    {
+                        local_used_ = local_to_;
+                        fail();
+                    }
+                    std::memcpy(copy, p, len);
+                    chunk = len * 4;
+                }
+            }
+
+            // Calls `f` with the value at `cur_` read into a document of its own, for the casters that take one.
+            // The documents come from an allocator that keeps the memory of the previous one.
+            template <typename F>
+            decltype(auto) with_document(F&& f)
+            {
+                const auto doc = std::unique_ptr<yyjson_doc, free_doc>(read_local_document());
+                return std::forward<F>(f)(const_value_ref(yyjson_doc_get_root(doc.get())));
             }
 
             template <typename T>
@@ -12890,10 +12955,10 @@ namespace yyjson
                 { t.capacity() } -> std::convertible_to<std::size_t>;
             };
 
-            // Whether `read_array_into` counts the rest of the elements of an array of T once it has read 512, and
-            // reserves room for them, rather than growing the range, which moves every element read so far.  The
-            // elements of a trivially copyable type are cheap to move, and most of their arrays are short, so that
-            // only the root array of them is given room, by `read_root`.
+            // Whether `read_array_into` counts the rest of the elements of an array of T once it has read 512, or the
+            // first of the root array, and reserves room for them, rather than growing the range, which moves every
+            // element read so far.  The elements of a trivially copyable type are cheap to move, and most of their
+            // arrays are short, so that only the root array of them is given room for the rest, by `read_root`.
             template <typename T>
             static constexpr bool counts_elements =
                 !std::is_trivially_copyable_v<std::ranges::range_value_t<T>> && reserves_elements<T>;
@@ -12915,6 +12980,25 @@ namespace yyjson
                 }
                 if (n != 0) result.reserve(result.size() + n);
             }
+
+            // The value at `cur_`, which a range constructs in place from what `read_element` returns, rather than
+            // moving it in.  It is not an aggregate, which MSVC would reflect as a struct while it checks the
+            // constructors of the element.
+            template <typename T>
+            class element_reader
+            {
+                direct_reader& reader_;
+
+            public:
+                explicit element_reader(direct_reader& reader) noexcept : reader_(reader) {}
+                operator T() const { return reader_.read_element<T>(); }
+            };
+
+            // Whether T is constructed from `element_reader<T>` by its conversion, rather than by a constructor that
+            // takes any type, such as that of `std::any`.
+            template <typename T>
+            static constexpr bool constructs_from_reader =
+                std::is_class_v<T> && !std::is_constructible_v<T, std::type_identity<direct_reader>>;
 
             // Reads the elements of the array at `cur_` into the empty or default-constructed range `result`.  The
             // root array of trivially copyable elements is read with `Root`, which estimates the rest of them once
@@ -12942,6 +13026,14 @@ namespace yyjson
                 [[maybe_unused]] auto out = std::ranges::begin(result);
                 [[maybe_unused]] auto count = std::size_t{0};
                 [[maybe_unused]] auto estimated = false;
+                // a nested array of trivially copyable elements, which is mostly short, is given the room of glibc's
+                // smallest block at once, as growing it from one element took three allocations for `[1,2,3]` and
+                // counting its elements first was slower still
+                if constexpr (!Root && yyjson::detail::back_insertable<T> && reserves_elements<T> &&
+                              std::is_trivially_copyable_v<value_type>)
+                {
+                    if (result.capacity() == 0) result.reserve(std::max<std::size_t>(1, 24 / sizeof(value_type)));
+                }
                 for (;;)
                 {
                     if constexpr (yyjson::detail::back_insertable<T>)
@@ -12956,8 +13048,11 @@ namespace yyjson
                         }
                         else if constexpr (counts_elements<T>)
                         {
-                            if (count++ == 512 && result.size() == result.capacity()) [[unlikely]]
+                            // the root array, whose elements are mostly many, is given room for them after the first
+                            if ((count == 1 && open == first_) ||
+                                (count == 512 && result.size() == result.capacity())) [[unlikely]]
                                 reserve_rest(result, open);
+                            ++count;
                         }
                         if constexpr (yyjson::detail::reflected_assignable_in_place<value_type, const_value_ref> &&
                                       requires {
@@ -13007,6 +13102,10 @@ namespace yyjson
                                 return result.emplace_back(index, std::forward<decltype(args)>(args)...);
                             });
                         }
+                        else if constexpr (constructs_from_reader<value_type> && requires {
+                                               { result.emplace_back(element_reader<value_type>{*this}) };
+                                           })
+                            result.emplace_back(element_reader<value_type>{*this});
                         else
                             result.push_back(read_element<value_type>());
                     }
