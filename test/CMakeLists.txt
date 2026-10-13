@@ -39,9 +39,15 @@ add_executable("${PROJECT_NAME}_test" test.cpp)
 target_link_libraries("${PROJECT_NAME}_test"
                       PRIVATE ${PROJECT_NAME} GTest::gtest GTest::gtest_main)
 
+# a caster of the user for a type that the library reads by itself applies to the whole program
+add_executable("${PROJECT_NAME}_test_user_casters" test_user_casters.cpp)
+target_link_libraries("${PROJECT_NAME}_test_user_casters"
+                      PRIVATE ${PROJECT_NAME} GTest::gtest GTest::gtest_main)
+
 # add google test
 include(GoogleTest)
 gtest_discover_tests("${PROJECT_NAME}_test" DISCOVERY_MODE PRE_TEST)
+gtest_discover_tests("${PROJECT_NAME}_test_user_casters" DISCOVERY_MODE PRE_TEST)
 
 # benchmark
 if(CPPYYJSON_BUILD_BENCH)

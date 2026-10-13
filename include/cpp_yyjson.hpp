@@ -5556,6 +5556,13 @@ namespace yyjson
         concept caster_names_from_json = std::is_class_v<caster<T>> && (!std::is_final_v<caster<T>>) &&
                                          !requires { &from_json_name_lookup<T>::from_json; };
 
+        // T is read by this library rather than by a `from_json` of the user, in any form.
+        template <typename T>
+        concept reads_by_default = !caster_names_from_json<T> || std::derived_from<caster<T>, builtin_caster>;
+        // A `std::string` that the reader without a document can read straight into its buffer.
+        template <typename T>
+        concept default_string = std::same_as<T, std::string> && reads_by_default<T>;
+
         // A node of the graph of `type_node` that ends at the types that a caster of the user reads, which leads
         // to the types whose values a value read from JSON holds.
         template <typename T>
@@ -11019,7 +11026,7 @@ namespace yyjson
                 constexpr auto index = std::in_place_index<I>;
                 try
                 {
-                    if constexpr (std::same_as<alternative, std::string>)
+                    if constexpr (yyjson::detail::default_string<alternative>)
                     {
                         if (*cur_ == '"')
                         {
@@ -11076,7 +11083,7 @@ namespace yyjson
             template <typename T>
             CPPYYJSON_ALWAYS_INLINE void assign_value(T& target)
             {
-                if constexpr (std::same_as<T, std::string>)
+                if constexpr (yyjson::detail::default_string<T>)
                 {
                     if (*cur_ == '"')
                     {
@@ -11554,7 +11561,7 @@ namespace yyjson
                             else
                                 result.push_back(read_value<value_type>());
                         }
-                        else if constexpr (std::same_as<value_type, std::string> && requires {
+                        else if constexpr (yyjson::detail::default_string<value_type> && requires {
                                                { result.emplace_back() } -> std::same_as<value_type&>;
                                            })
                         {
@@ -11672,7 +11679,7 @@ namespace yyjson
                         return;
                     }
                 }
-                else if constexpr (std::same_as<T, std::string>)
+                else if constexpr (yyjson::detail::default_string<T>)
                 {
                     if (*cur_ == '"')
                     {
@@ -12041,7 +12048,7 @@ namespace yyjson
                                 return;
                             }
                         }
-                        if constexpr (std::same_as<value_type, std::string>)
+                        if constexpr (yyjson::detail::default_string<value_type>)
                         {
                             if (*cur_ == '"')
                             {
@@ -12074,15 +12081,14 @@ namespace yyjson
                         yyjson::detail::from_json_translator<field_type>::assign(field, std::move(source));
                     });
                 }
-                else if constexpr (std::same_as<field_type, std::string>)
+                else if constexpr (yyjson::detail::default_string<field_type>)
                 {
                     if (*cur_ == '"') [[likely]]
                         read_string_into(field);
                     else
                         field = read_value<field_type>();
                 }
-                else if constexpr (std::same_as<field_type, bool> && !from_json_val_usr_defined<bool> &&
-                                   !yyjson::detail::from_json_translator<bool>::castable)
+                else if constexpr (std::same_as<field_type, bool> && yyjson::detail::reads_by_default<bool>)
                 {
                     if (*cur_ == 't')
                     {
