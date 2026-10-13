@@ -122,7 +122,7 @@ uint32_t yyjson_version(void) {
 #endif
 
 #undef YYJSON_HAS_SIMD_AVX2
-#if YYJSON_HAS_SIMD_SSE2 && (defined(__AVX2__) || defined(_M_AVX2))
+#if YYJSON_HAS_SIMD_SSE2 && defined(__AVX2__)
 #   define YYJSON_HAS_SIMD_AVX2 1
 #else
 #   define YYJSON_HAS_SIMD_AVX2 0
