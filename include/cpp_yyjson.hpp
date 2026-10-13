@@ -891,6 +891,8 @@ namespace yyjson
         // `caster<T>::from_json` in the form that it has, existing or translator.
         template <typename T, typename Json>
         T user_from_json(const Json& json);
+        template <typename T>
+        constexpr bool assert_from_json_usable() noexcept;
 
         // Tells whether the field at index I shares no byte with the other fields, which a field marked
         // `[[no_unique_address]]` may do.  A new object can then be constructed in the place of the field.
@@ -2925,6 +2927,7 @@ namespace yyjson
                 requires from_json_def_val_defined<U> && (!from_json_val_usr_defined<U>)
                 U cast() const
                 {
+                    yyjson::detail::assert_from_json_usable<U>();
                     return default_caster<U>::from_json(const_value_ref(doc_, val_));
                 }
                 template <typename T>
@@ -3403,6 +3406,7 @@ namespace yyjson
                 requires from_json_def_arr_defined<U> && (!from_json_val_usr_defined<U>)
                 U cast() const
                 {
+                    yyjson::detail::assert_from_json_usable<U>();
                     return default_caster<U>::from_json(const_array_ref(*this));
                 }
                 template <typename T>
@@ -4158,6 +4162,7 @@ namespace yyjson
                 requires from_json_def_obj_defined<U> && (!from_json_val_usr_defined<U>)
                 U cast() const
                 {
+                    yyjson::detail::assert_from_json_usable<U>();
                     return default_caster<U>::from_json(const_object_ref(*this));
                 }
                 template <typename T>
@@ -4790,6 +4795,7 @@ namespace yyjson
             requires detail::from_json_def_val_defined<U> && (!detail::from_json_val_usr_defined<U>)
             U cast() const
             {
+                yyjson::detail::assert_from_json_usable<U>();
                 return detail::default_caster<U>::from_json(*this);
             }
 
@@ -4892,6 +4898,7 @@ namespace yyjson
             requires detail::from_json_def_arr_defined<U> && (!detail::from_json_val_usr_defined<U>)
             U cast() const
             {
+                yyjson::detail::assert_from_json_usable<U>();
                 return detail::default_caster<U>::from_json(*this);
             }
             template <typename T>
@@ -5024,6 +5031,7 @@ namespace yyjson
             requires detail::from_json_def_obj_defined<U> && (!detail::from_json_val_usr_defined<U>)
             U cast() const
             {
+                yyjson::detail::assert_from_json_usable<U>();
                 return detail::default_caster<U>::from_json(*this);
             }
             template <typename T>
@@ -5597,6 +5605,37 @@ namespace yyjson
                           "program keeps");
         }
 
+        // `caster<T>` names `from_json` but no form of it can be called, as when the translator form is overloaded
+        // or a template, or takes another parameter: T would then be read as if the caster had no `from_json`.
+        template <typename T>
+        concept from_json_unusable =
+            caster_names_from_json<T> && (!std::derived_from<caster<T>, builtin_caster>) &&
+            (!from_json_translator<T>::returns) && (!from_json_translator<T>::in_place) &&
+            !requires(const reader::const_value_ref& v) { caster<T>::from_json(v); } &&
+            !requires(const writer::detail::const_value_ref& w) { caster<T>::from_json(w); } &&
+            !requires(T& t, const reader::const_value_ref& v) { caster<T>::from_json(t, v); } &&
+            !requires(T& t, const writer::detail::const_value_ref& w) { caster<T>::from_json(t, w); };
+        template <typename T>
+        constexpr bool assert_from_json_usable() noexcept
+        {
+            static_assert(!from_json_unusable<T>,
+                          "caster<T>::from_json cannot be called: declare one non-template `T from_json(U)` or "
+                          "`void from_json(T&, U)`, or a `from_json` that takes a JSON value");
+            return true;
+        }
+        template <typename... Ts>
+        constexpr void assert_from_json_usable(type_list<read_type_node<Ts>...>) noexcept
+        {
+            [[maybe_unused]] constexpr auto all = (assert_from_json_usable<Ts>() && ...);
+        }
+        // Every type that is read for a value of T, which a `caster` of the user reads or this library does, has a
+        // `from_json` that can be called if its caster names one.
+        template <typename T>
+        constexpr void assert_reads_through_casters() noexcept
+        {
+            assert_from_json_usable(closure_t<type_list<read_type_node<std::remove_cv_t<T>>>>{});
+        }
+
         template <typename T>
         template <typename Json>
         void from_json_translator<T>::assign_from_json(T& t, const Json& json)
@@ -5807,19 +5846,20 @@ namespace yyjson
                                             (!std::ranges::input_range<T>) && all_fields_castable<Json, T>;
 
         // `cast<T>` of a value of a read document builds `T()` and assigns the fields from the object,
-        // which can as well be done on an object already in place.
+        // which can as well be done on an object already in place.  A T whose caster names a `from_json` that
+        // cannot be called is left to `cast<T>`, which rejects it.
         template <typename T, typename Json>
         concept reflected_assignable_in_place =
             std::same_as<Json, reader::const_value_ref> && (!reader::detail::from_json_val_usr_defined<T>) &&
-            reflected_object_castable<T, reader::const_object_ref>;
+            (!from_json_unusable<T>) && reflected_object_castable<T, reader::const_object_ref>;
 
         // A range of fixed size, such as `std::array`, that `default_caster` fills in place from a JSON array of
         // a read document.
         template <typename T, typename Json>
         concept fixed_size_assignable_in_place =
             std::same_as<Json, reader::const_value_ref> && (!reader::detail::from_json_val_usr_defined<T>) &&
-            (!back_insertable<T>) && (!insertable_set<T>) && std::ranges::sized_range<T> &&
-            array_castable_range<T, reader::const_array_ref>;
+            (!from_json_unusable<T>) && (!back_insertable<T>) && (!insertable_set<T>) &&
+            std::ranges::sized_range<T> && array_castable_range<T, reader::const_array_ref>;
 
         template <typename M>
         struct member_pointee;
@@ -12551,6 +12591,7 @@ namespace yyjson
     [[nodiscard]] T read(std::string_view json, ReadFlag read_flag = ReadFlag::NoFlag)
     {
         yyjson::detail::assert_reads_owned_strings<T>();
+        yyjson::detail::assert_reads_through_casters<T>();
         using U = std::remove_cv_t<T>;
         if constexpr (reader::detail::direct_reader::reads_documents_in_loop<U>)
             return reader::read(json, read_flag).template cast<U>();
@@ -12586,6 +12627,7 @@ namespace yyjson
     void read_into(std::string_view json, T& t, ReadFlag read_flag = ReadFlag::NoFlag)
     {
         yyjson::detail::assert_reads_owned_strings<T>();
+        yyjson::detail::assert_reads_through_casters<T>();
         if constexpr (reader::detail::direct_reader::reads_documents_in_loop<T>)
             t = reader::read(json, read_flag).template cast<T>();
         else
@@ -12622,6 +12664,7 @@ namespace yyjson
     void merge_into(std::string_view json, T& t, ReadFlag read_flag = ReadFlag::NoFlag)
     {
         yyjson::detail::assert_reads_owned_strings<T>();
+        yyjson::detail::assert_reads_through_casters<T>();
         if constexpr (!reader::detail::direct_reader::reads_documents_in_loop<T>)
         {
             const char* first;
@@ -12651,6 +12694,7 @@ namespace yyjson
     [[nodiscard]] T read(std::string_view json, ReadFlag read_flag = ReadFlag::NoFlag)
     {
         yyjson::detail::assert_reads_owned_strings<T>();
+        yyjson::detail::assert_reads_through_casters<T>();
         return reader::read(json, read_flag).template cast<std::remove_cv_t<T>>();
     }
 
@@ -12659,6 +12703,7 @@ namespace yyjson
     void read_into(std::string_view json, T& t, ReadFlag read_flag = ReadFlag::NoFlag)
     {
         yyjson::detail::assert_reads_owned_strings<T>();
+        yyjson::detail::assert_reads_through_casters<T>();
         t = reader::read(json, read_flag).template cast<T>();
     }
 
@@ -12667,6 +12712,7 @@ namespace yyjson
     void merge_into(std::string_view json, T& t, ReadFlag read_flag = ReadFlag::NoFlag)
     {
         yyjson::detail::assert_reads_owned_strings<T>();
+        yyjson::detail::assert_reads_through_casters<T>();
         reader::detail::merge_from(t, reader::read(json, read_flag));
     }
 #endif

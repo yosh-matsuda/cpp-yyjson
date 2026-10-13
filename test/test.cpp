@@ -6619,6 +6619,18 @@ struct SameFormTwice
 {
     int a = 0;
 };
+struct ConstrainedTemplate
+{
+    int a = 0;
+};
+struct TakesTwoParameters
+{
+    int a = 0;
+};
+struct TemplateJsonForm
+{
+    int a = 0;
+};
 struct WithJsonForm
 {
     int a = 0;
@@ -6703,9 +6715,33 @@ struct yyjson::caster<TakesLvalue>
 template <>
 struct yyjson::caster<SameFormTwice>
 {
-    // two functions of the same form leave the caster without a translator
+    // two functions of the same form leave the caster without a translator, which cannot be read then
     static SameFormTwice from_json(int) { return {-1}; }
     static SameFormTwice from_json(double) { return {-2}; }
+};
+template <>
+struct yyjson::caster<ConstrainedTemplate>
+{
+    template <std::integral U>
+    static ConstrainedTemplate from_json(U u)
+    {
+        return {static_cast<int>(u)};
+    }
+};
+template <>
+struct yyjson::caster<TakesTwoParameters>
+{
+    static TakesTwoParameters from_json(int a, int b) { return {a + b}; }
+};
+template <>
+struct yyjson::caster<TemplateJsonForm>
+{
+    // a template that accepts a JSON value is the form that takes one
+    template <typename Json>
+    static TemplateJsonForm from_json(const Json& json)
+    {
+        return {json.template cast<int>() + 200};
+    }
 };
 template <>
 struct yyjson::caster<WithJsonForm>
@@ -6785,9 +6821,9 @@ TEST(Reader, TranslatorFromJson)
 
     EXPECT_EQ(yyjson::read<std::vector<TakesLvalue>>(R"(["a string longer than the small string buffer"])")[0].name,
               "a string longer than the small string buffer");
-    EXPECT_EQ(yyjson::read(R"({"a":1})").cast<SameFormTwice>().a, 1);
-    EXPECT_EQ(yyjson::read<std::vector<SameFormTwice>>(R"([{"a":1}])")[0].a, 1);
     EXPECT_EQ(yyjson::read("1").cast<WithJsonForm>().a, 101);
+    EXPECT_EQ(yyjson::read("1").cast<TemplateJsonForm>().a, 201);
+    EXPECT_EQ(yyjson::read<std::vector<TemplateJsonForm>>("[1]")[0].a, 201);
     EXPECT_EQ(yyjson::read<std::vector<WithJsonForm>>("[1]")[0].a, 101);
     EXPECT_EQ(yyjson::read<std::vector<Theme>>(R"(["#000102"])")[0].accent, (Rgb{0, 1, 2}));
 
@@ -6945,6 +6981,17 @@ static_assert(!yyjson::detail::reads_borrowed_strings<BorrowingFields>);
 static_assert(!yyjson::detail::reads_borrowed_strings<std::map<std::string, std::vector<std::string>>>);
 static_assert(yyjson::detail::caster_names_from_json<Rgb>);
 static_assert(yyjson::detail::caster_names_from_json<SameFormTwice>);
+// `read<T>` and `cast<T>` of these are compile errors
+static_assert(yyjson::detail::from_json_unusable<SameFormTwice>);
+static_assert(yyjson::detail::from_json_unusable<ConstrainedTemplate>);
+static_assert(yyjson::detail::from_json_unusable<TakesTwoParameters>);
+static_assert(!yyjson::detail::from_json_unusable<Rgb>);
+static_assert(!yyjson::detail::from_json_unusable<Meters>);
+static_assert(!yyjson::detail::from_json_unusable<BothForms>);
+static_assert(!yyjson::detail::from_json_unusable<WithJsonForm>);
+static_assert(!yyjson::detail::from_json_unusable<TemplateJsonForm>);
+static_assert(!yyjson::detail::from_json_unusable<HoldsView>);
+static_assert(!yyjson::detail::from_json_unusable<std::string>);
 static_assert(!yyjson::detail::caster_names_from_json<WrittenView>);
 static_assert(!yyjson::detail::caster_names_from_json<HoldsView>);
 

@@ -1373,7 +1373,7 @@ A field of a struct is given to this form, and any other value is read as `X()` 
 
 The library finds the type of the parameter from the type of the function, which brings these rules:
 
-*   There is one function of each form. Two functions of the same form, such as `from_json(int)` and `from_json(double)`, or a function template named `from_json` in the same caster, leave the caster without a translator, and the caster is used as if it had none.
+*   There is one function of each form. The type of the parameter cannot be found for two functions of the same form, such as `from_json(int)` and `from_json(double)`, nor for a function template. A function template that accepts a JSON value is used as the form that takes one; a caster whose `from_json` cannot be called in any form is a compile error.
 *   A function whose parameter is a JSON value, such as `const reader::const_value_ref&`, has the form that takes a JSON value. When the caster has such a function as well as a translator, the function that takes a JSON value is used.
 *   A parameter of type `X` is a compile error.
 
