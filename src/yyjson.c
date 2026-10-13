@@ -2569,11 +2569,17 @@ static const yyjson_alc YYJSON_DEFAULT_ALC = {
 
 static void huge_page_advise(void *ptr, usize size) {
     /* Advise the whole mapping: advising a part would split it, and `mremap`
-       then fails and turns every `realloc` of the block into a copy. */
-    long page = sysconf(_SC_PAGESIZE);
+       then fails and turns every `realloc` of the block into a copy. glibc
+       places a block with a mapping of its own two words after the start of
+       the mapping. A block in the heap, which glibc serves when mmap is
+       disabled or fails, is left alone, since the pages around it belong to
+       other allocations; only one that happens to start at that offset of a
+       page, such as the first block of a new heap, is advised as well. */
+    long page = sysconf(_SC_PAGESIZE); /* read from memory, not a syscall */
     usize mask, beg, end;
     if (page <= 0) return;
     mask = (usize)page - 1;
+    if (((usize)ptr & mask) != 2 * sizeof(usize)) return;
     beg = (usize)ptr & ~mask;
     end = ((usize)ptr + size + mask) & ~mask;
     madvise((void *)beg, end - beg, MADV_HUGEPAGE);
