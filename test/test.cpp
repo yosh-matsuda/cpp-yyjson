@@ -8031,6 +8031,256 @@ TEST(Reflection, CArrayFields)
     EXPECT_TRUE(expect_direct_read<RecursiveCArray>(recursive_json));
 }
 
+// Enumerations, which are read and written by the names of their enumerators, and as integers when a value has no
+// name
+enum class Color
+{
+    red,
+    green,
+    blue
+};
+enum Unscoped : std::uint8_t
+{
+    u_zero,
+    u_one,
+    u_max = 128
+};
+// `big` is out of the range of values that the C++20 backend of field-reflection searches for names
+enum class Wide : std::int64_t
+{
+    minus = -5,
+    zero = 0,
+    big = 1000
+};
+enum class Aliased
+{
+    first = 1,
+    second = 1,
+    other = 2
+};
+enum class Flags
+{
+    a = 1,
+    b = 2
+};
+enum class Ranged
+{
+    low = 0,
+    high = 1000
+};
+template <>
+struct field_reflection::enum_range<Ranged>
+{
+    static constexpr int min = 0;
+    static constexpr int max = 1000;
+};
+// names longer than an integer, and names that `WriteFlag::EscapeUnicode` escapes
+enum class LongNames
+{
+    a_name_longer_than_twenty_characters,
+    b
+};
+enum class Kana
+{
+    あ,
+    い
+};
+
+struct EnumFields
+{
+    Color c = Color::red;
+    Unscoped u = u_zero;
+    Wide w = Wide::zero;
+    Flags f = Flags::a;
+    std::vector<Color> v;
+    std::optional<Color> o;
+    std::map<std::string, Color> m;
+    Color arr[2] = {};
+    LongNames l = LongNames::b;
+};
+
+struct VisitableEnumFields
+{
+    Color c = Color::red;
+    std::vector<Wide> v;
+};
+VISITABLE_STRUCT(VisitableEnumFields, c, v);
+
+// enumerations with casters of the user, which take precedence over the names
+enum class UserColor
+{
+    red,
+    green
+};
+template <>
+struct yyjson::caster<UserColor>
+{
+    static UserColor from_json(std::string_view s)
+    {
+        if (s == "R") return UserColor::red;
+        if (s == "G") return UserColor::green;
+        throw yyjson::bad_cast("unknown color");
+    }
+    template <typename... Ts>
+    static std::string_view to_json(UserColor c, Ts...)
+    {
+        return c == UserColor::red ? "R" : "G";
+    }
+};
+enum class UserNumber
+{
+    one = 1
+};
+template <>
+struct yyjson::caster<UserNumber>
+{
+    template <typename Json>
+    static UserNumber from_json(const Json& json)
+    {
+        return static_cast<UserNumber>(yyjson::cast<int>(json) - 100);
+    }
+    static void to_json(yyjson::writer::value_ref& v, UserNumber n) { v = static_cast<int>(n) + 100; }
+};
+
+TEST(Reflection, Enums)
+{
+    using yyjson::bad_cast;
+    constexpr auto std_reflection = bool(FIELD_RFL_STD_REFLECTION);
+
+    // the root, and the values written for each kind of value of an enumeration
+    EXPECT_EQ(std::string(yyjson::write(Color::green)), R"("green")");
+    EXPECT_EQ(std::string(yyjson::value(Color::green).write()), R"("green")");
+    EXPECT_EQ(yyjson::read(R"("blue")").cast<Color>(), Color::blue);
+    EXPECT_EQ(yyjson::read<Color>(R"("blue")"), Color::blue);
+    EXPECT_EQ(written(std::vector<Unscoped>{u_zero, u_max, static_cast<Unscoped>(255)}), R"(["u_zero","u_max",255])");
+    EXPECT_EQ(written(std::vector<Wide>{Wide::minus, static_cast<Wide>(std::numeric_limits<std::int64_t>::min()),
+                                        Wide::big}),
+              std_reflection ? R"(["minus",-9223372036854775808,"big"])" : R"(["minus",-9223372036854775808,1000])");
+    EXPECT_EQ(written(std::vector<Ranged>{Ranged::low, Ranged::high}), R"(["low","high"])");
+    // a combination of flags has no name, and an alias is written by the name declared first
+    EXPECT_EQ(written(std::vector<Flags>{Flags::a, static_cast<Flags>(3)}), R"(["a",3])");
+    EXPECT_EQ(written(std::vector<Aliased>{Aliased::second, Aliased::other}), R"(["first","other"])");
+    EXPECT_EQ(yyjson::read<std::vector<Flags>>("[3]")[0], static_cast<Flags>(3));
+    expect_direct_write(std::vector<Unscoped>{u_zero, u_max, static_cast<Unscoped>(255)});
+    expect_direct_write(std::vector<Wide>{Wide::minus, Wide::big, static_cast<Wide>(7)});
+    expect_direct_write(std::vector<Flags>{Flags::b, static_cast<Flags>(3)});
+    expect_direct_write(std::vector<LongNames>{LongNames::a_name_longer_than_twenty_characters, LongNames::b});
+    expect_direct_write(std::vector<Kana>{Kana::あ, Kana::い, static_cast<Kana>(5)});
+    EXPECT_EQ(yyjson::read<std::vector<Kana>>(written(std::vector<Kana>{Kana::い, Kana::あ})),
+              (std::vector<Kana>{Kana::い, Kana::あ}));
+
+    // a struct, with the enumerations in the containers that hold other values
+    auto fields = EnumFields{Color::blue,
+                             u_one,
+                             Wide::minus,
+                             static_cast<Flags>(3),
+                             {Color::green, static_cast<Color>(-1)},
+                             Color::red,
+                             {{"x", Color::blue}},
+                             {Color::green, Color::blue},
+                             LongNames::a_name_longer_than_twenty_characters};
+    const auto* fields_json = R"({"c":"blue","u":"u_one","w":"minus","f":3,"v":["green",-1],"o":"red",)"
+                              R"("m":{"x":"blue"},"arr":["green","blue"],"l":"a_name_longer_than_twenty_characters"})";
+    EXPECT_EQ(written(fields), fields_json);
+    EXPECT_EQ(std::string(yyjson::value(fields).write()), fields_json);
+    EXPECT_EQ(std::string(yyjson::object(fields).write()), fields_json);
+    expect_direct_write(fields);
+    expect_direct_write(std::vector<EnumFields>{fields, EnumFields()});
+    EXPECT_EQ(written(yyjson::read(fields_json).cast<EnumFields>()), fields_json);
+    EXPECT_EQ(written(yyjson::read<EnumFields>(fields_json)), fields_json);
+    EXPECT_TRUE(expect_direct_read<EnumFields>(fields_json));
+    EXPECT_TRUE(expect_direct_read<std::vector<EnumFields>>(std::format("[{},{{}}]", fields_json)));
+    const auto visitable = VisitableEnumFields{Color::green, {Wide::zero, static_cast<Wide>(3)}};
+    EXPECT_EQ(written(visitable), R"({"c":"green","v":["zero",3]})");
+    expect_direct_write(visitable);
+    EXPECT_TRUE(expect_direct_read<VisitableEnumFields>(R"({"c":"blue","v":["minus",-7]})"));
+
+    // a name, or an integer that the underlying type holds, which is read as that type reads it from any number
+    EXPECT_EQ(written(yyjson::read<EnumFields>(R"({"c":1,"u":128,"w":-9223372036854775808,"f":2.9,"v":[2.0,-1]})")),
+              R"({"c":"green","u":"u_max","w":-9223372036854775808,"f":"b","v":["blue",-1],"m":{},)"
+              R"("arr":["red","red"],"l":"b"})");
+    for (const auto* json :
+         {R"({"c":"green"})", R"({"c":"gr\u0065en"})", R"({"c":2})", R"({"c":-3})", R"({"c":1.5})", R"({"u":255})",
+          R"({"u":"u_max"})", R"({"w":"big"})", R"({"w":1000})", R"({"w":18446744073709551615})", R"({"c":"Green"})",
+          R"({"c":"purple"})", R"({"c":""})", R"({"c":true})", R"({"c":null})", R"({"c":[]})", R"({"c":{}})",
+          R"({"u":256})", R"({"u":-1})", R"({"u":-0.5})", R"({"u":256.0})", R"({"c":1e10})", R"({"f":"a"})",
+          R"({"v":["red",3,"x"]})", R"({"o":null})", R"({"o":"blue"})", R"({"m":{"y":"red","z":0}})",
+          R"({"arr":["blue"]})", R"({"arr":["blue",1,2]})"})
+    {
+        expect_direct_read<EnumFields>(json);
+        expect_read_into(fields, json);
+        expect_merge_into(fields, json);
+    }
+    EXPECT_THROW((void)yyjson::read<EnumFields>(R"({"c":"purple"})"), bad_cast);
+    EXPECT_THROW((void)yyjson::read(R"({"c":"purple"})").cast<EnumFields>(), bad_cast);
+    EXPECT_THROW((void)yyjson::read<EnumFields>(R"({"c":"Green"})"), bad_cast);
+    EXPECT_THROW((void)yyjson::read<EnumFields>(R"({"c":true})"), bad_cast);
+    EXPECT_THROW((void)yyjson::read<EnumFields>(R"({"c":null})"), bad_cast);
+    EXPECT_THROW((void)yyjson::read<EnumFields>(R"({"u":256})"), bad_cast);
+    EXPECT_THROW((void)yyjson::read(R"({"u":-1})").cast<EnumFields>(), bad_cast);
+    EXPECT_THROW((void)yyjson::read<std::vector<Color>>(R"([[]])"), bad_cast);
+    EXPECT_THROW((void)yyjson::read(R"("purple")").cast<Color>(), bad_cast);
+    EXPECT_EQ(yyjson::read<EnumFields>(R"({"u":-0.5})").u, u_zero);
+    auto t = fields;
+    yyjson::read_into(R"({"c":"green","v":["red"]})", t);
+    EXPECT_EQ(written(t), R"({"c":"green","u":"u_zero","w":"zero","f":"a","v":["red"],"m":{},"arr":["red","red"],)"
+                          R"("l":"b"})");
+    t = fields;
+    yyjson::merge_into(R"({"c":"green","o":null,"m":{"y":0}})", t);
+    EXPECT_EQ(written(t), R"({"c":"green","u":"u_one","w":"minus","f":3,"v":["green",-1],)"
+                          R"("m":{"x":"blue","y":"red"},"arr":["green","blue"],"l":"a_name_longer_than_twenty_characters"})");
+    EXPECT_THROW(yyjson::merge_into(R"({"c":"purple"})", t), bad_cast);
+
+    // a name out of the range that the C++20 backend searches, and an alias, which is read by neither backend
+    EXPECT_EQ(yyjson::read<std::vector<Ranged>>(R"(["high",0])"), (std::vector<Ranged>{Ranged::high, Ranged::low}));
+    EXPECT_EQ(yyjson::read<std::vector<Aliased>>(R"(["first",2])"),
+              (std::vector<Aliased>{Aliased::first, Aliased::other}));
+    EXPECT_THROW((void)yyjson::read<std::vector<Aliased>>(R"(["second"])"), bad_cast);
+    if constexpr (std_reflection)
+        EXPECT_EQ(yyjson::read<std::vector<Wide>>(R"(["big"])")[0], Wide::big);
+    else
+        EXPECT_THROW((void)yyjson::read<std::vector<Wide>>(R"(["big"])"), bad_cast);
+
+    // a variant takes the first alternative that accepts the kind of the value, which for an enumeration is a
+    // string or a number, without and with a document
+    using int_or_color = std::variant<int, Color>;
+    using string_or_color = std::variant<std::string, Color>;
+    EXPECT_EQ(yyjson::read<std::vector<int_or_color>>(R"([1,"red"])"),
+              (std::vector<int_or_color>{1, Color::red}));
+    EXPECT_EQ(yyjson::read<std::vector<string_or_color>>(R"([1,"red"])"),
+              (std::vector<string_or_color>{Color::green, "red"}));
+    EXPECT_EQ(yyjson::read(R"([1,"red"])").cast<std::vector<string_or_color>>(),
+              (std::vector<string_or_color>{Color::green, "red"}));
+    expect_direct_read<std::vector<int_or_color>>(R"([1,"red",1.5,"purple"])");
+    EXPECT_TRUE(expect_direct_read<std::vector<int_or_color>>(R"([1,"red"])"));
+    EXPECT_TRUE((expect_direct_read<std::vector<std::variant<Color, std::string>>>(R"(["red","purple",2])")));
+    expect_direct_read<std::vector<std::variant<std::monostate, Unscoped>>>(R"([null,256])");
+    EXPECT_EQ(written(std::vector<int_or_color>{1, Color::red}), R"([1,"red"])");
+    expect_direct_write(std::vector<string_or_color>{"x", Color::blue, static_cast<Color>(9)});
+
+    // `std::byte` has no enumerators, and is an integer from 0 to 255
+    EXPECT_EQ(written(std::vector<std::byte>{std::byte{0}, std::byte{255}}), "[0,255]");
+    EXPECT_EQ(yyjson::read<std::vector<std::byte>>("[0,255]"), (std::vector<std::byte>{std::byte{0}, std::byte{255}}));
+    expect_direct_write(std::vector<std::byte>{std::byte{7}});
+    expect_direct_read<std::vector<std::byte>>("[256]");
+    expect_direct_read<std::vector<std::byte>>(R"(["a"])");
+
+    // a caster of the user takes precedence in both APIs
+    const auto users = std::vector<UserColor>{UserColor::green, UserColor::red};
+    EXPECT_EQ(written(users), R"(["G","R"])");
+    EXPECT_EQ(std::string(yyjson::value(users).write()), R"(["G","R"])");
+    expect_direct_write(users);
+    EXPECT_EQ(yyjson::read<std::vector<UserColor>>(R"(["R","G"])"),
+              (std::vector<UserColor>{UserColor::red, UserColor::green}));
+    EXPECT_TRUE(expect_direct_read<std::vector<UserColor>>(R"(["R","G"])"));
+    EXPECT_THROW((void)yyjson::read<std::vector<UserColor>>(R"(["red"])"), bad_cast);
+    EXPECT_THROW((void)yyjson::read(R"([0])").cast<std::vector<UserColor>>(), bad_cast);
+    EXPECT_EQ(written(std::vector<UserNumber>{UserNumber::one}), "[101]");
+    expect_direct_write(std::vector<UserNumber>{UserNumber::one});
+    EXPECT_EQ(yyjson::read<std::vector<UserNumber>>("[101]"), std::vector<UserNumber>{UserNumber::one});
+    EXPECT_THROW((void)yyjson::read<std::vector<UserNumber>>(R"(["one"])"), bad_cast);
+}
+
 // Recursive types, which reach themselves through their fields
 struct RecTree
 {

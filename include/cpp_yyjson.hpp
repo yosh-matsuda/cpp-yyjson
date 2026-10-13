@@ -1400,6 +1400,57 @@ namespace yyjson
             return true;
         }
 
+        // An enumeration is read and written by the names of its enumerators, and as the integer of its underlying
+        // type when its value has no name, such as a combination of flags.  The names are those of
+        // `field_reflection::enum_names`, which has the name declared first for each value: an alias, which only
+        // the C++26 backend of field-reflection would find by name, is read by neither.
+        template <typename T>
+        concept integer_like = std::is_enum_v<T> || (std::integral<T> && !std::same_as<T, bool>);
+        template <typename T>
+        struct integer_of
+        {
+            using type = T;
+        };
+        template <typename T>
+        requires std::is_enum_v<T>
+        struct integer_of<T>
+        {
+            using type = std::underlying_type_t<T>;
+        };
+        template <typename T>
+        using integer_of_t = typename integer_of<T>::type;
+
+        template <typename E>
+        inline constexpr auto enum_name_matcher =
+            field_key_matcher<field_reflection::enum_count<E>>(field_reflection::enum_names<E>);
+        // Whether every name can be written as it is, with its quotation marks around it.
+        template <typename E>
+        inline constexpr bool enum_names_plain = std::ranges::all_of(field_reflection::enum_names<E>, is_plain_key);
+        template <typename E>
+        inline constexpr std::size_t enum_name_max_size = [] {
+            auto size = std::size_t{0};
+            for (const auto name : field_reflection::enum_names<E>) size = std::max(size, name.size());
+            return size;
+        }();
+        template <typename E>
+        constexpr std::optional<E> enum_from_name(std::string_view name) noexcept
+        {
+            constexpr auto& matcher = enum_name_matcher<E>;
+            if (const auto i = matcher.find(name, matcher.size); i < matcher.size)
+                return field_reflection::enum_values<E>[i];
+            return std::nullopt;
+        }
+        // The integer that a value without a name is written as.
+        template <typename E>
+        constexpr auto enum_integer(E e) noexcept
+        {
+            using U = std::underlying_type_t<E>;
+            if constexpr (std::signed_integral<U>)
+                return static_cast<std::int64_t>(e);
+            else
+                return static_cast<std::uint64_t>(e);
+        }
+
         // A C array of `char` as a field, which the writer would take for a string that ends with a NUL, as the
         // integers that `std::array<char, N>` is written as.
         template <typename F>
@@ -6163,14 +6214,15 @@ namespace yyjson
         template <typename U = T>
         static U from_json_real(double value)
         {
-            if constexpr (std::integral<U> && !std::same_as<U, bool>)
+            if constexpr (integer_like<U>)
             {
                 // the value is truncated toward zero, as the conversion does, if it fits in U
-                constexpr auto upper = std::numeric_limits<U>::max() / 2 * 2.0 + 2.0;
-                constexpr auto lower = std::signed_integral<U> ? -upper : 0.0;
+                using I = integer_of_t<U>;
+                constexpr auto upper = std::numeric_limits<I>::max() / 2 * 2.0 + 2.0;
+                constexpr auto lower = std::signed_integral<I> ? -upper : 0.0;
                 if (const auto t = std::trunc(value); t >= lower && t < upper)
                 {
-                    return static_cast<U>(t);
+                    return static_cast<U>(static_cast<I>(t));
                 }
                 detail::throw_bad_cast("overflow detected: {} is not constructible from JSON number {}",
                                        detail::type_name<U>(), value);
@@ -6186,7 +6238,13 @@ namespace yyjson
         template <typename U = T>
         static U from_json_string(std::string_view value)
         {
-            if constexpr (!json_string_constructible<U>)
+            if constexpr (std::is_enum_v<U>)
+            {
+                if (const auto e = enum_from_name<U>(value); e.has_value()) [[likely]]
+                    return *e;
+                detail::throw_bad_cast("JSON string is not the name of an enumerator of {}", detail::type_name<U>());
+            }
+            else if constexpr (!json_string_constructible<U>)
                 detail::throw_bad_cast("{} is not constructible from JSON string", detail::type_name<U>());
             else if constexpr (std::constructible_from<U, std::string_view>)
                 return U(value);
@@ -6201,9 +6259,10 @@ namespace yyjson
         template <typename U = T>
         static U from_json_uint(std::uint64_t value)
         {
-            if constexpr (std::integral<U> && !std::same_as<U, bool>)
+            if constexpr (integer_like<U>)
             {
-                if (value <= std::numeric_limits<U>::max())
+                using I = integer_of_t<U>;
+                if (value <= std::numeric_limits<I>::max())
                 {
                     return static_cast<U>(value);
                 }
@@ -6221,18 +6280,20 @@ namespace yyjson
         template <typename U = T>
         static U from_json_sint(std::int64_t value)
         {
-            if constexpr (std::unsigned_integral<U> && !std::same_as<U, bool>)
+            if constexpr (integer_like<U> && std::unsigned_integral<integer_of_t<U>>)
             {
-                if (value >= 0 && static_cast<std::uint64_t>(value) <= std::numeric_limits<U>::max())
+                using I = integer_of_t<U>;
+                if (value >= 0 && static_cast<std::uint64_t>(value) <= std::numeric_limits<I>::max())
                 {
                     return static_cast<U>(value);
                 }
                 detail::throw_bad_cast("overflow detected: {} is not constructible from JSON integer {}",
                                        detail::type_name<U>(), value);
             }
-            else if constexpr (std::signed_integral<U>)
+            else if constexpr (integer_like<U>)
             {
-                if (value >= std::numeric_limits<U>::min() && value <= std::numeric_limits<U>::max())
+                using I = integer_of_t<U>;
+                if (value >= std::numeric_limits<I>::min() && value <= std::numeric_limits<I>::max())
                 {
                     return static_cast<U>(value);
                 }
@@ -6306,7 +6367,7 @@ namespace yyjson
                         return from_json_uint(unsafe_yyjson_get_uint(val));
                     if (unsafe_yyjson_is_sint(val)) return from_json_sint(unsafe_yyjson_get_sint(val));
                 }
-                else if constexpr (json_string_constructible<T>)
+                else if constexpr (json_string_constructible<T> || std::is_enum_v<T>)
                 {
                     if (unsafe_yyjson_is_str(val)) [[likely]]
                         return from_json_string(
@@ -6408,6 +6469,17 @@ namespace yyjson
 #if defined(__GNUC__)
 #pragma GCC diagnostic pop
 #endif
+
+        // The names have static storage, which the document can point to without a copy.
+        template <copy_string_args... Ts>
+        requires std::is_enum_v<T> && (!writer::detail::to_json_usr_translator<T>)
+        static void to_json(writer::value_ref& v, T t, Ts...)
+        {
+            if (const auto name = field_reflection::enum_name(t); !name.empty())
+                v = name;
+            else
+                v = enum_integer(t);
+        }
 
         template <copy_string_args... Ts>
         requires visitable<T> && (!writer::detail::to_json_usr_translator<T>)
@@ -6665,6 +6737,8 @@ namespace yyjson
                               json_scalar_constructible<T, std::int64_t>)
                     kinds |= json_kind_sint;
                 if constexpr (json_string_constructible<T>) kinds |= json_kind_string;
+                if constexpr (std::is_enum_v<T>)
+                    kinds |= json_kind_string | json_kind_uint | json_kind_sint | json_kind_real;
                 return static_cast<std::uint8_t>(kinds);
             }
         }
@@ -7630,8 +7704,8 @@ namespace yyjson
                 ensure(24);
                 buf_.cur = put_integer(buf_.cur, v);
             }
-            // The longest text of a value that `write_value` writes as null, a boolean or an integer, or 0 for
-            // any other value.
+            // The longest text of a value that `write_value` writes as null, a boolean, an integer or an enumeration
+            // whose names need no escape, or 0 for any other value.
             template <typename T>
             static consteval std::size_t bounded_size()
             {
@@ -7642,6 +7716,13 @@ namespace yyjson
                     return 5;
                 else if constexpr (std::integral<U>)
                     return 20;
+                else if constexpr (std::is_enum_v<U> && to_json_inp_def<value_ref, U>)
+                {
+                    if constexpr (yyjson::detail::enum_names_plain<U>)
+                        return std::max(yyjson::detail::enum_name_max_size<U> + 2, std::size_t{20});
+                    else
+                        return 0;
+                }
                 else
                     return 0;
             }
@@ -7654,6 +7735,17 @@ namespace yyjson
                     return put_null(p);
                 else if constexpr (std::same_as<U, bool>)
                     return put_bool(p, v);
+                else if constexpr (std::is_enum_v<U>)
+                {
+                    if (const auto name = field_reflection::enum_name(v); !name.empty())
+                    {
+                        *p = '"';
+                        std::memcpy(p + 1, name.data(), name.size());
+                        p[name.size() + 1] = '"';
+                        return p + name.size() + 2;
+                    }
+                    return put_integer(p, yyjson::detail::enum_integer(v));
+                }
                 else if constexpr (std::unsigned_integral<U>)
                     return put_integer(p, static_cast<std::uint64_t>(v));
                 else
@@ -9247,7 +9339,19 @@ namespace yyjson
             CPPYYJSON_ALWAYS_INLINE void write_in_place(T&& t)
             {
                 using U = std::remove_cvref_t<T>;
-                if constexpr (to_json_inp_def<V, T> && visitable<U>)
+                if constexpr (to_json_inp_def<V, T> && std::is_enum_v<U>)
+                {
+                    if constexpr (bounded_size<U>() != 0)
+                    {
+                        ensure(bounded_size<U>());
+                        buf_.cur = put_bounded(buf_.cur, t);
+                    }
+                    else if (const auto name = field_reflection::enum_name(t); !name.empty())
+                        write_string(name);
+                    else
+                        write_integer(yyjson::detail::enum_integer(t));
+                }
+                else if constexpr (to_json_inp_def<V, T> && visitable<U>)
                 {
                     open('{');
                     auto first = true;
