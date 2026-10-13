@@ -45,6 +45,11 @@ option(CPPYYJSON_DISABLE_FILE
 option(CPPYYJSON_DISABLE_HUGE_PAGES
        "Disable the transparent huge page advice for large blocks on Linux"
        OFF)
+# An option of cpp-yyjson itself, which works with either backend.
+set(CPPYYJSON_RECURSION_DEPTH_LIMIT
+    ""
+    CACHE STRING
+          "Depth limit for reading recursive types (empty for 256, 0 for none)")
 
 set(cppyyjson_backend_options CPPYYJSON_READER_DEPTH_LIMIT
                               CPPYYJSON_WRITER_DEPTH_LIMIT
@@ -117,6 +122,12 @@ if(CPPYYJSON_USE_BUNDLED_YYJSON)
     target_compile_definitions(${PROJECT_NAME}
                                PRIVATE YYJSON_DISABLE_HUGE_PAGES=1)
   endif()
+endif()
+# Every translation unit must see the same limit.
+if(NOT CPPYYJSON_RECURSION_DEPTH_LIMIT STREQUAL "")
+  target_compile_definitions(
+    ${PROJECT_NAME}
+    INTERFACE CPPYYJSON_RECURSION_DEPTH_LIMIT=${CPPYYJSON_RECURSION_DEPTH_LIMIT})
 endif()
 
 # The target name and the LTO support are recorded here, because the body of a function runs in

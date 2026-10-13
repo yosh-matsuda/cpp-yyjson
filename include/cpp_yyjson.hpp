@@ -62,6 +62,11 @@
 #define CPPYYJSON_HOT_NOINLINE
 #endif
 
+// How many values of a recursive type may be read one inside the other, where 0 means no limit.
+#ifndef CPPYYJSON_RECURSION_DEPTH_LIMIT
+#define CPPYYJSON_RECURSION_DEPTH_LIMIT 256
+#endif
+
 namespace yyjson
 {
     inline constexpr auto yyjson_required_version = 0x000600;
@@ -79,6 +84,20 @@ namespace yyjson
         [[noreturn]] CPPYYJSON_COLD void throw_bad_cast(std::format_string<Args...> fmt, Args&&... args)
         {
             throw bad_cast(std::format(fmt, std::forward<Args>(args)...));
+        }
+
+        // Thrown when values of recursive types are nested deeper than the limits allow.  A variant does not catch it
+        // to try its next alternative, which would read the same values again and fail the same way, so that the
+        // variants it is nested in would take time exponential in their depth to fail.
+        class recursion_limit_error : public bad_cast
+        {
+            using bad_cast::bad_cast;
+        };
+
+        template <typename... Args>
+        [[noreturn]] CPPYYJSON_COLD void throw_recursion_limit(std::format_string<Args...> fmt, Args&&... args)
+        {
+            throw recursion_limit_error(std::format(fmt, std::forward<Args>(args)...));
         }
     }  // namespace detail
 
@@ -717,6 +736,153 @@ namespace yyjson
         };
 
         template <typename T>
+        concept visitable = visit_struct<T>::value;
+
+        template <typename... Ts>
+        struct type_list
+        {
+        };
+        template <typename T, typename List>
+        constexpr bool type_list_has = false;
+        template <typename T, typename... Ts>
+        constexpr bool type_list_has<T, type_list<Ts...>> = (std::is_same_v<T, Ts> || ...);
+        template <typename... As, typename... Bs>
+        auto operator+(type_list<As...>, type_list<Bs...>) -> type_list<As..., Bs...>;
+
+        // The nodes of a graph of types that are reachable from some of them, each node `N` leading to those in
+        // the `type_list` `typename N::edges`.  The nodes are visited once each, in a left fold over the edges
+        // that carries the visited nodes along, so that a graph whose paths branch and join again takes as many
+        // steps as it has edges, and the depth of the instantiations is that of the walk.  The edges of a node are
+        // folded in a single instantiation, which keeps a struct with many fields from nesting one level deeper
+        // per field, and without resolving a call to a function, which takes much more of the compiler's stack.
+        template <typename Visited, typename N, bool Seen = type_list_has<N, Visited>>
+        struct closure_visit
+        {
+            using type = Visited;
+        };
+        template <typename Visited>
+        struct closure_state
+        {
+            using visited = Visited;
+        };
+        template <typename Visited, typename N>
+        auto operator<<(closure_state<Visited>, std::type_identity<N>)
+            -> closure_state<typename closure_visit<Visited, N>::type>;
+        template <typename Visited, typename Nodes>
+        struct closure_fold;
+        template <typename Visited, typename... Ns>
+        struct closure_fold<Visited, type_list<Ns...>>
+        {
+            using type = typename decltype((closure_state<Visited>{} << ... << std::type_identity<Ns>{}))::visited;
+        };
+        template <typename... Vs, typename N>
+        struct closure_visit<type_list<Vs...>, N, false>
+        {
+            using type = typename closure_fold<type_list<Vs..., N>, typename N::edges>::type;
+        };
+        template <typename Nodes>
+        using closure_t = typename closure_fold<type_list<>, Nodes>::type;
+
+        template <typename T>
+        struct template_type_args
+        {
+            using type = type_list<>;
+        };
+        template <template <typename...> typename C, typename... As>
+        struct template_type_args<C<As...>>
+        {
+            using type = type_list<As...>;
+        };
+        template <typename T, std::size_t N>
+        struct template_type_args<std::array<T, N>>
+        {
+            using type = type_list<T>;
+        };
+
+        // A node of the graph in which a class leads to the types of its fields, or to its template arguments
+        // when it has no fields to reflect, which is how a JSON value of one type can hold one of another.
+        template <typename T>
+        struct type_node
+        {
+            template <typename... Us>
+            static auto nodes(type_list<Us...>) -> type_list<type_node<std::remove_cvref_t<Us>>...>;
+            static consteval auto edges_of()
+            {
+                if constexpr (!std::is_class_v<T> || !requires { sizeof(T); })
+                    return type_list<>{};
+                else if constexpr (visitable<T>)
+                    return []<std::size_t... Is>(std::index_sequence<Is...>) {
+                        return decltype(nodes(
+                            type_list<decltype(std::declval<T&>().*std::get<Is>(visit_struct<T>::members))...>{})){};
+                    }(std::make_index_sequence<
+                        std::tuple_size_v<std::remove_cv_t<decltype(visit_struct<T>::members)>>>{});
+                else if constexpr (std_array<T>)
+                    return decltype(nodes(typename template_type_args<T>::type{})){};
+                else if constexpr (field_reflection::field_namable<T>)
+                    return []<std::size_t... Is>(std::index_sequence<Is...>) {
+                        return decltype(nodes(type_list<field_reflection::field_type<T, Is>...>{})){};
+                    }(std::make_index_sequence<field_reflection::field_count<T>>{});
+                else
+                    return decltype(nodes(typename template_type_args<T>::type{})){};
+            }
+            using edges = decltype(edges_of());
+        };
+
+        // Whether a value of type T can hold a value of type `Target`, or is one.
+        template <typename Target, typename T>
+        constexpr bool type_reaches = type_list_has<type_node<std::remove_cvref_t<Target>>,
+                                                    closure_t<type_list<type_node<std::remove_cvref_t<T>>>>>;
+
+        // A class that holds a value of its own type, through its fields.  Whether it can be read or written is not
+        // checked through its fields, which would depend on itself.
+        template <typename T>
+        concept recursive_type =
+            std::is_class_v<std::remove_cvref_t<T>> &&
+            type_list_has<type_node<std::remove_cvref_t<T>>,
+                          closure_t<typename type_node<std::remove_cvref_t<T>>::edges>>;
+
+        // The values of recursive types that are being read on this thread, one inside the other.
+        inline constinit thread_local std::size_t recursion_depth = 0;
+
+        // Counts a value of a recursive type while it is read, and throws `bad_cast` before more of them are
+        // nested than `CPPYYJSON_RECURSION_DEPTH_LIMIT`, which could overflow the stack.  The values of other
+        // types cannot be nested deeper than their definitions, and are not counted.  Nor are the standard
+        // types that this library casts, such as `std::shared_ptr<T>` of a recursive `T`: every cycle of
+        // types passes through a type of the user, so counting those counts each level once.
+        template <typename T>
+        class recursion_guard
+        {
+        };
+        template <typename T>
+        requires recursive_type<T> && (!std::derived_from<caster<T>, builtin_caster>) &&
+                 (CPPYYJSON_RECURSION_DEPTH_LIMIT != 0)
+        class recursion_guard<T>
+        {
+        public:
+            recursion_guard()
+            {
+                if (++recursion_depth > std::size_t{CPPYYJSON_RECURSION_DEPTH_LIMIT}) [[unlikely]]
+                {
+                    --recursion_depth;
+                    throw_recursion_limit("{} is nested deeper than CPPYYJSON_RECURSION_DEPTH_LIMIT ({})",
+                                          type_name<T>(), CPPYYJSON_RECURSION_DEPTH_LIMIT);
+                }
+            }
+            ~recursion_guard() { --recursion_depth; }
+            recursion_guard(const recursion_guard&) = delete;
+            recursion_guard& operator=(const recursion_guard&) = delete;
+        };
+
+        // `T`, but dependent on `Ds`, so that a member function declares its return type only when it is called.
+        template <typename T, typename... Ds>
+        struct dependent_type
+        {
+            using type = T;
+        };
+        template <typename T, typename... Ds>
+        using dependent_t = typename dependent_type<T, Ds...>::type;
+
+        template <typename T>
         struct default_caster;
 
         // The translator forms of `caster<T>::from_json`, which take a C++ value rather than a JSON value.
@@ -748,6 +914,7 @@ namespace yyjson
             {
                 // A field that cannot be returned by value, such as a proxy or a non-movable type,
                 // is assigned in place. The caster decides which type it casts the JSON value to.
+                [[maybe_unused]] const auto guard = recursion_guard<field_type>();
                 caster<field_type>::from_json(field, value);
             }
             else if constexpr (from_json_translator<field_type>::in_place)
@@ -1039,6 +1206,7 @@ namespace yyjson
         template <typename T, typename Json>
         void assign_reflected_fields(T& t, const Json& obj)
         {
+            [[maybe_unused]] const auto guard = recursion_guard<T>();
             assign_fields_by_key(reflected_key_matcher<T>, obj, [&t](std::size_t index, const auto& value) {
                 [&]<std::size_t... Is>(std::index_sequence<Is...>) {
                     (void)((index == Is && (assign_reflected_field(field_reflection::get_field<Is>(t), value,
@@ -1055,6 +1223,7 @@ namespace yyjson
         void assign_visitable_fields(T& t, const field_key_matcher<N>& matcher, const std::tuple<Members...>& members,
                                      const Json& obj)
         {
+            [[maybe_unused]] const auto guard = recursion_guard<T>();
             assign_fields_by_key(matcher, obj, [&](std::size_t index, const auto& value) {
                 [&]<std::size_t... Is>(std::index_sequence<Is...>) {
                     const auto replaceable = [&]<std::size_t I>(std::integral_constant<std::size_t, I>) {
@@ -1118,49 +1287,6 @@ namespace yyjson
 
         template <typename T>
         concept is_initializer_list = requires(T d) { []<typename X>(const std::initializer_list<X>&) {}(d); };
-
-        template <typename T>
-        concept visitable = visit_struct<T>::value;
-
-        template <typename... Ts>
-        struct type_list
-        {
-        };
-        template <typename T, typename List>
-        constexpr bool type_list_has = false;
-        template <typename T, typename... Ts>
-        constexpr bool type_list_has<T, type_list<Ts...>> = (std::is_same_v<T, Ts> || ...);
-        template <typename... As, typename... Bs>
-        auto operator+(type_list<As...>, type_list<Bs...>) -> type_list<As..., Bs...>;
-
-        // The nodes of a graph of types that are reachable from some of them, each node `N` leading to those in
-        // the `type_list` `typename N::edges`.  The nodes are visited once each, in a left fold over the edges
-        // that carries the visited nodes along, so that a graph whose paths branch and join again takes as many
-        // steps as it has edges, and the depth of the instantiations is that of the walk.
-        template <typename Visited, typename N, bool Seen = type_list_has<N, Visited>>
-        struct closure_visit
-        {
-            using type = Visited;
-        };
-        template <typename Visited>
-        struct closure_state
-        {
-            using visited = Visited;
-        };
-        template <typename Visited, typename N>
-        auto operator<<(closure_state<Visited>, std::type_identity<N>)
-            -> closure_state<typename closure_visit<Visited, N>::type>;
-        template <typename Visited, typename... Ns>
-        auto closure_walk(closure_state<Visited>, type_list<Ns...>)
-            -> decltype((closure_state<Visited>{} << ... << std::type_identity<Ns>{}));
-        template <typename... Vs, typename N>
-        struct closure_visit<type_list<Vs...>, N, false>
-        {
-            using type = typename decltype(closure_walk(closure_state<type_list<Vs..., N>>{},
-                                                        typename N::edges{}))::visited;
-        };
-        template <typename Nodes>
-        using closure_t = typename decltype(closure_walk(closure_state<type_list<>>{}, Nodes{}))::visited;
 
         template <typename T>
         concept back_insertable =
@@ -1555,7 +1681,10 @@ namespace yyjson
             template <typename T, std::size_t... Is>
             consteval bool directly_create_reflected_object_impl(std::index_sequence<Is...>)
             {
-                return (create_value_callable<field_reflection::field_type<T, Is>> && ...);
+                if constexpr (yyjson::detail::recursive_type<T>)
+                    return true;
+                else
+                    return (create_value_callable<field_reflection::field_type<T, Is>> && ...);
             }
 
             // The structs written field by field without their casters: those that have no `to_json` of
@@ -1588,13 +1717,18 @@ namespace yyjson
                     {convert(std::forward<T>(t), copy_string)} -> create_object_callable;
                 };  // clang-format on
 
+            // The elements of ranges and the values of maps that can be written.  An element of a recursive type
+            // is not checked, which would depend on itself, as the fields of a recursive struct are not.
+            template <typename T>
+            concept create_element_callable = yyjson::detail::recursive_type<T> || create_value_callable<T>;
+
             template <typename Pair>
             concept key_value_like_create_value_callable =
-                key_value_like<Pair> && create_value_callable<std::tuple_element_t<1, Pair>>;
+                key_value_like<Pair> && create_element_callable<std::tuple_element_t<1, Pair>>;
 
             template <typename Range>
             concept create_value_range =
-                std::ranges::input_range<Range> && create_value_callable<std::ranges::range_value_t<Range>> &&
+                std::ranges::input_range<Range> && create_element_callable<std::ranges::range_value_t<Range>> &&
                 (!create_primitive_callable<Range>) && (!convertible_to_create_array_callable<Range>);
 
             // The types `set_value` stores straight into the value it is handed.
@@ -1730,28 +1864,28 @@ namespace yyjson
                         ptrs->children.emplace_back(std::forward<T>(json_value).doc_.ptrs);
                 }
                 template <std::same_as<std::nullptr_t> T, copy_string_args... Ts>
-                auto create_primitive(T, Ts...) noexcept
+                yyjson_mut_val* create_primitive(T, Ts...) noexcept
                 {
                     return yyjson_mut_null(ptrs->self);
                 }
                 template <std::same_as<bool> T, copy_string_args... Ts>
-                auto create_primitive(T v, Ts...) noexcept
+                yyjson_mut_val* create_primitive(T v, Ts...) noexcept
                 {
                     return yyjson_mut_bool(ptrs->self, v);
                 }
                 template <std::unsigned_integral T, copy_string_args... Ts>
                 requires (!std::same_as<T, bool>)
-                auto create_primitive(T v, Ts...) noexcept
+                yyjson_mut_val* create_primitive(T v, Ts...) noexcept
                 {
                     return yyjson_mut_uint(ptrs->self, v);
                 }
                 template <std::signed_integral T, copy_string_args... Ts>
-                auto create_primitive(T v, Ts...) noexcept
+                yyjson_mut_val* create_primitive(T v, Ts...) noexcept
                 {
                     return yyjson_mut_sint(ptrs->self, v);
                 }
                 template <std::floating_point T, copy_string_args... Ts>
-                auto create_primitive(T v, Ts...) noexcept
+                yyjson_mut_val* create_primitive(T v, Ts...) noexcept
                 {
                     return yyjson_mut_real(ptrs->self, v);
                 }
@@ -1763,24 +1897,27 @@ namespace yyjson
                 {
                     return yyjson_mut_strn(ptrs->self, v.data(), v.size());
                 }
-                auto create_primitive(const std::string& v, copy_string_t) noexcept
+                yyjson_mut_val* create_primitive(const std::string& v, copy_string_t) noexcept
                 {
                     return create_string(v, copy_string);
                 }
-                auto create_primitive(std::string_view v, copy_string_t) noexcept
+                yyjson_mut_val* create_primitive(std::string_view v, copy_string_t) noexcept
                 {
                     return create_string(v, copy_string);
                 }
-                auto create_primitive(const char* v, copy_string_t) noexcept
+                yyjson_mut_val* create_primitive(const char* v, copy_string_t) noexcept
                 {
                     return create_primitive(std::string_view(v), copy_string);
                 }
-                auto create_primitive(const std::string& v) noexcept { return create_string(v); }
-                auto create_primitive(std::string&& v) noexcept { return create_string(v, copy_string); }
-                auto create_primitive(std::string_view v) noexcept { return create_string(v); }
-                auto create_primitive(const char* v) noexcept { return create_primitive(std::string_view(v)); }
+                yyjson_mut_val* create_primitive(const std::string& v) noexcept { return create_string(v); }
+                yyjson_mut_val* create_primitive(std::string&& v) noexcept { return create_string(v, copy_string); }
+                yyjson_mut_val* create_primitive(std::string_view v) noexcept { return create_string(v); }
+                yyjson_mut_val* create_primitive(const char* v) noexcept
+                {
+                    return create_primitive(std::string_view(v));
+                }
                 template <to_json_inp_defined T, copy_string_args... Ts>
-                auto create_primitive(T&& t, Ts... ts) noexcept
+                yyjson_mut_val* create_primitive(T&& t, Ts... ts) noexcept
                 {
                     // T -(convert)-> value / array / object
                     auto vr = get_empty_value_ref<to_json_input_ref<T>>();
@@ -1789,32 +1926,32 @@ namespace yyjson
                 }
                 template <typename T, copy_string_args... Ts>
                 requires (!to_json_inp_defined<T>) && convertible_to_create_primitive_callable<T>
-                auto create_primitive(T&& t, Ts... ts) noexcept
+                yyjson_mut_val* create_primitive(T&& t, Ts... ts) noexcept
                 {
                     // T -(convert)-> value
                     return create_primitive(convert(std::forward<T>(t), ts...), ts...);
                 }
-                auto create_primitive() noexcept
+                yyjson_mut_val* create_primitive() noexcept
                 {
                     // null value
                     return yyjson_mut_null(ptrs->self);
                 }
 
-                auto create_array() noexcept
+                yyjson_mut_val* create_array() noexcept
                 {
                     // empty array
                     return yyjson_mut_arr(ptrs->self);
                 }
                 template <typename T, copy_string_args... Ts>
                 requires (!to_json_arr_defined<T>) && convertible_to_create_array_callable<T>
-                auto create_array(T&& t, Ts... ts) noexcept
+                yyjson_mut_val* create_array(T&& t, Ts... ts) noexcept
                 {
                     // T -(convert)-> array
                     return create_array(convert(std::forward<T>(t), ts...), ts...);
                 }
                 template <std::ranges::input_range Range, copy_string_args... Args>
                 requires create_value_range<Range>
-                auto create_array(Range&& range, Args... args) noexcept
+                yyjson_mut_val* create_array(Range&& range, Args... args) noexcept
                 {
                     // range<T> -> array
                     if constexpr (sized_create_value_range<Range>)
@@ -1836,7 +1973,7 @@ namespace yyjson
                 }
                 template <std::ranges::input_range Range>
                 requires mutable_value_range<Range>
-                auto create_array(Range&& range, copy_string_t = copy_string) noexcept
+                yyjson_mut_val* create_array(Range&& range, copy_string_t = copy_string) noexcept
                 {
                     // range<value> -> array<value>
                     using value_type = std::ranges::range_value_t<Range>;
@@ -1899,7 +2036,7 @@ namespace yyjson
                 }
                 template <std::ranges::input_range Range>
                 requires reader_value_ref_range<Range>
-                auto create_array(Range&& range, copy_string_t = copy_string) noexcept
+                yyjson_mut_val* create_array(Range&& range, copy_string_t = copy_string) noexcept
                 {
                     // range<immut_value> -> array<value>
                     auto& doc = ptrs->self;
@@ -1912,7 +2049,7 @@ namespace yyjson
                     return result;
                 }
                 template <to_json_arr_defined T, copy_string_args... Ts>
-                auto create_array(T&& t, Ts... ts) noexcept
+                yyjson_mut_val* create_array(T&& t, Ts... ts) noexcept
                 {
                     // T -(convert)-> array
                     using reference_type =
@@ -1922,28 +2059,28 @@ namespace yyjson
                     return vr.val_;
                 }
 
-                auto create_object() noexcept
+                yyjson_mut_val* create_object() noexcept
                 {
                     // empty object
                     return yyjson_mut_obj(ptrs->self);
                 }
                 template <typename T, copy_string_args... Ts>
                 requires (!to_json_obj_defined<T>) && convertible_to_create_object_callable<T>
-                auto create_object(T&& t, Ts... ts) noexcept
+                yyjson_mut_val* create_object(T&& t, Ts... ts) noexcept
                 {
                     // T -(convert)-> object
                     return create_object(convert(std::forward<T>(t), ts...), ts...);
                 }
                 template <std::ranges::input_range Range, copy_string_args... Ts>
                 requires create_value_key_value_range<Range>
-                auto create_object(Range&& range, Ts... ts) noexcept
+                yyjson_mut_val* create_object(Range&& range, Ts... ts) noexcept
                 {
                     // range<T> -> object
                     return yyjson_mut_obj_with_range(nullptr, std::forward<Range>(range), ts...);
                 }
                 template <std::ranges::input_range Range, copy_string_args... Ts>
                 requires mutable_value_key_value_range<Range>
-                auto create_object(Range&& range, Ts... ts) noexcept
+                yyjson_mut_val* create_object(Range&& range, Ts... ts) noexcept
                 {
                     // range<pair<key, value>> -> object
                     using value_type = std::remove_cvref_t<std::tuple_element_t<1, std::ranges::range_value_t<Range>>>;
@@ -2012,7 +2149,7 @@ namespace yyjson
                 }
                 template <std::ranges::input_range Range, copy_string_args... Ts>
                 requires reader_value_ref_key_value_range<Range>
-                auto create_object(Range&& range, Ts... ts) noexcept
+                yyjson_mut_val* create_object(Range&& range, Ts... ts) noexcept
                 {
                     // range<pair<key, immut_value>> -> object
                     auto result = yyjson_mut_obj(ptrs->self);
@@ -2027,7 +2164,7 @@ namespace yyjson
                     return result;
                 }
                 template <to_json_obj_defined T, copy_string_args... Ts>
-                auto create_object(T&& t, Ts... ts) noexcept
+                yyjson_mut_val* create_object(T&& t, Ts... ts) noexcept
                 {
                     // T -(convert)-> object
                     using reference_type =
@@ -2038,19 +2175,19 @@ namespace yyjson
                 }
 
                 template <create_primitive_callable T, copy_string_args... Ts>
-                auto create_value(T&& t, Ts... ts) noexcept
+                yyjson_mut_val* create_value(T&& t, Ts... ts) noexcept
                 {
                     return create_primitive(std::forward<T>(t), ts...);
                 }
                 template <create_array_callable T, copy_string_args... Ts>
                 requires (!create_primitive_callable<T>) && (!create_object_callable<T>)
-                auto create_value(T&& t, Ts... ts) noexcept
+                yyjson_mut_val* create_value(T&& t, Ts... ts) noexcept
                 {
                     return create_array(std::forward<T>(t), ts...);
                 }
                 template <create_object_callable T, copy_string_args... Ts>
                 requires (!create_primitive_callable<T>)
-                auto create_value(T&& t, Ts... ts) noexcept
+                yyjson_mut_val* create_value(T&& t, Ts... ts) noexcept
                 {
                     return create_object(std::forward<T>(t), ts...);
                 }
@@ -2242,7 +2379,7 @@ namespace yyjson
                 }
 
                 template <std::ranges::input_range Range, copy_string_args... Ts>
-                requires create_value_callable<std::ranges::range_value_t<Range>>
+                requires create_element_callable<std::ranges::range_value_t<Range>>
                 yyjson_mut_val* yyjson_mut_arr_with_range(yyjson_mut_val* dst, Range&& range, Ts... ts)
                 {
                     const auto count = std::ranges::size(range);
@@ -4428,13 +4565,16 @@ namespace yyjson
             template <typename T, std::size_t... Is>
             consteval bool to_json_with_reflection_impl(std::index_sequence<Is...>)
             {
-                return field_reflection::field_namable<T>&&
-                requires (const T& t)
-                {
-                    (std::declval<object_ref&>().emplace(yyjson::detail::field_key<T, Is>,
-                                                         field_reflection::get_field<Is>(t)),
-                     ...);
-                };
+                if constexpr (yyjson::detail::recursive_type<T>)
+                    return field_reflection::field_namable<T>;
+                else
+                    return field_reflection::field_namable<T>&&
+                    requires (const T& t)
+                    {
+                        (std::declval<object_ref&>().emplace(yyjson::detail::field_key<T, Is>,
+                                                             field_reflection::get_field<Is>(t)),
+                         ...);
+                    };
             }
 
             // `std::array` is written as a JSON array, as the reader casts it from one.  Other aggregates
@@ -5401,12 +5541,14 @@ namespace yyjson
         template <typename Json>
         void from_json_translator<T>::assign_from_json(T& t, const Json& json)
         {
+            [[maybe_unused]] const auto guard = recursion_guard<T>();
             assign(t, cast<from_json_in_place_source<T>>(json));
         }
 
         template <typename T, typename Json>
         T user_from_json(const Json& json)
         {
+            [[maybe_unused]] const auto guard = recursion_guard<T>();
             if constexpr (from_json_translator<T>::castable)
                 return from_json_translator<T>::convert(cast<from_json_source<T>>(json));
             else
@@ -5422,11 +5564,14 @@ namespace yyjson
     template <json_object Json, field_reflection::field_namable T>
     constexpr bool all_fields_castable_impl()
     {
-        return []<std::size_t... I>(std::index_sequence<I...>) {
-            return (field_assignable<typename std::ranges::range_value_t<Json>::second_type,
-                                     field_reflection::field_type<T, I>> &&
-                    ...);
-        }(std::make_index_sequence<field_reflection::field_count<T>>{});
+        if constexpr (detail::recursive_type<T>)
+            return true;
+        else
+            return []<std::size_t... I>(std::index_sequence<I...>) {
+                return (field_assignable<typename std::ranges::range_value_t<Json>::second_type,
+                                         field_reflection::field_type<T, I>> &&
+                        ...);
+            }(std::make_index_sequence<field_reflection::field_count<T>>{});
     }
 
     template <typename Json, typename T>
@@ -5654,13 +5799,13 @@ namespace yyjson
     {
         template <json_object Json>
         requires std::default_initializable<T> && visitable<T>
-        static auto from_json(const Json& obj)
+        static dependent_t<T, Json> from_json(const Json& obj)
         {
             return visit_struct<T>::from_json_impl(obj);
         }
         template <json_object Json>
         requires object_emplaceable_range<T, Json>
-        static auto from_json(const Json& obj)
+        static dependent_t<T, Json> from_json(const Json& obj)
         {
             using value_type = std::remove_cvref_t<std::tuple_element_t<1, std::ranges::range_value_t<T>>>;
             auto result = T();
@@ -5674,7 +5819,7 @@ namespace yyjson
         }
         template <json_object Json>
         requires object_back_emplaceable_range<T, Json>
-        static auto from_json(const Json& obj)
+        static dependent_t<T, Json> from_json(const Json& obj)
         {
             using value_type = std::remove_cvref_t<std::tuple_element_t<1, std::ranges::range_value_t<T>>>;
             auto result = T();
@@ -5688,7 +5833,7 @@ namespace yyjson
         }
         template <json_object Json>
         requires reflected_object_castable<T, Json>
-        static auto from_json(const Json& obj)
+        static dependent_t<T, Json> from_json(const Json& obj)
         {
             auto result = T();
             detail::assign_reflected_fields(result, obj);
@@ -5696,7 +5841,7 @@ namespace yyjson
         }
         template <json_array Json>
         requires array_castable_range<T, Json>
-        static auto from_json(const Json& arr)
+        static dependent_t<T, Json> from_json(const Json& arr)
         {
             auto result = T();
 
@@ -5934,7 +6079,7 @@ namespace yyjson
 
         template <typename Json>
         requires (std::same_as<reader::const_value_ref, Json> || writer::detail::base_of_const_value<Json>)
-        static auto from_json(const Json& json)
+        static dependent_t<T, Json> from_json(const Json& json)
         {
             if constexpr (std::same_as<Json, reader::const_value_ref>)
             {
@@ -6064,13 +6209,13 @@ namespace yyjson
 
         template <copy_string_args... Ts>
         requires visitable<T> && (!writer::detail::to_json_usr_translator<T>)
-        static auto to_json(writer::object_ref& obj, const T& t, Ts... ts)
+        static void to_json(writer::object_ref& obj, const T& t, Ts... ts)
         {
             visit_struct<T>::to_json_impl(obj, t, ts...);
         }
         template <copy_string_args... Ts>
         requires visitable<T> && (!writer::detail::to_json_usr_translator<T>)
-        static auto to_json(writer::object_ref& obj, T&& t, Ts... ts)
+        static void to_json(writer::object_ref& obj, T&& t, Ts... ts)
         {
             visit_struct<T>::to_json_impl(obj, std::move(t), ts...);
         }
@@ -6078,7 +6223,7 @@ namespace yyjson
         template <copy_string_args... Ts>
         requires writer::detail::to_json_with_reflection<T> && (!visitable<T>) &&
                  (!writer::detail::to_json_usr_translator<T>)
-        static auto to_json(writer::object_ref& obj, const T& t, Ts... ts)
+        static void to_json(writer::object_ref& obj, const T& t, Ts... ts)
         {
             obj.assign_reflected_fields(detail::reflected_field_count(t), [&](auto& emitter) {
                 [&]<std::size_t... Is>(std::index_sequence<Is...>) {
@@ -6091,7 +6236,7 @@ namespace yyjson
         template <copy_string_args... Ts>
         requires writer::detail::to_json_with_reflection<T> && (!visitable<T>) &&
                  (!writer::detail::to_json_usr_translator<T>)
-        static auto to_json(writer::object_ref& obj, T&& t, Ts... ts)
+        static void to_json(writer::object_ref& obj, T&& t, Ts... ts)
         {
             // The fields are moved one by one out of `t` itself.  `for_each_field` would move them into a
             // temporary first, and a field that the user's caster references would not outlive the call.
@@ -6124,7 +6269,7 @@ namespace yyjson
             v = t;
             v = std::pair(t, copy_string);
         }
-        static auto to_json(writer::value_ref& v, const std::shared_ptr<T>& t, Ts...)
+        static void to_json(writer::value_ref& v, const std::shared_ptr<T>& t, Ts...)
         {
             constexpr auto copy = (sizeof...(Ts) != 0);
             if (!t)
@@ -6178,7 +6323,7 @@ namespace yyjson
             v = t;
             v = std::pair(t, copy_string);
         }
-        static auto to_json(writer::value_ref& v, const std::optional<T>& t, Ts...)
+        static void to_json(writer::value_ref& v, const std::optional<T>& t, Ts...)
         {
             constexpr auto copy = (sizeof...(Ts) != 0);
             if constexpr (copy)
@@ -6195,7 +6340,7 @@ namespace yyjson
             v = t;
             v = std::pair(t, copy_string);
         }
-        static auto to_json(writer::value_ref& v, std::optional<T>&& t, Ts...)
+        static void to_json(writer::value_ref& v, std::optional<T>&& t, Ts...)
         {
             constexpr auto copy = (sizeof...(Ts) != 0);
             if constexpr (copy)
@@ -6332,6 +6477,80 @@ namespace yyjson
                 return static_cast<std::uint8_t>((0U | ... | accepted_json_kinds<Ts, Json>()));
             }
         };
+
+        // An alternative that holds the variant again is writable if the others are: checking it would depend
+        // on itself.
+        template <typename T, typename Variant>
+        concept variant_alternative_writable =
+            type_reaches<Variant, T> || requires(writer::value_ref& val) { val = std::declval<T>(); };
+
+        // The product, over the variants that are being read on this thread one inside the other, of how many of
+        // their alternatives that hold the variant again accept the JSON value.  A variant reads the value again
+        // with the next alternative when one fails, and each of these may fail deep inside, so that the values
+        // nested in the variant are read up to this many times.
+        inline constinit thread_local std::size_t variant_rereads = 1;
+        inline constexpr std::size_t variant_reread_limit = 256;
+
+        // Counts a variant in `variant_rereads` while it is read, unless this would exceed `variant_reread_limit`.
+        // The variant then fails as soon as one of its alternatives that hold it again fails, without trying those
+        // after it, which keeps reading a value nested in such variants from taking time exponential in its depth.
+        template <typename Variant, typename Json>
+        class variant_reread_guard
+        {
+        public:
+            explicit variant_reread_guard(std::uint8_t) noexcept {}
+            template <std::size_t I>
+            [[nodiscard]] static constexpr bool stops_after() noexcept
+            {
+                return false;
+            }
+        };
+        template <typename... Ts, typename Json>
+        requires recursive_type<std::variant<Ts...>> && (CPPYYJSON_RECURSION_DEPTH_LIMIT != 0)
+        class variant_reread_guard<std::variant<Ts...>, Json>
+        {
+            static constexpr auto rereading = std::array<bool, sizeof...(Ts)>{type_reaches<std::variant<Ts...>, Ts>...};
+            static constexpr auto kinds = std::array<std::uint8_t, sizeof...(Ts)>{accepted_json_kinds<Ts, Json>()...};
+            // 1 when not counted, 0 when the limit stops it, and the factor in `variant_rereads` otherwise
+            std::size_t n_ = 1;
+
+        public:
+            explicit variant_reread_guard(std::uint8_t kind) noexcept
+            {
+                auto n = std::size_t{0};
+                for (std::size_t i = 0; i < sizeof...(Ts); ++i) n += rereading[i] && (kinds[i] & kind) != 0;
+                if (n < 2) return;
+                if (variant_rereads > variant_reread_limit / n)
+                {
+                    n_ = 0;
+                    return;
+                }
+                variant_rereads *= n;
+                n_ = n;
+            }
+            ~variant_reread_guard()
+            {
+                if (n_ > 1) variant_rereads /= n_;
+            }
+            variant_reread_guard(const variant_reread_guard&) = delete;
+            variant_reread_guard& operator=(const variant_reread_guard&) = delete;
+
+            // Whether the failure of the alternative I fails the variant, instead of trying the next alternative.
+            template <std::size_t I>
+            [[nodiscard]] bool stops_after() const noexcept
+            {
+                return rereading[I] && n_ == 0;
+            }
+        };
+
+        template <typename Variant, typename Alternative>
+        [[noreturn]] CPPYYJSON_COLD void throw_variant_reread_limit()
+        {
+            throw_recursion_limit(
+                "{} failed to be read as {}, and is nested too deeply in variants of recursive alternatives to try "
+                "another",
+                type_name<Variant>(), type_name<Alternative>());
+        }
     }  // namespace detail
 
     template <typename... Ts>
@@ -6349,9 +6568,10 @@ namespace yyjson
             static constexpr auto kinds = std::array<std::uint8_t, sizeof...(Ts)>{
                 detail::accepted_json_kinds<Ts, Json>()...};
             const auto kind = detail::json_kind_of(json);
+            const auto rereads = detail::variant_reread_guard<std::variant<Ts...>, Json>(kind);
             auto result = std::optional<std::variant<Ts...>>();
             [&]<std::size_t... I>(std::index_sequence<I...>) {
-                (((kinds[I] & kind) != 0 && cast_no_except<Ts>(json, result)) || ...);
+                (((kinds[I] & kind) != 0 && cast_no_except<I>(json, result, rereads)) || ...);
             }(std::index_sequence_for<Ts...>{});
             if (result.has_value()) return std::move(*result);
             detail::throw_bad_cast("{} is not constructible from JSON", detail::type_name<std::variant<Ts...>>());
@@ -6361,8 +6581,8 @@ namespace yyjson
 #endif
 
         template <detail::copy_string_args... Args>
-        requires requires(writer::value_ref& val) { ((val = std::declval<Ts>()), ...); }
-        static auto to_json(writer::value_ref& val, const std::variant<Ts...>& t, Args...)
+        requires (detail::variant_alternative_writable<Ts, std::variant<Ts...>> && ...)
+        static void to_json(writer::value_ref& val, const std::variant<Ts...>& t, Args...)
         {
             constexpr auto copy = (sizeof...(Args) != 0);
             std::visit(
@@ -6376,8 +6596,8 @@ namespace yyjson
         }
 
         template <detail::copy_string_args... Args>
-        requires requires(writer::value_ref& val) { ((val = std::declval<Ts>()), ...); }
-        static auto to_json(writer::value_ref& val, std::variant<Ts...>&& t, Args...)
+        requires (detail::variant_alternative_writable<Ts, std::variant<Ts...>> && ...)
+        static void to_json(writer::value_ref& val, std::variant<Ts...>&& t, Args...)
         {
             constexpr auto copy = (sizeof...(Args) != 0);
             std::visit(
@@ -6392,16 +6612,22 @@ namespace yyjson
 
     private:
         // `result` is empty, and holds the variant constructed from `cast<T>(json)` unless the cast fails.
-        template <typename T, typename Json>
-        static bool cast_no_except(const Json& json, std::optional<std::variant<Ts...>>& result)
+        template <std::size_t I, typename Json, typename Guard>
+        static bool cast_no_except(const Json& json, std::optional<std::variant<Ts...>>& result, const Guard& rereads)
         {
+            using T = std::variant_alternative_t<I, std::variant<Ts...>>;
             try
             {
                 result.emplace(cast<T>(json));
                 return true;
             }
+            catch (const detail::recursion_limit_error&)
+            {
+                throw;
+            }
             catch (...)
             {
+                if (rereads.template stops_after<I>()) detail::throw_variant_reread_limit<std::variant<Ts...>, T>();
                 return false;
             }
         }
@@ -8859,7 +9085,7 @@ namespace yyjson
         template <typename T>
         concept struct_mergeable =
             (!yyjson::detail::from_json_translator<T>::castable) && (!from_json_val_usr_defined<T>) &&
-            std::is_default_constructible_v<T> && std::is_move_assignable_v<T> &&
+            std::default_initializable<T> && std::is_move_assignable_v<T> &&
             (yyjson::detail::reflected_assignable_in_place<T, const_value_ref> ||
              (yyjson::detail::visitable<T> && requires {
                  visit_struct<T>::key_matcher;
@@ -8953,6 +9179,7 @@ namespace yyjson
         template <typename T>
         void merge_struct_from(T& t, const const_object_ref& obj)
         {
+            [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<T>();
             auto defaults = struct_defaults<T>();
             yyjson::detail::assign_fields_by_key(
                 struct_key_matcher<T>(), obj, [&](std::size_t index, const const_value_ref& value) {
@@ -10696,16 +10923,17 @@ namespace yyjson
             {
                 const char* const start = cur_;
                 const auto kind = kind_at();
+                const auto rereads = yyjson::detail::variant_reread_guard<std::remove_cv_t<T>, const_value_ref>(kind);
                 const auto found = [&]<std::size_t... Is>(std::index_sequence<Is...>) {
                     static constexpr auto kinds = std::array<std::uint8_t, sizeof...(Is)>{
                         yyjson::detail::accepted_json_kinds<std::variant_alternative_t<Is, T>, const_value_ref>()...};
-                    return (((kinds[Is] & kind) != 0 && read_alternative<T, Is>(make, start)) || ...);
+                    return (((kinds[Is] & kind) != 0 && read_alternative<T, Is>(make, start, rereads)) || ...);
                 }(std::make_index_sequence<std::variant_size_v<T>>{});
                 if (!found) fail();
             }
 
-            template <typename T, std::size_t I, typename Make>
-            bool read_alternative(Make& make, const char* start)
+            template <typename T, std::size_t I, typename Make, typename Guard>
+            bool read_alternative(Make& make, const char* start, const Guard& rereads)
             {
                 using alternative = std::remove_cv_t<std::variant_alternative_t<I, T>>;
                 constexpr auto index = std::in_place_index<I>;
@@ -10742,8 +10970,14 @@ namespace yyjson
                 {
                     throw;
                 }
+                catch (const yyjson::detail::recursion_limit_error&)
+                {
+                    throw;
+                }
                 catch (...)
                 {
+                    if (rereads.template stops_after<I>())
+                        yyjson::detail::throw_variant_reread_limit<T, alternative>();
                     cur_ = start;
                     return false;
                 }
@@ -10900,8 +11134,11 @@ namespace yyjson
                 else if constexpr (builtin_tuple<T>)
                     return read_tuple<T>();
                 else if constexpr (yyjson::detail::from_json_translator<T>::castable)
+                {
+                    [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<T>();
                     return yyjson::detail::from_json_translator<T>::convert(
                         read_value<yyjson::detail::from_json_source<T>>());
+                }
                 else if constexpr (from_json_val_usr_defined<T>)
                 {
                     if constexpr (yyjson::detail::shared_ptr_like<T> &&
@@ -11070,7 +11307,7 @@ namespace yyjson
             template <typename T>
             static constexpr bool array_readable_in_place =
                 !from_json_val_usr_defined<T> && from_json_def_arr_defined<T> && std::ranges::range<T> &&
-                std::is_default_constructible_v<T>;
+                std::default_initializable<T>;
 
             // Whether a field of type T, which `read_value` reads from an array with `read_array`, is cleared for an
             // empty array.
@@ -11369,6 +11606,7 @@ namespace yyjson
             template <typename T>
             void read_struct_over(T& t)
             {
+                [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<T>();
                 constexpr auto n = struct_field_count<T>;
                 auto seen = std::bitset<n>();
                 read_fields(struct_key_matcher<T>(), [&](std::size_t index) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
@@ -11454,6 +11692,7 @@ namespace yyjson
             template <typename T>
             void merge_struct(T& t)
             {
+                [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<T>();
                 auto defaults = struct_defaults<T>();
                 read_fields(struct_key_matcher<T>(), [&](std::size_t index) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
                     with_struct_field<T>(index, [&]<std::size_t I>(std::integral_constant<std::size_t, I>)
@@ -11736,11 +11975,17 @@ namespace yyjson
                         field = read_value<value_type>();
                     }
                     else
+                    {
+                        [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<field_type>();
                         with_document([&](const const_value_ref& v) { caster<field_type>::from_json(field, v); });
+                    }
                 }
                 else if constexpr (yyjson::detail::from_json_translator<field_type>::in_place)
+                {
+                    [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<field_type>();
                     yyjson::detail::from_json_translator<field_type>::assign(
                         field, read_value<yyjson::detail::from_json_in_place_source<field_type>>());
+                }
                 else if constexpr (std::same_as<field_type, std::string>)
                 {
                     if (*cur_ == '"') [[likely]]
@@ -11861,6 +12106,7 @@ namespace yyjson
             template <typename T>
             void read_reflected_fields(T& t)
             {
+                [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<T>();
                 constexpr auto& matcher = yyjson::detail::reflected_key_matcher<T>;
                 read_fields(matcher, [&](std::size_t index) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
                     [&]<std::size_t... Is>(std::index_sequence<Is...>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
@@ -11875,6 +12121,7 @@ namespace yyjson
             template <typename T>
             void read_visitable_fields(T& t)
             {
+                [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<T>();
                 constexpr auto& members = visit_struct<T>::members;
                 read_fields(visit_struct<T>::key_matcher, [&](std::size_t index) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
                     [&]<std::size_t... Is>(std::index_sequence<Is...>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
