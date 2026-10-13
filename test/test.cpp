@@ -6286,6 +6286,43 @@ TEST(DirectReader, VariantChecksNestedValues)
     EXPECT_EQ(yyjson::read<maps>(R"({"a":"x"})"), maps(std::map<std::string, std::string>{{"a", "x"}}));
 }
 
+struct AllocationFails
+{
+    int v = 0;
+    bool operator==(const AllocationFails&) const = default;
+};
+
+template <>
+struct yyjson::caster<AllocationFails>
+{
+    static inline auto calls = 0;
+    static AllocationFails from_json(int)
+    {
+        ++calls;
+        throw std::bad_alloc();
+    }
+    static int to_json(const AllocationFails& x) { return x.v; }
+};
+
+struct AllocationFailsField
+{
+    AllocationFails a;
+};
+
+TEST(DirectReader, BadAllocIsNotRetried)
+{
+    // `std::bad_alloc` from the reader without a document is thrown as it is, instead of reading the text again
+    // into a document
+    using yyjson::caster;
+    caster<AllocationFails>::calls = 0;
+    EXPECT_THROW((void)yyjson::read<std::vector<AllocationFails>>("[1]"), std::bad_alloc);
+    auto v = std::vector<AllocationFails>();
+    EXPECT_THROW(yyjson::read_into("[1]", v), std::bad_alloc);
+    auto field = AllocationFailsField();
+    EXPECT_THROW(yyjson::merge_into(R"({"a":1})", field), std::bad_alloc);
+    EXPECT_EQ(caster<AllocationFails>::calls, 3);
+}
+
 struct NoDefaultValue
 {
     explicit NoDefaultValue(int v) : v(v) {}

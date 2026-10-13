@@ -12536,7 +12536,8 @@ namespace yyjson
     // Reads JSON text into a value of type T, with the same result as `yyjson::read(json, read_flag).cast<T>()`
     // and the same exception if it fails, but without building a document for the parts of T that the default
     // casters read.  Those that a `caster` specialization reads are read through a document of their own, and
-    // when T holds them in a range or a map, the whole text is read into one document first.
+    // when T holds them in a range or a map, the whole text is read into one document first.  If reading without
+    // a document fails, the text is read into a document for the exception, unless it is `std::bad_alloc`.
     template <typename T>
     requires (!std::is_reference_v<T>) && castable<reader::const_value_ref, T>
     [[nodiscard]] T read(std::string_view json, ReadFlag read_flag = ReadFlag::NoFlag)
@@ -12554,6 +12555,10 @@ namespace yyjson
                 try
                 {
                     return reader::detail::direct_reader(first, last, read_flag).read_root<U>();
+                }
+                catch (const std::bad_alloc&)
+                {
+                    throw;
                 }
                 catch (...)
                 {
@@ -12586,6 +12591,10 @@ namespace yyjson
                     reader::detail::direct_reader(first, last, read_flag).read_root_into(t);
                     return;
                 }
+                catch (const std::bad_alloc&)
+                {
+                    throw;
+                }
                 catch (...)
                 {
                 }
@@ -12615,6 +12624,10 @@ namespace yyjson
                 {
                     reader::detail::direct_reader(first, last, read_flag).merge_root(t);
                     return;
+                }
+                catch (const std::bad_alloc&)
+                {
+                    throw;
                 }
                 catch (...)
                 {
