@@ -1,39 +1,349 @@
 # cpp-yyjson
 
-Ultra-fast and intuitive C++ JSON reader/writer with yyjson backend.
+Fast JSON for C++20: read and write your types directly, or work with a flexible DOM.
 
 [![CI](https://github.com/yosh-matsuda/cpp-yyjson/actions/workflows/tests.yml/badge.svg)](https://github.com/yosh-matsuda/cpp-yyjson/actions/workflows/tests.yml)
 
-1.  [Features](#features)
-2.  [Requirements](#requirements)
-3.  [Overview](#overview)
-    1.  [JSON Reader](#json-reader)
-    2.  [JSON Writer](#json-writer)
-    3.  [Serialization and Deserialization](#serialization-and-deserialization)
-4.  [Bundled backend](#bundled-backend)
-5.  [Installation](#installation)
-    1.  [Using CMake](#using-cmake)
-6.  [Benchmark](#benchmark)
-7.  [Reference](docs/reference.md)
-8.  [License](#license)
-9.  [Author](#author)
+```cpp
+#include "cpp_yyjson.hpp"
 
-## Features
+struct User
+{
+    std::string name;
+    int age;
+    std::vector<std::string> roles;
+    std::optional<std::string> email;
+};
 
-*   Header-only C++ interface
-*   Bundled [faster yyjson](#bundled-backend) backend by default
-*   Optional external yyjson backend
-*   C++20 range adaptation
-*   STL-like accessors
-*   Intuitive JSON construction
-*   Mutual transformation of JSON and C++ classes with
-    *   compile-time reflection of struct/class field name
-    *   pre-defined STL casters
-    *   user-defined casters in two ways
-    *   omission of an empty field and in-place assignment of a field
-    *   reading and writing C++ objects without building a DOM
-*   Minimum overhead compared to yyjson
-*   Object lifetime safety
+auto user = yyjson::read<User>(R"({"name":"Alice","age":30,"roles":["admin"]})");
+user.age += 1;
+auto json = yyjson::write(user);
+// -> {"name":"Alice","age":31,"roles":["admin"]}
+```
+
+No macro, no registration and no intermediate JSON tree: the field names come from compile-time reflection, and the JSON text is read straight into `User` and written straight from it. When the shape of the JSON is not known in advance, the same library reads it into a DOM that you can query and iterate with C++20 ranges, and builds new documents from values, containers and initializer lists.
+
+cpp-yyjson is a header-only C++ interface to [yyjson](https://github.com/ibireme/yyjson), and ships with a [fork of it](#bundled-backend) tuned for speed as its default backend.
+
+## Highlights
+
+*   **Performance.** Reading and writing are among the fastest of the major C++ JSON libraries, with both APIs, on the real-world documents measured in [Performance](#performance). `read_into` and `write(t, out)` reuse the memory of the previous call in a loop, and the bundled backend adds SIMD paths for strings and other optimizations to yyjson.
+*   **Two APIs, chosen per task.** The data binding API reads JSON text into C++ types and writes them back without building a document in between. The DOM API reads JSON of any shape into a document that can be queried, iterated and modified, and builds new documents. [Which API to use](#which-api-to-use) lists the common cases.
+*   **One call each way, no boilerplate.** `read<T>(json)` and `write(t)` convert aggregates by their field names through compile-time reflection, with no macro or registration. STL containers, `std::optional`, `std::variant`, `std::shared_ptr`, tuples and recursive types are supported, and `VISITABLE_STRUCT`, `yyjson::field_rename` and user-defined casters cover other types and JSON keys.
+*   **Tolerant of changing JSON.** Keys that the type does not have are ignored, missing keys keep the default value of the field, and an empty `std::optional` is left out when writing. `merge_into` applies a [JSON Merge Patch](https://www.rfc-editor.org/rfc/rfc7386) to an existing object, which updates a configuration with only the keys that changed.
+*   **A DOM that feels like the standard library.** Arrays and objects are C++20 ranges, objects yield key-value pairs for structured bindings, accessors return `std::optional`, values are formattable with `std::format`, and documents are built from containers, views and initializer lists.
+
+## Contents
+
+1.  [Data binding API](#data-binding-api)
+    1.  [Reading and writing C++ types](#reading-and-writing-c-types)
+    2.  [Reading into an existing object](#reading-into-an-existing-object)
+2.  [DOM API](#dom-api)
+    1.  [Reading JSON](#reading-json)
+    2.  [Building JSON](#building-json)
+    3.  [Between the DOM and C++ types](#between-the-dom-and-c-types)
+3.  [Supported types and casters](#supported-types-and-casters)
+4.  [Which API to use](#which-api-to-use)
+5.  [Performance](#performance)
+6.  [Bundled backend](#bundled-backend)
+7.  [Requirements](#requirements)
+8.  [Installation](#installation)
+9.  [Reference](docs/reference.md)
+10. [License](#license)
+
+## Data binding API
+
+The data binding API converts between JSON text and C++ types without building a JSON document in between.
+
+### Reading and writing C++ types
+
+`yyjson::read<T>` reads a JSON string into any type that cpp-yyjson can convert, and `yyjson::write` writes one back:
+
+```cpp
+#include "cpp_yyjson.hpp"
+
+using namespace yyjson;
+
+struct Release
+{
+    std::string version;
+    std::optional<std::string> notes;            // left out of the JSON when empty
+    std::map<std::string, int> downloads;
+};
+
+struct Project
+{
+    std::string name;
+    std::vector<std::string> tags;
+    std::vector<Release> releases;
+};
+
+auto project = read<Project>(R"({
+    "name": "cpp-yyjson",
+    "tags": ["json", "c++20"],
+    "releases": [{"version": "1.2.0", "downloads": {"linux": 10, "windows": 5}}]
+})");
+// -> Project{"cpp-yyjson", {"json", "c++20"}, {Release{"1.2.0", std::nullopt, {{"linux", 10}, {"windows", 5}}}}}
+
+auto json = write(project);
+// -> {"name":"cpp-yyjson","tags":["json","c++20"],"releases":[{"version":"1.2.0","downloads":{"linux":10,"windows":5}}]}
+
+auto pretty = write(project, WriteFlag::Pretty);
+
+// Reuse the capacity of the output string in a loop
+auto out = std::string();
+write(project, out);
+```
+
+A JSON string that is not valid JSON throws `yyjson::read_error`, and one that does not fit the type, such as a string where `int` is expected, throws `yyjson::bad_cast`. Keys that the type does not have are ignored, and a field whose key is missing keeps its default value.
+
+The JSON text is read and written without a document by the bundled backend, or by an external yyjson 0.12.0 or later. With an older yyjson, the same functions go through a document and give the same results.
+
+### Reading into an existing object
+
+`yyjson::read_into` gives an existing object the value that `read<T>` would return, and reuses the memory of its strings and containers, so reading documents of the same shape over and over allocates almost nothing after the first one. `yyjson::merge_into` instead applies the JSON string as a [JSON Merge Patch](https://www.rfc-editor.org/rfc/rfc7386): what the JSON does not mention keeps its value, and `null` resets a field or erases a key.
+
+```cpp
+struct Config
+{
+    std::string name;
+    int retries = 3;
+    std::map<std::string, int> limits;
+};
+
+auto config = Config();
+for (const auto& message : messages)  // e.g. a std::vector<std::string>
+{
+    read_into(message, config);       // the same result as config = read<Config>(message)
+    apply(config);
+}
+
+// Change two settings and keep the others
+merge_into(R"({"retries": 5, "limits": {"memory": null}})", config);
+```
+
+See the reference for [`read<T>`](docs/reference.md#reading-a-json-string-into-a-c-object-directly), [`read_into` and `merge_into`](docs/reference.md#reading-a-json-string-into-an-existing-c-object) and [`write`](docs/reference.md#writing-a-c-object-to-a-json-string-directly).
+
+## DOM API
+
+The DOM API reads JSON into a document that you can query, iterate and convert piece by piece, and builds documents from C++ values. Use it when the shape of the JSON is not known in advance, or when you build JSON that has no C++ type.
+
+### Reading JSON
+
+`yyjson::read` returns an *immutable* JSON value, whose arrays and objects are C++20 ranges:
+
+```cpp
+#include "cpp_yyjson.hpp"
+
+using namespace yyjson;
+
+auto val = read(R"({
+    "id": 1,
+    "name": "example",
+    "array": [0, 1, 2, 3, 4],
+    "currency": {"USD": 129.66, "EUR": 140.35, "GBP": 158.72}
+})");
+
+// as_xxx methods return std::optional
+auto obj = *val.as_object();
+auto id = *obj["id"].as_int();
+auto name = *obj["name"].as_string();
+
+// Arrays and objects are ranges; an object yields key-value pairs
+auto list = *obj["array"].as_array();
+for (const auto& v : list) std::cout << v.write() << std::endl;
+auto currency = *obj["currency"].as_object();
+for (const auto& [k, v] : currency) std::cout << k << ": " << v.write() << std::endl;
+
+// inspect() dispatches on the type of a value in one std::visit call
+std::visit(overloaded{[](std::string_view s) { std::cout << s << std::endl; }, [](const auto&) {}},
+           obj["name"].inspect());
+
+// write() stringifies any value
+std::cout << obj.write() << std::endl;
+// -> {"id":1,"name":"example","array":[0,1,2,3,4],"currency":{"USD":129.66,"EUR":140.35,"GBP":158.72}}
+```
+
+### Building JSON
+
+`yyjson::value`, `yyjson::array` and `yyjson::object` are *mutable* and are built from C++ values, ranges and initializer lists:
+
+```cpp
+using namespace yyjson;
+
+auto arr = array();
+arr.emplace_back(1);
+arr.emplace_back("string");
+
+auto obj = object();
+obj.emplace("USD", 129.66);
+obj.emplace("date", "Wed Feb 1 2023");
+
+// From ranges, including views
+auto squares = array(std::vector{1, 2, 3} | std::views::transform([](int x) { return x * x; }));
+// -> [1,4,9]
+auto prices = object(std::map<std::string, double>{{"USD", 129.66}, {"EUR", 140.35}});
+// -> {"EUR":140.35,"USD":129.66}
+
+// From initializer lists
+auto doc = object{{"id", 1}, {"array", {0, 1, 2}}, {"currency", {{"USD", 129.66}}}, {"success", true}};
+std::cout << doc.write() << std::endl;
+// -> {"id":1,"array":[0,1,2],"currency":{"USD":129.66},"success":true}
+```
+
+### Between the DOM and C++ types
+
+`yyjson::cast<T>` converts a JSON value, or any part of a document, to a C++ type, and the constructors of `value`, `array` and `object` convert a C++ object to JSON. They use the same conversions and casters as the data binding API:
+
+```cpp
+auto doc = read(R"({"project": {"name": "cpp-yyjson", "tags": [], "releases": []}, "extra": [1, 2]})");
+auto project = cast<Project>((*doc.as_object())["project"]);
+auto numbers = cast<std::vector<int>>((*doc.as_object())["extra"]);
+
+auto obj = object(project);
+obj.emplace("stars", 1000);
+```
+
+See the reference for the [immutable](docs/reference.md#immutable-json-classes) and [mutable](docs/reference.md#mutable-json-classes) classes and their [allocators](docs/reference.md#allocator-classes).
+
+## Supported types and casters
+
+Both APIs convert the following types, nested in any combination:
+
+*   `bool`, integer and floating-point types, `std::nullptr_t`, and strings such as `std::string`;
+*   ranges such as `std::vector`, `std::array` and `std::set`, and maps and ranges of key-value pairs such as `std::map` and `std::unordered_map`;
+*   `std::optional`, `std::shared_ptr`, `std::variant` and tuple-like types ([C++23 tuple-like](https://wg21.link/P2165R4));
+*   structs and classes converted by [compile-time reflection](docs/reference.md#automatic-casting-with-compile-time-reflection), or registered with the [`VISITABLE_STRUCT`](docs/reference.md#registration-of-field-names-of-structclass) macro, including [recursive types](docs/reference.md#recursive-types);
+*   any type with a user-defined caster.
+
+A JSON key that is not a valid C++ identifier is mapped to a field with `yyjson::field_rename`:
+
+```cpp
+struct Thing
+{
+    std::string context;
+    std::string name;
+};
+
+template <>
+struct yyjson::field_rename<Thing>
+{
+    static constexpr auto value = yyjson::rename{{"context", "@context"}};
+};
+
+auto thing = yyjson::read<Thing>(R"({"@context":"https://schema.org","name":"x"})");
+```
+
+A user-defined caster converts a type of your own. The simplest form is a *translator*, which converts the type to and from another type that cpp-yyjson already handles:
+
+```cpp
+enum class Color { red, green };
+
+template <>
+struct yyjson::caster<Color>
+{
+    static Color from_json(std::string_view s)
+    {
+        if (s == "red") return Color::red;
+        if (s == "green") return Color::green;
+        throw yyjson::bad_cast("unknown color");
+    }
+    template <typename... Ts>
+    static std::string_view to_json(Color c, Ts...)
+    {
+        return c == Color::red ? "red" : "green";
+    }
+};
+
+auto colors = yyjson::read<std::vector<Color>>(R"(["red","green"])");
+auto json = yyjson::write(colors);
+// -> ["red","green"]
+```
+
+The forms of a caster are listed below. The forms in the upper part work with both APIs without a document; the two in the lower part handle JSON values themselves and are for the DOM API. The data binding API still accepts them, but converts each such value through a temporary document. See [User-defined casters](docs/reference.md#user-defined-casters) for all of them.
+
+| Purpose | Form |
+| --- | --- |
+| Convert to and from another type, such as an enum to a string | [translator](docs/reference.md#translator-from_json) `from_json(U)` and `to_json(const X&)` that returns a value |
+| Write members that depend on the value | `to_json` with an [emitter](docs/reference.md#user-defined-casters) |
+| Read into a field that cannot be copied or moved | [in-place](docs/reference.md#in-place-assignment-of-a-field) `from_json(X&, U)` |
+| Leave a field out of the JSON object | [`should_omit`](docs/reference.md#omitting-a-field-with-no-value) |
+| Read a JSON value of any shape | `from_json(const Json&)` (DOM) |
+| Build the JSON value and change it after adding to it | `to_json(writer::object_ref&, ...)` and the like (DOM) |
+
+## Which API to use
+
+| Task | Recommended |
+| --- | --- |
+| Convert JSON text to a C++ type | `read<T>(json)` |
+| Read many documents of the same shape | `read_into(json, t)` |
+| Apply a partial update | `merge_into(json, t)` |
+| Convert a C++ object to JSON text | `write(t)`, or `write(t, out)` to reuse the string |
+| Read JSON of unknown or varying shape | `read(json)` and the DOM |
+| Build or modify JSON that has no C++ type | `value`, `array` and `object` |
+| Convert part of a document | `cast<T>(value)` on that part |
+
+`read(json).cast<T>()` and `value(t).write()` remain supported and give the same results as `read<T>(json)` and `write(t)`, which are faster because they skip the document.
+
+## Performance
+
+### Data binding API vs. Glaze
+
+cpp-yyjson and [Glaze](https://github.com/stephenberry/glaze) read seven documents of [yyjson_benchmark](https://github.com/ibireme/yyjson_benchmark#json-datasets), from 0.07 MB to 3.5 MB, into the same C++ structs, which have a member for every key, and write them back. The table gives how many times faster cpp-yyjson is:
+
+|  | Fresh result object / output | Reused result object / output |
+| --- | --- | --- |
+| Read: `read<T>` vs. `glz::read` | 1.1 - 1.6x | 1.0 - 1.6x (`merge_into`) |
+| Write: `write(t)` vs. `glz::write` | 1.2 - 2.3x | 1.0 - 1.5x (`write(t, out)`) |
+
+![Read throughput into C++ types](docs/benchmark/images/typed_read_throughput.svg)
+
+![Write throughput from C++ types](docs/benchmark/images/typed_write_throughput.svg)
+
+The charts also show the DOM API reading a document and casting it (`read(json).cast<T>()`) and building a document and writing it (`value(t).write()`), which the data binding API replaces. A reused Glaze object keeps the members that the next document does not have, as `merge_into` does, so the reused read compares the two. The environment and the charts of each document are in [docs/benchmark](docs/benchmark/README.md#data-binding-api).
+
+### DOM API vs. other libraries
+
+cpp-yyjson is compared with [yyjson](https://github.com/ibireme/yyjson), [simdjson](https://github.com/simdjson/simdjson), [rapidjson](https://github.com/Tencent/rapidjson/) and [nlohmann-json](https://github.com/nlohmann/json) on the ten documents of [yyjson_benchmark](https://github.com/ibireme/yyjson_benchmark#json-datasets), which range from 0.1 MB to 66 MB and from number-heavy to string-heavy. Reading is timed as parsing a document and visiting every element of it; writing as turning a parsed document back into JSON text.
+
+The table gives how many times faster cpp-yyjson is than each of them, and the charts below it give the throughput of each library on each document, higher being faster.
+
+|       | vs. yyjson | vs. simdjson | vs. rapidjson | vs. nlohmann-json |
+| ----- | ---------- | ------------ | ------------- | ----------------- |
+| Read  | 1.0 - 1.8x | 1.1 - 1.6x   | 1.4 - 4.4x    | -                 |
+| Write | 1.1 - 2.5x | -            | 3.3 - 11x     | 3.8 - 34x         |
+
+![Read throughput per document](docs/benchmark/images/read_throughput.svg)
+
+![Write throughput per document](docs/benchmark/images/write_throughput.svg)
+
+Each range is the slowest and the fastest of the ten documents, with no average in between, because which document you feed a JSON library moves the result more than any single number can convey. When writing, the low end against yyjson and rapidjson is `lottie` and against nlohmann-json the number-only `canada` document; the high end is the string-heavy `gsoc-2018` against yyjson, the smallest document, `github_events`, against rapidjson and `poet` against nlohmann-json.
+
+When reading, the high end against yyjson and simdjson, whose fastest method "On Demand" is the one compared, is the 48.8 MB `fgo` document, where most of the time goes into faulting in fresh memory rather than into parsing, and the [huge pages](#bundled-backend) of the bundled backend save most of those faults. With the parser and allocator reused, so that no document faults in fresh memory, cpp-yyjson still reads all ten documents 1.04 to 1.49x faster than On Demand. The read row compares plain parsing of a read-only input, the write row serialization of a parsed document; simdjson has no serializer and nlohmann-json is not in the read comparison.
+
+Against yyjson, which cpp-yyjson is built on, the C++ interface costs nothing measurable: where the two differ it is because cpp-yyjson uses its [bundled backend](#bundled-backend) and compiles it together with the calling code, while the yyjson row is the upstream release as packaged by vcpkg. That is also the main caveat of the comparison, and it cuts both ways: simdjson and yyjson are linked as prebuilt vcpkg libraries and therefore do not get `-march=x86-64-v3` or link-time optimization, whereas the header-only rapidjson and nlohmann-json are compiled with exactly the same options as cpp-yyjson.
+
+Which parsing method a library offers is not interchangeable either — some need a writable, padded buffer they may destroy — so the full results separate the cases instead of merging them into one ranking. They are in [docs/benchmark](docs/benchmark/README.md#dom-api), together with per-document charts, the effect of reusing parser memory, and how to reproduce the numbers.
+
+
+## Bundled backend
+
+cpp-yyjson ships with its own copy of yyjson, a [fork](https://github.com/yosh-matsuda/yyjson/tree/simd) of the upstream 0.13.0 release that only changes how fast it runs. The API, the accepted input and the output are those of yyjson, and the fork passes the upstream test suite, so nothing in your code depends on which of the two is used.
+
+What gets faster, measured against the upstream yyjson in the [benchmark](#dom-api-vs-other-libraries) with AVX2 enabled:
+
+| Workload | Why it is faster | Speed-up |
+| --- | --- | --- |
+| Reading JSON with many or long strings | strings are scanned 16 or 32 bytes at a time with SSE2/AVX2 | 1.5 - 1.8x |
+| Reading pretty-printed (indented) JSON | the indentation of each line is skipped in one step | 1.3 - 1.4x |
+| Reading numbers | digits are read four at a time | 1.1x |
+| Writing JSON with many or long strings | strings that need no escape are copied in blocks with SSE2/AVX2, and those of 16 to 64 bytes as two overlapping blocks | 1.4 - 2.5x |
+| Writing floating-point numbers | doubles are converted to text with a C port of [xjb64](https://github.com/xjb714/xjb), a faster shortest round-trip algorithm, which gives the same text as yyjson | 1.2 - 1.4x |
+| Reading or writing documents of tens of megabytes, on Linux | large blocks are backed by transparent huge pages, which saves most of the page faults | 1.4 - 1.8x |
+
+Documents that are none of these are read and written at about the upstream speed, and the gains add up in documents that are several of them. The SSE2/AVX2 paths are for x86-64: SSE2 is always used there and AVX2 on request (see [Installation](#installation)), while other CPUs keep the remaining gains. The huge pages need Linux with glibc and apply only to blocks of 32 MiB or more, and `-DCPPYYJSON_DISABLE_HUGE_PAGES=ON` turns them off; on other systems, reusing an allocator across documents is what avoids the page faults.
+
+To use the upstream yyjson instead, configure with `-DCPPYYJSON_USE_BUNDLED_YYJSON=OFF` as described below.
 
 ## Requirements
 
@@ -42,260 +352,7 @@ Ultra-fast and intuitive C++ JSON reader/writer with yyjson backend.
     *   LLVM 17-22
     *   AppleClang 16 (Xcode 16.2), 17 (Xcode 26.3), and 21 (Xcode 26.6)
     *   MSVC `cl` and `clang-cl` on `windows-2022` and `windows-2025`
-*   [yyjson](https://github.com/ibireme/yyjson) 0.6.0 or later, only when the external backend is used instead of the [bundled](#bundled-backend) one
-
-## Overview
-
-The following is an overview of reading and writing JSON using cpp-yyjson. See the [reference](docs/reference.md) for details.
-
-### JSON Reader
-
-```cpp
-#include "cpp_yyjson.hpp"
-
-using namespace yyjson;
-
-auto json_str = R"(
-{
-    "id": 1,
-    "pi": 3.141592,
-    "name": "example",
-    "array": [0, 1, 2, 3, 4],
-    "currency": {
-        "USD": 129.66,
-        "EUR": 140.35,
-        "GBP": 158.72
-    },
-    "success": true
-})";
-
-// Read JSON string
-auto val = read(json_str);
-
-// as_xxx methods return std::optional<T>
-auto obj = *val.as_object();
-
-// Key access to the JSON object class
-auto id = *obj["id"].as_int();
-auto pi = *obj["pi"].as_real();
-auto name = *obj["name"].as_string();
-auto success = *obj["success"].as_bool();
-
-// JSON array/object classes adapt the range concept
-auto list = *obj["array"].as_array();
-for (const auto& v : list)
-{
-    // `write` returns JSON read-only string
-    std::cout << v.write() << std::endl;
-}
-
-// The range value type of object class is a key-value pair
-auto dict = *obj["currency"].as_object();
-for (const auto& [k, v] : dict)
-{
-    std::cout << "{" << k << ": " << v.write() << "}" << std::endl;
-}
-
-// inspect() dispatches a JSON value by type in one std::visit call
-std::visit(overloaded{
-               [](std::string_view v) { std::cout << v << std::endl; },
-               [](const auto&) {}
-           },
-           obj["name"].inspect());
-
-// JSON array/object to container conversion
-auto numbers = cast<std::vector<int>>(list);
-auto currency = cast<std::map<std::string_view, double>>(dict);
-
-// Stringify read-only string
-std::cout << obj.write() << std::endl;
-// -> {"id":1,"pi":3.141592,"name":"example","array":[0,1,2,3,4],
-//     "currency":{"USD":129.66,"EUR":140.35,"GBP":158.72},"success":true}
-```
-
-### JSON Writer
-
-```cpp
-#include "cpp_yyjson.hpp"
-
-using namespace yyjson;
-
-// Create a new JSON value from primitive types
-auto v_null = value();  // Initial value as null
-auto v_bool = value(true);
-auto v_num = value(3.141592);
-auto v_str = value("example");
-
-// Create a new empty JSON array
-auto arr = array();
-arr.emplace_back(1);
-arr.emplace_back("string");
-
-// Create a new empty JSON object
-auto obj = object();
-obj.emplace("USD", 129.66);
-obj.emplace("date", "Wed Feb 1 2023");
-
-// Conversion from range to JSON array class
-auto vec = std::vector{1, 2, 3};
-auto vec_nst = std::vector<std::vector<int>>{{1, 2}, {3, 4}};
-auto arr_vec = array(vec);      // -> [1,2,3]
-auto arr_nst = array(vec_nst);  // -> [[1,2],[3,4]]
-array arr_rng =     // transformation via range adaptors
-    std::vector{1, 2, 3} | std::ranges::views::transform([](auto x) { return x * x; });
-    // -> [1,4,9]
-
-// Conversion from key-value-like range to JSON object class
-auto kv_map =
-    std::map<std::string_view, double>{{"first", 1.0}, {"second", 2.0}, {"third", 3.0}};
-auto val_map =
-    std::map<std::string_view, value>{{"number", 1.5}, {"error", nullptr}, {"text", "abc"}};
-auto obj_map = object(kv_map);
-auto obj_kv  = object(val_map);
-
-// Construction by std::initializer_list
-auto init_arr = array{nullptr, true, "2", 3.0, {4.0, "5", false}, {{"7", 8}, {"9", {0}}}};
-auto init_obj = object{{"id", 1},
-                       {"pi", 3.141592},
-                       {"name", "example"},
-                       {"array", {0, 1, 2, 3, 4}},
-                       {"currency", {{"USD", 129.66}, {"EUR", 140.35}, {"GBP", 158.72}}},
-                       {"success", true}};
-```
-
-### Serialization and Deserialization
-
-As shown above, cpp-yyjson provides conversion between JSON value/array/object classes and C++ ranges and container types recursively. In addition, the following JSON casters are available (see the [reference](docs/reference.md#serialize-and-deserialize-json) for details):
-
-*   Pre-defined STL casters (e.g., `std::optional`, `std::shared_ptr`, `std::variant`, `std::tuple` ([C++23 tuple-like](https://wg21.link/P2165R4))).
-*   Conversion using compile-time reflection of struct/class if it is available.
-*   Registration of field names with `VISITABLE_STRUCT` macro.
-*   [JSON keys other than field names](docs/reference.md#json-keys-other-than-field-names), such as `@context`, with `yyjson::field_rename`.
-*   User-defined casters, including [emitters](docs/reference.md#user-defined-casters) that write the members of an object or an array in order.
-*   Omission of an empty field with [`should_omit`](docs/reference.md#omitting-a-field-with-no-value), and [in-place assignment](docs/reference.md#in-place-assignment-of-a-field) of a field that cannot be copied.
-
-`yyjson::read<T>` and `yyjson::write` convert between a JSON string and a C++ object without building a JSON value in between. They follow the same rules and give the same results as `read(json).cast<T>()` and `value(t).write()` (see the reference for [reading](docs/reference.md#reading-a-json-string-into-a-c-object-directly) and [writing](docs/reference.md#writing-a-c-object-to-a-json-string-directly)):
-
-```cpp
-struct Point
-{
-    int x;
-    int y;
-};
-
-auto points = read<std::vector<Point>>(R"([{"x":1,"y":2},{"x":3,"y":4}])");  // -> {{1, 2}, {3, 4}}
-auto json = write(points);                                                     // -> [{"x":1,"y":2},{"x":3,"y":4}]
-```
-
-`yyjson::read_into` reads into an existing object with the result of `read<T>` and reuses the memory of its strings and containers, and `yyjson::merge_into` merges a JSON string into it as a [JSON Merge Patch](https://www.rfc-editor.org/rfc/rfc7386) (see [reading into an existing object](docs/reference.md#reading-a-json-string-into-an-existing-c-object)).
-
-#### Pre-defined STL casters
-
-```cpp
-// std::optional fields are omitted when they have no value
-struct Settings
-{
-    std::optional<int> timeout;
-};
-auto settings = Settings{.timeout = std::nullopt};
-auto serialized_settings = object(settings);              // -> {}
-
-// cast JSON null/value from/to std::shared_ptr
-auto nullable = std::shared_ptr<int>();
-auto serialized_nullable = value(nullable);               // -> null
-auto deserialized_nullable =
-    cast<decltype(nullable)>(serialized_nullable);         // -> nullptr
-
-// cast JSON value from/to std::variant
-auto variant = std::variant<std::monostate, int, std::string>("example");
-auto serialized = value(variant);                         // serialize std::variant to JSON value
-auto deserialized = cast<decltype(variant)>(serialized);  // deserialize JSON value into std::variant
-
-// cast JSON array class from/to tuple-like array type
-auto tpl_arr = std::tuple{nullptr, true, "2", 3.0, std::tuple{4.0, "5", false}};
-auto serialized = array(tpl_arr);                         // serialize tuple-like array to JSON array
-auto deserialized = cast<decltype(tpl_arr)>(serialized);  // deserialize JSON array into tuple-like
-
-// cast JSON object class from/to tuple-like object type
-std::tuple tpl_obj = {std::pair{"number", 1.5}, std::pair{"error", nullptr}, std::pair{"text", "abc"}};
-auto serialized = object(tpl_obj);                        // serialize tuple-like object to JSON object
-auto deserialized = cast<decltype(tpl_obj)>(serialized);  // deserialize JSON object into tuple-like
-```
-
-#### Automatic casting from/to JSON object with compile-time reflection
-
-(see the [reference](docs/reference.md#serialize-and-deserialize-json) about available conditions)
-
-```cpp
-struct X
-{
-    int a;
-    std::optional<double> b;
-    std::string c = "default";
-};
-
-// serialize struct X to JSON object with field-name reflection
-auto reflectable = X{.a = 1, .b = std::nullopt, .c = "x"};
-auto serialized = object(reflectable);
-// -> {"a":1,"c":"x"}
-
-// deserialize JSON object into struct X with field-name reflection
-auto deserialized = cast<X>(serialized);
-// -> X{.a = 1, .b = std::nullopt, .c = "x"}
-```
-
-Field name registration with `VISITABLE_STRUCT` macro:
-
-```cpp
-// register fields except `c` on purpose
-VISITABLE_STRUCT(X, a, b);
-
-// serialize visitable struct X to JSON object
-auto visitable = X{.a = 1, .b = std::nullopt, .c = "x"};
-auto serialized = object(visitable);
-// -> {"a":1}
-
-// deserialize JSON object into struct X
-auto deserialized = cast<X>(serialized);
-// -> X{.a = 1, .b = std::nullopt, .c = "default"}
-```
-
-#### User-defined caster (see the [reference](docs/reference.md#serialize-and-deserialize-json) for details)
-
-```cpp
-template <>
-struct yyjson::caster<X>
-{
-    // convert X to string (serialize)
-    inline static auto to_json(const X& x)
-    {
-        return std::format("{} {} {}", x.a, (x.b ? std::format("{}", *x.b) : "null"), x.c);
-    }
-};
-
-// convert struct X to JSON string with user-defined caster
-auto x = X{.a = 1, .b = std::nullopt, .c = "x"};
-auto serialized = value(x);
-// -> "1 null x"
-```
-
-## Bundled backend
-
-cpp-yyjson ships with its own copy of yyjson, a [fork](https://github.com/yosh-matsuda/yyjson/tree/simd) of the upstream 0.13.0 release that only changes how fast it runs. The API, the accepted input and the output are those of yyjson, and the fork passes the upstream test suite, so nothing in your code depends on which of the two is used.
-
-What gets faster, measured against the upstream yyjson in the [benchmark](#benchmark) with AVX2 enabled:
-
-| Workload | Why it is faster | Speed-up |
-| --- | --- | --- |
-| Reading JSON with many or long strings | strings are scanned 16 or 32 bytes at a time with SSE2/AVX2 | 1.5 - 1.8x |
-| Reading pretty-printed (indented) JSON | the indentation of each line is skipped in one step | 1.3 - 1.4x |
-| Reading numbers | digits are read four at a time | 1.1x |
-| Writing JSON with long strings | strings are copied in blocks with SSE2/AVX2 | 2.1x |
-| Reading or writing documents of tens of megabytes, on Linux | large blocks are backed by transparent huge pages, which saves most of the page faults | 1.4 - 1.8x |
-
-Documents that are none of these are read and written at about the upstream speed, and the gains add up in documents that are several of them. The SSE2/AVX2 paths are for x86-64: SSE2 is always used there and AVX2 on request (see [Installation](#installation)), while other CPUs keep the remaining gains. The huge pages need Linux with glibc and apply only to blocks of 32 MiB or more, and `-DCPPYYJSON_DISABLE_HUGE_PAGES=ON` turns them off; on other systems, reusing an allocator across documents is what avoids the page faults.
-
-To use the upstream yyjson instead, configure with `-DCPPYYJSON_USE_BUNDLED_YYJSON=OFF` as described below.
+*   [yyjson](https://github.com/ibireme/yyjson) 0.6.0 or later, only when the external backend is used instead of the [bundled](#bundled-backend) one; 0.12.0 or later lets the data binding API skip the document
 
 ## Installation
 
@@ -344,29 +401,6 @@ If you have installed cpp-yyjson via CMake, `find_package` command is enabled:
 find_package(cpp_yyjson CONFIG REQUIRED)
 target_link_libraries(${PROJECT_NAME} PRIVATE cpp_yyjson::cpp_yyjson)
 ```
-
-## Benchmark
-
-cpp-yyjson is compared with [yyjson](https://github.com/ibireme/yyjson), [simdjson](https://github.com/simdjson/simdjson), [rapidjson](https://github.com/Tencent/rapidjson/) and [nlohmann-json](https://github.com/nlohmann/json) on the ten documents of [yyjson_benchmark](https://github.com/ibireme/yyjson_benchmark#json-datasets), which range from 0.1 MB to 66 MB and from number-heavy to string-heavy. Reading is timed as parsing a document and visiting every element of it; writing as turning a parsed document back into JSON text.
-
-The table gives how many times faster cpp-yyjson is than each of them, and the charts below it give the throughput of each library on each document, higher being faster.
-
-|       | vs. yyjson | vs. simdjson | vs. rapidjson | vs. nlohmann-json |
-| ----- | ---------- | ------------ | ------------- | ----------------- |
-| Read  | 1.0 - 1.8x | 1.1 - 1.6x   | 1.4 - 4.6x    | -                 |
-| Write | 1.0 - 2.1x | -            | 2.6 - 8.1x    | 2.8 - 27x         |
-
-![Read throughput per document](docs/benchmark/images/read_throughput.svg)
-
-![Write throughput per document](docs/benchmark/images/write_throughput.svg)
-
-Each range is the slowest and the fastest of the ten documents, with no average in between, because which document you feed a JSON library moves the result more than any single number can convey. When writing, the low end is the number-only `canada` document, and the smallest document, `github_events`, produces both maxima against rapidjson.
-
-When reading, the high end against yyjson and simdjson, whose fastest method "On Demand" is the one compared, is the 48.8 MB `fgo` document, where most of the time goes into faulting in fresh memory rather than into parsing, and the [huge pages](#bundled-backend) of the bundled backend save most of those faults. With the parser and allocator reused, so that no document faults in fresh memory, cpp-yyjson still reads all ten documents 1.05 to 1.49x faster than On Demand. The read row compares plain parsing of a read-only input, the write row serialization of a parsed document; simdjson has no serializer and nlohmann-json is not in the read comparison.
-
-Against yyjson, which cpp-yyjson is built on, the C++ interface costs nothing measurable: where the two differ it is because cpp-yyjson uses its [bundled backend](#bundled-backend) and compiles it together with the calling code, while the yyjson row is the upstream release as packaged by vcpkg. That is also the main caveat of the comparison, and it cuts both ways: simdjson and yyjson are linked as prebuilt vcpkg libraries and therefore do not get `-march=x86-64-v3` or link-time optimization, whereas the header-only rapidjson and nlohmann-json are compiled with exactly the same options as cpp-yyjson.
-
-Which parsing method a library offers is not interchangeable either — some need a writable, padded buffer they may destroy — so the full results separate the cases instead of merging them into one ranking. They are in [docs/benchmark](docs/benchmark/README.md), together with per-document charts, the effect of reusing parser memory, and how to reproduce the numbers.
 
 ## Reference
 
