@@ -7244,6 +7244,24 @@ struct yyjson::caster<EmittedName>
         out.emplace("name", n.name, yyjson::copy_string);
     }
 };
+// Casters that use an emitter while a nested object or array that it emplaced is open.
+struct MisusedObjectEmitter
+{
+    int kind = 0;
+};
+template <>
+struct yyjson::caster<MisusedObjectEmitter>
+{
+    static void to_json(yyjson::object_emitter& out, const MisusedObjectEmitter& m)
+    {
+        if (m.kind == 0)
+            out.emplace_object("o", [&](yyjson::object_emitter&) { out.emplace("a", 1); });
+        else
+            out.emplace_array("a", [&](yyjson::array_emitter& arr) {
+                arr.emplace_back_object([&](yyjson::object_emitter&) { arr.emplace_back(1); });
+            });
+    }
+};
 // A caster whose `to_json` takes any reference is given an `object_ref` as before.
 struct AnyRefCaster
 {
@@ -7288,6 +7306,11 @@ TEST(Writer, Emitter)
     EXPECT_EQ(std::string(yyjson::write(EmittedPair{1, 2.5})), "[1,2.5]");
     expect_direct_write(std::vector<EmittedPair>{{1, 2.5}, {3, 4}});
     EXPECT_EQ(std::string(yyjson::write(EmittedName{"n"})), R"({"name":"n"})");
+    // a document appends to the outer value later, while the text would be written into the inner one
+    EXPECT_EQ(std::string(yyjson::value(MisusedObjectEmitter{0}).write()), R"({"o":{},"a":1})");
+    EXPECT_EQ(std::string(yyjson::value(MisusedObjectEmitter{1}).write()), R"({"a":[{},1]})");
+    EXPECT_THROW((void)yyjson::write(MisusedObjectEmitter{0}), std::logic_error);
+    EXPECT_THROW((void)yyjson::write(std::vector{MisusedObjectEmitter{1}}), std::logic_error);
     EXPECT_EQ(std::string(yyjson::write(AnyRefCaster{1})), R"({"v":1})");
     EXPECT_TRUE(yyjson::caster<AnyRefCaster>::given_object_ref);
     yyjson::caster<AnyRefCaster>::given_object_ref = false;

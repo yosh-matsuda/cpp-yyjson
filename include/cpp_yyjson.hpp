@@ -7158,6 +7158,13 @@ namespace yyjson
             throw write_error(std::format("write JSON error: {}", msg), code);
         }
 
+        // An emitter cannot append while a function that it was given writes a nested object or array, whose text
+        // the members would be written into.
+        [[noreturn]] CPPYYJSON_NOINLINE inline void throw_emitter_misuse()
+        {
+            throw std::logic_error("an emitter was used while a nested object or array that it emplaced was written");
+        }
+
         // Writes C++ values as JSON text, with the same output as building a mutable document of them and
         // writing it with yyjson.
         class direct_writer
@@ -12753,10 +12760,19 @@ namespace yyjson
 #endif
         writer::object_ref* object_ = nullptr;
         explicit object_emitter(writer::object_ref& obj) noexcept : object_(&obj) {}
+        writer::object_ref& document_object() const
+        {
+#if YYJSON_VERSION_HEX >= 0x000C00
+            // `direct_` is null as well while a function given to this emitter writes
+            if (object_ == nullptr) [[unlikely]]
+                writer::detail::throw_emitter_misuse();
+#endif
+            return *object_;
+        }
         template <typename Key, typename T, typename... Ts>
         void emplace_in_document(Key&& key, T&& t, Ts... ts)
         {
-            object_->emplace_no_iter(std::forward<Key>(key), std::forward<T>(t), ts...);
+            document_object().emplace_no_iter(std::forward<Key>(key), std::forward<T>(t), ts...);
         }
 
     public:
@@ -12804,6 +12820,14 @@ namespace yyjson
 #endif
         writer::array_ref* array_ = nullptr;
         explicit array_emitter(writer::array_ref& arr) noexcept : array_(&arr) {}
+        writer::array_ref& document_array() const
+        {
+#if YYJSON_VERSION_HEX >= 0x000C00
+            if (array_ == nullptr) [[unlikely]]
+                writer::detail::throw_emitter_misuse();
+#endif
+            return *array_;
+        }
 
     public:
         array_emitter(const array_emitter&) = delete;
@@ -12821,7 +12845,7 @@ namespace yyjson
                 return;
             }
 #endif
-            array_->emplace_back_no_iter(std::forward<T>(t), ts...);
+            document_array().emplace_back_no_iter(std::forward<T>(t), ts...);
         }
         // Appends an object, whose members `func(object_emitter&)` appends.
         template <std::invocable<object_emitter&> Func>
@@ -12831,14 +12855,17 @@ namespace yyjson
             if (direct_ != nullptr)
             {
                 direct_->next_element(first_);
-                direct_->open('{');
-                auto child = object_emitter(*direct_);
+                // the members or elements that this emitter would append while `func` writes are rejected
+                auto* const direct = std::exchange(direct_, nullptr);
+                direct->open('{');
+                auto child = object_emitter(*direct);
                 std::forward<Func>(func)(child);
-                direct_->close('}', child.first_);
+                direct->close('}', child.first_);
+                direct_ = direct;
                 return;
             }
 #endif
-            auto obj = array_->emplace_back(empty_object);
+            auto obj = document_array().emplace_back(empty_object);
             auto child = object_emitter(obj);
             std::forward<Func>(func)(child);
         }
@@ -12850,14 +12877,17 @@ namespace yyjson
             if (direct_ != nullptr)
             {
                 direct_->next_element(first_);
-                direct_->open('[');
-                auto child = array_emitter(*direct_);
+                // the members or elements that this emitter would append while `func` writes are rejected
+                auto* const direct = std::exchange(direct_, nullptr);
+                direct->open('[');
+                auto child = array_emitter(*direct);
                 std::forward<Func>(func)(child);
-                direct_->close(']', child.first_);
+                direct->close(']', child.first_);
+                direct_ = direct;
                 return;
             }
 #endif
-            auto arr = array_->emplace_back(empty_array);
+            auto arr = document_array().emplace_back(empty_array);
             auto child = array_emitter(arr);
             std::forward<Func>(func)(child);
         }
@@ -12871,14 +12901,17 @@ namespace yyjson
         if (direct_ != nullptr)
         {
             write_key(std::forward<Key>(key));
-            direct_->open('{');
-            auto child = object_emitter(*direct_);
+            // the members or elements that this emitter would append while `func` writes are rejected
+            auto* const direct = std::exchange(direct_, nullptr);
+            direct->open('{');
+            auto child = object_emitter(*direct);
             std::forward<Func>(func)(child);
-            direct_->close('}', child.first_);
+            direct->close('}', child.first_);
+            direct_ = direct;
             return;
         }
 #endif
-        auto obj = object_->emplace(std::forward<Key>(key), empty_object, ts...);
+        auto obj = document_object().emplace(std::forward<Key>(key), empty_object, ts...);
         auto child = object_emitter(obj);
         std::forward<Func>(func)(child);
     }
@@ -12890,14 +12923,17 @@ namespace yyjson
         if (direct_ != nullptr)
         {
             write_key(std::forward<Key>(key));
-            direct_->open('[');
-            auto child = array_emitter(*direct_);
+            // the members or elements that this emitter would append while `func` writes are rejected
+            auto* const direct = std::exchange(direct_, nullptr);
+            direct->open('[');
+            auto child = array_emitter(*direct);
             std::forward<Func>(func)(child);
-            direct_->close(']', child.first_);
+            direct->close(']', child.first_);
+            direct_ = direct;
             return;
         }
 #endif
-        auto arr = object_->emplace(std::forward<Key>(key), empty_array, ts...);
+        auto arr = document_object().emplace(std::forward<Key>(key), empty_array, ts...);
         auto child = array_emitter(arr);
         std::forward<Func>(func)(child);
     }
