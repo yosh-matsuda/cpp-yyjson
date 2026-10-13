@@ -44,10 +44,29 @@ add_executable("${PROJECT_NAME}_test_user_casters" test_user_casters.cpp)
 target_link_libraries("${PROJECT_NAME}_test_user_casters"
                       PRIVATE ${PROJECT_NAME} GTest::gtest GTest::gtest_main)
 
+# the depth limit configures the backend as well, which is compiled here with it
+if(CPPYYJSON_USE_BUNDLED_YYJSON)
+  add_executable("${PROJECT_NAME}_test_depth_limit" test_depth_limit.cpp
+                                                    ../src/yyjson.c)
+  target_include_directories("${PROJECT_NAME}_test_depth_limit"
+                             SYSTEM PRIVATE ../include)
+  target_compile_definitions("${PROJECT_NAME}_test_depth_limit"
+                             PRIVATE YYJSON_READER_DEPTH_LIMIT=4)
+  target_compile_options(
+    "${PROJECT_NAME}_test_depth_limit"
+    PRIVATE $<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/Zc:preprocessor>)
+  target_link_libraries("${PROJECT_NAME}_test_depth_limit"
+                        PRIVATE GTest::gtest GTest::gtest_main)
+endif()
+
 # add google test
 include(GoogleTest)
 gtest_discover_tests("${PROJECT_NAME}_test" DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests("${PROJECT_NAME}_test_user_casters" DISCOVERY_MODE PRE_TEST)
+if(CPPYYJSON_USE_BUNDLED_YYJSON)
+  gtest_discover_tests("${PROJECT_NAME}_test_depth_limit" DISCOVERY_MODE
+                       PRE_TEST)
+endif()
 
 # benchmark
 if(CPPYYJSON_BUILD_BENCH)

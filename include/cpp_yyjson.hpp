@@ -9754,6 +9754,10 @@ namespace yyjson
                 while (first != last && is_ws(last[-1])) --last;
                 if (last - first < 2 || !((*first == '{' && last[-1] == '}') || (*first == '[' && last[-1] == ']')))
                     return false;
+#if YYJSON_READER_DEPTH_LIMIT
+                // yyjson rejects the text, and this reader would not count the depth
+                if (!within_depth_limit(first, last)) return false;
+#endif
                 --last;
                 return true;
             }
@@ -10010,6 +10014,36 @@ namespace yyjson
             {
                 return c == ' ' || c == '\n' || c == '\r' || c == '\t';
             }
+
+#if YYJSON_READER_DEPTH_LIMIT
+            // Whether the containers of the text are nested no deeper than `YYJSON_READER_DEPTH_LIMIT`, counting the
+            // root, as yyjson checks them.  The text is not checked otherwise.
+            static bool within_depth_limit(const char* first, const char* last) noexcept
+            {
+                auto depth = std::size_t{0};
+                for (auto in_string = false; first != last; ++first)
+                {
+                    if (in_string)
+                    {
+                        if (*first == '\\')
+                        {
+                            if (++first == last) break;
+                        }
+                        else if (*first == '"')
+                            in_string = false;
+                    }
+                    else if (*first == '"')
+                        in_string = true;
+                    else if (*first == '[' || *first == '{')
+                    {
+                        if (++depth > std::size_t{YYJSON_READER_DEPTH_LIMIT}) return false;
+                    }
+                    else if ((*first == ']' || *first == '}') && depth != 0)
+                        --depth;
+                }
+                return true;
+            }
+#endif
 
             // Skips white space, of which there is usually none or a single space, and otherwise a line break
             // and the indentation of the next line.
