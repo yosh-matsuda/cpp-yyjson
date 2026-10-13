@@ -1174,6 +1174,7 @@ static const u8 hex_conv_table[256] = {
     0xF0, 0xF0, 0xF0, 0xF0, 0xF0, 0xF0, 0xF0, 0xF0
 };
 
+#if !YYJSON_DISABLE_READER
 /**
  This table is used to convert a two-character escape sequence to a byte.
  The character following the backslash is mapped to the byte it produces;
@@ -1214,6 +1215,7 @@ static const u8 esc_conv_table[256] = {
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 };
+#endif /* YYJSON_DISABLE_READER */
 
 /** Load 4 hex characters to `u16`, return true on valid input. */
 static_inline bool hex_load_4(const u8 *src, u16 *dst) {
