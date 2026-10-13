@@ -5542,6 +5542,54 @@ namespace yyjson
         concept borrows_strings = std::is_class_v<S> && (!std::same_as<S, std::string_view>) &&
                                   (type_reaches<std::string_view, S> || type_reaches<const char*, S>);
 
+        // Whether `caster<T>` has a member named `from_json`, of any form: the name is then ambiguous in a class
+        // derived from the caster and from another class that has it.
+        struct from_json_name_probe
+        {
+            static void from_json();
+        };
+        template <typename T>
+        struct from_json_name_lookup : caster<T>, from_json_name_probe
+        {
+        };
+        template <typename T>
+        concept caster_names_from_json = std::is_class_v<caster<T>> && (!std::is_final_v<caster<T>>) &&
+                                         !requires { &from_json_name_lookup<T>::from_json; };
+
+        // A node of the graph of `type_node` that ends at the types that a caster of the user reads, which leads
+        // to the types whose values a value read from JSON holds.
+        template <typename T>
+        struct read_type_node;
+        template <typename... Us>
+        auto read_type_nodes(type_list<type_node<Us>...>) -> type_list<read_type_node<Us>...>;
+        template <typename T>
+        struct read_type_edges
+        {
+            using type = decltype(read_type_nodes(typename type_node<T>::edges{}));
+        };
+        template <typename T>
+        struct read_type_node
+        {
+            using edges = typename std::conditional_t<
+                caster_names_from_json<T> && !std::derived_from<caster<T>, builtin_caster>,
+                std::type_identity<type_list<>>, read_type_edges<T>>::type;
+        };
+
+        // A value of T read from JSON can hold a string that points into the JSON or into a document, which
+        // `yyjson::read<T>` frees before it returns.
+        template <typename T>
+        concept reads_borrowed_strings =
+            type_list_has<read_type_node<std::string_view>, closure_t<type_list<read_type_node<T>>>> ||
+            type_list_has<read_type_node<const char*>, closure_t<type_list<read_type_node<T>>>>;
+        template <typename T>
+        constexpr void assert_reads_owned_strings() noexcept
+        {
+            static_assert(!reads_borrowed_strings<std::remove_cv_t<T>>,
+                          "T cannot hold a std::string_view or a const char*, which would point into JSON text or "
+                          "a document that does not outlive the call: use std::string, or cast a document that the "
+                          "program keeps");
+        }
+
         template <typename T>
         template <typename Json>
         void from_json_translator<T>::assign_from_json(T& t, const Json& json)
@@ -12191,6 +12239,7 @@ namespace yyjson
     requires (!std::is_reference_v<T>) && castable<reader::const_value_ref, T>
     [[nodiscard]] T read(std::string_view json, ReadFlag read_flag = ReadFlag::NoFlag)
     {
+        yyjson::detail::assert_reads_owned_strings<T>();
         using U = std::remove_cv_t<T>;
         if constexpr (reader::detail::direct_reader::reads_documents_in_loop<U>)
             return reader::read(json, read_flag).template cast<U>();
@@ -12223,6 +12272,7 @@ namespace yyjson
     requires (!std::is_const_v<T>) && castable<reader::const_value_ref, T> && std::is_move_assignable_v<T>
     void read_into(std::string_view json, T& t, ReadFlag read_flag = ReadFlag::NoFlag)
     {
+        yyjson::detail::assert_reads_owned_strings<T>();
         if constexpr (reader::detail::direct_reader::reads_documents_in_loop<T>)
             t = reader::read(json, read_flag).template cast<T>();
         else
@@ -12259,6 +12309,7 @@ namespace yyjson
     requires (!std::is_const_v<T>) && castable<reader::const_value_ref, T> && std::is_move_assignable_v<T>
     void merge_into(std::string_view json, T& t, ReadFlag read_flag = ReadFlag::NoFlag)
     {
+        yyjson::detail::assert_reads_owned_strings<T>();
         if constexpr (!reader::detail::direct_reader::reads_documents_in_loop<T>)
         {
             if ((to_underlying(read_flag) & ~yyjson_read_flag{YYJSON_READ_ALLOW_INVALID_UNICODE}) == 0) [[likely]]
@@ -12288,6 +12339,7 @@ namespace yyjson
     requires (!std::is_reference_v<T>) && castable<reader::const_value_ref, T>
     [[nodiscard]] T read(std::string_view json, ReadFlag read_flag = ReadFlag::NoFlag)
     {
+        yyjson::detail::assert_reads_owned_strings<T>();
         return reader::read(json, read_flag).template cast<std::remove_cv_t<T>>();
     }
 
@@ -12295,6 +12347,7 @@ namespace yyjson
     requires (!std::is_const_v<T>) && castable<reader::const_value_ref, T> && std::is_move_assignable_v<T>
     void read_into(std::string_view json, T& t, ReadFlag read_flag = ReadFlag::NoFlag)
     {
+        yyjson::detail::assert_reads_owned_strings<T>();
         t = reader::read(json, read_flag).template cast<T>();
     }
 
@@ -12302,6 +12355,7 @@ namespace yyjson
     requires (!std::is_const_v<T>) && castable<reader::const_value_ref, T> && std::is_move_assignable_v<T>
     void merge_into(std::string_view json, T& t, ReadFlag read_flag = ReadFlag::NoFlag)
     {
+        yyjson::detail::assert_reads_owned_strings<T>();
         reader::detail::merge_from(t, reader::read(json, read_flag));
     }
 #endif

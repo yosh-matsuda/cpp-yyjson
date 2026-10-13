@@ -6726,7 +6726,10 @@ struct yyjson::caster<ViewList>
 template <>
 struct yyjson::caster<ViewListInPlace>
 {
-    static void from_json(ViewListInPlace& t, const std::vector<std::string_view>& v) { t.items.assign(v.begin(), v.end()); }
+    static void from_json(ViewListInPlace& t, const std::vector<std::string_view>& v)
+    {
+        t.items.assign(v.begin(), v.end());
+    }
 };
 
 static_assert(yyjson::detail::borrows_strings<std::vector<std::string_view>>);
@@ -6735,6 +6738,58 @@ static_assert(yyjson::detail::borrows_strings<std::vector<const char*>>);
 static_assert(!yyjson::detail::borrows_strings<std::string_view>);
 static_assert(!yyjson::detail::borrows_strings<const char*>);
 static_assert(!yyjson::detail::borrows_strings<std::vector<std::string>>);
+
+// what `yyjson::read<T>` cannot give
+struct HoldsView
+{
+    std::string_view s;
+};
+struct HoldsCString
+{
+    std::vector<std::optional<const char*>> v;
+};
+// a caster that reads into the view, which it takes from a string that lives on
+struct InternedView
+{
+    std::string_view s;
+};
+template <>
+struct yyjson::caster<InternedView>
+{
+    static InternedView from_json(const std::string& s) { return {*interned().insert(s).first}; }
+    static std::set<std::string>& interned()
+    {
+        static auto set = std::set<std::string>();
+        return set;
+    }
+};
+// a caster that only writes
+struct WrittenView
+{
+    std::string_view s;
+};
+template <>
+struct yyjson::caster<WrittenView>
+{
+    template <typename... Ts>
+    static std::string_view to_json(const WrittenView& w, Ts...)
+    {
+        return w.s;
+    }
+};
+static_assert(yyjson::detail::reads_borrowed_strings<std::string_view>);
+static_assert(yyjson::detail::reads_borrowed_strings<const char*>);
+static_assert(yyjson::detail::reads_borrowed_strings<std::map<std::string_view, int>>);
+static_assert(yyjson::detail::reads_borrowed_strings<HoldsView>);
+static_assert(yyjson::detail::reads_borrowed_strings<HoldsCString>);
+static_assert(yyjson::detail::reads_borrowed_strings<std::vector<WrittenView>>);
+static_assert(!yyjson::detail::reads_borrowed_strings<std::vector<InternedView>>);
+static_assert(!yyjson::detail::reads_borrowed_strings<BorrowingFields>);
+static_assert(!yyjson::detail::reads_borrowed_strings<std::map<std::string, std::vector<std::string>>>);
+static_assert(yyjson::detail::caster_names_from_json<Rgb>);
+static_assert(yyjson::detail::caster_names_from_json<SameFormTwice>);
+static_assert(!yyjson::detail::caster_names_from_json<WrittenView>);
+static_assert(!yyjson::detail::caster_names_from_json<HoldsView>);
 
 TEST(Reader, BorrowedTranslatorSources)
 {
@@ -6751,6 +6806,9 @@ TEST(Reader, BorrowedTranslatorSources)
     EXPECT_EQ(yyjson::read<std::vector<ViewList>>(R"([["a\n","b\t"],[],["c"]])"),
               (std::vector<ViewList>{{{"a\n", "b\t"}}, {}, {{"c"}}}));
     EXPECT_EQ(yyjson::read<std::vector<ViewPair>>(R"([["a\n","b\t"]])"), (std::vector<ViewPair>{{"a\n", "b\t"}}));
+    const auto interned = yyjson::read<std::vector<InternedView>>(R"(["a string longer than the small buffer","b"])");
+    EXPECT_EQ(interned[0].s, "a string longer than the small buffer");
+    EXPECT_EQ(interned[1].s, "b");
 #if YYJSON_VERSION_HEX >= 0x000C00
     using yyjson::reader::detail::direct_reader;
     static_assert(!direct_reader::reads_documents_in_loop<std::vector<CName>>);
