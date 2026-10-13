@@ -744,8 +744,14 @@ namespace yyjson
         };
         template <typename T, typename List>
         constexpr bool type_list_has = false;
+        // The built-in compares the types without instantiating `std::is_same_v` for every pair of them, which
+        // took a third of the time that the closures below take.
         template <typename T, typename... Ts>
+#if defined(__GNUC__) || defined(__clang__)
+        constexpr bool type_list_has<T, type_list<Ts...>> = (__is_same(T, Ts) || ...);
+#else
         constexpr bool type_list_has<T, type_list<Ts...>> = (std::is_same_v<T, Ts> || ...);
+#endif
         template <typename... As, typename... Bs>
         auto operator+(type_list<As...>, type_list<Bs...>) -> type_list<As..., Bs...>;
 
