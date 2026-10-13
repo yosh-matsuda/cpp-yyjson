@@ -738,6 +738,11 @@ namespace yyjson
         template <typename T>
         concept visitable = visit_struct<T>::value;
 
+        // The structs converted field by field through field-reflection.  Empty aggregates are left out:
+        // they are mostly tags such as `std::monostate` and `copy_string_t`, which have meanings of their own.
+        template <typename T>
+        concept reflectable = field_reflection::field_namable<T> && (field_reflection::field_count<T> > 0);
+
         template <typename... Ts>
         struct type_list
         {
@@ -824,7 +829,7 @@ namespace yyjson
                         std::tuple_size_v<std::remove_cv_t<decltype(visit_struct<T>::members)>>>{});
                 else if constexpr (std_array<T>)
                     return decltype(nodes(typename template_type_args<T>::type{})){};
-                else if constexpr (field_reflection::field_namable<T>)
+                else if constexpr (yyjson::detail::reflectable<T>)
                     return []<std::size_t... Is>(std::index_sequence<Is...>) {
                         return decltype(nodes(type_list<field_reflection::field_type<T, Is>...>{})){};
                     }(std::make_index_sequence<field_reflection::field_count<T>>{});
@@ -1334,9 +1339,8 @@ namespace yyjson
             return true;
         }
 
-        // Field I of an object, moved out only when the object is an rvalue.  This is unlike
-        // `field_reflection::get_field`, which moves the whole object into a tuple to hand out one
-        // field of an rvalue, so that a second call finds the other fields moved from.
+        // Field I of an object, as an rvalue reference when the object is an rvalue.  `field_reflection::get_field`
+        // returns a field of an rvalue by value instead, which would construct one more object per field.
         template <std::size_t I, typename T>
         decltype(auto) forward_field(T&& t) noexcept
         {
@@ -1695,7 +1699,7 @@ namespace yyjson
             // on the structured binding that `field_namable` tries on it.
             template <typename T>
             concept directly_create_reflected_object =
-                (!yyjson::detail::std_array<T>) && field_reflection::field_namable<std::remove_cvref_t<T>> &&
+                (!yyjson::detail::std_array<T>) && yyjson::detail::reflectable<std::remove_cvref_t<T>> &&
                 (!visitable<std::remove_cvref_t<T>>) && (!to_json_inp_usr_defined<T>) && (!to_json_usr<T>) &&
                 directly_create_reflected_object_impl<std::remove_cvref_t<T>>(
                     std::make_index_sequence<field_reflection::field_count<std::remove_cvref_t<T>>>{});
@@ -4572,9 +4576,9 @@ namespace yyjson
             consteval bool to_json_with_reflection_impl(std::index_sequence<Is...>)
             {
                 if constexpr (yyjson::detail::recursive_type<T>)
-                    return field_reflection::field_namable<T>;
+                    return yyjson::detail::reflectable<T>;
                 else
-                    return field_reflection::field_namable<T>&&
+                    return yyjson::detail::reflectable<T>&&
                     requires (const T& t)
                     {
                         (std::declval<object_ref&>().emplace(yyjson::detail::field_key<T, Is>,
@@ -5661,7 +5665,7 @@ namespace yyjson
         caster<std::remove_cvref_t<T>>::from_json(field, json);
     } || detail::from_json_translator<std::remove_cvref_t<T>>::in_place;
 
-    template <json_object Json, field_reflection::field_namable T>
+    template <json_object Json, yyjson::detail::reflectable T>
     constexpr bool all_fields_castable_impl()
     {
         if constexpr (detail::recursive_type<T>)
@@ -5676,7 +5680,7 @@ namespace yyjson
 
     template <typename Json, typename T>
     concept all_fields_castable =
-        json_object<Json> && field_reflection::field_namable<T> && all_fields_castable_impl<Json, T>();
+        json_object<Json> && yyjson::detail::reflectable<T> && all_fields_castable_impl<Json, T>();
 
     namespace detail
     {
@@ -5887,7 +5891,7 @@ namespace yyjson
                             ...);
                 }(std::make_index_sequence<std::tuple_size_v<members>>{});
             }
-            else if constexpr (field_reflection::field_namable<T>)
+            else if constexpr (yyjson::detail::reflectable<T>)
             {
                 return []<std::size_t... Is>(std::index_sequence<Is...>) {
                     return (std::is_move_assignable_v<field_reflection::field_type<T, Is>> && ...);

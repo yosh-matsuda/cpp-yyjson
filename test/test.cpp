@@ -17,6 +17,10 @@
 #include <unordered_set>
 #include "cpp_yyjson.hpp"
 
+#if defined(CPPYYJSON_TEST_REQUIRE_STD_REFLECTION) && !FIELD_RFL_STD_REFLECTION
+#error "the C++26 reflection backend of field-reflection is not enabled"
+#endif
+
 #if defined(__GNUC__)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
@@ -8064,10 +8068,18 @@ static_assert(yyjson::detail::recursive_type<std::vector<RecTree>>);
 static_assert(!yyjson::detail::recursive_type<ReflectionRecord>);
 static_assert(!yyjson::detail::recursive_type<DiamondChain<40>>);
 static_assert(!yyjson::detail::recursive_type<PimplOwner>);
+// GCC 16 warns that `PimplImpl` is completed after the walk above found it incomplete, which is what this test checks
+#if defined(__GNUC__) && !defined(__clang__) && __GNUC__ >= 16
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsfinae-incomplete"
+#endif
 struct PimplImpl
 {
     int v = 0;
 };
+#if defined(__GNUC__) && !defined(__clang__) && __GNUC__ >= 16
+#pragma GCC diagnostic pop
+#endif
 template <typename... Ts>
 int yyjson::caster<PimplHandle>::to_json(const PimplHandle& h, Ts...)
 {
@@ -8228,6 +8240,179 @@ TEST(Reader, RecursiveVariantLimit)
     expect_recursive<RecTagged>(tagged(100, "1"));
     EXPECT_EQ(yyjson::read<RecTagged>(tagged(100, "1")).op.index(), 0);
 }
+
+#if FIELD_RFL_STD_REFLECTION
+// types that only the C++26 backend of field-reflection reflects
+struct ReflectedBase
+{
+    int id = 0;
+    std::string name;
+    bool operator==(const ReflectedBase&) const = default;
+};
+struct ReflectedDerived : ReflectedBase
+{
+    std::vector<int> list;
+    std::optional<double> score;
+    bool operator==(const ReflectedDerived&) const = default;
+};
+template <>
+struct yyjson::field_rename<ReflectedDerived>
+{
+    static constexpr auto value = yyjson::rename{{"name", "@name"}};
+};
+struct ReflectedWide
+{
+    int f0 = 0;
+    int f1 = 1;
+    int f2 = 2;
+    int f3 = 3;
+    int f4 = 4;
+    int f5 = 5;
+    int f6 = 6;
+    int f7 = 7;
+    int f8 = 8;
+    int f9 = 9;
+    int f10 = 10;
+    int f11 = 11;
+    int f12 = 12;
+    int f13 = 13;
+    int f14 = 14;
+    int f15 = 15;
+    int f16 = 16;
+    int f17 = 17;
+    int f18 = 18;
+    int f19 = 19;
+    int f20 = 20;
+    int f21 = 21;
+    int f22 = 22;
+    int f23 = 23;
+    int f24 = 24;
+    int f25 = 25;
+    int f26 = 26;
+    int f27 = 27;
+    int f28 = 28;
+    int f29 = 29;
+    int f30 = 30;
+    int f31 = 31;
+    int f32 = 32;
+    int f33 = 33;
+    int f34 = 34;
+    int f35 = 35;
+    int f36 = 36;
+    int f37 = 37;
+    int f38 = 38;
+    int f39 = 39;
+    int f40 = 40;
+    int f41 = 41;
+    int f42 = 42;
+    int f43 = 43;
+    int f44 = 44;
+    int f45 = 45;
+    int f46 = 46;
+    int f47 = 47;
+    int f48 = 48;
+    int f49 = 49;
+    int f50 = 50;
+    int f51 = 51;
+    int f52 = 52;
+    int f53 = 53;
+    int f54 = 54;
+    int f55 = 55;
+    int f56 = 56;
+    int f57 = 57;
+    int f58 = 58;
+    int f59 = 59;
+    int f60 = 60;
+    int f61 = 61;
+    int f62 = 62;
+    int f63 = 63;
+    int f64 = 64;
+    int f65 = 65;
+    int f66 = 66;
+    int f67 = 67;
+    int f68 = 68;
+    int f69 = 69;
+    int f70 = 70;
+    int f71 = 71;
+    int f72 = 72;
+    int f73 = 73;
+    int f74 = 74;
+    int f75 = 75;
+    int f76 = 76;
+    int f77 = 77;
+    int f78 = 78;
+    int f79 = 79;
+    int f80 = 80;
+    int f81 = 81;
+    int f82 = 82;
+    int f83 = 83;
+    int f84 = 84;
+    int f85 = 85;
+    int f86 = 86;
+    int f87 = 87;
+    int f88 = 88;
+    int f89 = 89;
+    int f90 = 90;
+    int f91 = 91;
+    int f92 = 92;
+    int f93 = 93;
+    int f94 = 94;
+    int f95 = 95;
+    int f96 = 96;
+    int f97 = 97;
+    int f98 = 98;
+    int f99 = 99;
+    int f100 = 100;
+    int f101 = 101;
+    int f102 = 102;
+    int f103 = 103;
+    int f104 = 104;
+    int f105 = 105;
+    int f106 = 106;
+    int f107 = 107;
+    int f108 = 108;
+    int f109 = 109;
+    int f110 = 110;
+    int f111 = 111;
+    int f112 = 112;
+    int f113 = 113;
+    int f114 = 114;
+    int f115 = 115;
+    int f116 = 116;
+    int f117 = 117;
+    int f118 = 118;
+    int f119 = 119;
+    bool operator==(const ReflectedWide&) const = default;
+};
+
+TEST(Reflection, StdReflection)
+{
+    static_assert(field_reflection::field_count<ReflectedDerived> == 4);
+    static_assert(field_reflection::field_count<ReflectedWide> == 120);
+
+    const auto* json = R"({"id":1,"@name":"a","list":[1,2],"score":0.5})";
+    expect_recursive<ReflectedDerived>(json);
+    auto derived = ReflectedDerived{};
+    derived.id = 1;
+    derived.name = "a";
+    derived.list = {1, 2};
+    derived.score = 0.5;
+    EXPECT_EQ(yyjson::read<ReflectedDerived>(json), derived);
+    EXPECT_EQ(std::string_view(yyjson::write(derived)), json);
+    expect_direct_write(derived);
+    expect_direct_write(std::vector<ReflectedDerived>{derived, ReflectedDerived{}});
+
+    auto wide_json = std::string("{");
+    for (auto i = 0; i < 120; ++i) wide_json += std::format("{}\"f{}\":{}", i == 0 ? "" : ",", i, i * 2);
+    wide_json += "}";
+    expect_recursive<ReflectedWide>(wide_json);
+    const auto wide = yyjson::read<ReflectedWide>(wide_json);
+    EXPECT_EQ(wide.f0, 0);
+    EXPECT_EQ(wide.f119, 238);
+    EXPECT_EQ(std::string_view(yyjson::write(wide)), wide_json);
+    expect_direct_write(wide);
+}
+#endif
 
 
 struct DiffInner
