@@ -9741,6 +9741,23 @@ namespace yyjson
             {
             }
 
+            // Finds the brackets of the root of `json` between white space, and returns whether this reader reads
+            // it: the root is an object or an array, and no flag but `ReadFlag::AllowInvalidUnicode` is given.
+            CPPYYJSON_ALWAYS_INLINE static bool find_root(std::string_view json, ReadFlag flg, const char*& first,
+                                                          const char*& last) noexcept
+            {
+                if ((to_underlying(flg) & ~yyjson_read_flag{YYJSON_READ_ALLOW_INVALID_UNICODE}) != 0) [[unlikely]]
+                    return false;
+                first = json.data();
+                last = json.data() + json.size();
+                while (first != last && is_ws(*first)) ++first;
+                while (first != last && is_ws(last[-1])) --last;
+                if (last - first < 2 || !((*first == '{' && last[-1] == '}') || (*first == '[' && last[-1] == ']')))
+                    return false;
+                --last;
+                return true;
+            }
+
             // Whether reading T calls `with_document` for each element of a range or a map: then a document of the
             // whole text is cheaper.  The nodes follow `read_value`, `read_object`, `read_array_into` and
             // `read_field`, and `Loop` is whether the value is an element.  A node is `local` if it calls
@@ -12230,11 +12247,6 @@ namespace yyjson
                 });
             }
         };
-
-        CPPYYJSON_ALWAYS_INLINE inline bool is_json_ws(char c) noexcept
-        {
-            return c == ' ' || c == '\n' || c == '\r' || c == '\t';
-        }
     }  // namespace reader::detail
 
     // Reads JSON text into a value of type T, with the same result as `yyjson::read(json, read_flag).cast<T>()`
@@ -12249,17 +12261,15 @@ namespace yyjson
         using U = std::remove_cv_t<T>;
         if constexpr (reader::detail::direct_reader::reads_documents_in_loop<U>)
             return reader::read(json, read_flag).template cast<U>();
-        else if ((to_underlying(read_flag) & ~yyjson_read_flag{YYJSON_READ_ALLOW_INVALID_UNICODE}) == 0) [[likely]]
+        else
         {
-            const auto* first = json.data();
-            const auto* last = json.data() + json.size();
-            while (first != last && reader::detail::is_json_ws(*first)) ++first;
-            while (first != last && reader::detail::is_json_ws(last[-1])) --last;
-            if (last - first >= 2 && ((*first == '{' && last[-1] == '}') || (*first == '[' && last[-1] == ']')))
+            const char* first;
+            const char* last;
+            if (reader::detail::direct_reader::find_root(json, read_flag, first, last)) [[likely]]
             {
                 try
                 {
-                    return reader::detail::direct_reader(first, last - 1, read_flag).read_root<U>();
+                    return reader::detail::direct_reader(first, last, read_flag).read_root<U>();
                 }
                 catch (...)
                 {
@@ -12283,22 +12293,17 @@ namespace yyjson
             t = reader::read(json, read_flag).template cast<T>();
         else
         {
-            if ((to_underlying(read_flag) & ~yyjson_read_flag{YYJSON_READ_ALLOW_INVALID_UNICODE}) == 0) [[likely]]
+            const char* first;
+            const char* last;
+            if (reader::detail::direct_reader::find_root(json, read_flag, first, last)) [[likely]]
             {
-                const auto* first = json.data();
-                const auto* last = json.data() + json.size();
-                while (first != last && reader::detail::is_json_ws(*first)) ++first;
-                while (first != last && reader::detail::is_json_ws(last[-1])) --last;
-                if (last - first >= 2 && ((*first == '{' && last[-1] == '}') || (*first == '[' && last[-1] == ']')))
+                try
                 {
-                    try
-                    {
-                        reader::detail::direct_reader(first, last - 1, read_flag).read_root_into(t);
-                        return;
-                    }
-                    catch (...)
-                    {
-                    }
+                    reader::detail::direct_reader(first, last, read_flag).read_root_into(t);
+                    return;
+                }
+                catch (...)
+                {
                 }
             }
             t = reader::read(json, read_flag).template cast<T>();
@@ -12318,22 +12323,17 @@ namespace yyjson
         yyjson::detail::assert_reads_owned_strings<T>();
         if constexpr (!reader::detail::direct_reader::reads_documents_in_loop<T>)
         {
-            if ((to_underlying(read_flag) & ~yyjson_read_flag{YYJSON_READ_ALLOW_INVALID_UNICODE}) == 0) [[likely]]
+            const char* first;
+            const char* last;
+            if (reader::detail::direct_reader::find_root(json, read_flag, first, last)) [[likely]]
             {
-                const auto* first = json.data();
-                const auto* last = json.data() + json.size();
-                while (first != last && reader::detail::is_json_ws(*first)) ++first;
-                while (first != last && reader::detail::is_json_ws(last[-1])) --last;
-                if (last - first >= 2 && ((*first == '{' && last[-1] == '}') || (*first == '[' && last[-1] == ']')))
+                try
                 {
-                    try
-                    {
-                        reader::detail::direct_reader(first, last - 1, read_flag).merge_root(t);
-                        return;
-                    }
-                    catch (...)
-                    {
-                    }
+                    reader::detail::direct_reader(first, last, read_flag).merge_root(t);
+                    return;
+                }
+                catch (...)
+                {
                 }
             }
         }
