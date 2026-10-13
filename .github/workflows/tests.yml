@@ -53,6 +53,7 @@ jobs:
         - { name: "GCC 14", os: "ubuntu-24.04", install: "apt", c: "gcc-14", cxx: "g++-14", packages: "gcc-14 g++-14" }
         - { name: "GCC 15", os: "ubuntu-26.04", install: "apt", c: "gcc-15", cxx: "g++-15", packages: "gcc-15 g++-15" }
         - { name: "GCC 16", os: "ubuntu-26.04", install: "apt", c: "gcc-16", cxx: "g++-16", packages: "gcc-16 g++-16" }
+        - { name: "GCC 16 (C++26 reflection)", os: "ubuntu-26.04", install: "apt", c: "gcc-16", cxx: "g++-16", packages: "gcc-16 g++-16", std: "26", flags: "-freflection -DCPPYYJSON_TEST_REQUIRE_STD_REFLECTION" }
         - { name: "LLVM 17", os: "ubuntu-24.04", install: "brew", c: "$(brew --prefix llvm@17)/bin/clang", cxx: "$(brew --prefix llvm@17)/bin/clang++", brewpkg: "llvm@17" }
         - { name: "LLVM 18", os: "ubuntu-24.04", install: "brew", c: "$(brew --prefix llvm@18)/bin/clang", cxx: "$(brew --prefix llvm@18)/bin/clang++", brewpkg: "llvm@18" }
         - { name: "LLVM 19", os: "ubuntu-24.04", install: "brew", c: "$(brew --prefix llvm@19)/bin/clang", cxx: "$(brew --prefix llvm@19)/bin/clang++", brewpkg: "llvm@19" }
@@ -88,7 +89,7 @@ jobs:
         fi
         export CC=${{ matrix.compiler.c }} CXX=${{ matrix.compiler.cxx }}
         rm -rf ${{ github.workspace }}/build
-        cmake -B ${{ github.workspace }}/build -DCMAKE_TOOLCHAIN_FILE=$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=${{ env.triplet }} -DCMAKE_C_COMPILER=${{ matrix.compiler.c }} -DCMAKE_CXX_COMPILER=${{ matrix.compiler.cxx }} -G "Ninja Multi-Config"
+        cmake -B ${{ github.workspace }}/build -DCMAKE_TOOLCHAIN_FILE=$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=${{ env.triplet }} -DCMAKE_C_COMPILER=${{ matrix.compiler.c }} -DCMAKE_CXX_COMPILER=${{ matrix.compiler.cxx }} -DCMAKE_CXX_STANDARD=${{ matrix.compiler.std || 20 }} "-DCMAKE_CXX_FLAGS=${{ matrix.compiler.flags }}" -G "Ninja Multi-Config"
         cmake --build ${{ github.workspace }}/build --config Debug --clean-first
         ctest --test-dir ${{ github.workspace }}/build -C Debug
         cmake --build ${{ github.workspace }}/build --config Release --clean-first
@@ -179,6 +180,7 @@ jobs:
         compiler:
         - { name: "GCC 15", os: "macos-latest", c: "gcc-15", cxx: "g++-15", brewpkg: "gcc@15" }
         - { name: "GCC 16", os: "macos-latest", c: "gcc-16", cxx: "g++-16", brewpkg: "gcc@16" }
+        - { name: "GCC 16 (C++26 reflection)", os: "macos-latest", c: "gcc-16", cxx: "g++-16", brewpkg: "gcc@16", std: "26", flags: "-freflection -DCPPYYJSON_TEST_REQUIRE_STD_REFLECTION" }
         - { name: "Clang 19", os: "macos-latest", c: "$(brew --prefix llvm@19)/bin/clang", cxx: "$(brew --prefix llvm@19)/bin/clang++", brewpkg: "llvm@19" }
         - { name: "Clang 20", os: "macos-latest", c: "$(brew --prefix llvm@20)/bin/clang", cxx: "$(brew --prefix llvm@20)/bin/clang++", brewpkg: "llvm@20" }
         - { name: "Clang 21", os: "macos-latest", c: "$(brew --prefix llvm@21)/bin/clang", cxx: "$(brew --prefix llvm@21)/bin/clang++", brewpkg: "llvm@21" }
@@ -221,7 +223,7 @@ jobs:
       run: |
         export CC=${{ matrix.compiler.c }} CXX=${{ matrix.compiler.cxx }}
         rm -rf ${{ github.workspace }}/build
-        cmake -B ${{ github.workspace }}/build -DCMAKE_TOOLCHAIN_FILE=./external/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=${{ env.triplet }} -DCMAKE_C_COMPILER=${{ matrix.compiler.c }} -DCMAKE_CXX_COMPILER=${{ matrix.compiler.cxx }} -G "Ninja Multi-Config"
+        cmake -B ${{ github.workspace }}/build -DCMAKE_TOOLCHAIN_FILE=./external/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=${{ env.triplet }} -DCMAKE_C_COMPILER=${{ matrix.compiler.c }} -DCMAKE_CXX_COMPILER=${{ matrix.compiler.cxx }} -DCMAKE_CXX_STANDARD=${{ matrix.compiler.std || 20 }} "-DCMAKE_CXX_FLAGS=${{ matrix.compiler.flags }}" -G "Ninja Multi-Config"
         cmake --build ${{ github.workspace }}/build --config Debug --clean-first
         ctest --test-dir ${{ github.workspace }}/build -C Debug
         cmake --build ${{ github.workspace }}/build --config Release --clean-first
