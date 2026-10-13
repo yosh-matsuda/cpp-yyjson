@@ -4,22 +4,27 @@
 // Models of the benchmark datasets for reading JSON into and writing it from C++ types.
 //
 // The same aggregates are read and written by cpp-yyjson, through its field-name
-// reflection, and by Glaze, through its own, so both libraries fill the same objects.
-// Members are declared in the order their keys appear in the documents, which is also
-// the order both libraries write them in.  Every key of the documents has a member.  A
-// key that is not a valid member name, such as `@context` or the C++ keyword `public`,
-// belongs to a member of another name, which `yyjson::field_rename` maps to the key; the
-// Glaze executable gives Glaze the same mapping through `glz::meta<T>::rename_key`.
-// Nothing is skipped, so a library that is fast at skipping values gains little here.
+// reflection, and by Glaze and reflect-cpp, through their own, so every library fills
+// the same objects.  Members are declared in the order their keys appear in the
+// documents, which is also the order the libraries write them in.  Every key of the
+// documents has a member.  A key that is not a valid member name, such as `@context` or
+// the C++ keyword `public`, belongs to a member of another name, which
+// `yyjson::field_rename` maps to the key; the Glaze executable gives Glaze the same
+// mapping through `glz::meta<T>::rename_key`, and the reflect-cpp executable gives it to
+// reflect-cpp through the processor `reflectcpp_rename`.  Nothing is skipped, so a
+// library that is fast at skipping values gains little here.
 //
 // A key whose value is always null in the document is a `std::optional`, as is a key
-// that only some of the objects have.  Both libraries leave out an empty optional when
+// that only some of the objects have.  The libraries leave out an empty optional when
 // writing, so they write the same keys.
 
 #include <cpp_yyjson.hpp>
 #if defined(CPPYYJSON_GLAZE_BENCHMARKS)
 #include <glaze/glaze.hpp>
+#elif defined(CPPYYJSON_REFLECTCPP_BENCHMARKS)
+#include <rfl.hpp>
 #endif
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <map>
@@ -637,5 +642,39 @@ struct glz::meta<T>
         return member;
     }
 };
+#elif defined(CPPYYJSON_REFLECTCPP_BENCHMARKS)
+namespace bench_typed
+{
+    // A reflect-cpp processor that gives every field the key `yyjson::field_rename` maps
+    // its member to.  `rfl::Rename` would do the same, but it changes the type of the
+    // member, and the aggregates are shared with the other libraries.
+    struct reflectcpp_rename
+    {
+        template <typename T>
+        static auto process(const auto& named_tuple)
+        {
+            if constexpr (yyjson::detail::has_field_rename<T>)
+                return named_tuple.transform([]<typename F>(const F& field) {
+                    return rfl::Field<key_of<T, F::name_>(), typename F::Type>(field.value());
+                });
+            else
+                return named_tuple;
+        }
+
+    private:
+        template <typename T, auto Member>
+        static constexpr auto key_of()
+        {
+            constexpr auto key = [] {
+                for (const auto& r : yyjson::field_rename<T>)
+                    if (r.member() == Member.string_view()) return r.key();
+                return Member.string_view();
+            }();
+            auto chars = std::array<char, key.size() + 1>{};
+            std::ranges::copy(key, chars.begin());
+            return rfl::internal::StringLiteral<key.size() + 1>(chars);
+        }
+    };
+}  // namespace bench_typed
 #endif
 // NOLINTEND

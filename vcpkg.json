@@ -12,6 +12,7 @@
                 "glaze",
                 "nlohmann-json",
                 "rapidjson",
+                "reflectcpp",
                 "simdjson",
                 "yyjson"
             ]
