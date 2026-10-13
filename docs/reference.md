@@ -1329,14 +1329,18 @@ A JSON array or object with more elements than the tuple throws `yyjson::bad_cas
 
 The compile-time reflection is supported to automatically convert C++ struct/class to JSON object and vice versa. This feature is provided by using [field-reflection](https://github.com/yosh-matsuda/field-reflection) and is included in this library.
 
-If a C++ struct/class satisfies the `field_reflection::field_namable` concept (see [field-reflection](https://github.com/yosh-matsuda/field-reflection)), it is possible to automatically convert from/to JSON objects with its field names and no need to write a caster definition or registration of field names with macros explained later.
+If a C++ struct/class satisfies the `field_reflection::field_namable` concept (see [field-reflection](https://github.com/yosh-matsuda/field-reflection)) and has at least one field, it is possible to automatically convert from/to JSON objects with its field names and no need to write a caster definition or registration of field names with macros explained later.
 
 In practice, the following conditions are required for C++ types for automatic conversion:
 
 *   default initializable
 *   [aggregate type](https://en.cppreference.com/w/cpp/types/is_aggregate)
-*   not a derived class
+*   at least one field; an empty struct such as `std::monostate` is not converted to a JSON object
+*   not a derived class (C++20)
+*   at most 100 fields (C++20)
 *   no reference member
+
+With C++26 static reflection, e.g. GCC 16 with `-std=c++26 -freflection`, field-reflection reflects derived classes and any number of fields. The fields of the base classes come first in the JSON object, and `yyjson::field_rename` of the derived class can rename them. A struct with a reference member can then be written but not read. Define `FIELD_RFL_DISABLE_STD_REFLECTION` to keep the C++20 rules.
 
 Example:
 
