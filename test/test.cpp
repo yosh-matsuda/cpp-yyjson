@@ -5,10 +5,12 @@
 #include <cmath>
 #include <deque>
 #include <format>
+#include <functional>
 #include <iostream>
 #include <limits>
 #include <list>
 #include <map>
+#include <mutex>
 #include <numeric>
 #include <random>
 #include <set>
@@ -7084,7 +7086,7 @@ struct RenamedRecord
 template <>
 struct yyjson::field_rename<RenamedRecord>
 {
-    static constexpr auto value = yyjson::rename{{"context", "@context"}, {"type", "a/b\"c, longer than 16"}};
+    static constexpr yyjson::rename value[] = {{"context", "@context"}, {"type", "a/b\"c, longer than 16"}};
 };
 
 struct VisitableRenamed
@@ -7108,7 +7110,7 @@ struct VisitableTraitRenamed
 template <>
 struct yyjson::field_rename<VisitableTraitRenamed>
 {
-    static constexpr auto value = yyjson::rename{{"type", "a/b\"c, longer than 16"}, {"context", "@context"}};
+    static constexpr yyjson::rename value[] = {{"type", "a/b\"c, longer than 16"}, {"context", "@context"}};
 };
 VISITABLE_STRUCT(VisitableTraitRenamed, context, type, id, list);
 
@@ -7121,7 +7123,20 @@ struct SwappedKeys
 template <>
 struct yyjson::field_rename<SwappedKeys>
 {
-    static constexpr auto value = yyjson::rename{{"a", "b"}, {"b", "a"}};
+    static constexpr yyjson::rename value[] = {{"a", "b"}, {"b", "a"}};
+};
+
+// `field_rename` given as a `std::array`
+struct ArrayRenamed
+{
+    int x = 0;
+    int y = 0;
+    bool operator==(const ArrayRenamed&) const = default;
+};
+template <>
+struct yyjson::field_rename<ArrayRenamed>
+{
+    static constexpr std::array<yyjson::rename, 2> value{{{"y", "@y"}, {"x", "@x"}}};
 };
 
 struct VisitableSwappedKeys
@@ -7144,16 +7159,19 @@ namespace
 {
     using key_array = std::array<std::string_view, 2>;
     constexpr auto members_ab = key_array{"a", "b"};
-    consteval auto renamed_keys(const key_array& keys, const auto& pairs)
+    consteval auto renamed_keys(const key_array& keys, std::initializer_list<yyjson::rename> renames)
     {
-        return yyjson::detail::make_field_keys(members_ab, keys, pairs);
+        return yyjson::detail::make_field_keys(members_ab, keys, renames);
     }
     using enum yyjson::detail::field_key_error;
-    static_assert(renamed_keys(members_ab, yyjson::rename{{"b", "x"}}.pairs).keys == key_array{"a", "x"});
-    static_assert(renamed_keys(members_ab, yyjson::rename{{"c", "x"}}.pairs).error == unknown_member);
-    static_assert(renamed_keys(members_ab, yyjson::rename{{"a", "x"}, {"a", "y"}}.pairs).error == duplicate_member);
-    static_assert(renamed_keys(members_ab, yyjson::rename{{"a", "b"}}.pairs).error == duplicate_key);
-    static_assert(renamed_keys(key_array{"x", "b"}, yyjson::rename{{"b", "y"}}.pairs).error == renamed_twice);
+    static_assert(renamed_keys(members_ab, {{"b", "x"}}).keys == key_array{"a", "x"});
+    static_assert(renamed_keys(members_ab, {{"c", "x"}}).error == unknown_member);
+    static_assert(renamed_keys(members_ab, {{"a", "x"}, {"a", "y"}}).error == duplicate_member);
+    static_assert(renamed_keys(members_ab, {{"a", "b"}}).error == duplicate_key);
+    static_assert(renamed_keys(members_ab, {yyjson::rename("x")}).error == no_member);
+    static_assert(renamed_keys(key_array{"x", "b"}, {{"b", "y"}}).error == renamed_twice);
+    static_assert(yyjson::rename("m", "k").member() == "m" && yyjson::rename("m", "k").key() == "k");
+    static_assert(!yyjson::rename("k").has_member() && yyjson::rename("k").key() == "k");
     static_assert(yyjson::detail::make_field_keys(members_ab, key_array{"b", "b"}).error == duplicate_key);
     // a `VISITABLE_STRUCT` listing a member twice compiles as before, unless it names keys
     static_assert(yyjson::detail::make_field_keys(key_array{"a", "a"}, key_array{"a", "a"}).error == none);
@@ -7220,6 +7238,9 @@ TEST(Writer, FieldRename)
     EXPECT_EQ(std::string(yyjson::write(SwappedKeys{1, 2})), R"({"b":1,"a":2})");
     EXPECT_EQ(std::string(yyjson::value(SwappedKeys{1, 2}).write()), R"({"b":1,"a":2})");
     EXPECT_EQ(std::string(yyjson::write(VisitableSwappedKeys{1, 2})), R"({"b":1,"a":2})");
+    EXPECT_EQ(std::string(yyjson::write(ArrayRenamed{1, 2})), R"({"@x":1,"@y":2})");
+    EXPECT_EQ(yyjson::read<ArrayRenamed>(R"({"@y":2,"@x":1,"x":3})"), (ArrayRenamed{1, 2}));
+    EXPECT_EQ(yyjson::read(R"({"@y":2,"@x":1,"x":3})").cast<ArrayRenamed>(), (ArrayRenamed{1, 2}));
     EXPECT_EQ(std::string(yyjson::value(VisitableSwappedKeys{1, 2}).write()), R"({"b":1,"a":2})");
 
     const auto holds = HoldsRenamed{{"c", "t", 1, {1, 2}}, {{"c", "t", 1, {}}}, {{"k", {"c", "t", 1, {3}}}}};
@@ -9149,7 +9170,7 @@ struct ReflectedDerived : ReflectedBase
 template <>
 struct yyjson::field_rename<ReflectedDerived>
 {
-    static constexpr auto value = yyjson::rename{{"name", "@name"}};
+    static constexpr yyjson::rename value[] = {{"name", "@name"}};
 };
 struct ReflectedWide
 {
@@ -9324,6 +9345,276 @@ TEST(Reflection, StdReflection)
     EXPECT_EQ(written(yyjson::read<EmptyBasedFields>(R"({"d":{"y":1},"b":{"x":3}})")), based_json);
     EXPECT_TRUE(expect_direct_read<EmptyBasedFields>(R"({"d":{"y":1},"b":{"x":5}})"));
     expect_direct_read<EmptyBasedFields>(R"({"d":[]})");
+}
+#endif
+
+#if FIELD_RFL_ANNOTATIONS
+// keys and skipped fields given by C++26 annotations
+struct AnnotatedProject
+{
+    [[= yyjson::rename("@context")]] std::string context;
+    [[= yyjson::rename("a/b\"c, longer than 16")]] std::string type;
+    int id = 0;
+    bool operator==(const AnnotatedProject&) const = default;
+};
+struct [[= yyjson::rename("context", "@context"), = yyjson::rename("type", "a/b\"c, longer than 16")]] TypeAnnotatedProject
+{
+    std::string context;
+    std::string type;
+    int id = 0;
+    bool operator==(const TypeAnnotatedProject&) const = default;
+};
+// the three ways to rename, one field each
+struct [[= yyjson::rename("b", "@b")]] CombinedRenames
+{
+    [[= yyjson::rename("@a")]] int a = 0;
+    int b = 0;
+    int c = 0;
+    int d = 0;
+    bool operator==(const CombinedRenames&) const = default;
+};
+template <>
+struct yyjson::field_rename<CombinedRenames>
+{
+    static constexpr yyjson::rename value[] = {{"c", "@c"}};
+};
+struct AnnotatedSwappedKeys
+{
+    [[= yyjson::rename("b")]] int a = 0;
+    [[= yyjson::rename("a")]] int b = 0;
+    bool operator==(const AnnotatedSwappedKeys&) const = default;
+};
+
+struct SkippedFields
+{
+    int id = 0;
+    [[= yyjson::skip]] std::string cache = "default";
+    std::vector<int> list = {};
+    [[= yyjson::skip]] std::function<int()> callback = {};  // neither read nor written by this library
+    [[= yyjson::skip]] int* pointer = nullptr;
+    std::optional<int> opt = {};
+    bool operator==(const SkippedFields& other) const
+    {
+        return id == other.id && cache == other.cache && list == other.list && pointer == other.pointer &&
+               opt == other.opt;
+    }
+};
+// a skipped field leaves its key to another field
+struct SkippedKeyReused
+{
+    [[= yyjson::skip]] int a = 7;
+    [[= yyjson::rename("a")]] int b = 0;
+    bool operator==(const SkippedKeyReused&) const = default;
+};
+struct AllSkipped
+{
+    [[= yyjson::skip]] int a = 1;
+    [[= yyjson::skip]] std::string b = "b";
+    bool operator==(const AllSkipped&) const = default;
+};
+struct SkippedConst
+{
+    int x = 0;
+    [[= yyjson::skip]] const int version = 3;
+    bool operator==(const SkippedConst&) const = default;
+};
+struct SkippedMutex
+{
+    int x = 0;
+    [[= yyjson::skip]] std::mutex mutex = {};
+};
+struct SkippedReference
+{
+    int x = 0;
+    [[= yyjson::skip]] const int& ref;
+};
+// not a recursive type, as the field of its own type is skipped
+struct SkippedRecursion
+{
+    int v = 0;
+    [[= yyjson::skip]] std::vector<SkippedRecursion> children;
+    bool operator==(const SkippedRecursion&) const = default;
+};
+struct HoldsAnnotated
+{
+    AnnotatedProject project;
+    std::vector<SkippedFields> items;
+    std::map<std::string, TypeAnnotatedProject> by_name;
+    std::optional<CombinedRenames> combined;
+    AllSkipped none = {};
+    bool operator==(const HoldsAnnotated&) const = default;
+};
+
+TEST(Reflection, AnnotationRename)
+{
+    static_assert(yyjson::detail::field_key<AnnotatedProject, 0> == "@context");
+    static_assert(yyjson::detail::field_key<AnnotatedProject, 2> == "id");
+    static_assert(yyjson::detail::field_key<TypeAnnotatedProject, 1> == "a/b\"c, longer than 16");
+    static_assert(yyjson::detail::field_key<CombinedRenames, 0> == "@a");
+    static_assert(yyjson::detail::field_key<CombinedRenames, 1> == "@b");
+    static_assert(yyjson::detail::field_key<CombinedRenames, 2> == "@c");
+    static_assert(yyjson::detail::field_key<CombinedRenames, 3> == "d");
+
+    const auto* json = R"({"@context":"c","a/b\"c, longer than 16":"t","id":1,"context":"x","type":"y"})";
+    const auto* written_json = R"({"@context":"c","a/b\"c, longer than 16":"t","id":1})";
+    const auto check = [&]<typename T>(std::type_identity<T>) {
+        const auto expected = T{"c", "t", 1};
+        EXPECT_EQ(yyjson::read(json).cast<T>(), expected);
+        EXPECT_EQ(yyjson::read<T>(json), expected);
+        EXPECT_TRUE(expect_direct_read<T>(json));
+        EXPECT_TRUE(expect_direct_read<T>(R"({"\u0040context":"c","a\/b\"c, longer than 16":"t"})"));
+        EXPECT_TRUE(expect_direct_read<std::vector<T>>(std::string("[") + json + "," + json + "]"));
+        auto t = T{"old", "old", 9};
+        yyjson::read_into(R"({"@context":"c"})", t);
+        EXPECT_EQ(t, (T{"c", "", 0}));
+        yyjson::merge_into(R"({"id":2,"type":"x"})", t);
+        EXPECT_EQ(t, (T{"c", "", 2}));
+
+        EXPECT_EQ(std::string(yyjson::value(expected).write()), written_json);
+        EXPECT_EQ(std::string(yyjson::object(expected).write()), written_json);
+        EXPECT_EQ(std::string(yyjson::object(T(expected)).write()), written_json);
+        EXPECT_EQ(std::string(yyjson::write(expected)), written_json);
+        expect_direct_write(expected);
+        expect_direct_write(std::vector<T>{expected, T{}});
+        EXPECT_EQ(yyjson::read<T>(std::string(yyjson::write(expected, yyjson::WriteFlag::Pretty))), expected);
+    };
+    check(std::type_identity<AnnotatedProject>{});
+    check(std::type_identity<TypeAnnotatedProject>{});
+
+    const auto combined = CombinedRenames{1, 2, 3, 4};
+    const auto* combined_json = R"({"@a":1,"@b":2,"@c":3,"d":4})";
+    EXPECT_EQ(std::string(yyjson::write(combined)), combined_json);
+    EXPECT_EQ(std::string(yyjson::value(combined).write()), combined_json);
+    EXPECT_EQ(yyjson::read<CombinedRenames>(combined_json), combined);
+    EXPECT_EQ(yyjson::read(combined_json).cast<CombinedRenames>(), combined);
+    EXPECT_EQ(yyjson::read<CombinedRenames>(R"({"a":1,"b":2,"c":3,"d":4})"), (CombinedRenames{0, 0, 0, 4}));
+    EXPECT_TRUE(expect_direct_read<CombinedRenames>(combined_json));
+
+    const auto* swapped = R"({"a":1,"b":2})";
+    EXPECT_EQ(yyjson::read<AnnotatedSwappedKeys>(swapped), (AnnotatedSwappedKeys{2, 1}));
+    EXPECT_EQ(yyjson::read(swapped).cast<AnnotatedSwappedKeys>(), (AnnotatedSwappedKeys{2, 1}));
+    EXPECT_EQ(std::string(yyjson::write(AnnotatedSwappedKeys{1, 2})), R"({"b":1,"a":2})");
+    EXPECT_TRUE(expect_direct_read<AnnotatedSwappedKeys>(swapped));
+}
+
+TEST(Reflection, AnnotationSkip)
+{
+    using yyjson::detail::reflected_fields;
+    static_assert(std::same_as<reflected_fields<SkippedFields>, std::index_sequence<0, 2, 5>>);
+    static_assert(std::same_as<reflected_fields<AllSkipped>, std::index_sequence<>>);
+    static_assert(std::same_as<reflected_fields<AnnotatedProject>, std::index_sequence<0, 1, 2>>);
+    static_assert(!yyjson::detail::recursive_type<SkippedRecursion>);
+
+    auto value = 5;
+    // reading ignores the keys of the skipped fields, and the fields keep their values
+    const auto* json = R"({"id":1,"cache":"x","list":[1,2],"callback":3,"pointer":4,"opt":5})";
+    auto expected = SkippedFields{.id = 1, .list = {1, 2}, .opt = 5};
+    EXPECT_EQ(yyjson::read<SkippedFields>(json), expected);
+    EXPECT_EQ(yyjson::read(json).cast<SkippedFields>(), expected);
+    EXPECT_TRUE(expect_direct_read<SkippedFields>(json));
+    EXPECT_TRUE(expect_direct_read<SkippedFields>(R"({"cache":{"a":[1,{}]},"id":2})"));
+    EXPECT_TRUE(expect_direct_read<std::vector<SkippedFields>>(std::string("[") + json + ",{}]"));
+    expect_direct_read<SkippedFields>(R"({"id":"x","cache":1})");
+    expect_direct_read<SkippedFields>("[]");
+    EXPECT_EQ(std::get<1>(yyjson::read<std::variant<int, SkippedFields>>(json)), expected);
+
+    auto t = SkippedFields{.id = 9, .cache = "kept", .list = {9}, .pointer = &value, .opt = 9};
+    t.callback = [] { return 1; };
+    // `read_into` gives the skipped fields their values in `T()` as `t = read<T>(json)` does, and `merge_into`
+    // keeps them
+    yyjson::read_into(R"({"id":2,"cache":"x","pointer":null})", t);
+    EXPECT_EQ(t, (SkippedFields{.id = 2}));
+    EXPECT_FALSE(t.callback);
+    t.cache = "kept";
+    t.pointer = &value;
+    t.callback = [] { return 1; };
+    yyjson::merge_into(R"({"list":[3],"cache":"y","callback":null,"opt":1})", t);
+    EXPECT_EQ(t, (SkippedFields{.id = 2, .cache = "kept", .list = {3}, .pointer = &value, .opt = 1}));
+    EXPECT_TRUE(t.callback);
+
+    // writing leaves the skipped fields out
+    const auto written_json = R"({"id":1,"list":[1,2],"opt":5})";
+    EXPECT_EQ(std::string(yyjson::write(expected)), written_json);
+    EXPECT_EQ(std::string(yyjson::value(expected).write()), written_json);
+    EXPECT_EQ(std::string(yyjson::object(expected).write()), written_json);
+    EXPECT_EQ(std::string(yyjson::object(SkippedFields(expected)).write()), written_json);
+    EXPECT_EQ(std::string(yyjson::write(expected, yyjson::WriteFlag::Pretty)),
+              std::string(yyjson::value(expected).write(yyjson::WriteFlag::Pretty)));
+    EXPECT_EQ(std::string(yyjson::write(SkippedFields{.id = 1})), R"({"id":1,"list":[]})");
+    expect_direct_write(expected);
+    expect_direct_write(SkippedFields{});
+    expect_direct_write(std::vector<SkippedFields>{expected, SkippedFields{}});
+    EXPECT_EQ(yyjson::read<SkippedFields>(std::string(yyjson::write(expected))), expected);
+
+    EXPECT_EQ(yyjson::read<SkippedKeyReused>(R"({"a":1})"), (SkippedKeyReused{7, 1}));
+    EXPECT_EQ(yyjson::read(R"({"a":1})").cast<SkippedKeyReused>(), (SkippedKeyReused{7, 1}));
+    EXPECT_EQ(std::string(yyjson::write(SkippedKeyReused{1, 2})), R"({"a":2})");
+    EXPECT_EQ(std::string(yyjson::value(SkippedKeyReused{1, 2}).write()), R"({"a":2})");
+
+    // a struct whose fields are all skipped is an empty object
+    EXPECT_EQ(std::string(yyjson::write(AllSkipped{2, "x"})), "{}");
+    EXPECT_EQ(std::string(yyjson::write(AllSkipped{2, "x"}, yyjson::WriteFlag::Pretty)), "{}");
+    EXPECT_EQ(std::string(yyjson::value(AllSkipped{2, "x"}).write()), "{}");
+    EXPECT_EQ(yyjson::read<AllSkipped>(R"({"a":2,"b":"x"})"), AllSkipped());
+    EXPECT_EQ(yyjson::read(R"({"a":2,"b":"x"})").cast<AllSkipped>(), AllSkipped());
+    EXPECT_TRUE(expect_direct_read<AllSkipped>(R"({"a":2})"));
+    expect_direct_read<AllSkipped>("1");
+    auto all = AllSkipped{2, "x"};
+    yyjson::merge_into(R"({"a":3})", all);
+    EXPECT_EQ(all, (AllSkipped{2, "x"}));
+    yyjson::read_into(R"({"a":3})", all);
+    EXPECT_EQ(all, AllSkipped());
+    expect_direct_write(AllSkipped{});
+
+    // skipped fields of types that cannot be read or assigned
+    EXPECT_EQ(yyjson::read<SkippedConst>(R"({"x":1,"version":4})"), (SkippedConst{1, 3}));
+    EXPECT_EQ(std::string(yyjson::write(SkippedConst{1, 3})), R"({"x":1})");
+    expect_direct_write(SkippedConst{1, 3});
+    auto mutex = SkippedMutex{.x = 1};
+    EXPECT_EQ(std::string(yyjson::write(mutex)), R"({"x":1})");
+    EXPECT_EQ(std::string(yyjson::value(mutex).write()), R"({"x":1})");
+    const auto reference = SkippedReference{2, value};
+    EXPECT_EQ(std::string(yyjson::write(reference)), R"({"x":2})");
+    EXPECT_EQ(std::string(yyjson::value(reference).write()), R"({"x":2})");
+
+    const auto recursion = SkippedRecursion{1, {{2, {}}}};
+    EXPECT_EQ(std::string(yyjson::write(recursion)), R"({"v":1})");
+    EXPECT_EQ(yyjson::read<SkippedRecursion>(R"({"v":1,"children":[{"v":2}]})"), (SkippedRecursion{1, {}}));
+}
+
+TEST(Reflection, AnnotationNested)
+{
+    auto holds = HoldsAnnotated{
+        .project = {"c", "t", 1},
+        .items = {SkippedFields{.id = 1, .list = {2}}, SkippedFields{.id = 3, .opt = 4}},
+        .by_name = {{"k", {"x", "y", 5}}},
+        .combined = CombinedRenames{1, 2, 3, 4},
+    };
+    const auto* json = R"({"project":{"@context":"c","a/b\"c, longer than 16":"t","id":1},)"
+                       R"("items":[{"id":1,"list":[2]},{"id":3,"list":[],"opt":4}],)"
+                       R"("by_name":{"k":{"@context":"x","a/b\"c, longer than 16":"y","id":5}},)"
+                       R"("combined":{"@a":1,"@b":2,"@c":3,"d":4},"none":{}})";
+    EXPECT_EQ(std::string(yyjson::write(holds)), json);
+    EXPECT_EQ(std::string(yyjson::value(holds).write()), json);
+    expect_direct_write(holds);
+    EXPECT_EQ(yyjson::read<HoldsAnnotated>(json), holds);
+    EXPECT_EQ(yyjson::read(json).cast<HoldsAnnotated>(), holds);
+    EXPECT_TRUE(expect_direct_read<HoldsAnnotated>(json));
+    EXPECT_EQ(yyjson::read<HoldsAnnotated>(std::string(yyjson::write(holds, yyjson::WriteFlag::Pretty))), holds);
+
+    // the skipped fields of the elements read over get their values in `T()`
+    auto into = holds;
+    into.items[0].cache = "changed";
+    into.items[1].cache = "changed";
+    yyjson::read_into(json, into);
+    EXPECT_EQ(into, holds);
+    EXPECT_EQ(into.items[0].cache, "default");
+    EXPECT_EQ(into.items[1].cache, "default");
+    into.items[0].cache = "kept";
+    yyjson::merge_into(R"({"items":[{"id":7,"cache":"x"}],"none":{"a":2}})", into);
+    EXPECT_EQ(into.items.size(), 1);
+    EXPECT_EQ(into.items[0].id, 7);
+    EXPECT_EQ(into.none, AllSkipped());
 }
 #endif
 

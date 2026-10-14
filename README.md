@@ -229,7 +229,7 @@ struct Thing
 template <>
 struct yyjson::field_rename<Thing>
 {
-    static constexpr auto value = yyjson::rename{{"context", "@context"}};
+    static constexpr yyjson::rename value[] = {{"context", "@context"}};
 };
 
 auto thing = yyjson::read<Thing>(R"({"@context":"https://schema.org","name":"x"})");

@@ -1448,7 +1448,7 @@ struct Project
 template <>
 struct yyjson::field_rename<Project>
 {
-    static constexpr auto value = yyjson::rename{{"context", "@context"}, {"type", "@type"}};
+    static constexpr yyjson::rename value[] = {{"context", "@context"}, {"type", "@type"}};
 };
 
 auto project = yyjson::read<Project>(R"({"@context":"https://schema.org","@type":"Project","name":"x"})");

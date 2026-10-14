@@ -32,7 +32,11 @@
 #include <yyjson.h>
 #include <format>
 #include <string_view>
+#include <version>
 #include "field_reflection.hpp"
+#if defined(__cpp_lib_define_static)
+#include <meta>
+#endif
 
 #if defined(__AVX2__)
 #include <immintrin.h>
@@ -416,28 +420,56 @@ namespace yyjson
     };
 
     // Gives fields of a reflected or `VISITABLE_STRUCT` type JSON keys other than their member names.  A
-    // specialization defines `static constexpr auto value = yyjson::rename{{"member", "key"}, ...};`.
+    // specialization defines `static constexpr yyjson::rename value[] = {{"member", "key"}, ...};`.
     template <typename T>
     struct field_rename
     {
     };
 
-    // Pairs of a member name and the JSON key of that member, for `field_rename`.
-    template <std::size_t N>
+    // The JSON key of a field: of the member that it names, in `field_rename` or in an annotation of a type, or
+    // of the field that it annotates.  It is a structural type, as an annotation has to be, which holds the
+    // strings in static storage where `std::define_static_string` can put them, as a pointer to a string literal
+    // cannot be the value of an annotation.
     struct rename
     {
-        std::array<std::pair<std::string_view, std::string_view>, N> pairs;
+        const char* member_data = nullptr;
+        std::size_t member_size = 0;  // 0 for the key of an annotated field
+        const char* key_data = nullptr;
+        std::size_t key_size = 0;
 
-        template <std::size_t... M>
-        requires (sizeof...(M) == N)
-        consteval rename(const std::string_view (&... entries)[M])  // NOLINT(google-explicit-constructor)
-            : pairs{std::pair<std::string_view, std::string_view>{entries[0], entries[M - 1]}...}
+        consteval explicit rename(std::string_view key) : key_data(static_string(key)), key_size(key.size()) {}
+        consteval rename(std::string_view member, std::string_view key)  // NOLINT(google-explicit-constructor)
+            : member_data(static_string(member)),
+              member_size(member.size()),
+              key_data(static_string(key)),
+              key_size(key.size())
         {
-            static_assert(((M == 2) && ...), "each entry of yyjson::rename must be {\"member\", \"key\"}");
+        }
+
+        // A member name is never empty.  Comparing `member_data` with null instead is not a constant expression
+        // when GCC checks for undefined behavior.
+        [[nodiscard]] constexpr bool has_member() const noexcept { return member_size != 0; }
+        [[nodiscard]] constexpr std::string_view member() const noexcept { return {member_data, member_size}; }
+        [[nodiscard]] constexpr std::string_view key() const noexcept { return {key_data, key_size}; }
+
+    private:
+        static consteval const char* static_string(std::string_view s)
+        {
+#if defined(__cpp_lib_define_static)
+            return std::define_static_string(s);
+#else
+            return s.data();
+#endif
         }
     };
-    template <std::size_t... M>
-    rename(const std::string_view (&... entries)[M]) -> rename<sizeof...(M)>;
+
+#if FIELD_RFL_ANNOTATIONS
+    // Annotates a field of a reflected struct that is neither read nor written, as `[[=yyjson::skip]]`.
+    struct skip_t
+    {
+    };
+    inline constexpr skip_t skip{};
+#endif
 
     template <typename T>
     struct caster
@@ -814,6 +846,260 @@ namespace yyjson
             field_reflection::field_namable<T> &&
             ((field_reflection::field_count<T> > 0) || (std::is_empty_v<T> && !library_class<T>()));
 
+        template <typename T>
+        concept has_field_rename = requires { field_rename<T>::value; };
+
+        // `field_rename<T>::value` is a C array or another range of `yyjson::rename`.
+        template <typename T>
+        concept field_rename_range =
+            std::ranges::input_range<decltype((field_rename<T>::value))> &&
+            std::same_as<std::ranges::range_value_t<decltype((field_rename<T>::value))>, rename>;
+
+        enum class field_key_error
+        {
+            none,
+            unknown_member,
+            duplicate_member,
+            duplicate_key,
+            renamed_twice,
+            no_member,
+            member_of_field,
+            skipped_renamed,
+        };
+
+        template <std::size_t N>
+        struct field_key_table
+        {
+            std::array<std::string_view, N> keys;
+            field_key_error error = field_key_error::none;
+            std::array<bool, N> skipped = {};  // whether a field is annotated with `yyjson::skip`
+        };
+
+        // Gives the fields the keys that `yyjson::rename` gives them, and keeps the first error.
+        template <std::size_t N>
+        struct field_key_builder
+        {
+            std::array<std::string_view, N> members;
+            field_key_table<N> table;
+            std::array<bool, N> renamed = {};
+
+            consteval void fail(field_key_error error)
+            {
+                if (table.error == field_key_error::none) table.error = error;
+            }
+            consteval void rename_field(std::size_t i, std::string_view key)
+            {
+                if (renamed[i]) return fail(field_key_error::duplicate_member);
+                if (table.skipped[i]) return fail(field_key_error::skipped_renamed);
+                renamed[i] = true;
+                table.keys[i] = key;
+            }
+            // Pairs of a member and its key, as `field_rename` and the annotations of a type give them.
+            template <typename Renames>
+            consteval void rename_members(const Renames& renames)
+            {
+                for (const rename& r : renames)
+                {
+                    if (!r.has_member()) return fail(field_key_error::no_member);
+                    std::size_t i = 0;
+                    while (i < N && members[i] != r.member()) ++i;
+                    if (i == N) return fail(field_key_error::unknown_member);
+                    rename_field(i, r.key());
+                }
+            }
+            // The keys that the annotations of field i give it.
+            template <typename Renames>
+            consteval void rename_annotated_field(std::size_t i, const Renames& renames)
+            {
+                for (const rename& r : renames)
+                {
+                    if (r.has_member()) return fail(field_key_error::member_of_field);
+                    rename_field(i, r.key());
+                }
+            }
+
+            // Duplicate keys are reported only when a key was given, so that a `VISITABLE_STRUCT` listing a
+            // member twice still compiles as it did.  A skipped field has no key in JSON.
+            [[nodiscard]] consteval field_key_table<N> result() const
+            {
+                auto result = table;
+                if (result.error != field_key_error::none ||
+                    (result.keys == members && std::ranges::find(renamed, true) == renamed.end()))
+                    return result;
+                for (std::size_t i = 0; i < N; ++i)
+                {
+                    for (std::size_t j = i + 1; j < N; ++j)
+                    {
+                        if (!result.skipped[i] && !result.skipped[j] && result.keys[i] == result.keys[j])
+                            result.error = field_key_error::duplicate_key;
+                    }
+                }
+                return result;
+            }
+        };
+
+        template <std::size_t N>
+        consteval field_key_table<N> make_field_keys(const std::array<std::string_view, N>& members,
+                                                     const std::array<std::string_view, N>& keys)
+        {
+            return field_key_builder<N>{members, {keys}}.result();
+        }
+
+        template <std::size_t N, typename Renames>
+        consteval field_key_table<N> make_field_keys(const std::array<std::string_view, N>& members,
+                                                     const std::array<std::string_view, N>& keys,
+                                                     const Renames& renames)
+        {
+            if (keys != members) return {keys, field_key_error::renamed_twice};
+            auto builder = field_key_builder<N>{members, {keys}};
+            builder.rename_members(renames);
+            return builder.result();
+        }
+
+#if FIELD_RFL_ANNOTATIONS
+        // Gives the fields of a reflected struct the keys of the `yyjson::rename` annotations of the struct and
+        // then those of its fields.
+        template <typename T, std::size_t N>
+        consteval void rename_annotated_fields(field_key_builder<N>& builder)
+        {
+            builder.rename_members(field_reflection::type_annotations<T, rename>);
+            [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                (builder.rename_annotated_field(Is, field_reflection::field_annotations<T, Is, rename>), ...);
+            }(std::make_index_sequence<N>{});
+        }
+
+        // Whether a reflected struct or its fields have annotations of this library, which give the fields
+        // keys or skip them.
+        template <typename T>
+        inline constexpr bool annotated_fields = [] {
+            return !field_reflection::type_annotations<T, rename>.empty() ||
+                   []<std::size_t... Is>(std::index_sequence<Is...>) {
+                       return ((!field_reflection::field_annotations<T, Is, rename>.empty() ||
+                                !field_reflection::field_annotations<T, Is, skip_t>.empty()) ||
+                               ...);
+                   }(std::make_index_sequence<field_reflection::field_count<T>>{});
+        }();
+#else
+        template <typename T>
+        inline constexpr bool annotated_fields = false;
+#endif
+
+        // The JSON keys of the fields of T.  `Source::members` are the member names and `Source::keys` the
+        // keys before `field_rename`, which differ from the member names only where `VISITABLE_STRUCT`
+        // gives a member its key.  A reflected struct has `Source::skipped` too, and its annotations rename
+        // fields after `field_rename`.
+        template <typename T, typename Source>
+        struct field_keys
+        {
+            static_assert(!has_field_rename<T> || field_rename_range<T>,
+                          "yyjson::field_rename<T>::value must be an array of yyjson::rename: "
+                          "static constexpr yyjson::rename value[] = {{\"member\", \"key\"}, ...};");
+            static constexpr auto table = [] {
+                constexpr auto n = Source::members.size();
+                auto builder = field_key_builder<n>{Source::members, {Source::keys}};
+                if constexpr (requires { Source::skipped; }) builder.table.skipped = Source::skipped;
+                if constexpr (has_field_rename<T> && field_rename_range<T>)
+                {
+                    if (Source::keys != Source::members)
+                        return field_key_table<n>{Source::keys, field_key_error::renamed_twice};
+                    builder.rename_members(field_rename<T>::value);
+                }
+#if FIELD_RFL_ANNOTATIONS
+                if constexpr (requires { Source::skipped; }) rename_annotated_fields<T>(builder);
+#endif
+                return builder.result();
+            }();
+            static_assert(table.error != field_key_error::no_member,
+                          "a yyjson::rename in yyjson::field_rename or in an annotation of a type must name the "
+                          "member: yyjson::rename(\"member\", \"key\")");
+            static_assert(table.error != field_key_error::member_of_field,
+                          "a yyjson::rename annotation of a field takes only the key: [[=yyjson::rename(\"key\")]]");
+            static_assert(table.error != field_key_error::unknown_member,
+                          "yyjson::rename names a member that does not exist");
+            static_assert(table.error != field_key_error::duplicate_member,
+                          "yyjson::field_rename and the yyjson::rename annotations rename the same member twice");
+            static_assert(table.error != field_key_error::skipped_renamed,
+                          "a field annotated with yyjson::skip cannot be renamed");
+            static_assert(table.error != field_key_error::duplicate_key, "two fields have the same JSON key");
+            static_assert(table.error != field_key_error::renamed_twice,
+                          "a VISITABLE_STRUCT that gives its members keys cannot have a yyjson::field_rename");
+            static constexpr auto value = table.keys;
+        };
+
+        template <typename T>
+        struct reflected_field_names
+        {
+            static constexpr auto members = []<std::size_t... Is>(std::index_sequence<Is...>) {
+                return std::array<std::string_view, sizeof...(Is)>{field_reflection::field_name<T, Is>...};
+            }(std::make_index_sequence<field_reflection::field_count<T>>{});
+            static constexpr auto keys = members;
+#if FIELD_RFL_ANNOTATIONS
+            static constexpr auto skipped = []<std::size_t... Is>(std::index_sequence<Is...>) {
+                return std::array<bool, sizeof...(Is)>{!field_reflection::field_annotations<T, Is, skip_t>.empty()...};
+            }(std::make_index_sequence<field_reflection::field_count<T>>{});
+#endif
+        };
+
+        // The JSON key of field I of a reflected struct.
+        template <typename T, std::size_t I>
+        inline constexpr std::string_view field_key = [] {
+            if constexpr (has_field_rename<T> || annotated_fields<T>)
+                return std::string_view(field_keys<T, reflected_field_names<T>>::value[I]);
+            else
+                return std::string_view(field_reflection::field_name<T, I>);
+        }();
+
+        // The indices of the fields of a reflected struct that are read and written, which are all but those
+        // annotated with `yyjson::skip`, as a `std::index_sequence`.  `reflected_field_index<T, K>` is the K-th.
+#if FIELD_RFL_ANNOTATIONS
+        template <typename T>
+        inline constexpr auto unskipped_field_indices = [] {
+            constexpr auto& skipped = field_keys<T, reflected_field_names<T>>::table.skipped;
+            auto indices = std::array<std::size_t, static_cast<std::size_t>(std::ranges::count(skipped, false))>{};
+            for (std::size_t i = 0, k = 0; i < skipped.size(); ++i)
+            {
+                if (!skipped[i]) indices[k++] = i;
+            }
+            return indices;
+        }();
+        template <typename T, std::size_t... Ks>
+        auto unskipped_field_sequence(std::index_sequence<Ks...>)
+            -> std::index_sequence<unskipped_field_indices<T>[Ks]...>;
+
+        template <typename T>
+        struct reflected_fields_of
+        {
+        };
+        template <typename T>
+        requires field_reflection::field_countable<T> && (!annotated_fields<T>)
+        struct reflected_fields_of<T>
+        {
+            using type = std::make_index_sequence<field_reflection::field_count<T>>;
+        };
+        template <typename T>
+        requires field_reflection::field_countable<T> && annotated_fields<T>
+        struct reflected_fields_of<T>
+        {
+            using type =
+                decltype(unskipped_field_sequence<T>(std::make_index_sequence<unskipped_field_indices<T>.size()>{}));
+        };
+        template <typename T>
+        using reflected_fields = typename reflected_fields_of<T>::type;
+
+        template <typename T, std::size_t K>
+        inline constexpr std::size_t reflected_field_index = [] {
+            if constexpr (annotated_fields<T>)
+                return unskipped_field_indices<T>[K];
+            else
+                return K;
+        }();
+#else
+        template <typename T>
+        using reflected_fields = std::make_index_sequence<field_reflection::field_count<T>>;
+        template <typename T, std::size_t K>
+        inline constexpr std::size_t reflected_field_index = K;
+#endif
+
         template <typename... Ts>
         struct type_list
         {
@@ -905,7 +1191,7 @@ namespace yyjson
                 else if constexpr (yyjson::detail::reflectable<T>)
                     return []<std::size_t... Is>(std::index_sequence<Is...>) {
                         return decltype(nodes(type_list<field_reflection::field_type<T, Is>...>{})){};
-                    }(std::make_index_sequence<field_reflection::field_count<T>>{});
+                    }(reflected_fields<T>{});
                 else
                     return decltype(nodes(typename template_type_args<T>::type{})){};
             }
@@ -1082,107 +1368,6 @@ namespace yyjson
             }
         }
 
-        template <typename T>
-        concept has_field_rename = requires { field_rename<T>::value.pairs; };
-
-        enum class field_key_error
-        {
-            none,
-            unknown_member,
-            duplicate_member,
-            duplicate_key,
-            renamed_twice,
-        };
-
-        template <std::size_t N>
-        struct field_key_table
-        {
-            std::array<std::string_view, N> keys;
-            field_key_error error = field_key_error::none;
-        };
-
-        // Duplicate keys are reported only when a key was given, so that a `VISITABLE_STRUCT` listing a member
-        // twice still compiles as it did.
-        template <std::size_t N>
-        consteval field_key_table<N> check_duplicate_keys(const field_key_table<N>& table, bool renamed)
-        {
-            if (!renamed) return table;
-            for (std::size_t i = 0; i < N; ++i)
-            {
-                for (std::size_t j = i + 1; j < N; ++j)
-                {
-                    if (table.keys[i] == table.keys[j]) return {table.keys, field_key_error::duplicate_key};
-                }
-            }
-            return table;
-        }
-
-        template <std::size_t N>
-        consteval field_key_table<N> make_field_keys(const std::array<std::string_view, N>& members,
-                                                     const std::array<std::string_view, N>& keys)
-        {
-            return check_duplicate_keys(field_key_table<N>{keys}, keys != members);
-        }
-
-        template <std::size_t N, typename Pairs>
-        consteval field_key_table<N> make_field_keys(const std::array<std::string_view, N>& members,
-                                                     const std::array<std::string_view, N>& keys, const Pairs& renames)
-        {
-            if (keys != members) return {keys, field_key_error::renamed_twice};
-            auto table = field_key_table<N>{keys};
-            auto done = std::array<bool, N>{};
-            for (const auto& [member, key] : renames)
-            {
-                std::size_t i = 0;
-                while (i < N && members[i] != member) ++i;
-                if (i == N) return {keys, field_key_error::unknown_member};
-                if (done[i]) return {keys, field_key_error::duplicate_member};
-                done[i] = true;
-                table.keys[i] = key;
-            }
-            return check_duplicate_keys(table, true);
-        }
-
-        // The JSON keys of the fields of T.  `Source::members` are the member names and `Source::keys` the
-        // keys before `field_rename`, which differ from the member names only where `VISITABLE_STRUCT`
-        // gives a member its key.
-        template <typename T, typename Source>
-        struct field_keys
-        {
-            static constexpr auto table = [] {
-                if constexpr (has_field_rename<T>)
-                    return make_field_keys(Source::members, Source::keys, field_rename<T>::value.pairs);
-                else
-                    return make_field_keys(Source::members, Source::keys);
-            }();
-            static_assert(table.error != field_key_error::unknown_member,
-                          "yyjson::field_rename names a member that does not exist");
-            static_assert(table.error != field_key_error::duplicate_member,
-                          "yyjson::field_rename names the same member twice");
-            static_assert(table.error != field_key_error::duplicate_key, "two fields have the same JSON key");
-            static_assert(table.error != field_key_error::renamed_twice,
-                          "a VISITABLE_STRUCT that gives its members keys cannot have a yyjson::field_rename");
-            static constexpr auto value = table.keys;
-        };
-
-        template <typename T>
-        struct reflected_field_names
-        {
-            static constexpr auto members = []<std::size_t... Is>(std::index_sequence<Is...>) {
-                return std::array<std::string_view, sizeof...(Is)>{field_reflection::field_name<T, Is>...};
-            }(std::make_index_sequence<field_reflection::field_count<T>>{});
-            static constexpr auto keys = members;
-        };
-
-        // The JSON key of field I of a reflected struct.
-        template <typename T, std::size_t I>
-        inline constexpr std::string_view field_key = [] {
-            if constexpr (has_field_rename<T>)
-                return std::string_view(field_keys<T, reflected_field_names<T>>::value[I]);
-            else
-                return std::string_view(field_reflection::field_name<T, I>);
-        }();
-
         // Finds the field that a JSON key names.  Keys usually come in the order that the fields are
         // declared, so the field after the last one found and the field after that, which follows a
         // missing or unknown key, are tried first.  Any other key is looked up among the names of its
@@ -1335,7 +1520,7 @@ namespace yyjson
         template <typename T>
         inline constexpr auto reflected_key_matcher = []<std::size_t... Is>(std::index_sequence<Is...>) {
             return field_key_matcher<sizeof...(Is)>(std::array<std::string_view, sizeof...(Is)>{field_key<T, Is>...});
-        }(std::make_index_sequence<field_reflection::field_count<T>>{});
+        }(reflected_fields<T>{});
 
         // Only a field of a struct type is replaced by a new object, and comparing the addresses of all fields
         // for any other costs a struct of many fields more than the field itself when the compiler does not
@@ -1358,12 +1543,13 @@ namespace yyjson
         {
             [[maybe_unused]] const auto guard = recursion_guard<T>();
             assign_fields_by_key(reflected_key_matcher<T>, obj, [&t](std::size_t index, const auto& value) {
-                [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                    (void)((index == Is && (assign_reflected_field(field_reflection::get_field<Is>(t), value,
-                                                                   reflected_field_replaceable<Is>(t)),
-                                            true)) ||
+                [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                    (void)((index == Ks &&
+                            (assign_reflected_field(field_reflection::get_field<reflected_field_index<T, Ks>>(t), value,
+                                                    reflected_field_replaceable<reflected_field_index<T, Ks>>(t)),
+                             true)) ||
                            ...);
-                }(std::make_index_sequence<field_reflection::field_count<T>>{});
+                }(std::make_index_sequence<reflected_fields<T>::size()>{});
             });
         }
 
@@ -1408,13 +1594,24 @@ namespace yyjson
         }
 
         template <typename T>
-        concept has_optional_reflected_field =
-            has_optional_reflected_field_impl<T>(std::make_index_sequence<field_reflection::field_count<T>>{});
+        concept has_optional_reflected_field = has_optional_reflected_field_impl<T>(reflected_fields<T>{});
 
         template <typename T, typename U = std::remove_cvref_t<T>>
         std::size_t reflected_field_count(T&& t)
         {
-            if constexpr (has_optional_reflected_field<U>)
+            if constexpr (has_optional_reflected_field<U> && annotated_fields<U>)
+            {
+                const auto written = [](const auto& field) -> std::size_t {
+                    if constexpr (omittable<decltype(field)>)
+                        return should_omit_field(field) ? 0 : 1;
+                    else
+                        return 1;
+                };
+                return [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                    return (std::size_t{0} + ... + written(field_reflection::get_field<Is>(t)));
+                }(reflected_fields<U>{});
+            }
+            else if constexpr (has_optional_reflected_field<U>)
             {
                 auto count = std::size_t{0};
                 field_reflection::for_each_field(t, [&](std::string_view, const auto& field) {
@@ -1431,7 +1628,7 @@ namespace yyjson
             }
             else
             {
-                return field_reflection::field_count<U>;
+                return reflected_fields<U>::size();
             }
         }
 
@@ -1967,7 +2164,7 @@ namespace yyjson
                 (!yyjson::detail::std_array<T>) && yyjson::detail::reflectable<std::remove_cvref_t<T>> &&
                 (!visitable<std::remove_cvref_t<T>>) && (!to_json_inp_usr_defined<T>) && (!to_json_usr<T>) &&
                 directly_create_reflected_object_impl<std::remove_cvref_t<T>>(
-                    std::make_index_sequence<field_reflection::field_count<std::remove_cvref_t<T>>>{});
+                    yyjson::detail::reflected_fields<std::remove_cvref_t<T>>{});
             template <typename T>
             concept directly_create_visitable_object = visitable<std::remove_cvref_t<T>> && requires {
                 visit_struct<std::remove_cvref_t<T>>::field_count;
@@ -2801,8 +2998,7 @@ namespace yyjson
                 {
                     using value_type = std::remove_cvref_t<std::ranges::range_value_t<Range>>;
                     return yyjson_mut_arr_with_reflected_objects_impl(
-                        dst, std::forward<Range>(range),
-                        std::make_index_sequence<field_reflection::field_count<value_type>>{}, ts...);
+                        dst, std::forward<Range>(range), yyjson::detail::reflected_fields<value_type>{}, ts...);
                 }
 
                 template <std::ranges::sized_range Range, std::size_t... Is, copy_string_args... Ts>
@@ -4890,9 +5086,8 @@ namespace yyjson
             // `std::array` is written as a JSON array, as the reader casts it from one.  Other aggregates
             // are reflected into objects even if they have `begin()` and `end()`.
             template <typename T>
-            concept to_json_with_reflection =
-                (!yyjson::detail::std_array<T>) &&
-                to_json_with_reflection_impl<T>(std::make_index_sequence<field_reflection::field_count<T>>());
+            concept to_json_with_reflection = (!yyjson::detail::std_array<T>) &&
+                                              to_json_with_reflection_impl<T>(yyjson::detail::reflected_fields<T>());
 
         }  // namespace detail
 
@@ -5983,7 +6178,7 @@ namespace yyjson
                 return (field_assignable<typename std::ranges::range_value_t<Json>::second_type,
                                          field_reflection::field_type<T, I>> &&
                         ...);
-            }(std::make_index_sequence<field_reflection::field_count<T>>{});
+            }(detail::reflected_fields<T>{});
     }
 
     template <typename Json, typename T>
@@ -6237,7 +6432,7 @@ namespace yyjson
                 return []<std::size_t... Is>(std::index_sequence<Is...>) {
                     return (std::is_move_assignable_v<std::remove_all_extents_t<field_reflection::field_type<T, Is>>> &&
                             ...);
-                }(std::make_index_sequence<field_reflection::field_count<T>>{});
+                }(yyjson::detail::reflected_fields<T>{});
             }
             else
                 return false;
@@ -6724,7 +6919,7 @@ namespace yyjson
                     (emitter.template emplace<detail::is_plain_key(detail::field_key<T, Is>)>(
                          detail::field_key<T, Is>, detail::forward_field<Is>(t), ts...),
                      ...);
-                }(std::make_index_sequence<field_reflection::field_count<T>>{});
+                }(detail::reflected_fields<T>{});
             });
         }
         template <copy_string_args... Ts>
@@ -6740,7 +6935,7 @@ namespace yyjson
                     (emitter.template emplace<detail::is_plain_key(detail::field_key<T, Is>)>(
                          detail::field_key<T, Is>, detail::forward_field<Is>(std::move(t)), ts...),
                      ...);
-                }(std::make_index_sequence<field_reflection::field_count<T>>{});
+                }(detail::reflected_fields<T>{});
             });
         }
     };
@@ -9626,8 +9821,7 @@ namespace yyjson
                 {
                     open('{');
                     auto first = true;
-                    write_reflected_fields(first, std::forward<T>(t),
-                                           std::make_index_sequence<field_reflection::field_count<U>>{});
+                    write_reflected_fields(first, std::forward<T>(t), yyjson::detail::reflected_fields<U>{});
                     close('}', first);
                 }
                 else if constexpr (std::derived_from<caster<U>, yyjson::detail::builtin_caster> &&
@@ -9878,7 +10072,7 @@ namespace yyjson
             if constexpr (yyjson::detail::visitable<T>)
                 return std::tuple_size_v<std::remove_cvref_t<decltype(visit_struct<T>::members)>>;
             else
-                return field_reflection::field_count<T>;
+                return yyjson::detail::reflected_fields<T>::size();
         }();
 
         template <std::size_t I, typename T>
@@ -9887,7 +10081,7 @@ namespace yyjson
             if constexpr (yyjson::detail::visitable<T>)
                 return t.*std::get<I>(visit_struct<T>::members);
             else
-                return field_reflection::get_field<I>(t);
+                return field_reflection::get_field<yyjson::detail::reflected_field_index<T, I>>(t);
         }
 
         // Calls `f(std::integral_constant<std::size_t, I>())` for the field I of T that `index` names.
@@ -9898,6 +10092,36 @@ namespace yyjson
                 (void)((index == Is && (f(std::integral_constant<std::size_t, Is>{}), true)) || ...);
             }(std::make_index_sequence<struct_field_count<T>>{});
         }
+
+        // Whether T has fields annotated with `yyjson::skip`, which `read_into` gives their values in `T()` as
+        // `t = read<T>(json)` does.
+        template <typename T>
+        inline constexpr bool has_skipped_fields = [] {
+#if FIELD_RFL_ANNOTATIONS
+            if constexpr (!yyjson::detail::visitable<T> && yyjson::detail::annotated_fields<T>)
+                return yyjson::detail::reflected_fields<T>::size() != field_reflection::field_count<T>;
+            else
+#endif
+                return false;
+        }();
+
+#if FIELD_RFL_ANNOTATIONS
+        template <typename T>
+        void reset_skipped_fields(T& t, T& defaults)
+        {
+            using keys = yyjson::detail::field_keys<T, yyjson::detail::reflected_field_names<T>>;
+            constexpr auto& skipped = keys::table.skipped;
+            [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                (
+                    [&] {
+                        if constexpr (skipped[Is])
+                            yyjson::detail::move_field(field_reflection::get_field<Is>(t),
+                                                       field_reflection::get_field<Is>(defaults));
+                    }(),
+                    ...);
+            }(std::make_index_sequence<field_reflection::field_count<T>>{});
+        }
+#endif
 
         // The value of `T()`, built at its first use, which gives a field the value that a JSON object without
         // its key gives it.  It is built again when a field that was moved from it is needed again.
@@ -10621,7 +10845,7 @@ namespace yyjson
                         node<false>{},
                         field_part<std::remove_cvref_t<decltype(field_reflection::get_field<Is>(std::declval<T&>()))>,
                                    Loop>()...)){};
-                }(std::make_index_sequence<field_reflection::field_count<T>>{});
+                }(yyjson::detail::reflected_fields<T>{});
             }
             template <typename T, bool Loop>
             static consteval auto visitable_fields_part()
@@ -12587,7 +12811,19 @@ namespace yyjson
                     with_struct_field<T>(index, [&]<std::size_t I>(std::integral_constant<std::size_t, I>)
                                                     CPPYYJSON_LAMBDA_ALWAYS_INLINE { read_field_over<I>(t, first); });
                 });
-                if (!seen.all()) [[unlikely]]
+                if constexpr (has_skipped_fields<T>)
+                {
+#if FIELD_RFL_ANNOTATIONS
+                    auto defaults = T();
+                    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                        ((seen[Is] || (yyjson::detail::move_field(struct_field<Is>(t), struct_field<Is>(defaults)),
+                                       true)),
+                         ...);
+                    }(std::make_index_sequence<n>{});
+                    reset_skipped_fields(t, defaults);
+#endif
+                }
+                else if (!seen.all()) [[unlikely]]
                 {
                     auto defaults = T();
                     [&]<std::size_t... Is>(std::index_sequence<Is...>) {
@@ -13125,12 +13361,15 @@ namespace yyjson
                 [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<T>();
                 constexpr auto& matcher = yyjson::detail::reflected_key_matcher<T>;
                 read_fields(matcher, [&](std::size_t index) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
-                    [&]<std::size_t... Is>(std::index_sequence<Is...>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
-                        (void)((index == Is && (read_field(field_reflection::get_field<Is>(t),
-                                                           yyjson::detail::reflected_field_replaceable<Is>(t)),
-                                                true)) ||
+                    [&]<std::size_t... Ks>(std::index_sequence<Ks...>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                        using yyjson::detail::reflected_field_index;
+                        (void)((index == Ks &&
+                                (read_field(
+                                     field_reflection::get_field<reflected_field_index<T, Ks>>(t),
+                                     yyjson::detail::reflected_field_replaceable<reflected_field_index<T, Ks>>(t)),
+                                 true)) ||
                                ...);
-                    }(std::make_index_sequence<field_reflection::field_count<T>>{});
+                    }(std::make_index_sequence<yyjson::detail::reflected_fields<T>::size()>{});
                 });
             }
 

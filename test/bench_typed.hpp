@@ -611,43 +611,43 @@ namespace bench_typed
 template <>
 struct yyjson::field_rename<bench_typed::twitter::user_t>
 {
-    static constexpr auto value = yyjson::rename{{"protected_", "protected"}};
+    static constexpr yyjson::rename value[] = {{"protected_", "protected"}};
 };
 template <>
 struct yyjson::field_rename<bench_typed::github_events::forkee_t>
 {
-    static constexpr auto value = yyjson::rename{{"private_", "private"}, {"public_", "public"}};
+    static constexpr yyjson::rename value[] = {{"private_", "private"}, {"public_", "public"}};
 };
 template <>
 struct yyjson::field_rename<bench_typed::github_events::event_t>
 {
-    static constexpr auto value = yyjson::rename{{"public_", "public"}};
+    static constexpr yyjson::rename value[] = {{"public_", "public"}};
 };
 template <>
 struct yyjson::field_rename<bench_typed::gsoc_2018::sponsor_t>
 {
-    static constexpr auto value = yyjson::rename{{"type", "@type"}};
+    static constexpr yyjson::rename value[] = {{"type", "@type"}};
 };
 template <>
 struct yyjson::field_rename<bench_typed::gsoc_2018::author_t>
 {
-    static constexpr auto value = yyjson::rename{{"type", "@type"}};
+    static constexpr yyjson::rename value[] = {{"type", "@type"}};
 };
 template <>
 struct yyjson::field_rename<bench_typed::gsoc_2018::project_t>
 {
-    static constexpr auto value = yyjson::rename{{"context", "@context"}, {"type", "@type"}};
+    static constexpr yyjson::rename value[] = {{"context", "@context"}, {"type", "@type"}};
 };
 
 #if defined(CPPYYJSON_GLAZE_BENCHMARKS)
 template <typename T>
-requires requires { yyjson::field_rename<T>::value.pairs; }
+requires requires { yyjson::field_rename<T>::value; }
 struct glz::meta<T>
 {
     static constexpr std::string_view rename_key(const std::string_view member)
     {
-        for (const auto& [name, key] : yyjson::field_rename<T>::value.pairs)
-            if (name == member) return key;
+        for (const auto& r : yyjson::field_rename<T>::value)
+            if (r.member() == member) return r.key();
         return member;
     }
 };
