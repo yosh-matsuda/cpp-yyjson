@@ -30,6 +30,7 @@ The `yyjson` namespace includes the following functions and classes. Typically, 
 | `yyjson::caster<T>`                                | Class template to specialize for a [user-defined caster](#user-defined-casters)  |
 | `yyjson::object_emitter`, `yyjson::array_emitter`  | Write the members of an object or an array in order from a caster's `to_json`    |
 | `yyjson::field_rename<T>`, `yyjson::rename`        | Map fields to [JSON keys other than their names](#json-keys-other-than-field-names) |
+| `yyjson::skip`                                     | C++26 annotation that leaves a field out of [reading and writing](#c26-annotations) |
 | `VISITABLE_STRUCT`                                 | Macro to [register the fields](#registration-of-field-names-of-structclass) of a struct |
 
 | Exception             |                                                          |
@@ -1247,7 +1248,7 @@ In addition to the above, the following methods are provided for converting *arb
 2.  [Enumerations](#enumerations) by the names of their enumerators.
 3.  [Conversion using compile-time reflection](#automatic-casting-with-compile-time-reflection).
 4.  [Registration of field names with the `VISITABLE_STRUCT` macro](#registration-of-field-names-of-structclass).
-5.  [JSON keys other than field names](#json-keys-other-than-field-names) with `yyjson::field_rename`.
+5.  [JSON keys other than field names](#json-keys-other-than-field-names) with `yyjson::field_rename` or C++26 annotations.
 6.  [User-defined casters](#user-defined-casters).
 
 ### Pre-defined STL casters
@@ -1350,7 +1351,8 @@ auto json = write(logger);
 *   A value that is not the value of an enumerator, such as a combination of flags, is written as the integer of the underlying type. A JSON number is read as well, under the rules of the underlying integer type.
 *   A JSON string that is not the name of an enumerator throws `yyjson::bad_cast`. The names are case-sensitive. When two enumerators have the same value, the one declared first gives the name, and the name of the other is not read.
 *   With C++20, field-reflection finds the enumerators only in the range [-128, 128], and the others are written as integers. Specialize `field_reflection::enum_range` to widen the range for an enumeration, at the cost of compile time. C++26 static reflection finds all of them.
-*   An enumeration with a user-defined caster is converted by the caster, for example to always write integers.
+*   A map or a range of pairs whose keys are enumerations, such as `std::map<Level, int>`, is a JSON object whose keys are the names: `{"debug":1,"info":2}`. A key that is not the value of an enumerator is the decimal integer in a string, such as `"-1"`, and is read back only in that form, without a sign `+` or leading zeros.
+*   An enumeration with a user-defined caster is converted by the caster, for example to always write integers. A map with such keys is an array of `[key, value]` pairs, as a map with integer keys is.
 *   `std::byte` has no enumerators and converts to and from the integers 0 to 255.
 
 ```cpp
@@ -1374,9 +1376,9 @@ In practice, the following conditions are required for C++ types for automatic c
 *   [aggregate type](https://en.cppreference.com/w/cpp/types/is_aggregate)
 *   not a derived class (C++20)
 *   at most 100 fields (C++20)
-*   no reference member
+*   no reference member (C++20)
 
-With C++26 static reflection, e.g. GCC 16 with `-std=c++26 -freflection`, field-reflection reflects derived classes and any number of fields. The fields of the base classes come first in the JSON object, and `yyjson::field_rename` of the derived class can rename them. A struct with a reference member can then be written but not read. Define `FIELD_RFL_DISABLE_STD_REFLECTION` to keep the C++20 rules.
+A struct with a `const` member can be written but not read: reading it, by `cast<T>`, `yyjson::read<T>` or any other function, fails to compile. With C++26 static reflection, e.g. GCC 16 with `-std=c++26 -freflection`, field-reflection reflects derived classes, reference members and any number of fields. The fields of the base classes come first in the JSON object, and `yyjson::field_rename` of the derived class can rename them. A struct with a reference member can then be written but not read, as one with a `const` member. Define `FIELD_RFL_DISABLE_STD_REFLECTION` to keep the C++20 rules.
 
 Example:
 
@@ -1400,7 +1402,7 @@ auto deserialized = cast<X>(serialized);
 // -> X{.a = 1, .b = std::nullopt, .c = "x"}
 ```
 
-A field that is a C array, such as `int a[3]` or `double m[2][3]`, converts to and from a JSON array as `std::array` does: a JSON array with more elements throws `yyjson::bad_cast`, and one with fewer leaves the remaining elements value-initialized. A `char` array is an array of integers, as `std::array<char, N>` is; use `std::string` for text. This applies to the fields of a struct registered with `VISITABLE_STRUCT` as well.
+A field that is a C array, such as `int a[3]` or `double m[2][3]`, converts to and from a JSON array as `std::array` does: a JSON array with more elements throws `yyjson::bad_cast`, and one with fewer leaves the remaining elements value-initialized. A `char` array is an array of integers, as `std::array<char, N>` is, and so is one nested in another array; use `std::string` for text. Only a `char` array given to `value` or `write` itself is a string, as a string literal is, which ends at the first NUL character or at the end of the array. This applies to the fields of a struct registered with `VISITABLE_STRUCT` as well.
 
 ```cpp
 struct Matrix
@@ -1467,6 +1469,30 @@ VISITABLE_STRUCT(Project, (context, "@context"), (type, "@type"), name);
 *   The keys are used everywhere the field names are: by `cast`, `object(t)` and `value(t)`, and by `yyjson::read<T>` and `yyjson::write`. A JSON key is compared after unescaping, so `"\u0040context"` is read into `context` as well, and a key is escaped as the write flags require.
 *   `yyjson::field_rename` works both for a struct that the compile-time reflection converts and for one that the `VISITABLE_STRUCT` macro registers. For the latter, declare the specialization before the macro, and do not combine it with pairs in the macro.
 *   A pair that names a member which does not exist or is not registered, a member named twice, and two fields that end up with the same key all fail to compile with a `static_assert`.
+
+#### C++26 annotations
+
+With C++26 static reflection, e.g. GCC 16 with `-std=c++26 -freflection`, the JSON keys can be given in the struct itself by [annotations](https://wg21.link/p3394). `yyjson::rename("key")` on a field gives that field the key, and `yyjson::rename("member", "key")` on the struct gives the named member the key, as a pair of `yyjson::field_rename` does. `yyjson::skip` on a field leaves the field out of reading and writing:
+
+```cpp
+struct [[=yyjson::rename("type", "@type")]] Project
+{
+    [[=yyjson::rename("@context")]] std::string context;
+    std::string type;
+    std::string name;
+    [[=yyjson::skip]] std::function<void()> on_change;
+};
+
+auto project = yyjson::read<Project>(R"({"@context":"https://schema.org","@type":"Project","name":"x"})");
+auto json = yyjson::write(project);
+// -> {"@context":"https://schema.org","@type":"Project","name":"x"}
+```
+
+*   The annotations of the struct, of its fields and a `yyjson::field_rename` specialization can be combined, as long as no field is renamed twice. The annotation on the struct names the member, and the one on a field does not; the other form fails to compile.
+*   A skipped field is not written, and its key is ignored when reading, as an unknown key is. It may have a type that cannot be converted, such as `std::function` or a pointer, and a skipped `const` member does not make the struct unreadable. A skipped field cannot also be renamed.
+*   `yyjson::read<T>` and `cast<T>` leave a skipped field at its value in `T()`, and so does `read_into`, which gives `t` the same value as `t = read<T>(json)`. `merge_into` keeps the value of a skipped field.
+*   Reading still needs what the struct itself needs: `yyjson::read<T>` and `cast<T>` a default constructible and movable `T`, and `read_into` and `merge_into` a move-assignable one. A struct with a skipped `std::mutex` can therefore only be written, and one with a skipped `const` or reference member cannot be read by `read_into` or `merge_into`.
+*   The annotations apply to the structs that the compile-time reflection converts, not to those registered with `VISITABLE_STRUCT`. `yyjson::skip` is defined only when they are available, when the macro `FIELD_RFL_ANNOTATIONS` is `1`, while `yyjson::rename` is always available for `yyjson::field_rename`.
 
 ### User-defined casters
 
@@ -1582,7 +1608,7 @@ The form of a caster decides whether [`yyjson::read<T>`](#reading-a-json-string-
 | What the caster does | Form | Direct read | Direct write |
 | --- | --- | --- | --- |
 | Converts a value, such as a struct to and from a string | [translator `from_json`](#translator-from_json) and a translator `to_json` | yes | yes |
-| Gives a struct JSON keys other than its field names | [`field_rename` or `VISITABLE_STRUCT`](#json-keys-other-than-field-names), with no caster | yes | yes |
+| Gives a struct JSON keys other than its field names | [`field_rename`, C++26 annotations or `VISITABLE_STRUCT`](#json-keys-other-than-field-names), with no caster | yes | yes |
 | Converts between two shapes of data | translator `from_json` and `to_json` through an intermediate struct | yes | yes |
 | Writes members depending on the value | `to_json` with an emitter | — | yes |
 | Reads or writes the JSON value itself | `from_json(const Json&)`, `to_json` with `writer::object_ref&`, `writer::array_ref&` or `writer::value_ref&` | no | no |

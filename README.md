@@ -211,7 +211,7 @@ See the reference for the [immutable](docs/reference.md#immutable-json-classes) 
 Both APIs convert the following types, nested in any combination:
 
 *   `bool`, integer and floating-point types, `std::nullptr_t`, and strings such as `std::string`;
-*   [enumerations](docs/reference.md#enumerations), as the names of their enumerators;
+*   [enumerations](docs/reference.md#enumerations), as the names of their enumerators, also as the keys of maps;
 *   ranges such as `std::vector`, `std::array` and `std::set`, and maps and ranges of key-value pairs such as `std::map` and `std::unordered_map`;
 *   `std::optional`, `std::shared_ptr`, `std::variant` and tuple-like types ([C++23 tuple-like](https://wg21.link/P2165R4));
 *   structs and classes converted by [compile-time reflection](docs/reference.md#automatic-casting-with-compile-time-reflection), or registered with the [`VISITABLE_STRUCT`](docs/reference.md#registration-of-field-names-of-structclass) macro, including C array fields, empty structs and [recursive types](docs/reference.md#recursive-types);
@@ -234,6 +234,8 @@ struct yyjson::field_rename<Thing>
 
 auto thing = yyjson::read<Thing>(R"({"@context":"https://schema.org","name":"x"})");
 ```
+
+With C++26, the same can be written in the struct as `[[=yyjson::rename("@context")]] std::string context;` ([details](docs/reference.md#c26-annotations)).
 
 A user-defined caster converts a type of your own. The simplest form is a *translator*, which converts the type to and from another type that cpp-yyjson already handles:
 
@@ -357,7 +359,7 @@ To use the upstream yyjson instead, configure with `-DCPPYYJSON_USE_BUNDLED_YYJS
     *   LLVM 17-22
     *   AppleClang 16 (Xcode 16.2), 17 (Xcode 26.3), and 21 (Xcode 26.6)
     *   MSVC `cl` and `clang-cl` on `windows-2022` and `windows-2025`
-*   C++26 is supported with GCC 16 and `-std=c++26 -freflection`; its static reflection also converts structs with base classes or more than 100 fields ([details](docs/reference.md#automatic-casting-with-compile-time-reflection))
+*   C++26 is supported with GCC 16 and `-std=c++26 -freflection`; its static reflection also converts structs with base classes or more than 100 fields ([details](docs/reference.md#automatic-casting-with-compile-time-reflection)), and annotations such as `[[=yyjson::rename("@context")]]` and `[[=yyjson::skip]]` rename or skip fields ([details](docs/reference.md#c26-annotations))
 *   [yyjson](https://github.com/ibireme/yyjson) 0.6.0 or later, only when the external backend is used instead of the [bundled](#bundled-backend) one; 0.12.0 or later lets the data binding API skip the document
 
 ## Installation
