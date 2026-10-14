@@ -712,8 +712,27 @@ namespace yyjson
         template <typename Key>
         concept key_type = std::convertible_to<Key, const char*> || std::convertible_to<Key, std::string> ||
                            std::convertible_to<Key, std::string_view>;
+        // An enumeration that its `caster` neither writes nor reads is a key of a JSON object as well, by the name
+        // of its enumerator as `enum_key_text` writes it.  One that a caster converts would need the caster to
+        // give a string, so that a map with such keys stays an array of pairs.
+        struct caster_conversion_probe
+        {
+            static void from_json();
+            static void to_json();
+        };
+        template <typename T>
+        struct caster_conversion_lookup : caster<T>, caster_conversion_probe
+        {
+        };
+        template <typename T>
+        concept enum_key =
+            std::is_enum_v<T> && std::is_class_v<caster<T>> && (!std::is_final_v<caster<T>>) && requires {
+                &caster_conversion_lookup<T>::from_json;
+                &caster_conversion_lookup<T>::to_json;
+            };
         template <typename Pair>
-        concept key_value_like = pair_like<Pair> && key_type<std::tuple_element_t<0, Pair>>;
+        concept key_value_like = pair_like<Pair> && (key_type<std::tuple_element_t<0, Pair>> ||
+                                                     enum_key<std::remove_cv_t<std::tuple_element_t<0, Pair>>>);
         template <typename T>
         concept omittable = requires(const std::remove_cvref_t<T>& t) {
             { caster<std::remove_cvref_t<T>>::should_omit(t) } -> std::convertible_to<bool>;
@@ -1536,6 +1555,43 @@ namespace yyjson
                 return static_cast<std::uint64_t>(e);
         }
 
+        // An enumeration as a key of a JSON object: the name of its enumerator, or else the decimal integer of its
+        // underlying type, which a key cannot be without quotes.  The integer is put in `buf`.
+        using enum_key_buffer = std::array<char, 20>;
+        template <typename E>
+        std::string_view enum_key_text(E e, enum_key_buffer& buf) noexcept
+        {
+            if (const auto name = field_reflection::enum_name(e); !name.empty()) return name;
+            const auto end = std::to_chars(buf.data(), buf.data() + buf.size(), enum_integer(e)).ptr;
+            return {buf.data(), static_cast<std::size_t>(end - buf.data())};
+        }
+        // Reads a key that `enum_key_text` writes.  The integer has the form that it writes, without a sign `+`,
+        // leading zeros or `-0`, so that each value has one key and a key that is not one fails.
+        template <typename E>
+        std::optional<E> enum_from_key(std::string_view key) noexcept
+        {
+            if (const auto e = enum_from_name<E>(key); e.has_value()) return e;
+            const auto digits = key.substr(!key.empty() && key.front() == '-');
+            if (digits.empty() || (digits.front() == '0' && key.size() != 1)) return std::nullopt;
+            using U = std::underlying_type_t<E>;
+            using I = decltype(enum_integer(E{}));
+            auto value = I{};
+            const auto [end, ec] = std::from_chars(key.data(), key.data() + key.size(), value);
+            if (ec != std::errc{} || end != key.data() + key.size() ||
+                value < static_cast<I>(std::numeric_limits<U>::min()) ||
+                value > static_cast<I>(std::numeric_limits<U>::max()))
+                return std::nullopt;
+            return static_cast<E>(static_cast<U>(value));
+        }
+        template <typename E>
+        E read_enum_key(std::string_view key)
+        {
+            if (const auto e = enum_from_key<E>(key); e.has_value()) [[likely]]
+                return *e;
+            throw_bad_cast("JSON object key is neither the name of an enumerator of {} nor an integer of it",
+                           type_name<E>());
+        }
+
         template <typename F>
         CPPYYJSON_ALWAYS_INLINE inline decltype(auto) writable_field(F&& f) noexcept
         {
@@ -2313,7 +2369,7 @@ namespace yyjson
                                 // NOTE: Must be value literal in initializer_list; value must not have a parent
                                 assert(!value.get_has_parent());
                                 [[maybe_unused]] auto success = yyjson_mut_obj_add(
-                                    result, create_primitive(std::forward<decltype(key)>(key), ts...), value.val_);
+                                    result, create_key(std::forward<decltype(key)>(key), ts...), value.val_);
                                 assert(success);
                                 if (ptrs != value.doc_.ptrs)
                                     children.emplace_back(std::forward<decltype(value)>(value).doc_.ptrs);
@@ -2322,8 +2378,7 @@ namespace yyjson
                             {
                                 // force copy
                                 [[maybe_unused]] auto success = yyjson_mut_obj_add(
-                                    result, create_primitive(std::forward<decltype(key)>(key), ts...),
-                                    copy_value(value));
+                                    result, create_key(std::forward<decltype(key)>(key), ts...), copy_value(value));
                                 assert(success);
                             }
                         }
@@ -2331,7 +2386,7 @@ namespace yyjson
                         {
                             // no copy; move
                             [[maybe_unused]] auto success = yyjson_mut_obj_add(
-                                result, create_primitive(std::forward<decltype(key)>(key), ts...), value.val_);
+                                result, create_key(std::forward<decltype(key)>(key), ts...), value.val_);
                             assert(success);
                             if (ptrs != value.doc_.ptrs)
                                 children.emplace_back(std::forward<decltype(value)>(value).doc_.ptrs);
@@ -2342,15 +2397,14 @@ namespace yyjson
                             {
                                 // copy
                                 [[maybe_unused]] auto success = yyjson_mut_obj_add(
-                                    result, create_primitive(std::forward<decltype(key)>(key), ts...),
-                                    copy_value(value));
+                                    result, create_key(std::forward<decltype(key)>(key), ts...), copy_value(value));
                                 assert(success);
                             }
                             else
                             {
                                 // no copy
                                 [[maybe_unused]] auto success = yyjson_mut_obj_add(
-                                    result, create_primitive(std::forward<decltype(key)>(key), ts...), value.val_);
+                                    result, create_key(std::forward<decltype(key)>(key), ts...), value.val_);
                                 assert(success);
                                 if constexpr (!std::is_rvalue_reference_v<decltype(value)> && value_type::is_value_type)
                                 {
@@ -2372,9 +2426,8 @@ namespace yyjson
                     for (auto&& v : std::forward<Range>(range))
                     {
                         auto&& key = forward_key<Range&&>(std::get<0>(std::forward<decltype(v)>(v)));
-                        [[maybe_unused]] auto success =
-                            yyjson_mut_obj_add(result, create_primitive(std::forward<decltype(key)>(key), ts...),
-                                               copy_value(std::get<1>(v)));
+                        [[maybe_unused]] auto success = yyjson_mut_obj_add(
+                            result, create_key(std::forward<decltype(key)>(key), ts...), copy_value(std::get<1>(v)));
                         assert(success);
                     }
                     return result;
@@ -2514,6 +2567,39 @@ namespace yyjson
                 {
                     copy_value_to(dst, json_value);
                     return;
+                }
+
+                // Stores the key of a member of a map, which an enumeration gives by `enum_key_text`: a name, which
+                // has static storage, or an integer, which is copied.  Neither needs an escape if no name does.
+                template <typename Key, copy_string_args... Ts>
+                bool set_key(yyjson_mut_val* dst, Key&& key, Ts... ts)
+                {
+                    using E = std::remove_cvref_t<Key>;
+                    if constexpr (yyjson::detail::enum_key<E>)
+                    {
+                        auto buf = yyjson::detail::enum_key_buffer();
+                        const auto text = yyjson::detail::enum_key_text(key, buf);
+                        const auto named = text.data() != buf.data();
+                        if (!(named ? set_value(dst, text) : set_value(dst, text, copy_string))) [[unlikely]]
+                            return false;
+#if YYJSON_VERSION_HEX >= 0x000800
+                        if (yyjson::detail::enum_names_plain<E> || !named) dst->tag |= YYJSON_SUBTYPE_NOESC;
+#endif
+                        return true;
+                    }
+                    else
+                        return set_value(dst, std::forward<Key>(key), ts...);
+                }
+                template <typename Key, copy_string_args... Ts>
+                yyjson_mut_val* create_key(Key&& key, Ts... ts)
+                {
+                    if constexpr (yyjson::detail::enum_key<std::remove_cvref_t<Key>>)
+                    {
+                        auto* val = yyjson_mut_null(ptrs->self);
+                        return val != nullptr && set_key(val, key) ? val : nullptr;
+                    }
+                    else
+                        return create_primitive(std::forward<Key>(key), ts...);
                 }
 
                 // The same as `set_value` for `dst` that is not linked into the document yet.  An array or
@@ -2790,7 +2876,7 @@ namespace yyjson
 
                                     // key
                                     {
-                                        const auto result = set_value(
+                                        const auto result = set_key(
                                             key, forward_key<Range&&>(std::get<0>(std::forward<decltype(v)>(v))),
                                             ts...);
                                         if (yyjson_unlikely(!result)) [[unlikely]]
@@ -5921,6 +6007,23 @@ namespace yyjson
         template <typename T>
         using key_value_mapped_t = std::remove_cvref_t<std::tuple_element_t<1, std::ranges::range_value_t<T>>>;
 
+        // The key of a member of a JSON object as the range T takes it: the enumeration that `read_enum_key` reads
+        // from the key, or else the key itself.
+        template <typename T, typename Json>
+        using object_key_t =
+            std::conditional_t<enum_key<std::remove_cv_t<std::tuple_element_t<0, std::ranges::range_value_t<T>>>>,
+                               std::remove_cv_t<std::tuple_element_t<0, std::ranges::range_value_t<T>>>,
+                               decltype((std::declval<Json&>().begin()->first))>;
+        template <typename T, typename JsonKey>
+        decltype(auto) object_key(JsonKey&& key)
+        {
+            using K = std::remove_cv_t<std::tuple_element_t<0, std::ranges::range_value_t<T>>>;
+            if constexpr (enum_key<K>)
+                return read_enum_key<K>(key);
+            else
+                return std::forward<JsonKey>(key);
+        }
+
         // An element of the range T is made from a key and a value either by its constructor, like `std::pair`,
         // or by aggregate initialization, like `std::array`.
         template <typename T, typename Key>
@@ -5939,9 +6042,9 @@ namespace yyjson
                 requires key_value_like<std::ranges::range_value_t<T>>;
                 requires requires(T t, Json obj, key_value_mapped_t<T> value, std::ranges::range_value_t<T> kv) {
                     requires castable<std::remove_cvref_t<decltype(obj.begin()->second)>, key_value_mapped_t<T>>;
-                    requires (key_value_constructible<T, decltype((obj.begin()->first))> && requires {
-                                 t.emplace(obj.begin()->first, std::move(value));
-                             }) || (key_value_aggregate_initializable<T, decltype((obj.begin()->first))> && requires {
+                    requires (key_value_constructible<T, object_key_t<T, Json>> && requires {
+                                 t.emplace(std::declval<object_key_t<T, Json>>(), std::move(value));
+                             }) || (key_value_aggregate_initializable<T, object_key_t<T, Json>> && requires {
                                  t.emplace(std::move(kv));
                              });
                 };
@@ -5954,9 +6057,9 @@ namespace yyjson
                 requires key_value_like<std::ranges::range_value_t<T>>;
                 requires requires(T t, Json obj, key_value_mapped_t<T> value, std::ranges::range_value_t<T> kv) {
                     requires castable<std::remove_cvref_t<decltype(obj.begin()->second)>, key_value_mapped_t<T>>;
-                    requires (key_value_constructible<T, decltype((obj.begin()->first))> && requires {
-                                 t.emplace_back(obj.begin()->first, std::move(value));
-                             }) || (key_value_aggregate_initializable<T, decltype((obj.begin()->first))> && requires {
+                    requires (key_value_constructible<T, object_key_t<T, Json>> && requires {
+                                 t.emplace_back(std::declval<object_key_t<T, Json>>(), std::move(value));
+                             }) || (key_value_aggregate_initializable<T, object_key_t<T, Json>> && requires {
                                  t.emplace_back(std::move(kv));
                              });
                 };
@@ -6180,7 +6283,7 @@ namespace yyjson
             auto position = emplace_position<T>::first(result);
             for (auto&& kv : obj)
             {
-                emplace_key_value<false>(result, position, kv.first, cast<value_type>(kv.second));
+                emplace_key_value<false>(result, position, object_key<T>(kv.first), cast<value_type>(kv.second));
             }
             return result;
         }
@@ -6194,7 +6297,7 @@ namespace yyjson
             auto position = emplace_position<T>::first(result);
             for (auto&& kv : obj)
             {
-                emplace_key_value<true>(result, position, kv.first, cast<value_type>(kv.second));
+                emplace_key_value<true>(result, position, object_key<T>(kv.first), cast<value_type>(kv.second));
             }
             return result;
         }
@@ -6873,8 +6976,9 @@ namespace yyjson
 
         // The values nested in a JSON value that `cast<T>` reads as types of their own, which `may_cast<T>` checks
         // in turn: the value of an optional or a shared pointer that is not null, the source of a translator, the
-        // first element of a range read from an array, and the first value of a map read from an object.  The
-        // values of a struct, a tuple, a variant and a user-defined caster are not checked.
+        // first element of a range read from an array, and the first value of a map read from an object, with its
+        // key if the keys are enumerations.  The values of a struct, a tuple, a variant and a user-defined caster
+        // are not checked.
         template <typename T, bool Elements, bool Values>
         struct nested_cast_types
         {
@@ -6908,6 +7012,13 @@ namespace yyjson
                 !builtin_cast && !from_json_translator<T>::castable &&
                 (object_emplaceable_range<T, reader::const_object_ref> ||
                  object_back_emplaceable_range<T, reader::const_object_ref>);
+            // whether the keys are enumerations, which a key of the object may name none of
+            static constexpr bool enum_keys = [] {
+                if constexpr (values)
+                    return enum_key<std::remove_cv_t<std::tuple_element_t<0, std::ranges::range_value_t<T>>>>;
+                else
+                    return false;
+            }();
             // the types of the elements and of the values, or void
             using element_type = typename nested_cast_types<T, elements, values>::element_type;
             using value_type = typename nested_cast_types<T, elements, values>::value_type;
@@ -6941,7 +7052,7 @@ namespace yyjson
             {
                 auto result = false;
                 if constexpr (n::elements) result = result || may_reject<typename n::element_type>();
-                if constexpr (n::values) result = result || may_reject<typename n::value_type>();
+                if constexpr (n::values) result = result || n::enum_keys || may_reject<typename n::value_type>();
                 return result;
             }
         }
@@ -6984,13 +7095,19 @@ namespace yyjson
                 }
                 if constexpr (n::values)
                 {
-                    if constexpr (may_reject<typename n::value_type>())
+                    if constexpr (n::enum_keys || may_reject<typename n::value_type>())
                     {
                         if (kind == json_kind_object)
                         {
                             const auto obj = json.as_object();
                             if (obj->empty()) return true;
-                            const auto v = obj->begin()->second;
+                            const auto [k, v] = *obj->begin();
+                            if constexpr (n::enum_keys)
+                            {
+                                using key_type =
+                                    std::remove_cv_t<std::tuple_element_t<0, std::ranges::range_value_t<T>>>;
+                                if (!enum_from_key<key_type>(k).has_value()) return false;
+                            }
                             return may_cast<typename n::value_type>(v, json_kind_of(v));
                         }
                     }
@@ -9275,7 +9392,9 @@ namespace yyjson
                     next_element(first);
                     auto&& key = forward_key<Range&&>(std::get<0>(std::forward<decltype(v)>(v)));
                     // `set_value` stores the key of a range of C++ values, `create_primitive` the others
-                    if constexpr (create_value_key_value_range<Range>)
+                    if constexpr (yyjson::detail::enum_key<std::remove_cvref_t<decltype(key)>>)
+                        write_enum_key(key);
+                    else if constexpr (create_value_key_value_range<Range>)
                         write_value(std::forward<decltype(key)>(key));
                     else
                         write_primitive(std::forward<decltype(key)>(key));
@@ -9283,6 +9402,31 @@ namespace yyjson
                     write_value(forward_element<Range&&>(std::get<1>(std::forward<decltype(v)>(v))));
                 }
                 close('}', first);
+            }
+
+            // A key that `mutable_document::set_key` stores, written without the check for escapes if no name
+            // needs one.
+            template <typename E>
+            void write_enum_key(E e)
+            {
+                if (const auto name = field_reflection::enum_name(e); !name.empty())
+                {
+                    if constexpr (yyjson::detail::enum_names_plain<E>)
+                    {
+                        ensure(name.size() + 2);
+                        *buf_.cur = '"';
+                        std::memcpy(buf_.cur + 1, name.data(), name.size());
+                        buf_.cur[name.size() + 1] = '"';
+                        buf_.cur += name.size() + 2;
+                    }
+                    else
+                        write_string(name);
+                    return;
+                }
+                ensure(24);
+                *buf_.cur++ = '"';
+                buf_.cur = put_integer(buf_.cur, yyjson::detail::enum_integer(e));
+                *buf_.cur++ = '"';
             }
 
             template <typename Key, typename Field>
@@ -9695,13 +9839,15 @@ namespace yyjson
              })) &&
             yyjson::detail::fields_move_assignable<T>();
 
-        // A map with unique string keys, whose values `merge_into` merges into and whose members it erases at
-        // null.
+        // A map with unique string or enumeration keys, whose values `merge_into` merges into and whose members it
+        // erases at null.
         template <typename T>
         concept map_mergeable =
             (!yyjson::detail::from_json_translator<T>::castable) && (!from_json_val_usr_defined<T>) &&
-            yyjson::detail::object_emplaceable_range<T, const_object_ref> && requires(T& t, const std::string& key) {
-                requires std::same_as<typename T::key_type, std::string>;
+            yyjson::detail::object_emplaceable_range<T, const_object_ref> &&
+            requires(T& t, const typename T::key_type& key) {
+                requires std::same_as<typename T::key_type, std::string> ||
+                             yyjson::detail::enum_key<typename T::key_type>;
                 requires std::default_initializable<typename T::mapped_type>;
                 requires std::is_move_assignable_v<typename T::mapped_type>;
                 { t.try_emplace(key).first->second } -> std::same_as<typename T::mapped_type&>;
@@ -9812,10 +9958,14 @@ namespace yyjson
         template <typename T>
         void merge_map_from(T& t, const const_object_ref& obj)
         {
-            auto key = std::string();
+            using key_type = typename T::key_type;
+            auto key = key_type();
             for (auto&& [k, value] : obj)
             {
-                key.assign(k);
+                if constexpr (yyjson::detail::enum_key<key_type>)
+                    key = yyjson::detail::read_enum_key<key_type>(k);
+                else
+                    key.assign(k);
                 if (value.is_null())
                 {
                     if (const auto it = t.find(key); it != t.end()) t.erase(it);
@@ -12046,6 +12196,28 @@ namespace yyjson
                 skip_ws();
             }
 
+            // Reads the key of a member into the map T: the text of the key, which is put in `buf` if it has
+            // escapes, or the enumeration that it names.
+            template <typename T>
+            CPPYYJSON_ALWAYS_INLINE auto read_key(std::string& buf)
+            {
+                using K = std::remove_cv_t<std::tuple_element_t<0, std::ranges::range_value_t<T>>>;
+                if constexpr (yyjson::detail::enum_key<K>)
+                    return yyjson::detail::read_enum_key<K>(read_string(buf));
+                else
+                    return read_string(buf);
+            }
+            // The key that `read_key` reads as the map T looks it up, which is copied into `lookup` for a string.
+            CPPYYJSON_ALWAYS_INLINE static const std::string& lookup_key(std::string& lookup, std::string_view key)
+            {
+                return lookup.assign(key);
+            }
+            template <typename E>
+            CPPYYJSON_ALWAYS_INLINE static const E& lookup_key(E& lookup, E key) noexcept
+            {
+                return lookup = key;
+            }
+
             template <typename T>
             T read_object()
             {
@@ -12068,7 +12240,7 @@ namespace yyjson
                     auto position = yyjson::detail::emplace_position<T>::first(result);
                     read_members([&] {
                         // the key is kept in `key_buf` while the value is read if it has escapes
-                        const auto key = read_string(key_buf);
+                        const auto key = read_key<T>(key_buf);
                         read_colon();
                         yyjson::detail::emplace_key_value<!yyjson::detail::object_emplaceable_range<T, json_object>>(
                             result, position, key, read_value<value_type>());
@@ -12349,7 +12521,8 @@ namespace yyjson
                 !yyjson::detail::from_json_translator<T>::castable && !from_json_val_usr_defined<T> &&
                 yyjson::detail::object_emplaceable_range<T, const_object_ref> &&
                 requires(T& t, typename T::node_type node) {
-                    requires std::same_as<typename T::key_type, std::string>;
+                    requires std::same_as<typename T::key_type, std::string> ||
+                                 yyjson::detail::enum_key<typename T::key_type>;
                     requires std::is_move_assignable_v<typename T::mapped_type>;
                     typename T::insert_return_type;
                     t.extract(t.begin());
@@ -12529,13 +12702,13 @@ namespace yyjson
             void merge_map(T& t)
             {
                 auto key_buf = std::string();
-                auto lookup = std::string();
+                auto lookup = typename T::key_type();
                 auto next = t.begin();
                 read_members([&] {
-                    const auto key = read_string(key_buf);
+                    const auto key = read_key<T>(key_buf);
                     read_colon();
                     // the members are usually in the order of the map, as in a document written from it
-                    auto it = next != t.end() && next->first == key ? next : t.find(lookup.assign(key));
+                    auto it = next != t.end() && next->first == key ? next : t.find(lookup_key(lookup, key));
                     if (*cur_ == 'n')
                     {
                         read_literal("null");
@@ -12610,7 +12783,7 @@ namespace yyjson
             {
                 using value_type = std::remove_cvref_t<std::tuple_element_t<1, std::ranges::range_value_t<T>>>;
                 auto key_buf = std::string();
-                auto lookup = std::string();
+                auto lookup = typename T::key_type();
                 if constexpr (yyjson::detail::hinted_map<T>)
                 {
                     // While the members name the keys in the order of the map, their values are read in place and
@@ -12620,7 +12793,7 @@ namespace yyjson
                     auto named = std::optional<node_set>();
                     auto next = result.end();
                     read_members([&] {
-                        const auto key = read_string(key_buf);
+                        const auto key = read_key<T>(key_buf);
                         read_colon();
                         if (!named) [[likely]]
                         {
@@ -12631,7 +12804,7 @@ namespace yyjson
                                 return;
                             }
                             // a key before `ahead` is either new or named before
-                            lookup.assign(key);
+                            lookup_key(lookup, key);
                             if (ahead == result.end() || result.key_comp()(lookup, ahead->first))
                             {
                                 result.emplace_hint(ahead, lookup, read_value<value_type>());
@@ -12640,7 +12813,8 @@ namespace yyjson
                             named.emplace(result.size());
                             next = ahead;
                         }
-                        auto it = next != result.end() && next->first == key ? next : result.find(lookup.assign(key));
+                        auto it =
+                            next != result.end() && next->first == key ? next : result.find(lookup_key(lookup, key));
                         if (it == result.end())
                         {
                             named->insert(&*result.emplace(lookup, read_value<value_type>()).first);
@@ -12665,10 +12839,10 @@ namespace yyjson
                     auto position = yyjson::detail::emplace_position<T>::first(result);
                     auto next = old.begin();
                     read_members([&] {
-                        const auto key = read_string(key_buf);
+                        const auto key = read_key<T>(key_buf);
                         read_colon();
                         // the members are usually in the order of the previous document
-                        auto it = next != old.end() && next->first == key ? next : old.find(lookup.assign(key));
+                        auto it = next != old.end() && next->first == key ? next : old.find(lookup_key(lookup, key));
                         if (it != old.end())
                         {
                             next = std::next(it);

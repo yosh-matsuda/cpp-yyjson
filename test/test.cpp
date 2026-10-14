@@ -8482,6 +8482,164 @@ TEST(Reflection, Enums)
     EXPECT_THROW((void)yyjson::read<std::vector<UserNumber>>(R"(["one"])"), bad_cast);
 }
 
+struct EnumKeyFields
+{
+    std::map<Color, int> m;
+    std::map<Color, std::vector<int>> nested;
+    std::optional<std::map<Unscoped, std::string>> opt;
+};
+
+TEST(Reflection, EnumKeys)
+{
+    using yyjson::bad_cast;
+    constexpr auto std_reflection = bool(FIELD_RFL_STD_REFLECTION);
+    using colors = std::map<Color, int>;
+    using unordered_colors = std::unordered_map<Color, int>;
+    using multi_colors = std::multimap<Color, int>;
+    using wides = std::map<Wide, int>;
+    using bytes_map = std::map<Unscoped, int>;
+    using flag_map = std::map<Flags, int>;
+    using kanas = std::map<Kana, int>;
+    using user_pairs = std::vector<std::pair<UserColor, int>>;
+
+    // a map with enumeration keys is an object of the names, in both APIs
+    const auto m = colors{{Color::red, 1}, {Color::blue, 3}};
+    EXPECT_EQ(written(m), R"({"red":1,"blue":3})");
+    EXPECT_EQ(std::string(yyjson::value(m).write()), R"({"red":1,"blue":3})");
+    EXPECT_EQ(std::string(yyjson::object(m).write()), R"({"red":1,"blue":3})");
+    EXPECT_EQ(yyjson::read(R"({"red":1,"blue":3})").cast<colors>(), m);
+    EXPECT_EQ(yyjson::read<colors>(R"({"red":1,"blue":3})"), m);
+    EXPECT_TRUE(expect_direct_read<colors>(R"({"blue":3,"red":1})"));
+    expect_direct_write(m);
+    expect_direct_write(colors());
+    // the other containers of key-value pairs that string keys make objects of, of which a sequence also reads an
+    // array of pairs
+    const auto um = unordered_colors{{Color::green, 2}};
+    EXPECT_EQ(written(um), R"({"green":2})");
+    EXPECT_EQ(yyjson::read<unordered_colors>(R"({"green":2})"), um);
+    expect_direct_write(um);
+    const auto mm = multi_colors{{Color::red, 1}, {Color::red, 2}};
+    EXPECT_EQ(written(mm), R"({"red":1,"red":2})");
+    EXPECT_TRUE(expect_direct_read<multi_colors>(R"({"red":1,"green":0,"red":2})"));
+    expect_direct_write(mm);
+    using pairs = std::vector<std::pair<Color, int>>;
+    const auto ps = pairs{{Color::blue, 1}, {Color::red, 2}, {Color::blue, 3}};
+    EXPECT_EQ(written(ps), R"({"blue":1,"red":2,"blue":3})");
+    EXPECT_EQ(std::string(yyjson::array(ps).write()), R"([["blue",1],["red",2],["blue",3]])");
+    expect_direct_write(ps);
+    EXPECT_EQ(yyjson::read<pairs>(R"({"blue":1,"red":2,"blue":3})"), ps);
+    EXPECT_EQ(yyjson::read<pairs>(R"([["blue",1],[0,2],["blue",3]])"), ps);
+    EXPECT_TRUE(expect_direct_read<pairs>(R"({"blue":1,"red":2,"blue":3})"));
+    expect_direct_read<pairs>(R"([["blue",1],[0,2]])");
+    // a key that the object has twice keeps its first value, as a string key does
+    EXPECT_EQ(yyjson::read<colors>(R"({"red":1,"red":2,"0":3})"), (colors{{Color::red, 1}}));
+    EXPECT_TRUE(expect_direct_read<colors>(R"({"red":1,"red":2,"0":3})"));
+
+    // a value without a name is the integer of its underlying type, which is read back
+    const auto unnamed = wides{{Wide::minus, 1},
+                               {static_cast<Wide>(std::numeric_limits<std::int64_t>::min()), 2},
+                               {static_cast<Wide>(7), 3},
+                               {Wide::big, 4}};
+    const auto* unnamed_json = std_reflection ? R"({"-9223372036854775808":2,"minus":1,"7":3,"big":4})"
+                                              : R"({"-9223372036854775808":2,"minus":1,"7":3,"1000":4})";
+    EXPECT_EQ(written(unnamed), unnamed_json);
+    EXPECT_EQ(std::string(yyjson::value(unnamed).write()), unnamed_json);
+    EXPECT_EQ(yyjson::read<wides>(unnamed_json), unnamed);
+    EXPECT_EQ(yyjson::read(unnamed_json).cast<wides>(), unnamed);
+    expect_direct_write(unnamed);
+    const auto flags = flag_map{{Flags::a, 1}, {static_cast<Flags>(3), 2}};
+    EXPECT_EQ(written(flags), R"({"a":1,"3":2})");
+    EXPECT_EQ(yyjson::read<flag_map>(R"({"a":1,"3":2})"), flags);
+    const auto bytes = bytes_map{{u_max, 1}, {static_cast<Unscoped>(255), 2}};
+    EXPECT_EQ(written(bytes), R"({"u_max":1,"255":2})");
+    EXPECT_EQ(yyjson::read<bytes_map>(R"({"u_max":1,"255":2})"), bytes);
+    // names that need escapes, which are escaped as the document escapes them
+    const auto kana = kanas{{Kana::あ, 1}, {static_cast<Kana>(5), 2}};
+    EXPECT_EQ(written(kana), R"({"あ":1,"5":2})");
+    EXPECT_EQ(std::string(yyjson::write(kana, yyjson::WriteFlag::EscapeUnicode)), R"({"\u3042":1,"5":2})");
+    expect_direct_write(kana);
+    EXPECT_EQ(yyjson::read<kanas>(R"({"\u3042":1,"い":2})"), (kanas{{Kana::あ, 1}, {Kana::い, 2}}));
+    expect_direct_write(std::map<LongNames, int>{{LongNames::a_name_longer_than_twenty_characters, 1}});
+    EXPECT_TRUE(expect_direct_read<kanas>(R"({"\u3042":1,"い":2})"));
+
+    // a key is a name or an integer as it is written, and nothing else
+    for (const auto* json :
+         {R"({"purple":1})", R"({"Red":1})", R"({"":1})", R"({"1.0":1})", R"({"+1":1})", R"({"01":1})", R"({"-0":1})",
+          R"({" 1":1})", R"({"1 ":1})", R"({"-":1})", R"({"1e0":1})", R"({"0x1":1})", R"({"red":1,"x":2})"})
+    {
+        EXPECT_THROW((void)yyjson::read<colors>(json), bad_cast) << json;
+        EXPECT_THROW((void)yyjson::read(json).cast<colors>(), bad_cast) << json;
+        expect_direct_read<colors>(json);
+    }
+    for (const auto* json : {R"({"300":1})", R"({"256":1})", R"({"-1":1})", R"({"18446744073709551616":1})"})
+    {
+        EXPECT_THROW((void)yyjson::read<bytes_map>(json), bad_cast) << json;
+        EXPECT_THROW((void)yyjson::read(json).cast<bytes_map>(), bad_cast) << json;
+    }
+    EXPECT_EQ(yyjson::read<colors>(R"({"0":1,"-1":2,"7":3})"),
+              (colors{{Color::red, 1}, {static_cast<Color>(-1), 2}, {static_cast<Color>(7), 3}}));
+    EXPECT_EQ(yyjson::read<wides>(R"({"-9223372036854775808":1})").begin()->first,
+              static_cast<Wide>(std::numeric_limits<std::int64_t>::min()));
+    EXPECT_THROW((void)yyjson::read<wides>(R"({"9223372036854775808":1})"), bad_cast);
+
+    // as fields, nested and optional, and read into and merged into
+    auto fields = EnumKeyFields{{{Color::red, 1}, {Color::green, 2}},
+                                {{Color::blue, {1, 2}}, {static_cast<Color>(9), {}}},
+                                std::map<Unscoped, std::string>{{u_one, "one"}}};
+    const auto* fields_json = R"({"m":{"red":1,"green":2},"nested":{"blue":[1,2],"9":[]},"opt":{"u_one":"one"}})";
+    EXPECT_EQ(written(fields), fields_json);
+    EXPECT_EQ(std::string(yyjson::value(fields).write()), fields_json);
+    expect_direct_write(fields);
+    EXPECT_EQ(written(yyjson::read(fields_json).cast<EnumKeyFields>()), fields_json);
+    EXPECT_EQ(written(yyjson::read<EnumKeyFields>(fields_json)), fields_json);
+    EXPECT_TRUE(expect_direct_read<EnumKeyFields>(fields_json));
+    for (const auto* json :
+         {R"({"m":{"green":5,"blue":6}})", R"({"m":{"blue":6,"red":7,"green":8}})", R"({"m":{"red":1,"red":2}})",
+          R"({"m":{"green":null}})", R"({"nested":{"blue":[3],"9":null,"0":[4]}})", R"({"opt":null})",
+          R"({"opt":{"u_one":null,"u_max":"max","7":"seven"}})", R"({"m":{"purple":1}})", R"({"opt":{"256":""}})"})
+    {
+        expect_read_into(fields, json);
+        expect_merge_into(fields, json);
+    }
+    auto t = fields;
+    const auto* first_node = &*t.m.find(Color::green);
+    yyjson::read_into(R"({"m":{"green":5,"blue":6}})", t);
+    EXPECT_EQ(t.m, (colors{{Color::green, 5}, {Color::blue, 6}}));
+    EXPECT_EQ(&*t.m.find(Color::green), first_node);
+    EXPECT_EQ(expect_merge_into(fields, R"({"m":{"green":null,"blue":3},"nested":{"blue":[5]},"opt":{"u_one":null}})"),
+              R"({"m":{"red":1,"blue":3},"nested":{"blue":[5],"9":[]},"opt":{}})");
+    EXPECT_EQ(expect_merge_into(colors{{Color::red, 1}}, R"({"0":null,"3":3})"), R"({"3":3})");
+    EXPECT_THROW(yyjson::merge_into(R"({"m":{"purple":1}})", t), bad_cast);
+
+    // a variant tells a map with enumeration keys by its first key, which it then reads without throwing
+    using color_or_string = std::variant<colors, std::map<std::string, int>>;
+    EXPECT_EQ(
+        yyjson::read<std::vector<color_or_string>>(R"([{"red":1},{"purple":2},{}])"),
+        (std::vector<color_or_string>{colors{{Color::red, 1}}, std::map<std::string, int>{{"purple", 2}}, colors()}));
+    EXPECT_EQ(yyjson::read(R"([{"red":1},{"purple":2}])").cast<std::vector<color_or_string>>(),
+              (std::vector<color_or_string>{colors{{Color::red, 1}}, std::map<std::string, int>{{"purple", 2}}}));
+    EXPECT_TRUE(expect_direct_read<std::vector<color_or_string>>(R"([{"red":1},{"purple":2},{"0":3,"x":4}])"));
+    static_assert(yyjson::detail::may_reject_nested<std::map<Color, ReadPoint>>());
+    static_assert(!yyjson::detail::may_reject_nested<std::map<std::string, ReadPoint>>());
+    for (const auto* json : {R"({"purple":1})", R"({"red":1})", R"({"7":1,"purple":2})", "{}"})
+    {
+        const auto doc = yyjson::read(json);
+        const auto value = yyjson::reader::const_value_ref(doc);
+        EXPECT_EQ(yyjson::detail::may_cast<colors>(value, yyjson::detail::json_kind_of(value)), json[2] != 'p') << json;
+    }
+    using pairs_or_int = std::variant<int, pairs>;
+    EXPECT_TRUE(expect_direct_read<std::vector<pairs_or_int>>(R"([1,{"red":1},[["blue",2]]])"));
+
+    // an enumeration with a caster of the user, which would have to give a string, is written as before as an
+    // element of an array of pairs
+    const auto users = std::map<UserColor, int>{{UserColor::red, 1}};
+    EXPECT_EQ(written(users), R"([["R",1]])");
+    EXPECT_EQ(std::string(yyjson::value(users).write()), R"([["R",1]])");
+    EXPECT_EQ(yyjson::read<user_pairs>(R"([["G",2]])"), (user_pairs{{UserColor::green, 2}}));
+    // and so are integer keys
+    EXPECT_EQ(written(std::map<int, int>{{1, 2}}), "[[1,2]]");
+}
+
 // Empty structs, which are read and written as empty JSON objects
 struct EmptyStruct
 {
