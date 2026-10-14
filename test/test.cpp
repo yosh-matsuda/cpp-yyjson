@@ -7084,10 +7084,9 @@ struct RenamedRecord
     bool operator==(const RenamedRecord&) const = default;
 };
 template <>
-struct yyjson::field_rename<RenamedRecord>
-{
-    static constexpr yyjson::rename value[] = {{"context", "@context"}, {"type", "a/b\"c, longer than 16"}};
-};
+inline constexpr auto yyjson::field_rename<RenamedRecord> = {
+    yyjson::rename("context", "@context"),
+    yyjson::rename("type", "a/b\"c, longer than 16")};
 
 struct VisitableRenamed
 {
@@ -7108,10 +7107,9 @@ struct VisitableTraitRenamed
     bool operator==(const VisitableTraitRenamed&) const = default;
 };
 template <>
-struct yyjson::field_rename<VisitableTraitRenamed>
-{
-    static constexpr yyjson::rename value[] = {{"type", "a/b\"c, longer than 16"}, {"context", "@context"}};
-};
+inline constexpr auto yyjson::field_rename<VisitableTraitRenamed> = {
+    yyjson::rename("type", "a/b\"c, longer than 16"),
+    yyjson::rename("context", "@context")};
 VISITABLE_STRUCT(VisitableTraitRenamed, context, type, id, list);
 
 struct SwappedKeys
@@ -7121,23 +7119,17 @@ struct SwappedKeys
     bool operator==(const SwappedKeys&) const = default;
 };
 template <>
-struct yyjson::field_rename<SwappedKeys>
-{
-    static constexpr yyjson::rename value[] = {{"a", "b"}, {"b", "a"}};
-};
+inline constexpr auto yyjson::field_rename<SwappedKeys> = {yyjson::rename("a", "b"), yyjson::rename("b", "a")};
 
-// `field_rename` given as a `std::array`
-struct ArrayRenamed
+// `field_rename` listing the members in another order than they are declared
+struct ReorderedRenamed
 {
     int x = 0;
     int y = 0;
-    bool operator==(const ArrayRenamed&) const = default;
+    bool operator==(const ReorderedRenamed&) const = default;
 };
 template <>
-struct yyjson::field_rename<ArrayRenamed>
-{
-    static constexpr std::array<yyjson::rename, 2> value{{{"y", "@y"}, {"x", "@x"}}};
-};
+inline constexpr auto yyjson::field_rename<ReorderedRenamed> = {yyjson::rename("y", "@y"), yyjson::rename("x", "@x")};
 
 struct VisitableSwappedKeys
 {
@@ -7164,12 +7156,13 @@ namespace
         return yyjson::detail::make_field_keys(members_ab, keys, renames);
     }
     using enum yyjson::detail::field_key_error;
-    static_assert(renamed_keys(members_ab, {{"b", "x"}}).keys == key_array{"a", "x"});
-    static_assert(renamed_keys(members_ab, {{"c", "x"}}).error == unknown_member);
-    static_assert(renamed_keys(members_ab, {{"a", "x"}, {"a", "y"}}).error == duplicate_member);
-    static_assert(renamed_keys(members_ab, {{"a", "b"}}).error == duplicate_key);
+    static_assert(renamed_keys(members_ab, {yyjson::rename("b", "x")}).keys == key_array{"a", "x"});
+    static_assert(renamed_keys(members_ab, {yyjson::rename("c", "x")}).error == unknown_member);
+    static_assert(renamed_keys(members_ab, {yyjson::rename("a", "x"), yyjson::rename("a", "y")}).error ==
+                  duplicate_member);
+    static_assert(renamed_keys(members_ab, {yyjson::rename("a", "b")}).error == duplicate_key);
     static_assert(renamed_keys(members_ab, {yyjson::rename("x")}).error == no_member);
-    static_assert(renamed_keys(key_array{"x", "b"}, {{"b", "y"}}).error == renamed_twice);
+    static_assert(renamed_keys(key_array{"x", "b"}, {yyjson::rename("b", "y")}).error == renamed_twice);
     static_assert(yyjson::rename("m", "k").member() == "m" && yyjson::rename("m", "k").key() == "k");
     static_assert(!yyjson::rename("k").has_member() && yyjson::rename("k").key() == "k");
     static_assert(yyjson::detail::make_field_keys(members_ab, key_array{"b", "b"}).error == duplicate_key);
@@ -7238,9 +7231,9 @@ TEST(Writer, FieldRename)
     EXPECT_EQ(std::string(yyjson::write(SwappedKeys{1, 2})), R"({"b":1,"a":2})");
     EXPECT_EQ(std::string(yyjson::value(SwappedKeys{1, 2}).write()), R"({"b":1,"a":2})");
     EXPECT_EQ(std::string(yyjson::write(VisitableSwappedKeys{1, 2})), R"({"b":1,"a":2})");
-    EXPECT_EQ(std::string(yyjson::write(ArrayRenamed{1, 2})), R"({"@x":1,"@y":2})");
-    EXPECT_EQ(yyjson::read<ArrayRenamed>(R"({"@y":2,"@x":1,"x":3})"), (ArrayRenamed{1, 2}));
-    EXPECT_EQ(yyjson::read(R"({"@y":2,"@x":1,"x":3})").cast<ArrayRenamed>(), (ArrayRenamed{1, 2}));
+    EXPECT_EQ(std::string(yyjson::write(ReorderedRenamed{1, 2})), R"({"@x":1,"@y":2})");
+    EXPECT_EQ(yyjson::read<ReorderedRenamed>(R"({"@y":2,"@x":1,"x":3})"), (ReorderedRenamed{1, 2}));
+    EXPECT_EQ(yyjson::read(R"({"@y":2,"@x":1,"x":3})").cast<ReorderedRenamed>(), (ReorderedRenamed{1, 2}));
     EXPECT_EQ(std::string(yyjson::value(VisitableSwappedKeys{1, 2}).write()), R"({"b":1,"a":2})");
 
     const auto holds = HoldsRenamed{{"c", "t", 1, {1, 2}}, {{"c", "t", 1, {}}}, {{"k", {"c", "t", 1, {3}}}}};
@@ -9168,10 +9161,7 @@ struct ReflectedDerived : ReflectedBase
     bool operator==(const ReflectedDerived&) const = default;
 };
 template <>
-struct yyjson::field_rename<ReflectedDerived>
-{
-    static constexpr yyjson::rename value[] = {{"name", "@name"}};
-};
+inline constexpr auto yyjson::field_rename<ReflectedDerived> = {yyjson::rename("name", "@name")};
 struct ReflectedWide
 {
     int f0 = 0;
@@ -9374,10 +9364,7 @@ struct [[= yyjson::rename("b", "@b")]] CombinedRenames
     bool operator==(const CombinedRenames&) const = default;
 };
 template <>
-struct yyjson::field_rename<CombinedRenames>
-{
-    static constexpr yyjson::rename value[] = {{"c", "@c"}};
-};
+inline constexpr auto yyjson::field_rename<CombinedRenames> = {yyjson::rename("c", "@c")};
 struct AnnotatedSwappedKeys
 {
     [[= yyjson::rename("b")]] int a = 0;

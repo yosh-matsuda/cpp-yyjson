@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <initializer_list>
 #include <memory>
 #include <optional>
 #include <ranges>
@@ -419,13 +420,6 @@ namespace yyjson
     {
     };
 
-    // Gives fields of a reflected or `VISITABLE_STRUCT` type JSON keys other than their member names.  A
-    // specialization defines `static constexpr yyjson::rename value[] = {{"member", "key"}, ...};`.
-    template <typename T>
-    struct field_rename
-    {
-    };
-
     // The JSON key of a field: of the member that it names, in `field_rename` or in an annotation of a type, or
     // of the field that it annotates.  It is a structural type, as an annotation has to be, which holds the
     // strings in static storage where `std::define_static_string` can put them, as a pointer to a string literal
@@ -438,7 +432,7 @@ namespace yyjson
         std::size_t key_size = 0;
 
         consteval explicit rename(std::string_view key) : key_data(static_string(key)), key_size(key.size()) {}
-        consteval rename(std::string_view member, std::string_view key)  // NOLINT(google-explicit-constructor)
+        consteval explicit rename(std::string_view member, std::string_view key)
             : member_data(static_string(member)),
               member_size(member.size()),
               key_data(static_string(key)),
@@ -462,6 +456,12 @@ namespace yyjson
 #endif
         }
     };
+
+    // Gives fields of a reflected or `VISITABLE_STRUCT` type JSON keys other than their member names.  A
+    // specialization is `template <> inline constexpr auto yyjson::field_rename<T> = {yyjson::rename("member",
+    // "key"), ...};`.
+    template <typename T>
+    inline constexpr std::initializer_list<rename> field_rename = {};
 
 #if FIELD_RFL_ANNOTATIONS
     // Annotates a field of a reflected struct that is neither read nor written, as `[[=yyjson::skip]]`.
@@ -846,14 +846,19 @@ namespace yyjson
             field_reflection::field_namable<T> &&
             ((field_reflection::field_count<T> > 0) || (std::is_empty_v<T> && !library_class<T>()));
 
+        // A specialization of `field_rename` may have another type than the list of `yyjson::rename`, which
+        // `field_keys` rejects.
         template <typename T>
-        concept has_field_rename = requires { field_rename<T>::value; };
+        concept field_rename_range = std::ranges::input_range<decltype((field_rename<T>))> &&
+                                     std::same_as<std::ranges::range_value_t<decltype((field_rename<T>))>, rename>;
 
-        // `field_rename<T>::value` is a C array or another range of `yyjson::rename`.
         template <typename T>
-        concept field_rename_range =
-            std::ranges::input_range<decltype((field_rename<T>::value))> &&
-            std::same_as<std::ranges::range_value_t<decltype((field_rename<T>::value))>, rename>;
+        inline constexpr bool has_field_rename = [] {
+            if constexpr (field_rename_range<T>)
+                return std::ranges::begin(field_rename<T>) != std::ranges::end(field_rename<T>);
+            else
+                return true;
+        }();
 
         enum class field_key_error
         {
@@ -992,8 +997,8 @@ namespace yyjson
         struct field_keys
         {
             static_assert(!has_field_rename<T> || field_rename_range<T>,
-                          "yyjson::field_rename<T>::value must be an array of yyjson::rename: "
-                          "static constexpr yyjson::rename value[] = {{\"member\", \"key\"}, ...};");
+                          "yyjson::field_rename<T> must be a list of yyjson::rename: template <> inline constexpr "
+                          "auto yyjson::field_rename<T> = {yyjson::rename(\"member\", \"key\"), ...};");
             static constexpr auto table = [] {
                 constexpr auto n = Source::members.size();
                 auto builder = field_key_builder<n>{Source::members, {Source::keys}};
@@ -1002,7 +1007,7 @@ namespace yyjson
                 {
                     if (Source::keys != Source::members)
                         return field_key_table<n>{Source::keys, field_key_error::renamed_twice};
-                    builder.rename_members(field_rename<T>::value);
+                    builder.rename_members(field_rename<T>);
                 }
 #if FIELD_RFL_ANNOTATIONS
                 if constexpr (requires { Source::skipped; }) rename_annotated_fields<T>(builder);

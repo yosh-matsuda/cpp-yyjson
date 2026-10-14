@@ -609,44 +609,30 @@ namespace bench_typed
 }  // namespace bench_typed
 
 template <>
-struct yyjson::field_rename<bench_typed::twitter::user_t>
-{
-    static constexpr yyjson::rename value[] = {{"protected_", "protected"}};
-};
+inline constexpr auto yyjson::field_rename<bench_typed::twitter::user_t> = {yyjson::rename("protected_", "protected")};
 template <>
-struct yyjson::field_rename<bench_typed::github_events::forkee_t>
-{
-    static constexpr yyjson::rename value[] = {{"private_", "private"}, {"public_", "public"}};
-};
+inline constexpr auto yyjson::field_rename<bench_typed::github_events::forkee_t> = {
+    yyjson::rename("private_", "private"),
+    yyjson::rename("public_", "public")};
 template <>
-struct yyjson::field_rename<bench_typed::github_events::event_t>
-{
-    static constexpr yyjson::rename value[] = {{"public_", "public"}};
-};
+inline constexpr auto yyjson::field_rename<bench_typed::github_events::event_t> = {yyjson::rename("public_", "public")};
 template <>
-struct yyjson::field_rename<bench_typed::gsoc_2018::sponsor_t>
-{
-    static constexpr yyjson::rename value[] = {{"type", "@type"}};
-};
+inline constexpr auto yyjson::field_rename<bench_typed::gsoc_2018::sponsor_t> = {yyjson::rename("type", "@type")};
 template <>
-struct yyjson::field_rename<bench_typed::gsoc_2018::author_t>
-{
-    static constexpr yyjson::rename value[] = {{"type", "@type"}};
-};
+inline constexpr auto yyjson::field_rename<bench_typed::gsoc_2018::author_t> = {yyjson::rename("type", "@type")};
 template <>
-struct yyjson::field_rename<bench_typed::gsoc_2018::project_t>
-{
-    static constexpr yyjson::rename value[] = {{"context", "@context"}, {"type", "@type"}};
-};
+inline constexpr auto yyjson::field_rename<bench_typed::gsoc_2018::project_t> = {
+    yyjson::rename("context", "@context"),
+    yyjson::rename("type", "@type")};
 
 #if defined(CPPYYJSON_GLAZE_BENCHMARKS)
 template <typename T>
-requires requires { yyjson::field_rename<T>::value; }
+requires (yyjson::detail::has_field_rename<T>)
 struct glz::meta<T>
 {
     static constexpr std::string_view rename_key(const std::string_view member)
     {
-        for (const auto& r : yyjson::field_rename<T>::value)
+        for (const auto& r : yyjson::field_rename<T>)
             if (r.member() == member) return r.key();
         return member;
     }

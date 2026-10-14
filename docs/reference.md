@@ -1437,7 +1437,7 @@ auto deserialized = cast<X>(serialized);
 
 ### JSON keys other than field names
 
-A JSON key that is not a valid C++ identifier, such as `@context`, can still be read into and written from a field. Specialize `yyjson::field_rename` for the type and list the fields to rename as pairs of the member name and the JSON key:
+A JSON key that is not a valid C++ identifier, such as `@context`, can still be read into and written from a field. Specialize the variable template `yyjson::field_rename` for the type with a list of `yyjson::rename("member", "key")`, the member name and the JSON key of each field to rename:
 
 ```cpp
 struct Project
@@ -1448,10 +1448,8 @@ struct Project
 };
 
 template <>
-struct yyjson::field_rename<Project>
-{
-    static constexpr yyjson::rename value[] = {{"context", "@context"}, {"type", "@type"}};
-};
+inline constexpr auto yyjson::field_rename<Project> = {yyjson::rename("context", "@context"),
+                                                       yyjson::rename("type", "@type")};
 
 auto project = yyjson::read<Project>(R"({"@context":"https://schema.org","@type":"Project","name":"x"})");
 // -> Project{.context = "https://schema.org", .type = "Project", .name = "x"}
@@ -1466,8 +1464,9 @@ VISITABLE_STRUCT(Project, (context, "@context"), (type, "@type"), name);
 ```
 
 *   A field that is not listed keeps its member name as the key.
+*   Write the specialization `inline` as above, since it is a definition: without `inline`, a header that has it fails to link into more than one translation unit, as any variable defined in a header does. Its type is `std::initializer_list<yyjson::rename>`, which `auto` deduces from the braces.
 *   The keys are used everywhere the field names are: by `cast`, `object(t)` and `value(t)`, and by `yyjson::read<T>` and `yyjson::write`. A JSON key is compared after unescaping, so `"\u0040context"` is read into `context` as well, and a key is escaped as the write flags require.
-*   `yyjson::field_rename` works both for a struct that the compile-time reflection converts and for one that the `VISITABLE_STRUCT` macro registers. For the latter, declare the specialization before the macro, and do not combine it with pairs in the macro.
+*   `yyjson::field_rename` works both for a struct that the compile-time reflection converts and for one that the `VISITABLE_STRUCT` macro registers. For the latter, define the specialization before the macro, and do not combine it with pairs in the macro.
 *   A pair that names a member which does not exist or is not registered, a member named twice, and two fields that end up with the same key all fail to compile with a `static_assert`.
 
 #### C++26 annotations
