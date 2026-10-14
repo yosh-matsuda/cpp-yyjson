@@ -8281,6 +8281,155 @@ TEST(Reflection, Enums)
     EXPECT_THROW((void)yyjson::read<std::vector<UserNumber>>(R"(["one"])"), bad_cast);
 }
 
+// Empty structs, which are read and written as empty JSON objects
+struct EmptyStruct
+{
+    bool operator==(const EmptyStruct&) const = default;
+};
+struct EmptyFields
+{
+    int a = 1;
+    EmptyStruct e;
+    std::vector<EmptyStruct> v;
+    std::optional<EmptyStruct> o;
+    std::map<std::string, EmptyStruct> m;
+};
+struct NestedEmpty
+{
+    EmptyFields f;
+    EmptyStruct e;
+};
+
+// an empty struct with a caster of the user, which takes precedence over the empty object
+struct UserEmpty
+{
+};
+template <>
+struct yyjson::caster<UserEmpty>
+{
+    static UserEmpty from_json(std::string_view s)
+    {
+        if (s != "user") throw yyjson::bad_cast("not user");
+        return {};
+    }
+    template <typename... Ts>
+    static std::string_view to_json(UserEmpty, Ts...)
+    {
+        return "user";
+    }
+};
+struct UserEmptyField
+{
+    UserEmpty u;
+    EmptyStruct e;
+};
+
+TEST(Reflection, EmptyStructs)
+{
+    using yyjson::bad_cast;
+
+    // the classes of the standard library and of this library are no objects
+    static_assert(yyjson::detail::reflectable<EmptyStruct>);
+    static_assert(!yyjson::detail::reflectable<std::monostate>);
+    static_assert(!yyjson::detail::reflectable<std::less<>>);
+    static_assert(!yyjson::detail::reflectable<std::true_type>);
+    static_assert(!yyjson::detail::reflectable<yyjson::copy_string_t>);
+    static_assert(!yyjson::detail::reflectable<yyjson::empty_object_t>);
+    static_assert(!yyjson::detail::reflectable<decltype([] {})>);
+    static_assert(std::is_assignable_v<yyjson::value, std::tuple<int, yyjson::copy_string_t>>);
+    EXPECT_TRUE(yyjson::value(std::monostate()).is_null());
+    EXPECT_EQ(written(std::monostate()), "null");
+
+    // the root
+    EXPECT_EQ(written(EmptyStruct()), "{}");
+    EXPECT_EQ(std::string(yyjson::value(EmptyStruct()).write()), "{}");
+    EXPECT_EQ(std::string(yyjson::object(EmptyStruct()).write()), "{}");
+    EXPECT_EQ(std::string(yyjson::write(EmptyStruct(), yyjson::WriteFlag::Pretty)), "{}");
+    expect_direct_write(EmptyStruct());
+    EXPECT_EQ(yyjson::read<EmptyStruct>("{}"), EmptyStruct());
+    EXPECT_EQ(yyjson::read("{}").cast<EmptyStruct>(), EmptyStruct());
+    // the members of the object are ignored, as unknown keys are, and any other value throws `bad_cast`
+    EXPECT_TRUE(expect_direct_read<EmptyStruct>(R"({"a":1,"b":[{}]})"));
+    for (const auto* json : {"null", "true", "0", "-1", "1.5", R"("")", "[]", "[{}]"})
+    {
+        expect_direct_read<EmptyStruct>(json);
+        EXPECT_THROW((void)yyjson::read<EmptyStruct>(json), bad_cast) << json;
+        EXPECT_THROW((void)yyjson::read(json).cast<EmptyStruct>(), bad_cast) << json;
+    }
+
+    // fields
+    auto full = EmptyFields();
+    full.v.resize(2);
+    full.o.emplace();
+    full.m["k"] = {};
+    const auto* full_json = R"({"a":1,"e":{},"v":[{},{}],"o":{},"m":{"k":{}}})";
+    EXPECT_EQ(written(full), full_json);
+    EXPECT_EQ(std::string(yyjson::value(full).write()), full_json);
+    EXPECT_EQ(std::string(yyjson::object(full).write()), full_json);
+    EXPECT_EQ(std::string(yyjson::write(full, yyjson::WriteFlag::Pretty)),
+              "{\n    \"a\": 1,\n    \"e\": {},\n    \"v\": [\n        {},\n        {}\n    ],\n    \"o\": {},\n"
+              "    \"m\": {\n        \"k\": {}\n    }\n}");
+    expect_direct_write(full);
+    expect_direct_write(NestedEmpty{full, {}});
+    EXPECT_EQ(written(NestedEmpty()), R"({"f":{"a":1,"e":{},"v":[],"m":{}},"e":{}})");
+    EXPECT_EQ(written(yyjson::read<EmptyFields>(full_json)), full_json);
+    EXPECT_EQ(written(yyjson::read(full_json).cast<EmptyFields>()), full_json);
+    EXPECT_TRUE(expect_direct_read<EmptyFields>(full_json));
+    EXPECT_TRUE(expect_direct_read<NestedEmpty>(R"({"f":{"e":{"x":1},"v":[{}]},"e":{"y":[]}})"));
+    EXPECT_TRUE(expect_direct_read<std::vector<EmptyStruct>>("[{},{}]"));
+    EXPECT_TRUE(expect_direct_read<std::optional<EmptyStruct>>("{}"));
+    expect_direct_read<std::optional<EmptyStruct>>("null");
+    for (const auto* json : {R"({})", R"({"e":{"x":1}})", R"({"e":null})", R"({"e":1})", R"({"e":[]})",
+                             R"({"v":[{},1]})", R"({"o":null})", R"({"o":"x"})", R"({"m":{"k":[]}})",
+                             R"({"a":2,"e":{},"o":{}})"})
+    {
+        expect_direct_read<EmptyFields>(json);
+        expect_read_into(full, json);
+        expect_merge_into(full, json);
+    }
+    EXPECT_THROW((void)yyjson::read<EmptyFields>(R"({"e":1})"), bad_cast);
+    EXPECT_THROW((void)yyjson::read(R"({"e":[]})").cast<EmptyFields>(), bad_cast);
+
+    // `read_into` and `merge_into` have nothing to put into an empty struct
+    auto t = full;
+    yyjson::read_into(R"({"e":{"x":1}})", t);
+    EXPECT_EQ(written(t), R"({"a":1,"e":{},"v":[],"m":{}})");
+    t = full;
+    yyjson::merge_into(R"({"a":2,"e":{"x":1},"v":[{}]})", t);
+    EXPECT_EQ(written(t), R"({"a":2,"e":{},"v":[{}],"o":{},"m":{"k":{}}})");
+    EXPECT_THROW(yyjson::read_into(R"({"e":null})", t), bad_cast);
+    EXPECT_THROW(yyjson::merge_into(R"({"e":"x"})", t), bad_cast);
+
+    // a caster of the user takes precedence in both APIs
+    EXPECT_EQ(written(UserEmptyField()), R"({"u":"user","e":{}})");
+    EXPECT_EQ(std::string(yyjson::value(UserEmptyField()).write()), R"({"u":"user","e":{}})");
+    expect_direct_write(UserEmptyField());
+    EXPECT_NO_THROW((void)yyjson::read<UserEmptyField>(R"({"u":"user","e":{}})"));
+    EXPECT_THROW((void)yyjson::read<UserEmptyField>(R"({"u":{}})"), bad_cast);
+    EXPECT_THROW((void)yyjson::read(R"({"u":{}})").cast<UserEmptyField>(), bad_cast);
+
+    // an empty struct is an alternative of a variant that a JSON object selects, and `std::monostate` the one that
+    // null selects
+    using monostate_or_empty = std::variant<std::monostate, EmptyStruct, int>;
+    EXPECT_EQ(yyjson::read<monostate_or_empty>("{}").index(), 1);
+    EXPECT_EQ(yyjson::read("{}").cast<monostate_or_empty>().index(), 1);
+    EXPECT_EQ(yyjson::read<monostate_or_empty>("null").index(), 0);
+    EXPECT_EQ(yyjson::read<monostate_or_empty>("2").index(), 2);
+    EXPECT_TRUE(expect_direct_read<std::vector<monostate_or_empty>>(R"([null,{},{"x":1},2])"));
+    expect_direct_read<std::vector<monostate_or_empty>>(R"([null,{},[]])");
+    EXPECT_EQ(written(std::vector<monostate_or_empty>{std::monostate(), EmptyStruct(), 2}), "[null,{},2]");
+    expect_direct_write(std::vector<monostate_or_empty>{std::monostate(), EmptyStruct(), 2});
+    // the first alternative that a JSON object can be read as is read, whatever members the object has
+    using empty_or_map = std::variant<EmptyStruct, std::map<std::string, int>>;
+    EXPECT_EQ(yyjson::read<empty_or_map>(R"({"a":1})").index(), 0);
+    EXPECT_EQ(yyjson::read(R"({"a":1})").cast<empty_or_map>().index(), 0);
+    using map_or_empty = std::variant<std::map<std::string, int>, EmptyStruct>;
+    EXPECT_EQ(yyjson::read<map_or_empty>(R"({"a":1})").index(), 0);
+    EXPECT_EQ(yyjson::read<map_or_empty>(R"({"a":"x"})").index(), 1);
+    EXPECT_EQ(yyjson::read(R"({"a":"x"})").cast<map_or_empty>().index(), 1);
+    EXPECT_TRUE(expect_direct_read<std::vector<map_or_empty>>(R"([{"a":1},{"a":"x"},{}])"));
+}
+
 // Recursive types, which reach themselves through their fields
 struct RecTree
 {
@@ -8767,6 +8916,18 @@ struct ReflectedWide
     int f119 = 119;
     bool operator==(const ReflectedWide&) const = default;
 };
+struct EmptyDerived : EmptyStruct
+{
+};
+struct EmptyBased : EmptyStruct
+{
+    int x = 3;
+};
+struct EmptyBasedFields
+{
+    EmptyDerived d;
+    EmptyBased b;
+};
 
 TEST(Reflection, StdReflection)
 {
@@ -8794,6 +8955,16 @@ TEST(Reflection, StdReflection)
     EXPECT_EQ(wide.f119, 238);
     EXPECT_EQ(std::string_view(yyjson::write(wide)), wide_json);
     expect_direct_write(wide);
+
+    // a struct whose only base is empty is an empty struct, and one with fields of its own is not
+    static_assert(field_reflection::field_count<EmptyDerived> == 0);
+    static_assert(field_reflection::field_count<EmptyBased> == 1);
+    const auto* based_json = R"({"d":{},"b":{"x":3}})";
+    EXPECT_EQ(written(EmptyBasedFields()), based_json);
+    expect_direct_write(EmptyBasedFields());
+    EXPECT_EQ(written(yyjson::read<EmptyBasedFields>(R"({"d":{"y":1},"b":{"x":3}})")), based_json);
+    EXPECT_TRUE(expect_direct_read<EmptyBasedFields>(R"({"d":{"y":1},"b":{"x":5}})"));
+    expect_direct_read<EmptyBasedFields>(R"({"d":[]})");
 }
 #endif
 

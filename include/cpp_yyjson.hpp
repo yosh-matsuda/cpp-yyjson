@@ -743,10 +743,24 @@ namespace yyjson
         template <typename T>
         concept visitable = visit_struct<T>::value;
 
-        // The structs converted field by field through field-reflection.  Empty aggregates are left out:
-        // they are mostly tags such as `std::monostate` and `copy_string_t`, which have meanings of their own.
+        // Whether a class is declared in `std` or in this library, by the name that the compiler gives it.
         template <typename T>
-        concept reflectable = field_reflection::field_namable<T> && (field_reflection::field_count<T> > 0);
+        consteval bool library_class() noexcept
+        {
+            auto name = type_name<T>();
+            for (const auto keyword : {std::string_view{"struct "}, std::string_view{"class "}})
+                if (name.starts_with(keyword)) name.remove_prefix(keyword.size());
+            return name.starts_with("std::") || name.starts_with("yyjson::");
+        }
+
+        // The structs converted field by field through field-reflection.  An empty struct is an object without
+        // members, unless it is a class of `std` or of this library: those are mostly tags such as `std::monostate`
+        // and `copy_string_t`, which have meanings of their own.  Were `copy_string_t` an object, a pair of a value
+        // and it would be a value too, and assigning the pair would be ambiguous with assigning the copy.
+        template <typename T>
+        concept reflectable =
+            field_reflection::field_namable<T> &&
+            ((field_reflection::field_count<T> > 0) || (std::is_empty_v<T> && !library_class<T>()));
 
         template <typename... Ts>
         struct type_list
