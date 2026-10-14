@@ -11850,78 +11850,158 @@ namespace yyjson
 
             // Skipping ----------------------------------------------------------------------------------------
 
+            // `q` moved by the index of the lowest bit of `m`, which is not zero, through a jump to one of the
+            // cases that each move it by a constant: the jump is predicted from the moves before, and the reads
+            // that follow need not wait for the index to be computed.  The keys of the objects of an array repeat,
+            // and with them their lengths, as do the indentations of a pretty-printed text.  Cases that returned
+            // the constants themselves would be turned back into the index.
+            CPPYYJSON_ALWAYS_INLINE static const char* advance_to_lowest_bit(const char* q, std::uint32_t m) noexcept
+            {
+                // clang-format off
+                switch (std::countr_zero(m))
+                {
+#define CPPYYJSON_CASE4(i) \
+    case i: return q + i; case i + 1: return q + (i + 1); \
+    case i + 2: return q + (i + 2); case i + 3: return q + (i + 3);
+                    CPPYYJSON_CASE4(0) CPPYYJSON_CASE4(4) CPPYYJSON_CASE4(8) CPPYYJSON_CASE4(12)
+#if defined(__AVX2__)
+                    CPPYYJSON_CASE4(16) CPPYYJSON_CASE4(20) CPPYYJSON_CASE4(24) CPPYYJSON_CASE4(28)
+#endif
+#undef CPPYYJSON_CASE4
+                    default: return q + std::countr_zero(m);
+                }
+                // clang-format on
+            }
+
+            // Returns the end of the string at `p` if it has neither escapes nor characters outside ASCII, which
+            // is how most of the strings of a skipped value are, and otherwise leaves it to `skip_string`.  A call
+            // for each string would cost more than the scan of a short one.
+            CPPYYJSON_ALWAYS_INLINE const char* skip_plain_string(const char* p)
+            {
+                const char* q = p + 1;
+#if defined(__AVX2__)
+                while (last_ - q >= 32)
+                {
+                    const auto v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(q));
+                    const auto quote =
+                        static_cast<std::uint32_t>(_mm256_movemask_epi8(_mm256_cmpeq_epi8(v, _mm256_set1_epi8('"'))));
+                    const auto other = static_cast<std::uint32_t>(_mm256_movemask_epi8(
+                                           _mm256_or_si256(_mm256_cmpeq_epi8(v, _mm256_set1_epi8('\\')),
+                                                           _mm256_cmpeq_epi8(_mm256_max_epu8(v, _mm256_set1_epi8(0x1F)),
+                                                                             _mm256_set1_epi8(0x1F))))) |
+                                       static_cast<std::uint32_t>(_mm256_movemask_epi8(v));
+                    // the characters up to the first quote, all of them if there is none
+                    if ((other & (quote ^ (quote - 1))) != 0) [[unlikely]]
+                        break;
+                    if (quote != 0) [[likely]]
+                        return advance_to_lowest_bit(q + 1, quote);
+                    q += 32;
+                }
+#elif defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+                while (last_ - q >= 16)
+                {
+                    const auto v = _mm_loadu_si128(reinterpret_cast<const __m128i*>(q));
+                    const auto quote =
+                        static_cast<std::uint32_t>(_mm_movemask_epi8(_mm_cmpeq_epi8(v, _mm_set1_epi8('"'))));
+                    const auto ctrl = _mm_cmpeq_epi8(_mm_max_epu8(v, _mm_set1_epi8(0x1F)), _mm_set1_epi8(0x1F));
+                    const auto other = static_cast<std::uint32_t>(_mm_movemask_epi8(
+                                           _mm_or_si128(_mm_cmpeq_epi8(v, _mm_set1_epi8('\\')), ctrl))) |
+                                       static_cast<std::uint32_t>(_mm_movemask_epi8(v));
+                    if ((other & (quote ^ (quote - 1))) != 0) [[unlikely]]
+                        break;
+                    if (quote != 0) [[likely]]
+                        return advance_to_lowest_bit(q + 1, quote);
+                    q += 16;
+                }
+#endif
+                cur_ = p;
+                skip_string();
+                return cur_;
+            }
+
+            // Skips the white space at `p` as `skip_ws` does.
+            CPPYYJSON_ALWAYS_INLINE const char* skip_ws_at(const char* p) const noexcept
+            {
+                if (static_cast<unsigned char>(*p) > ' ') [[likely]]
+                    return p;
+                if (*p == ' ' && static_cast<unsigned char>(p[1]) > ' ') [[likely]]
+                    return p + 1;
+#if defined(__AVX2__) || defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+                if (last_ - p >= ws_block_size) [[likely]]
+                {
+                    constexpr auto all = static_cast<std::uint32_t>((std::uint64_t{1} << ws_block_size) - 1);
+                    if (const auto m = ~ws_block_mask(p) & all; m != 0) [[likely]]
+                        return advance_to_lowest_bit(p, m);
+                }
+#endif
+                return skip_ws_run(p, last_);
+            }
+
             // Skips the value at `cur_`, checking it as yyjson would.  Containers nested deeper than the stack
-            // here are left to yyjson.
+            // here are left to yyjson.  The position is kept in a local variable, which the member would make
+            // wait for a store and a load on every token.
             void skip_value()
             {
-                const char* const start = cur_;
+                const char* p = cur_;
+                const char* const start = p;
                 char stack[64];
                 auto depth = std::size_t{0};
-                for (;;)
+            value:
+                switch (*p)
                 {
-                    // at the beginning of a value
-                    switch (*cur_)
-                    {
-                        case '{':
-                            ++cur_;
-                            skip_ws();
-                            if (*cur_ == '}')
-                            {
-                                if (cur_ == last_ && (depth != 0 || start != first_)) fail();
-                                ++cur_;
-                                break;
-                            }
-                            if (depth == sizeof(stack)) unsupported();
-                            stack[depth++] = '}';
-                            if (*cur_ != '"') fail();
-                            skip_string();
-                            skip_ws();
-                            expect(':');
-                            skip_ws();
-                            continue;
-                        case '[':
-                            ++cur_;
-                            skip_ws();
-                            if (*cur_ == ']')
-                            {
-                                if (cur_ == last_ && (depth != 0 || start != first_)) fail();
-                                ++cur_;
-                                break;
-                            }
-                            if (depth == sizeof(stack)) unsupported();
-                            stack[depth++] = ']';
-                            continue;
-                        case '"': skip_string(); break;
-                        case 't': read_literal("true"); break;
-                        case 'f': read_literal("false"); break;
-                        case 'n': read_literal("null"); break;
-                        default: read_number([](auto) {}); break;
-                    }
-                    // after a value
-                    for (;;)
-                    {
-                        if (depth == 0) return;
-                        skip_ws();
-                        if (*cur_ == ',')
+                    case '{':
+                        p = skip_ws_at(p + 1);
+                        if (*p == '}')
                         {
-                            ++cur_;
-                            skip_ws();
-                            if (stack[depth - 1] == '}')
-                            {
-                                if (*cur_ != '"') fail();
-                                skip_string();
-                                skip_ws();
-                                expect(':');
-                                skip_ws();
-                            }
-                            break;
+                            if (p == last_ && (depth != 0 || start != first_)) fail();
+                            ++p;
+                            goto after;
                         }
-                        if (*cur_ != stack[depth - 1]) fail();
-                        --depth;
-                        if (cur_ == last_ && (depth != 0 || start != first_)) fail();
-                        ++cur_;
-                    }
+                        if (depth == sizeof(stack)) unsupported();
+                        stack[depth++] = '}';
+                        goto key;
+                    case '[':
+                        p = skip_ws_at(p + 1);
+                        if (*p == ']')
+                        {
+                            if (p == last_ && (depth != 0 || start != first_)) fail();
+                            ++p;
+                            goto after;
+                        }
+                        if (depth == sizeof(stack)) unsupported();
+                        stack[depth++] = ']';
+                        goto value;
+                    case '"': p = skip_plain_string(p); goto after;
+                    case 't': cur_ = p; read_literal("true"); break;
+                    case 'f': cur_ = p; read_literal("false"); break;
+                    case 'n': cur_ = p; read_literal("null"); break;
+                    default: cur_ = p; read_number([](auto) {}); break;
                 }
+                p = cur_;
+            after:
+                if (depth == 0)
+                {
+                    cur_ = p;
+                    return;
+                }
+                p = skip_ws_at(p);
+                if (*p == ',')
+                {
+                    p = skip_ws_at(p + 1);
+                    if (stack[depth - 1] != '}') goto value;
+                    goto key;
+                }
+                if (*p != stack[depth - 1]) fail();
+                --depth;
+                if (p == last_ && (depth != 0 || start != first_)) fail();
+                ++p;
+                goto after;
+            key:
+                if (*p != '"') fail();
+                p = skip_ws_at(skip_plain_string(p));
+                if (*p != ':') fail();
+                p = skip_ws_at(p + 1);
+                goto value;
             }
 
             // Values ------------------------------------------------------------------------------------------

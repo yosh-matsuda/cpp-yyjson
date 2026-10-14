@@ -9630,6 +9630,17 @@ struct DiffRecord
     std::vector<std::vector<std::string>> grid;
 };
 
+// a few of the fields of `DiffRecord` and `DiffInner`, which skips the others
+struct DiffSparseInner
+{
+    std::string s;
+};
+struct DiffSparse
+{
+    std::int32_t n = 0;
+    std::vector<DiffSparseInner> items;
+};
+
 namespace
 {
     // Random values of `DiffRecord`, with strings that take every path of the string readers and writers, and
@@ -9764,16 +9775,24 @@ TEST(Differential, RandomValuesAndTexts)
         expect_direct_write(t);
         const auto json = std::string(
             yyjson::write(t, yyjson::WriteFlag::AllowInfAndNan | yyjson::WriteFlag::AllowInvalidUnicode));
+        // the white space of a pretty-printed text, which the fields that a struct does not have are skipped over
+        const auto pretty = std::string(yyjson::write(t, yyjson::WriteFlag::AllowInfAndNan |
+                                                             yyjson::WriteFlag::AllowInvalidUnicode |
+                                                             yyjson::WriteFlag::Pretty));
         for (const auto flag : {yyjson::ReadFlag::NoFlag, yyjson::ReadFlag::AllowInfAndNan |
                                                               yyjson::ReadFlag::AllowInvalidUnicode})
         {
             expect_direct_read<DiffRecord>(json, flag);
             expect_read_into(input.record(), json, flag);
+            expect_direct_read<DiffSparse>(json, flag);
+            expect_direct_read<DiffSparse>(pretty, flag);
             for (auto k = 0; k < 8; ++k)
             {
                 const auto edited = input.edit(json);
                 expect_direct_read<DiffRecord>(edited, flag);
                 expect_read_into(input.record(), edited, flag);
+                expect_direct_read<DiffSparse>(edited, flag);
+                expect_direct_read<DiffSparse>(input.edit(pretty), flag);
             }
         }
     }
