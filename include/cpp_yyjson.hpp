@@ -11873,10 +11873,12 @@ namespace yyjson
                 // clang-format on
             }
 
-            // Returns the end of the string at `p` if it has neither escapes nor characters outside ASCII, which
-            // is how most of the strings of a skipped value are, and otherwise leaves it to `skip_string`.  A call
-            // for each string would cost more than the scan of a short one.
-            CPPYYJSON_ALWAYS_INLINE const char* skip_plain_string(const char* p)
+            // The end of the string at `p`, past its closing quote, if it has neither escapes nor characters
+            // outside ASCII, which is how most keys and most of the strings of a skipped value are, and otherwise
+            // what `other()` returns.  A call of `scan_string` for each of them would cost more than the scan of
+            // a short one.
+            template <typename Other>
+            CPPYYJSON_ALWAYS_INLINE const char* plain_string_end(const char* p, Other&& other)
             {
                 const char* q = p + 1;
 #if defined(__AVX2__)
@@ -11885,13 +11887,13 @@ namespace yyjson
                     const auto v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(q));
                     const auto quote =
                         static_cast<std::uint32_t>(_mm256_movemask_epi8(_mm256_cmpeq_epi8(v, _mm256_set1_epi8('"'))));
-                    const auto other = static_cast<std::uint32_t>(_mm256_movemask_epi8(
-                                           _mm256_or_si256(_mm256_cmpeq_epi8(v, _mm256_set1_epi8('\\')),
-                                                           _mm256_cmpeq_epi8(_mm256_max_epu8(v, _mm256_set1_epi8(0x1F)),
-                                                                             _mm256_set1_epi8(0x1F))))) |
-                                       static_cast<std::uint32_t>(_mm256_movemask_epi8(v));
+                    const auto ctrl =
+                        _mm256_cmpeq_epi8(_mm256_max_epu8(v, _mm256_set1_epi8(0x1F)), _mm256_set1_epi8(0x1F));
+                    const auto unplain = static_cast<std::uint32_t>(_mm256_movemask_epi8(
+                                             _mm256_or_si256(_mm256_cmpeq_epi8(v, _mm256_set1_epi8('\\')), ctrl))) |
+                                         static_cast<std::uint32_t>(_mm256_movemask_epi8(v));
                     // the characters up to the first quote, all of them if there is none
-                    if ((other & (quote ^ (quote - 1))) != 0) [[unlikely]]
+                    if ((unplain & (quote ^ (quote - 1))) != 0) [[unlikely]]
                         break;
                     if (quote != 0) [[likely]]
                         return advance_to_lowest_bit(q + 1, quote);
@@ -11904,19 +11906,27 @@ namespace yyjson
                     const auto quote =
                         static_cast<std::uint32_t>(_mm_movemask_epi8(_mm_cmpeq_epi8(v, _mm_set1_epi8('"'))));
                     const auto ctrl = _mm_cmpeq_epi8(_mm_max_epu8(v, _mm_set1_epi8(0x1F)), _mm_set1_epi8(0x1F));
-                    const auto other = static_cast<std::uint32_t>(_mm_movemask_epi8(
-                                           _mm_or_si128(_mm_cmpeq_epi8(v, _mm_set1_epi8('\\')), ctrl))) |
-                                       static_cast<std::uint32_t>(_mm_movemask_epi8(v));
-                    if ((other & (quote ^ (quote - 1))) != 0) [[unlikely]]
+                    const auto unplain = static_cast<std::uint32_t>(_mm_movemask_epi8(
+                                             _mm_or_si128(_mm_cmpeq_epi8(v, _mm_set1_epi8('\\')), ctrl))) |
+                                         static_cast<std::uint32_t>(_mm_movemask_epi8(v));
+                    if ((unplain & (quote ^ (quote - 1))) != 0) [[unlikely]]
                         break;
                     if (quote != 0) [[likely]]
                         return advance_to_lowest_bit(q + 1, quote);
                     q += 16;
                 }
 #endif
-                cur_ = p;
-                skip_string();
-                return cur_;
+                return other();
+            }
+
+            // Returns the end of the string at `p`.
+            CPPYYJSON_ALWAYS_INLINE const char* skip_plain_string(const char* p)
+            {
+                return plain_string_end(p, [&]() CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                    cur_ = p;
+                    skip_string();
+                    return cur_;
+                });
             }
 
             // Skips the white space at `p` as `skip_ws` does.
@@ -11939,8 +11949,9 @@ namespace yyjson
 
             // Skips the value at `cur_`, checking it as yyjson would.  Containers nested deeper than the stack
             // here are left to yyjson.  The position is kept in a local variable, which the member would make
-            // wait for a store and a load on every token.
-            void skip_value()
+            // wait for a store and a load on every token.  A caller that inlined it, as GCC does for one that is
+            // the only caller, was slower.
+            CPPYYJSON_NOINLINE void skip_value()
             {
                 const char* p = cur_;
                 const char* const start = p;
@@ -13401,6 +13412,21 @@ namespace yyjson
                     field = read_value<field_type>();
             }
 
+            // Reads the key at `cur_` and finds it with `matcher`.  The keys of a type that are not read, or not
+            // in the order of its fields, come here, out of the loop of `read_fields`.
+            template <std::size_t N>
+            CPPYYJSON_NOINLINE std::size_t find_field(const yyjson::detail::field_key_matcher<N>& matcher,
+                                                      std::size_t hint)
+            {
+                if (const auto* end = plain_string_end(cur_, [] { return nullptr; })) [[likely]]
+                {
+                    const auto key = std::string_view(cur_ + 1, static_cast<std::size_t>(end - cur_ - 2));
+                    cur_ = end;
+                    return matcher.find(key, hint);
+                }
+                return matcher.find(read_string(scratch_), hint);
+            }
+
             // Reads the members of an object, assigning those that `matcher` finds with `assign(index)`.
             template <std::size_t N, typename Assign>
             CPPYYJSON_ALWAYS_INLINE void read_fields(const yyjson::detail::field_key_matcher<N>& matcher,
@@ -13428,7 +13454,7 @@ namespace yyjson
                             cur_ += n + 2;
                         }
                     }
-                    if (index == N) index = matcher.find(read_string(scratch_), hint);
+                    if (index == N) index = find_field(matcher, hint);
                     read_colon();
                     if (index < N)
                     {
