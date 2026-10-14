@@ -62,6 +62,15 @@
 #define CPPYYJSON_HOT_NOINLINE
 #endif
 
+// Keeps the compiler from vectorizing the loop that follows, for a scalar tail after a SIMD loop
+#if defined(__clang__)
+#define CPPYYJSON_NO_VECTORIZE _Pragma("clang loop vectorize(disable)")
+#elif defined(__GNUC__) && __GNUC__ >= 14
+#define CPPYYJSON_NO_VECTORIZE _Pragma("GCC novector")
+#else
+#define CPPYYJSON_NO_VECTORIZE
+#endif
+
 // How many values of a recursive type may be read one inside the other, where 0 means no limit.
 #ifndef CPPYYJSON_RECURSION_DEPTH_LIMIT
 #define CPPYYJSON_RECURSION_DEPTH_LIMIT 256
@@ -11079,12 +11088,79 @@ namespace yyjson
                 unescape_into(src, end, out);
             }
 
-            // Moves past the string at `cur_` and checks its escapes, which only `unescape` does.
+            // Checks the escapes of a string as `unescape` does, without writing what they stand for.
+            CPPYYJSON_HOT_NOINLINE static void check_escapes_of(const char* src, const char* end)
+            {
+                while (src != end)
+                {
+                    if (*src != '\\')
+                    {
+#if defined(__AVX2__)
+                        for (; end - src >= 32; src += 32)
+                        {
+                            const auto v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src));
+                            const auto m = static_cast<std::uint32_t>(
+                                _mm256_movemask_epi8(_mm256_cmpeq_epi8(v, _mm256_set1_epi8('\\'))));
+                            if (m != 0)
+                            {
+                                src += std::countr_zero(m);
+                                goto escape;
+                            }
+                        }
+#endif
+#if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+                        for (; end - src >= 16; src += 16)
+                        {
+                            const auto v = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src));
+                            const auto m =
+                                static_cast<std::uint32_t>(_mm_movemask_epi8(_mm_cmpeq_epi8(v, _mm_set1_epi8('\\'))));
+                            if (m != 0)
+                            {
+                                src += std::countr_zero(m);
+                                goto escape;
+                            }
+                        }
+#endif
+                        // without a store in the loop, GCC vectorizes it with a scalar prologue that aligns `src`,
+                        // which costs more than the few characters left after the blocks
+                        CPPYYJSON_NO_VECTORIZE
+                        while (src != end && *src != '\\') ++src;
+                        if (src == end) break;
+                    }
+#if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+                escape:
+#endif
+                    // no hint, unlike `unescape`: text that mixes `\n` with `\u` mispredicts the branch either way,
+                    // and laying out `\u` first cost 10 % on such text
+                    if (src[1] == 'u')
+                    {
+                        if (end - src < 6) [[unlikely]]
+                            fail();
+                        const auto u = read_hex4(src + 2);
+                        src += 6;
+                        if ((u & 0xF800) == 0xD800) [[unlikely]]
+                        {
+                            if ((u & 0xFC00) == 0xDC00 || end - src < 6 || src[0] != '\\' || src[1] != 'u') fail();
+                            if ((read_hex4(src + 2) & 0xFC00) != 0xDC00) fail();
+                            src += 6;
+                        }
+                        continue;
+                    }
+                    if (escaped_chars[static_cast<unsigned char>(src[1])] == 0) [[unlikely]]
+                        fail();
+                    src += 2;
+                }
+            }
+
+            // Kept out of line for the same reason as `unescape` above.
+            CPPYYJSON_COLD static void check_escapes(const char* src, const char* end) { check_escapes_of(src, end); }
+
+            // Moves past the string at `cur_` and checks its escapes, which `scan_string` leaves to the reader.
             CPPYYJSON_ALWAYS_INLINE void skip_string()
             {
                 const auto s = scan_string();
                 if (s.escaped) [[unlikely]]
-                    unescape(s.begin, s.end, scratch_);
+                    check_escapes(s.begin, s.end);
             }
 
             // The content of the string at `cur_`, in the text or, if it has escapes, in `buf`.
@@ -11116,78 +11192,169 @@ namespace yyjson
 
             // Skipping ----------------------------------------------------------------------------------------
 
-            // Skips the value at `cur_`, checking it as yyjson would.  Containers nested deeper than the stack
-            // here are left to yyjson.
-            void skip_value()
+            // `q` moved by the index of the lowest bit of `m`, which is not zero, through a jump to one of the
+            // cases that each move it by a constant: the jump is predicted from the moves before, and the reads
+            // that follow need not wait for the index to be computed.  The keys of the objects of an array repeat,
+            // and with them their lengths, as do the indentations of a pretty-printed text.  Cases that returned
+            // the constants themselves would be turned back into the index.
+            CPPYYJSON_ALWAYS_INLINE static const char* advance_to_lowest_bit(const char* q, std::uint32_t m) noexcept
             {
-                const char* const start = cur_;
+                // clang-format off
+                switch (std::countr_zero(m))
+                {
+#define CPPYYJSON_CASE4(i) \
+    case i: return q + i; case i + 1: return q + (i + 1); \
+    case i + 2: return q + (i + 2); case i + 3: return q + (i + 3);
+                    CPPYYJSON_CASE4(0) CPPYYJSON_CASE4(4) CPPYYJSON_CASE4(8) CPPYYJSON_CASE4(12)
+#if defined(__AVX2__)
+                    CPPYYJSON_CASE4(16) CPPYYJSON_CASE4(20) CPPYYJSON_CASE4(24) CPPYYJSON_CASE4(28)
+#endif
+#undef CPPYYJSON_CASE4
+                    default: return q + std::countr_zero(m);
+                }
+                // clang-format on
+            }
+
+            // The end of the string at `p`, past its closing quote, if it has neither escapes nor characters
+            // outside ASCII, which is how most keys and most of the strings of a skipped value are, and otherwise
+            // what `other()` returns.  A call of `scan_string` for each of them would cost more than the scan of
+            // a short one.
+            template <typename Other>
+            CPPYYJSON_ALWAYS_INLINE const char* plain_string_end(const char* p, Other&& other)
+            {
+                const char* q = p + 1;
+#if defined(__AVX2__)
+                while (last_ - q >= 32)
+                {
+                    const auto v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(q));
+                    const auto quote =
+                        static_cast<std::uint32_t>(_mm256_movemask_epi8(_mm256_cmpeq_epi8(v, _mm256_set1_epi8('"'))));
+                    const auto ctrl =
+                        _mm256_cmpeq_epi8(_mm256_max_epu8(v, _mm256_set1_epi8(0x1F)), _mm256_set1_epi8(0x1F));
+                    const auto unplain = static_cast<std::uint32_t>(_mm256_movemask_epi8(
+                                             _mm256_or_si256(_mm256_cmpeq_epi8(v, _mm256_set1_epi8('\\')), ctrl))) |
+                                         static_cast<std::uint32_t>(_mm256_movemask_epi8(v));
+                    // the characters up to the first quote, all of them if there is none
+                    if ((unplain & (quote ^ (quote - 1))) != 0) [[unlikely]]
+                        break;
+                    if (quote != 0) [[likely]]
+                        return advance_to_lowest_bit(q + 1, quote);
+                    q += 32;
+                }
+#elif defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+                while (last_ - q >= 16)
+                {
+                    const auto v = _mm_loadu_si128(reinterpret_cast<const __m128i*>(q));
+                    const auto quote =
+                        static_cast<std::uint32_t>(_mm_movemask_epi8(_mm_cmpeq_epi8(v, _mm_set1_epi8('"'))));
+                    const auto ctrl = _mm_cmpeq_epi8(_mm_max_epu8(v, _mm_set1_epi8(0x1F)), _mm_set1_epi8(0x1F));
+                    const auto unplain = static_cast<std::uint32_t>(_mm_movemask_epi8(
+                                             _mm_or_si128(_mm_cmpeq_epi8(v, _mm_set1_epi8('\\')), ctrl))) |
+                                         static_cast<std::uint32_t>(_mm_movemask_epi8(v));
+                    if ((unplain & (quote ^ (quote - 1))) != 0) [[unlikely]]
+                        break;
+                    if (quote != 0) [[likely]]
+                        return advance_to_lowest_bit(q + 1, quote);
+                    q += 16;
+                }
+#endif
+                return other();
+            }
+
+            // Returns the end of the string at `p`.
+            CPPYYJSON_ALWAYS_INLINE const char* skip_plain_string(const char* p)
+            {
+                return plain_string_end(p, [&]() CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                    cur_ = p;
+                    skip_string();
+                    return cur_;
+                });
+            }
+
+            // Skips the white space at `p` as `skip_ws` does.
+            CPPYYJSON_ALWAYS_INLINE const char* skip_ws_at(const char* p) const noexcept
+            {
+                if (static_cast<unsigned char>(*p) > ' ') [[likely]]
+                    return p;
+                if (*p == ' ' && static_cast<unsigned char>(p[1]) > ' ') [[likely]]
+                    return p + 1;
+#if defined(__AVX2__) || defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+                if (last_ - p >= ws_block_size) [[likely]]
+                {
+                    constexpr auto all = static_cast<std::uint32_t>((std::uint64_t{1} << ws_block_size) - 1);
+                    if (const auto m = ~ws_block_mask(p) & all; m != 0) [[likely]]
+                        return advance_to_lowest_bit(p, m);
+                }
+#endif
+                return skip_ws_run(p, last_);
+            }
+
+            // Skips the value at `cur_`, checking it as yyjson would.  Containers nested deeper than the stack
+            // here are left to yyjson.  The position is kept in a local variable, which the member would make
+            // wait for a store and a load on every token.  A caller that inlined it, as GCC does for one that is
+            // the only caller, was slower.
+            CPPYYJSON_NOINLINE void skip_value()
+            {
+                const char* p = cur_;
+                const char* const start = p;
                 char stack[64];
                 auto depth = std::size_t{0};
-                for (;;)
+            value:
+                switch (*p)
                 {
-                    // at the beginning of a value
-                    switch (*cur_)
-                    {
-                        case '{':
-                            ++cur_;
-                            skip_ws();
-                            if (*cur_ == '}')
-                            {
-                                if (cur_ == last_ && (depth != 0 || start != first_)) fail();
-                                ++cur_;
-                                break;
-                            }
-                            if (depth == sizeof(stack)) unsupported();
-                            stack[depth++] = '}';
-                            if (*cur_ != '"') fail();
-                            skip_string();
-                            skip_ws();
-                            expect(':');
-                            skip_ws();
-                            continue;
-                        case '[':
-                            ++cur_;
-                            skip_ws();
-                            if (*cur_ == ']')
-                            {
-                                if (cur_ == last_ && (depth != 0 || start != first_)) fail();
-                                ++cur_;
-                                break;
-                            }
-                            if (depth == sizeof(stack)) unsupported();
-                            stack[depth++] = ']';
-                            continue;
-                        case '"': skip_string(); break;
-                        case 't': read_literal("true"); break;
-                        case 'f': read_literal("false"); break;
-                        case 'n': read_literal("null"); break;
-                        default: read_number([](auto) {}); break;
-                    }
-                    // after a value
-                    for (;;)
-                    {
-                        if (depth == 0) return;
-                        skip_ws();
-                        if (*cur_ == ',')
+                    case '{':
+                        p = skip_ws_at(p + 1);
+                        if (*p == '}')
                         {
-                            ++cur_;
-                            skip_ws();
-                            if (stack[depth - 1] == '}')
-                            {
-                                if (*cur_ != '"') fail();
-                                skip_string();
-                                skip_ws();
-                                expect(':');
-                                skip_ws();
-                            }
-                            break;
+                            if (p == last_ && (depth != 0 || start != first_)) fail();
+                            ++p;
+                            goto after;
                         }
-                        if (*cur_ != stack[depth - 1]) fail();
-                        --depth;
-                        if (cur_ == last_ && (depth != 0 || start != first_)) fail();
-                        ++cur_;
-                    }
+                        if (depth == sizeof(stack)) unsupported();
+                        stack[depth++] = '}';
+                        goto key;
+                    case '[':
+                        p = skip_ws_at(p + 1);
+                        if (*p == ']')
+                        {
+                            if (p == last_ && (depth != 0 || start != first_)) fail();
+                            ++p;
+                            goto after;
+                        }
+                        if (depth == sizeof(stack)) unsupported();
+                        stack[depth++] = ']';
+                        goto value;
+                    case '"': p = skip_plain_string(p); goto after;
+                    case 't': cur_ = p; read_literal("true"); break;
+                    case 'f': cur_ = p; read_literal("false"); break;
+                    case 'n': cur_ = p; read_literal("null"); break;
+                    default: cur_ = p; read_number([](auto) {}); break;
                 }
+                p = cur_;
+            after:
+                if (depth == 0)
+                {
+                    cur_ = p;
+                    return;
+                }
+                p = skip_ws_at(p);
+                if (*p == ',')
+                {
+                    p = skip_ws_at(p + 1);
+                    if (stack[depth - 1] != '}') goto value;
+                    goto key;
+                }
+                if (*p != stack[depth - 1]) fail();
+                --depth;
+                if (p == last_ && (depth != 0 || start != first_)) fail();
+                ++p;
+                goto after;
+            key:
+                if (*p != '"') fail();
+                p = skip_ws_at(skip_plain_string(p));
+                if (*p != ':') fail();
+                p = skip_ws_at(p + 1);
+                goto value;
             }
 
             // Values ------------------------------------------------------------------------------------------
@@ -12404,6 +12571,21 @@ namespace yyjson
                     field = read_value<field_type>();
             }
 
+            // Reads the key at `cur_` and finds it with `matcher`.  The keys of a type that are not read, or not
+            // in the order of its fields, come here, out of the loop of `read_fields`.
+            template <std::size_t N>
+            CPPYYJSON_NOINLINE std::size_t find_field(const yyjson::detail::field_key_matcher<N>& matcher,
+                                                      std::size_t hint)
+            {
+                if (const auto* end = plain_string_end(cur_, [] { return nullptr; })) [[likely]]
+                {
+                    const auto key = std::string_view(cur_ + 1, static_cast<std::size_t>(end - cur_ - 2));
+                    cur_ = end;
+                    return matcher.find(key, hint);
+                }
+                return matcher.find(read_string(scratch_), hint);
+            }
+
             // Reads the members of an object, assigning those that `matcher` finds with `assign(index)`.
             template <std::size_t N, typename Assign>
             CPPYYJSON_ALWAYS_INLINE void read_fields(const yyjson::detail::field_key_matcher<N>& matcher,
@@ -12431,7 +12613,7 @@ namespace yyjson
                             cur_ += n + 2;
                         }
                     }
-                    if (index == N) index = matcher.find(read_string(scratch_), hint);
+                    if (index == N) index = find_field(matcher, hint);
                     read_colon();
                     if (index < N)
                     {
