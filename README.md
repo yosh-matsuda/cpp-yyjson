@@ -264,16 +264,15 @@ auto json = yyjson::write(colors);
 // -> ["#ff8000","#000000"]
 ```
 
-The forms of a caster are listed below. The forms in the upper part work with both APIs without a document; the two in the lower part handle JSON values themselves and are for the DOM API. The data binding API still accepts them, but converts each such value through a temporary document. See [User-defined casters](docs/reference.md#user-defined-casters) for all of them.
+The forms of a caster are listed below in the order to choose them. All but the last work with both APIs without a document. The last one takes the JSON value itself, a value of the DOM API, and the data binding API reads each such value into a temporary document. See [User-defined casters](docs/reference.md#user-defined-casters) for all of them.
 
 | Purpose | Form |
 | --- | --- |
-| Convert to and from another type, such as a struct to a string | [translator](docs/reference.md#translator-from_json) `from_json(U)` and `to_json(const X&)` that returns a value |
-| Write members that depend on the value | `to_json` with an [emitter](docs/reference.md#user-defined-casters) |
-| Read into a field that cannot be copied or moved | [in-place](docs/reference.md#in-place-assignment-of-a-field) `from_json(X&, U)` |
+| Convert to and from another type, such as a struct to a string | [translator](docs/reference.md#translator) `from_json(U)` and `to_json(const X&)` that returns a value |
+| Read into a field that cannot be copied or moved | [in-place](docs/reference.md#reading-into-an-existing-field) `from_json(X&, U)` |
+| Write members that depend on the value | `to_json` with an [emitter](docs/reference.md#writing-members-with-an-emitter) |
 | Leave a field out of the JSON object | [`should_omit`](docs/reference.md#omitting-a-field-with-no-value) |
-| Read a JSON value of any shape | `from_json(const Json&)` (DOM) |
-| Build the JSON value and change it after adding to it | `to_json(writer::object_ref&, ...)` and the like (DOM) |
+| Decide how to read a value from its content, such as a tagged union | [`from_json(const Json&)`](docs/reference.md#reading-a-json-value-in-a-caster) |
 
 ## Which API to use
 
