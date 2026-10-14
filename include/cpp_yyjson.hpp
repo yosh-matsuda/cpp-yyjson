@@ -67,6 +67,15 @@
 #define CPPYYJSON_HOT_NOINLINE
 #endif
 
+// Keeps the compiler from vectorizing the loop that follows, for a scalar tail after a SIMD loop
+#if defined(__clang__)
+#define CPPYYJSON_NO_VECTORIZE _Pragma("clang loop vectorize(disable)")
+#elif defined(__GNUC__) && __GNUC__ >= 14
+#define CPPYYJSON_NO_VECTORIZE _Pragma("GCC novector")
+#else
+#define CPPYYJSON_NO_VECTORIZE
+#endif
+
 // How many values of a recursive type may be read one inside the other, where 0 means no limit.
 #ifndef CPPYYJSON_RECURSION_DEPTH_LIMIT
 #define CPPYYJSON_RECURSION_DEPTH_LIMIT 256
@@ -11815,12 +11824,79 @@ namespace yyjson
                 unescape_into(src, end, out);
             }
 
-            // Moves past the string at `cur_` and checks its escapes, which only `unescape` does.
+            // Checks the escapes of a string as `unescape` does, without writing what they stand for.
+            CPPYYJSON_HOT_NOINLINE static void check_escapes_of(const char* src, const char* end)
+            {
+                while (src != end)
+                {
+                    if (*src != '\\')
+                    {
+#if defined(__AVX2__)
+                        for (; end - src >= 32; src += 32)
+                        {
+                            const auto v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src));
+                            const auto m = static_cast<std::uint32_t>(
+                                _mm256_movemask_epi8(_mm256_cmpeq_epi8(v, _mm256_set1_epi8('\\'))));
+                            if (m != 0)
+                            {
+                                src += std::countr_zero(m);
+                                goto escape;
+                            }
+                        }
+#endif
+#if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+                        for (; end - src >= 16; src += 16)
+                        {
+                            const auto v = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src));
+                            const auto m =
+                                static_cast<std::uint32_t>(_mm_movemask_epi8(_mm_cmpeq_epi8(v, _mm_set1_epi8('\\'))));
+                            if (m != 0)
+                            {
+                                src += std::countr_zero(m);
+                                goto escape;
+                            }
+                        }
+#endif
+                        // without a store in the loop, GCC vectorizes it with a scalar prologue that aligns `src`,
+                        // which costs more than the few characters left after the blocks
+                        CPPYYJSON_NO_VECTORIZE
+                        while (src != end && *src != '\\') ++src;
+                        if (src == end) break;
+                    }
+#if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+                escape:
+#endif
+                    // no hint, unlike `unescape`: text that mixes `\n` with `\u` mispredicts the branch either way,
+                    // and laying out `\u` first cost 10 % on such text
+                    if (src[1] == 'u')
+                    {
+                        if (end - src < 6) [[unlikely]]
+                            fail();
+                        const auto u = read_hex4(src + 2);
+                        src += 6;
+                        if ((u & 0xF800) == 0xD800) [[unlikely]]
+                        {
+                            if ((u & 0xFC00) == 0xDC00 || end - src < 6 || src[0] != '\\' || src[1] != 'u') fail();
+                            if ((read_hex4(src + 2) & 0xFC00) != 0xDC00) fail();
+                            src += 6;
+                        }
+                        continue;
+                    }
+                    if (escaped_chars[static_cast<unsigned char>(src[1])] == 0) [[unlikely]]
+                        fail();
+                    src += 2;
+                }
+            }
+
+            // Kept out of line for the same reason as `unescape` above.
+            CPPYYJSON_COLD static void check_escapes(const char* src, const char* end) { check_escapes_of(src, end); }
+
+            // Moves past the string at `cur_` and checks its escapes, which `scan_string` leaves to the reader.
             CPPYYJSON_ALWAYS_INLINE void skip_string()
             {
                 const auto s = scan_string();
                 if (s.escaped) [[unlikely]]
-                    unescape(s.begin, s.end, scratch_);
+                    check_escapes(s.begin, s.end);
             }
 
             // The content of the string at `cur_`, in the text or, if it has escapes, in `buf`.
