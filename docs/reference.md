@@ -1244,10 +1244,11 @@ Note that `yyjson::cast<T>` and `static_cast<T>` may give different results. `yy
 In addition to the above, the following methods are provided for converting *arbitrary* C++ types from and to JSON:
 
 1.  [Pre-defined STL casters](#pre-defined-stl-casters).
-2.  [Conversion using compile-time reflection](#automatic-casting-with-compile-time-reflection).
-3.  [Registration of field names with the `VISITABLE_STRUCT` macro](#registration-of-field-names-of-structclass).
-4.  [JSON keys other than field names](#json-keys-other-than-field-names) with `yyjson::field_rename`.
-5.  [User-defined casters](#user-defined-casters).
+2.  [Enumerations](#enumerations) by the names of their enumerators.
+3.  [Conversion using compile-time reflection](#automatic-casting-with-compile-time-reflection).
+4.  [Registration of field names with the `VISITABLE_STRUCT` macro](#registration-of-field-names-of-structclass).
+5.  [JSON keys other than field names](#json-keys-other-than-field-names) with `yyjson::field_rename`.
+6.  [User-defined casters](#user-defined-casters).
 
 ### Pre-defined STL casters
 
@@ -1325,17 +1326,52 @@ auto tpl_obj2 = cast<decltype(tpl_obj)>(json_obj);          // deserialize
 
 A JSON array or object with more elements than the tuple throws `yyjson::bad_cast`, and one with fewer leaves the remaining elements of the tuple value-initialized, as a `std::array` does.
 
+### Enumerations
+
+An enumeration converts to the JSON string of the name of its enumerator, and from it. The names are found by [field-reflection](https://github.com/yosh-matsuda/field-reflection), with no macro or registration:
+
+```cpp
+using namespace yyjson;
+
+enum class Level { debug, info, warning };
+
+struct Logger
+{
+    std::string name;
+    Level level = Level::info;
+};
+
+auto logger = read<Logger>(R"({"name":"app","level":"warning"})");
+// -> Logger{"app", Level::warning}
+auto json = write(logger);
+// -> {"name":"app","level":"warning"}
+```
+
+*   A value that is not the value of an enumerator, such as a combination of flags, is written as the integer of the underlying type. A JSON number is read as well, under the rules of the underlying integer type.
+*   A JSON string that is not the name of an enumerator throws `yyjson::bad_cast`. The names are case-sensitive. When two enumerators have the same value, the one declared first gives the name, and the name of the other is not read.
+*   With C++20, field-reflection finds the enumerators only in the range [-128, 128], and the others are written as integers. Specialize `field_reflection::enum_range` to widen the range for an enumeration, at the cost of compile time. C++26 static reflection finds all of them.
+*   An enumeration with a user-defined caster is converted by the caster, for example to always write integers.
+*   `std::byte` has no enumerators and converts to and from the integers 0 to 255.
+
+```cpp
+template <>
+struct field_reflection::enum_range<Status>
+{
+    static constexpr int min = 0;
+    static constexpr int max = 1000;
+};
+```
+
 ### Automatic casting with compile-time reflection
 
 The compile-time reflection is supported to automatically convert C++ struct/class to JSON object and vice versa. This feature is provided by using [field-reflection](https://github.com/yosh-matsuda/field-reflection) and is included in this library.
 
-If a C++ struct/class satisfies the `field_reflection::field_namable` concept (see [field-reflection](https://github.com/yosh-matsuda/field-reflection)) and has at least one field, it is possible to automatically convert from/to JSON objects with its field names and no need to write a caster definition or registration of field names with macros explained later.
+If a C++ struct/class satisfies the `field_reflection::field_namable` concept (see [field-reflection](https://github.com/yosh-matsuda/field-reflection)), it is possible to automatically convert from/to JSON objects with its field names and no need to write a caster definition or registration of field names with macros explained later.
 
 In practice, the following conditions are required for C++ types for automatic conversion:
 
 *   default initializable
 *   [aggregate type](https://en.cppreference.com/w/cpp/types/is_aggregate)
-*   at least one field; an empty struct such as `std::monostate` is not converted to a JSON object
 *   not a derived class (C++20)
 *   at most 100 fields (C++20)
 *   no reference member
@@ -1363,6 +1399,21 @@ auto serialized = object(reflectable);
 auto deserialized = cast<X>(serialized);
 // -> X{.a = 1, .b = std::nullopt, .c = "x"}
 ```
+
+A field that is a C array, such as `int a[3]` or `double m[2][3]`, converts to and from a JSON array as `std::array` does: a JSON array with more elements throws `yyjson::bad_cast`, and one with fewer leaves the remaining elements value-initialized. A `char` array is an array of integers, as `std::array<char, N>` is; use `std::string` for text. This applies to the fields of a struct registered with `VISITABLE_STRUCT` as well.
+
+```cpp
+struct Matrix
+{
+    char tag[2];
+    double m[2][2];
+};
+
+auto json = write(Matrix{{'a', 'b'}, {{1.0, 2.0}, {3.0, 4.0}}});
+// -> {"tag":[97,98],"m":[[1.0,2.0],[3.0,4.0]]}
+```
+
+An empty struct, such as `struct Tag {};`, converts to and from `{}`, and the members of a JSON object read into it are ignored. The empty classes of the standard library and of cpp-yyjson keep their own meanings: `std::monostate` is JSON null, for example.
 
 ### Registration of field names of struct/class
 
@@ -1530,7 +1581,7 @@ The form of a caster decides whether [`yyjson::read<T>`](#reading-a-json-string-
 
 | What the caster does | Form | Direct read | Direct write |
 | --- | --- | --- | --- |
-| Converts a value, such as an enum to and from a string | [translator `from_json`](#translator-from_json) and a translator `to_json` | yes | yes |
+| Converts a value, such as a struct to and from a string | [translator `from_json`](#translator-from_json) and a translator `to_json` | yes | yes |
 | Gives a struct JSON keys other than its field names | [`field_rename` or `VISITABLE_STRUCT`](#json-keys-other-than-field-names), with no caster | yes | yes |
 | Converts between two shapes of data | translator `from_json` and `to_json` through an intermediate struct | yes | yes |
 | Writes members depending on the value | `to_json` with an emitter | — | yes |
