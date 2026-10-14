@@ -8111,6 +8111,127 @@ TEST(Writer, CharArrays)
     expect_direct_write(u8);
 }
 
+// Structs whose fields cannot all be assigned, which are written but cannot be read
+struct ConstField
+{
+    const int a;
+    int b;
+};
+struct ConstFieldInit
+{
+    const int a = 1;
+    int b = 2;
+};
+struct ConstArrayField
+{
+    const int a[2] = {1, 2};
+    int b = 3;
+};
+struct NestedConstField
+{
+    ConstFieldInit c;
+    int d = 4;
+};
+struct VisitableConstField
+{
+    const int a = 5;
+    int b = 6;
+};
+VISITABLE_STRUCT(VisitableConstField, a, b);
+// a caster of the user reads it anyway, though not as a field, which cannot be assigned
+struct UserConstField
+{
+    const int a = 0;
+    int b = 0;
+};
+template <>
+struct yyjson::caster<UserConstField>
+{
+    template <typename Json>
+    static UserConstField from_json(const Json& json)
+    {
+        return UserConstField{0, yyjson::cast<int>(json)};
+    }
+};
+struct UserConstFieldField
+{
+    UserConstField u;
+};
+#if FIELD_RFL_STD_REFLECTION
+// only the C++26 backend of field-reflection reflects references and volatile fields
+inline int referenced_int = 7;
+struct RefField
+{
+    int& r = referenced_int;
+    int b = 8;
+};
+struct RvalueRefField
+{
+    int&& r = std::move(referenced_int);
+    int b = 10;
+};
+struct VolatileField
+{
+    volatile int a = 0;
+    int b = 0;
+};
+#endif
+
+namespace
+{
+    template <typename T>
+    concept readable_in_any_way =
+        yyjson::castable<yyjson::reader::const_value_ref, T> || yyjson::castable<yyjson::value, T> ||
+        requires(std::string_view json, T& t) { yyjson::read<T>(json); } ||
+        requires(std::string_view json, T& t) { yyjson::read_into(json, t); } ||
+        requires(std::string_view json, T& t) { yyjson::merge_into(json, t); };
+}
+
+TEST(Reflection, UnassignableFields)
+{
+    static_assert(!readable_in_any_way<ConstField>);
+    static_assert(!readable_in_any_way<ConstFieldInit>);
+    static_assert(!readable_in_any_way<ConstArrayField>);
+    static_assert(!readable_in_any_way<NestedConstField>);
+    static_assert(!readable_in_any_way<VisitableConstField>);
+    static_assert(!readable_in_any_way<std::vector<ConstFieldInit>>);
+    static_assert(!readable_in_any_way<std::map<std::string, ConstFieldInit>>);
+    static_assert(!readable_in_any_way<std::optional<ConstFieldInit>>);
+    static_assert(!readable_in_any_way<std::shared_ptr<ConstFieldInit>>);
+    static_assert(!readable_in_any_way<std::variant<ConstFieldInit, int>>);
+    static_assert(!readable_in_any_way<std::tuple<ConstFieldInit, int>>);
+    static_assert(!readable_in_any_way<UserConstFieldField>);
+
+    EXPECT_EQ(yyjson::read<UserConstField>("5").b, 5);
+    EXPECT_EQ(yyjson::read<std::vector<UserConstField>>("[5]").at(0).b, 5);
+
+    EXPECT_EQ(std::string_view(yyjson::write(ConstField{1, 2})), R"({"a":1,"b":2})");
+    EXPECT_EQ(std::string_view(yyjson::write(ConstArrayField())), R"({"a":[1,2],"b":3})");
+    EXPECT_EQ(std::string_view(yyjson::write(NestedConstField())), R"({"c":{"a":1,"b":2},"d":4})");
+    EXPECT_EQ(std::string_view(yyjson::write(VisitableConstField())), R"({"a":5,"b":6})");
+    EXPECT_EQ(yyjson::value(NestedConstField()).write(), R"({"c":{"a":1,"b":2},"d":4})");
+    expect_direct_write(ConstField{1, 2});
+    expect_direct_write(NestedConstField());
+    expect_direct_write(std::vector<ConstFieldInit>(2));
+    expect_direct_write(VisitableConstField());
+
+#if FIELD_RFL_STD_REFLECTION
+    static_assert(!readable_in_any_way<RefField>);
+    static_assert(!readable_in_any_way<RvalueRefField>);
+    static_assert(!readable_in_any_way<std::vector<RefField>>);
+    EXPECT_EQ(std::string_view(yyjson::write(RefField())), R"({"r":7,"b":8})");
+    EXPECT_EQ(std::string_view(yyjson::write(RvalueRefField())), R"({"r":7,"b":10})");
+    expect_direct_write(RefField());
+
+    const auto v = yyjson::read<VolatileField>(R"({"a":11,"b":12})");
+    EXPECT_EQ(static_cast<int>(v.a), 11);
+    EXPECT_EQ(v.b, 12);
+    auto into = VolatileField();
+    yyjson::read_into(R"({"a":13})", into);
+    EXPECT_EQ(static_cast<int>(into.a), 13);
+#endif
+}
+
 // Enumerations, which are read and written by the names of their enumerators, and as integers when a value has no
 // name
 enum class Color

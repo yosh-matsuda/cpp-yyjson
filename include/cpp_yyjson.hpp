@@ -5874,13 +5874,18 @@ namespace yyjson
         }
     }  // namespace detail
 
-    // A C array is assigned element by element, so that its elements, not the array, must be castable.
+    // A C array is assigned element by element, so that its elements, not the array, must be castable.  A
+    // const or reference field cannot be given the value read, and neither can a field that cannot be assigned
+    // unless its caster reads it in place.
     template <typename Json, typename T>
     concept field_assignable =
-        (detail::c_array<T> && castable<Json, std::remove_all_extents_t<std::remove_cvref_t<T>>>) ||
-        (!detail::c_array<T> && (castable<Json, T> || requires(T& field, const Json& json) {
-             caster<std::remove_cvref_t<T>>::from_json(field, json);
-         } || detail::from_json_translator<std::remove_cvref_t<T>>::in_place));
+        (!std::is_reference_v<T>) && (!std::is_const_v<std::remove_all_extents_t<T>>) &&
+        ((detail::c_array<T> && castable<Json, std::remove_all_extents_t<std::remove_cvref_t<T>>> &&
+          std::is_move_assignable_v<std::remove_all_extents_t<T>>) ||
+         (!detail::c_array<T> &&
+          ((castable<Json, T> && std::is_move_assignable_v<T>) || requires(T& field, const Json& json) {
+              caster<std::remove_cvref_t<T>>::from_json(field, json);
+          } || detail::from_json_translator<std::remove_cvref_t<T>>::in_place)));
 
     template <json_object Json, yyjson::detail::reflectable T>
     constexpr bool all_fields_castable_impl()
@@ -5933,6 +5938,7 @@ namespace yyjson
                 typename std::ranges::range_value_t<T>;
                 requires key_value_like<std::ranges::range_value_t<T>>;
                 requires requires(T t, Json obj, key_value_mapped_t<T> value, std::ranges::range_value_t<T> kv) {
+                    requires castable<std::remove_cvref_t<decltype(obj.begin()->second)>, key_value_mapped_t<T>>;
                     requires (key_value_constructible<T, decltype((obj.begin()->first))> && requires {
                                  t.emplace(obj.begin()->first, std::move(value));
                              }) || (key_value_aggregate_initializable<T, decltype((obj.begin()->first))> && requires {
@@ -5947,6 +5953,7 @@ namespace yyjson
                 typename std::ranges::range_value_t<T>;
                 requires key_value_like<std::ranges::range_value_t<T>>;
                 requires requires(T t, Json obj, key_value_mapped_t<T> value, std::ranges::range_value_t<T> kv) {
+                    requires castable<std::remove_cvref_t<decltype(obj.begin()->second)>, key_value_mapped_t<T>>;
                     requires (key_value_constructible<T, decltype((obj.begin()->first))> && requires {
                                  t.emplace_back(obj.begin()->first, std::move(value));
                              }) || (key_value_aggregate_initializable<T, decltype((obj.begin()->first))> && requires {
@@ -6094,6 +6101,20 @@ namespace yyjson
             using type = M;
         };
 
+        // Whether no field of a visitable struct, or no element of a C array field, is const, which the default
+        // caster could not read.  A field of another type that cannot be assigned may still be read in place by
+        // its caster.
+        template <typename T>
+        consteval bool visitable_fields_non_const()
+        {
+            using members = std::remove_cv_t<decltype(visit_struct<T>::members)>;
+            return []<std::size_t... Is>(std::index_sequence<Is...>) {
+                return (!std::is_const_v<std::remove_all_extents_t<
+                            typename member_pointee<std::tuple_element_t<Is, members>>::type>> &&
+                        ...);
+            }(std::make_index_sequence<std::tuple_size_v<members>>{});
+        }
+
         // Whether every field of a reflected or visitable struct, or every element of a C array field, can be
         // move-assigned, so that `read_into` and `merge_into` can assign a field over its old value.
         template <typename T>
@@ -6118,13 +6139,33 @@ namespace yyjson
             else
                 return false;
         }
+
+        // The default caster reads T from some kind of JSON value, as `accepted_json_kinds` tells.
+        template <typename T>
+        concept reads_some_json =
+            std::integral<T> || std::is_enum_v<T> || json_scalar_constructible<T, bool> ||
+            json_scalar_constructible<T, double> || json_scalar_constructible<T, std::uint64_t> ||
+            json_scalar_constructible<T, std::int64_t> || json_null_constructible<T> || json_string_constructible<T> ||
+            writer::detail::from_json_def_obj_defined<T> || reader::detail::from_json_def_obj_defined<T> ||
+            writer::detail::from_json_def_arr_defined<T> || reader::detail::from_json_def_arr_defined<T>;
+
+        // A struct that cannot be read field by field, as one with a const or reference field cannot, or a range
+        // of elements that cannot be read, is not castable, rather than castable but failing for every JSON value.
+        // Neither is a type whose caster in this library names a `from_json` that cannot read it, such as
+        // `std::optional` of such a struct, which would otherwise be read from null only.
+        template <typename T>
+        concept default_readable =
+            (!caster_names_from_json<T> || !std::derived_from<caster<T>, builtin_caster>) &&
+            (reads_some_json<T> ||
+             !(visitable<T> || (reflectable<T> && json_aggregate<T>) ||
+               (std::ranges::range<T> && !castable<reader::const_value_ref, std::ranges::range_value_t<T>>)));
     }  // namespace detail
 
     template <typename T>
     struct detail::default_caster
     {
         template <json_object Json>
-        requires std::default_initializable<T> && visitable<T>
+        requires std::default_initializable<T> && visitable<T> && (visitable_fields_non_const<T>())
         static dependent_t<T, Json> from_json(const Json& obj)
         {
             return visit_struct<T>::from_json_impl(obj);
@@ -6416,7 +6457,8 @@ namespace yyjson
         }
 
         template <typename Json>
-        requires (std::same_as<reader::const_value_ref, Json> || writer::detail::base_of_const_value<Json>)
+        requires (std::same_as<reader::const_value_ref, Json> || writer::detail::base_of_const_value<Json>) &&
+                 default_readable<T>
         static dependent_t<T, Json> from_json(const Json& json)
         {
             if constexpr (std::same_as<Json, reader::const_value_ref>)
@@ -6606,7 +6648,7 @@ namespace yyjson
         static constexpr auto json_value_type = !std::same_as<T, writer::detail::mutable_document_ptrs>;
 
         template <typename Json>
-        requires json_value_type
+        requires json_value_type && castable<Json, T>
         static std::shared_ptr<T> from_json(const Json& json)
         {
             if (json.is_null()) return {};
@@ -7040,8 +7082,10 @@ namespace yyjson
 #pragma GCC diagnostic ignored "-Wunused-value"
 #endif
         // Tries the alternatives in order, and skips those that cannot be cast from the kind of the JSON
-        // value, which saves throwing and catching an exception for each of them.
+        // value, which saves throwing and catching an exception for each of them.  Every alternative has to be
+        // castable, as every one has to be writable for `to_json`.
         template <typename Json>
+        requires (castable<Json, Ts> && ...)
         static std::variant<Ts...> from_json(const Json& json)
         {
             static constexpr auto kinds = std::array<std::uint8_t, sizeof...(Ts)>{
