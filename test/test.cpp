@@ -8031,6 +8031,86 @@ TEST(Reflection, CArrayFields)
     EXPECT_TRUE(expect_direct_read<RecursiveCArray>(recursive_json));
 }
 
+// A struct whose caster writes a key and a value from C arrays of `char` without a NUL
+struct EmittedCharArrays
+{
+    char key[2] = {'k', 'y'};
+    char value[3] = {'v', 'a', 'l'};
+};
+template <>
+struct yyjson::caster<EmittedCharArrays>
+{
+    template <typename... Ts>
+    static void to_json(yyjson::object_emitter& out, const EmittedCharArrays& e, Ts... ts)
+    {
+        out.emplace(e.key, e.value, ts...);
+        out.emplace_array("a", [&](yyjson::array_emitter& a) { a.emplace_back(e.value, ts...); });
+    }
+};
+
+// A C array of `char` that is an element of an array or a range is written as integers, as a field is.  A
+// 1-dimensional one written as a value or a key of its own, such as a string literal, is a string that ends at its
+// first NUL, or at its end when it has none.
+TEST(Writer, CharArrays)
+{
+    const char nested[2][3] = {{'a', 'b', 'c'}, {'d', 'e', 'f'}};
+    EXPECT_EQ(std::string(yyjson::write(nested)), "[[97,98,99],[100,101,102]]");
+    EXPECT_EQ(std::string(yyjson::value(nested).write()), "[[97,98,99],[100,101,102]]");
+    EXPECT_EQ(std::string(yyjson::array(nested).write()), "[[97,98,99],[100,101,102]]");
+    expect_direct_write(nested);
+    char deeper[2][1][2] = {{{'a', 'b'}}, {{'c', 'd'}}};
+    EXPECT_EQ(std::string(yyjson::write(deeper)), "[[[97,98]],[[99,100]]]");
+    expect_direct_write(deeper);
+    const char names[][6] = {"alpha", "beta"};
+    EXPECT_EQ(std::string(yyjson::write(names)), "[[97,108,112,104,97,0],[98,101,116,97,0,0]]");
+
+    const std::array<char[2], 2> elements = {{{'x', 'y'}, {'z', 'w'}}};
+    EXPECT_EQ(std::string(yyjson::write(elements)), "[[120,121],[122,119]]");
+    EXPECT_EQ(std::string(yyjson::value(elements).write()), "[[120,121],[122,119]]");
+    expect_direct_write(elements);
+    EXPECT_EQ(std::string(yyjson::write(std::span(elements))), "[[120,121],[122,119]]");
+    EXPECT_EQ(std::string(yyjson::value(std::span(deeper)).write()), "[[[97,98]],[[99,100]]]");
+    const auto vectors = std::vector<std::array<char, 2>>{{'a', 'b'}};
+    EXPECT_EQ(std::string(yyjson::write(vectors)), "[[97,98]]");
+    expect_direct_write(vectors);
+
+    char unterminated[3] = {'x', 'y', 'z'};
+    const char early[5] = {'a', 'b', '\0', 'c', '\0'};
+    EXPECT_EQ(std::string(yyjson::write("abc")), R"("abc")");
+    EXPECT_EQ(std::string(yyjson::value("abc").write()), R"("abc")");
+    EXPECT_EQ(std::string(yyjson::write(unterminated)), R"("xyz")");
+    EXPECT_EQ(std::string(yyjson::value(unterminated).write()), R"("xyz")");
+    EXPECT_EQ(std::string(yyjson::value(unterminated, yyjson::copy_string).write()), R"("xyz")");
+    EXPECT_EQ(std::string(yyjson::write(early)), R"("ab")");
+    EXPECT_EQ(std::string(yyjson::value(early).write()), R"("ab")");
+    expect_direct_write(unterminated);
+    expect_direct_write(early);
+    EXPECT_EQ(std::string(yyjson::write(std::forward_as_tuple(unterminated, 1))), R"(["xyz",1])");
+    EXPECT_EQ(std::string(yyjson::value(std::forward_as_tuple(unterminated, 1)).write()), R"(["xyz",1])");
+    EXPECT_EQ(std::string(yyjson::array{unterminated, early}.write()), R"(["xyz","ab"])");
+
+    EXPECT_EQ(std::string(yyjson::object{{unterminated, 1}, {early, 2}, {"k", "v"}}.write()),
+              R"({"xyz":1,"ab":2,"k":"v"})");
+    auto obj = yyjson::object();
+    obj.emplace(unterminated, unterminated);
+    obj.emplace(early, early, yyjson::copy_string);
+    EXPECT_EQ(std::string(obj.write()), R"({"xyz":"xyz","ab":"ab"})");
+    EXPECT_EQ(std::string(yyjson::write(EmittedCharArrays())), R"({"ky":"val","a":["val"]})");
+    EXPECT_EQ(std::string(yyjson::value(EmittedCharArrays()).write()), R"({"ky":"val","a":["val"]})");
+    expect_direct_write(EmittedCharArrays());
+
+    // the other character types are integers anywhere
+    const signed char s[2] = {1, -2};
+    const unsigned char u[2][1] = {{3}, {4}};
+    const char8_t u8[2] = {u8'a', u8'b'};
+    EXPECT_EQ(std::string(yyjson::write(s)), "[1,-2]");
+    EXPECT_EQ(std::string(yyjson::write(u)), "[[3],[4]]");
+    EXPECT_EQ(std::string(yyjson::write(u8)), "[97,98]");
+    expect_direct_write(s);
+    expect_direct_write(u);
+    expect_direct_write(u8);
+}
+
 // Enumerations, which are read and written by the names of their enumerators, and as integers when a value has no
 // name
 enum class Color

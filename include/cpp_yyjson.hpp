@@ -473,12 +473,45 @@ namespace yyjson
         }
     };
 
+    namespace detail
+    {
+        // A 1-dimensional C array of `char` given as a string, such as a string literal.
+        template <typename T>
+        concept char_string_array =
+            std::is_bounded_array_v<std::remove_reference_t<T>> && std::rank_v<std::remove_reference_t<T>> == 1 &&
+            std::same_as<std::remove_cv_t<std::remove_extent_t<std::remove_reference_t<T>>>, char>;
+        // The size of the string in such an array: up to its first NUL, or up to its end when it has none.
+        template <std::size_t N>
+        constexpr std::size_t char_array_size(const char (&s)[N]) noexcept
+        {
+            const auto* const nul = std::char_traits<char>::find(s, N, '\0');
+            return nul != nullptr ? static_cast<std::size_t>(nul - s) : N;
+        }
+    }  // namespace detail
+
     class key_string : public std::string_view
     {
         using base = std::string_view;
-        using base::base;
 
     public:
+        constexpr key_string() noexcept = default;
+        template <typename... Args>
+        requires (sizeof...(Args) == 2) && std::constructible_from<base, Args...>
+        constexpr key_string(Args&&... args) noexcept(std::is_nothrow_constructible_v<base, Args...>)
+            : base(std::forward<Args>(args)...)
+        {
+        }
+        // A string that ends with a NUL.  An array is taken by the next constructor instead.
+        template <typename P>
+        requires (!std::is_array_v<std::remove_reference_t<P>>) &&
+                 (!std::same_as<std::remove_cvref_t<P>, std::nullptr_t>) && std::convertible_to<P, const char*>
+        constexpr key_string(P&& s) noexcept : base(static_cast<const char*>(s))  // NOLINT
+        {
+        }
+        template <detail::char_string_array T>
+        constexpr key_string(T&& s) noexcept : base(s, detail::char_array_size(s))  // NOLINT
+        {
+        }
         key_string(const std::string_view& v) noexcept : std::string_view(v) {}        // NOLINT
         key_string(std::string_view&& v) noexcept : std::string_view(std::move(v)) {}  // NOLINT
         key_string(std::string&&) = delete;
@@ -1394,13 +1427,51 @@ namespace yyjson
         concept copy_string_args =
             ((sizeof...(Args) == 1 && (std::same_as<Args, copy_string_t> && ...)) || sizeof...(Args) == 0);
 
+        // A C array of `char` as a field or an element, which the writer would take for a string that ends with a
+        // NUL, as the integers that `std::array<char, N>` is written as.
+        template <typename F>
+        concept char_c_array =
+            c_array<F> && std::same_as<std::remove_cv_t<std::remove_all_extents_t<std::remove_reference_t<F>>>, char>;
+        template <typename F>
+        auto char_array_elements(const F& f) noexcept
+        {
+            if constexpr (std::rank_v<F> == 1)
+                return std::span<const char, std::extent_v<F>>(f);
+            else
+                return [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                    return std::array{char_array_elements(f[Is])...};
+                }(std::make_index_sequence<std::extent_v<F>>{});
+        }
+
+        // A C array of `char` written as a value of its own, such as a string literal, as the string up to its
+        // first NUL, or up to its end when it has none.
+        template <typename T>
+        CPPYYJSON_ALWAYS_INLINE inline decltype(auto) char_array_as_string(T&& t) noexcept
+        {
+            if constexpr (char_string_array<T>)
+                return std::string_view(t, char_array_size(t));
+            else
+                return std::forward<T>(t);
+        }
+
         template <std::ranges::range R, typename T>
         using forward_element_type =
             std::conditional_t<std::ranges::borrowed_range<R>, T, std::remove_reference_t<T>&&>;
+        // An element of a range, or the value of a pair in it, as an rvalue reference when the range is not
+        // borrowed, or as `char_array_elements` gives a C array of `char`.
         template <std::ranges::range R, typename T>
         decltype(auto) forward_element(T&& t)
         {
-            return std::forward<forward_element_type<R, T>>(t);
+            if constexpr (char_c_array<T>)
+                return char_array_elements(t);
+            else
+                return std::forward<forward_element_type<R, T>>(t);
+        }
+        // The key of a pair in a range, which a C array of `char` is a string for.
+        template <std::ranges::range R, typename T>
+        decltype(auto) forward_key(T&& t)
+        {
+            return char_array_as_string(std::forward<forward_element_type<R, T>>(t));
         }
 
         // A struct key that needs no escape under any flag.  The direct writer copies it with its quotes and
@@ -1465,21 +1536,6 @@ namespace yyjson
                 return static_cast<std::uint64_t>(e);
         }
 
-        // A C array of `char` as a field, which the writer would take for a string that ends with a NUL, as the
-        // integers that `std::array<char, N>` is written as.
-        template <typename F>
-        concept char_c_array =
-            c_array<F> && std::same_as<std::remove_cv_t<std::remove_all_extents_t<std::remove_reference_t<F>>>, char>;
-        template <typename F>
-        auto char_array_elements(const F& f) noexcept
-        {
-            if constexpr (std::rank_v<F> == 1)
-                return std::span<const char, std::extent_v<F>>(f);
-            else
-                return [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                    return std::array{char_array_elements(f[Is])...};
-                }(std::make_index_sequence<std::extent_v<F>>{});
-        }
         template <typename F>
         CPPYYJSON_ALWAYS_INLINE inline decltype(auto) writable_field(F&& f) noexcept
         {
@@ -2248,7 +2304,7 @@ namespace yyjson
                     auto& children = ptrs->children;
                     for (auto&& v : range)
                     {
-                        auto&& key = forward_element<Range&&>(std::get<0>(std::forward<decltype(v)>(v)));
+                        auto&& key = forward_key<Range&&>(std::get<0>(std::forward<decltype(v)>(v)));
                         auto&& value = forward_element<Range&&>(std::get<1>(std::forward<decltype(v)>(v)));
                         if constexpr (!std::is_assignable_v<decltype(value.get_has_parent()), bool>)
                         {
@@ -2315,7 +2371,7 @@ namespace yyjson
                     auto result = yyjson_mut_obj(ptrs->self);
                     for (auto&& v : std::forward<Range>(range))
                     {
-                        auto&& key = forward_element<Range&&>(std::get<0>(std::forward<decltype(v)>(v)));
+                        auto&& key = forward_key<Range&&>(std::get<0>(std::forward<decltype(v)>(v)));
                         [[maybe_unused]] auto success =
                             yyjson_mut_obj_add(result, create_primitive(std::forward<decltype(key)>(key), ts...),
                                                copy_value(std::get<1>(v)));
@@ -2337,7 +2393,7 @@ namespace yyjson
                 template <create_primitive_callable T, copy_string_args... Ts>
                 yyjson_mut_val* create_value(T&& t, Ts... ts)
                 {
-                    return create_primitive(std::forward<T>(t), ts...);
+                    return create_primitive(char_array_as_string(std::forward<T>(t)), ts...);
                 }
                 template <create_array_callable T, copy_string_args... Ts>
                 requires (!create_primitive_callable<T>) && (!create_object_callable<T>)
@@ -2735,7 +2791,7 @@ namespace yyjson
                                     // key
                                     {
                                         const auto result = set_value(
-                                            key, forward_element<Range&&>(std::get<0>(std::forward<decltype(v)>(v))),
+                                            key, forward_key<Range&&>(std::get<0>(std::forward<decltype(v)>(v))),
                                             ts...);
                                         if (yyjson_unlikely(!result)) [[unlikely]]
                                             return nullptr;
@@ -4351,7 +4407,8 @@ namespace yyjson
                 requires key_type<std::remove_cvref_t<Key&&>>
                 auto object_append_no_iter(Key&& key, T&& t, Ts... ts)
                 {
-                    const auto add_key = base::doc_.create_primitive(std::forward<Key>(key), ts...);
+                    const auto add_key =
+                        base::doc_.create_primitive(char_array_as_string(std::forward<Key>(key)), ts...);
                     auto add_val = base::doc_.create_value(std::forward<T>(t), ts...);
                     [[maybe_unused]] auto success = yyjson_mut_obj_add(base::val_, add_key, add_val);
                     assert(success);
@@ -4370,7 +4427,8 @@ namespace yyjson
                 template <typename Key, base_of_value T, copy_string_args... Ts>
                 auto object_append_no_iter(Key&& key, T&& json_value, Ts... ts) noexcept
                 {
-                    const auto add_key = base::doc_.create_primitive(std::forward<Key>(key), ts...);
+                    const auto add_key =
+                        base::doc_.create_primitive(char_array_as_string(std::forward<Key>(key)), ts...);
 
                     if constexpr (!std::is_assignable_v<decltype(json_value.get_has_parent()), bool>)
                     {
@@ -4421,7 +4479,8 @@ namespace yyjson
                 template <typename Key, reader::detail::base_of_value_ref T, copy_string_args... Ts>
                 auto object_append_no_iter(Key&& key, T&& json_value, Ts... ts) noexcept
                 {
-                    const auto add_key = base::doc_.create_primitive(std::forward<Key>(key), ts...);
+                    const auto add_key =
+                        base::doc_.create_primitive(char_array_as_string(std::forward<Key>(key)), ts...);
                     auto val_copy = base::doc_.copy_value(json_value);
                     [[maybe_unused]] auto success = yyjson_mut_obj_add(base::val_, add_key, val_copy);
                     assert(success);
@@ -4532,8 +4591,9 @@ namespace yyjson
                 auto emplace(KeyType&& key, empty_array_t, Ts... ts) noexcept
                 {
                     auto result = base::doc_.template get_empty_value_ref<array_ref>();
-                    [[maybe_unused]] auto success = yyjson_mut_obj_add(
-                        base::val_, base::doc_.create_primitive(std::forward<KeyType>(key), ts...), result.val_);
+                    const auto add_key =
+                        base::doc_.create_primitive(char_array_as_string(std::forward<KeyType>(key)), ts...);
+                    [[maybe_unused]] auto success = yyjson_mut_obj_add(base::val_, add_key, result.val_);
                     assert(success);
                     return result;
                 }
@@ -4541,8 +4601,9 @@ namespace yyjson
                 auto emplace(KeyType&& key, empty_object_t, Ts... ts) noexcept
                 {
                     auto result = base::doc_.template get_empty_value_ref<object_ref>();
-                    [[maybe_unused]] auto success = yyjson_mut_obj_add(
-                        base::val_, base::doc_.create_primitive(std::forward<KeyType>(key), ts...), result.val_);
+                    const auto add_key =
+                        base::doc_.create_primitive(char_array_as_string(std::forward<KeyType>(key)), ts...);
+                    [[maybe_unused]] auto success = yyjson_mut_obj_add(base::val_, add_key, result.val_);
                     assert(success);
                     return result;
                 }
@@ -8992,7 +9053,7 @@ namespace yyjson
                 if constexpr (base_of_value<T> || reader::detail::base_of_value_ref<T>)
                     write_json(json_value_access::get(t));
                 else if constexpr (create_primitive_callable<T>)
-                    write_primitive(std::forward<T>(t));
+                    write_primitive(char_array_as_string(std::forward<T>(t)));
                 else if constexpr (create_object_callable<T>)
                     write_object(std::forward<T>(t));
                 else
@@ -9168,7 +9229,7 @@ namespace yyjson
                 for (auto&& v : std::forward<Range>(range))
                 {
                     next_element(first);
-                    auto&& key = forward_element<Range&&>(std::get<0>(std::forward<decltype(v)>(v)));
+                    auto&& key = forward_key<Range&&>(std::get<0>(std::forward<decltype(v)>(v)));
                     // `set_value` stores the key of a range of C++ values, `create_primitive` the others
                     if constexpr (create_value_key_value_range<Range>)
                         write_value(std::forward<decltype(key)>(key));
@@ -9309,7 +9370,7 @@ namespace yyjson
                     }
                 }
                 next_element(first);
-                write_primitive(std::get<0>(std::forward<M>(m)));
+                write_primitive(char_array_as_string(std::get<0>(std::forward<M>(m))));
                 end_key();
                 write_value(std::get<1>(std::forward<M>(m)));
             }
@@ -13036,7 +13097,7 @@ namespace yyjson
         {
             // a string literal, whose check for escapes the compiler can do
             if constexpr (std::is_array_v<std::remove_cvref_t<Key>>)
-                direct_->next_key(first_, std::string_view(key));
+                direct_->next_key(first_, std::string_view(yyjson::detail::char_array_as_string(key)));
             else
             {
                 direct_->next_element(first_);
