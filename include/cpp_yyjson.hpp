@@ -473,6 +473,52 @@ namespace yyjson
     template <typename T>
     inline constexpr std::initializer_list<rename> field_rename = {};
 
+    // How JSON names the alternative of a `std::variant`, as `variant_tag` gives it: by trying the alternatives in
+    // turn, by a member of the object of the alternative, or by a member of the object that holds the variant as a
+    // field next to it.
+    enum class variant_tagging : std::uint8_t
+    {
+        untagged,
+        internal,
+        adjacent
+    };
+
+    // The key of the member that names the alternative of a variant, and the names of its alternatives other than
+    // `std::monostate` in their order.  The names are kept as they are given, which `internal_tag` and
+    // `adjacent_tag` take from string literals.
+    template <std::size_t N>
+    struct variant_tag_spec
+    {
+        variant_tagging tagging = variant_tagging::untagged;
+        std::string_view key;
+        std::array<std::string_view, N> ids = {};
+    };
+
+    // `{"type": "circle", "radius": 1}`: the member `key` of the object that the alternative is written as.
+    template <std::size_t N>
+    consteval variant_tag_spec<N> internal_tag(std::string_view key, const std::string_view (&ids)[N])
+    {
+        auto spec = variant_tag_spec<N>{variant_tagging::internal, key};
+        std::ranges::copy(ids, spec.ids.begin());
+        return spec;
+    }
+
+    // `{"type": "circle", "shape": {"radius": 1}}`: the member `key` of the object of a struct, next to the field
+    // that holds the variant.
+    template <std::size_t N>
+    consteval variant_tag_spec<N> adjacent_tag(std::string_view key, const std::string_view (&ids)[N])
+    {
+        auto spec = variant_tag_spec<N>{variant_tagging::adjacent, key};
+        std::ranges::copy(ids, spec.ids.begin());
+        return spec;
+    }
+
+    // Names the alternatives of the variant T in JSON.  A specialization is `template <> inline constexpr auto
+    // yyjson::variant_tag<T> = yyjson::internal_tag("type", {"circle", "rect"});` or the same with
+    // `yyjson::adjacent_tag`.  A variant without one tries its alternatives in turn.
+    template <typename T>
+    inline constexpr variant_tag_spec<0> variant_tag = {};
+
 #if FIELD_RFL_ANNOTATIONS
     // Annotates a field of a reflected struct that is neither read nor written, as `[[=yyjson::skip]]`.
     struct skip_t
@@ -1352,6 +1398,254 @@ namespace yyjson
             for (; i < size; ++i) value_initialize(field[i]);
         }
 
+        // Whether the first `n` of `names` differ from each other.
+        template <std::size_t N>
+        consteval bool distinct_names(const std::array<std::string_view, N>& names, std::size_t n)
+        {
+            for (std::size_t i = 0; i < n; ++i)
+                for (std::size_t j = 0; j < i; ++j)
+                    if (names[i] == names[j]) return false;
+            return true;
+        }
+
+        // The names of the alternatives of a variant that `variant_tag` tags.  `alternative(id)` is the index of the
+        // alternative that `id` names, or else that of `std::monostate`, which a missing or unknown tag reads as,
+        // or else `std::variant_npos`.
+        template <typename V>
+        struct variant_tags
+        {
+            static constexpr auto tagging = variant_tagging::untagged;
+        };
+        template <typename... Ts>
+        requires (variant_tag<std::variant<Ts...>>.tagging != variant_tagging::untagged)
+        struct variant_tags<std::variant<Ts...>>
+        {
+            static constexpr auto& spec = variant_tag<std::variant<Ts...>>;
+            static constexpr auto tagging = spec.tagging;
+            static constexpr std::string_view key = spec.key;
+            static constexpr std::size_t monostate = [] {
+                constexpr auto is_monostate = std::array<bool, sizeof...(Ts)>{std::same_as<Ts, std::monostate>...};
+                const auto it = std::ranges::find(is_monostate, true);
+                return it == is_monostate.end() ? std::variant_npos
+                                                : static_cast<std::size_t>(it - is_monostate.begin());
+            }();
+            static_assert((0 + ... + std::same_as<Ts, std::monostate>) <= 1,
+                          "a variant that yyjson::variant_tag tags can have std::monostate only once");
+            static_assert(spec.ids.size() + (monostate != std::variant_npos) == sizeof...(Ts),
+                          "yyjson::variant_tag must name each alternative of the variant other than std::monostate");
+            static_assert(!key.empty(), "the key of yyjson::variant_tag must not be empty");
+            static_assert(distinct_names(spec.ids, spec.ids.size()) &&
+                              std::ranges::none_of(spec.ids, &std::string_view::empty),
+                          "the names of the alternatives in yyjson::variant_tag must be distinct and not empty");
+            // the name of each alternative, empty for `std::monostate`
+            static constexpr auto ids = [] {
+                auto result = std::array<std::string_view, sizeof...(Ts)>{};
+                for (std::size_t i = 0, j = 0; i < sizeof...(Ts); ++i)
+                    if (i != monostate) result[i] = spec.ids[j++];
+                return result;
+            }();
+
+            [[nodiscard]] static constexpr std::size_t alternative(std::string_view id) noexcept
+            {
+                for (std::size_t i = 0; i < sizeof...(Ts); ++i)
+                    if (i != monostate && ids[i] == id) return i;
+                return monostate;
+            }
+        };
+
+        template <typename T>
+        concept internally_tagged = variant_tags<std::remove_cvref_t<T>>::tagging == variant_tagging::internal;
+        template <typename T>
+        concept adjacently_tagged = variant_tags<std::remove_cvref_t<T>>::tagging == variant_tagging::adjacent;
+
+        [[noreturn]] CPPYYJSON_COLD inline void throw_variant_tag_missing(std::string_view key, std::string_view type)
+        {
+            throw_bad_cast("{} is not constructible from JSON without the tag \"{}\" that names an alternative", type,
+                           key);
+        }
+        [[noreturn]] CPPYYJSON_COLD inline void throw_variant_tag_unknown(std::string_view key, std::string_view id,
+                                                                          std::string_view type)
+        {
+            throw_bad_cast("{} is not constructible from JSON: the tag \"{}\": \"{}\" names no alternative", type, key,
+                           id);
+        }
+        [[noreturn]] CPPYYJSON_COLD inline void throw_adjacent_tag_alone(std::string_view type)
+        {
+            throw std::logic_error(std::format(
+                "{} is tagged by yyjson::adjacent_tag, and is read and written only as a field of a struct", type));
+        }
+
+        // The fields of a reflected struct that are read and written, or of a `VISITABLE_STRUCT`, by their index
+        // among them, which a key matcher of the struct gives.
+        template <typename S>
+        inline constexpr std::size_t struct_field_count = [] {
+            if constexpr (visitable<S>)
+                return std::tuple_size_v<std::remove_cvref_t<decltype(visit_struct<S>::members)>>;
+            else
+                return reflected_fields<S>::size();
+        }();
+        template <std::size_t I, typename S>
+        CPPYYJSON_ALWAYS_INLINE inline constexpr auto& struct_field(S& s) noexcept
+        {
+            if constexpr (visitable<S>)
+                return s.*std::get<I>(visit_struct<S>::members);
+            else
+                return field_reflection::get_field<reflected_field_index<S, I>>(s);
+        }
+        template <typename S, std::size_t I>
+        using struct_field_type = std::remove_cvref_t<decltype(struct_field<I>(std::declval<S&>()))>;
+        template <typename S, std::size_t I>
+        inline constexpr std::string_view struct_field_key = [] {
+            if constexpr (visitable<S>)
+                return std::string_view(visit_struct<S>::names[I]);
+            else
+                return field_key<S, reflected_field_index<S, I>>;
+        }();
+
+        // The index of the field of S whose key is `key`, or `struct_field_count<S>`.
+        template <typename S>
+        consteval std::size_t struct_field_of_key(std::string_view key)
+        {
+            return [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                auto result = sizeof...(Is);
+                (void)((struct_field_key<S, Is> == key && (result = Is, true)) || ...);
+                return result;
+            }(std::make_index_sequence<struct_field_count<S>>{});
+        }
+
+        // A field of S that holds a variant tagged by `adjacent_tag`, and whether S has a field of its tag, which
+        // is then read and written as any other field, and checked against the variant when it is written.
+        // Otherwise the tag is written as a member just before the variant.
+        template <typename S, std::size_t I>
+        inline constexpr bool adjacent_field = adjacently_tagged<struct_field_type<S, I>>;
+        template <typename S, typename Field>
+        inline constexpr bool writes_adjacent_tag = [] {
+            if constexpr (adjacently_tagged<Field>)
+                return struct_field_of_key<S>(variant_tags<std::remove_cvref_t<Field>>::key) == struct_field_count<S>;
+            else
+                return false;
+        }();
+
+        template <typename S>
+        inline constexpr bool has_adjacent_fields = []<std::size_t... Is>(std::index_sequence<Is...>) {
+            return (adjacent_field<S, Is> || ...);
+        }(std::make_index_sequence<struct_field_count<S>>{});
+
+        // Whether the object of S may have a member of `key`, of a field or of a tag that `writes_adjacent_tag`.
+        template <typename S>
+        constexpr bool writes_member_of_key(std::string_view key)
+        {
+            if (struct_field_of_key<S>(key) != struct_field_count<S>) return true;
+            return [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                return ([&] {
+                    if constexpr (writes_adjacent_tag<S, struct_field_type<S, Is>>)
+                        return variant_tags<std::remove_cvref_t<struct_field_type<S, Is>>>::key == key;
+                    else
+                        return false;
+                }() || ...);
+            }(std::make_index_sequence<struct_field_count<S>>{});
+        }
+
+        // The field of S that holds the tag of the field I tagged by `adjacent_tag`, or `struct_field_count<S>`,
+        // and whether the field J holds the tag of any.
+        template <typename S, std::size_t I>
+        inline constexpr std::size_t adjacent_tag_field =
+            struct_field_of_key<S>(variant_tags<std::remove_cvref_t<struct_field_type<S, I>>>::key);
+        template <typename S, std::size_t J>
+        inline constexpr bool holds_adjacent_tag = []<std::size_t... Is>(std::index_sequence<Is...>) {
+            return ([] {
+                if constexpr (adjacent_field<S, Is>)
+                    return adjacent_tag_field<S, Is> == J;
+                else
+                    return false;
+            }() || ...);
+        }(std::make_index_sequence<struct_field_count<S>>{});
+
+        // The number of members that the fields of S may write: one for each field and one for each tag that
+        // `writes_adjacent_tag`.
+        template <typename S>
+        inline constexpr std::size_t struct_member_capacity = [] {
+            if constexpr (!has_adjacent_fields<S>)
+                return struct_field_count<S>;
+            else
+                return []<std::size_t... Is>(std::index_sequence<Is...>) {
+                    constexpr auto keys = [] {
+                        auto result = std::array<std::string_view, sizeof...(Is)>{};
+                        auto n = std::size_t{0};
+                        (
+                            [&] {
+                                if constexpr (writes_adjacent_tag<S, struct_field_type<S, Is>>)
+                                    result[n++] = variant_tags<std::remove_cvref_t<struct_field_type<S, Is>>>::key;
+                            }(),
+                            ...);
+                        return std::pair(result, n);
+                    }();
+                    static_assert(distinct_names(keys.first, keys.second),
+                                  "two fields tagged by yyjson::adjacent_tag with the same key need a field of that "
+                                  "key");
+                    return sizeof...(Is) + keys.second;
+                }(std::make_index_sequence<struct_field_count<S>>{});
+        }();
+
+        // The tags that `writes_adjacent_tag` writes for `s`, one for each variant that does not hold
+        // `std::monostate`.
+        template <typename S>
+        std::size_t written_adjacent_tags(const S& s) noexcept
+        {
+            return [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                auto n = std::size_t{0};
+                (
+                    [&] {
+                        if constexpr (writes_adjacent_tag<S, struct_field_type<S, Is>>)
+                        {
+                            const auto index = struct_field<Is>(s).index();
+                            n += index != variant_tags<struct_field_type<S, Is>>::monostate &&
+                                 index != std::variant_npos;
+                        }
+                    }(),
+                    ...);
+                return n;
+            }(std::make_index_sequence<struct_field_count<S>>{});
+        }
+
+        // Throws unless each field of S that is the tag of a variant names the alternative that the variant holds.
+        template <typename S>
+        void check_adjacent_tags(const S& s)
+        {
+            [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                (
+                    [&] {
+                        using field_type = struct_field_type<S, Is>;
+                        if constexpr (adjacently_tagged<field_type> && !writes_adjacent_tag<S, field_type>)
+                        {
+                            using tags = variant_tags<field_type>;
+                            constexpr auto t = struct_field_of_key<S>(tags::key);
+                            using tag_type = struct_field_type<S, t>;
+                            const auto index = struct_field<Is>(s).index();
+                            // a variant without a value is left to `std::visit`, which throws
+                            if (index == tags::monostate || index == std::variant_npos) return;
+                            const auto& tag = struct_field<t>(s);
+                            auto id = std::string_view();
+                            if constexpr (std::is_enum_v<tag_type>)
+                                id = field_reflection::enum_name(tag);
+                            else
+                            {
+                                static_assert(std::convertible_to<const tag_type&, std::string_view>,
+                                              "the field of the key of yyjson::adjacent_tag must be a string or an "
+                                              "enumeration");
+                                id = std::string_view(tag);
+                            }
+                            if (id != tags::ids[index])
+                                throw std::invalid_argument(std::format(
+                                    "the field \"{}\" of {} is \"{}\", but the field \"{}\" holds the alternative "
+                                    "\"{}\"",
+                                    tags::key, type_name<S>(), id, struct_field_key<S, Is>, tags::ids[index]));
+                        }
+                    }(),
+                    ...);
+            }(std::make_index_sequence<struct_field_count<S>>{});
+        }
+
         // `replaceable` tells whether a new object may be constructed in the place of the field.
         template <typename Field, typename Json>
         void assign_reflected_field(Field& field, const Json& value, bool replaceable)
@@ -1381,6 +1675,52 @@ namespace yyjson
             {
                 field = cast<field_type>(value);
             }
+        }
+
+        // Casts `json` to the alternative `index` of the variant V, or gives `std::monostate` without reading it.
+        template <typename V, typename Json>
+        V cast_alternative(std::size_t index, const Json& json)
+        {
+            return [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                using cast_function = V (*)(const Json&);
+                static constexpr cast_function casts[] = {+[]([[maybe_unused]] const Json& j) -> V {
+                    using alternative = std::variant_alternative_t<Is, V>;
+                    if constexpr (std::same_as<alternative, std::monostate>)
+                        return V(std::in_place_index<Is>);
+                    else
+                        return V(std::in_place_index<Is>, cast<alternative>(j));
+                }...};
+                return casts[index](json);
+            }(std::make_index_sequence<std::variant_size_v<V>>{});
+        }
+
+        // The alternative of the variant V that the tag in the object `obj` names.
+        template <typename V, typename Obj>
+        std::size_t tagged_alternative(const Obj& obj)
+        {
+            using tags = variant_tags<V>;
+            for (auto&& [key, value] : obj)
+            {
+                if (std::string_view(key) != tags::key) continue;
+                if (const auto id = value.as_string(); id.has_value())
+                {
+                    if (const auto i = tags::alternative(*id); i != std::variant_npos) return i;
+                    throw_variant_tag_unknown(tags::key, *id, type_name<V>());
+                }
+                break;
+            }
+            if constexpr (tags::monostate != std::variant_npos)
+                return tags::monostate;
+            else
+                throw_variant_tag_missing(tags::key, type_name<V>());
+        }
+
+        // Assigns the value of a field tagged by `adjacent_tag` from the object `obj` that holds it.
+        template <typename Field, typename Json, typename Obj>
+        void assign_adjacent_field(Field& field, const Json& value, const Obj& obj)
+        {
+            using V = std::remove_cvref_t<Field>;
+            field = cast_alternative<V>(tagged_alternative<V>(obj), value);
         }
 
         // Finds the field that a JSON key names.  Keys usually come in the order that the fields are
@@ -1553,15 +1893,37 @@ namespace yyjson
                 }(std::make_index_sequence<field_reflection::field_count<T>>{});
         }
 
+        // `assign_fields_by_key` for the fields of the struct T, which calls `assign(index, value, obj)` instead
+        // when T has a field that `adjacent_tag` tags, to read its tag from the object.  `assign` must not name
+        // the object: a lambda captures it even from a discarded `if constexpr` branch, which keeps the object
+        // in memory and slows down `cast` of every struct.
+        template <typename T, std::size_t N, typename Json, typename Assign>
+        CPPYYJSON_ALWAYS_INLINE inline void assign_struct_fields_by_key(const field_key_matcher<N>& matcher,
+                                                                        const Json& obj, Assign&& assign)
+        {
+            if constexpr (has_adjacent_fields<T>)
+                assign_fields_by_key(matcher, obj,
+                                     [&](std::size_t index, const auto& value) { assign(index, value, obj); });
+            else
+                assign_fields_by_key(matcher, obj, std::forward<Assign>(assign));
+        }
+
         template <typename T, typename Json>
         void assign_reflected_fields(T& t, const Json& obj)
         {
             [[maybe_unused]] const auto guard = recursion_guard<T>();
-            assign_fields_by_key(reflected_key_matcher<T>, obj, [&t](std::size_t index, const auto& value) {
+            assign_struct_fields_by_key<T>(reflected_key_matcher<T>, obj, [&](std::size_t index, const auto& value,
+                                                                              const auto&... object) {
                 [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
                     (void)((index == Ks &&
-                            (assign_reflected_field(field_reflection::get_field<reflected_field_index<T, Ks>>(t), value,
-                                                    reflected_field_replaceable<reflected_field_index<T, Ks>>(t)),
+                            ([&] {
+                                constexpr auto i = reflected_field_index<T, Ks>;
+                                auto& field = field_reflection::get_field<i>(t);
+                                if constexpr (adjacently_tagged<decltype(field)>)
+                                    assign_adjacent_field(field, value, object...);
+                                else
+                                    assign_reflected_field(field, value, reflected_field_replaceable<i>(t));
+                            }(),
                              true)) ||
                            ...);
                 }(std::make_index_sequence<reflected_fields<T>::size()>{});
@@ -1575,14 +1937,21 @@ namespace yyjson
                                      const Json& obj)
         {
             [[maybe_unused]] const auto guard = recursion_guard<T>();
-            assign_fields_by_key(matcher, obj, [&](std::size_t index, const auto& value) {
+            assign_struct_fields_by_key<T>(matcher, obj, [&](std::size_t index, const auto& value,
+                                                            const auto&... object) {
                 [&]<std::size_t... Is>(std::index_sequence<Is...>) {
                     const auto replaceable = [&]<std::size_t I>(std::integral_constant<std::size_t, I>) {
                         return has_own_bytes<I>(t.*std::get<Is>(members)...);
                     };
                     (void)((index == Is &&
-                            (assign_reflected_field(t.*std::get<Is>(members), value,
-                                                    replaceable(std::integral_constant<std::size_t, Is>{})),
+                            ([&] {
+                                auto& field = t.*std::get<Is>(members);
+                                if constexpr (adjacently_tagged<decltype(field)>)
+                                    assign_adjacent_field(field, value, object...);
+                                else
+                                    assign_reflected_field(field, value,
+                                                           replaceable(std::integral_constant<std::size_t, Is>{}));
+                            }(),
                              true)) ||
                            ...);
                 }(std::index_sequence_for<Members...>{});
@@ -1611,8 +1980,21 @@ namespace yyjson
         template <typename T>
         concept has_optional_reflected_field = has_optional_reflected_field_impl<T>(reflected_fields<T>{});
 
+        template <typename T, typename U>
+        std::size_t written_field_count(T&& t);
+
+        // The members that the fields of a reflected struct write.
         template <typename T, typename U = std::remove_cvref_t<T>>
         std::size_t reflected_field_count(T&& t)
+        {
+            if constexpr (has_adjacent_fields<U>)
+                return written_field_count<T, U>(t) + written_adjacent_tags(t);
+            else
+                return written_field_count<T, U>(t);
+        }
+        // The fields that are written, without the tags that `written_adjacent_tags` counts.
+        template <typename T, typename U>
+        std::size_t written_field_count(T&& t)
         {
             if constexpr (has_optional_reflected_field<U> && annotated_fields<U>)
             {
@@ -1826,6 +2208,39 @@ namespace yyjson
                 return std::move(field_reflection::get_field<I>(t));
             else
                 return field_reflection::get_field<I>(t);
+        }
+
+        // Emplaces a field of the struct S with `emitter`.  A variant tagged by `adjacent_tag` is written as the
+        // alternative that it holds, after its tag unless S has a field of it.
+        template <typename S, bool Plain, typename Emitter, typename Field, typename... Ts>
+        CPPYYJSON_ALWAYS_INLINE inline void emplace_struct_field(Emitter& emitter, std::string_view key,
+                                                                 Field&& field, Ts... ts)
+        {
+            if constexpr (adjacently_tagged<Field>)
+            {
+                using tags = variant_tags<std::remove_cvref_t<Field>>;
+                if constexpr (writes_adjacent_tag<S, Field>)
+                {
+                    if (const auto index = field.index(); index != tags::monostate && index != std::variant_npos)
+                        emitter.template emplace<is_plain_key(tags::key)>(tags::key, tags::ids[index], ts...);
+                }
+                std::visit(
+                    [&](auto&& v) {
+                        if constexpr (omittable<decltype(v)>)
+                        {
+                            // the field is counted as written
+                            if (should_omit_field(v))
+                            {
+                                emitter.template emplace<Plain>(key, nullptr, ts...);
+                                return;
+                            }
+                        }
+                        emitter.template emplace<Plain>(key, std::forward<decltype(v)>(v), ts...);
+                    },
+                    std::forward<Field>(field));
+            }
+            else
+                emitter.template emplace<Plain>(key, std::forward<Field>(field), ts...);
         }
     }  // namespace detail
 
@@ -2968,7 +3383,7 @@ namespace yyjson
                 yyjson_mut_val* yyjson_mut_arr_with_visitable_objects(yyjson_mut_val* dst, Range&& range, Ts... ts)
                 {
                     using value_type = std::remove_cvref_t<std::ranges::range_value_t<Range>>;
-                    constexpr auto field_count = visit_struct<value_type>::field_count;
+                    constexpr auto field_count = yyjson::detail::struct_member_capacity<value_type>;
                     const auto count = std::ranges::size(range);
                     constexpr auto max_values = ~static_cast<std::size_t>(0) / sizeof(yyjson_mut_val);
                     if (yyjson_likely(count <= (max_values - 1) / ((field_count * 2) + 1)))
@@ -3021,7 +3436,7 @@ namespace yyjson
                                                                            std::index_sequence<Is...>, Ts... ts)
                 {
                     using value_type = std::remove_cvref_t<std::ranges::range_value_t<Range>>;
-                    constexpr auto field_count = sizeof...(Is);
+                    constexpr auto field_count = yyjson::detail::struct_member_capacity<value_type>;
                     const auto count = std::ranges::size(range);
                     constexpr auto max_values = ~static_cast<std::size_t>(0) / sizeof(yyjson_mut_val);
                     if (yyjson_likely(count <= (max_values - 1) / ((field_count * 2) + 1)))
@@ -3040,9 +3455,12 @@ namespace yyjson
                                     auto* field_values = fields + (i * field_count * 2);
                                     auto emitter = reflected_field_emitter{*this, obj, field_values, field_count};
                                     auto&& element = forward_element<Range&&>(std::forward<decltype(v)>(v));
-                                    (emitter.template emplace<yyjson::detail::is_plain_key(
-                                         yyjson::detail::field_key<value_type, Is>)>(
-                                         yyjson::detail::field_key<value_type, Is>,
+                                    if constexpr (yyjson::detail::has_adjacent_fields<value_type>)
+                                        yyjson::detail::check_adjacent_tags(element);
+                                    (yyjson::detail::emplace_struct_field<
+                                         value_type, yyjson::detail::is_plain_key(
+                                                         yyjson::detail::field_key<value_type, Is>)>(
+                                         emitter, yyjson::detail::field_key<value_type, Is>,
                                          yyjson::detail::forward_field<Is>(std::forward<decltype(element)>(element)),
                                          ts...),
                                      ...);
@@ -6956,10 +7374,11 @@ namespace yyjson
                  (!writer::detail::to_json_usr_translator<T>)
         static void to_json(writer::object_ref& obj, const T& t, Ts... ts)
         {
+            if constexpr (detail::has_adjacent_fields<T>) detail::check_adjacent_tags(t);
             obj.assign_reflected_fields(detail::reflected_field_count(t), [&](auto& emitter) {
                 [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                    (emitter.template emplace<detail::is_plain_key(detail::field_key<T, Is>)>(
-                         detail::field_key<T, Is>, detail::forward_field<Is>(t), ts...),
+                    (detail::emplace_struct_field<T, detail::is_plain_key(detail::field_key<T, Is>)>(
+                         emitter, detail::field_key<T, Is>, detail::forward_field<Is>(t), ts...),
                      ...);
                 }(detail::reflected_fields<T>{});
             });
@@ -6971,11 +7390,12 @@ namespace yyjson
         {
             // The fields are moved one by one out of `t` itself.  `for_each_field` would move them into a
             // temporary first, and a field that the user's caster references would not outlive the call.
+            if constexpr (detail::has_adjacent_fields<T>) detail::check_adjacent_tags(t);
             const auto field_count = detail::reflected_field_count(t);
             obj.assign_reflected_fields(field_count, [&](auto& emitter) {
                 [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                    (emitter.template emplace<detail::is_plain_key(detail::field_key<T, Is>)>(
-                         detail::field_key<T, Is>, detail::forward_field<Is>(std::move(t)), ts...),
+                    (detail::emplace_struct_field<T, detail::is_plain_key(detail::field_key<T, Is>)>(
+                         emitter, detail::field_key<T, Is>, detail::forward_field<Is>(std::move(t)), ts...),
                      ...);
                 }(detail::reflected_fields<T>{});
             });
@@ -7212,7 +7632,13 @@ namespace yyjson
             template <typename Json>
             static consteval std::uint8_t value()
             {
-                return static_cast<std::uint8_t>((0U | ... | accepted_json_kinds<Ts, Json>()));
+                using tags = variant_tags<std::variant<Ts...>>;
+                if constexpr (tags::tagging == variant_tagging::internal)
+                    return tags::monostate != std::variant_npos ? json_kind_object | json_kind_null : json_kind_object;
+                else if constexpr (tags::tagging == variant_tagging::adjacent)
+                    return json_kind_all;
+                else
+                    return static_cast<std::uint8_t>((0U | ... | accepted_json_kinds<Ts, Json>()));
             }
         };
 
@@ -7433,6 +7859,14 @@ namespace yyjson
         }
     }  // namespace detail
 
+    namespace detail
+    {
+        // Inserts the member `key: id` first into the object `val`, or checks that the member `key` that it has
+        // is `id`.
+        void insert_variant_tag(writer::value_ref& val, std::string_view key, std::string_view id,
+                                std::string_view type);
+    }  // namespace detail
+
     template <typename... Ts>
     struct caster<std::variant<Ts...>> : detail::builtin_caster
     {
@@ -7446,6 +7880,30 @@ namespace yyjson
         template <typename Json>
         requires (castable<Json, Ts> && ...)
         static std::variant<Ts...> from_json(const Json& json)
+        {
+            using V = std::variant<Ts...>;
+            if constexpr (detail::adjacently_tagged<V>)
+                detail::throw_adjacent_tag_alone(detail::type_name<V>());
+            else if constexpr (detail::internally_tagged<V>)
+            {
+                using tags = detail::variant_tags<V>;
+                if constexpr (tags::monostate != std::variant_npos)
+                {
+                    if (json.is_null()) return V(std::in_place_index<tags::monostate>);
+                }
+                const auto obj = json.as_object();
+                if (!obj.has_value())
+                    detail::throw_bad_cast("{} is not constructible from JSON other than an object",
+                                           detail::type_name<V>());
+                return detail::cast_alternative<V>(detail::tagged_alternative<V>(*obj), json);
+            }
+            else
+                return from_untagged(json);
+        }
+
+    private:
+        template <typename Json>
+        static std::variant<Ts...> from_untagged(const Json& json)
         {
             static constexpr auto kinds = std::array<std::uint8_t, sizeof...(Ts)>{
                 detail::accepted_json_kinds<Ts, Json>()...};
@@ -7471,11 +7929,24 @@ namespace yyjson
 #pragma GCC diagnostic pop
 #endif
 
+        // Writes the tag of an alternative that `internal_tag` names first in its object, unless the object has a
+        // member of the tag already, which has to name the alternative.
+        static void write_internal_tag(writer::value_ref& val, std::size_t index)
+        {
+            using tags = detail::variant_tags<std::variant<Ts...>>;
+            if (index == tags::monostate) return;
+            detail::insert_variant_tag(val, tags::key, tags::ids[index], detail::type_name<std::variant<Ts...>>());
+        }
+
+    public:
+
         template <detail::copy_string_args... Args>
         requires (detail::variant_alternative_writable<Ts, std::variant<Ts...>> && ...)
         static void to_json(writer::value_ref& val, const std::variant<Ts...>& t, Args...)
         {
             constexpr auto copy = (sizeof...(Args) != 0);
+            if constexpr (detail::adjacently_tagged<std::variant<Ts...>>)
+                detail::throw_adjacent_tag_alone(detail::type_name<std::variant<Ts...>>());
             std::visit(
                 [&val](const auto& v) {
                     if constexpr (copy)
@@ -7484,6 +7955,7 @@ namespace yyjson
                         val = v;
                 },
                 t);
+            if constexpr (detail::internally_tagged<std::variant<Ts...>>) write_internal_tag(val, t.index());
         }
 
         template <detail::copy_string_args... Args>
@@ -7491,6 +7963,9 @@ namespace yyjson
         static void to_json(writer::value_ref& val, std::variant<Ts...>&& t, Args...)
         {
             constexpr auto copy = (sizeof...(Args) != 0);
+            if constexpr (detail::adjacently_tagged<std::variant<Ts...>>)
+                detail::throw_adjacent_tag_alone(detail::type_name<std::variant<Ts...>>());
+            [[maybe_unused]] const auto index = t.index();
             std::visit(
                 [&val](auto&& v) {
                     if constexpr (copy)
@@ -7499,6 +7974,7 @@ namespace yyjson
                         val = std::move(v);
                 },
                 std::move(t));
+            if constexpr (detail::internally_tagged<std::variant<Ts...>>) write_internal_tag(val, index);
         }
 
     private:
@@ -7694,7 +8170,42 @@ namespace yyjson
                 return v.val_;
             }
             static const yyjson_val* get(const reader::abstract_value_ref& v) noexcept { return v.val_; }
+            template <typename DocType>
+            static yyjson_mut_doc* document(const abstract_value<DocType>& v) noexcept
+            {
+                return v.doc_.ptrs->self;
+            }
         };
+    }  // namespace writer::detail
+
+    namespace detail
+    {
+        inline void insert_variant_tag(writer::value_ref& val, std::string_view key, std::string_view id,
+                                       std::string_view type)
+        {
+            using access = writer::detail::json_value_access;
+            auto* const obj = const_cast<yyjson_mut_val*>(access::get(val));
+            if (!yyjson_mut_is_obj(obj))
+                throw std::invalid_argument(std::format(
+                    "the alternative \"{}\" of {}, which yyjson::internal_tag tags, is not written as a JSON object",
+                    id, type));
+            if (auto* const tag = yyjson_mut_obj_getn(obj, key.data(), key.size()); tag != nullptr)
+            {
+                if (!yyjson_mut_equals_strn(tag, id.data(), id.size()))
+                    throw std::invalid_argument(
+                        std::format("the alternative \"{}\" of {} is written with another \"{}\"", id, type, key));
+                return;
+            }
+            auto* const doc = access::document(val);
+            auto* const k = yyjson_mut_strn(doc, key.data(), key.size());
+            auto* const v = yyjson_mut_strn(doc, id.data(), id.size());
+            if (k == nullptr || v == nullptr || !yyjson_mut_obj_insert(obj, k, v, 0)) [[unlikely]]
+                throw std::bad_alloc();
+        }
+    }  // namespace detail
+
+    namespace writer::detail
+    {
 
         template <typename T>
         struct is_optional : std::false_type
@@ -9671,9 +10182,37 @@ namespace yyjson
                 *buf_.cur++ = '"';
             }
 
-            template <typename Key, typename Field>
+            // A field of the struct S, as `yyjson::detail::emplace_struct_field` emplaces it.
+            template <typename S, typename Key, typename Field>
             CPPYYJSON_ALWAYS_INLINE void write_field(bool& first, Field&& field)
             {
+                if constexpr (yyjson::detail::adjacently_tagged<Field>)
+                {
+                    using tags = yyjson::detail::variant_tags<std::remove_cvref_t<Field>>;
+                    if constexpr (yyjson::detail::writes_adjacent_tag<S, Field>)
+                    {
+                        if (const auto index = field.index(); index != tags::monostate && index != std::variant_npos)
+                        {
+                            next_key(first, tags::key);
+                            write_string(tags::ids[index]);
+                        }
+                    }
+                    next_struct_key<Key>(first);
+                    std::visit(
+                        [&](auto&& v) {
+                            if constexpr (omittable<decltype(v)>)
+                            {
+                                if (should_omit_field(v))
+                                {
+                                    write_null();
+                                    return;
+                                }
+                            }
+                            write_value(std::forward<decltype(v)>(v));
+                        },
+                        std::forward<Field>(field));
+                    return;
+                }
                 if constexpr (omittable<Field>)
                 {
                     if (should_omit_field(field)) return;
@@ -9692,19 +10231,23 @@ namespace yyjson
             {
                 using U = std::remove_cvref_t<T>;
                 constexpr auto& members = visit_struct<U>::members;
+                if constexpr (yyjson::detail::has_adjacent_fields<U>) yyjson::detail::check_adjacent_tags(t);
                 if constexpr (std::is_rvalue_reference_v<T&&>)
-                    (write_field<visitable_key<U, Is>>(
+                    (write_field<U, visitable_key<U, Is>>(
                          first, yyjson::detail::writable_field(std::move(t.*std::get<Is>(members)))),
                      ...);
                 else
-                    (write_field<visitable_key<U, Is>>(first, yyjson::detail::writable_field(t.*std::get<Is>(members))),
+                    (write_field<U, visitable_key<U, Is>>(first,
+                                                          yyjson::detail::writable_field(t.*std::get<Is>(members))),
                      ...);
             }
             template <typename T, std::size_t... Is>
             CPPYYJSON_ALWAYS_INLINE void write_reflected_fields(bool& first, T&& t, std::index_sequence<Is...>)
             {
                 using U = std::remove_cvref_t<T>;
-                (write_field<reflected_key<U, Is>>(first, yyjson::detail::forward_field<Is>(std::forward<T>(t))), ...);
+                if constexpr (yyjson::detail::has_adjacent_fields<U>) yyjson::detail::check_adjacent_tags(t);
+                (write_field<U, reflected_key<U, Is>>(first, yyjson::detail::forward_field<Is>(std::forward<T>(t))),
+                 ...);
             }
 
             // Whether the writer checks a key of type K for `next_plain_key`.
@@ -9838,6 +10381,53 @@ namespace yyjson
                 }
             }
 
+            // A variant that `internal_tag` tags.  The tag of a struct that writes no other member of its key is
+            // written first in its object, and any other alternative is built in the document, where the tag is
+            // added to it.
+            template <typename T>
+            void write_internally_tagged(T&& t)
+            {
+                using U = std::remove_cvref_t<T>;
+                using tags = yyjson::detail::variant_tags<U>;
+                const auto index = t.index();
+                std::visit(
+                    [&]<typename A>(A&& a) {
+                        using W = std::remove_cvref_t<A>;
+                        constexpr auto tagless_struct = [] {
+                            if constexpr (to_json_inp_def<to_json_input_ref<A>, A> && !std::is_enum_v<W>)
+                                return !yyjson::detail::writes_member_of_key<W>(tags::key);
+                            else
+                                return false;
+                        }();
+                        if constexpr (std::same_as<W, std::monostate>)
+                            write_null();
+                        else if constexpr (tagless_struct)
+                        {
+                            open('{');
+                            auto first = true;
+                            next_key(first, tags::key);
+                            write_string(tags::ids[index]);
+                            if constexpr (visitable<W>)
+                                write_visitable_fields(first, std::forward<A>(a),
+                                                       std::make_index_sequence<visit_struct<W>::field_count>{});
+                            else
+                                write_reflected_fields(first, std::forward<A>(a),
+                                                       yyjson::detail::reflected_fields<W>{});
+                            close('}', first);
+                        }
+                        else
+                        {
+                            if (!doc_) doc_.emplace();
+                            auto vr = doc_->template get_empty_value_ref<value_ref>();
+                            vr = std::forward<A>(a);
+                            yyjson::detail::insert_variant_tag(vr, tags::key, tags::ids[index],
+                                                               yyjson::detail::type_name<U>());
+                            write_in_document(json_value_access::get(vr));
+                        }
+                    },
+                    std::forward<T>(t));
+            }
+
             // What `to_json(V&, t)` of the caster of T writes.  The casters of this library are followed
             // here, and any other is called on the mutable document that the writer keeps for them.
             template <typename V, typename T>
@@ -9883,7 +10473,12 @@ namespace yyjson
                 else if constexpr (std::derived_from<caster<U>, yyjson::detail::builtin_caster> &&
                                    is_variant<U>::value && std::same_as<V, value_ref>)
                 {
-                    std::visit([&](auto&& v) { write_value(std::forward<decltype(v)>(v)); }, std::forward<T>(t));
+                    if constexpr (yyjson::detail::adjacently_tagged<U>)
+                        yyjson::detail::throw_adjacent_tag_alone(yyjson::detail::type_name<U>());
+                    else if constexpr (yyjson::detail::internally_tagged<U>)
+                        write_internally_tagged(std::forward<T>(t));
+                    else
+                        std::visit([&](auto&& v) { write_value(std::forward<decltype(v)>(v)); }, std::forward<T>(t));
                 }
                 else if constexpr (std::derived_from<caster<U>, yyjson::detail::builtin_caster> &&
                                    std::same_as<U, std::vector<bool>> && std::same_as<V, array_ref>)
@@ -10114,22 +10709,8 @@ namespace yyjson
                 return yyjson::detail::reflected_key_matcher<T>;
         }
 
-        template <typename T>
-        inline constexpr std::size_t struct_field_count = [] {
-            if constexpr (yyjson::detail::visitable<T>)
-                return std::tuple_size_v<std::remove_cvref_t<decltype(visit_struct<T>::members)>>;
-            else
-                return yyjson::detail::reflected_fields<T>::size();
-        }();
-
-        template <std::size_t I, typename T>
-        CPPYYJSON_ALWAYS_INLINE inline constexpr auto& struct_field(T& t) noexcept
-        {
-            if constexpr (yyjson::detail::visitable<T>)
-                return t.*std::get<I>(visit_struct<T>::members);
-            else
-                return field_reflection::get_field<yyjson::detail::reflected_field_index<T, I>>(t);
-        }
+        using yyjson::detail::struct_field;
+        using yyjson::detail::struct_field_count;
 
         // Calls `f(std::integral_constant<std::size_t, I>())` for the field I of T that `index` names.
         template <typename T, typename F>
@@ -10201,8 +10782,9 @@ namespace yyjson
         {
             [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<T>();
             auto defaults = struct_defaults<T>();
-            yyjson::detail::assign_fields_by_key(
-                struct_key_matcher<T>(), obj, [&](std::size_t index, const const_value_ref& value) {
+            yyjson::detail::assign_struct_fields_by_key<T>(
+                struct_key_matcher<T>(), obj,
+                [&](std::size_t index, const const_value_ref& value, const auto&... object) {
                     with_struct_field<T>(index, [&]<std::size_t I>(std::integral_constant<std::size_t, I>) {
                         auto& field = struct_field<I>(t);
                         using field_type = std::remove_cvref_t<decltype(field)>;
@@ -10211,7 +10793,12 @@ namespace yyjson
                             defaults.template reset<I>(t);
                             return;
                         }
-                        if constexpr (reads_over_old_value<field_type>)
+                        if constexpr (yyjson::detail::adjacently_tagged<field_type>)
+                        {
+                            yyjson::detail::assign_adjacent_field(field, value, object...);
+                            return;
+                        }
+                        else if constexpr (reads_over_old_value<field_type>)
                             defaults.template reset<I>(t);
                         else if constexpr (mergeable<field_type>)
                         {
@@ -12708,6 +13295,240 @@ namespace yyjson
             template <typename T, typename Make>
             void read_variant(Make&& make)
             {
+                if constexpr (yyjson::detail::adjacently_tagged<T>)
+                    yyjson::detail::throw_adjacent_tag_alone(yyjson::detail::type_name<T>());
+                else if constexpr (yyjson::detail::internally_tagged<T>)
+                {
+                    using tags = yyjson::detail::variant_tags<std::remove_cv_t<T>>;
+                    if constexpr (tags::monostate != std::variant_npos)
+                    {
+                        if (*cur_ == 'n')
+                        {
+                            read_literal("null");
+                            make(std::in_place_index<tags::monostate>);
+                            return;
+                        }
+                    }
+                    if (*cur_ != '{') [[unlikely]]
+                        fail();
+                    const char* const start = cur_;
+                    auto index = find_variant_tag<T>(start);
+                    if (index == std::variant_npos) index = missing_variant_tag<T>();
+                    read_tagged_alternative<T>(make, index, start);
+                }
+                else
+                    read_untagged_variant<T>(make);
+            }
+
+            // The alternative of the variant T that the first member of its tag in the object at `open` names,
+            // which is looked for among the members before the value at `stop`, or in the whole object if `stop`
+            // is null.  Gives `std::variant_npos` if the tag is not there, and leaves `cur_` in the object.
+            template <typename T>
+            std::size_t find_variant_tag(const char* open, const char* stop = nullptr)
+            {
+                using tags = yyjson::detail::variant_tags<std::remove_cv_t<T>>;
+                cur_ = open + 1;
+                skip_ws();
+                if (*cur_ == '}') return std::variant_npos;
+                auto buf = std::string();
+                for (;;)
+                {
+                    if (*cur_ != '"') [[unlikely]]
+                        fail();
+                    const auto is_tag = read_short_string(buf) == tags::key;
+                    read_colon();
+                    if (cur_ == stop) return std::variant_npos;
+                    if (is_tag) return read_variant_tag<T>(buf);
+                    skip_value();
+                    skip_ws();
+                    if (*cur_ != ',') return std::variant_npos;
+                    ++cur_;
+                    skip_ws();
+                }
+            }
+
+            // The alternative of the variant T that the tag at `cur_` names.  A tag that is not a string is taken
+            // as missing.
+            template <typename T>
+            std::size_t read_variant_tag(std::string& buf)
+            {
+                using tags = yyjson::detail::variant_tags<std::remove_cv_t<T>>;
+                if (*cur_ != '"') return missing_variant_tag<T>();
+                const auto i = tags::alternative(read_short_string(buf));
+                if (i == std::variant_npos) [[unlikely]]
+                    fail();
+                return i;
+            }
+
+            template <typename T>
+            static std::size_t missing_variant_tag()
+            {
+                using tags = yyjson::detail::variant_tags<std::remove_cv_t<T>>;
+                if constexpr (tags::monostate == std::variant_npos) fail();
+                return tags::monostate;
+            }
+
+            // The string at `cur_`, from the text itself unless it has escapes.
+            std::string_view read_short_string(std::string& buf)
+            {
+                if (const auto* end = plain_string_end(cur_, [] { return nullptr; })) [[likely]]
+                {
+                    const auto str = std::string_view(cur_ + 1, static_cast<std::size_t>(end - cur_ - 2));
+                    cur_ = end;
+                    return str;
+                }
+                return read_string(buf);
+            }
+
+            // Reads the value at `start` into the alternative `index` of the variant T, or skips it for
+            // `std::monostate`.
+            template <typename T, typename Make>
+            void read_tagged_alternative(Make&& make, std::size_t index, const char* start)
+            {
+                cur_ = start;
+                [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                    (void)((index == Is && ([&] {
+                                if constexpr (std::same_as<std::variant_alternative_t<Is, T>, std::monostate>)
+                                {
+                                    skip_value();
+                                    make(std::in_place_index<Is>);
+                                }
+                                else
+                                    read_alternative_value<T, Is>(make);
+                            }(),
+                                            true)) ||
+                           ...);
+                }(std::make_index_sequence<std::variant_size_v<T>>{});
+            }
+
+            // What the reader of the object of the struct T keeps for its fields tagged by `adjacent_tag`: where
+            // the value of each such field is that comes before its tag and the document it is read into, and
+            // where the value of each field of a tag is, by the index of the field.
+            template <typename T>
+            struct adjacent_fields
+            {
+                const char* open;
+                std::array<const char*, struct_field_count<T>> at = {};
+                std::array<std::unique_ptr<yyjson_doc, free_doc>, struct_field_count<T>> docs = {};
+            };
+            struct no_adjacent_fields
+            {
+                explicit no_adjacent_fields(const char*) noexcept {}
+            };
+            template <typename T>
+            using adjacent_fields_of =
+                std::conditional_t<yyjson::detail::has_adjacent_fields<T>, adjacent_fields<T>, no_adjacent_fields>;
+
+            // Reads the field I of `t` from the value at `cur_`, which is a field tagged by `adjacent_tag` or the
+            // field of a tag, as `read(field)` reads any other field.
+            template <typename T, std::size_t I, typename Read>
+            CPPYYJSON_ALWAYS_INLINE void read_struct_field(T& t, adjacent_fields_of<T>& adjacent, Read&& read)
+            {
+                if constexpr (yyjson::detail::adjacent_field<T, I>)
+                    read_adjacent_field<T, I>(t, adjacent);
+                else
+                {
+                    if constexpr (yyjson::detail::holds_adjacent_tag<T, I>)
+                    {
+                        if (adjacent.at[I] == nullptr) adjacent.at[I] = cur_;
+                    }
+                    std::forward<Read>(read)(struct_field<I>(t));
+                }
+            }
+
+            // Reads the value at `cur_` into the field I tagged by `adjacent_tag`, or into a document until the end
+            // of the object if its tag is not known yet, which is faster than reading the text again.  A second member of the field after one that was skipped is
+            // left to the document, which reads both.
+            template <typename T, std::size_t I>
+            void read_adjacent_field(T& t, adjacent_fields<T>& adjacent)
+            {
+                using V = std::remove_cvref_t<yyjson::detail::struct_field_type<T, I>>;
+                constexpr auto j = yyjson::detail::adjacent_tag_field<T, I>;
+                if (adjacent.at[I] != nullptr) [[unlikely]]
+                    fail();
+                auto index = std::variant_npos;
+                const char* const start = cur_;
+                if constexpr (j < struct_field_count<T>)
+                {
+                    if (const char* const tag = adjacent.at[j]; tag != nullptr)
+                    {
+                        cur_ = tag;
+                        auto buf = std::string();
+                        index = read_variant_tag<V>(buf);
+                    }
+                }
+                else
+                    index = find_variant_tag<V>(adjacent.open, start);
+                if (index == std::variant_npos)
+                {
+                    cur_ = start;
+                    adjacent.at[I] = start;
+                    adjacent.docs[I].reset(read_local_document());
+                    return;
+                }
+                read_adjacent_alternative<T, I>(t, index, start);
+            }
+
+            template <typename T, std::size_t I>
+            void read_adjacent_alternative(T& t, std::size_t index, const char* start)
+            {
+                using V = std::remove_cvref_t<yyjson::detail::struct_field_type<T, I>>;
+                read_tagged_alternative<V>(
+                    [&](auto i, auto&&... args) -> V& {
+                        return emplace_alternative(struct_field<I>(t), i, std::forward<decltype(args)>(args)...);
+                    },
+                    index, start);
+            }
+
+            // Reads the fields tagged by `adjacent_tag` that came before their tags, after `cur_` has passed the
+            // object.
+            template <typename T>
+            void read_skipped_adjacent_fields(T& t, adjacent_fields_of<T>& adjacent)
+            {
+                if constexpr (yyjson::detail::has_adjacent_fields<T>)
+                {
+                    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                        (
+                            [&] {
+                                if constexpr (yyjson::detail::adjacent_field<T, Is>)
+                                {
+                                    if (adjacent.at[Is] != nullptr) [[unlikely]]
+                                        read_skipped_adjacent_field<T, Is>(t, adjacent);
+                                }
+                            }(),
+                            ...);
+                    }(std::make_index_sequence<struct_field_count<T>>{});
+                }
+            }
+
+            template <typename T, std::size_t I>
+            CPPYYJSON_NOINLINE void read_skipped_adjacent_field(T& t, adjacent_fields<T>& adjacent)
+            {
+                using V = std::remove_cvref_t<yyjson::detail::struct_field_type<T, I>>;
+                constexpr auto j = yyjson::detail::adjacent_tag_field<T, I>;
+                const char* const end = cur_;
+                auto index = std::variant_npos;
+                if constexpr (j < struct_field_count<T>)
+                {
+                    if (const char* const tag = adjacent.at[j]; tag != nullptr)
+                    {
+                        cur_ = tag;
+                        auto buf = std::string();
+                        index = read_variant_tag<V>(buf);
+                    }
+                }
+                else
+                    index = find_variant_tag<V>(adjacent.open);
+                if (index == std::variant_npos) index = missing_variant_tag<V>();
+                const auto doc = std::move(adjacent.docs[I]);
+                struct_field<I>(t) =
+                    yyjson::detail::cast_alternative<V>(index, const_value_ref(yyjson_doc_get_root(doc.get())));
+                cur_ = end;
+            }
+
+            template <typename T, typename Make>
+            void read_untagged_variant(Make&& make)
+            {
                 const char* const start = cur_;
                 const auto kind = kind_at();
                 const auto rereads = yyjson::detail::variant_reread_guard<std::remove_cv_t<T>, const_value_ref>(kind);
@@ -12733,7 +13554,6 @@ namespace yyjson
             bool read_alternative(Make& make, const char* start, bool check, const Guard& rereads)
             {
                 using alternative = std::remove_cv_t<std::variant_alternative_t<I, T>>;
-                constexpr auto index = std::in_place_index<I>;
                 try
                 {
                     if constexpr (yyjson::detail::may_reject_nested<alternative>())
@@ -12750,31 +13570,7 @@ namespace yyjson
                             }
                         }
                     }
-                    if constexpr (yyjson::detail::default_string<alternative>)
-                    {
-                        if (*cur_ == '"')
-                        {
-                            const auto s = scan_string();
-                            if (!s.escaped) [[likely]]
-                                make(index, s.begin, s.end);
-                            else
-                            {
-                                auto str = std::string();
-                                unescape(s.begin, s.end, str);
-                                make(index, std::move(str));
-                            }
-                            return true;
-                        }
-                    }
-                    else if constexpr (yyjson::detail::reflected_assignable_in_place<alternative, const_value_ref>)
-                    {
-                        if (*cur_ == '{')
-                        {
-                            read_reflected_fields(std::get<I>(make(index)));
-                            return true;
-                        }
-                    }
-                    make(index, read_value<alternative>());
+                    read_alternative_value<T, I>(make);
                     return true;
                 }
                 catch (const direct_read_unsupported&)
@@ -12792,6 +13588,39 @@ namespace yyjson
                     cur_ = start;
                     return false;
                 }
+            }
+
+            // Reads the value at `cur_` into the alternative I of the variant T.
+            template <typename T, std::size_t I, typename Make>
+            void read_alternative_value(Make& make)
+            {
+                using alternative = std::remove_cv_t<std::variant_alternative_t<I, T>>;
+                constexpr auto index = std::in_place_index<I>;
+                if constexpr (yyjson::detail::default_string<alternative>)
+                {
+                    if (*cur_ == '"')
+                    {
+                        const auto s = scan_string();
+                        if (!s.escaped) [[likely]]
+                            make(index, s.begin, s.end);
+                        else
+                        {
+                            auto str = std::string();
+                            unescape(s.begin, s.end, str);
+                            make(index, std::move(str));
+                        }
+                        return;
+                    }
+                }
+                else if constexpr (yyjson::detail::reflected_assignable_in_place<alternative, const_value_ref>)
+                {
+                    if (*cur_ == '{')
+                    {
+                        read_reflected_fields(std::get<I>(make(index)));
+                        return;
+                    }
+                }
+                make(index, read_value<alternative>());
             }
 
             // Emplaces the alternative I into `v`.
@@ -13480,12 +14309,18 @@ namespace yyjson
                 [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<T>();
                 constexpr auto n = struct_field_count<T>;
                 auto seen = std::bitset<n>();
+                auto adjacent = adjacent_fields_of<T>{cur_};
                 read_fields(struct_key_matcher<T>(), [&](std::size_t index) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
                     const auto first = !seen[index];
                     seen.set(index);
                     with_struct_field<T>(index, [&]<std::size_t I>(std::integral_constant<std::size_t, I>)
-                                                    CPPYYJSON_LAMBDA_ALWAYS_INLINE { read_field_over<I>(t, first); });
+                                                    CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                                                        read_struct_field<T, I>(t, adjacent, [&](auto&) {
+                                                            read_field_over<I>(t, first);
+                                                        });
+                                                    });
                 });
+                read_skipped_adjacent_fields(t, adjacent);
                 if constexpr (has_skipped_fields<T>)
                 {
 #if FIELD_RFL_ANNOTATIONS
@@ -13579,10 +14414,25 @@ namespace yyjson
             {
                 [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<T>();
                 auto defaults = struct_defaults<T>();
+                auto adjacent = adjacent_fields_of<T>{cur_};
                 read_fields(struct_key_matcher<T>(), [&](std::size_t index) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
                     with_struct_field<T>(index, [&]<std::size_t I>(std::integral_constant<std::size_t, I>)
-                                                    CPPYYJSON_LAMBDA_ALWAYS_INLINE { merge_field<I>(t, defaults); });
+                                                    CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                                                        if constexpr (yyjson::detail::adjacent_field<T, I>)
+                                                        {
+                                                            if (*cur_ == 'n')
+                                                            {
+                                                                read_literal("null");
+                                                                defaults.template reset<I>(t);
+                                                                return;
+                                                            }
+                                                        }
+                                                        read_struct_field<T, I>(t, adjacent, [&](auto&) {
+                                                            merge_field<I>(t, defaults);
+                                                        });
+                                                    });
                 });
+                read_skipped_adjacent_fields(t, adjacent);
             }
 
             template <std::size_t I, typename T>
@@ -14050,17 +14900,22 @@ namespace yyjson
             {
                 [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<T>();
                 constexpr auto& matcher = yyjson::detail::reflected_key_matcher<T>;
+                auto adjacent = adjacent_fields_of<T>{cur_};
                 read_fields(matcher, [&](std::size_t index) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
                     [&]<std::size_t... Ks>(std::index_sequence<Ks...>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
-                        using yyjson::detail::reflected_field_index;
-                        (void)((index == Ks &&
-                                (read_field(
-                                     field_reflection::get_field<reflected_field_index<T, Ks>>(t),
-                                     yyjson::detail::reflected_field_replaceable<reflected_field_index<T, Ks>>(t)),
-                                 true)) ||
-                               ...);
+                        [[maybe_unused]] const auto read_one =
+                            [&]<std::size_t K>(std::integral_constant<std::size_t, K>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                                using yyjson::detail::reflected_field_index;
+                                using yyjson::detail::reflected_field_replaceable;
+                                const auto read = [&](auto& field) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                                    read_field(field, reflected_field_replaceable<reflected_field_index<T, K>>(t));
+                                };
+                                read_struct_field<T, K>(t, adjacent, read);
+                            };
+                        (void)((index == Ks && (read_one(std::integral_constant<std::size_t, Ks>{}), true)) || ...);
                     }(std::make_index_sequence<yyjson::detail::reflected_fields<T>::size()>{});
                 });
+                read_skipped_adjacent_fields(t, adjacent);
             }
 
             template <typename T>
@@ -14068,17 +14923,23 @@ namespace yyjson
             {
                 [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<T>();
                 constexpr auto& members = visit_struct<T>::members;
+                auto adjacent = adjacent_fields_of<T>{cur_};
                 read_fields(visit_struct<T>::key_matcher, [&](std::size_t index) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
                     [&]<std::size_t... Is>(std::index_sequence<Is...>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
                         const auto replaceable = [&]<std::size_t I>(std::integral_constant<std::size_t, I>) {
                             return yyjson::detail::has_own_bytes<I>(t.*std::get<Is>(members)...);
                         };
-                        (void)((index == Is && (read_field(t.*std::get<Is>(members),
-                                                           replaceable(std::integral_constant<std::size_t, Is>{})),
-                                                true)) ||
-                               ...);
+                        [[maybe_unused]] const auto read_one =
+                            [&]<std::size_t I>(std::integral_constant<std::size_t, I>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                                const auto read = [&](auto& field) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                                    read_field(field, replaceable(std::integral_constant<std::size_t, I>{}));
+                                };
+                                read_struct_field<T, I>(t, adjacent, read);
+                            };
+                        (void)((index == Is && (read_one(std::integral_constant<std::size_t, Is>{}), true)) || ...);
                     }(std::make_index_sequence<std::tuple_size_v<std::remove_cvref_t<decltype(members)>>>{});
                 });
+                read_skipped_adjacent_fields(t, adjacent);
             }
         };
     }  // namespace reader::detail
@@ -14959,9 +15820,11 @@ struct std::formatter<T>
         template <typename Emitter, typename T, typename... Ts>                                                      \
         static void emplace_fields(Emitter& emitter, T&& t, Ts... ts)                                                \
         {                                                                                                            \
+            if constexpr (yyjson::detail::has_adjacent_fields<CLASS>) yyjson::detail::check_adjacent_tags(t);        \
             [&]<std::size_t... Is>(std::index_sequence<Is...>) {                                                     \
-                (emitter.template emplace<yyjson::detail::is_plain_key(names[Is])>(                                  \
-                     names[Is], yyjson::detail::writable_field(std::forward<T>(t).*std::get<Is>(members)), ts...),   \
+                (yyjson::detail::emplace_struct_field<CLASS, yyjson::detail::is_plain_key(names[Is])>(               \
+                     emitter, names[Is], yyjson::detail::writable_field(std::forward<T>(t).*std::get<Is>(members)),  \
+                     ts...),                                                                                         \
                  ...);                                                                                               \
             }(std::make_index_sequence<field_count>{});                                                              \
         }                                                                                                            \
@@ -14980,12 +15843,13 @@ struct std::formatter<T>
         template <typename... Ts>                                                                                    \
         static auto to_json_impl(writer::object_ref& obj, const CLASS& t, Ts... ts)                                  \
         {                                                                                                            \
-            obj.assign_reflected_fields_max(field_count, [&](auto& emitter) { emplace_fields(emitter, t, ts...); }); \
+            obj.assign_reflected_fields_max(yyjson::detail::struct_member_capacity<CLASS>,                            \
+                                            [&](auto& emitter) { emplace_fields(emitter, t, ts...); });              \
         }                                                                                                            \
         template <typename... Ts>                                                                                    \
         static auto to_json_impl(writer::object_ref& obj, CLASS&& t, Ts... ts)                                       \
         {                                                                                                            \
-            obj.assign_reflected_fields_max(field_count,                                                             \
+            obj.assign_reflected_fields_max(yyjson::detail::struct_member_capacity<CLASS>,                            \
                                             [&](auto& emitter) { emplace_fields(emitter, std::move(t), ts...); });   \
         }                                                                                                            \
     }
