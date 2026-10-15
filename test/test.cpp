@@ -5864,6 +5864,46 @@ TEST(DirectReader, LocalDocuments)
         EXPECT_THROW((void)read<std::vector<DocumentOf<std::vector<int>>>>(text), read_error) << json;
     }
 }
+
+// an element that a constructor for any type would take in place of the value that its caster reads
+struct TakesAny
+{
+    int value = 0;
+    TakesAny() = default;
+    explicit TakesAny(int v) : value(v) {}
+    template <typename U>
+        requires(!std::same_as<std::remove_cvref_t<U>, TakesAny> && !std::same_as<std::remove_cvref_t<U>, int>)
+    TakesAny(U&&) : value(-1)
+    {
+    }
+    bool operator==(const TakesAny&) const = default;
+};
+
+template <>
+struct yyjson::caster<TakesAny>
+{
+    template <typename Json>
+    static TakesAny from_json(const Json& json)
+    {
+        return TakesAny(cast<int>(json));
+    }
+};
+
+TEST(DirectReader, ElementsInPlace)
+{
+    // the elements that casters read are constructed in place, but not by a constructor that takes any type
+    const auto direct = []<typename T>(std::type_identity<T>, std::string_view json) {
+        return yyjson::reader::detail::direct_reader(json.data(), json.data() + json.size() - 1,
+                                                     yyjson::ReadFlag::NoFlag)
+            .read_root<T>();
+    };
+    EXPECT_EQ(direct(std::type_identity<std::vector<TakesAny>>{}, "[1,2,3]"),
+              (std::vector<TakesAny>{TakesAny(1), TakesAny(2), TakesAny(3)}));
+    EXPECT_EQ(direct(std::type_identity<std::vector<std::vector<TakesAny>>>{}, "[[1],[2,3]]"),
+              (std::vector<std::vector<TakesAny>>{{TakesAny(1)}, {TakesAny(2), TakesAny(3)}}));
+    EXPECT_EQ(yyjson::read<std::vector<TakesAny>>("[1,2,3]"),
+              (std::vector<TakesAny>{TakesAny(1), TakesAny(2), TakesAny(3)}));
+}
 #endif
 
 TEST(DirectReader, Overloads)

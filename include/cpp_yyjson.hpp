@@ -12838,6 +12838,21 @@ namespace yyjson
                 if (n != 0) result.reserve(result.size() + n);
             }
 
+            // The value at `cur_`, which a range constructs in place from what `read_element` returns, rather than
+            // moving it in.
+            template <typename T>
+            struct element_reader
+            {
+                direct_reader& reader;
+                operator T() const { return reader.read_element<T>(); }
+            };
+
+            // Whether T is constructed from `element_reader<T>` by its conversion, rather than by a constructor that
+            // takes any type, such as that of `std::any`.
+            template <typename T>
+            static constexpr bool constructs_from_reader =
+                std::is_class_v<T> && !std::is_constructible_v<T, std::type_identity<direct_reader>>;
+
             // Reads the elements of the array at `cur_` into the empty or default-constructed range `result`.  The
             // root array of trivially copyable elements is read with `Root`, which estimates the rest of them once
             // the range is full at 512 or more.
@@ -12940,6 +12955,10 @@ namespace yyjson
                                 return result.emplace_back(index, std::forward<decltype(args)>(args)...);
                             });
                         }
+                        else if constexpr (constructs_from_reader<value_type> && requires {
+                                               { result.emplace_back(element_reader<value_type>{*this}) };
+                                           })
+                            result.emplace_back(element_reader<value_type>{*this});
                         else
                             result.push_back(read_element<value_type>());
                     }
