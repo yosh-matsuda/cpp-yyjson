@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <forward_list>
 #include <initializer_list>
 #include <memory>
 #include <optional>
@@ -5122,6 +5123,15 @@ namespace yyjson
         using const_key_value_ref_pair = detail::const_key_value_ref_pair;
     }  // namespace writer
 
+    class json_view;
+    class json_object_view;
+    class json_array_view;
+    namespace detail
+    {
+        template <typename Json>
+        struct json_view_of_copy;
+    }
+
     namespace reader
     {
         namespace detail
@@ -5207,6 +5217,9 @@ namespace yyjson
             friend class const_object_iter;
             friend class const_object_ref;
             friend class detail::direct_reader;
+            friend class yyjson::json_view;
+            friend class yyjson::json_object_view;
+            friend class yyjson::json_array_view;
             template <typename T>
             friend struct yyjson::detail::default_caster;
 
@@ -6062,6 +6075,7 @@ namespace yyjson
         // A source of a translator that can hold more than one string borrowed from the JSON read.
         template <typename S>
         concept borrows_strings = std::is_class_v<S> && (!std::same_as<S, std::string_view>) &&
+                                  (!std::same_as<S, json_view>) &&
                                   (type_reaches<std::string_view, S> || type_reaches<const char*, S>);
 
         // Whether `caster<T>` has a member named `from_json`, of any form: the name is then ambiguous in a class
@@ -6117,6 +6131,9 @@ namespace yyjson
                           "T cannot hold a std::string_view or a const char*, which would point into JSON text or "
                           "a document that does not outlive the call: use std::string, or cast a document that the "
                           "program keeps");
+            static_assert(
+                !type_list_has<read_type_node<json_view>, closure_t<type_list<read_type_node<std::remove_cv_t<T>>>>>,
+                "T cannot hold a yyjson::json_view, which is valid only while the caster that takes it runs");
         }
 
         // `caster<T>` names `from_json` but no form of it can be called, as when the translator form is overloaded
@@ -6150,22 +6167,33 @@ namespace yyjson
             assert_from_json_usable(closure_t<type_list<read_type_node<std::remove_cv_t<T>>>>{});
         }
 
+        // A `json_view` views a value of an immutable document, so a caster that takes one is given a view of a
+        // copy of a value of a mutable document.
+        template <typename S, typename Json>
+        concept views_copy = std::same_as<S, json_view> && !castable<Json, json_view>;
+
         template <typename T>
         template <typename Json>
         void from_json_translator<T>::assign_from_json(T& t, const Json& json)
         {
             [[maybe_unused]] const auto guard = recursion_guard<T>();
-            assign(t, cast<from_json_in_place_source<T>>(json));
+            if constexpr (views_copy<from_json_in_place_source<T>, Json>)
+                json_view_of_copy<Json>::apply(json, [&](auto view) { assign(t, view); });
+            else
+                assign(t, cast<from_json_in_place_source<T>>(json));
         }
 
         template <typename T, typename Json>
         T user_from_json(const Json& json)
         {
             [[maybe_unused]] const auto guard = recursion_guard<T>();
-            if constexpr (from_json_translator<T>::castable)
-                return from_json_translator<T>::convert(cast<from_json_source<T>>(json));
-            else
+            if constexpr (!from_json_translator<T>::castable)
                 return caster<T>::from_json(json);
+            else if constexpr (views_copy<from_json_source<T>, Json>)
+                return json_view_of_copy<Json>::apply(
+                    json, [](auto view) { return from_json_translator<T>::convert(view); });
+            else
+                return from_json_translator<T>::convert(cast<from_json_source<T>>(json));
         }
     }  // namespace detail
 
@@ -7124,6 +7152,11 @@ namespace yyjson
             else if constexpr (!std::same_as<T, std::remove_cvref_t<T>>)
             {
                 return accepted_json_kinds<std::remove_cvref_t<T>, Json>();
+            }
+            else if constexpr (std::same_as<T, json_view>)
+            {
+                // also a value of a mutable document, of which the caster is given a view of a copy
+                return json_kind_all;
             }
             else if constexpr (requires(const Json& json) {
                                    { caster<T>::from_json(json) } -> std::same_as<T>;
@@ -10641,6 +10674,9 @@ namespace yyjson
         class direct_reader
         {
             using utf8 = writer::detail::direct_writer;
+            friend class yyjson::json_view;
+            friend class yyjson::json_object_view;
+            friend class yyjson::json_array_view;
 
             const char* cur_;
             const char* first_;  // the opening bracket of the root
@@ -10666,6 +10702,40 @@ namespace yyjson
             const char* local_to_ = nullptr;
             const char* local_used_ = nullptr;
             std::size_t local_chunk_ = 4096;
+            // The copy is kept up to `local_kept_` for the documents in `view_docs_`.
+            const char* local_kept_ = nullptr;
+
+            // What the views of the casters that take a `json_view` keep until the outermost of those returns: the
+            // strings that they unescaped, the documents of the members that their lookups read past, and the copies
+            // of the text that those documents are in.
+            int view_depth_ = 0;
+            std::forward_list<std::string> view_strings_;
+            std::vector<std::unique_ptr<yyjson_doc, free_doc>> view_docs_;
+            std::vector<std::unique_ptr<char[]>> view_copies_;
+            // The ends of values that the views read, which are not skipped again.  A value ends where it ends for
+            // every view, so that they are kept as long as the reader.
+            std::array<std::pair<const char*, const char*>, 8> view_ends_{};
+            unsigned view_ends_next_ = 0;
+            // The members of the objects that views looked up, as far as they were scanned.  A member whose value
+            // a lookup read past is in a document if the value is an array or an object.
+            struct view_index
+            {
+                struct entry
+                {
+                    std::string_view key;
+                    const char* at;
+                    const char* value;
+                    yyjson_val* val;
+                };
+                const char* open = nullptr;
+                std::vector<entry> members;
+                const char* end = nullptr;
+            };
+            std::array<view_index, 4> view_indexes_{};
+            unsigned view_index_next_ = 0;
+            // Whether lookups read the members that they pass into documents: each costs more than a skip, and
+            // pays only when the caster looks the member up later, so the reads go on while they are looked up.
+            int view_reads_ = 8;
 
         public:
             direct_reader(const char* first, const char* last, ReadFlag flg) noexcept
@@ -10727,7 +10797,9 @@ namespace yyjson
             static consteval auto value_node_of()
             {
                 using yyjson::detail::type_list;
-                if constexpr (builtin_variant<T>)
+                if constexpr (std::same_as<T, yyjson::json_view>)
+                    return node<false>{};
+                else if constexpr (builtin_variant<T>)
                     return []<std::size_t... Is>(std::index_sequence<Is...>) {
                         return node<false,
                                     type_list<value_node<std::remove_cv_t<std::variant_alternative_t<Is, T>>, Loop>...>>{};
@@ -12034,12 +12106,22 @@ namespace yyjson
             // here are left to yyjson.  The position is kept in a local variable, which the member would make
             // wait for a store and a load on every token.  A caller that inlined it, as GCC does for one that is
             // the only caller, was slower.
-            CPPYYJSON_NOINLINE void skip_value()
+            CPPYYJSON_NOINLINE void skip_value() { skip_value_from<false>(cur_, cur_); }
+            // Skips the rest of the container at `open` from `p`, after a member or an element of it.
+            CPPYYJSON_NOINLINE void skip_rest(const char* open, const char* p)
             {
-                const char* p = cur_;
-                const char* const start = p;
+                skip_value_from<true>(open, p);
+            }
+            template <bool Rest>
+            CPPYYJSON_ALWAYS_INLINE void skip_value_from(const char* const start, const char* p)
+            {
                 char stack[64];
                 auto depth = std::size_t{0};
+                if constexpr (Rest)
+                {
+                    stack[depth++] = *start == '{' ? '}' : ']';
+                    goto after;
+                }
             value:
                 switch (*p)
                 {
@@ -12116,8 +12198,13 @@ namespace yyjson
                     alc_.reset(yyjson_alc_dyn_new());
                     if (alc_ == nullptr) throw std::bad_alloc();
                 }
-                if (local_ == nullptr || p < local_from_)
+                if (local_ == nullptr || p < local_from_ || p < local_kept_)
                 {
+                    if (local_kept_ != nullptr)
+                    {
+                        view_copies_.push_back(std::move(local_));
+                        local_kept_ = nullptr;
+                    }
                     local_ = std::make_unique_for_overwrite<char[]>(static_cast<std::size_t>(last_ + 1 - p) +
                                                                     YYJSON_PADDING_SIZE);
                     local_from_ = local_to_ = local_used_ = p;
@@ -12190,11 +12277,340 @@ namespace yyjson
             template <typename S, typename F>
             decltype(auto) with_source(F&& f)
             {
-                if constexpr (yyjson::detail::borrows_strings<S>)
+                if constexpr (std::same_as<S, yyjson::json_view>)
+                {
+                    // the text of the value is checked as far as the caster reads it, and after it returns
+                    struct depth_guard
+                    {
+                        direct_reader& r;
+                        ~depth_guard()
+                        {
+                            if (--r.view_depth_ == 0) r.view_release();
+                        }
+                    };
+                    ++view_depth_;
+                    const auto guard = depth_guard{*this};
+                    const char* const start = cur_;
+                    using R = decltype(f(std::declval<S>()));
+                    if constexpr (std::is_void_v<R>)
+                    {
+                        f(S(*this, start));
+                        view_close(start);
+                    }
+                    else
+                    {
+                        R result = f(S(*this, start));
+                        view_close(start);
+                        return result;
+                    }
+                }
+                else if constexpr (yyjson::detail::borrows_strings<S>)
                     return with_document(
                         [&](const const_value_ref& v) -> decltype(auto) { return f(v.template cast<S>()); });
                 else
                     return f(read_value<S>());
+            }
+
+            // Views -------------------------------------------------------------------------------------------
+            // The operations of a `json_view` on the text, which leave `cur_` where it was.
+
+            struct cursor_guard
+            {
+                direct_reader& r;
+                const char* saved;
+                ~cursor_guard() { r.cur_ = saved; }
+            };
+
+            // Releases what the views kept, when the outermost caster that takes one returns.
+            void view_release() noexcept
+            {
+                for (auto& e : view_indexes_) e.open = nullptr;
+                view_docs_.clear();
+                view_copies_.clear();
+                local_kept_ = nullptr;
+                view_strings_.clear();
+            }
+
+            const char* view_known_end(const char* p) const noexcept
+            {
+                // most often the value that a view has just read
+                if (const auto& [begin, end] = view_ends_[(view_ends_next_ - 1) % view_ends_.size()]; begin == p)
+                    return end;
+                for (const auto& [begin, end] : view_ends_)
+                    if (begin == p) return end;
+                return nullptr;
+            }
+            void view_add_end(const char* begin, const char* end) noexcept
+            {
+                view_ends_[view_ends_next_++ % view_ends_.size()] = {begin, end};
+            }
+            // Moves `cur_` past the value at `p`.
+            void view_skip(const char* p)
+            {
+                if (const auto* end = view_known_end(p))
+                    cur_ = end;
+                else
+                {
+                    cur_ = p;
+                    skip_value();
+                }
+            }
+
+            // Moves `cur_` past the value of a view that started at `start`, checking what the caster did not read.
+            void view_close(const char* start)
+            {
+                if (const auto* end = view_known_end(start))
+                    cur_ = end;
+                else if (auto* e = view_index_find(start); e != nullptr && !e->members.empty())
+                {
+                    if (e->end != nullptr)
+                    {
+                        cur_ = e->end;
+                        return;
+                    }
+                    view_skip(e->members.back().value);
+                    skip_rest(start, cur_);
+                    view_add_end(start, cur_);
+                }
+                else
+                {
+                    cur_ = start;
+                    skip_value();
+                }
+            }
+
+            // The content of the string at `cur_`, in the text or in a string of `view_strings_`.
+            std::string_view view_scan_string()
+            {
+                const auto s = scan_string();
+                if (!s.escaped) [[likely]]
+                    return {s.begin, static_cast<std::size_t>(s.end - s.begin)};
+                auto& out = view_strings_.emplace_front();
+                unescape(s.begin, s.end, out);
+                return out;
+            }
+            // The key at `cur_`, most of which are neither escaped nor outside ASCII.
+            CPPYYJSON_ALWAYS_INLINE std::string_view view_key()
+            {
+                if (const auto* end = plain_string_end(cur_, [] { return nullptr; })) [[likely]]
+                {
+                    const auto key = std::string_view(cur_ + 1, static_cast<std::size_t>(end - cur_ - 2));
+                    cur_ = end;
+                    return key;
+                }
+                return view_scan_string();
+            }
+            std::string_view view_string(const char* p)
+            {
+                const auto guard = cursor_guard{*this, cur_};
+                cur_ = p;
+                const auto result = view_scan_string();
+                view_add_end(p, cur_);
+                return result;
+            }
+
+            // The number at `p` as a value of a document.
+            yyjson_val view_number(const char* p)
+            {
+                const auto guard = cursor_guard{*this, cur_};
+                cur_ = p;
+                auto val = yyjson_val{};
+                read_number([&](auto v) {
+                    if constexpr (std::same_as<decltype(v), std::uint64_t>)
+                    {
+                        val.tag = YYJSON_TYPE_NUM | YYJSON_SUBTYPE_UINT;
+                        val.uni.u64 = v;
+                    }
+                    else if constexpr (std::same_as<decltype(v), std::int64_t>)
+                    {
+                        val.tag = YYJSON_TYPE_NUM | YYJSON_SUBTYPE_SINT;
+                        val.uni.i64 = v;
+                    }
+                    else
+                    {
+                        val.tag = YYJSON_TYPE_NUM | YYJSON_SUBTYPE_REAL;
+                        val.uni.f64 = v;
+                    }
+                });
+                return val;
+            }
+
+            // The value at `p` in a document that is kept until the outermost caster that takes a view returns,
+            // and in `end` the end of the value.
+            yyjson_val* view_document(const char* p, const char*& end)
+            {
+                const auto guard = cursor_guard{*this, cur_};
+                cur_ = p;
+                view_docs_.reserve(view_docs_.size() + 1);
+                auto* const doc = read_local_document();
+                view_docs_.emplace_back(doc);
+                local_kept_ = local_used_;
+                end = cur_;
+                view_add_end(p, end);
+                return yyjson_doc_get_root(doc);
+            }
+            yyjson_val* view_document(const char* p)
+            {
+                const char* end;
+                return view_document(p, end);
+            }
+
+            template <typename U>
+            U view_cast(const char* p)
+            {
+                // the strings that U borrows are those of a document, as they are for a view of a document
+                if constexpr (std::same_as<U, std::string_view>)
+                {
+                    if (*p == '"') return view_string(p);
+                    return const_value_ref(view_document(p)).template cast<U>();
+                }
+                else if constexpr (std::same_as<U, const char*> || yyjson::detail::borrows_strings<U>)
+                    return const_value_ref(view_document(p)).template cast<U>();
+                else
+                {
+                    const auto guard = cursor_guard{*this, cur_};
+                    cur_ = p;
+                    decltype(auto) result = read_value<U>();
+                    view_add_end(p, cur_);
+                    return result;
+                }
+            }
+
+            // The first member or element of the container at `p`, or null if it is empty.
+            const char* view_first(const char* p)
+            {
+                const auto guard = cursor_guard{*this, cur_};
+                cur_ = p + 1;
+                skip_ws();
+                if (*cur_ == (*p == '{' ? '}' : ']'))
+                {
+                    view_add_end(p, cur_ + 1);
+                    return nullptr;
+                }
+                if (*p == '{' && *cur_ != '"') fail();
+                return cur_;
+            }
+            // The next member or element after the value at `value` in the container at `open`, or null after the
+            // last.
+            const char* view_next(const char* open, const char* value)
+            {
+                const auto guard = cursor_guard{*this, cur_};
+                view_skip(value);
+                skip_ws();
+                if (*cur_ == ',')
+                {
+                    ++cur_;
+                    skip_ws();
+                    if (*open == '{' && *cur_ != '"') fail();
+                    return cur_;
+                }
+                if (*cur_ != (*open == '{' ? '}' : ']')) fail();
+                if (cur_ == last_ && open != first_) fail();
+                view_add_end(open, cur_ + 1);
+                return nullptr;
+            }
+            // The key of the member at `p` and the position of its value.
+            std::pair<std::string_view, const char*> view_member(const char* p)
+            {
+                const auto guard = cursor_guard{*this, cur_};
+                cur_ = p;
+                const auto key = view_key();
+                skip_ws();
+                expect(':');
+                skip_ws();
+                return {key, cur_};
+            }
+
+            view_index* view_index_find(const char* open) noexcept
+            {
+                for (auto& e : view_indexes_)
+                    if (e.open == open) return &e;
+                return nullptr;
+            }
+            view_index& view_index_of(const char* open)
+            {
+                if (auto* e = view_index_find(open)) return *e;
+                auto& e = view_indexes_[view_index_next_++ % view_indexes_.size()];
+                e.open = open;
+                e.members.clear();
+                e.end = nullptr;
+                return e;
+            }
+            // Scans the next member of the object of `e`, or returns false after the last.  With `reads`, for a
+            // lookup, the value of the member before it is read into a document if it is an array or an object,
+            // as a lookup passes those that the caster looks up later.
+            bool view_index_step(view_index& e, bool reads)
+            {
+                if (e.end != nullptr) return false;
+                const auto guard = cursor_guard{*this, cur_};
+                if (e.members.empty())
+                {
+                    cur_ = e.open + 1;
+                    skip_ws();
+                }
+                else
+                {
+                    auto& last = e.members.back();
+                    if (const auto* end = view_known_end(last.value))
+                        cur_ = end;
+                    else if (reads && (*last.value == '{' || *last.value == '['))
+                    {
+                        const char* end;
+                        last.val = view_document(last.value, end);
+                        cur_ = end;
+                        --view_reads_;
+                    }
+                    else
+                    {
+                        cur_ = last.value;
+                        skip_value();
+                    }
+                    skip_ws();
+                    if (*cur_ == ',')
+                    {
+                        ++cur_;
+                        skip_ws();
+                        if (*cur_ != '"') fail();
+                    }
+                    else if (*cur_ != '}')
+                        fail();
+                }
+                if (*cur_ == '}')
+                {
+                    if (cur_ == last_ && e.open != first_) fail();
+                    e.end = cur_ + 1;
+                    view_add_end(e.open, e.end);
+                    return false;
+                }
+                if (*cur_ != '"') fail();
+                const char* const at = cur_;
+                const auto key = view_key();
+                skip_ws();
+                expect(':');
+                skip_ws();
+                e.members.push_back({key, at, cur_, nullptr});
+                return true;
+            }
+            // The first member of the object at `open` with `key`, or null.
+            const view_index::entry* view_find(const char* open, std::string_view key)
+            {
+                auto& e = view_index_of(open);
+                for (const auto& m : e.members)
+                    if (m.key == key)
+                    {
+                        if (&m != &e.members.back() && (*m.value == '{' || *m.value == '['))
+                            view_reads_ = std::min(view_reads_ + 2, 16);
+                        return &m;
+                    }
+                while (view_index_step(e, view_reads_ > 0))
+                    if (e.members.back().key == key) return &e.members.back();
+                return nullptr;
+            }
+            std::size_t view_object_size(const char* open)
+            {
+                auto& e = view_index_of(open);
+                while (view_index_step(e, false)) {}
+                return e.members.size();
             }
 
             // The kinds of JSON values that the value at `cur_` may be, from its first character.
@@ -13666,6 +14082,397 @@ namespace yyjson
             }
         };
     }  // namespace reader::detail
+
+    // A read-only view of a JSON value for a caster that reads it as `static T from_json(yyjson::json_view)`.  The
+    // value is in a document when the caster casts one, and in the text when `yyjson::read<T>` reads the value
+    // without one, where the view reads only what the caster asks for and the rest is checked after it returns.
+    // A view, and the strings that it hands out, are valid until the caster returns.
+    class json_view
+    {
+        friend class reader::detail::direct_reader;
+        friend class json_object_view;
+        friend class json_array_view;
+        friend struct caster<json_view>;
+        template <typename Json>
+        friend struct detail::json_view_of_copy;
+
+        reader::detail::direct_reader* rd_ = nullptr;
+        yyjson_val* val_ = nullptr;
+        const char* pos_ = nullptr;
+
+        explicit json_view(yyjson_val* val) noexcept : val_(val) {}
+        json_view(reader::detail::direct_reader& rd, const char* pos) noexcept : rd_(&rd), pos_(pos) {}
+        static json_view of(const reader::const_value_ref& v) noexcept { return json_view(v.val_); }
+
+        // A number in the text as a value of a document, to have the semantics of `const_value_ref`.
+        template <typename F>
+        decltype(auto) number(F&& f) const
+        {
+            if (rd_ == nullptr) return f(reader::const_value_ref(val_));
+            auto val = yyjson_val{};
+            if (*pos_ == '-' || (*pos_ >= '0' && *pos_ <= '9')) val = rd_->view_number(pos_);
+            return f(reader::const_value_ref(&val));
+        }
+
+    public:
+        json_view() = delete;
+
+        [[nodiscard]] bool is_null() const noexcept { return rd_ != nullptr ? *pos_ == 'n' : yyjson_is_null(val_); }
+        [[nodiscard]] bool is_true() const noexcept { return rd_ != nullptr ? *pos_ == 't' : yyjson_is_true(val_); }
+        [[nodiscard]] bool is_false() const noexcept { return rd_ != nullptr ? *pos_ == 'f' : yyjson_is_false(val_); }
+        [[nodiscard]] bool is_bool() const noexcept { return is_true() || is_false(); }
+        [[nodiscard]] bool is_uint() const
+        {
+            return number([](const auto& v) { return v.is_uint(); });
+        }
+        [[nodiscard]] bool is_sint() const
+        {
+            return number([](const auto& v) { return v.is_sint(); });
+        }
+        [[nodiscard]] bool is_int() const
+        {
+            return number([](const auto& v) { return v.is_int(); });
+        }
+        [[nodiscard]] bool is_real() const
+        {
+            return number([](const auto& v) { return v.is_real(); });
+        }
+        [[nodiscard]] bool is_num() const noexcept
+        {
+            return rd_ != nullptr ? *pos_ == '-' || (*pos_ >= '0' && *pos_ <= '9') : yyjson_is_num(val_);
+        }
+        [[nodiscard]] bool is_string() const noexcept { return rd_ != nullptr ? *pos_ == '"' : yyjson_is_str(val_); }
+        [[nodiscard]] bool is_array() const noexcept { return rd_ != nullptr ? *pos_ == '[' : yyjson_is_arr(val_); }
+        [[nodiscard]] bool is_object() const noexcept { return rd_ != nullptr ? *pos_ == '{' : yyjson_is_obj(val_); }
+        [[nodiscard]] bool is_container() const noexcept { return is_array() || is_object(); }
+
+        [[nodiscard]] std::optional<std::nullptr_t> as_null() const noexcept
+        {
+            if (is_null()) [[likely]]
+                return nullptr;
+            return std::nullopt;
+        }
+        [[nodiscard]] std::optional<bool> as_bool() const noexcept
+        {
+            if (is_bool()) [[likely]]
+                return is_true();
+            return std::nullopt;
+        }
+        [[nodiscard]] std::optional<std::uint64_t> as_uint() const
+        {
+            return number([](const auto& v) { return v.as_uint(); });
+        }
+        [[nodiscard]] std::optional<std::int64_t> as_sint() const
+        {
+            return number([](const auto& v) { return v.as_sint(); });
+        }
+        [[nodiscard]] std::optional<std::int64_t> as_int() const
+        {
+            return number([](const auto& v) { return v.as_int(); });
+        }
+        [[nodiscard]] std::optional<double> as_real() const
+        {
+            return number([](const auto& v) { return v.as_real(); });
+        }
+        [[nodiscard]] std::optional<double> as_num() const
+        {
+            return number([](const auto& v) { return v.as_num(); });
+        }
+        [[nodiscard]] std::optional<std::string_view> as_string() const
+        {
+            if (!is_string()) return std::nullopt;
+            if (rd_ != nullptr) return rd_->view_string(pos_);
+            return std::string_view(unsafe_yyjson_get_str(val_), unsafe_yyjson_get_len(val_));
+        }
+        [[nodiscard]] std::optional<json_array_view> as_array() const;
+        [[nodiscard]] std::optional<json_object_view> as_object() const;
+
+        template <typename U>
+        [[nodiscard]] U cast() const
+        {
+            if constexpr (std::same_as<U, json_view>)
+                return *this;
+            else
+            {
+                if (rd_ != nullptr) return rd_->template view_cast<U>(pos_);
+                return reader::const_value_ref(val_).template cast<U>();
+            }
+        }
+    };
+
+    // The members of an object of a `json_view`, which in the text are found by reading the object from the start
+    // as far as the member, and are found again without reading.
+    class json_object_view
+    {
+        friend class json_view;
+
+        reader::detail::direct_reader* rd_ = nullptr;
+        yyjson_val* val_ = nullptr;
+        const char* pos_ = nullptr;
+
+        explicit json_object_view(const json_view& v) noexcept : rd_(v.rd_), val_(v.val_), pos_(v.pos_) {}
+
+        json_view member_view(const auto& m) const noexcept
+        {
+            return m.val != nullptr ? json_view(m.val) : json_view(*rd_, m.value);
+        }
+
+    public:
+        using value_type = std::pair<std::string_view, json_view>;
+
+        class iterator
+        {
+            friend class json_object_view;
+
+        public:
+            using difference_type = std::ptrdiff_t;
+            using value_type = json_object_view::value_type;
+
+        private:
+            reader::detail::direct_reader* rd_ = nullptr;
+            yyjson_val* key_ = nullptr;
+            std::size_t rest_ = 0;
+            const char* open_ = nullptr;
+            const char* value_ = nullptr;
+            value_type m_{std::string_view(), json_view(static_cast<yyjson_val*>(nullptr))};
+
+            void load()
+            {
+                if (rd_ != nullptr)
+                {
+                    if (value_ != nullptr)
+                    {
+                        const auto [key, value] = rd_->view_member(value_);
+                        value_ = value;
+                        m_.first = key;
+                        m_.second.rd_ = rd_;
+                        m_.second.pos_ = value;
+                    }
+                }
+                else if (rest_ != 0)
+                {
+                    m_.first = std::string_view(unsafe_yyjson_get_str(key_), unsafe_yyjson_get_len(key_));
+                    m_.second.val_ = key_ + 1;
+                }
+            }
+
+        public:
+            const value_type& operator*() const noexcept { return m_; }
+            const value_type* operator->() const noexcept { return &m_; }
+            iterator& operator++()
+            {
+                if (rd_ != nullptr)
+                    value_ = rd_->view_next(open_, value_);
+                else if (--rest_ != 0)
+                    key_ = unsafe_yyjson_get_next(key_ + 1);
+                load();
+                return *this;
+            }
+            void operator++(int) { ++*this; }
+            bool operator==(std::default_sentinel_t) const noexcept
+            {
+                return rd_ != nullptr ? value_ == nullptr : rest_ == 0;
+            }
+        };
+
+        [[nodiscard]] iterator begin() const
+        {
+            auto it = iterator();
+            if (rd_ != nullptr)
+            {
+                it.rd_ = rd_;
+                it.open_ = pos_;
+                it.value_ = rd_->view_first(pos_);
+            }
+            else
+            {
+                it.rest_ = unsafe_yyjson_get_len(val_);
+                it.key_ = it.rest_ != 0 ? unsafe_yyjson_get_first(val_) : nullptr;
+            }
+            it.load();
+            return it;
+        }
+        [[nodiscard]] std::default_sentinel_t end() const noexcept { return {}; }
+
+        // The first member with the key, as `const_object_ref::find` finds it.
+        [[nodiscard]] iterator find(std::string_view key) const
+        {
+            if (rd_ != nullptr)
+            {
+                auto it = iterator();
+                it.rd_ = rd_;
+                it.open_ = pos_;
+                if (const auto* m = rd_->view_find(pos_, key))
+                {
+                    it.value_ = m->value;
+                    it.m_.first = m->key;
+                    it.m_.second = member_view(*m);
+                }
+                return it;
+            }
+            auto it = begin();
+            while (it != end() && it->first != key) ++it;
+            return it;
+        }
+        [[nodiscard]] bool contains(std::string_view key) const
+        {
+            if (rd_ == nullptr) return yyjson_obj_getn(val_, key.data(), key.size()) != nullptr;
+            return rd_->view_find(pos_, key) != nullptr;
+        }
+        [[nodiscard]] json_view operator[](std::string_view key) const
+        {
+            if (rd_ == nullptr)
+            {
+                auto* const v = yyjson_obj_getn(val_, key.data(), key.size());
+                if (v == nullptr) [[unlikely]]
+                    throw std::out_of_range(std::format("JSON object key not found: {}", key));
+                return json_view(v);
+            }
+            const auto* const m = rd_->view_find(pos_, key);
+            if (m == nullptr) [[unlikely]]
+                throw std::out_of_range(std::format("JSON object key not found: {}", key));
+            return member_view(*m);
+        }
+        [[nodiscard]] std::size_t size() const
+        {
+            return rd_ != nullptr ? rd_->view_object_size(pos_) : unsafe_yyjson_get_len(val_);
+        }
+        [[nodiscard]] bool empty() const { return begin() == end(); }
+
+        template <typename U>
+        [[nodiscard]] U cast() const
+        {
+            return (rd_ != nullptr ? json_view(*rd_, pos_) : json_view(val_)).template cast<U>();
+        }
+    };
+
+    // The elements of an array of a `json_view`, which in the text are read from the start of the array.
+    class json_array_view
+    {
+        friend class json_view;
+
+        reader::detail::direct_reader* rd_ = nullptr;
+        yyjson_val* val_ = nullptr;
+        const char* pos_ = nullptr;
+
+        explicit json_array_view(const json_view& v) noexcept : rd_(v.rd_), val_(v.val_), pos_(v.pos_) {}
+
+    public:
+        using value_type = json_view;
+
+        class iterator
+        {
+            friend class json_array_view;
+
+            reader::detail::direct_reader* rd_ = nullptr;
+            yyjson_val* val_ = nullptr;
+            std::size_t rest_ = 0;
+            const char* open_ = nullptr;
+            const char* pos_ = nullptr;
+
+        public:
+            using difference_type = std::ptrdiff_t;
+            using value_type = json_view;
+
+            json_view operator*() const noexcept { return rd_ != nullptr ? json_view(*rd_, pos_) : json_view(val_); }
+            iterator& operator++()
+            {
+                if (rd_ != nullptr)
+                    pos_ = rd_->view_next(open_, pos_);
+                else if (--rest_ != 0)
+                    val_ = unsafe_yyjson_get_next(val_);
+                return *this;
+            }
+            void operator++(int) { ++*this; }
+            bool operator==(std::default_sentinel_t) const noexcept
+            {
+                return rd_ != nullptr ? pos_ == nullptr : rest_ == 0;
+            }
+        };
+
+        [[nodiscard]] iterator begin() const
+        {
+            auto it = iterator();
+            if (rd_ != nullptr)
+            {
+                it.rd_ = rd_;
+                it.open_ = pos_;
+                it.pos_ = rd_->view_first(pos_);
+            }
+            else
+            {
+                it.rest_ = unsafe_yyjson_get_len(val_);
+                it.val_ = it.rest_ != 0 ? unsafe_yyjson_get_first(val_) : nullptr;
+            }
+            return it;
+        }
+        [[nodiscard]] std::default_sentinel_t end() const noexcept { return {}; }
+        [[nodiscard]] std::size_t size() const
+        {
+            if (rd_ == nullptr) return unsafe_yyjson_get_len(val_);
+            auto n = std::size_t{0};
+            for (auto it = begin(); it != end(); ++it) ++n;
+            return n;
+        }
+        [[nodiscard]] bool empty() const { return begin() == end(); }
+        // The element at `index`, which in the text is found by reading the elements before it.
+        [[nodiscard]] json_view operator[](std::size_t index) const
+        {
+            if (rd_ == nullptr)
+            {
+                auto* const v = yyjson_arr_get(val_, index);
+                if (v == nullptr) [[unlikely]]
+                    throw std::out_of_range(std::format("JSON array index out of range: {}", index));
+                return json_view(v);
+            }
+            auto it = begin();
+            for (auto i = index; it != end() && i != 0; ++it, --i) {}
+            if (it == end()) [[unlikely]]
+                throw std::out_of_range(std::format("JSON array index out of range: {}", index));
+            return *it;
+        }
+
+        template <typename U>
+        [[nodiscard]] U cast() const
+        {
+            return (rd_ != nullptr ? json_view(*rd_, pos_) : json_view(val_)).template cast<U>();
+        }
+    };
+
+    inline std::optional<json_array_view> json_view::as_array() const
+    {
+        if (!is_array()) return std::nullopt;
+        return json_array_view(*this);
+    }
+    inline std::optional<json_object_view> json_view::as_object() const
+    {
+        if (!is_object()) return std::nullopt;
+        return json_object_view(*this);
+    }
+
+    template <>
+    struct caster<json_view>
+    {
+        static json_view from_json(const reader::const_value_ref& v) noexcept { return json_view::of(v); }
+    };
+
+    namespace detail
+    {
+        template <typename Json>
+        struct json_view_of_copy
+        {
+            // Calls `f` with a view of a copy of `json` in an immutable document, which lives until `f` returns.
+            template <typename F>
+            static decltype(auto) apply(const Json& json, F&& f)
+            {
+                const auto doc = std::unique_ptr<yyjson_doc, decltype(&yyjson_doc_free)>(
+                    yyjson_mut_val_imut_copy(writer::detail::json_value_access::get(json), nullptr), &yyjson_doc_free);
+                if (doc == nullptr) [[unlikely]]
+                    throw std::bad_alloc();
+                return std::forward<F>(f)(json_view(yyjson_doc_get_root(doc.get())));
+            }
+        };
+    }  // namespace detail
 
     // Reads JSON text into a value of type T, with the same result as `yyjson::read(json, read_flag).cast<T>()`
     // and the same exception if it fails, but without building a document for the parts of T that the default
