@@ -12812,10 +12812,10 @@ namespace yyjson
                 { t.capacity() } -> std::convertible_to<std::size_t>;
             };
 
-            // Whether `read_array_into` counts the rest of the elements of an array of T once it has read 512, and
-            // reserves room for them, rather than growing the range, which moves every element read so far.  The
-            // elements of a trivially copyable type are cheap to move, and most of their arrays are short, so that
-            // only the root array of them is given room for the rest, by `read_root`.
+            // Whether `read_array_into` counts the rest of the elements of an array of T once it has read 512, or the
+            // first of the root array, and reserves room for them, rather than growing the range, which moves every
+            // element read so far.  The elements of a trivially copyable type are cheap to move, and most of their
+            // arrays are short, so that only the root array of them is given room for the rest, by `read_root`.
             template <typename T>
             static constexpr bool counts_elements =
                 !std::is_trivially_copyable_v<std::ranges::range_value_t<T>> && reserves_elements<T>;
@@ -12886,8 +12886,11 @@ namespace yyjson
                         }
                         else if constexpr (counts_elements<T>)
                         {
-                            if (count++ == 512 && result.size() == result.capacity()) [[unlikely]]
+                            // the root array, whose elements are mostly many, is given room for them after the first
+                            if ((count == 1 && open == first_) ||
+                                (count == 512 && result.size() == result.capacity())) [[unlikely]]
                                 reserve_rest(result, open);
+                            ++count;
                         }
                         if constexpr (yyjson::detail::reflected_assignable_in_place<value_type, const_value_ref> &&
                                       requires {

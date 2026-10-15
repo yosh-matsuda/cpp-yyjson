@@ -6673,7 +6673,8 @@ TEST(DirectReader, ReservesRest)
     EXPECT_EQ(fields.n, 1);
     EXPECT_TRUE(expect_direct_read<ReservedStrings>(object));
 #if defined(__GLIBCXX__) || defined(_LIBCPP_VERSION)
-    // the range doubles up to 512 elements and then takes the exact count
+    // the root array takes the exact count after its first element, and the others double up to 512 elements
+    // before they take it
 #if YYJSON_VERSION_HEX >= 0x000C00
     EXPECT_EQ(strings.capacity(), strings.size());
 #endif
