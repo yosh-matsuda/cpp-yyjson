@@ -10659,6 +10659,13 @@ namespace yyjson
                 void operator()(yyjson_doc* doc) const noexcept { yyjson_doc_free(doc); }
             };
             std::unique_ptr<yyjson_alc, free_alc> alc_;
+            // The copy of the text that `read_local_document` reads documents from in place: `local_[0]` is the
+            // character at `local_from_` of the text, and the copy is the text from `local_used_` to `local_to_`.
+            std::unique_ptr<char[]> local_;
+            const char* local_from_ = nullptr;
+            const char* local_to_ = nullptr;
+            const char* local_used_ = nullptr;
+            std::size_t local_chunk_ = 4096;
 
         public:
             direct_reader(const char* first, const char* last, ReadFlag flg) noexcept
@@ -12093,24 +12100,82 @@ namespace yyjson
 
             // Values ------------------------------------------------------------------------------------------
 
-            // Calls `f` with the value at `cur_` read into a document of its own, for the casters that take one.
-            // The documents come from an allocator that keeps the memory of the previous one.
-            template <typename F>
-            decltype(auto) with_document(F&& f)
+            // Reads the value at `cur_` into a document and moves past it.  yyjson reads the value in place from a
+            // copy of the text.  The copy has room for the rest of the text and is filled a chunk at a time as far
+            // as the values reach, so the values that follow find their text already copied.  A value that may not
+            // end within the chunk is read again from a chunk four times as long, which the next values start with.
+            // yyjson writes into the part of the copy that holds the value, so that part is copied again before a
+            // value earlier in the text is read.
+            yyjson_doc* read_local_document()
             {
-                const char* const start = cur_;
-                skip_value();
+                const char* const p = cur_;
+                // a value in the root ends before its closing bracket, which only the root itself reaches
+                const char* const end = p == first_ ? last_ + 1 : last_;
                 if (alc_ == nullptr)
                 {
                     alc_.reset(yyjson_alc_dyn_new());
                     if (alc_ == nullptr) throw std::bad_alloc();
                 }
-                auto err = yyjson_read_err();
-                auto* const doc = yyjson_read_opts(const_cast<char*>(start), static_cast<std::size_t>(cur_ - start),
-                                                   to_underlying(flg_), alc_.get(), &err);
-                if (doc == nullptr) fail();
-                const auto guard = std::unique_ptr<yyjson_doc, free_doc>(doc);
-                return std::forward<F>(f)(const_value_ref(yyjson_doc_get_root(doc)));
+                if (local_ == nullptr || p < local_from_)
+                {
+                    local_ = std::make_unique_for_overwrite<char[]>(static_cast<std::size_t>(last_ + 1 - p) +
+                                                                    YYJSON_PADDING_SIZE);
+                    local_from_ = local_to_ = local_used_ = p;
+                }
+                // the copy from `local_used_` to `local_to_` is the text
+                char* const copy = local_.get() + (p - local_from_);
+                if (p > local_to_)
+                    local_to_ = local_used_ = p;
+                else if (p < local_used_)
+                {
+                    std::memcpy(copy, p, static_cast<std::size_t>(local_used_ - p));
+                    local_used_ = p;
+                }
+                for (auto chunk = local_chunk_;;)
+                {
+                    if (const char* const to = p + std::min(chunk, static_cast<std::size_t>(end - p)); to > local_to_)
+                    {
+                        std::memcpy(local_.get() + (local_to_ - local_from_), local_to_,
+                                    static_cast<std::size_t>(to - local_to_));
+                        local_to_ = to;
+                    }
+                    const auto len = static_cast<std::size_t>(local_to_ - p);
+                    auto err = yyjson_read_err();
+                    auto* const doc = yyjson_read_opts(
+                        copy, len, to_underlying(flg_) | YYJSON_READ_INSITU | YYJSON_READ_STOP_WHEN_DONE, alc_.get(),
+                        &err);
+                    if (doc != nullptr)
+                    {
+                        const auto read = yyjson_doc_get_read_size(doc);
+                        // a number that the chunk cuts short reads as a shorter number
+                        if (read < len || local_to_ == end)
+                        {
+                            local_used_ = p + read;
+                            local_chunk_ = chunk;
+                            cur_ = p + read;
+                            return doc;
+                        }
+                        yyjson_doc_free(doc);
+                    }
+                    else if (err.code == YYJSON_READ_ERROR_MEMORY_ALLOCATION)
+                        throw std::bad_alloc();
+                    if (local_to_ == end)
+                    {
+                        local_used_ = local_to_;
+                        fail();
+                    }
+                    std::memcpy(copy, p, len);
+                    chunk = len * 4;
+                }
+            }
+
+            // Calls `f` with the value at `cur_` read into a document of its own, for the casters that take one.
+            // The documents come from an allocator that keeps the memory of the previous one.
+            template <typename F>
+            decltype(auto) with_document(F&& f)
+            {
+                const auto doc = std::unique_ptr<yyjson_doc, free_doc>(read_local_document());
+                return std::forward<F>(f)(const_value_ref(yyjson_doc_get_root(doc.get())));
             }
 
             template <typename T>

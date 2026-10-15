@@ -5765,6 +5765,107 @@ TEST(DirectReader, DocumentOfWholeText)
 #endif
 }
 
+#if YYJSON_VERSION_HEX >= 0x000C00
+template <typename T>
+struct DocumentOf
+{
+    T value;
+    bool operator==(const DocumentOf&) const = default;
+};
+
+template <typename T>
+struct yyjson::caster<DocumentOf<T>>
+{
+    template <typename Json>
+    static DocumentOf<T> from_json(const Json& json)
+    {
+        return {cast<T>(json)};
+    }
+};
+
+TEST(DirectReader, LocalDocuments)
+{
+    using namespace yyjson;
+    using reader::detail::direct_reader;
+
+    // the reader reads each value that a caster takes on a document from a copy of the text that it makes a chunk
+    // at a time, and the values that end beyond the chunk again from a longer one
+    // from a buffer that ends at the closing bracket, for the address sanitizer to see a read beyond it
+    const auto direct = []<typename T>(std::type_identity<T>, const std::string& json) {
+        const auto text = std::make_unique_for_overwrite<char[]>(json.size());
+        std::memcpy(text.get(), json.data(), json.size());
+        return direct_reader(text.get(), text.get() + json.size() - 1, ReadFlag::NoFlag).read_root<T>();
+    };
+    const auto check = [&]<typename T>(std::type_identity<T> type, const std::string& json) {
+        const auto expected = read(json).cast<T>();
+        EXPECT_EQ(direct(type, json), expected) << json.substr(0, 80);
+        EXPECT_EQ(read<T>(json), expected) << json.substr(0, 80);
+    };
+
+    // numbers that a chunk may cut short, from every offset in the text, and a number longer than a chunk
+    check(std::type_identity<std::vector<DocumentOf<double>>>{},
+          std::format("[1,1.{}e-5,2]", std::string(10000, '0')));
+    for (auto pad = 0; pad < 24; ++pad)
+    {
+        auto json = std::string("[") + std::string(static_cast<std::size_t>(pad), ' ');
+        for (auto i = 0; i < 2000; ++i) json += std::format("{}{},", i % 7 == 0 ? "-" : "", 1234567890123LL + i);
+        json += "-1.5e300]";
+        check(std::type_identity<std::vector<DocumentOf<double>>>{}, json);
+        check(std::type_identity<std::vector<DocumentOf<std::int64_t>>>{},
+              json.substr(0, json.size() - 9) + "0]");
+    }
+
+    // strings with escapes, which yyjson unescapes in its copy, before and after values longer than the chunk
+    {
+        auto json = std::string("[");
+        for (auto i = 0; i < 300; ++i)
+        {
+            json += i % 50 == 25 ? std::format(R"("{}\u00e9\n",)", std::string(static_cast<std::size_t>(i) * 300, 'x'))
+                                 : std::format(R"("a\"b\\{}\u3042",)", i);
+        }
+        json += R"("end")" "]";
+        check(std::type_identity<std::vector<DocumentOf<std::string>>>{}, json);
+    }
+    // and in the part of a value longer than the chunk that yyjson reads before it finds the chunk too short
+    {
+        auto json = std::string("[");
+        for (auto i = 0; i < 40; ++i)
+        {
+            json += "[";
+            for (auto j = 0; j < (i % 8 + 1) * 150; ++j) json += std::format(R"("a\"b\\{}\u3042",)", j);
+            json += R"("end"],)";
+        }
+        json += "[]]";
+        check(std::type_identity<std::vector<DocumentOf<std::vector<std::string>>>>{}, json);
+    }
+
+    // containers, in a map, the last of which ends at the closing bracket of the root
+    {
+        auto json = std::string("{");
+        for (auto i = 0; i < 200; ++i)
+            json += std::format(R"("k{}":[{},{}{}] ,)", i, i, std::string(static_cast<std::size_t>(i % 9) * 40, ' '), i);
+        json += R"("last":[1,2]})";
+        check(std::type_identity<std::map<std::string, DocumentOf<std::vector<int>>>>{}, json);
+    }
+
+    // the root itself, and a value that is the whole of the root
+    check(std::type_identity<DocumentOf<std::vector<int>>>{}, "[1,2]");
+    check(std::type_identity<std::vector<DocumentOf<std::vector<int>>>>{}, "[[1,2]]");
+    check(std::type_identity<std::vector<DocumentOf<std::vector<int>>>>{}, "[]");
+
+    // a value that yyjson rejects fails the reader, and `read<T>` throws as reading a document does
+    for (const auto* json : {R"([[1,2],[1,2})", R"([[1,2],[1,2])", R"([[1,2],[1,)", R"([[1,2],tru])", R"([[1,2],"a])",
+                             R"([[1,2],[1,2]x])", R"([[1,2],01])"})
+    {
+        const auto text = std::string(json);
+        EXPECT_THROW(direct(std::type_identity<std::vector<DocumentOf<std::vector<int>>>>{}, text),
+                     reader::detail::direct_read_failure)
+            << json;
+        EXPECT_THROW((void)read<std::vector<DocumentOf<std::vector<int>>>>(text), read_error) << json;
+    }
+}
+#endif
+
 TEST(DirectReader, Overloads)
 {
     using namespace yyjson;
