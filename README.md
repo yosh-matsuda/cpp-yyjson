@@ -298,7 +298,7 @@ cpp-yyjson and [Glaze](https://github.com/stephenberry/glaze) read seven documen
 
 |  | Fresh result object / output | Reused result object / output |
 | --- | --- | --- |
-| Read: `read<T>` vs. `glz::read` | 1.1 - 1.6x | 1.0 - 1.6x (`merge_into`) |
+| Read: `read<T>` vs. `glz::read` | 1.1 - 1.6x | 1.0 - 1.7x (`merge_into`) |
 | Write: `write(t)` vs. `glz::write` | 1.2 - 2.3x | 1.0 - 1.5x (`write(t, out)`) |
 
 ![Read throughput into C++ types](docs/benchmark/images/typed_read_throughput.svg)
@@ -315,7 +315,7 @@ The table gives how many times faster cpp-yyjson is than each of them, and the c
 
 |       | vs. yyjson | vs. simdjson | vs. rapidjson | vs. nlohmann-json |
 | ----- | ---------- | ------------ | ------------- | ----------------- |
-| Read  | 1.0 - 1.8x | 1.1 - 1.6x   | 1.4 - 4.4x    | -                 |
+| Read  | 1.0 - 1.8x | 1.1 - 1.7x   | 1.4 - 4.5x    | -                 |
 | Write | 1.1 - 2.5x | -            | 3.3 - 11x     | 3.8 - 34x         |
 
 ![Read throughput per document](docs/benchmark/images/read_throughput.svg)
