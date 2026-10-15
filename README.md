@@ -29,7 +29,7 @@ cpp-yyjson is a header-only C++ interface to [yyjson](https://github.com/ibireme
 
 *   **Performance.** Reading and writing are among the fastest of the major C++ JSON libraries, with both APIs, on the real-world documents measured in [Performance](#performance). `read_into` and `write(t, out)` reuse the memory of the previous call in a loop, and the bundled backend adds SIMD paths for strings and other optimizations to yyjson.
 *   **Two APIs, chosen per task.** The data binding API reads JSON text into C++ types and writes them back without building a document in between. The DOM API reads JSON of any shape into a document that can be queried, iterated and modified, and builds new documents. [Which API to use](#which-api-to-use) lists the common cases.
-*   **One call each way, no boilerplate.** `read<T>(json)` and `write(t)` convert aggregates by their field names through compile-time reflection, with no macro or registration. STL containers, `std::optional`, `std::variant`, `std::shared_ptr`, tuples, enumerations by name and recursive types are supported, and `VISITABLE_STRUCT`, `yyjson::field_rename` and user-defined casters cover other types and JSON keys.
+*   **One call each way, no boilerplate.** `read<T>(json)` and `write(t)` convert aggregates by their field names through compile-time reflection, with no macro or registration. STL containers, `std::optional`, `std::variant` with or without a tag member, `std::shared_ptr`, tuples, enumerations by name and recursive types are supported, and `VISITABLE_STRUCT`, `yyjson::field_rename` and user-defined casters cover other types and JSON keys.
 *   **Tolerant of changing JSON.** Keys that the type does not have are ignored, missing keys keep the default value of the field, and an empty `std::optional` is left out when writing. `merge_into` applies a [JSON Merge Patch](https://www.rfc-editor.org/rfc/rfc7386) to an existing object, which updates a configuration with only the keys that changed.
 *   **A DOM that feels like the standard library.** Arrays and objects are C++20 ranges, objects yield key-value pairs for structured bindings, accessors return `std::optional`, values are formattable with `std::format`, and documents are built from containers, views and initializer lists.
 
@@ -213,7 +213,7 @@ Both APIs convert the following types, nested in any combination:
 *   `bool`, integer and floating-point types, `std::nullptr_t`, and strings such as `std::string`;
 *   [enumerations](docs/reference.md#enumerations), as the names of their enumerators, also as the keys of maps;
 *   ranges such as `std::vector`, `std::array` and `std::set`, and maps and ranges of key-value pairs such as `std::map` and `std::unordered_map`;
-*   `std::optional`, `std::shared_ptr`, `std::variant` and tuple-like types ([C++23 tuple-like](https://wg21.link/P2165R4));
+*   `std::optional`, `std::shared_ptr`, `std::variant` and tuple-like types ([C++23 tuple-like](https://wg21.link/P2165R4)), and a `std::variant` [tagged](docs/reference.md#tagged-variants) by a member that names its alternative;
 *   structs and classes converted by [compile-time reflection](docs/reference.md#automatic-casting-with-compile-time-reflection), or registered with the [`VISITABLE_STRUCT`](docs/reference.md#registration-of-field-names-of-structclass) macro, including C array fields, empty structs and [recursive types](docs/reference.md#recursive-types);
 *   any type with a user-defined caster.
 
@@ -264,15 +264,17 @@ auto json = yyjson::write(colors);
 // -> ["#ff8000","#000000"]
 ```
 
-The forms of a caster are listed below in the order to choose them. All but the last work with both APIs without a document. The last one takes the JSON value itself, a value of the DOM API, and the data binding API reads each such value into a temporary document. See [User-defined casters](docs/reference.md#user-defined-casters) for all of them.
+The forms of a caster are listed below in the order to choose them. All but the last work with both APIs without a document. The last one takes a JSON value of the DOM API, and the data binding API reads each such value into a temporary document. See [User-defined casters](docs/reference.md#user-defined-casters) for all of them.
 
 | Purpose | Form |
 | --- | --- |
+| Tell the alternatives of a `std::variant` by a member that names them | no caster: [`variant_tag`](docs/reference.md#tagged-variants) |
 | Convert to and from another type, such as a struct to a string | [translator](docs/reference.md#translator) `from_json(U)` and `to_json(const X&)` that returns a value |
 | Read into a field that cannot be copied or moved | [in-place](docs/reference.md#reading-into-an-existing-field) `from_json(X&, U)` |
 | Write members that depend on the value | `to_json` with an [emitter](docs/reference.md#writing-members-with-an-emitter) |
 | Leave a field out of the JSON object | [`should_omit`](docs/reference.md#omitting-a-field-with-no-value) |
-| Decide how to read a value from its content, such as a tagged union | [`from_json(const Json&)`](docs/reference.md#reading-a-json-value-in-a-caster) |
+| Decide how to read a value from its content, such as an object of keys known only at run time | [`from_json(yyjson::json_view)`](docs/reference.md#reading-a-json-value-in-a-caster) |
+| The same, with the DOM API | [`from_json(const Json&)`](docs/reference.md#reading-a-json-value-in-a-caster) |
 
 ## Which API to use
 

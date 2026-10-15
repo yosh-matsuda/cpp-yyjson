@@ -31,6 +31,8 @@ The `yyjson` namespace includes the following functions and classes. Typically, 
 | `yyjson::object_emitter`, `yyjson::array_emitter`  | Write the members of an object or an array [from a caster's `to_json`](#writing-members-with-an-emitter) |
 | `yyjson::field_rename<T>`, `yyjson::rename`        | Map fields to [JSON keys other than their names](#json-keys-other-than-field-names) |
 | `yyjson::skip`                                     | C++26 annotation that leaves a field out of [reading and writing](#c26-annotations) |
+| `yyjson::variant_tag<T>`, `yyjson::internal_tag`, `yyjson::adjacent_tag` | Name the alternatives of a `std::variant` by a [member of the object](#tagged-variants) |
+| `yyjson::json_view`                                | Read-only view of a JSON value for a caster's [`from_json`](#reading-a-json-value-in-a-caster) |
 | `VISITABLE_STRUCT`                                 | Macro to [register the fields](#registration-of-field-names-of-structclass) of a struct |
 
 | Exception             |                                                          |
@@ -76,7 +78,7 @@ auto points = read<std::vector<Point>>(R"([{"x":1,"y":2},{"x":3,"y":4}])");
 // -> {{1, 2}, {3, 4}}
 ```
 
-Most types are read straight from the string: numbers, strings, `bool`, `nullptr`, ranges, maps, the pre-defined STL casters, and structs that the compile-time reflection or the `VISITABLE_STRUCT` macro converts. A `std::variant` tries its alternatives on the string in the same order as the cast tries them on a value. A tuple-like type, such as `std::tuple` or `std::pair`, is read from an array or an object as its caster reads it from a value; only a tuple of key-value pairs whose keys are not `std::string` is read like a user-defined `from_json` below. A [translator `from_json`](#translator) is read as its parameter type and then converted. A user-defined `from_json` that takes a JSON value is given one, so the value that it converts is read into a temporary document, while the values around it are still read directly. When `T` holds such values as the elements of a range or a map, also as an alternative of a `std::variant`, a temporary document for each element would cost more than one document for the whole string, so `read<T>` then reads the string into a document and casts it, as `read(json_string, flag).cast<T>()` does.
+Most types are read straight from the string: numbers, strings, `bool`, `nullptr`, ranges, maps, the pre-defined STL casters, and structs that the compile-time reflection or the `VISITABLE_STRUCT` macro converts. A `std::variant` tries its alternatives on the string in the same order as the cast tries them on a value, and a [tagged variant](#tagged-variants) reads the alternative that its tag names. A tuple-like type, such as `std::tuple` or `std::pair`, is read from an array or an object as its caster reads it from a value; only a tuple of key-value pairs whose keys are not `std::string` is read like a user-defined `from_json` below. A [translator `from_json`](#translator) is read as its parameter type and then converted, and a `from_json` that takes a [`yyjson::json_view`](#reading-a-json-value-in-a-caster) is given a view of the string. A user-defined `from_json` that takes a JSON value of the DOM API is given one, so the value that it converts is read into a temporary document, while the values around it are still read directly. When `T` holds such values as the elements of a range or a map, also as an alternative of a `std::variant`, a temporary document for each element would cost more than one document for the whole string, so `read<T>` then reads the string into a document and casts it, as `read(json_string, flag).cast<T>()` does.
 
 The string is read without a document when its root is an array or an object and `flag` is `NoFlag` or `AllowInvalidUnicode`. Otherwise, and whenever the direct read fails, `read<T>` reads the string into a document and casts it, which is how it gives the result and the exception of `cast<T>` in every case. A user-defined `from_json` may therefore be called twice for the same JSON value, when the direct read fails after calling it. Do not rely on the number of calls.
 
@@ -1305,7 +1307,7 @@ auto str_var = cast<Variant>(str_json);                                   // des
 // -> "a"
 ```
 
-A `std::variant` is deserialized into the first of its alternatives, in the order of the template arguments, that the JSON value converts to. An alternative that never converts from the kind of the JSON value, such as `std::vector<double>` from a number, is skipped without trying it, while an alternative with a user-defined `from_json` is always tried.
+A `std::variant` is deserialized into the first of its alternatives, in the order of the template arguments, that the JSON value converts to. An alternative that never converts from the kind of the JSON value, such as `std::vector<double>` from a number, is skipped without trying it, while an alternative with a user-defined `from_json` is always tried. A variant whose alternatives a member of the JSON object names is read by that member instead, as a [tagged variant](#tagged-variants).
 
 For a multi-type JSON array or object, using the caster for `std::tuple` is valuable and efficient.
 
@@ -1493,20 +1495,90 @@ auto json = yyjson::write(project);
 *   Reading still needs what the struct itself needs: `yyjson::read<T>` and `cast<T>` a default constructible and movable `T`, and `read_into` and `merge_into` a move-assignable one. A struct with a skipped `std::mutex` can therefore only be written, and one with a skipped `const` or reference member cannot be read by `read_into` or `merge_into`.
 *   The annotations apply to the structs that the compile-time reflection converts, not to those registered with `VISITABLE_STRUCT`. `yyjson::skip` is defined only when they are available, when the macro `FIELD_RFL_ANNOTATIONS` is `1`, while `yyjson::rename` is always available for `yyjson::field_rename`.
 
+### Tagged variants
+
+JSON often tells the kind of an object by a member that names it, such as `"type": "circle"`, rather than by its shape. Specialize the variable template `yyjson::variant_tag` for a `std::variant` to read and write its alternatives by such a member, which is called the tag. `yyjson::internal_tag(key, ids)` puts the tag in the object of the alternative itself, and `yyjson::adjacent_tag(key, ids)` puts it in the object of the struct that holds the variant, next to the field of the variant. `ids` names the alternatives other than `std::monostate`, in the order of the template arguments:
+
+```cpp
+struct Circle
+{
+    double r;
+};
+struct Rect
+{
+    int w;
+    int h;
+};
+
+using Shape = std::variant<Circle, Rect>;
+template <>
+inline constexpr auto yyjson::variant_tag<Shape> = yyjson::internal_tag("type", {"circle", "rect"});
+
+auto shapes = yyjson::read<std::vector<Shape>>(R"([{"type":"circle","r":1.5},{"w":2,"h":3,"type":"rect"}])");
+// -> {Circle{1.5}, Rect{2, 3}}
+auto json = yyjson::write(shapes);
+// -> [{"type":"circle","r":1.5},{"type":"rect","w":2,"h":3}]
+
+using Payload = std::variant<Circle, Rect, int>;
+template <>
+inline constexpr auto yyjson::variant_tag<Payload> = yyjson::adjacent_tag("kind", {"circle", "rect", "count"});
+
+struct Event
+{
+    int id;
+    Payload data;
+};
+
+auto event = yyjson::read<Event>(R"({"id":1,"data":5,"kind":"count"})");
+// -> Event{1, 5}
+auto json2 = yyjson::write(Event{2, Rect{1, 2}});
+// -> {"id":2,"kind":"rect","data":{"w":1,"h":2}}
+```
+
+These are the internally and the adjacently tagged representations of [serde](https://serde.rs/enum-representations.html). Without a specialization, a variant tries its alternatives in turn, as [above](#pre-defined-stl-casters).
+
+*   The tag may be anywhere in its object, before or after the other members. When the object has more than one member of the key, the first one names the alternative. A tag that is missing, that is not a string or that names no alternative reads as `std::monostate` if the variant has it, and throws `yyjson::bad_cast` otherwise.
+*   `std::monostate` is written as JSON null without a tag, and JSON null reads as `std::monostate` in a variant that has it. Any other alternative is written with its tag first: the first member of its object for `internal_tag`, and the member right before the field of the variant for `adjacent_tag`.
+*   Write the specialization `inline`, as for [`yyjson::field_rename`](#json-keys-other-than-field-names). A variant that has `std::monostate` more than once, `ids` that do not name each of the other alternatives, an empty key, and empty or repeated names all fail to compile with a `static_assert`.
+*   `cast`, `value` and `object` of the DOM API read and write a tagged variant the same way as `yyjson::read<T>` and `yyjson::write`.
+
+With `internal_tag`, each alternative other than `std::monostate` is written as a JSON object: a struct, a map, or a type whose caster writes an object. Writing an alternative that is another kind of value throws `std::invalid_argument`. The alternative reads the whole object, its tag included, so a struct skips the tag as an unknown key and a map holds it as an element. A struct may also have a field of the key, which is read and written as any other field; the library then does not write the tag again, and the field has to name the alternative, or writing it throws `std::invalid_argument`. The same applies to a map that holds the key.
+
+With `adjacent_tag`, the variant is read and written only as a field of a struct that the compile-time reflection or `VISITABLE_STRUCT` converts. The variant on its own, such as the root, an element of a range or the value of a `std::optional`, throws `std::logic_error`. The struct may have a field of the key, a string or an [enumeration](#enumerations) whose names are the `ids`. That field is read and written as any other field, the library does not write the tag again, and the field has to name the alternative that the variant holds, or writing the struct throws `std::invalid_argument`:
+
+```cpp
+enum class Kind { circle, rect, count };
+
+struct TypedEvent
+{
+    Kind kind;
+    Payload data;
+};
+
+auto typed = yyjson::read<TypedEvent>(R"({"kind":"rect","data":{"w":1,"h":2}})");
+// -> TypedEvent{Kind::rect, Rect{1, 2}}
+```
+
+Two variants of the same key in one struct need such a field, and fail to compile without one. `read_into` and `merge_into` read the variant by the tag in the same object; an object without the member of the variant leaves the variant as it is, whether or not it has the tag.
+
+`yyjson::read<T>` reads a tagged variant without a document. It finds the tag by reading the keys of the members before it, so the tag is cheapest first in its object, where `yyjson::write` puts it. A value of an adjacently tagged variant that comes before its tag is read into a temporary document, which is cast once the tag is found.
+
 ### User-defined casters
 
 A user-defined caster converts a type that the conversions above do not handle, or converts it in another way. Specialize `yyjson::caster<X>` and give it the static member functions below. The caster of a type takes precedence over every other conversion of that type.
 
-The forms are listed in the order to choose them. All but the last convert C++ values, and both APIs use them without a document: `cast` and `value` of the DOM API as well as `yyjson::read<T>`, `yyjson::read_into`, `yyjson::merge_into` and `yyjson::write` of the data binding API. The last form takes the JSON value itself, which is a value of the DOM API. The data binding API accepts it too, but reads each such value into a temporary document.
+The forms are listed in the order to choose them. All but the last convert C++ values or read a [`yyjson::json_view`](#reading-a-json-value-in-a-caster), and both APIs use them without a document: `cast` and `value` of the DOM API as well as `yyjson::read<T>`, `yyjson::read_into`, `yyjson::merge_into` and `yyjson::write` of the data binding API. The last form takes a JSON value of the DOM API. The data binding API accepts it too, but reads each such value into a temporary document.
 
 | Purpose | Form | Direct read | Direct write |
 | --- | --- | --- | --- |
 | Give a struct JSON keys other than its field names | no caster: [`field_rename`, C++26 annotations or `VISITABLE_STRUCT`](#json-keys-other-than-field-names) | yes | yes |
+| Tell the alternatives of a `std::variant` by a member that names them | no caster: [`variant_tag`](#tagged-variants) | yes | yes |
 | Convert to and from another type, such as a struct to a string | [translator](#translator): `X from_json(U)` and `U to_json(const X&)` | yes | yes |
 | Read into a field that cannot be copied or moved | [in-place translator](#reading-into-an-existing-field): `void from_json(X&, U)` | yes | — |
 | Write members that depend on the value | [emitter](#writing-members-with-an-emitter): `void to_json(object_emitter&, const X&)` | — | yes |
 | Leave a field out of the JSON object | [`should_omit`](#omitting-a-field-with-no-value): `bool should_omit(const X&)` | — | yes |
-| Decide how to read a value from its content, such as a tagged union | [`from_json` that takes a JSON value](#reading-a-json-value-in-a-caster) | through a document | — |
+| Decide how to read a value from its content, such as an object of keys known only at run time | [`from_json` that takes a `json_view`](#reading-a-json-value-in-a-caster) | yes | — |
+| The same, with the DOM API | [`from_json` that takes a JSON value](#reading-a-json-value-in-a-caster) | through a document | — |
 
 Every form gives the same result with both APIs. Some rules apply to all of them:
 
@@ -1695,26 +1767,25 @@ A caster that has `should_omit` and no `to_json` is enough for a type that the c
 
 #### Reading a JSON value in a caster
 
-`from_json` can take the JSON value itself, as a template parameter, and return `X`. Use it when a caster decides how to read a value from its content, such as a tagged union whose `"type"` member tells which struct the rest of the object is, or an object whose keys are known only at run time:
+`from_json` can take the JSON value itself as a `yyjson::json_view` and return `X`. Use it when a caster decides how to read a value from its content, such as an object whose keys are known only at run time, or a union that a [tagged variant](#tagged-variants) cannot describe:
 
 ```cpp
 template <>
 struct yyjson::caster<X>
 {
-    template <typename Json>
-    static X from_json(const Json& json)
+    static X from_json(yyjson::json_view json)
     {
         if (const auto obj = json.as_object(); obj.has_value())
         {
             auto result = X();
-            for (const auto& kv : *obj)
+            for (const auto& [key, value] : *obj)
             {
-                if (kv.first == "a")
-                    result.a = yyjson::cast<decltype(result.a)>(kv.second);
-                else if (kv.first == "b")
-                    result.b = yyjson::cast<decltype(result.b)>(kv.second);
-                else if (kv.first == "c")
-                    result.c = yyjson::cast<decltype(result.c)>(kv.second);
+                if (key == "a")
+                    result.a = value.cast<decltype(result.a)>();
+                else if (key == "b")
+                    result.b = value.cast<decltype(result.b)>();
+                else if (key == "c")
+                    result.c = value.cast<decltype(result.c)>();
             }
             return result;
         }
@@ -1723,11 +1794,25 @@ struct yyjson::caster<X>
 };
 ```
 
-The JSON value is a value of the DOM API. `yyjson::read<T>` therefore reads each value that this form converts into a temporary document, and reads the whole string into a document when such values are the elements of a range or a map or an alternative of a `std::variant`. The result is the same as with `cast`, but the data binding API loses most of its advantage for that type, so prefer a [translator](#translator) whenever a C++ type can describe the JSON.
+A `json_view` is a read-only view with the reading functions of `yyjson::reader::const_value_ref`: `is_*`, `as_*` and `cast<U>()`. `as_array()` and `as_object()` give views of the elements and the members, which iterate, and have `size()`, `empty()`, `operator[]` and `cast<U>()`; the view of an object also has `find(key)` and `contains(key)`, which find the first member of the key. `operator[]` throws `std::out_of_range` for an index or a key that is not there.
 
-Its in-place form fills a field, as the [in-place translator](#reading-into-an-existing-field) does, and chooses the type that it casts the JSON value to:
+`cast` gives the caster a view of the value in the document. The value of a mutable document, such as a `yyjson::value`, is copied into an immutable document first, which is freed when the caster returns. `yyjson::read<T>` gives it a view of the value in the string instead, with no document, also when the values are the elements of a range or a map. The view reads only what the caster asks for, and the rest of the value is checked after the caster returns, so invalid JSON fails as it does with `cast`. The results are the same. The view, and the strings that it gives, are valid until the caster returns.
+
+In the string, the members and the elements are found by reading the value from its start. Iterating once in order reads each member once, while `find`, `contains` and `operator[]` of an object read the members before the one that they look for, and `size()` reads all of them. The members that they read are remembered for the last few objects looked into, so looking up another member of the same object goes on from where the last lookup stopped. `operator[]` of an array reads the elements before the index each time. A caster that reads a member that tells how to read the others reads fastest when that member comes first in the JSON. A value that the caster casts with `cast<U>()` is read by the caster of `U`, directly from the string.
+
+`from_json` can also take the JSON value of the DOM API, as a template parameter:
 
 ```cpp
+template <typename Json>
+static X from_json(const Json& json);
+```
+
+`yyjson::read<T>` reads each value that this form converts into a temporary document, and reads the whole string into a document when such values are the elements of a range or a map or an alternative of a `std::variant`. The result is the same as with `cast`, but the data binding API loses most of its advantage for that type, so prefer a `json_view` or a [translator](#translator).
+
+Both forms have an in-place form that fills a field, as the [in-place translator](#reading-into-an-existing-field) does, and chooses the type that it casts the JSON value to:
+
+```cpp
+static void from_json(X& field, yyjson::json_view json);
 template <typename Json>
 static void from_json(X& field, const Json& json);
 ```
@@ -1793,7 +1878,7 @@ Writing many objects into one `std::string` with `yyjson::write(t, out)` stops a
 
 ### Write casters that convert C++ values
 
-The forms of a [user-defined caster](#user-defined-casters) that take or fill a JSON value need a document. `read<T>` reads each value that a [`from_json(const Json&)`](#reading-a-json-value-in-a-caster) converts into a temporary document, and reads the whole string into a document when such values are the elements of a range or a map or an alternative of a `std::variant`. `write` builds a temporary document for each value that a `to_json` with `writer::object_ref&`, `writer::array_ref&` or `writer::value_ref&` [fills](#writing-into-a-json-value-in-a-caster), the forms kept for the casters of v1.1.0. The results are the same, but the data binding API loses most of its advantage.
+The forms of a [user-defined caster](#user-defined-casters) that take or fill a JSON value need a document. `read<T>` reads each value that a [`from_json(const Json&)`](#reading-a-json-value-in-a-caster) converts into a temporary document, and reads the whole string into a document when such values are the elements of a range or a map or an alternative of a `std::variant`. `write` builds a temporary document for each value that a `to_json` with `writer::object_ref&`, `writer::array_ref&` or `writer::value_ref&` [fills](#writing-into-a-json-value-in-a-caster), the forms kept for the casters of v1.1.0. The results are the same, but the data binding API loses most of its advantage. A caster that reads the JSON value can take a [`yyjson::json_view`](#reading-a-json-value-in-a-caster) instead, which `read<T>` gives without a document, and a `std::variant` whose alternatives a member names needs no caster with [`variant_tag`](#tagged-variants).
 
 Write casters in the forms that convert C++ values instead, which both APIs use without a document: a [translator](#translator) `from_json(U)` and a `to_json` that returns a value, the [in-place](#reading-into-an-existing-field) `from_json(X&, U)`, a `to_json` with an [emitter](#writing-members-with-an-emitter) and [`should_omit`](#omitting-a-field-with-no-value). A struct whose keys differ from its field names needs no caster at all with [`yyjson::field_rename`](#json-keys-other-than-field-names).
 
