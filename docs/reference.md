@@ -34,6 +34,7 @@ The `yyjson` namespace includes the following functions and classes. Typically, 
 | `yyjson::variant_tag<T>`, `yyjson::internal_tag`, `yyjson::adjacent_tag` | Name the alternatives of a `std::variant` by a [member of the object](#tagged-variants) |
 | `yyjson::json_view`                                | Read-only view of a JSON value for a caster's [`from_json`](#reading-a-json-value-in-a-caster) |
 | `VISITABLE_STRUCT`                                 | Macro to [register the fields](#registration-of-field-names-of-structclass) of a struct |
+| `yyjson::readable<T>`, `yyjson::writable<T>`, `yyjson::castable<Json, T>` | Concepts that tell whether a type [can be read or written](#conversion-rules) |
 
 | Exception             |                                                          |
 | --------------------- | -------------------------------------------------------- |
@@ -1257,18 +1258,64 @@ Some conversions succeed where one might expect them to fail, or give JSON that 
 *   `float` is written with the digits of the `double` of the same value: `0.1f` becomes `0.10000000149011612`.
 *   When a struct is read, a key that the struct does not have is ignored, a field whose key is missing keeps its value in `T()`, and a key that appears twice gives the field its last value. There is no option to require a key or to reject unknown keys; declare a field `std::optional` and check it after reading to require it.
 
-The following types are not converted at all and fail to compile where they are read or written. Use the type or the form in the second column instead:
+The following types have no conversion of their own, and fail to compile where they are written. Some of them still compile where they are read, because a type that can be constructed from a JSON scalar or from null is read from that value: a raw pointer, a `std::function` and a `std::unique_ptr` of an array read only JSON null, a duration reads an integer as its count, and a union reads a number into its first member. Use the type or the form in the second column instead:
 
 | Type | Instead |
 | --- | --- |
-| raw pointers (a raw pointer reads only JSON null) | `std::optional`, `std::unique_ptr`, `std::shared_ptr`, or a [translator](#translator) |
+| raw pointers | `std::optional`, `std::unique_ptr`, `std::shared_ptr`, or a [translator](#translator) |
 | `std::chrono` durations and time points | a translator to a number or a string |
 | `std::function`, `std::any`, unions | leave the field out with `VISITABLE_STRUCT` or a [C++26 annotation](#c26-annotations) |
 | `std::mutex` and other types that cannot be moved | the same, but the struct can then only be written |
 | a class with private fields, or a struct with a constructor of its own | a translator, or `VISITABLE_STRUCT` if the fields are public |
-| `std::forward_list` | it is written but not read; `std::vector` or `std::list` |
+| `std::forward_list`, `std::unique_ptr` of an array | `std::vector` or `std::list`; `std::forward_list` is written but not read |
 
-The compile error names the function that was called, such as `no matching function for call to 'write(P)'`, and the constraints of the library that are not satisfied, but not the field whose type caused it. Writing a value of each field type alone, such as `yyjson::write(std::chrono::seconds())`, finds that field.
+A struct, a container or another type that holds one of them converts only in the direction that each of its fields and elements does. The concepts `yyjson::readable<T>` and `yyjson::writable<T>` tell whether `T` can be read by `yyjson::read<T>` and written by `yyjson::write`, and `yyjson::castable<Json, T>` whether `yyjson::cast<T>` reads `T` from a JSON value of type `Json`. Use them to check a type in a `static_assert` or to constrain a template of your own:
+
+```cpp
+struct Event
+{
+    std::string name;
+    std::chrono::seconds duration;
+};
+
+static_assert(yyjson::readable<Event>);
+static_assert(!yyjson::writable<Event>);  // a duration is not written
+```
+
+#### Compile errors of types that cannot be converted
+
+Calling `yyjson::write`, `yyjson::read<T>`, `yyjson::read_into` or `yyjson::merge_into` with a type that cannot be converted in that direction calls a deleted overload. Its template argument `cannot_be_written` or `cannot_be_read` names the path from `T` to the first field or element that cannot be converted, with these types of the namespace `yyjson::diagnostic`:
+
+| Type | Meaning |
+| --- | --- |
+| `field<Struct, name<N>{"member"}, Cause>` | the field `member` of `Struct`, named as declared rather than by its JSON key, cannot be converted, because of `Cause` |
+| `element<Container, Cause>` | the elements, the values of a map, the alternatives of a variant or the value of an optional or a pointer in `Container` cannot be converted, because of `Cause` |
+| `not_writable<T>`, `not_readable<T>` | `T` itself cannot be converted, and none of its fields or elements is the reason |
+
+For example, writing the following `P` gives this error with GCC, which shows that the field `d` of the elements of the field `items` is a `std::chrono::seconds`:
+
+```cpp
+struct Inner
+{
+    int x;
+    std::chrono::seconds d;
+};
+struct P
+{
+    int a;
+    std::vector<Inner> items;
+};
+
+auto json = yyjson::write(P{});
+```
+
+```text
+error: use of deleted function 'yyjson::json_string yyjson::write(const T&, WriteFlag) [with T = P; cannot_be_written = diagnostic::field<P, diagnostic::name<5>{"items"}, diagnostic::element<std::vector<Inner>, diagnostic::field<Inner, diagnostic::name<1>{"d"}, diagnostic::not_writable<std::chrono::duration<long int> > > > >]'
+```
+
+Clang names the same type in the note on the deleted candidate. A compiler that supports a message on a deleted function, a C++26 feature that Clang accepts in C++20 as well, also says in the error message that `cannot_be_written` names the field. The DOM API, such as `yyjson::value(t)` and `yyjson::cast<T>`, gives the errors of its constraints without this name; check the type with `yyjson::write` or `yyjson::read<T>` to find the field.
+
+The fields of a [recursive type](#recursive-types) are not checked, because following them would add to the compile time of every call. `yyjson::readable` and `yyjson::writable` are true for such a type even if one of its fields cannot be converted, and the compile error then comes from inside the library, at the field that cannot be converted, such as `no matching function for call to 'write_array(const std::chrono::duration<long int>&)'`.
 
 Note that `yyjson::cast<T>` and `static_cast<T>` may give different results. `yyjson::cast<T>` applies cpp-yyjson's JSON conversion rules, including predefined casters, while `static_cast<T>` only uses ordinary C++ conversion rules. For example, `yyjson::cast<std::shared_ptr<int>>(value(nullptr))` returns `nullptr` because the predefined `std::shared_ptr` caster maps JSON null to a null pointer. The corresponding `static_cast<std::shared_ptr<int>>(value(nullptr))` is ill-formed because `yyjson::value` is not directly convertible to `std::shared_ptr<int>` in C++.
 

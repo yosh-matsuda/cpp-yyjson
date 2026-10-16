@@ -1,10 +1,13 @@
 #include <gtest/gtest.h>
+#include <any>
 #include <array>
 #include <atomic>
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <deque>
 #include <format>
+#include <forward_list>
 #include <functional>
 #include <iostream>
 #include <limits>
@@ -7685,6 +7688,22 @@ static_assert(!yyjson::detail::from_json_unusable<HoldsView>);
 static_assert(!yyjson::detail::from_json_unusable<std::string>);
 static_assert(!yyjson::detail::caster_names_from_json<WrittenView>);
 static_assert(!yyjson::detail::caster_names_from_json<HoldsView>);
+// `yyjson::readable` rejects what the static assertions of `read<T>` reject, which a document can still give
+static_assert(yyjson::readable<std::vector<InternedView>>);
+static_assert(yyjson::readable<const Rgb>);
+static_assert(!yyjson::readable<Rgb&>);
+static_assert(!yyjson::readable<HoldsView>);
+static_assert(!yyjson::readable<HoldsCString>);
+static_assert(!yyjson::readable<std::map<std::string_view, int>>);
+#if YYJSON_VERSION_HEX >= 0x000C00
+static_assert(!yyjson::readable<std::vector<yyjson::json_view>>);
+#endif
+static_assert(!yyjson::readable<std::vector<SameFormTwice>>);
+static_assert(!yyjson::readable<std::optional<TakesTwoParameters>>);
+static_assert(!yyjson::readable<WrittenView>);
+static_assert(yyjson::castable<yyjson::value, HoldsView>);
+static_assert(yyjson::writable<HoldsView>);
+static_assert(yyjson::writable<WrittenView>);
 
 TEST(Reader, BorrowedTranslatorSources)
 {
@@ -8862,7 +8881,7 @@ namespace
     template <typename T>
     concept readable_in_any_way =
         yyjson::castable<yyjson::reader::const_value_ref, T> || yyjson::castable<yyjson::value, T> ||
-        requires(std::string_view json, T& t) { yyjson::read<T>(json); } ||
+        yyjson::readable<T> || requires(std::string_view json, T& t) { yyjson::read<T>(json); } ||
         requires(std::string_view json, T& t) { yyjson::read_into(json, t); } ||
         requires(std::string_view json, T& t) { yyjson::merge_into(json, t); };
 }
@@ -9285,7 +9304,11 @@ TEST(Reflection, EnumKeys)
     const auto* first_node = &*t.m.find(Color::green);
     yyjson::read_into(R"({"m":{"green":5,"blue":6}})", t);
     EXPECT_EQ(t.m, (colors{{Color::green, 5}, {Color::blue, 6}}));
+#if YYJSON_VERSION_HEX >= 0x000C00
     EXPECT_EQ(&*t.m.find(Color::green), first_node);
+#else
+    static_cast<void>(first_node);
+#endif
     EXPECT_EQ(expect_merge_into(fields, R"({"m":{"green":null,"blue":3},"nested":{"blue":[5]},"opt":{"u_one":null}})"),
               R"({"m":{"red":1,"blue":3},"nested":{"blue":[5],"9":[]},"opt":{}})");
     EXPECT_EQ(expect_merge_into(colors{{Color::red, 1}}, R"({"0":null,"3":3})"), R"({"3":3})");
@@ -9428,6 +9451,140 @@ TEST(Reflection, RangeAggregates)
               R"({"r":{"items":[1],"name":"c"},"m":[{"items":[2,3]}],"o":{"items":[],"name":"b"}})");
 }
 
+// No JSON value is read into these types, so they are not castable rather than failing at run time
+class PrivateFields
+{
+    int a_ = 0;
+
+public:
+    [[nodiscard]] int a() const { return a_; }
+};
+static_assert(!yyjson::castable<yyjson::reader::const_value_ref, PrivateFields>);
+static_assert(!yyjson::castable<yyjson::reader::const_value_ref, std::mutex>);
+static_assert(!yyjson::castable<yyjson::reader::const_value_ref, std::forward_list<int>>);
+static_assert(!yyjson::castable<yyjson::value, std::forward_list<int>>);
+// `std::any` would hold a `std::string_view` into the JSON of a string, and no JSON value is read into it
+static_assert(!yyjson::castable<yyjson::reader::const_value_ref, std::any>);
+static_assert(!yyjson::castable<yyjson::value, std::any>);
+static_assert(!yyjson::castable<yyjson::reader::const_value_ref, std::optional<std::any>>);
+
+// `yyjson::readable` and `yyjson::writable` of the types that are converted only one way or not at all
+static_assert(!yyjson::readable<PrivateFields> && !yyjson::writable<PrivateFields>);
+static_assert(!yyjson::readable<std::mutex> && !yyjson::writable<std::mutex>);
+static_assert(!yyjson::readable<std::forward_list<int>> && yyjson::writable<std::forward_list<int>>);
+static_assert(!yyjson::readable<std::any> && !yyjson::writable<std::any>);
+static_assert(!yyjson::readable<std::vector<std::any>>);
+// a type constructible from a JSON scalar reads it
+static_assert(yyjson::readable<std::chrono::seconds> && !yyjson::writable<std::chrono::seconds>);
+static_assert(yyjson::readable<std::function<void()>> && !yyjson::writable<std::function<void()>>);
+static_assert(!yyjson::writable<std::unique_ptr<int[]>>);
+static_assert(yyjson::readable<std::unique_ptr<int>> && yyjson::writable<std::unique_ptr<int>>);
+static_assert(yyjson::readable<yyjson::value> && yyjson::writable<yyjson::value>);
+static_assert(yyjson::writable<yyjson::reader::const_value_ref>);
+
+// A `VISITABLE_STRUCT` is converted only when each of its members is, as a reflected struct is
+struct VisitableDuration
+{
+    int a = 0;
+    std::chrono::seconds d;
+};
+VISITABLE_STRUCT(VisitableDuration, a, d);
+struct VisitableMutex
+{
+    int a = 0;
+    std::mutex m;
+};
+VISITABLE_STRUCT(VisitableMutex, a, m);
+static_assert(yyjson::readable<VisitableDuration> && !yyjson::writable<VisitableDuration>);
+static_assert(!yyjson::readable<VisitableMutex> && !yyjson::writable<VisitableMutex>);
+static_assert(!yyjson::castable<yyjson::value, VisitableMutex>);
+
+// A type that cannot be converted is rejected by a deleted overload that names the field or element that cannot
+// be, and a requires-expression of the call is still false.
+struct BadInner
+{
+    int x = 0;
+    std::unique_ptr<int[]> p;
+};
+struct BadOuter
+{
+    int a = 0;
+    std::vector<BadInner> items;
+};
+struct ConstFieldCause
+{
+    const int a = 0;
+};
+// The name of a field in a cause, built as the library builds it: MSVC keeps `name<N>{"literal"}` as another
+// template argument.
+template <std::size_t N>
+consteval auto cause_name(const char (&s)[N])
+{
+    return yyjson::detail::diagnostic_name<N - 1>(std::string_view(s, N - 1));
+}
+static_assert(std::same_as<
+              yyjson::detail::write_cause<BadOuter>,
+              yyjson::diagnostic::field<
+                  BadOuter, cause_name("items"),
+                  yyjson::diagnostic::element<
+                      std::vector<BadInner>,
+                      yyjson::diagnostic::field<BadInner, cause_name("p"),
+                                                yyjson::diagnostic::not_writable<std::unique_ptr<int[]>>>>>>);
+static_assert(std::same_as<yyjson::detail::read_cause<ConstFieldCause>,
+                           yyjson::diagnostic::field<ConstFieldCause, cause_name("a"),
+                                                     yyjson::diagnostic::not_readable<const int>>>);
+static_assert(std::same_as<yyjson::detail::write_cause<VisitableDuration>,
+                           yyjson::diagnostic::field<VisitableDuration, cause_name("d"),
+                                                     yyjson::diagnostic::not_writable<std::chrono::seconds>>>);
+static_assert(
+    std::same_as<yyjson::detail::write_cause<std::map<std::string, std::optional<std::chrono::seconds>>>,
+                 yyjson::diagnostic::element<std::map<std::string, std::optional<std::chrono::seconds>>,
+                                             yyjson::diagnostic::element<std::optional<std::chrono::seconds>,
+                                                                         yyjson::diagnostic::not_writable<
+                                                                             std::chrono::seconds>>>>);
+static_assert(std::same_as<yyjson::detail::write_cause<std::variant<int, std::chrono::seconds>>,
+                           yyjson::diagnostic::element<std::variant<int, std::chrono::seconds>,
+                                                       yyjson::diagnostic::not_writable<std::chrono::seconds>>>);
+static_assert(std::same_as<yyjson::detail::read_cause<std::tuple<int, PrivateFields>>,
+                           yyjson::diagnostic::element<std::tuple<int, PrivateFields>,
+                                                       yyjson::diagnostic::not_readable<PrivateFields>>>);
+static_assert(std::same_as<yyjson::detail::write_cause<PrivateFields>,
+                           yyjson::diagnostic::not_writable<PrivateFields>>);
+// a field renamed in JSON is named as declared
+struct RenamedCause
+{
+    std::chrono::seconds duration_s;
+};
+template <>
+inline constexpr auto yyjson::field_rename<RenamedCause> = {yyjson::rename("duration_s", "duration")};
+struct VisitableRenamedCause
+{
+    std::chrono::seconds duration_s;
+};
+VISITABLE_STRUCT(VisitableRenamedCause, (duration_s, "duration"));
+static_assert(std::same_as<yyjson::detail::write_cause<RenamedCause>,
+                           yyjson::diagnostic::field<RenamedCause, cause_name("duration_s"),
+                                                     yyjson::diagnostic::not_writable<std::chrono::seconds>>>);
+static_assert(
+    std::same_as<yyjson::detail::write_cause<VisitableRenamedCause>,
+                 yyjson::diagnostic::field<VisitableRenamedCause, cause_name("duration_s"),
+                                           yyjson::diagnostic::not_writable<std::chrono::seconds>>>);
+namespace
+{
+    template <typename T>
+    concept writes_through_call = requires(const T& t, std::string& out) {
+        yyjson::write(t);
+        yyjson::write(t, out);
+    };
+    template <typename T>
+    concept reads_through_call = requires(std::string_view json, T& t) { yyjson::read<T>(json); } ||
+                                 requires(std::string_view json, T& t) { yyjson::read_into(json, t); } ||
+                                 requires(std::string_view json, T& t) { yyjson::merge_into(json, t); };
+}  // namespace
+static_assert(!writes_through_call<BadOuter> && writes_through_call<ConstFieldCause>);
+static_assert(!reads_through_call<ConstFieldCause> && !reads_through_call<PrivateFields>);
+static_assert(reads_through_call<BadOuter>);
+
 // `std::unique_ptr` is null or the value it points to, as `std::shared_ptr` is
 struct UniqueFields
 {
@@ -9442,6 +9599,7 @@ TEST(Reflection, UniquePointers)
 {
     using yyjson::bad_cast;
     using yyjson::read;
+    static_assert(yyjson::readable<UniqueFields> && yyjson::writable<UniqueFields>);
 
     EXPECT_EQ(read("null").cast<std::unique_ptr<int>>(), nullptr);
     EXPECT_EQ(*read("3").cast<std::unique_ptr<int>>(), 3);
