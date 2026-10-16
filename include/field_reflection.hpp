@@ -1,5 +1,5 @@
 /*===================================================*
-|  field-reflection version v1.0.0                   |
+|  field-reflection version v1.0.1                   |
 |  https://github.com/yosh-matsuda/field-reflection  |
 |                                                    |
 |  Copyright (c) 2026 Yoshiki Matsuda @yosh-matsuda  |
@@ -265,12 +265,15 @@ namespace field_reflection
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wundefined-inline"
 #endif
+            // A prvalue initializes a member of a class type without copying it, so that the copy constructor of a
+            // type such as std::vector<std::unique_ptr<int>>, which std::is_copy_constructible accepts, is not
+            // instantiated: clang instantiates it and fails to compile. The lvalue binds to a reference member.
             template <typename T, std::size_t = 0>
             struct any_lref
             {
                 template <typename U>
                 requires (!std::same_as<U, T>)
-                operator U&() const&& noexcept;  // NOLINT
+                operator U() const&& noexcept;  // NOLINT
                 template <typename U>
                 requires (!std::same_as<U, T>)
                 operator U&() const& noexcept;  // NOLINT
@@ -284,12 +287,24 @@ namespace field_reflection
                 operator U() const&& noexcept;  // NOLINT
             };
 
+            // Not converted to a type that cannot be copied, so that `{any_copyable}` does not select the
+            // initializer-list constructor of a member such as std::vector<std::unique_ptr<int>>: clang
+            // instantiates the definition of that constructor, which fails to compile because it copies the elements.
+            template <typename T, std::size_t = 0>
+            struct any_copyable
+            {
+                template <typename U>
+                requires (!std::same_as<U, T>) && (!std::same_as<U, any_copyable>) &&
+                         std::is_copy_constructible_v<U>
+                operator U() const&& noexcept;  // NOLINT
+            };
+
             template <typename T, std::size_t = 0>
             struct any_lref_no_base
             {
                 template <typename U>
                 requires (!std::is_base_of_v<U, T> && !std::same_as<U, T>)
-                operator U&() const&& noexcept;  // NOLINT
+                operator U() const&& noexcept;  // NOLINT
                 template <typename U>
                 requires (!std::is_base_of_v<U, T> && !std::same_as<U, T>)
                 operator U&() const& noexcept;  // NOLINT
@@ -485,8 +500,14 @@ namespace field_reflection
                 }
                 // Fast paths for a member that is not a C array: `{}` or `{arg}` initializes it, and the rest of
                 // the members take the rest of the initializers.
-                else if constexpr (constructible_with_nested<T, L, 0, Max - L - 1> ||
-                                   constructible_with_nested<T, L, 1, Max - L - 1>)
+                else if constexpr (constructible_with_nested<T, L, 0, Max - L - 1>)
+                {
+                    return 1 + member_count_from<T, L + 1, Max>;
+                }
+                // Checked only if `{}` does not initialize the member, because `{arg}` selects the initializer-list
+                // constructor of a member such as std::vector<std::unique_ptr<int>>, whose definition clang
+                // instantiates and fails to compile.
+                else if constexpr (constructible_with_nested<T, L, 1, Max - L - 1>)
                 {
                     return 1 + member_count_from<T, L + 1, Max>;
                 }
@@ -515,7 +536,7 @@ namespace field_reflection
                 // Fast path: a braced list initializes exactly one member without brace elision, so T has no C
                 // array members if each of the initializers in braces initializes T.
                 else if constexpr ([]<std::size_t... Is>(std::index_sequence<Is...>) {
-                                       return requires { T{{any_rref<T, Is>()}...}; };
+                                       return requires { T{{any_copyable<T, Is>()}...}; };
                                    }(std::make_index_sequence<max_args>()))
                 {
                     return max_args;
