@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <any>
 #include <array>
 #include <atomic>
 #include <bit>
@@ -9397,11 +9398,17 @@ static_assert(!yyjson::castable<yyjson::reader::const_value_ref, PrivateFields>)
 static_assert(!yyjson::castable<yyjson::reader::const_value_ref, std::mutex>);
 static_assert(!yyjson::castable<yyjson::reader::const_value_ref, std::forward_list<int>>);
 static_assert(!yyjson::castable<yyjson::value, std::forward_list<int>>);
+// `std::any` would hold a `std::string_view` into the JSON of a string, and no JSON value is read into it
+static_assert(!yyjson::castable<yyjson::reader::const_value_ref, std::any>);
+static_assert(!yyjson::castable<yyjson::value, std::any>);
+static_assert(!yyjson::castable<yyjson::reader::const_value_ref, std::optional<std::any>>);
 
 // `yyjson::readable` and `yyjson::writable` of the types that are converted only one way or not at all
 static_assert(!yyjson::readable<PrivateFields> && !yyjson::writable<PrivateFields>);
 static_assert(!yyjson::readable<std::mutex> && !yyjson::writable<std::mutex>);
 static_assert(!yyjson::readable<std::forward_list<int>> && yyjson::writable<std::forward_list<int>>);
+static_assert(!yyjson::readable<std::any> && !yyjson::writable<std::any>);
+static_assert(!yyjson::readable<std::vector<std::any>>);
 // a type constructible from a JSON scalar reads it
 static_assert(yyjson::readable<std::chrono::seconds> && !yyjson::writable<std::chrono::seconds>);
 static_assert(yyjson::readable<std::function<void()>> && !yyjson::writable<std::function<void()>>);

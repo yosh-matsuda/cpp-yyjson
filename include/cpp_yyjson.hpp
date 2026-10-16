@@ -7173,6 +7173,14 @@ namespace yyjson
         template <typename T>
         concept json_aggregate = std::is_class_v<T> && std::is_aggregate_v<T> && (!std::same_as<T, std::monostate>);
 
+        // A class constructible from a type that it cannot know, such as `std::any`, would hold whatever the reader
+        // gives it, which for a JSON string is a `std::string_view` into the text, and is not read at all.
+        struct any_type_probe
+        {
+        };
+        template <typename T>
+        concept accepts_any_type = std::is_class_v<T> && std::constructible_from<T, any_type_probe>;
+
         // T is constructed from a JSON scalar given as Arg, which is not done when the result is not the value
         // of the scalar: a container takes a number as its size and a struct as its first field, and C++
         // converts numbers, pointers and null to `bool`, which is read from JSON true and false only.
@@ -7180,24 +7188,24 @@ namespace yyjson
 #ifdef _MSC_VER
         concept json_scalar_constructible =
             (!std::ranges::range<T>) && (!json_aggregate<T>) && (!std::same_as<T, bool> || std::same_as<Arg, bool>) &&
-            requires { T(std::declval<Arg>()); };
+            (!accepts_any_type<T>) && requires { T(std::declval<Arg>()); };
 #else
         concept json_scalar_constructible =
             (!std::ranges::range<T>) && (!json_aggregate<T>) && (!std::same_as<T, bool> || std::same_as<Arg, bool>) &&
-            std::constructible_from<T, Arg>;
+            (!accepts_any_type<T>) && std::constructible_from<T, Arg>;
 #endif
 
         // `default_caster<T>::from_json_null` gives a T.
         template <typename T>
         concept json_null_constructible =
-            (!json_aggregate<T>) && (!std::same_as<T, bool>) &&
+            (!json_aggregate<T>) && (!std::same_as<T, bool>) && (!accepts_any_type<T>) &&
             ((std::constructible_from<T, std::nullptr_t> && !std::constructible_from<T, std::string_view>) ||
              std::constructible_from<T, std::nullopt_t> || std::constructible_from<T, std::monostate>);
 
         // `default_caster<T>::from_json_string` gives a T.
         template <typename T>
         concept json_string_constructible =
-            (!json_aggregate<T>) && (!std::same_as<T, bool>) &&
+            (!json_aggregate<T>) && (!std::same_as<T, bool>) && (!accepts_any_type<T>) &&
             (std::constructible_from<T, std::string_view> || std::constructible_from<T, std::string> ||
              std::constructible_from<T, const char*>);
 
