@@ -8320,12 +8320,15 @@ namespace yyjson
             std::array<std::uint8_t, sizeof...(Ts)>{detail::accepted_json_kinds<Ts, Json>()...};
         // the kinds that an alternative after each accepts, whose kinds a value has to be checked against
         template <typename Json>
-        static constexpr auto later_kinds = [] {
+        static consteval auto make_later_kinds()
+        {
             auto result = std::array<std::uint8_t, sizeof...(Ts)>{};
             for (auto i = sizeof...(Ts) - 1; i > 0; --i)
                 result[i - 1] = static_cast<std::uint8_t>(result[i] | alternative_kinds<Json>[i]);
             return result;
-        }();
+        }
+        template <typename Json>
+        static constexpr auto later_kinds = make_later_kinds<Json>();
 
         template <typename Json>
         static std::variant<Ts...> from_untagged(const Json& json)
