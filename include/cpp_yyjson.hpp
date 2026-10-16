@@ -1207,8 +1207,6 @@ namespace yyjson
 #else
         constexpr bool type_list_has<T, type_list<Ts...>> = (std::is_same_v<T, Ts> || ...);
 #endif
-        template <typename... As, typename... Bs>
-        auto operator+(type_list<As...>, type_list<Bs...>) -> type_list<As..., Bs...>;
 
         // The nodes of a graph of types that are reachable from some of them, each node `N` leading to those in
         // the `type_list` `typename N::edges`.  The nodes are visited once each, in a left fold over the edges
@@ -11945,10 +11943,49 @@ namespace yyjson
             // The object, the array and the fields that a value reads in its own place are parts joined into the
             // node of the value, not nodes of their own: the walk, whose cost grows with the square of the nodes,
             // then takes about one node for each type.  A field read in place leads to the node of its type, which
-            // reads the same fields.
-            template <bool... Locals, typename... Edges>
-            static auto join(node<Locals, Edges>...)
-                -> node<(false || ... || Locals), decltype((yyjson::detail::type_list<>{} + ... + Edges{}))>;
+            // reads the same fields.  The parts are joined by a class rather than by a call: the call would look
+            // up its arguments, and MSVC then instantiates the nodes in their edges, which can be the node whose
+            // edges are being computed.
+            template <typename Joined, typename... Parts>
+            struct join
+            {
+                using type = Joined;
+            };
+            template <bool L, typename... Es, bool PL, typename... PEs, typename... Parts>
+            struct join<node<L, yyjson::detail::type_list<Es...>>, node<PL, yyjson::detail::type_list<PEs...>>,
+                        Parts...> : join<node<L || PL, yyjson::detail::type_list<Es..., PEs...>>, Parts...>
+            {
+            };
+
+            // The part of a tuple: the values of its members when it is read from an object, and its elements
+            // when it is read from an array.  A class rather than nested lambdas, in which MSVC loses the
+            // indices of the enclosing lambda.
+            template <typename T, bool Loop, typename = std::make_index_sequence<std::tuple_size_v<T>>>
+            struct tuple_part;
+            template <typename T, bool Loop, std::size_t... Is>
+            struct tuple_part<T, Loop, std::index_sequence<Is...>>
+            {
+                static consteval auto members()
+                {
+                    if constexpr (tuple_from_object<T>)
+                        return yyjson::detail::type_list<
+                            value_node<std::remove_cv_t<std::tuple_element_t<1, std::tuple_element_t<Is, T>>>,
+                                       Loop>...>{};
+                    else
+                        return yyjson::detail::type_list<>{};
+                }
+                static consteval auto elements()
+                {
+                    if constexpr (tuple_from_array<T>)
+                        return yyjson::detail::type_list<
+                            value_node<std::remove_cv_t<std::tuple_element_t<Is, T>>, Loop>...>{};
+                    else
+                        return yyjson::detail::type_list<>{};
+                }
+                using type = typename join<node<tuple_from_object<T> && !tuple_copies_keys<T> && Loop,
+                                                decltype(members())>,
+                                           node<false, decltype(elements())>>::type;
+            };
 
             template <typename T, bool Loop>
             static consteval auto value_node_of()
@@ -11964,23 +12001,7 @@ namespace yyjson
                                     type_list<value_node<std::remove_cv_t<std::variant_alternative_t<Is, T>>, Loop>...>>{};
                     }(std::make_index_sequence<std::variant_size_v<T>>{});
                 else if constexpr (builtin_tuple<T>)
-                    return []<std::size_t... Is>(std::index_sequence<Is...>) {
-                        constexpr auto members = [] {
-                            if constexpr (tuple_from_object<T>)
-                                return type_list<value_node<
-                                    std::remove_cv_t<std::tuple_element_t<1, std::tuple_element_t<Is, T>>>, Loop>...>{};
-                            else
-                                return type_list<>{};
-                        };
-                        constexpr auto elements = [] {
-                            if constexpr (tuple_from_array<T>)
-                                return type_list<value_node<std::remove_cv_t<std::tuple_element_t<Is, T>>, Loop>...>{};
-                            else
-                                return type_list<>{};
-                        };
-                        return node<tuple_from_object<T> && !tuple_copies_keys<T> && Loop,
-                                    decltype(members() + elements())>{};
-                    }(std::make_index_sequence<std::tuple_size_v<T>>{});
+                    return typename tuple_part<T, Loop>::type{};
                 else if constexpr (yyjson::detail::from_json_translator<T>::castable)
                 {
                     if constexpr (yyjson::detail::borrows_strings<yyjson::detail::from_json_source<T>>)
@@ -12000,7 +12021,7 @@ namespace yyjson
                         return node<Loop>{};
                 }
                 else
-                    return decltype(join(object_part<T, Loop>(), array_part<T>())){};
+                    return typename join<decltype(object_part<T, Loop>()), decltype(array_part<T>())>::type{};
             }
             template <typename T, bool Loop>
             static consteval auto object_part()
@@ -12093,10 +12114,11 @@ namespace yyjson
             static consteval auto reflected_fields_part()
             {
                 return []<std::size_t... Is>(std::index_sequence<Is...>) {
-                    return decltype(join(
-                        node<false>{},
-                        field_part<std::remove_cvref_t<decltype(field_reflection::get_field<Is>(std::declval<T&>()))>,
-                                   Loop>()...)){};
+                    return typename join<
+                        node<false>,
+                        decltype(field_part<
+                                 std::remove_cvref_t<decltype(field_reflection::get_field<Is>(std::declval<T&>()))>,
+                                 Loop>())...>::type{};
                 }(yyjson::detail::reflected_fields<T>{});
             }
             template <typename T, bool Loop>
@@ -12104,11 +12126,11 @@ namespace yyjson
             {
                 using members = std::remove_cvref_t<decltype(visit_struct<T>::members)>;
                 return []<std::size_t... Is>(std::index_sequence<Is...>) {
-                    return decltype(join(
-                        node<false>{},
-                        field_part<std::remove_cvref_t<decltype(std::declval<T&>().*
-                                                                std::get<Is>(visit_struct<T>::members))>,
-                                   Loop>()...)){};
+                    return typename join<
+                        node<false>,
+                        decltype(field_part<std::remove_cvref_t<decltype(std::declval<T&>().*
+                                                                         std::get<Is>(visit_struct<T>::members))>,
+                                            Loop>())...>::type{};
                 }(std::make_index_sequence<std::tuple_size_v<members>>{});
             }
 

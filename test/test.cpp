@@ -5259,6 +5259,12 @@ struct DiamondChain<0>
     int a = 0;
     bool operator==(const DiamondChain&) const = default;
 };
+// the depth that the direct reader walks; MSVC runs out of heap space at 20 in this file
+#if defined(_MSC_VER) && !defined(__clang__)
+constexpr std::size_t diamond_depth = 10;
+#else
+constexpr std::size_t diamond_depth = 40;
+#endif
 
 #if YYJSON_VERSION_HEX >= 0x000C00
 TEST(DirectReader, PowersOfFive)
@@ -5781,7 +5787,7 @@ TEST(DirectReader, DocumentOfWholeText)
     static_assert(!direct_reader::reads_documents_in_loop<ReadChain>);
     static_assert(direct_reader::reads_documents_in_loop<std::vector<ReadChain>>);
     // and so is a type that many paths reach
-    static_assert(!direct_reader::reads_documents_in_loop<DiamondChain<40>>);
+    static_assert(!direct_reader::reads_documents_in_loop<DiamondChain<diamond_depth>>);
 #endif
 
     expect_direct_read<std::vector<CounterRecord>>(R"([{"name":"a","hits":1},{"hits":2}])");
@@ -5805,7 +5811,7 @@ TEST(DirectReader, DocumentOfWholeText)
     }
     EXPECT_THROW((void)read<std::vector<ReadChain>>(R"([{"point":[1,2],"next":{"point":[3]}}])"), bad_cast);
 
-    expect_direct_read<DiamondChain<40>>(R"({"a":[{"b":[{"a":[]}]}],"b":[]})");
+    expect_direct_read<DiamondChain<diamond_depth>>(R"({"a":[{"b":[{"a":[]}]}],"b":[]})");
 #endif
 }
 
