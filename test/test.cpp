@@ -4945,6 +4945,21 @@ TEST(DirectWriter, Strings)
             }
         }
     }
+    // strings of 35 bytes or more, whose UTF-8 is checked while they are copied in blocks of 32 bytes: a piece at
+    // every position of text that is not ASCII, of ASCII, and of text that is not ASCII after one to three
+    // characters to escape
+    auto cjk_text = std::string();
+    for (auto i = 0; i < 40; ++i) cjk_text += "\xe3\x81\x82";
+    for (const auto& piece : pieces)
+    {
+        for (auto pos = std::size_t{0}; pos <= 100; ++pos)
+        {
+            expect_direct_write(cjk_text.substr(0, pos) + piece + cjk_text.substr(pos));
+            expect_direct_write(std::string(pos, 'x') + piece + std::string(100 - pos, 'y'));
+            for (const auto* const escaped : {"\n", "\n\"", "\n\"\\"})
+                expect_direct_write(escaped + cjk_text.substr(0, pos) + piece + std::string(40, 'z'));
+        }
+    }
     expect_direct_write(std::string("\0a\0", 3));
     for (auto size = std::size_t{1}; size <= 70; ++size)
     {

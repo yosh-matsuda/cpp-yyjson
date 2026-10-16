@@ -9388,7 +9388,10 @@ namespace yyjson
                 static type subs_u(type a, type b) noexcept { return _mm_subs_epu8(a, b); }
                 static type min_u(type a, type b) noexcept { return _mm_min_epu8(a, b); }
                 static type shuffle(type t, type i) noexcept { return _mm_shuffle_epi8(t, i); }
-                static type high_nibble(type v) noexcept { return _mm_and_si128(_mm_srli_epi16(v, 4), set1(0x0F)); }
+                static type high_nibble(type v, type nibble) noexcept
+                {
+                    return _mm_and_si128(_mm_srli_epi16(v, 4), nibble);
+                }
                 // the bytes of `input` moved up by N, with the last N of `prev` before them
                 template <int N>
                 static type prev(type input, type prev) noexcept
@@ -9442,9 +9445,9 @@ namespace yyjson
                 static type subs_u(type a, type b) noexcept { return _mm256_subs_epu8(a, b); }
                 static type min_u(type a, type b) noexcept { return _mm256_min_epu8(a, b); }
                 static type shuffle(type t, type i) noexcept { return _mm256_shuffle_epi8(t, i); }
-                static type high_nibble(type v) noexcept
+                static type high_nibble(type v, type nibble) noexcept
                 {
-                    return _mm256_and_si256(_mm256_srli_epi16(v, 4), set1(0x0F));
+                    return _mm256_and_si256(_mm256_srli_epi16(v, 4), nibble);
                 }
                 template <int N>
                 static type prev(type input, type prev) noexcept
@@ -9526,21 +9529,41 @@ namespace yyjson
                     too_short};
             };
 
+            // The constants of `utf8_error`.  `pin` hides them from the compiler, which would otherwise build them
+            // again in each pass of a loop that needs many registers.
+            template <typename B>
+            struct utf8_constants
+            {
+                typename B::type byte_1_high = B::table(utf8_tables::byte_1_high);
+                typename B::type byte_1_low = B::table(utf8_tables::byte_1_low);
+                typename B::type byte_2_high = B::table(utf8_tables::byte_2_high);
+                typename B::type nibble = B::set1(0x0F);
+                typename B::type third = B::set1(0xE0 - 0x80);
+                typename B::type fourth = B::set1(0xF0 - 0x80);
+                typename B::type high = B::set1(-0x80);
+                void pin() noexcept
+                {
+#if defined(__GNUC__)
+                    __asm__("" : "+x"(nibble), "+x"(third), "+x"(fourth), "+x"(high));
+#endif
+                }
+            };
+
             // Nonzero bytes where the bytes of `input` are not valid UTF-8 after the bytes of `prev`, all but a
             // sequence that `input` leaves incomplete at its end.
             template <typename B>
             static typename B::type utf8_error(typename B::type input, typename B::type prev1,
-                                               typename B::type prev2, typename B::type prev3) noexcept
+                                               typename B::type prev2, typename B::type prev3,
+                                               const utf8_constants<B>& c = {}) noexcept
             {
-                using t = utf8_tables;
-                const auto nibble = B::set1(0x0F);
-                const auto special_cases = B::and_(B::and_(B::shuffle(B::table(t::byte_1_high), B::high_nibble(prev1)),
-                                                           B::shuffle(B::table(t::byte_1_low), B::and_(prev1, nibble))),
-                                                   B::shuffle(B::table(t::byte_2_high), B::high_nibble(input)));
+                const auto special_cases =
+                    B::and_(B::and_(B::shuffle(c.byte_1_high, B::high_nibble(prev1, c.nibble)),
+                                    B::shuffle(c.byte_1_low, B::and_(prev1, c.nibble))),
+                            B::shuffle(c.byte_2_high, B::high_nibble(input, c.nibble)));
                 // the third and the fourth byte of a sequence must be continuation bytes
-                const auto is_third = B::subs_u(prev2, B::set1(0xE0 - 0x80));
-                const auto is_fourth = B::subs_u(prev3, B::set1(0xF0 - 0x80));
-                const auto must_be_cont = B::and_(B::or_(is_third, is_fourth), B::set1(-0x80));
+                const auto is_third = B::subs_u(prev2, c.third);
+                const auto is_fourth = B::subs_u(prev3, c.fourth);
+                const auto must_be_cont = B::and_(B::or_(is_third, is_fourth), c.high);
                 return B::xor_(must_be_cont, special_cases);
             }
             template <typename B>
@@ -9713,6 +9736,73 @@ namespace yyjson
                 src_ref = src;
                 dst_ref = dst;
             }
+
+#if defined(__AVX2__)
+            // `copy_blocks` with `copy_utf8` for a string of 35 bytes or more, which also checks that the text is
+            // valid UTF-8 while each block is still in a register, instead of reading it again in
+            // `is_valid_utf8`.  A block of ASCII after ASCII is not checked.  Returns false if the text is not
+            // valid UTF-8.
+            bool copy_valid_utf8(const std::uint8_t*& src_ref, char*& dst_ref, const std::uint8_t* end) const noexcept
+            {
+                using B = block32;
+                const auto* const begin = src_ref;
+                // Escapes move `src` past ASCII only, so a block that has fewer than three bytes of the string before
+                // it begins the string or follows an escaped character.
+                const auto* const after3 = begin + 3;
+                auto src = src_ref;
+                auto dst = dst_ref;
+                const auto ctrl_max = B::set1(0x1F);
+                const auto punct = punct_table<B>();
+                auto uc = utf8_constants<B>{};
+                uc.pin();
+                auto error = B::zero();
+                while (end - src >= 32)
+                {
+                    const auto v = B::load(src);
+                    B::store(dst, v);
+                    if (B::movemask(v) != 0 || (src != begin && src[-1] >= 0x80))
+                    {
+                        const auto prev1 = src >= after3 ? B::load(src - 1) : B::template prev<1>(v, B::zero());
+                        const auto prev2 = src >= after3 ? B::load(src - 2) : B::template prev<2>(v, B::zero());
+                        const auto prev3 = src >= after3 ? B::load(src - 3) : B::template prev<3>(v, B::zero());
+                        error = B::or_(error, utf8_error<B>(v, prev1, prev2, prev3, uc));
+                    }
+                    const auto mask =
+                        B::movemask(B::or_(B::eq(B::min_u(v, ctrl_max), v), B::eq(B::shuffle(punct, v), v)));
+                    if (mask == 0)
+                    {
+                        src += 32;
+                        dst += 32;
+                        continue;
+                    }
+                    auto rest = mask;
+                    auto n = std::countr_zero(rest);
+                    while (true)
+                    {
+                        src += n;
+                        dst = write_ascii_escape(dst + n, *src++);
+                        rest = (rest >> n) >> 1;
+                        if (rest == 0 || end - src < 32) break;
+                        B::store(dst, B::load(src));
+                        n = std::countr_zero(rest);
+                    }
+                }
+                // no incomplete sequence at the end, and the last bytes checked as the last 32
+                const auto* const last = end - 32;
+                const auto lv = B::load(last);
+                error = B::or_(error, B::subs_u(lv, B::incomplete_limit()));
+                if (src != end)
+                {
+                    error = B::or_(error,
+                                   utf8_error<B>(lv, B::load(last - 1), B::load(last - 2), B::load(last - 3), uc));
+                    auto multi = false;
+                    copy_blocks<block16, true>(src, dst, end, true, multi);
+                }
+                src_ref = src;
+                dst_ref = dst;
+                return !B::any(error);
+            }
+#endif
 
             // Copies the `B::width` bytes from `src` and those before `end` if they are ASCII none of which is to
             // be escaped.
@@ -9967,6 +10057,16 @@ namespace yyjson
                 // be valid UTF-8, in which case the code below writes it as yyjson does.
                 auto copy_utf8 = !esc_;
                 const auto* const begin = src;
+#if defined(__AVX2__)
+                if (copy_utf8 && !inv_ && end - src >= 35)
+                {
+                    if (copy_valid_utf8(src, dst, end)) return finish_string(dst);
+                    // write the string again, without copying the text that is not ASCII in blocks
+                    src = begin;
+                    dst = buf_.cur + 1;
+                    copy_utf8 = false;
+                }
+#endif
 #endif
                 for (;;)
                 {
