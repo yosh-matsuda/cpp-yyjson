@@ -49,6 +49,15 @@ namespace conformance
         std::string y;
     };
 
+    // an aggregate with begin() and end(), which is read and written as a struct
+    struct ConfRange
+    {
+        std::vector<int> items;
+        int n = 0;
+        [[nodiscard]] auto begin() const { return items.begin(); }
+        [[nodiscard]] auto end() const { return items.end(); }
+    };
+
     // the fields that the generated records give values of the right kind, more often than not
     struct ConfRecord
     {
@@ -64,6 +73,8 @@ namespace conformance
         std::vector<int> v;
         std::vector<std::string> vs;
         std::map<std::string, double> m;
+        std::map<int, int> pm;
+        ConfRange rg;
         std::variant<std::monostate, int, std::string, std::vector<double>> var;
         std::tuple<int, std::string> t;
         std::array<int, 3> a{};
@@ -78,8 +89,8 @@ namespace
     using conformance::ConfInner;
     using conformance::ConfRecord;
 
-    constexpr auto record_keys = std::array{"i", "u", "n", "h", "d", "f", "b", "s", "o", "v", "vs", "m",
-                                            "var", "t", "a", "in", "ins", "kids"};
+    constexpr auto record_keys = std::array{"i", "u", "n", "h", "d", "f", "b", "s", "o", "v", "vs", "m", "pm",
+                                            "rg", "var", "t", "a", "in", "ins", "kids"};
 
     constexpr auto data_dir = std::string_view(CPPYYJSON_TEST_DATA_DIR);
 
@@ -628,6 +639,30 @@ namespace
                 }
                 out_ += '}';
             }
+            else if (field == "pm")
+                list(
+                    [&] {
+                        out_ += '[';
+                        integer();
+                        out_ += ',';
+                        integer();
+                        if (chance(wrong_kinds_ * 5)) out_ += ",1";
+                        out_ += ']';
+                    },
+                    4);
+            else if (field == "rg")
+            {
+                out_ += '{';
+                if (coin())
+                {
+                    out_ += R"("items":)";
+                    list([&] { integer(); }, 4);
+                    out_ += ',';
+                }
+                out_ += R"("n":)";
+                integer();
+                out_ += '}';
+            }
             else if (field == "var")
             {
                 switch (below(4))
@@ -753,6 +788,7 @@ TEST(Conformance, GeneratedValues)
         expect_same<std::vector<std::variant<std::monostate, bool, std::int64_t, double, std::string>>>(text);
         expect_same<std::map<std::string, std::int64_t>>(text);
         expect_same<std::tuple<int, double, std::string>>(text);
+        expect_same<std::map<std::int64_t, double>>(text);
         expect_same<ConfRecord>(text);
     }
 }
