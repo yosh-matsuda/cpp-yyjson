@@ -21,32 +21,32 @@
 <text x="56" y="116.0" class="value" text-anchor="end">4</text>
 <text x="24" y="102" class="value">GB/s</text>
 <line x1="64" y1="392" x2="956" y2="392" class="axis"/>
-<rect x="88.2" y="311.2" width="26.3" height="80.8" fill="#2563eb"/>
-<rect x="114.5" y="323.8" width="26.3" height="68.2" fill="#93c5fd"/>
-<rect x="140.9" y="318.6" width="26.3" height="73.4" fill="#ca8a04"/>
+<rect x="88.2" y="311.4" width="26.3" height="80.6" fill="#2563eb"/>
+<rect x="114.5" y="324.6" width="26.3" height="67.4" fill="#93c5fd"/>
+<rect x="140.9" y="318.7" width="26.3" height="73.3" fill="#ca8a04"/>
 <text x="127.7" y="412" class="value" text-anchor="middle">canada</text>
-<rect x="215.6" y="170.0" width="26.3" height="222.0" fill="#2563eb"/>
-<rect x="242.0" y="233.4" width="26.3" height="158.6" fill="#93c5fd"/>
-<rect x="268.3" y="245.5" width="26.3" height="146.5" fill="#ca8a04"/>
+<rect x="215.6" y="168.0" width="26.3" height="224.0" fill="#2563eb"/>
+<rect x="242.0" y="232.6" width="26.3" height="159.4" fill="#93c5fd"/>
+<rect x="268.3" y="245.4" width="26.3" height="146.6" fill="#ca8a04"/>
 <text x="255.1" y="412" class="value" text-anchor="middle">citm_catalog</text>
-<rect x="343.1" y="265.5" width="26.3" height="126.5" fill="#2563eb"/>
-<rect x="369.4" y="290.6" width="26.3" height="101.4" fill="#93c5fd"/>
+<rect x="343.1" y="266.1" width="26.3" height="125.9" fill="#2563eb"/>
+<rect x="369.4" y="291.1" width="26.3" height="100.9" fill="#93c5fd"/>
 <rect x="395.7" y="296.2" width="26.3" height="95.8" fill="#ca8a04"/>
 <text x="382.6" y="412" class="value" text-anchor="middle">twitter</text>
-<rect x="470.5" y="306.3" width="26.3" height="85.7" fill="#2563eb"/>
-<rect x="496.8" y="314.5" width="26.3" height="77.5" fill="#93c5fd"/>
-<rect x="523.2" y="330.3" width="26.3" height="61.7" fill="#ca8a04"/>
+<rect x="470.5" y="305.8" width="26.3" height="86.2" fill="#2563eb"/>
+<rect x="496.8" y="314.2" width="26.3" height="77.8" fill="#93c5fd"/>
+<rect x="523.2" y="330.4" width="26.3" height="61.6" fill="#ca8a04"/>
 <text x="510.0" y="412" class="value" text-anchor="middle">twitterescaped</text>
-<rect x="597.9" y="215.3" width="26.3" height="176.7" fill="#2563eb"/>
-<rect x="624.3" y="256.4" width="26.3" height="135.6" fill="#93c5fd"/>
-<rect x="650.6" y="267.5" width="26.3" height="124.5" fill="#ca8a04"/>
+<rect x="597.9" y="215.0" width="26.3" height="177.0" fill="#2563eb"/>
+<rect x="624.3" y="255.1" width="26.3" height="136.9" fill="#93c5fd"/>
+<rect x="650.6" y="267.0" width="26.3" height="125.0" fill="#ca8a04"/>
 <text x="637.4" y="412" class="value" text-anchor="middle">poet</text>
-<rect x="725.4" y="279.0" width="26.3" height="113.0" fill="#2563eb"/>
-<rect x="751.7" y="308.0" width="26.3" height="84.0" fill="#93c5fd"/>
-<rect x="778.0" y="315.7" width="26.3" height="76.3" fill="#ca8a04"/>
+<rect x="725.4" y="279.1" width="26.3" height="112.9" fill="#2563eb"/>
+<rect x="751.7" y="306.0" width="26.3" height="86.0" fill="#93c5fd"/>
+<rect x="778.0" y="315.9" width="26.3" height="76.1" fill="#ca8a04"/>
 <text x="764.9" y="412" class="value" text-anchor="middle">github_events</text>
-<rect x="852.8" y="231.1" width="26.3" height="160.9" fill="#2563eb"/>
-<rect x="879.1" y="265.1" width="26.3" height="126.9" fill="#93c5fd"/>
+<rect x="852.8" y="231.6" width="26.3" height="160.4" fill="#2563eb"/>
+<rect x="879.1" y="265.3" width="26.3" height="126.7" fill="#93c5fd"/>
 <rect x="905.5" y="277.4" width="26.3" height="114.6" fill="#ca8a04"/>
 <text x="892.3" y="412" class="value" text-anchor="middle">gsoc-2018</text>
 </svg>
