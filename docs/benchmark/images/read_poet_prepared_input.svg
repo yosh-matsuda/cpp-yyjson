@@ -6,7 +6,7 @@
 <line x1="300.0" y1="50" x2="300.0" y2="352" class="grid"/>
 <text x="300.0" y="370" class="value" text-anchor="middle">0.000 ms</text>
 <line x1="438.0" y1="50" x2="438.0" y2="352" class="grid"/>
-<text x="438.0" y="370" class="value" text-anchor="middle">0.767 ms</text>
+<text x="438.0" y="370" class="value" text-anchor="middle">767 µs</text>
 <line x1="576.0" y1="50" x2="576.0" y2="352" class="grid"/>
 <text x="576.0" y="370" class="value" text-anchor="middle">1.53 ms</text>
 <line x1="714.0" y1="50" x2="714.0" y2="352" class="grid"/>

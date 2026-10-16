@@ -6,9 +6,9 @@
 <line x1="300.0" y1="50" x2="300.0" y2="280" class="grid"/>
 <text x="300.0" y="298" class="value" text-anchor="middle">0.000 ms</text>
 <line x1="438.0" y1="50" x2="438.0" y2="280" class="grid"/>
-<text x="438.0" y="298" class="value" text-anchor="middle">0.386 ms</text>
+<text x="438.0" y="298" class="value" text-anchor="middle">386 µs</text>
 <line x1="576.0" y1="50" x2="576.0" y2="280" class="grid"/>
-<text x="576.0" y="298" class="value" text-anchor="middle">0.772 ms</text>
+<text x="576.0" y="298" class="value" text-anchor="middle">772 µs</text>
 <line x1="714.0" y1="50" x2="714.0" y2="280" class="grid"/>
 <text x="714.0" y="298" class="value" text-anchor="middle">1.16 ms</text>
 <line x1="852.0" y1="50" x2="852.0" y2="280" class="grid"/>
@@ -16,24 +16,24 @@
 <text x="24" y="76" class="heading">New output buffer per write</text>
 <text x="24" y="100" class="label">cpp-yyjson</text>
 <rect x="300" y="89" width="48.5" height="14" rx="2" fill="#2563eb"/>
-<text x="864" y="100" class="value">0.136 ms</text>
+<text x="864" y="100" class="value">136 µs</text>
 <text x="24" y="124" class="label">yyjson</text>
 <rect x="300" y="113" width="57.8" height="14" rx="2" fill="#16a34a"/>
-<text x="864" y="124" class="value">0.162 ms</text>
+<text x="864" y="124" class="value">162 µs</text>
 <text x="24" y="148" class="label">rapidjson</text>
 <rect x="300" y="137" width="286.5" height="14" rx="2" fill="#dc2626"/>
-<text x="864" y="148" class="value">0.802 ms</text>
+<text x="864" y="148" class="value">802 µs</text>
 <text x="24" y="172" class="label">nlohmann-json</text>
 <rect x="300" y="161" width="511.1" height="14" rx="2" fill="#f97316"/>
 <text x="864" y="172" class="value">1.43 ms</text>
 <text x="24" y="198" class="heading">Reused output buffer</text>
 <text x="24" y="222" class="label">cpp-yyjson</text>
 <rect x="300" y="211" width="48.4" height="14" rx="2" fill="#2563eb"/>
-<text x="864" y="222" class="value">0.135 ms</text>
+<text x="864" y="222" class="value">135 µs</text>
 <text x="24" y="246" class="label">yyjson</text>
 <rect x="300" y="235" width="57.9" height="14" rx="2" fill="#16a34a"/>
-<text x="864" y="246" class="value">0.162 ms</text>
+<text x="864" y="246" class="value">162 µs</text>
 <text x="24" y="270" class="label">rapidjson</text>
 <rect x="300" y="259" width="284.2" height="14" rx="2" fill="#dc2626"/>
-<text x="864" y="270" class="value">0.795 ms</text>
+<text x="864" y="270" class="value">795 µs</text>
 </svg>
