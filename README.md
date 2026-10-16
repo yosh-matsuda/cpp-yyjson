@@ -27,7 +27,7 @@ cpp-yyjson is a header-only C++ interface to [yyjson](https://github.com/ibireme
 
 ## Highlights
 
-*   **Fast with both APIs.** The data binding API reads C++ types 1.1 - 1.6x and writes them 1.2 - 2.3x faster than [Glaze](https://github.com/stephenberry/glaze). The DOM API reads up to 1.8x and writes up to 2.5x faster than the yyjson it is built on, and reads 1.1 - 1.7x faster than simdjson On Demand. See [Performance](#performance).
+*   **Fast with both APIs.** The data binding API reads C++ types 1.1 - 1.5x and writes them 1.2 - 2.5x faster than [Glaze](https://github.com/stephenberry/glaze). The DOM API reads up to 1.8x and writes up to 2.5x faster than the yyjson it is built on, and reads 1.1 - 1.7x faster than simdjson On Demand. See [Performance](#performance).
 *   **Two APIs, chosen per task.** The data binding API reads JSON text into C++ types and writes them back without building a document in between. The DOM API reads JSON of any shape into a document that can be queried, iterated and modified, and builds new documents. [Which API to use](#which-api-to-use) lists the common cases.
 *   **One call each way, no boilerplate.** `read<T>(json)` and `write(t)` convert aggregates by their field names through compile-time reflection, with no macro or registration. STL containers, `std::optional`, `std::variant`, `std::shared_ptr`, `std::unique_ptr`, tuples, enumerations by name and recursive types are supported, and a short caster covers a type of your own.
 *   **Tolerant of changing JSON.** Keys that the type does not have are ignored, missing keys keep the default value of the field, and an empty `std::optional` is left out when writing. `merge_into` applies a [JSON Merge Patch](https://www.rfc-editor.org/rfc/rfc7386) to an existing object, and `read_into` and `write(t, out)` reuse the memory of the previous call in a loop.
@@ -292,8 +292,8 @@ cpp-yyjson and [Glaze](https://github.com/stephenberry/glaze) read seven documen
 
 |  | Fresh result object / output | Reused result object / output |
 | --- | --- | --- |
-| Read: `read<T>` vs. `glz::read` | 1.1 - 1.6x | 1.0 - 1.7x (`merge_into`) |
-| Write: `write(t)` vs. `glz::write` | 1.2 - 2.3x | 1.0 - 1.5x (`write(t, out)`) |
+| Read: `read<T>` vs. `glz::read` | 1.10 - 1.53x | 1.03 - 1.64x (`merge_into`) |
+| Write: `write(t)` vs. `glz::write` | 1.15 - 2.51x | 1.05 - 1.51x (`write(t, out)`) |
 
 ![Read throughput into C++ types](docs/benchmark/images/typed_read_throughput.svg)
 
