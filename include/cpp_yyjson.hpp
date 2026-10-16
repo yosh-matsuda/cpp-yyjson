@@ -6825,6 +6825,34 @@ namespace yyjson
             t.insert(t.end(), std::move(v));
         };
 
+        // A map whose keys are neither strings nor `enum_key`s is written as a JSON array of [key, value] pairs, and
+        // is read back from one with `emplace`.
+        template <typename T>
+        concept pair_array_map =
+            std::ranges::range<T> && requires {
+                typename T::key_type;
+                typename T::mapped_type;
+                requires pair_like<std::ranges::range_value_t<T>>;
+                requires(!key_value_like<std::ranges::range_value_t<T>>);
+            } && requires(T& t, typename T::key_type&& key, typename T::mapped_type&& value) {
+                t.emplace(std::move(key), std::move(value));
+            };
+
+        // The type that an element of a range is read as from a JSON array: the element of the range, but a pair
+        // of a mutable key and value for a `pair_array_map`, whose elements have const keys.
+        template <typename T>
+        struct array_element
+        {
+            using type = std::ranges::range_value_t<T>;
+        };
+        template <pair_array_map T>
+        struct array_element<T>
+        {
+            using type = std::pair<typename T::key_type, typename T::mapped_type>;
+        };
+        template <typename T>
+        using array_element_t = typename array_element<T>::type;
+
         // A string is a range of characters, but is read from a JSON string only.
         template <typename T, typename Json>
         concept array_castable_range =
@@ -6833,8 +6861,8 @@ namespace yyjson
                 // `std::vector<bool>` is not an output range in C++20, whose proxy reference cannot be assigned
                 // through a const reference, but it is back insertable
                 requires std::ranges::output_range<T, std::ranges::range_value_t<T>> || back_insertable<T> ||
-                             insertable_set<T>;
-                requires requires(const Json& arr) { cast<std::ranges::range_value_t<T>>(arr.front()); };
+                             insertable_set<T> || pair_array_map<T>;
+                requires requires(const Json& arr) { cast<array_element_t<T>>(arr.front()); };
             };
 
         // A struct is read from a JSON object only, although C++20 lets `T(v)` initialize its first field from
@@ -6887,7 +6915,7 @@ namespace yyjson
         template <typename T, typename Json>
         concept fixed_size_assignable_in_place =
             std::same_as<Json, reader::const_value_ref> && (!reader::detail::from_json_val_usr_defined<T>) &&
-            (!from_json_unusable<T>) && (!back_insertable<T>) && (!insertable_set<T>) &&
+            (!from_json_unusable<T>) && (!back_insertable<T>) && (!insertable_set<T>) && (!pair_array_map<T>) &&
             std::ranges::sized_range<T> && array_castable_range<T, reader::const_array_ref>;
 
         template <typename M>
@@ -7038,6 +7066,15 @@ namespace yyjson
                 // the end is the right hint for the elements of a sorted set, which are written in order
                 reserve_if_possible(result, arr.size());
                 for (const auto& e : arr) result.insert(result.end(), cast<value_type>(e));
+            }
+            else if constexpr (pair_array_map<T>)
+            {
+                reserve_if_possible(result, arr.size());
+                for (const auto& e : arr)
+                {
+                    auto kv = cast<array_element_t<T>>(e);
+                    result.emplace(std::move(kv.first), std::move(kv.second));
+                }
             }
             else  // TODO: fixed size range concept
                 assign_fixed_size_range(result, arr);
@@ -7699,7 +7736,7 @@ namespace yyjson
         template <typename T, bool Values>
         struct nested_cast_types<T, true, Values> : nested_cast_types<T, false, Values>
         {
-            using element_type = std::ranges::range_value_t<T>;
+            using element_type = array_element_t<T>;
         };
         template <typename T>
         struct nested_cast_types<T, false, true>
@@ -11544,7 +11581,7 @@ namespace yyjson
             static consteval auto array_part_of_range()
             {
                 using yyjson::detail::type_list;
-                using value_type = std::ranges::range_value_t<T>;
+                using value_type = yyjson::detail::array_element_t<T>;
                 if constexpr (yyjson::detail::back_insertable<T> &&
                               yyjson::detail::reflected_assignable_in_place<value_type, const_value_ref>)
                     return in_place_node<value_type, true>();
@@ -14184,7 +14221,7 @@ namespace yyjson
             template <typename T, bool Root = false>
             void read_array_into(T& result)
             {
-                using value_type = std::ranges::range_value_t<T>;
+                using value_type = yyjson::detail::array_element_t<T>;
                 const char* const open = cur_;
                 ++cur_;
                 // numbers and tuples, which are rarely put on lines of their own, are read in a tighter loop without
@@ -14289,6 +14326,11 @@ namespace yyjson
                     }
                     else if constexpr (yyjson::detail::insertable_set<T>)
                         result.insert(result.end(), read_element<value_type>());
+                    else if constexpr (yyjson::detail::pair_array_map<T>)
+                    {
+                        auto kv = read_element<value_type>();
+                        result.emplace(std::move(kv.first), std::move(kv.second));
+                    }
                     else
                     {
                         if (count++ == std::ranges::size(result)) fail();

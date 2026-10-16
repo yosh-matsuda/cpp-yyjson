@@ -9261,6 +9261,58 @@ TEST(Reflection, EnumKeys)
     EXPECT_EQ(written(std::map<int, int>{{1, 2}}), "[[1,2]]");
 }
 
+struct PairMapFields
+{
+    std::map<int, int> m;
+    std::optional<std::unordered_map<int, std::string>> u;
+    std::vector<std::multimap<int, int>> v;
+};
+
+// A map whose keys are neither strings nor enumerations, which is written as an array of [key, value] pairs, is read
+// back from one
+TEST(Reflection, MapsFromArraysOfPairs)
+{
+    using yyjson::bad_cast;
+
+    const auto ints = std::map<int, int>{{1, 2}, {3, 4}};
+    EXPECT_EQ((yyjson::read<std::map<int, int>>(written(ints))), ints);
+    EXPECT_EQ((yyjson::read(written(ints)).cast<std::map<int, int>>()), ints);
+    EXPECT_TRUE((expect_direct_read<std::map<int, int>>("[[1,2],[3,4]]")));
+    EXPECT_TRUE((expect_direct_read<std::unordered_map<int, std::string>>(R"([[1,"a"]])")));
+    EXPECT_TRUE((expect_direct_read<std::multimap<int, int>>("[[1,2],[1,3],[0,4]]")));
+    EXPECT_TRUE((expect_direct_read<std::map<std::pair<int, int>, int>>("[[[1,2],3],[[0,1],4]]")));
+    EXPECT_TRUE((expect_direct_read<std::map<int, std::map<int, int>>>("[[1,[[2,3]]],[0,[]]]")));
+    EXPECT_TRUE((expect_direct_read<std::vector<std::map<int, double>>>("[[[1,1.5]],[]]")));
+    EXPECT_EQ((yyjson::read<std::map<UserColor, int>>(R"([["G",2],["R",1]])")),
+              (std::map<UserColor, int>{{UserColor::red, 1}, {UserColor::green, 2}}));
+
+    // a key given twice keeps its first value, as a key of an object read into a map does
+    EXPECT_EQ((yyjson::read<std::map<int, int>>("[[1,2],[1,3]]")), (std::map<int, int>{{1, 2}}));
+    EXPECT_EQ((yyjson::read("[[1,2],[1,3]]").cast<std::map<int, int>>()), (std::map<int, int>{{1, 2}}));
+
+    // neither an object nor an element that is not a pair of a key and a value
+    for (const auto* json : {R"({"1":2})", "[1]", R"([["1",2]])", "[[1,2,3]]", "[[1,null]]"})
+    {
+        EXPECT_THROW(static_cast<void>(yyjson::read<std::map<int, int>>(json)), bad_cast) << json;
+        EXPECT_THROW(static_cast<void>(yyjson::read(json).cast<std::map<int, int>>()), bad_cast) << json;
+    }
+
+    // as fields, read into and merged into, which replaces the map as it does an array
+    const auto fields = PairMapFields{{{1, 2}}, std::unordered_map<int, std::string>{{3, "x"}}, {{{4, 5}, {4, 6}}}};
+    const auto* fields_json = R"({"m":[[1,2]],"u":[[3,"x"]],"v":[[[4,5],[4,6]]]})";
+    EXPECT_EQ(written(fields), fields_json);
+    EXPECT_EQ(written(yyjson::read<PairMapFields>(fields_json)), fields_json);
+    EXPECT_EQ(written(yyjson::read(fields_json).cast<PairMapFields>()), fields_json);
+    EXPECT_TRUE(expect_direct_read<PairMapFields>(fields_json));
+    for (const auto* json : {R"({"m":[[5,6]]})", R"({"m":[],"u":null})", R"({"v":[[],[[7,8]]]})", R"({"m":{}})"})
+    {
+        expect_read_into(fields, json);
+        expect_merge_into(fields, json);
+    }
+    EXPECT_EQ(expect_merge_into(fields, R"({"m":[[5,6]]})"), R"({"m":[[5,6]],"u":[[3,"x"]],"v":[[[4,5],[4,6]]]})");
+    EXPECT_TRUE(expect_read_into(std::map<int, int>{{1, 1}}, "[[2,5]]"));
+}
+
 // Empty structs, which are read and written as empty JSON objects
 struct EmptyStruct
 {
