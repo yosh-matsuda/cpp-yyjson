@@ -22,6 +22,7 @@ jobs:
         compiler: [ { c: "clang-cl", cxx: "clang-cl" }, { c: "cl", cxx: "cl" } ]
     name: Windows - ${{ matrix.os }} - ${{ matrix.compiler.cxx }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
 
     env:
       triplet: x64-windows
@@ -41,7 +42,7 @@ jobs:
         # cmake --build "${{ github.workspace }}\build" --config Debug --clean-first
         # ctest --test-dir "${{ github.workspace }}\build" -C Debug
         cmake --build "${{ github.workspace }}\build" --config Release --clean-first
-        ctest --test-dir "${{ github.workspace }}\build" -C Release
+        ctest --test-dir "${{ github.workspace }}\build" -C Release --output-on-failure --timeout 900
       shell: bash
 
   ubuntu-build:
@@ -64,6 +65,7 @@ jobs:
         - { name: "LLVM 22 (C++23)", os: "ubuntu-24.04", install: "brew", c: "$(brew --prefix llvm@22)/bin/clang", cxx: "$(brew --prefix llvm@22)/bin/clang++", brewpkg: "llvm@22", std: "23" }
     name: Ubuntu - ${{ matrix.compiler.name }}
     runs-on: ${{ matrix.compiler.os }}
+    timeout-minutes: 120
 
     env:
       triplet: x64-linux
@@ -93,9 +95,9 @@ jobs:
         rm -rf ${{ github.workspace }}/build
         cmake -B ${{ github.workspace }}/build -DCMAKE_TOOLCHAIN_FILE=$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=${{ env.triplet }} -DCMAKE_C_COMPILER=${{ matrix.compiler.c }} -DCMAKE_CXX_COMPILER=${{ matrix.compiler.cxx }} -DCMAKE_CXX_STANDARD=${{ matrix.compiler.std || 20 }} "-DCMAKE_CXX_FLAGS=${{ matrix.compiler.flags }}" -G "Ninja Multi-Config"
         cmake --build ${{ github.workspace }}/build --config Debug --clean-first
-        ctest --test-dir ${{ github.workspace }}/build -C Debug
+        ctest --test-dir ${{ github.workspace }}/build -C Debug --output-on-failure --timeout 900
         cmake --build ${{ github.workspace }}/build --config Release --clean-first
-        ctest --test-dir ${{ github.workspace }}/build -C Release
+        ctest --test-dir ${{ github.workspace }}/build -C Release --output-on-failure --timeout 900
 
   ubuntu-target-build:
     strategy:
@@ -111,6 +113,7 @@ jobs:
         - { name: "LLVM 18 - arm64", os: "ubuntu-24.04-arm", triplet: "arm64-linux", c: "clang-18", cxx: "clang++-18", packages: "clang-18", flags: "", avx2: "OFF" }
     name: Ubuntu - ${{ matrix.config.name }}
     runs-on: ${{ matrix.config.os }}
+    timeout-minutes: 120
 
     steps:
     - uses: actions/checkout@v4
@@ -139,7 +142,7 @@ jobs:
         rm -rf ${{ github.workspace }}/build
         cmake -B ${{ github.workspace }}/build -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=${{ matrix.config.triplet }} -DCMAKE_C_COMPILER=${{ matrix.config.c }} -DCMAKE_CXX_COMPILER=${{ matrix.config.cxx }} -DCMAKE_C_FLAGS="${{ matrix.config.flags }}" -DCMAKE_CXX_FLAGS="${{ matrix.config.flags }}" -DCMAKE_EXE_LINKER_FLAGS="${{ matrix.config.flags }}" -DCPPYYJSON_ENABLE_AVX2=${{ matrix.config.avx2 }} -G "Ninja Multi-Config"
         cmake --build ${{ github.workspace }}/build --config Release --clean-first
-        ctest --test-dir ${{ github.workspace }}/build -C Release --output-on-failure
+        ctest --test-dir ${{ github.workspace }}/build -C Release --output-on-failure --timeout 900
 
   upstream-yyjson-build:
     strategy:
@@ -149,6 +152,7 @@ jobs:
         compiler: [ { name: "GCC 13", c: "gcc-13", cxx: "g++-13" }, { name: "LLVM 18", c: "clang-18", cxx: "clang++-18" } ]
     name: Ubuntu - ${{ matrix.compiler.name }} - upstream yyjson ${{ matrix.yyjson }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 120
 
     env:
       triplet: x64-linux
@@ -171,9 +175,9 @@ jobs:
         rm -rf ${{ github.workspace }}/build
         cmake -B ${{ github.workspace }}/build -DCMAKE_TOOLCHAIN_FILE=$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=${{ env.triplet }} -DCMAKE_C_COMPILER=${{ matrix.compiler.c }} -DCMAKE_CXX_COMPILER=${{ matrix.compiler.cxx }} -DCPPYYJSON_USE_BUNDLED_YYJSON=OFF -DCMAKE_PREFIX_PATH=${{ runner.temp }}/yyjson-install -G "Ninja Multi-Config"
         cmake --build ${{ github.workspace }}/build --config Debug --clean-first
-        ctest --test-dir ${{ github.workspace }}/build -C Debug
+        ctest --test-dir ${{ github.workspace }}/build -C Debug --output-on-failure --timeout 900
         cmake --build ${{ github.workspace }}/build --config Release --clean-first
-        ctest --test-dir ${{ github.workspace }}/build -C Release
+        ctest --test-dir ${{ github.workspace }}/build -C Release --output-on-failure --timeout 900
 
   macos-build:
     strategy:
@@ -192,6 +196,7 @@ jobs:
         - { name: "AppleClang21", os: "macos-26", c: "/usr/bin/clang", cxx: "/usr/bin/clang++", xcode: "/Applications/Xcode_26.6.app" }
     name: MacOS - ${{ matrix.compiler.name }}
     runs-on: ${{ matrix.compiler.os }}
+    timeout-minutes: 120
 
     env:
       triplet: arm64-osx
@@ -227,6 +232,6 @@ jobs:
         rm -rf ${{ github.workspace }}/build
         cmake -B ${{ github.workspace }}/build -DCMAKE_TOOLCHAIN_FILE=./external/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=${{ env.triplet }} -DCMAKE_C_COMPILER=${{ matrix.compiler.c }} -DCMAKE_CXX_COMPILER=${{ matrix.compiler.cxx }} -DCMAKE_CXX_STANDARD=${{ matrix.compiler.std || 20 }} "-DCMAKE_CXX_FLAGS=${{ matrix.compiler.flags }}" -G "Ninja Multi-Config"
         cmake --build ${{ github.workspace }}/build --config Debug --clean-first
-        ctest --test-dir ${{ github.workspace }}/build -C Debug
+        ctest --test-dir ${{ github.workspace }}/build -C Debug --output-on-failure --timeout 900
         cmake --build ${{ github.workspace }}/build --config Release --clean-first
-        ctest --test-dir ${{ github.workspace }}/build -C Release
+        ctest --test-dir ${{ github.workspace }}/build -C Release --output-on-failure --timeout 900
