@@ -41,6 +41,9 @@ include_directories(${GTEST_INCLUDE_DIRS})
 add_executable("${PROJECT_NAME}_test" test.cpp)
 target_link_libraries("${PROJECT_NAME}_test"
                       PRIVATE ${PROJECT_NAME} GTest::gtest GTest::gtest_main)
+# the tests in one file exceed the sections of an object file that MSVC writes by default
+target_compile_options("${PROJECT_NAME}_test"
+                       PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
 
 # a caster of the user for a type that the library reads by itself applies to the whole program
 add_executable("${PROJECT_NAME}_test_user_casters" test_user_casters.cpp)
