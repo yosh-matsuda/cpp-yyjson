@@ -1082,7 +1082,10 @@ namespace yyjson
             static_assert(!has_field_rename<T> || field_rename_range<T>,
                           "yyjson::field_rename<T> must be a list of yyjson::rename: template <> inline constexpr "
                           "auto yyjson::field_rename<T> = {yyjson::rename(\"member\", \"key\"), ...};");
-            static constexpr auto table = [] {
+            // A function rather than a lambda: clang before 19 and MSVC take a call to a consteval function in a
+            // lambda of a class template as a call outside a constant expression.
+            static consteval auto make_table()
+            {
                 constexpr auto n = Source::members.size();
                 auto builder = field_key_builder<n>{Source::members, {Source::keys}};
                 if constexpr (requires { Source::skipped; }) builder.table.skipped = Source::skipped;
@@ -1096,7 +1099,8 @@ namespace yyjson
                 if constexpr (requires { Source::skipped; }) rename_annotated_fields<T>(builder);
 #endif
                 return builder.result();
-            }();
+            }
+            static constexpr auto table = make_table();
             static_assert(table.error != field_key_error::no_member,
                           "a yyjson::rename in yyjson::field_rename or in an annotation of a type must name the "
                           "member: yyjson::rename(\"member\", \"key\")");
@@ -1560,7 +1564,7 @@ namespace yyjson
 
         // Whether the object of S may have a member of `key`, of a field or of a tag that `writes_adjacent_tag`.
         template <typename S>
-        constexpr bool writes_member_of_key(std::string_view key)
+        consteval bool writes_member_of_key(std::string_view key)
         {
             if (struct_field_of_key<S>(key) != struct_field_count<S>) return true;
             return [&]<std::size_t... Is>(std::index_sequence<Is...>) {
