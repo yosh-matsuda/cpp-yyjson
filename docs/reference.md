@@ -1206,7 +1206,7 @@ obj["name"] = "❤️";
 
 ## Serialize and deserialize JSON
 
-In the cpp-yyjson, conversion from C++ objects to JSON values is very flexible and vice versa.
+This chapter describes which C++ types convert to and from JSON, and how.
 
 The conversions in this chapter are shared by both APIs: `yyjson::read<T>`, `yyjson::read_into`, `yyjson::merge_into` and `yyjson::write` of the [data binding API](#data-binding-api) convert between JSON text and C++ types with them, and the [DOM API](#dom-api) converts between JSON values and C++ types with them. In the DOM API, the constructors of `yyjson::value`, `yyjson::array` and `yyjson::object` convert a C++ object to JSON, and `yyjson::cast<T>` converts a JSON value to `T`:
 
@@ -1229,6 +1229,10 @@ auto map = cast<std::unordered_map<std::string, double>>(obj);
 // -> {{"first", 1.5}, {"second", 2.5}, {"third", 3.5}}
 ```
 
+### Conversion rules
+
+`cpp_yyjson.hpp` includes the standard headers of the types it is built on, such as `<string>`, `<vector>`, `<optional>`, `<variant>` and `<memory>`, but not those of the other containers. Include `<map>`, `<set>`, `<unordered_map>`, `<unordered_set>`, `<list>` or `<deque>` yourself when you use them.
+
 A range of key-value pairs converts to a JSON object, and from one. A key-value pair is any tuple-like type of two elements whose first element is a string, such as `std::pair<std::string, int>`, `std::tuple<std::string, int>` or `std::array<std::string, 2>`, so `std::vector<std::array<std::string, 2>>{{"a", "b"}}` becomes `{"a": "b"}`. A sequence of them, such as `std::vector`, also converts from a JSON array of two-element arrays.
 
 A set such as `std::set<int>` or `std::unordered_set<std::string>` converts to a JSON array, and from one. Its elements are inserted in the order of the array, so a set without duplicates, such as `std::set`, keeps the first of equal elements, and a multiset keeps them all.
@@ -1242,9 +1246,34 @@ If the conversion fails, the `yyjson::bad_cast` exception is thrown or a compile
 *   A string type such as `std::string` converts from a JSON string only, not from an array of integers. Another range of characters, such as `std::vector<char>`, converts from an array.
 *   A struct read by [reflection](#automatic-casting-with-compile-time-reflection) or `VISITABLE_STRUCT` converts from a JSON object only, although C++20 initializes the first field of an aggregate from `T(v)`. To read a struct from another JSON value, define a [translator](#translator).
 
+A `yyjson::bad_cast` thrown while reading names the C++ type and the kind of the JSON value, such as `int is not constructible from JSON string`, but not the key of the member or the position in the document. The C++ type is spelled as the compiler spells it, such as `std::__cxx11::basic_string<char>`.
+
+Some conversions succeed where one might expect them to fail, or give JSON that their types do not suggest:
+
+*   An integer or floating-point type reads JSON `true` and `false` as `1` and `0`, while `bool` reads neither numbers nor anything else.
+*   A `std::variant` takes the first alternative that accepts the value, and an integer accepts a real number by truncating it. `std::variant<int, double>` therefore reads `1.5` as the `int` `1`; with `double` first, every number is read as `double`.
+*   A map whose keys are neither strings nor [enumerations](#enumerations), such as `std::map<int, int>`, is written as an array of `[key, value]` pairs, `[[1,2]]`, and a map does not read that array back: it throws `yyjson::bad_cast`. Read the pairs into `std::vector<std::pair<int, int>>`, or convert the map to `std::map<std::string, int>` with a [translator](#translator) to have a JSON object.
+*   `char`, `signed char`, `unsigned char`, `std::int8_t` and `std::uint8_t` are numbers, and `std::u8string`, `std::u16string`, `std::u32string` and `std::wstring` are arrays of numbers. Only ranges of `char` are JSON strings.
+*   `float` is written with the digits of the `double` of the same value: `0.1f` becomes `0.10000000149011612`.
+*   When a struct is read, a key that the struct does not have is ignored, a field whose key is missing keeps its value in `T()`, and a key that appears twice gives the field its last value. There is no option to require a key or to reject unknown keys; declare a field `std::optional` and check it after reading to require it.
+
+The following types are not converted at all and fail to compile where they are read or written. Use the type or the form in the second column instead:
+
+| Type | Instead |
+| --- | --- |
+| `std::unique_ptr`, raw pointers (a raw pointer reads only JSON null) | `std::optional`, `std::shared_ptr`, or a [translator](#translator) |
+| `std::chrono` durations and time points | a translator to a number or a string |
+| `std::function`, `std::any`, unions | leave the field out with `VISITABLE_STRUCT` or a [C++26 annotation](#c26-annotations) |
+| `std::mutex` and other types that cannot be moved | the same, but the struct can then only be written |
+| a class with private fields, or a struct with a constructor of its own | a translator, or `VISITABLE_STRUCT` if the fields are public |
+| a struct that is also a range, with `begin()` and `end()` | a caster; such a struct is not read by reflection |
+| `std::forward_list` | it is written but not read; `std::vector` or `std::list` |
+
+The compile error names the function that was called, such as `no matching function for call to 'write(P)'`, and the constraints of the library that are not satisfied, but not the field whose type caused it. Writing a value of each field type alone, such as `yyjson::write(std::unique_ptr<int>())`, finds that field.
+
 Note that `yyjson::cast<T>` and `static_cast<T>` may give different results. `yyjson::cast<T>` applies cpp-yyjson's JSON conversion rules, including predefined casters, while `static_cast<T>` only uses ordinary C++ conversion rules. For example, `yyjson::cast<std::shared_ptr<int>>(value(nullptr))` returns `nullptr` because the predefined `std::shared_ptr` caster maps JSON null to a null pointer. The corresponding `static_cast<std::shared_ptr<int>>(value(nullptr))` is ill-formed because `yyjson::value` is not directly convertible to `std::shared_ptr<int>` in C++.
 
-In addition to the above, the following methods are provided for converting *arbitrary* C++ types from and to JSON:
+In addition to the above, the following methods are provided for converting *arbitrary* C++ types from and to JSON. A [user-defined caster](#user-defined-casters) of a type takes precedence over all the others, and a struct registered with `VISITABLE_STRUCT` is converted by its registration rather than by reflection:
 
 1.  [Pre-defined STL casters](#pre-defined-stl-casters).
 2.  [Enumerations](#enumerations) by the names of their enumerators.
@@ -1255,7 +1284,7 @@ In addition to the above, the following methods are provided for converting *arb
 
 ### Pre-defined STL casters
 
-Several casters from/to STL classes to JSON are pre-defined in the library for convenience. Currently, available STL types are as follows:
+Besides the strings, ranges, maps and sets described above, the library has casters for the following types of the standard library:
 
 *   `std::optional`
 *   `std::shared_ptr`
@@ -1368,19 +1397,25 @@ struct field_reflection::enum_range<Status>
 
 ### Automatic casting with compile-time reflection
 
-The compile-time reflection is supported to automatically convert C++ struct/class to JSON object and vice versa. This feature is provided by using [field-reflection](https://github.com/yosh-matsuda/field-reflection) and is included in this library.
+The compile-time reflection converts a C++ struct to and from a JSON object by its field names, with no caster and no registration. This feature is provided by [field-reflection](https://github.com/yosh-matsuda/field-reflection), which is included in this library.
 
-If a C++ struct/class satisfies the `field_reflection::field_namable` concept (see [field-reflection](https://github.com/yosh-matsuda/field-reflection)), it is possible to automatically convert from/to JSON objects with its field names and no need to write a caster definition or registration of field names with macros explained later.
+A struct is converted when it satisfies the `field_reflection::field_namable` concept (see [field-reflection](https://github.com/yosh-matsuda/field-reflection)) and the type of every field is convertible. In practice, the struct has to be
 
-In practice, the following conditions are required for C++ types for automatic conversion:
+*   an [aggregate type](https://en.cppreference.com/w/cpp/types/is_aggregate): all its fields are public, and it declares no constructor and no virtual function;
+*   default initializable.
 
-*   default initializable
-*   [aggregate type](https://en.cppreference.com/w/cpp/types/is_aggregate)
-*   not a derived class (C++20)
-*   at most 100 fields (C++20)
-*   no reference member (C++20)
+The other conditions depend on the C++ standard. C++26 static reflection is used with GCC 16 and `-std=c++26 -freflection`, unless the macro `FIELD_RFL_DISABLE_STD_REFLECTION` is defined to keep the C++20 rules:
 
-A struct with a `const` member can be written but not read: reading it, by `cast<T>`, `yyjson::read<T>` or any other function, fails to compile. With C++26 static reflection, e.g. GCC 16 with `-std=c++26 -freflection`, field-reflection reflects derived classes, reference members and any number of fields. The fields of the base classes come first in the JSON object, and `yyjson::field_rename` of the derived class can rename them. A struct with a reference member can then be written but not read, as one with a `const` member. Define `FIELD_RFL_DISABLE_STD_REFLECTION` to keep the C++20 rules.
+| | C++20 | C++26 |
+| --- | --- | --- |
+| Base classes | not converted | converted, base fields first |
+| Number of fields | at most 100 | any |
+| `const` member | written, not read | written, not read |
+| Reference member | not converted | written, not read |
+| Enumerators converted by [name](#enumerations) | values in [-128, 128] unless widened | all |
+| Keys and skipped fields given in the struct | no, use [`field_rename`](#json-keys-other-than-field-names) | [annotations](#c26-annotations) |
+
+A struct that is written but not read fails to compile when it is read, by `cast<T>`, `yyjson::read<T>` or any other function. With C++26, `yyjson::field_rename` of a derived class can rename the fields of its base classes as well. A struct with a constructor of its own and public fields can be registered with [`VISITABLE_STRUCT`](#registration-of-field-names-of-structclass) instead, and one with private fields needs a [user-defined caster](#user-defined-casters).
 
 Example:
 
