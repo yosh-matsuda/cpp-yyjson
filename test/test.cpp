@@ -6228,6 +6228,40 @@ struct DomMembers
     std::variant<int, yyjson::object, yyjson::array> var;
 };
 
+// a caster that translates from and to a value of the DOM API
+struct DomRaw
+{
+    yyjson::value v;
+};
+
+template <>
+struct yyjson::caster<DomRaw>
+{
+    static DomRaw from_json(yyjson::value v) { return {std::move(v)}; }
+    static yyjson::value to_json(const DomRaw& t) { return t.v; }
+};
+
+struct DomRawObject
+{
+    yyjson::object o;
+};
+
+template <>
+struct yyjson::caster<DomRawObject>
+{
+    static DomRawObject from_json(const yyjson::object& o) { return {o}; }
+    static yyjson::object to_json(const DomRawObject& t) { return t.o; }
+};
+
+struct DomRaws
+{
+    DomRaw r;
+    std::vector<DomRaw> rs;
+    std::map<std::string, DomRaw> m;
+    std::optional<DomRawObject> o;
+    std::variant<int, DomRaw> var;
+};
+
 // a caster that takes a member of a view as a value of the DOM API
 struct DomViewed
 {
@@ -6289,6 +6323,38 @@ TEST(DomValue, Members)
     // a view gives its members as values
     EXPECT_EQ(read<DomViewed>(R"({"y":0,"x":{"n":[1,2,3]}})").v.write(), R"({"n":[1,2,3]})");
     EXPECT_EQ(read(R"({"x":[5]})").cast<DomViewed>().v.write(), "[5]");
+}
+
+TEST(DomValue, Translators)
+{
+    using namespace yyjson;
+    using reader::detail::direct_reader;
+
+    // a translator from a value is not the form of a caster of the DOM API, so a loop reads without the document
+    static_assert(detail::from_json_translator<DomRaw>::castable);
+    static_assert(detail::from_json_translator<DomRawObject>::castable);
+    static_assert(!direct_reader::reads_documents_in_loop<std::vector<DomRaw>>);
+
+    const auto json = std::string(
+        R"({"r":{"k":[1,2]},"rs":[1,"x",[null]],"m":{"q":{"z":1.5}},"o":{"p":1},"var":"s"})");
+    const auto check = [&](const DomRaws& t) {
+        EXPECT_EQ(write(t), json);
+        EXPECT_EQ(writer::value(t).write(), json);
+        EXPECT_EQ(write(t, WriteFlag::Pretty), writer::value(t).write(WriteFlag::Pretty));
+    };
+    check(read(json).cast<DomRaws>());
+    check(read<DomRaws>(json));
+    check(writer::value(read(json)).cast<DomRaws>());
+    EXPECT_THROW((void)read<DomRaws>(R"({"o":[]})"), bad_cast);
+
+    // the value that `to_json` returns is written wherever the type is
+    const auto t = read<DomRaws>(json);
+    EXPECT_EQ(writer::array(t.rs).write(), R"([1,"x",[null]])");
+    EXPECT_EQ(writer::value(t.r).write(), R"({"k":[1,2]})");
+    auto o = writer::object();
+    o["x"] = t.r;
+    o.emplace("y", *t.o);
+    EXPECT_EQ(o.write(), R"({"x":{"k":[1,2]},"y":{"p":1}})");
 }
 
 #endif
