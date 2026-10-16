@@ -6884,9 +6884,11 @@ namespace yyjson
             (!reflected_range_aggregate<T>) && requires {
                 typename std::ranges::range_value_t<T>;
                 // `std::vector<bool>` is not an output range in C++20, whose proxy reference cannot be assigned
-                // through a const reference, but it is back insertable
-                requires std::ranges::output_range<T, std::ranges::range_value_t<T>> || back_insertable<T> ||
-                             insertable_set<T> || pair_array_map<T>;
+                // through a const reference, but it is back insertable.  A range of a fixed size is assigned up to
+                // its size, which `std::forward_list` does not have.
+                requires (std::ranges::output_range<T, std::ranges::range_value_t<T>> &&
+                          std::ranges::sized_range<T>) ||
+                             back_insertable<T> || insertable_set<T> || pair_array_map<T>;
                 requires requires(const Json& arr) { cast<array_element_t<T>>(arr.front()); };
             };
 
@@ -7000,16 +7002,14 @@ namespace yyjson
             writer::detail::from_json_def_obj_defined<T> || reader::detail::from_json_def_obj_defined<T> ||
             writer::detail::from_json_def_arr_defined<T> || reader::detail::from_json_def_arr_defined<T>;
 
-        // A struct that cannot be read field by field, as one with a const or reference field cannot, or a range
-        // of elements that cannot be read, is not castable, rather than castable but failing for every JSON value.
+        // A type that no kind of JSON value can be read into is not castable, rather than castable but failing for
+        // every JSON value: a struct that cannot be read field by field, as one with a const or reference field
+        // cannot, a range of elements that cannot be read, `std::forward_list`, or a class with private fields.
         // Neither is a type whose caster in this library names a `from_json` that cannot read it, such as
         // `std::optional` of such a struct, which would otherwise be read from null only.
         template <typename T>
         concept default_readable =
-            (!caster_names_from_json<T> || !std::derived_from<caster<T>, builtin_caster>) &&
-            (reads_some_json<T> ||
-             !(visitable<T> || (reflectable<T> && json_aggregate<T>) ||
-               (std::ranges::range<T> && !castable<reader::const_value_ref, std::ranges::range_value_t<T>>)));
+            (!caster_names_from_json<T> || !std::derived_from<caster<T>, builtin_caster>) && reads_some_json<T>;
     }  // namespace detail
 
     template <typename T>

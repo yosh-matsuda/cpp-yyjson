@@ -5,6 +5,7 @@
 #include <cmath>
 #include <deque>
 #include <format>
+#include <forward_list>
 #include <functional>
 #include <iostream>
 #include <limits>
@@ -9368,6 +9369,19 @@ TEST(Reflection, RangeAggregates)
     EXPECT_EQ(expect_merge_into(fields, R"({"r":{"name":"c"}})"),
               R"({"r":{"items":[1],"name":"c"},"m":[{"items":[2,3]}],"o":{"items":[],"name":"b"}})");
 }
+
+// No JSON value is read into these types, so they are not castable rather than failing at run time
+class PrivateFields
+{
+    int a_ = 0;
+
+public:
+    [[nodiscard]] int a() const { return a_; }
+};
+static_assert(!yyjson::castable<yyjson::reader::const_value_ref, PrivateFields>);
+static_assert(!yyjson::castable<yyjson::reader::const_value_ref, std::mutex>);
+static_assert(!yyjson::castable<yyjson::reader::const_value_ref, std::forward_list<int>>);
+static_assert(!yyjson::castable<yyjson::value, std::forward_list<int>>);
 
 // `std::unique_ptr` is null or the value it points to, as `std::shared_ptr` is
 struct UniqueFields
