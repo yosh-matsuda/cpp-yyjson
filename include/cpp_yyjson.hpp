@@ -810,9 +810,10 @@ namespace yyjson
         template <typename Key>
         concept key_type = std::convertible_to<Key, const char*> || std::convertible_to<Key, std::string> ||
                            std::convertible_to<Key, std::string_view>;
-        // An enumeration that its `caster` neither writes nor reads is a key of a JSON object as well, by the name
-        // of its enumerator as `enum_key_text` writes it.  One that a caster converts would need the caster to
-        // give a string, so that a map with such keys stays an array of pairs.
+        // Whether `caster<T>` has a member named `from_json` or `to_json`, of any form: the name is then
+        // ambiguous in a class derived from the caster and from another class that has it.  MSVC 19.5x takes the
+        // address of a single member that is not a template although the name is ambiguous, but it is valid in
+        // the caster then.
         struct caster_conversion_probe
         {
             static void from_json();
@@ -823,11 +824,20 @@ namespace yyjson
         {
         };
         template <typename T>
-        concept enum_key =
-            std::is_enum_v<T> && std::is_class_v<caster<T>> && (!std::is_final_v<caster<T>>) && requires {
-                &caster_conversion_lookup<T>::from_json;
-                &caster_conversion_lookup<T>::to_json;
-            };
+        concept caster_names_from_json =
+            std::is_class_v<caster<T>> && (!std::is_final_v<caster<T>>) &&
+            (!requires { &caster_conversion_lookup<T>::from_json; } || requires { &caster<T>::from_json; });
+        template <typename T>
+        concept caster_names_to_json =
+            std::is_class_v<caster<T>> && (!std::is_final_v<caster<T>>) &&
+            (!requires { &caster_conversion_lookup<T>::to_json; } || requires { &caster<T>::to_json; });
+
+        // An enumeration that its `caster` neither writes nor reads is a key of a JSON object as well, by the name
+        // of its enumerator as `enum_key_text` writes it.  One that a caster converts would need the caster to
+        // give a string, so that a map with such keys stays an array of pairs.
+        template <typename T>
+        concept enum_key = std::is_enum_v<T> && std::is_class_v<caster<T>> && (!std::is_final_v<caster<T>>) &&
+                           (!caster_names_from_json<T>) && (!caster_names_to_json<T>);
         template <typename Pair>
         concept key_value_like = pair_like<Pair> && (key_type<std::tuple_element_t<0, Pair>> ||
                                                      enum_key<std::remove_cv_t<std::tuple_element_t<0, Pair>>>);
@@ -6587,20 +6597,6 @@ namespace yyjson
         concept borrows_strings = std::is_class_v<S> && (!std::same_as<S, std::string_view>) &&
                                   (!std::same_as<S, json_view>) &&
                                   (type_reaches<std::string_view, S> || type_reaches<const char*, S>);
-
-        // Whether `caster<T>` has a member named `from_json`, of any form: the name is then ambiguous in a class
-        // derived from the caster and from another class that has it.
-        struct from_json_name_probe
-        {
-            static void from_json();
-        };
-        template <typename T>
-        struct from_json_name_lookup : caster<T>, from_json_name_probe
-        {
-        };
-        template <typename T>
-        concept caster_names_from_json = std::is_class_v<caster<T>> && (!std::is_final_v<caster<T>>) &&
-                                         !requires { &from_json_name_lookup<T>::from_json; };
 
         // T is read by this library rather than by a `from_json` of the user, in any form.
         template <typename T>
