@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <forward_list>
 #include <initializer_list>
 #include <memory>
@@ -8425,19 +8426,23 @@ namespace yyjson
                 if ((alternative_kinds<Json>[I] & kind) != 0 &&
                     ((later_kinds<Json>[I] & kind) == 0 || may_cast<I>(json, kind, rereads)))
                 {
+                    // The limit is thrown again after the handler.  On Windows a handler runs on top of the frames
+                    // that threw, so a throw from the handler at every level of a nested value keeps all of those
+                    // frames until the stack overflows.
+                    auto limit = std::exception_ptr();
                     try
                     {
                         return cast_alternative<I>(json);
                     }
                     catch (const detail::recursion_limit_error&)
                     {
-                        throw;
+                        limit = std::current_exception();
                     }
                     catch (...)
                     {
-                        if (rereads.template stops_after<I>())
-                            detail::throw_variant_reread_limit<std::variant<Ts...>, T>();
                     }
+                    if (limit) std::rethrow_exception(limit);
+                    if (rereads.template stops_after<I>()) detail::throw_variant_reread_limit<std::variant<Ts...>, T>();
                 }
                 return from_alternative<I + 1>(json, kind, rereads);
             }
@@ -14121,6 +14126,8 @@ namespace yyjson
             bool read_alternative(Make& make, const char* start, bool check, const Guard& rereads)
             {
                 using alternative = std::remove_cv_t<std::variant_alternative_t<I, T>>;
+                // thrown again after the handler, as in `caster<std::variant>::from_alternative`
+                auto pass_on = std::exception_ptr();
                 try
                 {
                     if constexpr (yyjson::detail::may_reject_nested<alternative>())
@@ -14142,19 +14149,19 @@ namespace yyjson
                 }
                 catch (const direct_read_unsupported&)
                 {
-                    throw;
+                    pass_on = std::current_exception();
                 }
                 catch (const yyjson::detail::recursion_limit_error&)
                 {
-                    throw;
+                    pass_on = std::current_exception();
                 }
                 catch (...)
                 {
-                    if (rereads.template stops_after<I>())
-                        yyjson::detail::throw_variant_reread_limit<T, alternative>();
-                    cur_ = start;
-                    return false;
                 }
+                if (pass_on) std::rethrow_exception(pass_on);
+                if (rereads.template stops_after<I>()) yyjson::detail::throw_variant_reread_limit<T, alternative>();
+                cur_ = start;
+                return false;
             }
 
             // Reads the value at `cur_` into the alternative I of the variant T.
