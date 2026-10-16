@@ -2613,10 +2613,26 @@ namespace yyjson
                 (!visitable<std::remove_cvref_t<T>>) && (!to_json_inp_usr_defined<T>) && (!to_json_usr<T>) &&
                 directly_create_reflected_object_impl<std::remove_cvref_t<T>>(
                     yyjson::detail::reflected_fields<std::remove_cvref_t<T>>{});
+            // Whether every member of a visitable struct can be written, as for a reflected struct above.
+            template <typename T, std::size_t I>
+            using visitable_member_t =
+                std::remove_cvref_t<decltype(std::declval<const T&>().*std::get<I>(visit_struct<T>::members))>;
             template <typename T>
-            concept directly_create_visitable_object = visitable<std::remove_cvref_t<T>> && requires {
-                visit_struct<std::remove_cvref_t<T>>::field_count;
-            } && (!to_json_usr<T>) && (!to_json_inp_usr_defined<T>);
+            consteval bool visitable_fields_creatable()
+            {
+                using members = std::remove_cv_t<decltype(visit_struct<T>::members)>;
+                if constexpr (yyjson::detail::recursive_type<T>)
+                    return true;
+                else
+                    return []<std::size_t... Is>(std::index_sequence<Is...>) {
+                        return (create_value_callable<visitable_member_t<T, Is>> && ...);
+                    }(std::make_index_sequence<std::tuple_size_v<members>>{});
+            }
+            template <typename T>
+            concept directly_create_visitable_object =
+                visitable<std::remove_cvref_t<T>> && requires { visit_struct<std::remove_cvref_t<T>>::field_count; } &&
+                (!to_json_usr<T>) && (!to_json_inp_usr_defined<T>) &&
+                visitable_fields_creatable<std::remove_cvref_t<T>>();
 
             template <typename T>
             concept convertible_to_create_primitive_callable = requires(T&& t) {  // clang-format off
@@ -6981,17 +6997,22 @@ namespace yyjson
             using type = M;
         };
 
-        // Whether no field of a visitable struct, or no element of a C array field, is const, which the default
-        // caster could not read.  A field of another type that cannot be assigned may still be read in place by
-        // its caster.
-        template <typename T>
-        consteval bool visitable_fields_non_const()
+        // Whether every field of a visitable struct can be given the value read, as `field_assignable` tells for a
+        // reflected struct.  Only the fields of a recursive struct are not checked, but whether one is const,
+        // which the default caster could not read.
+        template <typename T, typename Json>
+        consteval bool visitable_fields_assignable()
         {
             using members = std::remove_cv_t<decltype(visit_struct<T>::members)>;
             return []<std::size_t... Is>(std::index_sequence<Is...>) {
-                return (!std::is_const_v<std::remove_all_extents_t<
-                            typename member_pointee<std::tuple_element_t<Is, members>>::type>> &&
-                        ...);
+                if constexpr (recursive_type<T>)
+                    return (!std::is_const_v<std::remove_all_extents_t<
+                                typename member_pointee<std::tuple_element_t<Is, members>>::type>> &&
+                            ...);
+                else
+                    return (field_assignable<typename std::ranges::range_value_t<Json>::second_type,
+                                             typename member_pointee<std::tuple_element_t<Is, members>>::type> &&
+                            ...);
             }(std::make_index_sequence<std::tuple_size_v<members>>{});
         }
 
@@ -7043,7 +7064,7 @@ namespace yyjson
     struct detail::default_caster
     {
         template <json_object Json>
-        requires std::default_initializable<T> && visitable<T> && (visitable_fields_non_const<T>())
+        requires std::default_initializable<T> && visitable<T> && (visitable_fields_assignable<T, Json>())
         static dependent_t<T, Json> from_json(const Json& obj)
         {
             return visit_struct<T>::from_json_impl(obj);
@@ -7486,13 +7507,15 @@ namespace yyjson
         }
 
         template <copy_string_args... Ts>
-        requires visitable<T> && (!writer::detail::to_json_usr_translator<T>)
+        requires visitable<T> && (!writer::detail::to_json_usr_translator<T>) &&
+                 (writer::detail::visitable_fields_creatable<T>())
         static void to_json(writer::object_ref& obj, const T& t, Ts... ts)
         {
             visit_struct<T>::to_json_impl(obj, t, ts...);
         }
         template <copy_string_args... Ts>
-        requires visitable<T> && (!writer::detail::to_json_usr_translator<T>)
+        requires visitable<T> && (!writer::detail::to_json_usr_translator<T>) &&
+                 (writer::detail::visitable_fields_creatable<T>())
         static void to_json(writer::object_ref& obj, T&& t, Ts... ts)
         {
             visit_struct<T>::to_json_impl(obj, std::move(t), ts...);

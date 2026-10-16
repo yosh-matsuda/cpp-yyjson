@@ -9410,6 +9410,23 @@ static_assert(yyjson::readable<std::unique_ptr<int>> && yyjson::writable<std::un
 static_assert(yyjson::readable<yyjson::value> && yyjson::writable<yyjson::value>);
 static_assert(yyjson::writable<yyjson::reader::const_value_ref>);
 
+// A `VISITABLE_STRUCT` is converted only when each of its members is, as a reflected struct is
+struct VisitableDuration
+{
+    int a = 0;
+    std::chrono::seconds d;
+};
+VISITABLE_STRUCT(VisitableDuration, a, d);
+struct VisitableMutex
+{
+    int a = 0;
+    std::mutex m;
+};
+VISITABLE_STRUCT(VisitableMutex, a, m);
+static_assert(yyjson::readable<VisitableDuration> && !yyjson::writable<VisitableDuration>);
+static_assert(!yyjson::readable<VisitableMutex> && !yyjson::writable<VisitableMutex>);
+static_assert(!yyjson::castable<yyjson::value, VisitableMutex>);
+
 // `std::unique_ptr` is null or the value it points to, as `std::shared_ptr` is
 struct UniqueFields
 {
