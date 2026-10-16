@@ -9620,9 +9620,15 @@ struct RecNestHolder
 };
 // a type that reaches an incomplete type through a template argument, which is not recursive
 struct PimplImpl;
+// whose special members are defined where `PimplImpl` is complete, as those of a pimpl class are
 struct PimplHandle
 {
     std::unique_ptr<PimplImpl> impl;
+    PimplHandle();
+    explicit PimplHandle(std::unique_ptr<PimplImpl> p);
+    PimplHandle(PimplHandle&&) noexcept;
+    PimplHandle& operator=(PimplHandle&&) noexcept;
+    ~PimplHandle();
 };
 template <>
 struct yyjson::caster<PimplHandle>
@@ -9630,7 +9636,7 @@ struct yyjson::caster<PimplHandle>
     template <typename Json>
     static PimplHandle from_json(const Json& json)
     {
-        return {std::make_unique<PimplImpl>(yyjson::cast<int>(json))};
+        return PimplHandle(std::make_unique<PimplImpl>(yyjson::cast<int>(json)));
     }
     template <typename... Ts>
     static int to_json(const PimplHandle& h, Ts...);
@@ -9700,6 +9706,11 @@ struct PimplImpl
 #if defined(__GNUC__) && !defined(__clang__) && __GNUC__ >= 16
 #pragma GCC diagnostic pop
 #endif
+PimplHandle::PimplHandle() = default;
+PimplHandle::PimplHandle(std::unique_ptr<PimplImpl> p) : impl(std::move(p)) {}
+PimplHandle::PimplHandle(PimplHandle&&) noexcept = default;
+PimplHandle& PimplHandle::operator=(PimplHandle&&) noexcept = default;
+PimplHandle::~PimplHandle() = default;
 template <typename... Ts>
 int yyjson::caster<PimplHandle>::to_json(const PimplHandle& h, Ts...)
 {
