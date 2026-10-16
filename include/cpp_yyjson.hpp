@@ -7186,12 +7186,13 @@ namespace yyjson
 
         // T is constructed from a JSON scalar given as Arg, which is not done when the result is not the value
         // of the scalar: a container takes a number as its size and a struct as its first field, and C++
-        // converts numbers, pointers and null to `bool`, which is read from JSON true and false only.
+        // converts numbers, pointers and null to `bool`, which is read from JSON true and false only.  MSVC
+        // checks the cast that T(Arg) is, which converts a `bool` to a scoped enumeration as well.
         template <typename T, typename Arg>
 #ifdef _MSC_VER
         concept json_scalar_constructible =
             (!std::ranges::range<T>) && (!json_aggregate<T>) && (!std::same_as<T, bool> || std::same_as<Arg, bool>) &&
-            (!accepts_any_type<T>) && requires { T(std::declval<Arg>()); };
+            (!accepts_any_type<T>) && (!std::is_enum_v<T>) && requires { T(std::declval<Arg>()); };
 #else
         concept json_scalar_constructible =
             (!std::ranges::range<T>) && (!json_aggregate<T>) && (!std::same_as<T, bool> || std::same_as<Arg, bool>) &&
