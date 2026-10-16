@@ -3241,6 +3241,18 @@ TEST(Writer, CopyFromReaderValue)
         EXPECT_EQ(nullptr, doc.as_null().value());
         EXPECT_EQ(nullptr, v.as_null().value());
     }
+    {
+        // from the references to an array and an object of a read document
+        auto doc = read(R"({"a":1,"b":[1,2]})");
+        const auto obj = *doc.as_object();
+        const auto arr = *obj["b"].as_array();
+        EXPECT_EQ(object(obj).write(), R"({"a":1,"b":[1,2]})");
+        EXPECT_EQ(array(arr).write(), "[1,2]");
+        EXPECT_EQ(object(reader::const_object_ref(obj)).write(), R"({"a":1,"b":[1,2]})");
+        EXPECT_EQ(array(reader::const_array_ref(arr)).write(), "[1,2]");
+        EXPECT_THROW(static_cast<void>(object(obj["b"])), bad_cast);
+        EXPECT_THROW(static_cast<void>(array(obj["a"])), bad_cast);
+    }
 }
 
 TEST(Reader, PredefinedCaster)

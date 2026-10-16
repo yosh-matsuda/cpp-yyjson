@@ -4318,11 +4318,13 @@ namespace yyjson
                     if (!t.is_array()) [[unlikely]]
                         throw bad_cast("Could not cast to JSON array");
                 }
+                // The value is checked after the copy, since a reference to an array or an object of a read
+                // document has no `is_array`.
                 template <reader::detail::base_of_value_ref T>
                 requires requires(T&& t) { base(std::forward<T>(t)); }
                 explicit const_array_base(T&& t) : base(std::forward<T>(t))
                 {
-                    if (!t.is_array()) [[unlikely]]
+                    if (!yyjson_mut_is_arr(base::val_)) [[unlikely]]
                         throw bad_cast("Could not cast to JSON array");
                 }
 
@@ -5063,11 +5065,13 @@ namespace yyjson
                     if (!t.is_object()) [[unlikely]]
                         throw bad_cast("Could not cast to JSON object");
                 }
+                // The value is checked after the copy, since a reference to an array or an object of a read
+                // document has no `is_object`.
                 template <reader::detail::base_of_value_ref T>
                 requires requires(T&& t) { base(std::forward<T>(t)); }
                 explicit const_object_base(T&& t) : base(std::forward<T>(t))
                 {
-                    if (!t.is_object()) [[unlikely]]
+                    if (!yyjson_mut_is_obj(base::val_)) [[unlikely]]
                         throw bad_cast("Could not cast to JSON object");
                 }
 
