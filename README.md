@@ -215,6 +215,7 @@ Both APIs convert the following types, nested in any combination:
 *   ranges such as `std::vector`, `std::array` and `std::set`, and maps and ranges of key-value pairs such as `std::map` and `std::unordered_map`;
 *   `std::optional`, `std::shared_ptr`, `std::variant` and tuple-like types ([C++23 tuple-like](https://wg21.link/P2165R4)), and a `std::variant` [tagged](docs/reference.md#tagged-variants) by a member that names its alternative;
 *   structs and classes converted by [compile-time reflection](docs/reference.md#automatic-casting-with-compile-time-reflection), or registered with the [`VISITABLE_STRUCT`](docs/reference.md#registration-of-field-names-of-structclass) macro, including C array fields, empty structs and [recursive types](docs/reference.md#recursive-types);
+*   `yyjson::value`, `yyjson::object` and `yyjson::array`, which keep a part of the JSON as a value of the DOM API ([details](docs/reference.md#json-values-as-fields));
 *   any type with a user-defined caster.
 
 A JSON key that is not a valid C++ identifier is mapped to a field with `yyjson::field_rename`:
@@ -285,6 +286,7 @@ The forms of a caster are listed below in the order to choose them. All but the 
 | Apply a partial update | `merge_into(json, t)` |
 | Convert a C++ object to JSON text | `write(t)`, or `write(t, out)` to reuse the string |
 | Read JSON of unknown or varying shape | `read(json)` and the DOM |
+| Keep a member of unknown shape in a C++ type | a field of type `yyjson::value` |
 | Build or modify JSON that has no C++ type | `value`, `array` and `object` |
 | Convert part of a document | `cast<T>(value)` on that part |
 

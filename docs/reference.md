@@ -1563,6 +1563,32 @@ Two variants of the same key in one struct need such a field, and fail to compil
 
 `yyjson::read<T>` reads a tagged variant without a document. It finds the tag by reading the keys of the members before it, so the tag is cheapest first in its object, where `yyjson::write` puts it. A value of an adjacently tagged variant that comes before its tag is read into a temporary document, which is cast once the tag is found.
 
+### JSON values as fields
+
+A field of type `yyjson::value`, `yyjson::object` or `yyjson::array` keeps a part of the JSON as a value of the DOM API, for a member whose shape the program does not know in advance or passes on as it is:
+
+```cpp
+using namespace yyjson;
+
+struct Request
+{
+    std::string method;
+    yyjson::value params;
+    int id;
+};
+
+auto request = read<Request>(R"({"method":"add","params":[1,2],"id":3})");
+auto numbers = request.params.cast<std::vector<int>>();
+// -> {1, 2}
+(*request.params.as_array()).emplace_back(3);
+auto json = write(request);
+// -> {"method":"add","params":[1,2,3],"id":3}
+```
+
+Each field owns a document of its own, into which the JSON value is copied, so the field stays valid after the string or the document that it was read from is gone and can be modified as any mutable value. `yyjson::object` and `yyjson::array` accept only a JSON object and a JSON array, and throw `yyjson::bad_cast` for any other value, which also lets a `std::variant` choose them by the kind of the value. Writing writes the value as it is.
+
+These types convert in every place and with every function that reads or writes a type: as an element of a range or a value of a map, in a `std::optional`, with `cast`, `read<T>`, `read_into` and `merge_into`, and with `cast<yyjson::value>()` of a [`json_view`](#reading-a-json-value-in-a-caster). `yyjson::read<T>` reads such a value into a temporary document of that value alone and copies it, and reads the rest of the string directly.
+
 ### User-defined casters
 
 A user-defined caster converts a type that the conversions above do not handle, or converts it in another way. Specialize `yyjson::caster<X>` and give it the static member functions below. The caster of a type takes precedence over every other conversion of that type.
@@ -1573,6 +1599,7 @@ The forms are listed in the order to choose them. All but the last convert C++ v
 | --- | --- | --- | --- |
 | Give a struct JSON keys other than its field names | no caster: [`field_rename`, C++26 annotations or `VISITABLE_STRUCT`](#json-keys-other-than-field-names) | yes | yes |
 | Tell the alternatives of a `std::variant` by a member that names them | no caster: [`variant_tag`](#tagged-variants) | yes | yes |
+| Keep a part of the JSON as it is | no caster: a field of [`yyjson::value`](#json-values-as-fields) | yes | yes |
 | Convert to and from another type, such as a struct to a string | [translator](#translator): `X from_json(U)` and `U to_json(const X&)` | yes | yes |
 | Read into a field that cannot be copied or moved | [in-place translator](#reading-into-an-existing-field): `void from_json(X&, U)` | yes | — |
 | Write members that depend on the value | [emitter](#writing-members-with-an-emitter): `void to_json(object_emitter&, const X&)` | — | yes |

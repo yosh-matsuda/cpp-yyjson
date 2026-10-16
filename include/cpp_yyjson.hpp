@@ -6385,6 +6385,14 @@ namespace yyjson
     using object = writer::object;
     using key_value_pair = writer::key_value_pair;
 
+    namespace detail
+    {
+        // A JSON value of the DOM API that owns its document, which a value read from JSON holds as it is.
+        template <typename T>
+        concept dom_value =
+            std::same_as<T, writer::value> || std::same_as<T, writer::object> || std::same_as<T, writer::array>;
+    }  // namespace detail
+
     template <typename Json, typename T>
     concept castable = requires(Json json) {
         { yyjson::cast<T>(json) };
@@ -7586,6 +7594,10 @@ namespace yyjson
             {
                 if constexpr (!std::derived_from<caster<T>, builtin_caster>)
                     return json_kind_all;
+                else if constexpr (std::same_as<T, writer::object>)
+                    return json_kind_object;
+                else if constexpr (std::same_as<T, writer::array>)
+                    return json_kind_array;
                 else if constexpr (variant_json_kinds<T>::is_variant)
                     return variant_json_kinds<T>::template value<Json>();
                 else if constexpr (shared_ptr_like<T>)
@@ -8153,6 +8165,34 @@ namespace yyjson
         {
             return static_cast<bool>(v);
         }
+    };
+
+    namespace detail
+    {
+        // Reads a `yyjson::value`, `yyjson::object` or `yyjson::array` by copying the JSON value into a document of
+        // its own, which the writers write as it is.
+        template <dom_value T>
+        struct dom_value_caster : builtin_caster
+        {
+            template <typename Json>
+            requires reader::detail::base_of_value_ref<Json> || writer::detail::base_of_value<Json>
+            static T from_json(const Json& json)
+            {
+                return T(json);
+            }
+        };
+    }  // namespace detail
+    template <>
+    struct caster<writer::value> : detail::dom_value_caster<writer::value>
+    {
+    };
+    template <>
+    struct caster<writer::object> : detail::dom_value_caster<writer::object>
+    {
+    };
+    template <>
+    struct caster<writer::array> : detail::dom_value_caster<writer::array>
+    {
     };
 
 #if YYJSON_VERSION_HEX >= 0x000C00
@@ -11386,7 +11426,9 @@ namespace yyjson
             static consteval auto value_node_of()
             {
                 using yyjson::detail::type_list;
-                if constexpr (std::same_as<T, yyjson::json_view>)
+                // a view reads the text, and a value of the DOM API copies the JSON value into a document of its
+                // own, so neither reads faster from a document of the whole text
+                if constexpr (std::same_as<T, yyjson::json_view> || yyjson::detail::dom_value<T>)
                     return node<false>{};
                 else if constexpr (builtin_variant<T>)
                     return []<std::size_t... Is>(std::index_sequence<Is...>) {

@@ -6214,6 +6214,83 @@ TEST(JsonView, TextAndDocument)
     EXPECT_THROW((void)(*view.as_object())["b"], std::out_of_range);
     EXPECT_THROW((void)(*(*view.as_object())["a"].as_array())[2], std::out_of_range);
 }
+
+// members that keep a part of the document as a value of the DOM API
+struct DomMembers
+{
+    int a = 0;
+    yyjson::value v;
+    yyjson::object o;
+    yyjson::array arr;
+    std::optional<yyjson::value> opt;
+    std::vector<yyjson::value> vs;
+    std::map<std::string, yyjson::value> m;
+    std::variant<int, yyjson::object, yyjson::array> var;
+};
+
+// a caster that takes a member of a view as a value of the DOM API
+struct DomViewed
+{
+    yyjson::value v;
+};
+
+template <>
+struct yyjson::caster<DomViewed>
+{
+    static DomViewed from_json(yyjson::json_view v) { return {(*v.as_object())["x"].cast<yyjson::value>()}; }
+};
+
+TEST(DomValue, Members)
+{
+    using namespace yyjson;
+
+    const auto json = std::string(
+        R"({"a":1,"v":{"big":18446744073709551615,"s":"e\"\\\n"},"o":{"x":1},"arr":[1,"s"],"opt":{"q":[]},)"
+        R"("vs":[1,"two",{"three":3},[4]],"m":{"k":{"z":null}},"var":{"w":true}})");
+    const auto check = [&](const DomMembers& t) {
+        EXPECT_EQ(write(t), json);
+        EXPECT_EQ(writer::value(t).write(), json);
+        EXPECT_EQ(write(t, WriteFlag::Pretty), writer::value(t).write(WriteFlag::Pretty));
+    };
+    check(read(json).cast<DomMembers>());
+    check(read<DomMembers>(json));
+    check(writer::value(read(json)).cast<DomMembers>());
+    auto into = DomMembers();
+    read_into(json, into);
+    check(into);
+    read_into(json, into);
+    check(into);
+    auto merged = DomMembers();
+    merge_into(json, merged);
+    check(merged);
+    for (const auto& t : read<std::vector<DomMembers>>("[" + json + "," + json + "]")) check(t);
+
+    // a member owns its document
+    auto t = read<DomMembers>(json);
+    t.o["y"] = 2;
+    EXPECT_EQ(t.o.write(), R"({"x":1,"y":2})");
+    auto values = read<std::vector<value>>(R"([1,{"a":2}])");
+    (*values[1].as_object())["b"] = 3;
+    EXPECT_EQ(write(values), R"([1,{"a":2,"b":3}])");
+
+    // an object or an array requires the kind, and a variant takes the alternative of the kind
+    for (const auto* wrong : {R"({"o":[1]})", R"({"arr":{}})"})
+    {
+        EXPECT_THROW((void)read<DomMembers>(wrong), bad_cast) << wrong;
+        EXPECT_THROW((void)read(wrong).cast<DomMembers>(), bad_cast) << wrong;
+    }
+    const auto variants = read<std::vector<std::variant<int, object, array>>>(R"([1,{"a":[]},[{}]])");
+    ASSERT_EQ(variants.size(), 3u);
+    EXPECT_EQ(variants[0].index(), 0u);
+    EXPECT_EQ(variants[1].index(), 1u);
+    EXPECT_EQ(variants[2].index(), 2u);
+    EXPECT_EQ(write(variants), R"([1,{"a":[]},[{}]])");
+
+    // a view gives its members as values
+    EXPECT_EQ(read<DomViewed>(R"({"y":0,"x":{"n":[1,2,3]}})").v.write(), R"({"n":[1,2,3]})");
+    EXPECT_EQ(read(R"({"x":[5]})").cast<DomViewed>().v.write(), "[5]");
+}
+
 #endif
 
 TEST(DirectReader, Overloads)
