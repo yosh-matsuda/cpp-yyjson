@@ -288,18 +288,18 @@ See the reference for the [immutable](docs/reference.md#immutable-json-classes) 
 
 ### Data binding API vs. Glaze
 
-cpp-yyjson and [Glaze](https://github.com/stephenberry/glaze) read seven documents of [yyjson_benchmark](https://github.com/ibireme/yyjson_benchmark#json-datasets), from 0.07 MB to 3.5 MB, into the same C++ structs, which have a member for every key, and write them back. The table gives how many times faster cpp-yyjson is:
+cpp-yyjson and [Glaze](https://github.com/stephenberry/glaze) read seven documents of [yyjson_benchmark](https://github.com/ibireme/yyjson_benchmark#json-datasets), from 0.07 MB to 3.5 MB, and two messages of 1 - 3 KB cut out of them, into the same C++ structs, which have a member for every key, and write them back. The table gives how many times faster cpp-yyjson is:
 
 |  | Fresh result object / output | Reused result object / output |
 | --- | --- | --- |
-| Read: `read<T>` vs. `glz::read` | 1.10 - 1.53x | 1.03 - 1.64x (`merge_into`) |
-| Write: `write(t)` vs. `glz::write` | 1.15 - 2.51x | 1.05 - 1.51x (`write(t, out)`) |
+| Read: `read<T>` vs. `glz::read` | 1.09 - 1.53x | 1.03 - 1.60x (`merge_into`) |
+| Write: `write(t)` vs. `glz::write` | 1.15 - 2.52x | 1.05 - 1.53x (`write(t, out)`) |
 
 ![Read throughput into C++ types](docs/benchmark/images/typed_read_throughput.svg)
 
 ![Write throughput from C++ types](docs/benchmark/images/typed_write_throughput.svg)
 
-The charts also show the DOM API reading a document and casting it (`read(json).cast<T>()`) and building a document and writing it (`value(t).write()`), which the data binding API replaces. A reused Glaze object keeps the members that the next document does not have, as `merge_into` does, so the reused read compares the two. The environment and the charts of each document are in [docs/benchmark](docs/benchmark/README.md#data-binding-api).
+The charts also show the DOM API reading a document and casting it (`read(json).cast<T>()`) and building a document and writing it (`value(t).write()`), which the data binding API replaces. A reused Glaze object keeps the members that the next document does not have, as `merge_into` does, so the reused read compares the two. [reflect-cpp](https://github.com/getml/reflect-cpp), which reads and writes through a yyjson document, takes 1.7 - 5.8x the time of `read<T>` and 1.7 - 5.6x the time of `write(t)`. The environment and the charts of each document are in [docs/benchmark](docs/benchmark/README.md#data-binding-api).
 
 ### DOM API vs. other libraries
 
