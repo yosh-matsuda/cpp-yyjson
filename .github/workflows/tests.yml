@@ -52,6 +52,7 @@ jobs:
         - { name: "GCC 13", os: "ubuntu-24.04", install: "apt", c: "gcc-13", cxx: "g++-13", packages: "gcc-13 g++-13" }
         - { name: "GCC 14", os: "ubuntu-24.04", install: "apt", c: "gcc-14", cxx: "g++-14", packages: "gcc-14 g++-14" }
         - { name: "GCC 15", os: "ubuntu-26.04", install: "apt", c: "gcc-15", cxx: "g++-15", packages: "gcc-15 g++-15" }
+        - { name: "GCC 15 (C++23)", os: "ubuntu-26.04", install: "apt", c: "gcc-15", cxx: "g++-15", packages: "gcc-15 g++-15", std: "23" }
         - { name: "GCC 16", os: "ubuntu-26.04", install: "apt", c: "gcc-16", cxx: "g++-16", packages: "gcc-16 g++-16" }
         - { name: "GCC 16 (C++26 reflection)", os: "ubuntu-26.04", install: "apt", c: "gcc-16", cxx: "g++-16", packages: "gcc-16 g++-16", std: "26", flags: "-freflection -DCPPYYJSON_TEST_REQUIRE_STD_REFLECTION" }
         - { name: "LLVM 17", os: "ubuntu-24.04", install: "brew", c: "$(brew --prefix llvm@17)/bin/clang", cxx: "$(brew --prefix llvm@17)/bin/clang++", brewpkg: "llvm@17" }
@@ -60,6 +61,7 @@ jobs:
         - { name: "LLVM 20", os: "ubuntu-24.04", install: "brew", c: "$(brew --prefix llvm@20)/bin/clang", cxx: "$(brew --prefix llvm@20)/bin/clang++", brewpkg: "llvm@20" }
         - { name: "LLVM 21", os: "ubuntu-24.04", install: "brew", c: "$(brew --prefix llvm@21)/bin/clang", cxx: "$(brew --prefix llvm@21)/bin/clang++", brewpkg: "llvm@21" }
         - { name: "LLVM 22", os: "ubuntu-24.04", install: "brew", c: "$(brew --prefix llvm@22)/bin/clang", cxx: "$(brew --prefix llvm@22)/bin/clang++", brewpkg: "llvm@22" }
+        - { name: "LLVM 22 (C++23)", os: "ubuntu-24.04", install: "brew", c: "$(brew --prefix llvm@22)/bin/clang", cxx: "$(brew --prefix llvm@22)/bin/clang++", brewpkg: "llvm@22", std: "23" }
     name: Ubuntu - ${{ matrix.compiler.name }}
     runs-on: ${{ matrix.compiler.os }}
 
