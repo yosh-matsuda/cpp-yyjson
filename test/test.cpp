@@ -7695,7 +7695,9 @@ static_assert(!yyjson::readable<Rgb&>);
 static_assert(!yyjson::readable<HoldsView>);
 static_assert(!yyjson::readable<HoldsCString>);
 static_assert(!yyjson::readable<std::map<std::string_view, int>>);
+#if YYJSON_VERSION_HEX >= 0x000C00
 static_assert(!yyjson::readable<std::vector<yyjson::json_view>>);
+#endif
 static_assert(!yyjson::readable<std::vector<SameFormTwice>>);
 static_assert(!yyjson::readable<std::optional<TakesTwoParameters>>);
 static_assert(!yyjson::readable<WrittenView>);
@@ -9278,7 +9280,11 @@ TEST(Reflection, EnumKeys)
     const auto* first_node = &*t.m.find(Color::green);
     yyjson::read_into(R"({"m":{"green":5,"blue":6}})", t);
     EXPECT_EQ(t.m, (colors{{Color::green, 5}, {Color::blue, 6}}));
+#if YYJSON_VERSION_HEX >= 0x000C00
     EXPECT_EQ(&*t.m.find(Color::green), first_node);
+#else
+    static_cast<void>(first_node);
+#endif
     EXPECT_EQ(expect_merge_into(fields, R"({"m":{"green":null,"blue":3},"nested":{"blue":[5]},"opt":{"u_one":null}})"),
               R"({"m":{"red":1,"blue":3},"nested":{"blue":[5],"9":[]},"opt":{}})");
     EXPECT_EQ(expect_merge_into(colors{{Color::red, 1}}, R"({"0":null,"3":3})"), R"({"3":3})");
@@ -9485,6 +9491,13 @@ struct ConstFieldCause
 {
     const int a = 0;
 };
+// The name of a field in a cause, built as the library builds it: MSVC keeps `name<N>{"literal"}` as another
+// template argument.
+template <std::size_t N>
+consteval auto cause_name(const char (&s)[N])
+{
+    return yyjson::detail::diagnostic_name<N - 1>(std::string_view(s, N - 1));
+}
 static_assert(std::same_as<
               yyjson::detail::write_cause<BadOuter>,
               yyjson::diagnostic::field<
