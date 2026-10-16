@@ -15932,7 +15932,10 @@ namespace yyjson
             static decltype(auto) apply(const Json& json, F&& f)
             {
                 const auto doc = std::unique_ptr<yyjson_doc, decltype(&yyjson_doc_free)>(
-                    yyjson_mut_val_imut_copy(writer::detail::json_value_access::get(json), nullptr), &yyjson_doc_free);
+                    // the value is const from yyjson 0.13, and not modified before
+                    yyjson_mut_val_imut_copy(const_cast<yyjson_mut_val*>(writer::detail::json_value_access::get(json)),
+                                             nullptr),
+                    &yyjson_doc_free);
                 if (doc == nullptr) [[unlikely]]
                     throw std::bad_alloc();
                 return std::forward<F>(f)(json_view(yyjson_doc_get_root(doc.get())));
