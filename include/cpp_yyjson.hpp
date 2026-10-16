@@ -14700,12 +14700,16 @@ namespace yyjson
             }
 
             // The value at `cur_`, which a range constructs in place from what `read_element` returns, rather than
-            // moving it in.
+            // moving it in.  It is not an aggregate, which MSVC would reflect as a struct while it checks the
+            // constructors of the element.
             template <typename T>
-            struct element_reader
+            class element_reader
             {
-                direct_reader& reader;
-                operator T() const { return reader.read_element<T>(); }
+                direct_reader& reader_;
+
+            public:
+                explicit element_reader(direct_reader& reader) noexcept : reader_(reader) {}
+                operator T() const { return reader_.read_element<T>(); }
             };
 
             // Whether T is constructed from `element_reader<T>` by its conversion, rather than by a constructor that
