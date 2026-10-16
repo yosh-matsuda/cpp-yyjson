@@ -175,6 +175,8 @@ The rows are labelled by the API used:
 <img src="images/typed_read_poet.svg" width="48%"></img>
 <img src="images/typed_read_github_events.svg" width="48%"></img>
 <img src="images/typed_read_gsoc-2018.svg" width="48%"></img>
+<img src="images/typed_read_github_event.svg" width="48%"></img>
+<img src="images/typed_read_twitter_status.svg" width="48%"></img>
 
 ### Writing from C++ types
 
@@ -185,11 +187,17 @@ The rows are labelled by the API used:
 <img src="images/typed_write_poet.svg" width="48%"></img>
 <img src="images/typed_write_github_events.svg" width="48%"></img>
 <img src="images/typed_write_gsoc-2018.svg" width="48%"></img>
+<img src="images/typed_write_github_event.svg" width="48%"></img>
+<img src="images/typed_write_twitter_status.svg" width="48%"></img>
 
 ### Findings
 
-**Reading.** `read<T>` reads every document faster than `glz::read`, from 1.10x on the number-only `canada` to 1.53x on `citm_catalog`. Both libraries spend most of the time on `canada` converting decimal numbers, which leaves the least to gain. Into a reused object, `merge_into` is 1.03x to 1.64x faster than Glaze, and `read_into` is within 2% of `merge_into` except on `gsoc-2018`, where it takes 5% longer. Even the DOM API, reading a document and casting it, is faster than `glz::read` on six of the seven documents. Reusing the object saves 12% to 41% on the six documents with strings and nothing on `canada`, whose vectors of numbers cost little to allocate.
+**Reading.** `read<T>` reads every document faster than `glz::read`, from 1.09x on the number-only `canada` to 1.53x on `citm_catalog`, and the two messages 1.31x and 1.30x faster. Both libraries spend most of the time on `canada` converting decimal numbers, which leaves the least to gain. Into a reused object, `merge_into` is 1.03x to 1.60x faster than Glaze, and `read_into` is within 3% of `merge_into` except on `gsoc-2018` and `github_event`, where it takes 5% and 11% longer. Even the DOM API, reading a document and casting it, is faster than `glz::read` on six of the seven documents, but on neither message. Reusing the object saves 11% to 43% on the six documents with strings and nothing on `canada`, whose vectors of numbers cost little to allocate.
 
-**Writing.** `write(t)` writes every document faster than `glz::write`, from 1.15x on `canada` to 2.51x on `gsoc-2018`. Reusing the output string saves `write(t, out)` 15% and 18% on `github_events` and `twitterescaped` and at most 3% on the others, but saves Glaze 9% to 41%; against a reused Glaze buffer, `write(t, out)` is still 1.05x to 1.51x faster.
+**Writing.** `write(t)` writes every document faster than `glz::write`, from 1.15x on `canada` to 2.52x on `gsoc-2018`, and the two messages 1.40x and 1.22x faster. Reusing the output string saves `write(t, out)` 15% and 18% on `github_events` and `twitterescaped`, 37% and 29% on the messages, and at most 3% on the others, but saves Glaze 9% to 40%; against a reused Glaze buffer, `write(t, out)` is still 1.05x to 1.53x faster.
 
-**Against the DOM API.** The data binding API takes 71% to 90% of the time of reading a document and casting it, and 31% to 86% of the time of building a document and writing it. Reading the document alone, without the cast, is faster than `read<T>` on every document except `canada`, because `read<T>` also allocates the strings and vectors of the result; `read_into`, which reuses them, is as fast as reading the document alone or faster on `canada`, `citm_catalog`, `poet` and `gsoc-2018`.
+**Messages.** A call on a message takes about a microsecond: `read<T>` reads `github_event` in 0.73 µs and `twitter_status` in 1.40 µs, against 0.96 µs and 1.82 µs for `glz::read`, and `write(t)` writes them in 0.23 µs and 0.53 µs, against 0.32 µs and 0.64 µs for `glz::write`.
+
+**Against the DOM API.** The data binding API takes 67% to 87% of the time of reading a document and casting it, and 32% to 85% of the time of building a document and writing it. Reading the document alone, without the cast, is faster than `read<T>` on every document and message except `canada`, because `read<T>` also allocates the strings and vectors of the result; `read_into`, which reuses them, is as fast as reading the document alone or faster on `canada`, `citm_catalog`, `poet` and `gsoc-2018`. The cast depends on how the compiler lays out its code more than the other rows do: adding the `twitter_status` message to the executable, with no change to cpp-yyjson, made the DOM rows of `twitter` and `twitterescaped` 3.5% slower.
+
+**Against reflect-cpp.** reflect-cpp reads the text into a yyjson document and fills the object from it, as the DOM API of cpp-yyjson does, and takes 1.4x to 3.9x the time of `read(json).cast<T>()` and 1.7x to 5.8x the time of `read<T>`; it is slowest against cpp-yyjson on `twitter` and `twitter_status`. Writing takes it 1.4x to 2.9x the time of `value(t).write()` and 1.7x to 5.6x the time of `write(t)`. It is also slower than Glaze on every row, by 1.4x to 4.5x in reading and 1.5x to 3.6x in writing.
