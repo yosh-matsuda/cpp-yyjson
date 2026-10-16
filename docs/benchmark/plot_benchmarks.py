@@ -320,9 +320,11 @@ def clean_name(name: str) -> str:
 
 
 def benchmark_time(row: dict) -> float | None:
+    """The time of a row in milliseconds, whatever unit it was reported in."""
     value = row.get("real_time")
-    if isinstance(value, int | float):
-        return float(value)
+    unit = TIME_UNITS.get(row.get("time_unit", "ms"))
+    if isinstance(value, int | float) and unit is not None:
+        return float(value) * unit / TIME_UNITS["ms"]
     return None
 
 
@@ -369,12 +371,11 @@ def load_processed_bytes(paths: list[Path]) -> dict[str, float]:
             name = row.get("name")
             rate = row.get("bytes_per_second")
             time = benchmark_time(row)
-            unit = TIME_UNITS.get(row.get("time_unit", "ms"))
             if not isinstance(name, str) or not isinstance(rate, int | float):
                 continue
-            if time is None or unit is None:
+            if time is None:
                 continue
-            value = rate * time * unit
+            value = rate * time * TIME_UNITS["ms"]
 
             aggregate_name = row.get("aggregate_name")
             if aggregate_name == "median" or name.endswith("_median"):
@@ -726,13 +727,18 @@ def nice_title(name: str) -> str:
 
 
 def time_text(value: float) -> str:
+    """Three significant digits of a time in milliseconds, in µs below a millisecond."""
+    unit = "ms"
+    if 0 < value < 1:
+        value *= 1000
+        unit = "µs"
     if value >= 100:
-        return f"{value:.0f} ms"
+        return f"{value:.0f} {unit}"
     if value >= 10:
-        return f"{value:.1f} ms"
+        return f"{value:.1f} {unit}"
     if value >= 1:
-        return f"{value:.2f} ms"
-    return f"{value:.3f} ms"
+        return f"{value:.2f} {unit}"
+    return f"{value:.3f} {unit}"
 
 
 def write_svg(

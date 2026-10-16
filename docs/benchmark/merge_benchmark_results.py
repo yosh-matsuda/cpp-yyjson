@@ -59,15 +59,20 @@ def annotate(benchmarks: list[dict], date: str) -> None:
         row.setdefault(MEASURED_AT_KEY, date)
 
 
+TIME_UNITS = {"ns": 1e-9, "us": 1e-6, "ms": 1e-3, "s": 1.0}
+
+
 def median_values(benchmarks: list[dict]) -> dict[str, float]:
+    """Median times in seconds, so that a row whose unit changed compares to its old value."""
     values: dict[str, float] = {}
     for row in benchmarks:
         name = row.get("name")
         time = row.get("real_time")
-        if not isinstance(name, str) or not isinstance(time, int | float):
+        unit = TIME_UNITS.get(row.get("time_unit", "ms"))
+        if not isinstance(name, str) or not isinstance(time, int | float) or unit is None:
             continue
         if row.get("aggregate_name") == "median" or name.endswith("_median"):
-            values[name] = float(time)
+            values[name] = float(time) * unit
     return values
 
 
