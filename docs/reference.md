@@ -1549,6 +1549,13 @@ VISITABLE_STRUCT(Project, (context, "@context"), (type, "@type"), name);
 
 *   A field that is not listed keeps its member name as the key.
 *   Write the specialization `inline` as above, since it is a definition: without `inline`, a header that has it fails to link into more than one translation unit, as any variable defined in a header does. Its type is `std::initializer_list<yyjson::rename>`, which `auto` deduces from the braces.
+*   MSVC does not deduce `std::initializer_list` from the braces in an explicit specialization: it rejects more than one `yyjson::rename` there (error C3518) and deduces `yyjson::rename` from a single one. A single `yyjson::rename` is accepted as a list of one, so the form above works with one pair. With more than one pair, write the type in place of `auto`, which every compiler accepts:
+
+    ```cpp
+    template <>
+    inline constexpr std::initializer_list<yyjson::rename> yyjson::field_rename<Project> = {
+        yyjson::rename("context", "@context"), yyjson::rename("type", "@type")};
+    ```
 *   The keys are used everywhere the field names are: by `cast`, `object(t)` and `value(t)`, and by `yyjson::read<T>` and `yyjson::write`. A JSON key is compared after unescaping, so `"\u0040context"` is read into `context` as well, and a key is escaped as the write flags require.
 *   `yyjson::field_rename` works both for a struct that the compile-time reflection converts and for one that the `VISITABLE_STRUCT` macro registers. For the latter, define the specialization before the macro, and do not combine it with pairs in the macro.
 *   A pair that names a member which does not exist or is not registered, a member named twice, and two fields that end up with the same key all fail to compile with a `static_assert`.

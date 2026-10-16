@@ -7736,6 +7736,13 @@ TEST(Reader, BorrowedTranslatorSources)
 #endif
 }
 
+// MSVC rejects `auto` with more than one `rename` in an explicit specialization of `field_rename` (C3518).
+#if defined(_MSC_VER) && !defined(__clang__)
+#define RENAME_LIST std::initializer_list<yyjson::rename>
+#else
+#define RENAME_LIST auto
+#endif
+
 struct RenamedRecord
 {
     std::string context;
@@ -7745,7 +7752,7 @@ struct RenamedRecord
     bool operator==(const RenamedRecord&) const = default;
 };
 template <>
-inline constexpr auto yyjson::field_rename<RenamedRecord> = {
+inline constexpr RENAME_LIST yyjson::field_rename<RenamedRecord> = {
     yyjson::rename("context", "@context"),
     yyjson::rename("type", "a/b\"c, longer than 16")};
 
@@ -7768,7 +7775,7 @@ struct VisitableTraitRenamed
     bool operator==(const VisitableTraitRenamed&) const = default;
 };
 template <>
-inline constexpr auto yyjson::field_rename<VisitableTraitRenamed> = {
+inline constexpr RENAME_LIST yyjson::field_rename<VisitableTraitRenamed> = {
     yyjson::rename("type", "a/b\"c, longer than 16"),
     yyjson::rename("context", "@context")};
 VISITABLE_STRUCT(VisitableTraitRenamed, context, type, id, list);
@@ -7780,7 +7787,7 @@ struct SwappedKeys
     bool operator==(const SwappedKeys&) const = default;
 };
 template <>
-inline constexpr auto yyjson::field_rename<SwappedKeys> = {yyjson::rename("a", "b"), yyjson::rename("b", "a")};
+inline constexpr RENAME_LIST yyjson::field_rename<SwappedKeys> = {yyjson::rename("a", "b"), yyjson::rename("b", "a")};
 
 // `field_rename` listing the members in another order than they are declared
 struct ReorderedRenamed
@@ -7790,7 +7797,18 @@ struct ReorderedRenamed
     bool operator==(const ReorderedRenamed&) const = default;
 };
 template <>
-inline constexpr auto yyjson::field_rename<ReorderedRenamed> = {yyjson::rename("y", "@y"), yyjson::rename("x", "@x")};
+inline constexpr RENAME_LIST yyjson::field_rename<ReorderedRenamed> = {yyjson::rename("y", "@y"),
+                                                                      yyjson::rename("x", "@x")};
+
+// A single `rename` rather than a list, which MSVC deduces from `auto field_rename<T> = {yyjson::rename(...)}`
+struct SingleRenamed
+{
+    int x = 0;
+    int y = 0;
+    bool operator==(const SingleRenamed&) const = default;
+};
+template <>
+inline constexpr yyjson::rename yyjson::field_rename<SingleRenamed> = yyjson::rename("x", "@x");
 
 struct VisitableSwappedKeys
 {
@@ -7895,6 +7913,10 @@ TEST(Writer, FieldRename)
     EXPECT_EQ(std::string(yyjson::write(ReorderedRenamed{1, 2})), R"({"@x":1,"@y":2})");
     EXPECT_EQ(yyjson::read<ReorderedRenamed>(R"({"@y":2,"@x":1,"x":3})"), (ReorderedRenamed{1, 2}));
     EXPECT_EQ(yyjson::read(R"({"@y":2,"@x":1,"x":3})").cast<ReorderedRenamed>(), (ReorderedRenamed{1, 2}));
+    EXPECT_EQ(std::string(yyjson::write(SingleRenamed{1, 2})), R"({"@x":1,"y":2})");
+    EXPECT_EQ(std::string(yyjson::value(SingleRenamed{1, 2}).write()), R"({"@x":1,"y":2})");
+    EXPECT_EQ(yyjson::read<SingleRenamed>(R"({"y":2,"@x":1,"x":3})"), (SingleRenamed{1, 2}));
+    EXPECT_EQ(yyjson::read(R"({"y":2,"@x":1,"x":3})").cast<SingleRenamed>(), (SingleRenamed{1, 2}));
     EXPECT_EQ(std::string(yyjson::value(VisitableSwappedKeys{1, 2}).write()), R"({"b":1,"a":2})");
 
     const auto holds = HoldsRenamed{{"c", "t", 1, {1, 2}}, {{"c", "t", 1, {}}}, {{"k", {"c", "t", 1, {3}}}}};
@@ -8031,8 +8053,10 @@ TEST(Writer, Emitter)
     // a document appends to the outer value later, while the text would be written into the inner one
     EXPECT_EQ(std::string(yyjson::value(MisusedObjectEmitter{0}).write()), R"({"o":{},"a":1})");
     EXPECT_EQ(std::string(yyjson::value(MisusedObjectEmitter{1}).write()), R"({"a":[{},1]})");
+#if YYJSON_VERSION_HEX >= 0x000C00
     EXPECT_THROW((void)yyjson::write(MisusedObjectEmitter{0}), std::logic_error);
     EXPECT_THROW((void)yyjson::write(std::vector{MisusedObjectEmitter{1}}), std::logic_error);
+#endif
     EXPECT_EQ(std::string(yyjson::write(AnyRefCaster{1})), R"({"v":1})");
     EXPECT_TRUE(yyjson::caster<AnyRefCaster>::given_object_ref);
     yyjson::caster<AnyRefCaster>::given_object_ref = false;

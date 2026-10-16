@@ -477,7 +477,8 @@ namespace yyjson
 
     // Gives fields of a reflected or `VISITABLE_STRUCT` type JSON keys other than their member names.  A
     // specialization is `template <> inline constexpr auto yyjson::field_rename<T> = {yyjson::rename("member",
-    // "key"), ...};`.
+    // "key"), ...};`.  MSVC rejects `auto` with more than one `rename` there (C3518), so the specialization for MSVC
+    // names the type: `inline constexpr std::initializer_list<yyjson::rename>`.
     template <typename T>
     inline constexpr std::initializer_list<rename> field_rename = {};
 
@@ -940,15 +941,24 @@ namespace yyjson
             field_reflection::field_namable<T> &&
             ((field_reflection::field_count<T> > 0) || (std::is_empty_v<T> && !library_class<T>()));
 
+        // MSVC deduces `rename` rather than a list from `auto yyjson::field_rename<T> = {yyjson::rename(...)}` in an
+        // explicit specialization, so a single `rename` counts as a list of one.
+        template <typename T>
+        concept single_field_rename = std::same_as<std::remove_cvref_t<decltype(field_rename<T>)>, rename>;
+
         // A specialization of `field_rename` may have another type than the list of `yyjson::rename`, which
         // `field_keys` rejects.
         template <typename T>
-        concept field_rename_range = std::ranges::input_range<decltype((field_rename<T>))> &&
-                                     std::same_as<std::ranges::range_value_t<decltype((field_rename<T>))>, rename>;
+        concept field_rename_range =
+            single_field_rename<T> ||
+            (std::ranges::input_range<decltype((field_rename<T>))> &&
+             std::same_as<std::ranges::range_value_t<decltype((field_rename<T>))>, rename>);
 
         template <typename T>
         inline constexpr bool has_field_rename = [] {
-            if constexpr (field_rename_range<T>)
+            if constexpr (single_field_rename<T>)
+                return true;
+            else if constexpr (field_rename_range<T>)
                 return std::ranges::begin(field_rename<T>) != std::ranges::end(field_rename<T>);
             else
                 return true;
@@ -1092,7 +1102,8 @@ namespace yyjson
         {
             static_assert(!has_field_rename<T> || field_rename_range<T>,
                           "yyjson::field_rename<T> must be a list of yyjson::rename: template <> inline constexpr "
-                          "auto yyjson::field_rename<T> = {yyjson::rename(\"member\", \"key\"), ...};");
+                          "auto yyjson::field_rename<T> = {yyjson::rename(\"member\", \"key\"), ...}; (MSVC: "
+                          "std::initializer_list<yyjson::rename> in place of auto)");
             // A function rather than a lambda: clang before 19 and MSVC take a call to a consteval function in a
             // lambda of a class template as a call outside a constant expression.
             static consteval auto make_table()
@@ -1104,7 +1115,10 @@ namespace yyjson
                 {
                     if (Source::keys != Source::members)
                         return field_key_table<n>{Source::keys, field_key_error::renamed_twice};
-                    builder.rename_members(field_rename<T>);
+                    if constexpr (single_field_rename<T>)
+                        builder.rename_members(std::array{field_rename<T>});
+                    else
+                        builder.rename_members(field_rename<T>);
                 }
 #if FIELD_RFL_ANNOTATIONS
                 if constexpr (requires { Source::skipped; }) rename_annotated_fields<T>(builder);
