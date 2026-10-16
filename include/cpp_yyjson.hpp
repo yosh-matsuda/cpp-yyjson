@@ -6877,19 +6877,18 @@ namespace yyjson
 
         template <typename P, typename Visited, typename T>
         struct conversion_cause_on_path;
+        // An alias template rather than a local alias, which MSVC leaves unsubstituted in `Label::wrap`.
+        template <typename P, typename Visited, typename C>
+        using child_conversion_cause = typename conversion_cause_on_path<P, Visited, C>::type;
         template <typename P, typename Visited, typename Label, typename C>
         auto child_cause(cause_child<Label, C>)
         {
             if constexpr (P::template converts<C>())
                 return cause_fold<void>{};
+            else if constexpr (std::same_as<child_conversion_cause<P, Visited, C>, cycle_cause>)
+                return cause_fold<cycle_cause>{};
             else
-            {
-                using found = typename conversion_cause_on_path<P, Visited, C>::type;
-                if constexpr (std::same_as<found, cycle_cause>)
-                    return cause_fold<cycle_cause>{};
-                else
-                    return cause_fold<typename Label::template wrap<found>>{};
-            }
+                return cause_fold<typename Label::template wrap<child_conversion_cause<P, Visited, C>>>{};
         }
         template <typename P, typename Visited, typename... Children>
         auto children_cause(type_list<Children...>)

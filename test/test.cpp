@@ -9501,16 +9501,16 @@ consteval auto cause_name(const char (&s)[N])
 static_assert(std::same_as<
               yyjson::detail::write_cause<BadOuter>,
               yyjson::diagnostic::field<
-                  BadOuter, yyjson::diagnostic::name<5>{"items"},
+                  BadOuter, cause_name("items"),
                   yyjson::diagnostic::element<
                       std::vector<BadInner>,
-                      yyjson::diagnostic::field<BadInner, yyjson::diagnostic::name<1>{"p"},
+                      yyjson::diagnostic::field<BadInner, cause_name("p"),
                                                 yyjson::diagnostic::not_writable<std::unique_ptr<int[]>>>>>>);
 static_assert(std::same_as<yyjson::detail::read_cause<ConstFieldCause>,
-                           yyjson::diagnostic::field<ConstFieldCause, yyjson::diagnostic::name<1>{"a"},
+                           yyjson::diagnostic::field<ConstFieldCause, cause_name("a"),
                                                      yyjson::diagnostic::not_readable<const int>>>);
 static_assert(std::same_as<yyjson::detail::write_cause<VisitableDuration>,
-                           yyjson::diagnostic::field<VisitableDuration, yyjson::diagnostic::name<1>{"d"},
+                           yyjson::diagnostic::field<VisitableDuration, cause_name("d"),
                                                      yyjson::diagnostic::not_writable<std::chrono::seconds>>>);
 static_assert(
     std::same_as<yyjson::detail::write_cause<std::map<std::string, std::optional<std::chrono::seconds>>>,
@@ -9539,11 +9539,11 @@ struct VisitableRenamedCause
 };
 VISITABLE_STRUCT(VisitableRenamedCause, (duration_s, "duration"));
 static_assert(std::same_as<yyjson::detail::write_cause<RenamedCause>,
-                           yyjson::diagnostic::field<RenamedCause, yyjson::diagnostic::name<10>{"duration_s"},
+                           yyjson::diagnostic::field<RenamedCause, cause_name("duration_s"),
                                                      yyjson::diagnostic::not_writable<std::chrono::seconds>>>);
 static_assert(
     std::same_as<yyjson::detail::write_cause<VisitableRenamedCause>,
-                 yyjson::diagnostic::field<VisitableRenamedCause, yyjson::diagnostic::name<10>{"duration_s"},
+                 yyjson::diagnostic::field<VisitableRenamedCause, cause_name("duration_s"),
                                            yyjson::diagnostic::not_writable<std::chrono::seconds>>>);
 namespace
 {
