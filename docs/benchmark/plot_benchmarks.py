@@ -215,6 +215,7 @@ TYPED_COLORS = {
     "cpp_yyjson": "#2563eb",
     "cpp_yyjson_dom": "#93c5fd",
     "glaze": "#ca8a04",
+    "reflectcpp": "#16a34a",
 }
 
 TYPED_POLICIES = {
@@ -227,8 +228,9 @@ TYPED_POLICIES = {
 
 # benchmark name -> (direction, policy, color key, label), or None for a row that is
 # measured but not drawn.  The charts compare the data binding API of cpp-yyjson and its
-# DOM API, which reads a document and casts it or builds one and writes it, with Glaze;
-# the DOM read alone and the DOM read with a reused allocator have no Glaze counterpart.
+# DOM API, which reads a document and casts it or builds one and writes it, with Glaze
+# and reflect-cpp; the DOM read alone and the DOM read with a reused allocator have no
+# counterpart in the other libraries.
 # The "object" rows read into the object of the previous iteration and reuse the
 # capacity of its strings and vectors.
 TYPED_VARIANTS = {
@@ -251,6 +253,8 @@ TYPED_VARIANTS = {
     "typed_write_cpp_yyjson_direct_single": ("write", "reused", "cpp_yyjson", "cpp-yyjson write(t, out)"),
     "typed_write_glaze": ("write", "fresh", "glaze", "Glaze glz::write"),
     "typed_write_glaze_single": ("write", "reused", "glaze", "Glaze glz::write"),
+    "typed_read_reflectcpp": ("read", "fresh", "reflectcpp", "reflect-cpp rfl::json::read"),
+    "typed_write_reflectcpp": ("write", "fresh", "reflectcpp", "reflect-cpp rfl::json::write"),
 }
 
 # The comparisons of the README tables: output name -> (title, subtitle,
@@ -292,6 +296,7 @@ THROUGHPUT_CHARTS = {
             ("typed_read_cpp_yyjson_direct", "cpp_yyjson", "cpp-yyjson read<T>"),
             ("typed_read_cpp_yyjson", "cpp_yyjson_dom", "cpp-yyjson DOM: read + cast<T>"),
             ("typed_read_glaze", "glaze", "Glaze glz::read"),
+            ("typed_read_reflectcpp", "reflectcpp", "reflect-cpp"),
         ],
         TYPED_COLORS,
         TYPED_DATASET_NAMES,
@@ -303,6 +308,7 @@ THROUGHPUT_CHARTS = {
             ("typed_write_cpp_yyjson_direct", "cpp_yyjson", "cpp-yyjson write(t)"),
             ("typed_write_cpp_yyjson", "cpp_yyjson_dom", "cpp-yyjson DOM: value(t).write()"),
             ("typed_write_glaze", "glaze", "Glaze glz::write"),
+            ("typed_write_reflectcpp", "reflectcpp", "reflect-cpp"),
         ],
         TYPED_COLORS,
         TYPED_DATASET_NAMES,

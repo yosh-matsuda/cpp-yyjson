@@ -46,10 +46,11 @@ C_WRITE=yyjson_bench_write
 GLAZE_READ=glaze_bench_read
 GLAZE_WRITE=glaze_bench_write
 GLAZE_TYPED=glaze_bench_typed
+REFLECTCPP_TYPED=reflectcpp_bench_typed
 ALL_TARGETS=("${CPP_READ}" "${CPP_WRITE}" "${CPP_TYPED}" "${C_READ}" "${C_WRITE}"
-    "${GLAZE_READ}" "${GLAZE_WRITE}" "${GLAZE_TYPED}")
+    "${GLAZE_READ}" "${GLAZE_WRITE}" "${GLAZE_TYPED}" "${REFLECTCPP_TYPED}")
 
-COMPETITOR_FILTER='^(typed_)?(read|write)_(rapidjson|simdjson|nlohmann|c_yyjson|glaze)'
+COMPETITOR_FILTER='^(typed_)?(read|write)_(rapidjson|simdjson|nlohmann|c_yyjson|glaze|reflectcpp)'
 
 info() { printf '\033[1m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[33mwarning:\033[0m %s\n' "$*" >&2; }
@@ -112,19 +113,20 @@ usage() {
 Usage: docs/benchmark/run_benchmarks.sh [options]
 
 Scope (which benchmarks are measured):
-  --scope cpp            cpp-yyjson rows only, read, write and typed (default, ~17 min)
-  --scope cpp-read       cpp-yyjson read rows only, typed reads included (~10 min)
-  --scope cpp-write      cpp-yyjson write rows only, typed writes included (~7 min)
-  --scope competitors    rapidjson/simdjson/nlohmann-json/yyjson/Glaze rows only (~47 min)
+  --scope cpp            cpp-yyjson rows only, read, write and typed (default, ~25 min)
+  --scope cpp-read       cpp-yyjson read rows only, typed reads included (~14 min)
+  --scope cpp-write      cpp-yyjson write rows only, typed writes included (~11 min)
+  --scope competitors    rapidjson/simdjson/nlohmann-json/yyjson/Glaze/reflect-cpp rows
+                         only (~50 min)
   --scope read           every generic read benchmark, cpp-yyjson, yyjson and Glaze
-                         executables (~43 min)
+                         executables (~41 min)
   --scope write          every generic write benchmark, cpp-yyjson, yyjson and Glaze
-                         executables (~18 min)
-  --scope typed          reading into and writing from C++ types, cpp-yyjson and Glaze
-                         (~3 min, estimate)
+                         executables (~17 min)
+  --scope typed          reading into and writing from C++ types, cpp-yyjson, Glaze and
+                         reflect-cpp (~16 min, estimate)
   --scope glaze          every Glaze row: generic read, generic write and typed
-                         (~7 min, estimate)
-  --scope all            everything (~60 min)
+                         (~9 min, estimate)
+  --scope all            everything (~76 min)
   --filter REGEX         Google Benchmark filter, overrides the scope default; an
                          executable none of whose benchmarks match it is skipped
 
@@ -211,12 +213,12 @@ case ${SCOPE} in
         ;;
     competitors)
         TARGETS=("${CPP_READ}" "${CPP_WRITE}" "${C_READ}" "${C_WRITE}"
-            "${GLAZE_READ}" "${GLAZE_WRITE}" "${GLAZE_TYPED}")
+            "${GLAZE_READ}" "${GLAZE_WRITE}" "${GLAZE_TYPED}" "${REFLECTCPP_TYPED}")
         [[ ${FILTER_SET} -eq 1 ]] || FILTER=${COMPETITOR_FILTER}
         ;;
     read) TARGETS=("${CPP_READ}" "${C_READ}" "${GLAZE_READ}") ;;
     write) TARGETS=("${CPP_WRITE}" "${C_WRITE}" "${GLAZE_WRITE}") ;;
-    typed) TARGETS=("${CPP_TYPED}" "${GLAZE_TYPED}") ;;
+    typed) TARGETS=("${CPP_TYPED}" "${GLAZE_TYPED}" "${REFLECTCPP_TYPED}") ;;
     glaze) TARGETS=("${GLAZE_READ}" "${GLAZE_WRITE}" "${GLAZE_TYPED}") ;;
     all) TARGETS=("${ALL_TARGETS[@]}") ;;
     *) fail "unknown scope: ${SCOPE}" ;;
@@ -813,9 +815,11 @@ if [[ ${DO_PLOT} -eq 1 ]]; then
         typed_json=()
         [[ ! -f ${RESULT_DIR}/${GLAZE_READ}.json ]] || read_json+=("${RESULT_DIR}/${GLAZE_READ}.json")
         [[ ! -f ${RESULT_DIR}/${GLAZE_WRITE}.json ]] || write_json+=("${RESULT_DIR}/${GLAZE_WRITE}.json")
-        # A typed chart compares the two libraries, so it waits for both of them.
-        if [[ -f ${RESULT_DIR}/${CPP_TYPED}.json && -f ${RESULT_DIR}/${GLAZE_TYPED}.json ]]; then
-            typed_json=(--typed-json "${RESULT_DIR}/${CPP_TYPED}.json" "${RESULT_DIR}/${GLAZE_TYPED}.json")
+        # A typed chart compares the libraries, so it waits for all of them.
+        if [[ -f ${RESULT_DIR}/${CPP_TYPED}.json && -f ${RESULT_DIR}/${GLAZE_TYPED}.json &&
+            -f ${RESULT_DIR}/${REFLECTCPP_TYPED}.json ]]; then
+            typed_json=(--typed-json "${RESULT_DIR}/${CPP_TYPED}.json" "${RESULT_DIR}/${GLAZE_TYPED}.json"
+                "${RESULT_DIR}/${REFLECTCPP_TYPED}.json")
         fi
         info "Regenerating ${IMAGE_DIR}"
         python3 "${SCRIPT_DIR}/plot_benchmarks.py" \

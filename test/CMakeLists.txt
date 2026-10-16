@@ -153,8 +153,19 @@ if(CPPYYJSON_BUILD_BENCH)
   target_compile_features(yyjson_bench_write PRIVATE cxx_std_20)
   target_compile_definitions(yyjson_bench_write PRIVATE CPPYYJSON_RAW_YYJSON_BENCHMARKS)
 
+  # reflect-cpp benchmarks.  reflect-cpp reads and writes JSON through the yyjson
+  # of vcpkg, which defines the same symbols as the bundled backend, so its
+  # executable compiles cpp-yyjson, the reference its results are checked
+  # against, on that yyjson as well, as CPPYYJSON_USE_BUNDLED_YYJSON=OFF does.
+  find_package(reflectcpp CONFIG REQUIRED)
+  add_executable(reflectcpp_bench_typed bench_typed.cpp)
+  target_link_libraries(reflectcpp_bench_typed PRIVATE benchmark::benchmark
+                                                       reflectcpp::reflectcpp)
+  target_compile_features(reflectcpp_bench_typed PRIVATE cxx_std_20)
+  target_compile_definitions(reflectcpp_bench_typed PRIVATE CPPYYJSON_REFLECTCPP_BENCHMARKS)
+
   get_target_property(YYJSON_INCLUDE_DIRECTORIES yyjson::yyjson INTERFACE_INCLUDE_DIRECTORIES)
-  foreach(target yyjson_bench_read yyjson_bench_write)
+  foreach(target yyjson_bench_read yyjson_bench_write reflectcpp_bench_typed)
     target_include_directories(
       ${target}
       SYSTEM BEFORE PRIVATE "$<BUILD_INTERFACE:${YYJSON_INCLUDE_DIRECTORIES}>"
@@ -169,7 +180,8 @@ if(CPPYYJSON_BUILD_BENCH)
   # which is the comparison the benchmarks are about.
   foreach(target "${PROJECT_NAME}_bench_read" "${PROJECT_NAME}_bench_write"
                  "${PROJECT_NAME}_bench_typed" yyjson_bench_read yyjson_bench_write
-                 glaze_bench_read glaze_bench_write glaze_bench_typed)
+                 glaze_bench_read glaze_bench_write glaze_bench_typed
+                 reflectcpp_bench_typed)
     cpp_yyjson_enable_lto(${target})
     if(NOT MSVC AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64)$")
       target_compile_options(${target} PRIVATE -march=x86-64-v3)

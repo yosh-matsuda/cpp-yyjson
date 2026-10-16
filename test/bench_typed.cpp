@@ -1,18 +1,21 @@
 // NOLINTBEGIN
 // Reading JSON into C++ types and writing it from them, on the documents modelled in
-// bench_typed.hpp.  The same source builds two executables: cpp_yyjson_bench_typed with
-// the cpp-yyjson rows, compiled as C++20 like the rest of the project, and
+// bench_typed.hpp.  The same source builds three executables: cpp_yyjson_bench_typed
+// with the cpp-yyjson rows, compiled as C++20 like the rest of the project,
 // glaze_bench_typed with the Glaze rows (CPPYYJSON_GLAZE_BENCHMARKS), compiled as the
-// C++23 that Glaze requires.
+// C++23 that Glaze requires, and reflectcpp_bench_typed with the reflect-cpp rows
+// (CPPYYJSON_REFLECTCPP_BENCHMARKS).
 //
 // `yyjson::read(json).cast<T>()` reads a document into the DOM of cpp-yyjson and casts
 // the DOM into the type; `typed_read_cpp_yyjson_dom` times the first of the two steps
 // alone, so that the cost of the cast is the difference to `typed_read_cpp_yyjson`.
 // `yyjson::read<T>(json)`, the `direct` row, reads the text into the type without the
-// DOM, as Glaze does.
+// DOM, as Glaze does.  reflect-cpp reads the text into the DOM of yyjson and fills the
+// type from it, and writes the other way round, so it takes the path of the DOM rows.
 //
 // The timed region of a read ends when the object is filled: destroying it is left out
-// for both libraries, while the DOM that cpp-yyjson reads through is freed inside it.
+// for every library, while the DOM that cpp-yyjson and reflect-cpp read through is freed
+// inside it.
 //
 // Besides the whole documents, two messages of 1.1 KB and 2.5 KB, the first event of
 // github_events and the first status of twitter, show what a call costs when the JSON is
@@ -25,6 +28,8 @@
 #include <cpp_yyjson.hpp>
 #if defined(CPPYYJSON_GLAZE_BENCHMARKS)
 #include <glaze/glaze.hpp>
+#elif defined(CPPYYJSON_REFLECTCPP_BENCHMARKS)
+#include <rfl/json.hpp>
 #endif
 #include <array>
 #include <chrono>
@@ -126,10 +131,10 @@ namespace
             return yyjson::object(t);
     }
 
-    // cpp-yyjson is the reference both executables check against: the cpp-yyjson rows
-    // check that what they write reads back into the same object, and the Glaze rows
-    // check that Glaze reads the same object as cpp-yyjson and that what Glaze writes
-    // reads back into it.
+    // cpp-yyjson is the reference every executable checks against: the cpp-yyjson rows
+    // check that what they write reads back into the same object, and the other rows
+    // check that their library reads the same object as cpp-yyjson and that what it
+    // writes reads back into it.
     template <typename T>
     T cpp_yyjson_read_typed(std::string_view json)
     {
@@ -255,7 +260,7 @@ namespace
                       [&] { return validate_read_once<D>(state, validated, result); });
     }
 
-#if !defined(CPPYYJSON_GLAZE_BENCHMARKS)
+#if !defined(CPPYYJSON_GLAZE_BENCHMARKS) && !defined(CPPYYJSON_REFLECTCPP_BENCHMARKS)
     template <typename D>
     struct typed_read_cpp_yyjson
     {
@@ -406,7 +411,7 @@ namespace
             finish<D>(state, written);
         }
     };
-#else
+#elif defined(CPPYYJSON_GLAZE_BENCHMARKS)
     // Glaze stops at a key it has no member for by default; cpp-yyjson skips it.
     constexpr auto glaze_read_opts = glz::opts{.error_on_unknown_keys = false};
     // Glaze writes control characters into strings as they are by default, which is not
@@ -530,6 +535,64 @@ namespace
             finish<D>(state, written);
         }
     };
+#else
+    // reflect-cpp returns the object in an `rfl::Result`, which a caller can use in place;
+    // the rows keep it, without moving the object out.  It has no read into an existing
+    // object, and writes either into a new string or into a stream, so it has no rows of
+    // reused objects or buffers.
+    template <typename D>
+    auto reflectcpp_read(std::string_view json)
+    {
+        return rfl::json::read<typename D::type, bench_typed::reflectcpp_rename>(json);
+    }
+
+    template <typename D>
+    struct typed_read_reflectcpp
+    {
+        static void run(benchmark::State& state)
+        {
+            const auto& json = typed_json<D>();
+            auto results = result_slots<decltype(reflectcpp_read<D>(json))>(D::batch);
+            auto validated = false;
+            time_reads<D>(
+                state, [&] { results.emplace([&] { return reflectcpp_read<D>(json); }); },
+                [&] {
+                    const auto& result = results.front();
+                    auto valid = static_cast<bool>(result);
+                    if (!valid)
+                        state.SkipWithError(result.error().what());
+                    else
+                        valid = validate_read_once<D>(state, validated, result.value());
+                    results.clear();
+                    return valid;
+                });
+        }
+    };
+
+    template <typename D>
+    const typename D::type& reflectcpp_source_object()
+    {
+        static const auto object = reflectcpp_read<D>(typed_json<D>()).value();
+        return object;
+    }
+
+    template <typename D>
+    struct typed_write_reflectcpp
+    {
+        static void run(benchmark::State& state)
+        {
+            const auto& source = reflectcpp_source_object<D>();
+            auto validated = false;
+            auto written = std::size_t{0};
+            for (auto _ : state)
+            {
+                auto result = rfl::json::write<bench_typed::reflectcpp_rename>(source);
+                written = result.size();
+                if (!validate_written_once<D>(state, validated, result)) break;
+            }
+            finish<D>(state, written);
+        }
+    };
 #endif
 }  // namespace
 
@@ -545,7 +608,7 @@ namespace
         ->Unit(benchmark::kMicrosecond) \
         ->DenseRange(0, typed_dataset_count - 1)
 
-#if !defined(CPPYYJSON_GLAZE_BENCHMARKS)
+#if !defined(CPPYYJSON_GLAZE_BENCHMARKS) && !defined(CPPYYJSON_REFLECTCPP_BENCHMARKS)
 TYPED_READ(typed_read_cpp_yyjson);
 TYPED_READ(typed_read_cpp_yyjson_single);
 TYPED_READ(typed_read_cpp_yyjson_dom);
@@ -556,11 +619,14 @@ TYPED_WRITE(typed_write_cpp_yyjson);
 TYPED_WRITE(typed_write_cpp_yyjson_single);
 TYPED_WRITE(typed_write_cpp_yyjson_direct);
 TYPED_WRITE(typed_write_cpp_yyjson_direct_single);
-#else
+#elif defined(CPPYYJSON_GLAZE_BENCHMARKS)
 TYPED_READ(typed_read_glaze);
 TYPED_READ(typed_read_glaze_single);
 TYPED_WRITE(typed_write_glaze);
 TYPED_WRITE(typed_write_glaze_single);
+#else
+TYPED_READ(typed_read_reflectcpp);
+TYPED_WRITE(typed_write_reflectcpp);
 #endif
 
 BENCHMARK_MAIN();
