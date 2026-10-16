@@ -1944,13 +1944,17 @@ namespace yyjson
             [[maybe_unused]] const auto guard = recursion_guard<T>();
             assign_struct_fields_by_key<T>(reflected_key_matcher<T>, obj, [&](std::size_t index, const auto& value,
                                                                               const auto&... object) {
+                // expanded here rather than in the fold, where MSVC finds no pack to expand
+                [[maybe_unused]] const auto assign_adjacent = [&](auto& field) {
+                    assign_adjacent_field(field, value, object...);
+                };
                 [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
                     (void)((index == Ks &&
                             ([&] {
                                 constexpr auto i = reflected_field_index<T, Ks>;
                                 auto& field = field_reflection::get_field<i>(t);
                                 if constexpr (adjacently_tagged<decltype(field)>)
-                                    assign_adjacent_field(field, value, object...);
+                                    assign_adjacent(field);
                                 else
                                     assign_reflected_field(field, value, reflected_field_replaceable<i>(t));
                             }(),
@@ -1969,6 +1973,9 @@ namespace yyjson
             [[maybe_unused]] const auto guard = recursion_guard<T>();
             assign_struct_fields_by_key<T>(matcher, obj, [&](std::size_t index, const auto& value,
                                                             const auto&... object) {
+                [[maybe_unused]] const auto assign_adjacent = [&](auto& field) {
+                    assign_adjacent_field(field, value, object...);
+                };
                 [&]<std::size_t... Is>(std::index_sequence<Is...>) {
                     const auto replaceable = [&]<std::size_t I>(std::integral_constant<std::size_t, I>) {
                         return has_own_bytes<I>(t.*std::get<Is>(members)...);
@@ -1977,7 +1984,7 @@ namespace yyjson
                             ([&] {
                                 auto& field = t.*std::get<Is>(members);
                                 if constexpr (adjacently_tagged<decltype(field)>)
-                                    assign_adjacent_field(field, value, object...);
+                                    assign_adjacent(field);
                                 else
                                     assign_reflected_field(field, value,
                                                            replaceable(std::integral_constant<std::size_t, Is>{}));
