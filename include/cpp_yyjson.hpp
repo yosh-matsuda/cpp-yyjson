@@ -2226,6 +2226,14 @@ namespace yyjson
                     {convert(std::forward<T>(t))} -> create_object_callable;
                     {convert(std::forward<T>(t), copy_string)} -> create_object_callable;
                 };  // clang-format on
+            // A type that a translator converts to a JSON value of the DOM API, which is written as it is.
+            template <typename J>
+            concept json_value_of_dom = base_of_value<J> || reader::detail::base_of_value_ref<J>;
+            template <typename T>
+            concept convertible_to_json_value = requires(T&& t) {  // clang-format off
+                    {convert(std::forward<T>(t))} -> json_value_of_dom;
+                    {convert(std::forward<T>(t), copy_string)} -> json_value_of_dom;
+                };  // clang-format on
 
             // The elements of ranges and the values of maps that can be written.  An element of a recursive type
             // is not checked, which would depend on itself, as the fields of a recursive struct are not.
@@ -2440,6 +2448,13 @@ namespace yyjson
                 {
                     // T -(convert)-> value
                     return create_primitive(convert(std::forward<T>(t), ts...), ts...);
+                }
+                template <typename T, copy_string_args... Ts>
+                requires (!to_json_inp_defined<T>) && convertible_to_json_value<T>
+                yyjson_mut_val* create_primitive(T&& t, Ts... ts)
+                {
+                    // T -(convert)-> a JSON value, copied
+                    return copy_value(convert(std::forward<T>(t), ts...));
                 }
                 yyjson_mut_val* create_primitive() noexcept
                 {
@@ -3447,8 +3462,10 @@ namespace yyjson
                 {
                 }
 
+                // A type that converts to any other type, as the fields of the compile-time reflection do while
+                // it counts them, is not a JSON value.
                 template <reader::detail::base_of_value_ref T>
-                requires is_value_type
+                requires is_value_type && std::derived_from<std::remove_cvref_t<T>, reader::abstract_value_ref>
                 abstract_value(T&& t) noexcept  // NOLINT
                     : val_(doc_.copy_value(std::forward<T>(t)))
                 {
@@ -5991,6 +6008,14 @@ namespace yyjson
     using object = writer::object;
     using key_value_pair = writer::key_value_pair;
 
+    namespace detail
+    {
+        // A JSON value of the DOM API that owns its document, which a value read from JSON holds as it is.
+        template <typename T>
+        concept dom_value =
+            std::same_as<T, writer::value> || std::same_as<T, writer::object> || std::same_as<T, writer::array>;
+    }  // namespace detail
+
     template <typename Json, typename T>
     concept castable = requires(Json json) {
         { yyjson::cast<T>(json) };
@@ -6027,9 +6052,11 @@ namespace yyjson
             using type = decltype(from_json_in_place_form<T>(&caster<T>::from_json));
         };
 
-        // A `from_json` that takes a JSON value has the form of the casters that existed before translators.
+        // A `from_json` that takes a JSON value has the form of the casters that existed before translators,
+        // unless the value owns its document as the value of a field can.
         template <typename U>
         concept translator_param =
+            dom_value<std::remove_cvref_t<U>> ||
             !(json_value<std::remove_cvref_t<U>> || json_object<std::remove_cvref_t<U>> ||
               json_array<std::remove_cvref_t<U>>);
         template <typename T>
@@ -6044,14 +6071,22 @@ namespace yyjson
         template <typename T>
         struct from_json_translator
         {
+            static consteval bool returns_dom_value()
+            {
+                if constexpr (from_json_return_translator<T>)
+                    return dom_value<std::remove_cvref_t<typename from_json_return_param<T>::type>>;
+                else
+                    return false;
+            }
             static constexpr bool returns = from_json_return_translator<T>;
             // `void from_json(T&, U)`, which a field of a struct is given in place
             static constexpr bool in_place = from_json_in_place_translator<T>;
-            // `cast<T>` takes the caster of a `from_json(const const_value_ref&)` that also exists
+            // `cast<T>` takes the caster of a `from_json(const const_value_ref&)` that also exists, other than one
+            // that takes a value owning its document, which a `const_value_ref` converts to
             static constexpr bool castable =
-                !requires(const reader::const_value_ref& v) {
+                (returns_dom_value() || !requires(const reader::const_value_ref& v) {
                     { caster<T>::from_json(v) } -> std::same_as<T>;
-                } && (returns || (in_place && std::default_initializable<T> && std::move_constructible<T>));
+                }) && (returns || (in_place && std::default_initializable<T> && std::move_constructible<T>));
 
             // Converts the value that `cast<source>` has read.
             template <typename S>
@@ -7177,6 +7212,10 @@ namespace yyjson
             {
                 if constexpr (!std::derived_from<caster<T>, builtin_caster>)
                     return json_kind_all;
+                else if constexpr (std::same_as<T, writer::object>)
+                    return json_kind_object;
+                else if constexpr (std::same_as<T, writer::array>)
+                    return json_kind_array;
                 else if constexpr (variant_json_kinds<T>::is_variant)
                     return variant_json_kinds<T>::template value<Json>();
                 else if constexpr (shared_ptr_like<T>)
@@ -7688,6 +7727,34 @@ namespace yyjson
         {
             return static_cast<bool>(v);
         }
+    };
+
+    namespace detail
+    {
+        // Reads a `yyjson::value`, `yyjson::object` or `yyjson::array` by copying the JSON value into a document of
+        // its own, which the writers write as it is.
+        template <dom_value T>
+        struct dom_value_caster : builtin_caster
+        {
+            template <typename Json>
+            requires reader::detail::base_of_value_ref<Json> || writer::detail::base_of_value<Json>
+            static T from_json(const Json& json)
+            {
+                return T(json);
+            }
+        };
+    }  // namespace detail
+    template <>
+    struct caster<writer::value> : detail::dom_value_caster<writer::value>
+    {
+    };
+    template <>
+    struct caster<writer::object> : detail::dom_value_caster<writer::object>
+    {
+    };
+    template <>
+    struct caster<writer::array> : detail::dom_value_caster<writer::array>
+    {
     };
 
 #if YYJSON_VERSION_HEX >= 0x000C00
@@ -9627,6 +9694,13 @@ namespace yyjson
             {
                 write_primitive(convert(std::forward<T>(t)));
             }
+            template <typename T>
+            requires (!to_json_inp_defined<T>) && convertible_to_json_value<T>
+            void write_primitive(T&& t)
+            {
+                const auto json = convert(std::forward<T>(t));
+                write_json(json_value_access::get(json));
+            }
 
             // The same overloads as `mutable_document::create_array`, but those of `to_json(array_ref&)`,
             // which `write_value` takes for a primitive.
@@ -10953,7 +11027,9 @@ namespace yyjson
             static consteval auto value_node_of()
             {
                 using yyjson::detail::type_list;
-                if constexpr (std::same_as<T, yyjson::json_view>)
+                // a view reads the text, and a value of the DOM API copies the JSON value into a document of its
+                // own, so neither reads faster from a document of the whole text
+                if constexpr (std::same_as<T, yyjson::json_view> || yyjson::detail::dom_value<T>)
                     return node<false>{};
                 else if constexpr (builtin_variant<T>)
                     return []<std::size_t... Is>(std::index_sequence<Is...>) {

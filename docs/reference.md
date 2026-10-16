@@ -1500,6 +1500,34 @@ auto json = yyjson::write(project);
 *   Reading still needs what the struct itself needs: `yyjson::read<T>` and `cast<T>` a default constructible and movable `T`, and `read_into` and `merge_into` a move-assignable one. A struct with a skipped `std::mutex` can therefore only be written, and one with a skipped `const` or reference member cannot be read by `read_into` or `merge_into`.
 *   The annotations apply to the structs that the compile-time reflection converts, not to those registered with `VISITABLE_STRUCT`. `yyjson::skip` is defined only when they are available, when the macro `FIELD_RFL_ANNOTATIONS` is `1`, while `yyjson::rename` is always available for `yyjson::field_rename`.
 
+### JSON values as fields
+
+A field of type `yyjson::value`, `yyjson::object` or `yyjson::array` keeps a part of the JSON as a value of the DOM API, for a member whose shape the program does not know in advance or passes on as it is:
+
+```cpp
+using namespace yyjson;
+
+struct Request
+{
+    std::string method;
+    yyjson::value params;
+    int id;
+};
+
+auto request = read<Request>(R"({"method":"add","params":[1,2],"id":3})");
+auto numbers = request.params.cast<std::vector<int>>();
+// -> {1, 2}
+(*request.params.as_array()).emplace_back(3);
+auto json = write(request);
+// -> {"method":"add","params":[1,2,3],"id":3}
+```
+
+Each field owns a document of its own, into which the JSON value is copied, so the field stays valid after the string or the document that it was read from is gone and can be modified as any mutable value. `yyjson::object` and `yyjson::array` accept only a JSON object and a JSON array, and throw `yyjson::bad_cast` for any other value, which also lets a `std::variant` choose them by the kind of the value. Writing writes the value as it is.
+
+These types convert in every place and with every function that reads or writes a type: as an element of a range or a value of a map, in a `std::optional`, with `cast`, `read<T>`, `read_into` and `merge_into`, and with `cast<yyjson::value>()` of a [`json_view`](#reading-a-json-value-in-a-caster). `yyjson::read<T>` reads such a value into a temporary document of that value alone and copies it, and reads the rest of the string directly.
+
+A [translator](#translator) can take one of these types as its parameter and return one from `to_json`, to convert a type that holds a JSON value.
+
 ### User-defined casters
 
 A user-defined caster converts a type that the conversions above do not handle, or converts it in another way. Specialize `yyjson::caster<X>` and give it the static member functions below. The caster of a type takes precedence over every other conversion of that type.
@@ -1509,6 +1537,7 @@ The forms are listed in the order to choose them. All but the last convert C++ v
 | Purpose | Form | Direct read | Direct write |
 | --- | --- | --- | --- |
 | Give a struct JSON keys other than its field names | no caster: [`field_rename`, C++26 annotations or `VISITABLE_STRUCT`](#json-keys-other-than-field-names) | yes | yes |
+| Keep a part of the JSON as it is | no caster: a field of [`yyjson::value`](#json-values-as-fields) | yes | yes |
 | Convert to and from another type, such as a struct to a string | [translator](#translator): `X from_json(U)` and `U to_json(const X&)` | yes | yes |
 | Read into a field that cannot be copied or moved | [in-place translator](#reading-into-an-existing-field): `void from_json(X&, U)` | yes | — |
 | Write members that depend on the value | [emitter](#writing-members-with-an-emitter): `void to_json(object_emitter&, const X&)` | — | yes |
@@ -1556,14 +1585,14 @@ auto first = cast<Color>(arr[0]);
 // -> {255, 128, 0}
 ```
 
-`cast<Color>(json)` is then `caster<Color>::from_json(cast<std::string_view>(json))`, and `yyjson::read<Color>` reads the string straight into the parameter. The value that `to_json` returns can be anything that `yyjson::value` can be constructed from.
+`cast<Color>(json)` is then `caster<Color>::from_json(cast<std::string_view>(json))`, and `yyjson::read<Color>` reads the string straight into the parameter. The value that `to_json` returns can be anything that `yyjson::value` can be constructed from, including a `yyjson::value`, which is written as it is.
 
-The parameter of `from_json` can have any type that `cast` converts a JSON value to. A struct or a range of structs that mirrors the JSON is converted to `X` afterwards, which converts between two shapes of data, and a type with a translator of its own can be the parameter as well. The parameter can be taken by value, by `const&` or by `&&`, and a non-const lvalue reference is given the value that was read. A `std::string_view` refers to the JSON string only during the call.
+The parameter of `from_json` can have any type that `cast` converts a JSON value to. A struct or a range of structs that mirrors the JSON is converted to `X` afterwards, which converts between two shapes of data, and a type with a translator of its own can be the parameter as well. A parameter of type [`yyjson::value`, `yyjson::object` or `yyjson::array`](#json-values-as-fields) receives a copy of the JSON value that `X` can keep. The parameter can be taken by value, by `const&` or by `&&`, and a non-const lvalue reference is given the value that was read. A `std::string_view` refers to the JSON string only during the call.
 
 The library finds the type of the parameter from the type of the function, which brings these rules:
 
 *   There is one function of each form. The type of the parameter cannot be found for two functions of the same form, such as `from_json(int)` and `from_json(double)`, nor for a function template. A function template that accepts a JSON value is used as the [form that takes a JSON value](#reading-a-json-value-in-a-caster); a caster whose `from_json` cannot be called in any form is a compile error.
-*   When the caster has a function whose parameter is a JSON value, such as `const reader::const_value_ref&`, as well as a translator, the function that takes a JSON value is used.
+*   When the caster has a function whose parameter is a JSON value, such as `const reader::const_value_ref&`, as well as a translator, the function that takes a JSON value is used. `yyjson::value`, `yyjson::object` and `yyjson::array` own their documents and are parameters of translators.
 *   A parameter of type `X` is a compile error.
 
 #### Reading into an existing field

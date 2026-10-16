@@ -6192,6 +6192,149 @@ TEST(JsonView, TextAndDocument)
     EXPECT_THROW((void)(*view.as_object())["b"], std::out_of_range);
     EXPECT_THROW((void)(*(*view.as_object())["a"].as_array())[2], std::out_of_range);
 }
+
+// members that keep a part of the document as a value of the DOM API
+struct DomMembers
+{
+    int a = 0;
+    yyjson::value v;
+    yyjson::object o;
+    yyjson::array arr;
+    std::optional<yyjson::value> opt;
+    std::vector<yyjson::value> vs;
+    std::map<std::string, yyjson::value> m;
+    std::variant<int, yyjson::object, yyjson::array> var;
+};
+
+// a caster that translates from and to a value of the DOM API
+struct DomRaw
+{
+    yyjson::value v;
+};
+
+template <>
+struct yyjson::caster<DomRaw>
+{
+    static DomRaw from_json(yyjson::value v) { return {std::move(v)}; }
+    static yyjson::value to_json(const DomRaw& t) { return t.v; }
+};
+
+struct DomRawObject
+{
+    yyjson::object o;
+};
+
+template <>
+struct yyjson::caster<DomRawObject>
+{
+    static DomRawObject from_json(const yyjson::object& o) { return {o}; }
+    static yyjson::object to_json(const DomRawObject& t) { return t.o; }
+};
+
+struct DomRaws
+{
+    DomRaw r;
+    std::vector<DomRaw> rs;
+    std::map<std::string, DomRaw> m;
+    std::optional<DomRawObject> o;
+    std::variant<int, DomRaw> var;
+};
+
+// a caster that takes a member of a view as a value of the DOM API
+struct DomViewed
+{
+    yyjson::value v;
+};
+
+template <>
+struct yyjson::caster<DomViewed>
+{
+    static DomViewed from_json(yyjson::json_view v) { return {(*v.as_object())["x"].cast<yyjson::value>()}; }
+};
+
+TEST(DomValue, Members)
+{
+    using namespace yyjson;
+
+    const auto json = std::string(
+        R"({"a":1,"v":{"big":18446744073709551615,"s":"e\"\\\n"},"o":{"x":1},"arr":[1,"s"],"opt":{"q":[]},)"
+        R"("vs":[1,"two",{"three":3},[4]],"m":{"k":{"z":null}},"var":{"w":true}})");
+    const auto check = [&](const DomMembers& t) {
+        EXPECT_EQ(write(t), json);
+        EXPECT_EQ(writer::value(t).write(), json);
+        EXPECT_EQ(write(t, WriteFlag::Pretty), writer::value(t).write(WriteFlag::Pretty));
+    };
+    check(read(json).cast<DomMembers>());
+    check(read<DomMembers>(json));
+    check(writer::value(read(json)).cast<DomMembers>());
+    auto into = DomMembers();
+    read_into(json, into);
+    check(into);
+    read_into(json, into);
+    check(into);
+    auto merged = DomMembers();
+    merge_into(json, merged);
+    check(merged);
+    for (const auto& t : read<std::vector<DomMembers>>("[" + json + "," + json + "]")) check(t);
+
+    // a member owns its document
+    auto t = read<DomMembers>(json);
+    t.o["y"] = 2;
+    EXPECT_EQ(t.o.write(), R"({"x":1,"y":2})");
+    auto values = read<std::vector<value>>(R"([1,{"a":2}])");
+    (*values[1].as_object())["b"] = 3;
+    EXPECT_EQ(write(values), R"([1,{"a":2,"b":3}])");
+
+    // an object or an array requires the kind, and a variant takes the alternative of the kind
+    for (const auto* wrong : {R"({"o":[1]})", R"({"arr":{}})"})
+    {
+        EXPECT_THROW((void)read<DomMembers>(wrong), bad_cast) << wrong;
+        EXPECT_THROW((void)read(wrong).cast<DomMembers>(), bad_cast) << wrong;
+    }
+    const auto variants = read<std::vector<std::variant<int, object, array>>>(R"([1,{"a":[]},[{}]])");
+    ASSERT_EQ(variants.size(), 3u);
+    EXPECT_EQ(variants[0].index(), 0u);
+    EXPECT_EQ(variants[1].index(), 1u);
+    EXPECT_EQ(variants[2].index(), 2u);
+    EXPECT_EQ(write(variants), R"([1,{"a":[]},[{}]])");
+
+    // a view gives its members as values
+    EXPECT_EQ(read<DomViewed>(R"({"y":0,"x":{"n":[1,2,3]}})").v.write(), R"({"n":[1,2,3]})");
+    EXPECT_EQ(read(R"({"x":[5]})").cast<DomViewed>().v.write(), "[5]");
+}
+
+TEST(DomValue, Translators)
+{
+    using namespace yyjson;
+    using reader::detail::direct_reader;
+
+    // a translator from a value is not the form of a caster of the DOM API, so a loop reads without the document
+    static_assert(detail::from_json_translator<DomRaw>::castable);
+    static_assert(detail::from_json_translator<DomRawObject>::castable);
+    static_assert(!direct_reader::reads_documents_in_loop<std::vector<DomRaw>>);
+
+    const auto json = std::string(
+        R"({"r":{"k":[1,2]},"rs":[1,"x",[null]],"m":{"q":{"z":1.5}},"o":{"p":1},"var":"s"})");
+    const auto check = [&](const DomRaws& t) {
+        EXPECT_EQ(write(t), json);
+        EXPECT_EQ(writer::value(t).write(), json);
+        EXPECT_EQ(write(t, WriteFlag::Pretty), writer::value(t).write(WriteFlag::Pretty));
+    };
+    check(read(json).cast<DomRaws>());
+    check(read<DomRaws>(json));
+    check(writer::value(read(json)).cast<DomRaws>());
+    EXPECT_THROW((void)read<DomRaws>(R"({"o":[]})"), bad_cast);
+
+    // the value that `to_json` returns is written wherever the type is
+    const auto t = read<DomRaws>(json);
+    EXPECT_EQ(writer::array(t.rs).write(), R"([1,"x",[null]])");
+    EXPECT_EQ(writer::value(t.r).write(), R"({"k":[1,2]})");
+    auto o = writer::object();
+    o["x"] = t.r;
+    o.emplace("y", *t.o);
+    EXPECT_EQ(o.write(), R"({"x":{"k":[1,2]},"y":{"p":1}})");
+}
+
 #endif
 
 TEST(DirectReader, Overloads)
