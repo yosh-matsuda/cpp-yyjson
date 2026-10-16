@@ -834,17 +834,35 @@ namespace yyjson
             return caster<std::remove_cvref_t<T>>::should_omit(field);
         }
 
+        // `std::shared_ptr<T>` and `std::unique_ptr<T>`, which JSON null leaves empty and any other JSON value
+        // gives a new T.
         template <typename T>
-        struct is_shared_ptr : std::false_type
+        struct is_owning_pointer : std::false_type
         {
         };
         template <typename T>
-        struct is_shared_ptr<std::shared_ptr<T>> : std::true_type
+        struct is_owning_pointer<std::shared_ptr<T>> : std::true_type
         {
             using value_type = T;
+            template <typename U>
+            static std::shared_ptr<T> make(U&& u)
+            {
+                return std::make_shared<T>(std::forward<U>(u));
+            }
         };
         template <typename T>
-        concept shared_ptr_like = is_shared_ptr<std::remove_cvref_t<T>>::value;
+        requires (!std::is_array_v<T>)
+        struct is_owning_pointer<std::unique_ptr<T>> : std::true_type
+        {
+            using value_type = T;
+            template <typename U>
+            static std::unique_ptr<T> make(U&& u)
+            {
+                return std::make_unique<T>(std::forward<U>(u));
+            }
+        };
+        template <typename T>
+        concept owning_pointer = is_owning_pointer<std::remove_cvref_t<T>>::value;
 
         template <typename T>
         struct is_std_optional : std::false_type
@@ -7486,40 +7504,56 @@ namespace yyjson
         }
     };
 
-    template <typename T>
-    struct caster<std::shared_ptr<T>> : detail::builtin_caster
+    namespace detail
     {
-        static constexpr auto json_value_type = !std::same_as<T, writer::detail::mutable_document_ptrs>;
-
-        template <typename Json>
-        requires json_value_type && castable<Json, T>
-        static std::shared_ptr<T> from_json(const Json& json)
+        // The caster of an owning pointer P to a T: null is an empty pointer, and any other JSON value is a T.
+        template <typename P, typename T>
+        struct owning_pointer_caster : builtin_caster
         {
-            if (json.is_null()) return {};
-            return std::make_shared<T>(cast<T>(json));
-        }
+            static constexpr auto json_value_type = !std::same_as<T, writer::detail::mutable_document_ptrs>;
 
-        template <detail::copy_string_args... Ts>
-        requires json_value_type && requires(writer::value_ref& v, T t) {
-            v = t;
-            v = std::pair(t, copy_string);
-        }
-        static void to_json(writer::value_ref& v, const std::shared_ptr<T>& t, Ts...)
-        {
-            constexpr auto copy = (sizeof...(Ts) != 0);
-            if (!t)
+            template <typename Json>
+            requires json_value_type && castable<Json, T>
+            static P from_json(const Json& json)
             {
-                v = nullptr;
+                if (json.is_null()) return {};
+                return is_owning_pointer<P>::make(cast<T>(json));
             }
-            else if constexpr (copy)
+
+            template <copy_string_args... Ts>
+            requires json_value_type && requires(writer::value_ref& v, const T& t) {
+                v = t;
+                v = std::pair<const T&, copy_string_t>(t, copy_string);
+            }
+            static void to_json(writer::value_ref& v, const P& t, Ts...)
             {
-                v = std::pair(*t, copy_string);
+                constexpr auto copy = (sizeof...(Ts) != 0);
+                if (!t)
+                {
+                    v = nullptr;
+                }
+                else if constexpr (copy)
+                {
+                    v = std::pair<const T&, copy_string_t>(*t, copy_string);
+                }
+                else
+                {
+                    v = *t;
+                }
             }
-            else
-            {
-                v = *t;
-            }
-        }
+        };
+    }  // namespace detail
+
+    template <typename T>
+    struct caster<std::shared_ptr<T>> : detail::owning_pointer_caster<std::shared_ptr<T>, T>
+    {
+    };
+
+    // A `std::unique_ptr` with the default deleter, which a struct can hold a value of its own type in.
+    template <typename T>
+    requires (!std::is_array_v<T>)
+    struct caster<std::unique_ptr<T>> : detail::owning_pointer_caster<std::unique_ptr<T>, T>
+    {
     };
 
     template <typename T>
@@ -7541,7 +7575,7 @@ namespace yyjson
                     return;
                 }
             }
-            if (!json.is_null() || detail::shared_ptr_like<T>) field = cast<T>(json);
+            if (!json.is_null() || detail::owning_pointer<T>) field = cast<T>(json);
         }
 
         // Null gives no value, and any other JSON value is read as `cast<T>` reads it.
@@ -7549,21 +7583,21 @@ namespace yyjson
         requires castable<Json, T>
         static std::optional<T> from_json(const Json& json)
         {
-            if (json.is_null() && !detail::shared_ptr_like<T>) return std::nullopt;
+            if (json.is_null() && !detail::owning_pointer<T>) return std::nullopt;
             return cast<T>(json);
         }
 
         template <detail::copy_string_args... Ts>
-        requires requires(writer::value_ref& v, T t) {
+        requires requires(writer::value_ref& v, const T& t) {
             v = t;
-            v = std::pair(t, copy_string);
+            v = std::pair<const T&, copy_string_t>(t, copy_string);
         }
         static void to_json(writer::value_ref& v, const std::optional<T>& t, Ts...)
         {
             constexpr auto copy = (sizeof...(Ts) != 0);
             if constexpr (copy)
             {
-                if (t.has_value()) v = std::pair(*t, copy_string);
+                if (t.has_value()) v = std::pair<const T&, copy_string_t>(*t, copy_string);
             }
             else
             {
@@ -7571,16 +7605,16 @@ namespace yyjson
             }
         }
         template <detail::copy_string_args... Ts>
-        requires requires(writer::value_ref& v, T t) {
+        requires requires(writer::value_ref& v, const T& t) {
             v = t;
-            v = std::pair(t, copy_string);
+            v = std::pair<const T&, copy_string_t>(t, copy_string);
         }
         static void to_json(writer::value_ref& v, std::optional<T>&& t, Ts...)
         {
             constexpr auto copy = (sizeof...(Ts) != 0);
             if constexpr (copy)
             {
-                if (t.has_value()) v = std::pair(std::move(*t), copy_string);
+                if (t.has_value()) v = std::pair<T&&, copy_string_t>(std::move(*t), copy_string);
             }
             else
             {
@@ -7674,8 +7708,8 @@ namespace yyjson
                     return json_kind_array;
                 else if constexpr (variant_json_kinds<T>::is_variant)
                     return variant_json_kinds<T>::template value<Json>();
-                else if constexpr (shared_ptr_like<T>)
-                    return json_kind_null | accepted_json_kinds<typename is_shared_ptr<T>::value_type, Json>();
+                else if constexpr (owning_pointer<T>)
+                    return json_kind_null | accepted_json_kinds<typename is_owning_pointer<T>::value_type, Json>();
                 else if constexpr (is_std_optional<T>::value)
                     return json_kind_null | accepted_json_kinds<typename T::value_type, Json>();
                 else if constexpr (tuple_like<T>)
@@ -7760,7 +7794,7 @@ namespace yyjson
                 { caster<T>::from_json(v) } -> std::same_as<T>;
             };
             static constexpr bool inner = builtin_cast && std::derived_from<caster<T>, builtin_caster> &&
-                                          (shared_ptr_like<T> || is_std_optional<T>::value);
+                                          (owning_pointer<T> || is_std_optional<T>::value);
             static constexpr bool source = !builtin_cast && from_json_translator<T>::castable && !recursive_type<T>;
             static constexpr bool elements =
                 !builtin_cast && !from_json_translator<T>::castable && array_castable_range<T, reader::const_array_ref>;
@@ -7797,7 +7831,7 @@ namespace yyjson
             using n = nested_casts<T>;
             if constexpr (n::inner)
             {
-                if constexpr (shared_ptr_like<T>)
+                if constexpr (owning_pointer<T>)
                     return may_reject_nested<std::remove_cv_t<typename T::element_type>>();
                 else
                     return may_reject_nested<typename T::value_type>();
@@ -7827,7 +7861,7 @@ namespace yyjson
             else if constexpr (n::inner)
             {
                 if (kind == json_kind_null) return true;
-                if constexpr (shared_ptr_like<T>)
+                if constexpr (owning_pointer<T>)
                     return may_cast<std::remove_cv_t<typename T::element_type>>(json, kind);
                 else
                     return may_cast<typename T::value_type>(json, kind);
@@ -10495,7 +10529,7 @@ namespace yyjson
                     using V = to_json_input_ref<T>;
                     constexpr auto builtin = std::derived_from<caster<U>, yyjson::detail::builtin_caster>;
                     return !(to_json_inp_def<V, T> || to_json_emit_usr<V, T> ||
-                             (builtin && (yyjson::detail::shared_ptr_like<U> || is_optional<U>::value) &&
+                             (builtin && (yyjson::detail::owning_pointer<U> || is_optional<U>::value) &&
                               std::same_as<V, value_ref>) ||
                              (builtin && is_variant<U>::value && std::same_as<V, value_ref>) ||
                              (builtin && std::same_as<U, std::vector<bool>> && std::same_as<V, array_ref>) ||
@@ -10585,7 +10619,7 @@ namespace yyjson
                     close('}', first);
                 }
                 else if constexpr (std::derived_from<caster<U>, yyjson::detail::builtin_caster> &&
-                                   (yyjson::detail::shared_ptr_like<U> || is_optional<U>::value) &&
+                                   (yyjson::detail::owning_pointer<U> || is_optional<U>::value) &&
                                    std::same_as<V, value_ref>)
                 {
                     if (t)
@@ -11543,7 +11577,7 @@ namespace yyjson
                 }
                 else if constexpr (from_json_val_usr_defined<T>)
                 {
-                    if constexpr (yyjson::detail::shared_ptr_like<T> &&
+                    if constexpr (yyjson::detail::owning_pointer<T> &&
                                   std::derived_from<caster<T>, yyjson::detail::builtin_caster>)
                         return node<false, type_list<value_node<std::remove_cv_t<typename T::element_type>, Loop>>>{};
                     else if constexpr (is_std_optional<T>::value &&
@@ -13369,7 +13403,7 @@ namespace yyjson
                 else if constexpr (n::inner)
                 {
                     if (kind == d::json_kind_null) return true;
-                    if constexpr (d::shared_ptr_like<T>)
+                    if constexpr (d::owning_pointer<T>)
                         return may_read<std::remove_cv_t<typename T::element_type>>();
                     else
                         return may_read<typename T::value_type>();
@@ -13907,7 +13941,7 @@ namespace yyjson
                 }
                 else if constexpr (from_json_val_usr_defined<T>)
                 {
-                    if constexpr (yyjson::detail::shared_ptr_like<T> &&
+                    if constexpr (yyjson::detail::owning_pointer<T> &&
                                   std::derived_from<caster<T>, yyjson::detail::builtin_caster>)
                     {
                         if (*cur_ == 'n')
@@ -13915,13 +13949,13 @@ namespace yyjson
                             read_literal("null");
                             return T();
                         }
-                        return std::make_shared<typename T::element_type>(
+                        return yyjson::detail::is_owning_pointer<T>::make(
                             read_value<std::remove_cv_t<typename T::element_type>>());
                     }
                     else if constexpr (is_std_optional<T>::value &&
                                        std::derived_from<caster<T>, yyjson::detail::builtin_caster>)
                     {
-                        if constexpr (!yyjson::detail::shared_ptr_like<typename T::value_type>)
+                        if constexpr (!yyjson::detail::owning_pointer<typename T::value_type>)
                         {
                             if (*cur_ == 'n')
                             {
@@ -14853,7 +14887,7 @@ namespace yyjson
                                 return;
                             }
                         }
-                        if constexpr (!yyjson::detail::shared_ptr_like<value_type>)
+                        if constexpr (!yyjson::detail::owning_pointer<value_type>)
                         {
                             if (*cur_ == 'n')
                             {

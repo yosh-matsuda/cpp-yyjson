@@ -5102,7 +5102,7 @@ namespace
         {
             const auto t =
                 yyjson::reader::detail::direct_reader(json.data(), json.data() + json.size() - 1, flag).read_root<T>();
-            return read_or_error([&] { return t; });
+            return read_or_error([&]() -> const T& { return t; });
         }
         catch (...)
         {
@@ -9369,6 +9369,52 @@ TEST(Reflection, RangeAggregates)
               R"({"r":{"items":[1],"name":"c"},"m":[{"items":[2,3]}],"o":{"items":[],"name":"b"}})");
 }
 
+// `std::unique_ptr` is null or the value it points to, as `std::shared_ptr` is
+struct UniqueFields
+{
+    int a = 0;
+    std::unique_ptr<int> p;
+    std::optional<std::unique_ptr<std::string>> o;
+    std::vector<std::unique_ptr<int>> v;
+    std::map<std::string, std::unique_ptr<double>> m;
+};
+
+TEST(Reflection, UniquePointers)
+{
+    using yyjson::bad_cast;
+    using yyjson::read;
+
+    EXPECT_EQ(read("null").cast<std::unique_ptr<int>>(), nullptr);
+    EXPECT_EQ(*read("3").cast<std::unique_ptr<int>>(), 3);
+    EXPECT_EQ(*yyjson::read<std::unique_ptr<std::string>>(R"("s")"), "s");
+    EXPECT_TRUE(yyjson::value(std::unique_ptr<int>()).is_null());
+    EXPECT_EQ(written(std::make_unique<int>(2)), "2");
+    EXPECT_EQ(std::string(yyjson::value(std::make_unique<std::string>("x")).write()), R"("x")");
+    EXPECT_THROW((void)read(R"("s")").cast<std::unique_ptr<int>>(), bad_cast);
+    EXPECT_THROW((void)yyjson::read<std::unique_ptr<int>>(R"("s")"), bad_cast);
+    EXPECT_TRUE(expect_direct_read<std::vector<std::unique_ptr<int>>>("[null,1]"));
+    EXPECT_TRUE((expect_direct_read<std::vector<std::variant<std::unique_ptr<int>, std::string>>>(R"([null,1,"s"])")));
+
+    const auto* json = R"({"a":1,"p":2,"o":"s","v":[3,null],"m":{"x":1.5,"y":null}})";
+    const auto fields = yyjson::read<UniqueFields>(json);
+    EXPECT_EQ(written(fields), json);
+    EXPECT_EQ(std::string(yyjson::value(fields).write()), json);
+    EXPECT_EQ(written(read(json).cast<UniqueFields>()), json);
+    EXPECT_TRUE(expect_direct_read<UniqueFields>(json));
+    expect_direct_write(fields);
+    // an optional pointer keeps null as an empty pointer
+    EXPECT_EQ(written(yyjson::read<UniqueFields>(R"({"p":null,"o":null})")),
+              R"({"a":0,"p":null,"o":null,"v":[],"m":{}})");
+
+    auto into = yyjson::read<UniqueFields>(json);
+    yyjson::read_into(R"({"p":null,"v":[4]})", into);
+    EXPECT_EQ(written(into), R"({"a":0,"p":null,"v":[4],"m":{}})");
+    yyjson::merge_into(R"({"p":5,"m":{"z":2.5}})", into);
+    EXPECT_EQ(written(into), R"({"a":0,"p":5,"v":[4],"m":{"z":2.5}})");
+    yyjson::merge_into(R"({"p":null,"m":{"z":null}})", into);
+    EXPECT_EQ(written(into), R"({"a":0,"p":null,"v":[4],"m":{}})");
+}
+
 // Empty structs, which are read and written as empty JSON objects
 struct EmptyStruct
 {
@@ -9535,6 +9581,20 @@ struct RecList
                (next == nullptr ? other.next == nullptr : other.next != nullptr && *next == *other.next);
     }
 };
+struct RecUList
+{
+    int v = 0;
+    std::unique_ptr<RecUList> next;
+    std::vector<std::unique_ptr<RecUList>> kids;
+    bool operator==(const RecUList& other) const
+    {
+        const auto same = [](const auto& a, const auto& b) {
+            return a == nullptr ? b == nullptr : b != nullptr && *a == *b;
+        };
+        return v == other.v && same(next, other.next) &&
+               std::ranges::equal(kids, other.kids, [&](const auto& a, const auto& b) { return same(a, b); });
+    }
+};
 // with clang and libstdc++, `std::is_default_constructible_v<RecDict>` is false, because the defaulted
 // `operator==` instantiates it before the default member initializer is complete; `merge_into` still merges into it
 struct RecDict
@@ -9685,6 +9745,7 @@ struct RecTagged
 
 static_assert(yyjson::detail::recursive_type<RecTree>);
 static_assert(yyjson::detail::recursive_type<RecList>);
+static_assert(yyjson::detail::recursive_type<RecUList>);
 static_assert(yyjson::detail::recursive_type<RecDict>);
 static_assert(std::default_initializable<RecDict>);
 static_assert(yyjson::detail::recursive_type<RecA> && yyjson::detail::recursive_type<RecB>);
@@ -9781,6 +9842,7 @@ TEST(Reader, RecursiveTypes)
     expect_recursive<RecTree>(R"({"v":1,"kids":[{"v":2,"kids":[{"v":3,"kids":[]}]},{"v":4}]})");
     expect_recursive<std::vector<RecTree>>(R"([{"v":1,"kids":[{"v":2}]},{"v":3}])");
     expect_recursive<RecList>(R"({"v":1,"next":{"v":2,"next":{"v":3,"next":null}}})");
+    expect_recursive<RecUList>(R"({"v":1,"next":{"v":2,"next":{"v":3,"next":null}},"kids":[{"v":4},null]})");
     expect_recursive<RecDict>(R"({"v":1,"children":{"x":{"v":2,"children":{"y":{"v":3}}},"z":{}}})");
     expect_recursive<RecA>(R"({"a":1,"bs":[{"as":[{"a":2,"bs":[{}]}]},{"as":null}]})");
     expect_recursive<RecVisitable>(R"({"v":1,"kids":[{"v":2,"kids":[{"v":3}]}]})");
@@ -9812,6 +9874,7 @@ TEST(Reader, RecursionDepthLimit)
         return nested(depth - 1, R"({"v":1,"kids":[)", R"({"v":2})", "]}");
     });
     expect_depth_limit<RecList>([](std::size_t depth) { return nested(depth, R"({"next":)", "null", "}"); });
+    expect_depth_limit<RecUList>([](std::size_t depth) { return nested(depth - 1, R"({"kids":[)", "{}", "]}"); });
     expect_depth_limit<RecDict>([](std::size_t depth) {
         return nested(depth - 1, R"({"children":{"a":)", "{}", "}}");
     });

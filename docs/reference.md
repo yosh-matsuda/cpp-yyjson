@@ -1261,14 +1261,14 @@ The following types are not converted at all and fail to compile where they are 
 
 | Type | Instead |
 | --- | --- |
-| `std::unique_ptr`, raw pointers (a raw pointer reads only JSON null) | `std::optional`, `std::shared_ptr`, or a [translator](#translator) |
+| raw pointers (a raw pointer reads only JSON null) | `std::optional`, `std::unique_ptr`, `std::shared_ptr`, or a [translator](#translator) |
 | `std::chrono` durations and time points | a translator to a number or a string |
 | `std::function`, `std::any`, unions | leave the field out with `VISITABLE_STRUCT` or a [C++26 annotation](#c26-annotations) |
 | `std::mutex` and other types that cannot be moved | the same, but the struct can then only be written |
 | a class with private fields, or a struct with a constructor of its own | a translator, or `VISITABLE_STRUCT` if the fields are public |
 | `std::forward_list` | it is written but not read; `std::vector` or `std::list` |
 
-The compile error names the function that was called, such as `no matching function for call to 'write(P)'`, and the constraints of the library that are not satisfied, but not the field whose type caused it. Writing a value of each field type alone, such as `yyjson::write(std::unique_ptr<int>())`, finds that field.
+The compile error names the function that was called, such as `no matching function for call to 'write(P)'`, and the constraints of the library that are not satisfied, but not the field whose type caused it. Writing a value of each field type alone, such as `yyjson::write(std::chrono::seconds())`, finds that field.
 
 Note that `yyjson::cast<T>` and `static_cast<T>` may give different results. `yyjson::cast<T>` applies cpp-yyjson's JSON conversion rules, including predefined casters, while `static_cast<T>` only uses ordinary C++ conversion rules. For example, `yyjson::cast<std::shared_ptr<int>>(value(nullptr))` returns `nullptr` because the predefined `std::shared_ptr` caster maps JSON null to a null pointer. The corresponding `static_cast<std::shared_ptr<int>>(value(nullptr))` is ill-formed because `yyjson::value` is not directly convertible to `std::shared_ptr<int>` in C++.
 
@@ -1287,11 +1287,12 @@ Besides the strings, ranges, maps and sets described above, the library has cast
 
 *   `std::optional`
 *   `std::shared_ptr`
+*   `std::unique_ptr`, with the default deleter and not of an array
 *   `std::variant`
 *   `std::tuple`-like
 *   `std::vector<bool>` (specialized)
 
-For reflected object fields, `std::optional` represents field presence: fields with `std::nullopt` are omitted when serialized, and JSON null is ignored when deserializing into the optional field. If JSON null is a value to be preserved, use `std::shared_ptr` instead. Any other `std::optional<T>`, such as the root or an element of an array, is deserialized from JSON null into `std::nullopt` and from any other value as `T` is.
+For reflected object fields, `std::optional` represents field presence: fields with `std::nullopt` are omitted when serialized, and JSON null is ignored when deserializing into the optional field. If JSON null is a value to be preserved, use `std::shared_ptr` or `std::unique_ptr` instead: an empty pointer is written as null, and null is read as an empty pointer. Any other `std::optional<T>`, such as the root or an element of an array, is deserialized from JSON null into `std::nullopt` and from any other value as `T` is.
 
 ```cpp
 using namespace yyjson;
@@ -1888,7 +1889,7 @@ A caster is given an emitter only when its `to_json` takes none of these three r
 
 ### Recursive types
 
-A struct may hold values of its own type, in a range, a map, a `std::shared_ptr` or a `std::variant`, or in another struct that holds it in turn. Such a recursive type converts from and to JSON as any other struct does, with the compile-time reflection, the `VISITABLE_STRUCT` macro or a user-defined caster:
+A struct may hold values of its own type, in a range, a map, a `std::unique_ptr`, a `std::shared_ptr` or a `std::variant`, or in another struct that holds it in turn. Such a recursive type converts from and to JSON as any other struct does, with the compile-time reflection, the `VISITABLE_STRUCT` macro or a user-defined caster:
 
 ```cpp
 using namespace yyjson;
