@@ -7958,10 +7958,6 @@ namespace yyjson
     template <typename... Ts>
     struct caster<std::variant<Ts...>> : detail::builtin_caster
     {
-#if defined(__GNUC__) or defined(__clang__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wunused-value"
-#endif
         // Tries the alternatives in order, and skips those that cannot be cast from the kind of the JSON
         // value, which saves throwing and catching an exception for each of them.  Every alternative has to be
         // castable, as every one has to be writable for `to_json`.
@@ -7991,31 +7987,24 @@ namespace yyjson
 
     private:
         template <typename Json>
+        static constexpr auto alternative_kinds =
+            std::array<std::uint8_t, sizeof...(Ts)>{detail::accepted_json_kinds<Ts, Json>()...};
+        // the kinds that an alternative after each accepts, whose kinds a value has to be checked against
+        template <typename Json>
+        static constexpr auto later_kinds = [] {
+            auto result = std::array<std::uint8_t, sizeof...(Ts)>{};
+            for (auto i = sizeof...(Ts) - 1; i > 0; --i)
+                result[i - 1] = static_cast<std::uint8_t>(result[i] | alternative_kinds<Json>[i]);
+            return result;
+        }();
+
+        template <typename Json>
         static std::variant<Ts...> from_untagged(const Json& json)
         {
-            static constexpr auto kinds = std::array<std::uint8_t, sizeof...(Ts)>{
-                detail::accepted_json_kinds<Ts, Json>()...};
-            // the kinds that an alternative after each accepts, whose kinds a value has to be checked against
-            static constexpr auto later = [] {
-                auto result = std::array<std::uint8_t, sizeof...(Ts)>{};
-                for (auto i = sizeof...(Ts) - 1; i > 0; --i)
-                    result[i - 1] = static_cast<std::uint8_t>(result[i] | kinds[i]);
-                return result;
-            }();
             const auto kind = detail::json_kind_of(json);
             const auto rereads = detail::variant_reread_guard<std::variant<Ts...>, Json>(kind);
-            auto result = std::optional<std::variant<Ts...>>();
-            [&]<std::size_t... I>(std::index_sequence<I...>) {
-                (((kinds[I] & kind) != 0 && ((later[I] & kind) == 0 || may_cast<I>(json, kind, rereads)) &&
-                  cast_no_except<I>(json, result, rereads)) ||
-                 ...);
-            }(std::index_sequence_for<Ts...>{});
-            if (result.has_value()) return std::move(*result);
-            detail::throw_bad_cast("{} is not constructible from JSON", detail::type_name<std::variant<Ts...>>());
+            return from_alternative<0>(json, kind, rereads);
         }
-#if defined(__GNUC__) or defined(__clang__)
-#pragma GCC diagnostic pop
-#endif
 
         // Writes the tag of an alternative that `internal_tag` names first in its object, unless the object has a
         // member of the tag already, which has to name the alternative.
@@ -8067,7 +8056,7 @@ namespace yyjson
 
     private:
         // `detail::may_cast` for the alternative I, which is checked before it is cast when another alternative
-        // may be tried.  False fails the alternative as `cast_no_except` does.
+        // may be tried.  False fails the alternative as a failed cast does.
         template <std::size_t I, typename Json, typename Guard>
         static bool may_cast(const Json& json, std::uint8_t kind, const Guard& rereads)
         {
@@ -8083,24 +8072,35 @@ namespace yyjson
             return true;
         }
 
-        // `result` is empty, and holds the variant constructed from `cast<T>(json)` unless the cast fails.
+        // Casts the JSON value to the alternative I, or to the first alternative after it that accepts the value.
+        // The variant is returned as it is constructed: one held in a `std::optional` until the end made GCC warn
+        // with `-Wmaybe-uninitialized` where it was moved out.
         template <std::size_t I, typename Json, typename Guard>
-        static bool cast_no_except(const Json& json, std::optional<std::variant<Ts...>>& result, const Guard& rereads)
+        static std::variant<Ts...> from_alternative(const Json& json, std::uint8_t kind, const Guard& rereads)
         {
-            using T = std::variant_alternative_t<I, std::variant<Ts...>>;
-            try
+            if constexpr (I == sizeof...(Ts))
+                detail::throw_bad_cast("{} is not constructible from JSON", detail::type_name<std::variant<Ts...>>());
+            else
             {
-                result.emplace(cast<T>(json));
-                return true;
-            }
-            catch (const detail::recursion_limit_error&)
-            {
-                throw;
-            }
-            catch (...)
-            {
-                if (rereads.template stops_after<I>()) detail::throw_variant_reread_limit<std::variant<Ts...>, T>();
-                return false;
+                using T = std::variant_alternative_t<I, std::variant<Ts...>>;
+                if ((alternative_kinds<Json>[I] & kind) != 0 &&
+                    ((later_kinds<Json>[I] & kind) == 0 || may_cast<I>(json, kind, rereads)))
+                {
+                    try
+                    {
+                        return std::variant<Ts...>(std::in_place_index<I>, cast<T>(json));
+                    }
+                    catch (const detail::recursion_limit_error&)
+                    {
+                        throw;
+                    }
+                    catch (...)
+                    {
+                        if (rereads.template stops_after<I>())
+                            detail::throw_variant_reread_limit<std::variant<Ts...>, T>();
+                    }
+                }
+                return from_alternative<I + 1>(json, kind, rereads);
             }
         }
     };
