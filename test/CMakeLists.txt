@@ -47,6 +47,16 @@ add_executable("${PROJECT_NAME}_test_user_casters" test_user_casters.cpp)
 target_link_libraries("${PROJECT_NAME}_test_user_casters"
                       PRIVATE ${PROJECT_NAME} GTest::gtest GTest::gtest_main)
 
+# JSONTestSuite, the number tests and generated texts, from the datasets of the benchmark submodule
+add_executable("${PROJECT_NAME}_test_conformance" test_conformance.cpp)
+target_link_libraries("${PROJECT_NAME}_test_conformance"
+                      PRIVATE ${PROJECT_NAME} GTest::gtest GTest::gtest_main)
+target_compile_definitions(
+  "${PROJECT_NAME}_test_conformance"
+  PRIVATE
+    CPPYYJSON_TEST_DATA_DIR="${PROJECT_SOURCE_DIR}/external/yyjson_benchmark/data"
+)
+
 # the depth limit configures the backend as well, which is compiled here with it
 if(CPPYYJSON_USE_BUNDLED_YYJSON)
   add_executable("${PROJECT_NAME}_test_depth_limit" test_depth_limit.cpp
@@ -66,6 +76,7 @@ endif()
 include(GoogleTest)
 gtest_discover_tests("${PROJECT_NAME}_test" DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests("${PROJECT_NAME}_test_user_casters" DISCOVERY_MODE PRE_TEST)
+gtest_discover_tests("${PROJECT_NAME}_test_conformance" DISCOVERY_MODE PRE_TEST)
 if(CPPYYJSON_USE_BUNDLED_YYJSON)
   gtest_discover_tests("${PROJECT_NAME}_test_depth_limit" DISCOVERY_MODE
                        PRE_TEST)

@@ -54,7 +54,7 @@ The JSON value, array, and object classes have the corresponding *reference* (on
 
 ## Data binding API
 
-The data binding API converts between JSON text and C++ types without building a JSON document in between: `yyjson::read<T>` reads a new object, `yyjson::read_into` and `yyjson::merge_into` read into an existing one, and `yyjson::write` writes one. The types that it converts and the casters that customize the conversion are those of [Serialize and deserialize JSON](#serialize-and-deserialize-json), which the DOM API uses as well, and it gives the same results as reading a document and casting it, or building a document and writing it.
+The data binding API converts between JSON text and C++ types without building a JSON document in between: `yyjson::read<T>` reads a new object, `yyjson::read_into` and `yyjson::merge_into` read into an existing one, and `yyjson::write` writes one. The types that it converts and the casters that customize the conversion are those of [Serialize and deserialize JSON](#serialize-and-deserialize-json), which the DOM API uses as well, and it gives the same results as reading a document and casting it, or building a document and writing it. `test/test_conformance.cpp` checks this for reading: on the files of [JSONTestSuite](https://github.com/nst/JSONTestSuite), on number edge cases and real documents, and on texts generated at random and then damaged, `read<T>`, `read_into` and `merge_into` accept and reject what yyjson does and read what the cast from a document reads.
 
 ### Reading a JSON string into a C++ object directly
 
