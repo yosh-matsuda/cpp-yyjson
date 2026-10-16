@@ -6853,10 +6853,17 @@ namespace yyjson
         template <typename T>
         using array_element_t = typename array_element<T>::type;
 
+        // An aggregate with `begin()` and `end()` is written field by field into a JSON object, as other structs
+        // are, and is read from one.  `std::array` is the aggregate that is a JSON array.
+        template <typename T>
+        concept reflected_range_aggregate =
+            std::is_class_v<T> && std::is_aggregate_v<T> && (!std_array<T>) && reflectable<T>;
+
         // A string is a range of characters, but is read from a JSON string only.
         template <typename T, typename Json>
         concept array_castable_range =
-            (!is_basic_string<T>::value) && std::ranges::range<T> && std::default_initializable<T> && requires {
+            (!is_basic_string<T>::value) && std::ranges::range<T> && std::default_initializable<T> &&
+            (!reflected_range_aggregate<T>) && requires {
                 typename std::ranges::range_value_t<T>;
                 // `std::vector<bool>` is not an output range in C++20, whose proxy reference cannot be assigned
                 // through a const reference, but it is back insertable
@@ -6899,8 +6906,9 @@ namespace yyjson
              std::constructible_from<T, const char*>);
 
         template <typename T, typename Json>
-        concept reflected_object_castable = std::default_initializable<T> && (!visitable<T>) &&
-                                            (!std::ranges::input_range<T>) && all_fields_castable<Json, T>;
+        concept reflected_object_castable =
+            std::default_initializable<T> && (!visitable<T>) &&
+            (!std::ranges::input_range<T> || reflected_range_aggregate<T>) && all_fields_castable<Json, T>;
 
         // `cast<T>` of a value of a read document builds `T()` and assigns the fields from the object,
         // which can as well be done on an object already in place.  A T whose caster names a `from_json` that

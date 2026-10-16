@@ -1266,7 +1266,6 @@ The following types are not converted at all and fail to compile where they are 
 | `std::function`, `std::any`, unions | leave the field out with `VISITABLE_STRUCT` or a [C++26 annotation](#c26-annotations) |
 | `std::mutex` and other types that cannot be moved | the same, but the struct can then only be written |
 | a class with private fields, or a struct with a constructor of its own | a translator, or `VISITABLE_STRUCT` if the fields are public |
-| a struct that is also a range, with `begin()` and `end()` | a caster; such a struct is not read by reflection |
 | `std::forward_list` | it is written but not read; `std::vector` or `std::list` |
 
 The compile error names the function that was called, such as `no matching function for call to 'write(P)'`, and the constraints of the library that are not satisfied, but not the field whose type caused it. Writing a value of each field type alone, such as `yyjson::write(std::unique_ptr<int>())`, finds that field.
@@ -1415,7 +1414,7 @@ The other conditions depend on the C++ standard. C++26 static reflection is used
 | Enumerators converted by [name](#enumerations) | values in [-128, 128] unless widened | all |
 | Keys and skipped fields given in the struct | no, use [`field_rename`](#json-keys-other-than-field-names) | [annotations](#c26-annotations) |
 
-A struct that is written but not read fails to compile when it is read, by `cast<T>`, `yyjson::read<T>` or any other function. With C++26, `yyjson::field_rename` of a derived class can rename the fields of its base classes as well. A struct with a constructor of its own and public fields can be registered with [`VISITABLE_STRUCT`](#registration-of-field-names-of-structclass) instead, and one with private fields needs a [user-defined caster](#user-defined-casters).
+A struct that is written but not read fails to compile when it is read, by `cast<T>`, `yyjson::read<T>` or any other function. A struct that also has `begin()` and `end()` is still a JSON object of its fields; only `std::array` among the aggregates is a JSON array. With C++26, `yyjson::field_rename` of a derived class can rename the fields of its base classes as well. A struct with a constructor of its own and public fields can be registered with [`VISITABLE_STRUCT`](#registration-of-field-names-of-structclass) instead, and one with private fields needs a [user-defined caster](#user-defined-casters).
 
 Example:
 

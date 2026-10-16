@@ -49,6 +49,15 @@ namespace conformance
         std::string y;
     };
 
+    // an aggregate with begin() and end(), which is read and written as a struct
+    struct ConfRange
+    {
+        std::vector<int> items;
+        int n = 0;
+        [[nodiscard]] auto begin() const { return items.begin(); }
+        [[nodiscard]] auto end() const { return items.end(); }
+    };
+
     // the fields that the generated records give values of the right kind, more often than not
     struct ConfRecord
     {
@@ -65,6 +74,7 @@ namespace conformance
         std::vector<std::string> vs;
         std::map<std::string, double> m;
         std::map<int, int> pm;
+        ConfRange rg;
         std::variant<std::monostate, int, std::string, std::vector<double>> var;
         std::tuple<int, std::string> t;
         std::array<int, 3> a{};
@@ -80,7 +90,7 @@ namespace
     using conformance::ConfRecord;
 
     constexpr auto record_keys = std::array{"i", "u", "n", "h", "d", "f", "b", "s", "o", "v", "vs", "m", "pm",
-                                            "var", "t", "a", "in", "ins", "kids"};
+                                            "rg", "var", "t", "a", "in", "ins", "kids"};
 
     constexpr auto data_dir = std::string_view(CPPYYJSON_TEST_DATA_DIR);
 
@@ -640,6 +650,19 @@ namespace
                         out_ += ']';
                     },
                     4);
+            else if (field == "rg")
+            {
+                out_ += '{';
+                if (coin())
+                {
+                    out_ += R"("items":)";
+                    list([&] { integer(); }, 4);
+                    out_ += ',';
+                }
+                out_ += R"("n":)";
+                integer();
+                out_ += '}';
+            }
             else if (field == "var")
             {
                 switch (below(4))

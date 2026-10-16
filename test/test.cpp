@@ -9313,6 +9313,62 @@ TEST(Reflection, MapsFromArraysOfPairs)
     EXPECT_TRUE(expect_read_into(std::map<int, int>{{1, 1}}, "[[2,5]]"));
 }
 
+// An aggregate with begin() and end() is written into an object, and is read from one
+struct RangeAggregate
+{
+    std::vector<int> items;
+    std::string name;
+    [[nodiscard]] auto begin() const { return items.begin(); }
+    [[nodiscard]] auto end() const { return items.end(); }
+};
+struct MutableRangeAggregate
+{
+    std::vector<int> items;
+    [[nodiscard]] auto begin() { return items.begin(); }
+    [[nodiscard]] auto end() { return items.end(); }
+    [[nodiscard]] auto begin() const { return items.begin(); }
+    [[nodiscard]] auto end() const { return items.end(); }
+};
+struct RangeAggregateFields
+{
+    RangeAggregate r;
+    std::vector<MutableRangeAggregate> m;
+    std::optional<RangeAggregate> o;
+};
+
+TEST(Reflection, RangeAggregates)
+{
+    using yyjson::bad_cast;
+    static_assert(std::ranges::input_range<RangeAggregate> && std::ranges::input_range<MutableRangeAggregate>);
+
+    const auto json = R"({"items":[1,2],"name":"x"})";
+    EXPECT_EQ(written(RangeAggregate{{1, 2}, "x"}), json);
+    EXPECT_EQ(written(yyjson::read<RangeAggregate>(json)), json);
+    EXPECT_EQ(written(yyjson::read(json).cast<RangeAggregate>()), json);
+    EXPECT_TRUE(expect_direct_read<RangeAggregate>(json));
+    EXPECT_TRUE(expect_direct_read<MutableRangeAggregate>(R"({"items":[3]})"));
+    for (const auto* text : {"[1,2]", "[]"})
+    {
+        EXPECT_THROW((void)yyjson::read<RangeAggregate>(text), bad_cast) << text;
+        EXPECT_THROW((void)yyjson::read(text).cast<RangeAggregate>(), bad_cast) << text;
+        EXPECT_THROW((void)yyjson::read<MutableRangeAggregate>(text), bad_cast) << text;
+        EXPECT_THROW((void)yyjson::read(text).cast<MutableRangeAggregate>(), bad_cast) << text;
+    }
+
+    const auto fields = RangeAggregateFields{{{1}, "a"}, {{{2, 3}}}, RangeAggregate{{}, "b"}};
+    const auto* fields_json = R"({"r":{"items":[1],"name":"a"},"m":[{"items":[2,3]}],"o":{"items":[],"name":"b"}})";
+    EXPECT_EQ(written(fields), fields_json);
+    EXPECT_EQ(std::string(yyjson::value(fields).write()), fields_json);
+    EXPECT_TRUE(expect_direct_read<RangeAggregateFields>(fields_json));
+    for (const auto* text : {R"({"r":{"name":"c"}})", R"({"m":[{},{"items":[4]}],"o":null})", R"({"o":{"items":[5]}})"})
+    {
+        expect_read_into(fields, text);
+        expect_merge_into(fields, text);
+    }
+    EXPECT_EQ(expect_merge_into(fields, R"({"r":{"name":"c"}})"),
+              R"({"r":{"items":[1],"name":"c"},"m":[{"items":[2,3]}],"o":{"items":[],"name":"b"}})");
+}
+
 // Empty structs, which are read and written as empty JSON objects
 struct EmptyStruct
 {
