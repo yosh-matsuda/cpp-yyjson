@@ -132,7 +132,7 @@ Both APIs convert the following types, nested in any combination:
 
 A struct is converted by its field names when it is an aggregate, with public fields and no constructor of its own, and is default constructible. With C++20 it also needs no base class and at most 100 fields, two limits that C++26 static reflection removes; the [conditions](docs/reference.md#automatic-casting-with-compile-time-reflection) compare the two standards. A struct that does not qualify is registered with [`VISITABLE_STRUCT`](docs/reference.md#registration-of-field-names-of-structclass) if its fields are public, or given a caster.
 
-Some common types, such as raw pointers and `std::chrono` durations, are not converted, and reading or writing them fails to compile. [Conversion rules](docs/reference.md#conversion-rules) lists them with what to use instead, together with the conversions that may be unexpected, such as `std::variant<int, double>` reading `1.5` as the `int` `1`.
+Some common types, such as raw pointers and `std::chrono` durations, are not converted, and writing them fails to compile. [Conversion rules](docs/reference.md#conversion-rules) lists them with what to use instead, together with the conversions that may be unexpected, such as `std::variant<int, double>` reading `1.5` as the `int` `1`. The concepts `yyjson::readable<T>` and `yyjson::writable<T>` check a type in advance, and the compile error of `read<T>` or `write` names the field that cannot be converted ([details](docs/reference.md#compile-errors-of-types-that-cannot-be-converted)).
 
 ### JSON keys and casters
 
