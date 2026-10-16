@@ -8280,8 +8280,8 @@ namespace yyjson
     {
         // Inserts the member `key: id` first into the object `val`, or checks that the member `key` that it has
         // is `id`.
-        void insert_variant_tag(writer::value_ref& val, std::string_view key, std::string_view id,
-                                std::string_view type);
+        inline void insert_variant_tag(writer::value_ref& val, std::string_view key, std::string_view id,
+                                       std::string_view type);
     }  // namespace detail
 
     template <typename... Ts>
@@ -8615,12 +8615,6 @@ namespace yyjson
     {
     };
 
-#if YYJSON_VERSION_HEX >= 0x000C00
-    namespace reader::detail
-    {
-        class direct_reader;
-    }
-
     namespace writer::detail
     {
         // The pointer to the yyjson value that a JSON value of this library wraps.
@@ -8665,6 +8659,12 @@ namespace yyjson
                 throw std::bad_alloc();
         }
     }  // namespace detail
+
+#if YYJSON_VERSION_HEX >= 0x000C00
+    namespace reader::detail
+    {
+        class direct_reader;
+    }
 
     namespace writer::detail
     {
