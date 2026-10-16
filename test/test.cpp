@@ -9427,6 +9427,85 @@ static_assert(yyjson::readable<VisitableDuration> && !yyjson::writable<Visitable
 static_assert(!yyjson::readable<VisitableMutex> && !yyjson::writable<VisitableMutex>);
 static_assert(!yyjson::castable<yyjson::value, VisitableMutex>);
 
+// A type that cannot be converted is rejected by a deleted overload that names the field or element that cannot
+// be, and a requires-expression of the call is still false.
+struct BadInner
+{
+    int x = 0;
+    std::unique_ptr<int[]> p;
+};
+struct BadOuter
+{
+    int a = 0;
+    std::vector<BadInner> items;
+};
+struct ConstFieldCause
+{
+    const int a = 0;
+};
+static_assert(std::same_as<
+              yyjson::detail::write_cause<BadOuter>,
+              yyjson::diagnostic::field<
+                  BadOuter, yyjson::diagnostic::name<5>{"items"},
+                  yyjson::diagnostic::element<
+                      std::vector<BadInner>,
+                      yyjson::diagnostic::field<BadInner, yyjson::diagnostic::name<1>{"p"},
+                                                yyjson::diagnostic::not_writable<std::unique_ptr<int[]>>>>>>);
+static_assert(std::same_as<yyjson::detail::read_cause<ConstFieldCause>,
+                           yyjson::diagnostic::field<ConstFieldCause, yyjson::diagnostic::name<1>{"a"},
+                                                     yyjson::diagnostic::not_readable<const int>>>);
+static_assert(std::same_as<yyjson::detail::write_cause<VisitableDuration>,
+                           yyjson::diagnostic::field<VisitableDuration, yyjson::diagnostic::name<1>{"d"},
+                                                     yyjson::diagnostic::not_writable<std::chrono::seconds>>>);
+static_assert(
+    std::same_as<yyjson::detail::write_cause<std::map<std::string, std::optional<std::chrono::seconds>>>,
+                 yyjson::diagnostic::element<std::map<std::string, std::optional<std::chrono::seconds>>,
+                                             yyjson::diagnostic::element<std::optional<std::chrono::seconds>,
+                                                                         yyjson::diagnostic::not_writable<
+                                                                             std::chrono::seconds>>>>);
+static_assert(std::same_as<yyjson::detail::write_cause<std::variant<int, std::chrono::seconds>>,
+                           yyjson::diagnostic::element<std::variant<int, std::chrono::seconds>,
+                                                       yyjson::diagnostic::not_writable<std::chrono::seconds>>>);
+static_assert(std::same_as<yyjson::detail::read_cause<std::tuple<int, PrivateFields>>,
+                           yyjson::diagnostic::element<std::tuple<int, PrivateFields>,
+                                                       yyjson::diagnostic::not_readable<PrivateFields>>>);
+static_assert(std::same_as<yyjson::detail::write_cause<PrivateFields>,
+                           yyjson::diagnostic::not_writable<PrivateFields>>);
+// a field renamed in JSON is named as declared
+struct RenamedCause
+{
+    std::chrono::seconds duration_s;
+};
+template <>
+inline constexpr auto yyjson::field_rename<RenamedCause> = {yyjson::rename("duration_s", "duration")};
+struct VisitableRenamedCause
+{
+    std::chrono::seconds duration_s;
+};
+VISITABLE_STRUCT(VisitableRenamedCause, (duration_s, "duration"));
+static_assert(std::same_as<yyjson::detail::write_cause<RenamedCause>,
+                           yyjson::diagnostic::field<RenamedCause, yyjson::diagnostic::name<10>{"duration_s"},
+                                                     yyjson::diagnostic::not_writable<std::chrono::seconds>>>);
+static_assert(
+    std::same_as<yyjson::detail::write_cause<VisitableRenamedCause>,
+                 yyjson::diagnostic::field<VisitableRenamedCause, yyjson::diagnostic::name<10>{"duration_s"},
+                                           yyjson::diagnostic::not_writable<std::chrono::seconds>>>);
+namespace
+{
+    template <typename T>
+    concept writes_through_call = requires(const T& t, std::string& out) {
+        yyjson::write(t);
+        yyjson::write(t, out);
+    };
+    template <typename T>
+    concept reads_through_call = requires(std::string_view json, T& t) { yyjson::read<T>(json); } ||
+                                 requires(std::string_view json, T& t) { yyjson::read_into(json, t); } ||
+                                 requires(std::string_view json, T& t) { yyjson::merge_into(json, t); };
+}  // namespace
+static_assert(!writes_through_call<BadOuter> && writes_through_call<ConstFieldCause>);
+static_assert(!reads_through_call<ConstFieldCause> && !reads_through_call<PrivateFields>);
+static_assert(reads_through_call<BadOuter>);
+
 // `std::unique_ptr` is null or the value it points to, as `std::shared_ptr` is
 struct UniqueFields
 {

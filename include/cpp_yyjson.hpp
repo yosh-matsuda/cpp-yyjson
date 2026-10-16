@@ -68,6 +68,13 @@
 #define CPPYYJSON_HOT_NOINLINE
 #endif
 
+// A deleted function that tells why, where the compiler can (C++26)
+#if defined(__cpp_deleted_function) && __cpp_deleted_function >= 202403L
+#define CPPYYJSON_DELETED_FUNCTION(message) delete (message)
+#else
+#define CPPYYJSON_DELETED_FUNCTION(message) delete
+#endif
+
 // Keeps the compiler from vectorizing the loop that follows, for a scalar tail after a SIMD loop
 #if defined(__clang__)
 #define CPPYYJSON_NO_VECTORIZE _Pragma("clang loop vectorize(disable)")
@@ -6683,6 +6690,230 @@ namespace yyjson
     concept writable = writer::detail::create_value_callable<const T&> || writer::detail::base_of_value<T> ||
                        reader::detail::base_of_value_ref<T>;
 
+    // The types that a compile error names when `yyjson::read<T>`, `yyjson::read_into`, `yyjson::merge_into` or
+    // `yyjson::write` is given a type that it cannot convert, in the template argument `cannot_be_read` or
+    // `cannot_be_written`.  `field<S, name, Cause>` is a field of the struct S and `element<C, Cause>` an element
+    // of C, which is a range, a map, `std::optional`, a pointer, `std::variant` or a tuple.  The innermost
+    // `not_readable<U>` or `not_writable<U>` is the type that cannot be converted although its own fields or
+    // elements can, or that has none, such as a raw pointer or a class with private members.
+    namespace diagnostic
+    {
+        template <std::size_t N>
+        struct name
+        {
+            char value[N + 1];
+        };
+        template <typename T>
+        struct not_readable
+        {
+        };
+        template <typename T>
+        struct not_writable
+        {
+        };
+        template <typename Struct, name Name, typename Cause>
+        struct field
+        {
+        };
+        template <typename Container, typename Cause>
+        struct element
+        {
+        };
+    }  // namespace diagnostic
+
+    namespace detail
+    {
+        template <std::size_t N>
+        consteval diagnostic::name<N> diagnostic_name(std::string_view s)
+        {
+            auto name = diagnostic::name<N>{};
+            std::ranges::copy(s, name.value);
+            return name;
+        }
+        template <typename T, std::size_t I>
+        consteval auto reflected_member_name()
+        {
+            constexpr auto s = std::string_view(field_reflection::field_name<T, I>);
+            return diagnostic_name<s.size()>(s);
+        }
+        // The name of the member as declared, which a `VISITABLE_STRUCT` keeps beside the JSON key that it gives.
+        template <typename T, std::size_t I>
+        consteval auto visitable_member_name()
+        {
+            constexpr auto s = [] {
+                if constexpr (requires { visit_struct<T>::field_names::members[I]; })
+                    return std::string_view(visit_struct<T>::field_names::members[I]);
+                else
+                    return std::string_view(visit_struct<T>::names[I]);
+            }();
+            return diagnostic_name<s.size()>(s);
+        }
+
+        template <typename T, auto Name>
+        struct field_label
+        {
+            template <typename Cause>
+            using wrap = diagnostic::field<T, Name, Cause>;
+        };
+        template <typename T>
+        struct element_label
+        {
+            template <typename Cause>
+            using wrap = diagnostic::element<T, Cause>;
+        };
+        template <typename Label, typename C>
+        struct cause_child
+        {
+        };
+
+        // A caster of the user converts T, whose members this library does not look into.
+        template <typename T>
+        concept user_converted = std::is_class_v<caster<T>> && (!std::is_final_v<caster<T>>) &&
+                                 (!std::derived_from<caster<T>, builtin_caster>) &&
+                                 !requires {
+                                     &caster_conversion_lookup<T>::from_json;
+                                     &caster_conversion_lookup<T>::to_json;
+                                 };
+
+        // The fields and elements of T through which a failure to convert T is looked for.
+        template <typename T>
+        consteval auto cause_children()
+        {
+            if constexpr (std::is_array_v<T>)
+                return type_list<cause_child<element_label<T>, std::remove_extent_t<T>>>{};
+            else if constexpr (!std::is_class_v<T> || user_converted<T>)
+                return type_list<>{};
+            else if constexpr (visitable<T>)
+                return []<std::size_t... Is>(std::index_sequence<Is...>) {
+                    return type_list<
+                        cause_child<field_label<T, visitable_member_name<T, Is>()>,
+                                    std::remove_reference_t<decltype(std::declval<T&>().*
+                                                                     std::get<Is>(visit_struct<T>::members))>>...>{};
+                }(std::make_index_sequence<
+                           std::tuple_size_v<std::remove_cv_t<decltype(visit_struct<T>::members)>>>{});
+            else if constexpr (is_std_optional<T>::value)
+                return type_list<cause_child<element_label<T>, typename T::value_type>>{};
+            else if constexpr (owning_pointer<T>)
+                return type_list<cause_child<element_label<T>, typename is_owning_pointer<T>::value_type>>{};
+            else if constexpr (requires { std::variant_size<T>::value; })
+                return []<std::size_t... Is>(std::index_sequence<Is...>) {
+                    return type_list<cause_child<element_label<T>, std::variant_alternative_t<Is, T>>...>{};
+                }(std::make_index_sequence<std::variant_size_v<T>>{});
+            else if constexpr (std::ranges::range<T> && requires {
+                                   typename T::key_type;
+                                   typename T::mapped_type;
+                               })
+                return type_list<cause_child<element_label<T>, typename T::key_type>,
+                                 cause_child<element_label<T>, typename T::mapped_type>>{};
+            else if constexpr (std::ranges::range<T>)
+                return type_list<cause_child<element_label<T>, std::ranges::range_value_t<T>>>{};
+            else if constexpr (tuple_like<T>)
+                return []<std::size_t... Is>(std::index_sequence<Is...>) {
+                    return type_list<cause_child<element_label<T>, std::tuple_element_t<Is, T>>...>{};
+                }(std::make_index_sequence<std::tuple_size_v<T>>{});
+            else if constexpr (reflectable<T>)
+                return []<std::size_t... Is>(std::index_sequence<Is...>) {
+                    return type_list<cause_child<field_label<T, reflected_member_name<T, Is>()>,
+                                                 field_reflection::field_type<T, Is>>...>{};
+                }(reflected_fields<T>{});
+            else
+                return type_list<>{};
+        }
+
+        struct read_cause_policy
+        {
+            template <typename T>
+            static consteval bool converts()
+            {
+                if constexpr (std::is_array_v<T>)
+                    return converts<std::remove_extent_t<T>>();
+                else
+                    return !std::is_reference_v<T> && !std::is_const_v<T> && castable<reader::const_value_ref, T>;
+            }
+            template <typename T>
+            using leaf = diagnostic::not_readable<T>;
+        };
+        struct write_cause_policy
+        {
+            template <typename T>
+            static consteval bool converts()
+            {
+                if constexpr (std::is_array_v<std::remove_reference_t<T>>)
+                    return converts<std::remove_extent_t<std::remove_reference_t<T>>>();
+                else
+                    return writable<std::remove_cvref_t<T>>;
+            }
+            template <typename T>
+            using leaf = diagnostic::not_writable<std::remove_cvref_t<T>>;
+        };
+
+        // A child that cannot be converted only because a type that it leads back to cannot.
+        struct cycle_cause
+        {
+        };
+        // The cause found so far among the children of a type: `void` while every child converts, and the first
+        // cause other than `cycle_cause` once there is one.
+        template <typename Cause>
+        struct cause_fold
+        {
+            using type = Cause;
+        };
+        template <typename A, typename B>
+        auto operator|(cause_fold<A>, cause_fold<B>)
+            -> cause_fold<std::conditional_t<std::is_void_v<A> || (std::same_as<A, cycle_cause> && !std::is_void_v<B>),
+                                             B, A>>;
+
+        template <typename P, typename Visited, typename T>
+        struct conversion_cause_on_path;
+        template <typename P, typename Visited, typename Label, typename C>
+        auto child_cause(cause_child<Label, C>)
+        {
+            if constexpr (P::template converts<C>())
+                return cause_fold<void>{};
+            else
+            {
+                using found = typename conversion_cause_on_path<P, Visited, C>::type;
+                if constexpr (std::same_as<found, cycle_cause>)
+                    return cause_fold<cycle_cause>{};
+                else
+                    return cause_fold<typename Label::template wrap<found>>{};
+            }
+        }
+        template <typename P, typename Visited, typename... Children>
+        auto children_cause(type_list<Children...>)
+            -> decltype((cause_fold<void>{} | ... | child_cause<P, Visited>(Children{})));
+
+        // Why T cannot be converted, below the types of `Visited` that lead to it: the first field or element
+        // that cannot be, or T itself when every one of them can.
+        template <typename P, typename Visited, typename T>
+        struct conversion_cause_on_path
+        {
+            using type = cycle_cause;
+        };
+        template <typename P, typename... Vs, typename T>
+        requires (!type_list_has<std::remove_cv_t<T>, type_list<Vs...>>)
+        struct conversion_cause_on_path<P, type_list<Vs...>, T>
+        {
+            using children = typename decltype(children_cause<P, type_list<Vs..., std::remove_cv_t<T>>>(
+                cause_children<std::remove_cvref_t<T>>()))::type;
+            using type = std::conditional_t<std::is_void_v<children>, typename P::template leaf<T>, children>;
+        };
+        template <typename P, typename T>
+        struct conversion_cause
+        {
+            using found = typename conversion_cause_on_path<P, type_list<>, T>::type;
+            using type = std::conditional_t<std::same_as<found, cycle_cause>, typename P::template leaf<T>, found>;
+        };
+
+        // The cause that a call names when T cannot be converted, computed only then.
+        template <typename T>
+        using read_cause = typename std::conditional_t<castable<reader::const_value_ref, T>, std::type_identity<void>,
+                                                       conversion_cause<read_cause_policy, T>>::type;
+        template <typename T>
+        using write_cause = typename std::conditional_t<writable<T>, std::type_identity<void>,
+                                                        conversion_cause<write_cause_policy, T>>::type;
+    }  // namespace detail
+
     namespace detail
     {
         // A `json_view` views a value of an immutable document, so a caster that takes one is given a view of a
@@ -10848,6 +11079,17 @@ namespace yyjson
         out.append(write(t, write_flag));
     }
 #endif
+
+    // A type that cannot be written is rejected by name, along with the field or the element of it that cannot be
+    // written, in `cannot_be_written`.  See `yyjson::diagnostic`.
+    template <typename T, typename cannot_be_written = detail::write_cause<T>>
+    requires (!writable<T>)
+    json_string write(const T& t, WriteFlag write_flag = WriteFlag::NoFlag) = CPPYYJSON_DELETED_FUNCTION(
+        "T cannot be written as JSON: `cannot_be_written` names the field or element that cannot be");
+    template <typename T, typename cannot_be_written = detail::write_cause<T>>
+    requires (!writable<T>)
+    void write(const T& t, std::string& out, WriteFlag write_flag = WriteFlag::NoFlag) = CPPYYJSON_DELETED_FUNCTION(
+        "T cannot be written as JSON: `cannot_be_written` names the field or element that cannot be");
 
     namespace reader::detail
     {
@@ -15676,6 +15918,21 @@ namespace yyjson
         reader::detail::merge_from(t, reader::read(json, read_flag));
     }
 #endif
+
+    // A type that cannot be read is rejected by name, along with the field or the element of it that cannot be
+    // read, in `cannot_be_read`.  See `yyjson::diagnostic`.
+    template <typename T, typename cannot_be_read = detail::read_cause<T>>
+    requires (!std::is_reference_v<T>) && (!castable<reader::const_value_ref, T>)
+    T read(std::string_view json, ReadFlag read_flag = ReadFlag::NoFlag) = CPPYYJSON_DELETED_FUNCTION(
+        "T cannot be read from JSON: `cannot_be_read` names the field or element that cannot be");
+    template <typename T, typename cannot_be_read = detail::read_cause<T>>
+    requires (!std::is_const_v<T>) && (!castable<reader::const_value_ref, T>)
+    void read_into(std::string_view json, T& t, ReadFlag read_flag = ReadFlag::NoFlag) = CPPYYJSON_DELETED_FUNCTION(
+        "T cannot be read from JSON: `cannot_be_read` names the field or element that cannot be");
+    template <typename T, typename cannot_be_read = detail::read_cause<T>>
+    requires (!std::is_const_v<T>) && (!castable<reader::const_value_ref, T>)
+    void merge_into(std::string_view json, T& t, ReadFlag read_flag = ReadFlag::NoFlag) = CPPYYJSON_DELETED_FUNCTION(
+        "T cannot be read from JSON: `cannot_be_read` names the field or element that cannot be");
 
     namespace writer::detail
     {
