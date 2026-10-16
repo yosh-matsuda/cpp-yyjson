@@ -207,6 +207,8 @@ TYPED_DATASET_NAMES = {
     4: "poet",
     5: "github_events",
     6: "gsoc-2018",
+    7: "github_event",
+    8: "twitter_status",
 }
 
 TYPED_COLORS = {
