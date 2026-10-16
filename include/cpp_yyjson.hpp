@@ -3839,8 +3839,10 @@ namespace yyjson
                 {
                 }
 
+                // A type that converts to any other type, as the fields of the compile-time reflection do while
+                // it counts them, is not a JSON value.
                 template <reader::detail::base_of_value_ref T>
-                requires is_value_type
+                requires is_value_type && std::derived_from<std::remove_cvref_t<T>, reader::abstract_value_ref>
                 abstract_value(T&& t) noexcept  // NOLINT
                     : val_(doc_.copy_value(std::forward<T>(t)))
                 {
