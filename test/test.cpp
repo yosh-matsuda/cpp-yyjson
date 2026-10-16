@@ -9532,6 +9532,16 @@ TEST(Reflection, UniquePointers)
     EXPECT_THROW((void)yyjson::read<std::unique_ptr<int>>(R"("s")"), bad_cast);
     EXPECT_TRUE(expect_direct_read<std::vector<std::unique_ptr<int>>>("[null,1]"));
     EXPECT_TRUE((expect_direct_read<std::vector<std::variant<std::unique_ptr<int>, std::string>>>(R"([null,1,"s"])")));
+    // a pointer to an array reads only null, and the error names its type up to the end
+    try
+    {
+        (void)yyjson::read<std::unique_ptr<int[]>>("1");
+        ADD_FAILURE();
+    }
+    catch (const bad_cast& e)
+    {
+        EXPECT_TRUE(std::string_view(e.what()).ends_with("> is not constructible from JSON integer")) << e.what();
+    }
 
     const auto* json = R"({"a":1,"p":2,"o":"s","v":[3,null],"m":{"x":1.5,"y":null}})";
     const auto fields = yyjson::read<UniqueFields>(json);

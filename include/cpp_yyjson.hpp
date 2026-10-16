@@ -742,7 +742,9 @@ namespace yyjson
             constexpr auto signature = std::string_view{__PRETTY_FUNCTION__};
             constexpr auto prefix = std::string_view{"T = "};
             const auto start = signature.find(prefix) + prefix.size();
-            const auto end = signature.find_first_of(";]", start);
+            // GCC follows T with "; std::string_view = ...", and the name may contain brackets, as in `int [2]`.
+            const auto semicolon = signature.find(';', start);
+            const auto end = semicolon != std::string_view::npos ? semicolon : signature.rfind(']');
             return signature.substr(start, end - start);
 #elif defined(_MSC_VER)
             constexpr auto signature = std::string_view{__FUNCSIG__};
