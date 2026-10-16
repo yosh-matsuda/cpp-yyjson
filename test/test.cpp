@@ -5080,14 +5080,28 @@ TEST(DirectWriter, RangesOfNumbers)
 
 namespace
 {
+    // The elements of an unordered container in order.  Their order otherwise depends on the buckets, which
+    // differ with libc++ between the cast of a document, which reserves the elements first, and the reader
+    // without a document, which does not know their number.
+    template <typename T>
+    decltype(auto) in_order(const T& t)
+    {
+        if constexpr (requires { typename T::hasher; typename T::mapped_type; })
+            return std::multimap<typename T::key_type, typename T::mapped_type>(t.begin(), t.end());
+        else if constexpr (requires { typename T::hasher; })
+            return std::multiset<typename T::value_type>(t.begin(), t.end());
+        else
+            return t;
+    }
+
     // what reading gives, written back, or the error it throws
     template <typename F>
     std::string read_or_error(F&& read)
     {
         try
         {
-            return std::string(yyjson::write(read(), yyjson::WriteFlag::AllowInfAndNan |
-                                                         yyjson::WriteFlag::AllowInvalidUnicode));
+            return std::string(yyjson::write(in_order(read()), yyjson::WriteFlag::AllowInfAndNan |
+                                                                   yyjson::WriteFlag::AllowInvalidUnicode));
         }
         catch (const yyjson::read_error& e)
         {
