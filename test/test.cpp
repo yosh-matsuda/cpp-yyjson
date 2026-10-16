@@ -2,6 +2,7 @@
 #include <array>
 #include <atomic>
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <deque>
 #include <format>
@@ -7651,6 +7652,20 @@ static_assert(!yyjson::detail::from_json_unusable<HoldsView>);
 static_assert(!yyjson::detail::from_json_unusable<std::string>);
 static_assert(!yyjson::detail::caster_names_from_json<WrittenView>);
 static_assert(!yyjson::detail::caster_names_from_json<HoldsView>);
+// `yyjson::readable` rejects what the static assertions of `read<T>` reject, which a document can still give
+static_assert(yyjson::readable<std::vector<InternedView>>);
+static_assert(yyjson::readable<const Rgb>);
+static_assert(!yyjson::readable<Rgb&>);
+static_assert(!yyjson::readable<HoldsView>);
+static_assert(!yyjson::readable<HoldsCString>);
+static_assert(!yyjson::readable<std::map<std::string_view, int>>);
+static_assert(!yyjson::readable<std::vector<yyjson::json_view>>);
+static_assert(!yyjson::readable<std::vector<SameFormTwice>>);
+static_assert(!yyjson::readable<std::optional<TakesTwoParameters>>);
+static_assert(!yyjson::readable<WrittenView>);
+static_assert(yyjson::castable<yyjson::value, HoldsView>);
+static_assert(yyjson::writable<HoldsView>);
+static_assert(yyjson::writable<WrittenView>);
 
 TEST(Reader, BorrowedTranslatorSources)
 {
@@ -8804,7 +8819,7 @@ namespace
     template <typename T>
     concept readable_in_any_way =
         yyjson::castable<yyjson::reader::const_value_ref, T> || yyjson::castable<yyjson::value, T> ||
-        requires(std::string_view json, T& t) { yyjson::read<T>(json); } ||
+        yyjson::readable<T> || requires(std::string_view json, T& t) { yyjson::read<T>(json); } ||
         requires(std::string_view json, T& t) { yyjson::read_into(json, t); } ||
         requires(std::string_view json, T& t) { yyjson::merge_into(json, t); };
 }
@@ -9383,6 +9398,18 @@ static_assert(!yyjson::castable<yyjson::reader::const_value_ref, std::mutex>);
 static_assert(!yyjson::castable<yyjson::reader::const_value_ref, std::forward_list<int>>);
 static_assert(!yyjson::castable<yyjson::value, std::forward_list<int>>);
 
+// `yyjson::readable` and `yyjson::writable` of the types that are converted only one way or not at all
+static_assert(!yyjson::readable<PrivateFields> && !yyjson::writable<PrivateFields>);
+static_assert(!yyjson::readable<std::mutex> && !yyjson::writable<std::mutex>);
+static_assert(!yyjson::readable<std::forward_list<int>> && yyjson::writable<std::forward_list<int>>);
+// a type constructible from a JSON scalar reads it
+static_assert(yyjson::readable<std::chrono::seconds> && !yyjson::writable<std::chrono::seconds>);
+static_assert(yyjson::readable<std::function<void()>> && !yyjson::writable<std::function<void()>>);
+static_assert(!yyjson::writable<std::unique_ptr<int[]>>);
+static_assert(yyjson::readable<std::unique_ptr<int>> && yyjson::writable<std::unique_ptr<int>>);
+static_assert(yyjson::readable<yyjson::value> && yyjson::writable<yyjson::value>);
+static_assert(yyjson::writable<yyjson::reader::const_value_ref>);
+
 // `std::unique_ptr` is null or the value it points to, as `std::shared_ptr` is
 struct UniqueFields
 {
@@ -9397,6 +9424,7 @@ TEST(Reflection, UniquePointers)
 {
     using yyjson::bad_cast;
     using yyjson::read;
+    static_assert(yyjson::readable<UniqueFields> && yyjson::writable<UniqueFields>);
 
     EXPECT_EQ(read("null").cast<std::unique_ptr<int>>(), nullptr);
     EXPECT_EQ(*read("3").cast<std::unique_ptr<int>>(), 3);

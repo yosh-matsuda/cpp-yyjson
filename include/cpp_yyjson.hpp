@@ -6642,6 +6642,33 @@ namespace yyjson
             assert_from_json_usable(closure_t<type_list<read_type_node<std::remove_cv_t<T>>>>{});
         }
 
+        template <typename... Ts>
+        constexpr bool reads_with_usable_from_json(type_list<read_type_node<Ts>...>) noexcept
+        {
+            return (!from_json_unusable<Ts> && ...);
+        }
+        // A value of T read from JSON passes the static assertions of `yyjson::read<T>`.
+        template <typename T>
+        concept reads_owned_values =
+            (!reads_borrowed_strings<T>) &&
+            (!type_list_has<read_type_node<json_view>, closure_t<type_list<read_type_node<T>>>>) &&
+            reads_with_usable_from_json(closure_t<type_list<read_type_node<T>>>{});
+    }  // namespace detail
+
+    // `yyjson::read<T>(json)` reads a T from JSON text: `yyjson::castable<yyjson::reader::const_value_ref, T>`
+    // holds and the value owns its strings.  `yyjson::read_into` and `yyjson::merge_into` also need T to be
+    // move-assignable and not const.
+    template <typename T>
+    concept readable = (!std::is_reference_v<T>) && castable<reader::const_value_ref, std::remove_cv_t<T>> &&
+                       detail::reads_owned_values<std::remove_cv_t<T>>;
+
+    // `yyjson::write(t)` writes a T as JSON text.
+    template <typename T>
+    concept writable = writer::detail::create_value_callable<const T&> || writer::detail::base_of_value<T> ||
+                       reader::detail::base_of_value_ref<T>;
+
+    namespace detail
+    {
         // A `json_view` views a value of an immutable document, so a caster that takes one is given a view of a
         // copy of a value of a mutable document.
         template <typename S, typename Json>
@@ -10733,9 +10760,7 @@ namespace yyjson
 
     // Writes a C++ value as JSON text, without building a mutable document of it.  The text is the same as
     // `yyjson::value(t).write(write_flag)`.
-    template <typename T>
-    requires writer::detail::create_value_callable<const T&> || writer::detail::base_of_value<T> ||
-             reader::detail::base_of_value_ref<T>
+    template <writable T>
     [[nodiscard]] json_string write(const T& t, WriteFlag write_flag = WriteFlag::NoFlag)
     {
         auto buf = writer::detail::direct_write_buffer{};
@@ -10760,9 +10785,7 @@ namespace yyjson
     }
 
     // Writes a C++ value as JSON text into `out`, whose content is replaced and whose capacity is reused.
-    template <typename T>
-    requires writer::detail::create_value_callable<const T&> || writer::detail::base_of_value<T> ||
-             reader::detail::base_of_value_ref<T>
+    template <writable T>
     void write(const T& t, std::string& out, WriteFlag write_flag = WriteFlag::NoFlag)
     {
         writer::detail::resize_for_overwrite(out, std::max(out.capacity(), writer::detail::direct_write_initial_size));
@@ -10786,9 +10809,7 @@ namespace yyjson
 #else
     // yyjson before 0.12 lacks `yyjson_write_number`, which the direct writer writes numbers with, so the text is
     // written through a document.
-    template <typename T>
-    requires writer::detail::create_value_callable<const T&> || writer::detail::base_of_value<T> ||
-             reader::detail::base_of_value_ref<T>
+    template <writable T>
     [[nodiscard]] json_string write(const T& t, WriteFlag write_flag = WriteFlag::NoFlag)
     {
         if constexpr (writer::detail::base_of_value<T> || reader::detail::base_of_value_ref<T>)
@@ -10797,9 +10818,7 @@ namespace yyjson
             return value(t).write(write_flag);
     }
 
-    template <typename T>
-    requires writer::detail::create_value_callable<const T&> || writer::detail::base_of_value<T> ||
-             reader::detail::base_of_value_ref<T>
+    template <writable T>
     void write(const T& t, std::string& out, WriteFlag write_flag = WriteFlag::NoFlag)
     {
         out.clear();
