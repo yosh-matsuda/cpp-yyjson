@@ -8401,6 +8401,16 @@ namespace yyjson
             return true;
         }
 
+        // Constructs the variant as the alternative I cast from the JSON value.  A function of its own: clang 17
+        // and 18 returned a garbage variant from `from_alternative` at -O1 and above when it constructed the
+        // variant in its `return` statement within the `try` block.
+        template <std::size_t I, typename Json>
+        static std::variant<Ts...> cast_alternative(const Json& json)
+        {
+            using T = std::variant_alternative_t<I, std::variant<Ts...>>;
+            return std::variant<Ts...>(std::in_place_index<I>, cast<T>(json));
+        }
+
         // Casts the JSON value to the alternative I, or to the first alternative after it that accepts the value.
         // The variant is returned as it is constructed: one held in a `std::optional` until the end made GCC warn
         // with `-Wmaybe-uninitialized` where it was moved out.
@@ -8417,7 +8427,7 @@ namespace yyjson
                 {
                     try
                     {
-                        return std::variant<Ts...>(std::in_place_index<I>, cast<T>(json));
+                        return cast_alternative<I>(json);
                     }
                     catch (const detail::recursion_limit_error&)
                     {
