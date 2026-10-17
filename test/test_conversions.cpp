@@ -290,18 +290,18 @@ std::optional<std::pair<std::size_t, std::string>> cast_variant_trying_all(const
 {
     auto result = std::optional<V>();
     [&]<typename... Ts>(std::type_identity<std::variant<Ts...>>) {
-        ((result = [&]() -> std::optional<V> {
-              try
-              {
-                  return V(yyjson::cast<Ts>(json));
-              }
-              catch (...)
-              {
-                  return std::nullopt;
-              }
-          }())
-             .has_value() ||
-         ...);
+        static_cast<void>(((result = [&]() -> std::optional<V> {
+                               try
+                               {
+                                   return V(yyjson::cast<Ts>(json));
+                               }
+                               catch (...)
+                               {
+                                   return std::nullopt;
+                               }
+                           }())
+                               .has_value() ||
+                           ...));
     }(std::type_identity<V>{});
     if (!result.has_value()) return std::nullopt;
     return std::pair(result->index(), std::string(yyjson::value(*result).write(yyjson::WriteFlag::AllowInfAndNan)));
