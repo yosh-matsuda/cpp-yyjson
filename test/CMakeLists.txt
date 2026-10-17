@@ -38,10 +38,26 @@ find_package(GTest REQUIRED)
 include_directories(${GTEST_INCLUDE_DIRS})
 
 # executables
-add_executable("${PROJECT_NAME}_test" test.cpp)
+add_executable(
+  "${PROJECT_NAME}_test"
+  test_dom_write.cpp
+  test_dom_read.cpp
+  test_readme.cpp
+  test_dom_structs.cpp
+  test_direct_writer.cpp
+  test_direct_reader.cpp
+  test_json_view.cpp
+  test_conversions.cpp
+  test_casters.cpp
+  test_read_into.cpp
+  test_reflection.cpp
+  test_recursive_types.cpp
+  test_std_reflection.cpp
+  test_differential.cpp
+  test_tagged_variant.cpp)
 target_link_libraries("${PROJECT_NAME}_test"
                       PRIVATE ${PROJECT_NAME} GTest::gtest GTest::gtest_main)
-# the tests in one file exceed the sections of an object file that MSVC writes by default
+# a test file can exceed the sections of an object file that MSVC writes by default
 target_compile_options("${PROJECT_NAME}_test"
                        PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
 
