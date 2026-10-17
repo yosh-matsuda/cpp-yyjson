@@ -3,11 +3,21 @@ name: Tests
 on:
   workflow_dispatch:
   pull_request:
+    paths-ignore:
+    - "**.md"
+    - "docs/**"
+    - ".github/skills/**"
+    - "LICENSE"
   push:
     branches:
     - main
     tags:
     - "v*"
+    paths-ignore:
+    - "**.md"
+    - "docs/**"
+    - ".github/skills/**"
+    - "LICENSE"
 
 concurrency:
   group: test-${{ github.ref }}
