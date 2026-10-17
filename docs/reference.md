@@ -1686,17 +1686,17 @@ A user-defined caster converts a type that the conversions above do not handle, 
 
 The forms are listed in the order to choose them. All but the last convert C++ values or read a [`yyjson::json_view`](#reading-a-json-value-in-a-caster), and both APIs use them without a document: `cast` and `value` of the DOM API as well as `yyjson::read<T>`, `yyjson::read_into`, `yyjson::merge_into` and `yyjson::write` of the data binding API. The last form takes a JSON value of the DOM API. The data binding API accepts it too, but reads each such value into a temporary document.
 
-| Purpose | Form | Direct read | Direct write |
-| --- | --- | --- | --- |
-| Give a struct JSON keys other than its field names | no caster: [`field_rename`, C++26 annotations or `VISITABLE_STRUCT`](#json-keys-other-than-field-names) | yes | yes |
-| Tell the alternatives of a `std::variant` by a member that names them | no caster: [`variant_tag`](#tagged-variants) | yes | yes |
-| Keep a part of the JSON as it is | no caster: a field of [`yyjson::value`](#json-values-as-fields) | yes | yes |
-| Convert to and from another type, such as a struct to a string | [translator](#translator): `X from_json(U)` and `U to_json(const X&)` | yes | yes |
-| Read into a field that cannot be copied or moved | [in-place translator](#reading-into-an-existing-field): `void from_json(X&, U)` | yes | — |
-| Write members that depend on the value | [emitter](#writing-members-with-an-emitter): `void to_json(object_emitter&, const X&)` | — | yes |
-| Leave a field out of the JSON object | [`should_omit`](#omitting-a-field-with-no-value): `bool should_omit(const X&)` | — | yes |
-| Decide how to read a value from its content, such as an object of keys known only at run time | [`from_json` that takes a `json_view`](#reading-a-json-value-in-a-caster) | yes | — |
-| The same, with the DOM API | [`from_json` that takes a JSON value](#reading-a-json-value-in-a-caster) | through a document | — |
+| Purpose | Form | Direction |
+| --- | --- | --- |
+| Give a struct JSON keys other than its field names | no caster: [`field_rename`, C++26 annotations or `VISITABLE_STRUCT`](#json-keys-other-than-field-names) | read and write |
+| Tell the alternatives of a `std::variant` by a member that names them | no caster: [`variant_tag`](#tagged-variants) | read and write |
+| Keep a part of the JSON as it is | no caster: a field of [`yyjson::value`](#json-values-as-fields) | read and write |
+| Convert to and from another type, such as a struct to a string | [translator](#translator): `X from_json(U)` and `U to_json(const X&)` | read and write |
+| Read into a field that cannot be copied or moved | [in-place translator](#reading-into-an-existing-field): `void from_json(X&, U)` | read |
+| Write members that depend on the value | [emitter](#writing-members-with-an-emitter): `void to_json(object_emitter&, const X&)` | write |
+| Leave a field out of the JSON object | [`should_omit`](#omitting-a-field-with-no-value): `bool should_omit(const X&)` | write |
+| Decide how to read a value from its content, such as an object of keys known only at run time | [`from_json` that takes a `json_view`](#reading-a-json-value-in-a-caster) | read |
+| The same, with the DOM API | [`from_json` that takes a JSON value](#reading-a-json-value-in-a-caster) | read |
 
 Every form gives the same result with both APIs. Some rules apply to all of them:
 
