@@ -15513,6 +15513,9 @@ namespace yyjson
             CPPYYJSON_ALWAYS_INLINE void read_fields(const yyjson::detail::field_key_matcher<N>& matcher,
                                                      Assign&& assign)
             {
+                // Named through the class: read through the reference `matcher`, it is not a constant expression
+                // before C++23, and Clang rejects the narrowing below.
+                constexpr auto key_bytes = std::ptrdiff_t{yyjson::detail::field_key_matcher<N>::key_bytes};
                 auto hint = std::size_t{0};
                 read_members([&]() CPPYYJSON_LAMBDA_ALWAYS_INLINE {
                     auto index = N;
@@ -15520,7 +15523,7 @@ namespace yyjson
                     {
                         // the key that is expected next is compared with the text without scanning it first
                         const auto n = matcher.name_size(hint);
-                        if (matcher.has_short_key(hint) && last_ - cur_ >= std::ptrdiff_t{matcher.key_bytes})
+                        if (matcher.has_short_key(hint) && last_ - cur_ >= key_bytes)
                         {
                             if (matcher.is_raw_key_at(hint, cur_ + 1))
                             {
