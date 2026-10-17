@@ -39,9 +39,9 @@ jobs:
       run: |
         rm -rf "${{ github.workspace }}\build"
         cmake -B "${{ github.workspace }}\build" -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT\\scripts\\buildsystems\\vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=${{ env.triplet }} -DCMAKE_C_COMPILER=${{ matrix.compiler.c }} -DCMAKE_CXX_COMPILER=${{ matrix.compiler.cxx }} -G "Ninja Multi-Config"
-        # cmake --build "${{ github.workspace }}\build" --config Debug --clean-first
+        # cmake --build "${{ github.workspace }}\build" --config Debug
         # ctest --test-dir "${{ github.workspace }}\build" -C Debug
-        cmake --build "${{ github.workspace }}\build" --config Release --clean-first
+        cmake --build "${{ github.workspace }}\build" --config Release
         ctest --test-dir "${{ github.workspace }}\build" -C Release --output-on-failure --timeout 900
       shell: bash
 
@@ -94,9 +94,9 @@ jobs:
         export CC=${{ matrix.compiler.c }} CXX=${{ matrix.compiler.cxx }}
         rm -rf ${{ github.workspace }}/build
         cmake -B ${{ github.workspace }}/build -DCMAKE_TOOLCHAIN_FILE=$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=${{ env.triplet }} -DCMAKE_C_COMPILER=${{ matrix.compiler.c }} -DCMAKE_CXX_COMPILER=${{ matrix.compiler.cxx }} -DCMAKE_CXX_STANDARD=${{ matrix.compiler.std || 20 }} "-DCMAKE_CXX_FLAGS=${{ matrix.compiler.flags }}" -G "Ninja Multi-Config"
-        cmake --build ${{ github.workspace }}/build --config Debug --clean-first
+        cmake --build ${{ github.workspace }}/build --config Debug
         ctest --test-dir ${{ github.workspace }}/build -C Debug --output-on-failure --timeout 900
-        cmake --build ${{ github.workspace }}/build --config Release --clean-first
+        cmake --build ${{ github.workspace }}/build --config Release
         ctest --test-dir ${{ github.workspace }}/build -C Release --output-on-failure --timeout 900
 
   ubuntu-target-build:
@@ -141,7 +141,7 @@ jobs:
         export CC=${{ matrix.config.c }} CXX=${{ matrix.config.cxx }}
         rm -rf ${{ github.workspace }}/build
         cmake -B ${{ github.workspace }}/build -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=${{ matrix.config.triplet }} -DCMAKE_C_COMPILER=${{ matrix.config.c }} -DCMAKE_CXX_COMPILER=${{ matrix.config.cxx }} -DCMAKE_C_FLAGS="${{ matrix.config.flags }}" -DCMAKE_CXX_FLAGS="${{ matrix.config.flags }}" -DCMAKE_EXE_LINKER_FLAGS="${{ matrix.config.flags }}" -DCPPYYJSON_ENABLE_AVX2=${{ matrix.config.avx2 }} -G "Ninja Multi-Config"
-        cmake --build ${{ github.workspace }}/build --config Release --clean-first
+        cmake --build ${{ github.workspace }}/build --config Release
         ctest --test-dir ${{ github.workspace }}/build -C Release --output-on-failure --timeout 900
 
   upstream-yyjson-build:
@@ -174,9 +174,9 @@ jobs:
         export CC=${{ matrix.compiler.c }} CXX=${{ matrix.compiler.cxx }}
         rm -rf ${{ github.workspace }}/build
         cmake -B ${{ github.workspace }}/build -DCMAKE_TOOLCHAIN_FILE=$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=${{ env.triplet }} -DCMAKE_C_COMPILER=${{ matrix.compiler.c }} -DCMAKE_CXX_COMPILER=${{ matrix.compiler.cxx }} -DCPPYYJSON_USE_BUNDLED_YYJSON=OFF -DCMAKE_PREFIX_PATH=${{ runner.temp }}/yyjson-install -G "Ninja Multi-Config"
-        cmake --build ${{ github.workspace }}/build --config Debug --clean-first
+        cmake --build ${{ github.workspace }}/build --config Debug
         ctest --test-dir ${{ github.workspace }}/build -C Debug --output-on-failure --timeout 900
-        cmake --build ${{ github.workspace }}/build --config Release --clean-first
+        cmake --build ${{ github.workspace }}/build --config Release
         ctest --test-dir ${{ github.workspace }}/build -C Release --output-on-failure --timeout 900
 
   macos-build:
@@ -231,7 +231,7 @@ jobs:
         export CC=${{ matrix.compiler.c }} CXX=${{ matrix.compiler.cxx }}
         rm -rf ${{ github.workspace }}/build
         cmake -B ${{ github.workspace }}/build -DCMAKE_TOOLCHAIN_FILE=./external/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=${{ env.triplet }} -DCMAKE_C_COMPILER=${{ matrix.compiler.c }} -DCMAKE_CXX_COMPILER=${{ matrix.compiler.cxx }} -DCMAKE_CXX_STANDARD=${{ matrix.compiler.std || 20 }} "-DCMAKE_CXX_FLAGS=${{ matrix.compiler.flags }}" -G "Ninja Multi-Config"
-        cmake --build ${{ github.workspace }}/build --config Debug --clean-first
+        cmake --build ${{ github.workspace }}/build --config Debug
         ctest --test-dir ${{ github.workspace }}/build -C Debug --output-on-failure --timeout 900
-        cmake --build ${{ github.workspace }}/build --config Release --clean-first
+        cmake --build ${{ github.workspace }}/build --config Release
         ctest --test-dir ${{ github.workspace }}/build -C Release --output-on-failure --timeout 900
