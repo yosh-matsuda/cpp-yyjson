@@ -11,7 +11,7 @@ cpp-yyjson is a header-only C++ interface to [yyjson](https://github.com/ibireme
 *   **Fast with both APIs.** In the [benchmarks](#performance), the data binding API reads and writes C++ types faster than every library it is compared with, and the DOM API reads and writes documents at least as fast as every one of them.
 *   **One call each way.** `read<T>(json)` and `write(t)` convert aggregate structs through compile-time reflection, with no macro or registration. Containers, `std::optional`, `std::variant`, smart pointers, enumerations and recursive types work out of the box.
 *   **Two APIs in one library.** Read JSON of a known shape into C++ types, and JSON of any shape into a DOM, and convert between the two.
-*   **Tolerant of changing JSON.** Unknown keys are ignored, missing keys keep their defaults, and `merge_into` applies a [JSON Merge Patch](https://www.rfc-editor.org/rfc/rfc7386) to an existing object.
+*   **Tolerant of changing JSON.** Unknown keys are ignored, missing keys keep their defaults, and `merge_into` applies a [JSON Merge Patch](https://www.rfc-editor.org/rfc/rfc7396) to an existing object.
 *   **A DOM that feels like the standard library.** Arrays and objects are C++20 ranges, objects yield key-value pairs for structured bindings, values work with `std::format`, and documents are built from containers and initializer lists.
 *   **A faster yyjson inside.** The [bundled backend](#bundled-backend) adds SIMD string paths and other optimizations to yyjson, with the same API, input and output.
 
@@ -64,7 +64,7 @@ Invalid JSON throws `yyjson::read_error`, and JSON that does not fit the type th
 
 ### Reading into an existing object
 
-`yyjson::read_into` reads into an existing object and reuses the memory of its strings and containers. `yyjson::merge_into` applies the JSON as a [JSON Merge Patch](https://www.rfc-editor.org/rfc/rfc7386) and keeps what it does not mention:
+`yyjson::read_into` reads into an existing object and reuses the memory of its strings and containers. `yyjson::merge_into` applies the JSON as a [JSON Merge Patch](https://www.rfc-editor.org/rfc/rfc7396) and keeps what it does not mention:
 
 ```cpp
 struct Config

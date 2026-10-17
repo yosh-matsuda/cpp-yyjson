@@ -101,7 +101,7 @@ void merge_into(std::string_view json_string, T& t, ReadFlag flag = ReadFlag::No
 
 `read_into` gives `t` the same value as `t = read<T>(json_string, flag)`: a field that the JSON object does not have gets its value in `T()`, a key of a map that the JSON object does not have is erased, and a range gets exactly the elements of the JSON array.
 
-`merge_into` applies the JSON string to `t` as a [JSON Merge Patch (RFC 7386)](https://www.rfc-editor.org/rfc/rfc7386) applies it to a JSON value. A JSON object is merged into a struct that the compile-time reflection or the `VISITABLE_STRUCT` macro converts, into a map with unique `std::string` keys, or into a `std::optional` of either, which gets a value first if it has none. Each member of the object is merged into the field or the value of the map that its key names:
+`merge_into` applies the JSON string to `t` as a [JSON Merge Patch (RFC 7396)](https://www.rfc-editor.org/rfc/rfc7396) applies it to a JSON value. A JSON object is merged into a struct that the compile-time reflection or the `VISITABLE_STRUCT` macro converts, into a map with unique `std::string` keys, or into a `std::optional` of either, which gets a value first if it has none. Each member of the object is merged into the field or the value of the map that its key names:
 
 *   `null` gives a field its value in `T()` and erases a key from a map.
 *   A JSON object is merged in the same way, and a key that a map does not have yet is added with a default value first.
