@@ -103,7 +103,7 @@ void merge_into(std::string_view json_string, T& t, ReadFlag flag = ReadFlag::No
 
 `read_into` gives `t` the same value as `t = read<T>(json_string, flag)`: a field that the JSON object does not have gets its value in `T()`, a key of a map that the JSON object does not have is erased, and a range gets exactly the elements of the JSON array.
 
-`merge_into` applies the JSON string to `t` as a [JSON Merge Patch (RFC 7386)](https://www.rfc-editor.org/rfc/rfc7386) applies it to a JSON value. A JSON object is merged into a struct that the compile-time reflection or the `VISITABLE_STRUCT` macro converts, into a map with unique `std::string` keys, into the alternative that a [tagged variant](#tagged-variants) holds, or into a `std::optional` of one of them, which gets a value first if it has none: a struct or a map gets its value in `T()`, and a tagged variant is read from the object. Each member of the object is merged into the field or the value of the map that its key names:
+`merge_into` applies the JSON string to `t` as a [JSON Merge Patch (RFC 7396)](https://www.rfc-editor.org/rfc/rfc7396) applies it to a JSON value. A JSON object is merged into a struct that the compile-time reflection or the `VISITABLE_STRUCT` macro converts, into a map with unique `std::string` keys, into the alternative that a [tagged variant](#tagged-variants) holds, or into a `std::optional` of one of them, which gets a value first if it has none: a struct or a map gets its value in `T()`, and a tagged variant is read from the object. Each member of the object is merged into the field or the value of the map that its key names:
 
 *   `null` gives a field its value in `T()` and erases a key from a map.
 *   A JSON object is merged in the same way, and a key that a map does not have yet is added with a default value first.
@@ -1761,17 +1761,17 @@ A user-defined caster converts a type that the conversions above do not handle, 
 
 The forms are listed in the order to choose them. All but the last convert C++ values or read a [`yyjson::json_view`](#reading-a-json-value-in-a-caster), and both APIs use them without a document: `cast` and `value` of the DOM API as well as `yyjson::read<T>`, `yyjson::read_into`, `yyjson::merge_into` and `yyjson::write` of the data binding API. The last form takes a JSON value of the DOM API. The data binding API accepts it too, but reads each such value into a temporary document.
 
-| Purpose | Form | Direct read | Direct write |
-| --- | --- | --- | --- |
-| Give a struct JSON keys other than its field names, or skip fields | no caster: [`yyjson::annotations`, C++26 annotations or `VISITABLE_STRUCT`](#json-keys-other-than-field-names) | yes | yes |
-| Tell the alternatives of a `std::variant` by a member that names them | no caster: [`internal_tag` or `adjacent_tag`](#tagged-variants) | yes | yes |
-| Keep a part of the JSON as it is | no caster: a field of [`yyjson::value`](#json-values-as-fields) | yes | yes |
-| Convert to and from another type, such as a struct to a string | [translator](#translator): `X from_json(U)` and `U to_json(const X&)` | yes | yes |
-| Read into a field that cannot be copied or moved | [in-place translator](#reading-into-an-existing-field): `void from_json(X&, U)` | yes | — |
-| Write members that depend on the value | [emitter](#writing-members-with-an-emitter): `void to_json(object_emitter&, const X&)` | — | yes |
-| Leave a field out of the JSON object | [`should_omit`](#omitting-a-field-with-no-value): `bool should_omit(const X&)` | — | yes |
-| Decide how to read a value from its content, such as an object of keys known only at run time | [`from_json` that takes a `json_view`](#reading-a-json-value-in-a-caster) | yes | — |
-| The same, with the DOM API | [`from_json` that takes a JSON value](#reading-a-json-value-in-a-caster) | through a document | — |
+| Purpose | Form | Direction |
+| --- | --- | --- |
+| Give a struct JSON keys other than its field names, or skip fields | no caster: [`yyjson::annotations`, C++26 annotations or `VISITABLE_STRUCT`](#json-keys-other-than-field-names) | read and write |
+| Tell the alternatives of a `std::variant` by a member that names them | no caster: [`internal_tag` or `adjacent_tag`](#tagged-variants) | read and write |
+| Keep a part of the JSON as it is | no caster: a field of [`yyjson::value`](#json-values-as-fields) | read and write |
+| Convert to and from another type, such as a struct to a string | [translator](#translator): `X from_json(U)` and `U to_json(const X&)` | read and write |
+| Read into a field that cannot be copied or moved | [in-place translator](#reading-into-an-existing-field): `void from_json(X&, U)` | read |
+| Write members that depend on the value | [emitter](#writing-members-with-an-emitter): `void to_json(object_emitter&, const X&)` | write |
+| Leave a field out of the JSON object | [`should_omit`](#omitting-a-field-with-no-value): `bool should_omit(const X&)` | write |
+| Decide how to read a value from its content, such as an object of keys known only at run time | [`from_json` that takes a `json_view`](#reading-a-json-value-in-a-caster) | read |
+| The same, with the DOM API | [`from_json` that takes a JSON value](#reading-a-json-value-in-a-caster) | read |
 
 Every form gives the same result with both APIs. Some rules apply to all of them:
 
@@ -2111,9 +2111,9 @@ Writing many objects into one `std::string` with `yyjson::write(t, out)` stops a
 
 ### Write casters that convert C++ values
 
-The forms of a [user-defined caster](#user-defined-casters) that take or fill a JSON value need a document. `read<T>` reads each value that a [`from_json(const Json&)`](#reading-a-json-value-in-a-caster) converts into a temporary document, and reads the whole string into a document when such values are the elements of a range or a map or an alternative of a `std::variant`. `write` builds a temporary document for each value that a `to_json` with `writer::object_ref&`, `writer::array_ref&` or `writer::value_ref&` [fills](#writing-into-a-json-value-in-a-caster), the forms kept for the casters of v1.1.0. The results are the same, but the data binding API loses most of its advantage. A caster that reads the JSON value can take a [`yyjson::json_view`](#reading-a-json-value-in-a-caster) instead, which `read<T>` gives without a document, a caster that keeps it can be a translator from [`yyjson::value`](#json-values-as-fields), and a `std::variant` whose alternatives a member names needs no caster with [`variant_tag`](#tagged-variants).
+The forms of a [user-defined caster](#user-defined-casters) that take or fill a JSON value need a document. `read<T>` reads each value that a [`from_json(const Json&)`](#reading-a-json-value-in-a-caster) converts into a temporary document, and reads the whole string into a document when such values are the elements of a range or a map or an alternative of a `std::variant`. `write` builds a temporary document for each value that a `to_json` with `writer::object_ref&`, `writer::array_ref&` or `writer::value_ref&` [fills](#writing-into-a-json-value-in-a-caster), the forms kept for the casters of v1.1.0. The results are the same, but the data binding API loses most of its advantage. A caster that reads the JSON value can take a [`yyjson::json_view`](#reading-a-json-value-in-a-caster) instead, which `read<T>` gives without a document, a caster that keeps it can be a translator from [`yyjson::value`](#json-values-as-fields), and a `std::variant` whose alternatives a member names needs no caster with a [tag](#tagged-variants) in `yyjson::annotations`.
 
-Write casters in the forms that convert C++ values instead, which both APIs use without a document: a [translator](#translator) `from_json(U)` and a `to_json` that returns a value, the [in-place](#reading-into-an-existing-field) `from_json(X&, U)`, a `to_json` with an [emitter](#writing-members-with-an-emitter) and [`should_omit`](#omitting-a-field-with-no-value). A struct whose keys differ from its field names needs no caster at all with [`yyjson::field_rename`](#json-keys-other-than-field-names).
+Write casters in the forms that convert C++ values instead, which both APIs use without a document: a [translator](#translator) `from_json(U)` and a `to_json` that returns a value, the [in-place](#reading-into-an-existing-field) `from_json(X&, U)`, a `to_json` with an [emitter](#writing-members-with-an-emitter) and [`should_omit`](#omitting-a-field-with-no-value). A struct whose keys differ from its field names needs no caster at all with [`yyjson::annotations`](#json-keys-other-than-field-names).
 
 ### Reuse an allocator with the DOM API
 
