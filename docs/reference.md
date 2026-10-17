@@ -1711,7 +1711,7 @@ A translator converts `X` to and from another type `U` that cpp-yyjson already h
 ```cpp
 struct Color
 {
-    int r, g, b;
+    std::uint8_t r, g, b;
 };
 
 template <>
@@ -1721,7 +1721,14 @@ struct yyjson::caster<Color>
     static Color from_json(std::string_view hex)
     {
         if (hex.size() != 7 || hex[0] != '#') throw yyjson::bad_cast("Color is not constructible from JSON");
-        const auto byte = [&](std::size_t i) { return std::stoi(std::string(hex.substr(i, 2)), nullptr, 16); };
+        const auto byte = [&](std::size_t i)
+        {
+            const auto* first = hex.data() + i;
+            auto v = std::uint8_t();
+            const auto [end, ec] = std::from_chars(first, first + 2, v, 16);
+            if (ec != std::errc() || end != first + 2) throw yyjson::bad_cast("Color is not constructible from JSON");
+            return v;
+        };
         return {byte(1), byte(3), byte(5)};
     }
     static std::string to_json(const Color& c)
@@ -2059,4 +2066,20 @@ nested.emplace("EUR", 140.35);
 *   `cpp_yyjson_enable_lto(target)` optimizes the backend together with your code, which is worth a few percent everywhere.
 *   On Linux with glibc, the bundled backend backs blocks of 32 MiB or more with transparent huge pages, which saves most of the page faults of large documents.
 
-See [Installation](../README.md#installation) for these options.
+See [Installation](../README.md#installation) and [Build configuration](#build-configuration) for these options.
+
+## Build configuration
+
+The CMake options are listed in [Installation](../README.md#cmake-options) of the README. This section covers what needs more than a line there.
+
+### Link-time optimization
+
+`cpp_yyjson_enable_lto()` enables link-time optimization for the target and the backend. The backend then keeps machine code beside the bitcode with `-ffat-lto-objects`, so that targets without link-time optimization can link it too. GCC and Clang 18 or later have that option; with Clang 17 or earlier and MSVC, call `cpp_yyjson_enable_lto()` for every target that links cpp-yyjson in the same build, or the link fails with `file format not recognized`.
+
+### Options with an external yyjson
+
+`CPPYYJSON_READER_DEPTH_LIMIT`, `CPPYYJSON_WRITER_DEPTH_LIMIT` and `CPPYYJSON_DISABLE_FILE` define the yyjson [compile-time options](https://ibireme.github.io/yyjson/doc/doxygen/html/building-and-testing.html#compile-time-options) of the same name with `YYJSON_` for the backend and for your code, and require the bundled backend. With an external yyjson, define the `YYJSON_*` option when building yyjson instead, and `YYJSON_READER_DEPTH_LIMIT` for your code too, because `read<T>`, `read_into` and `merge_into` apply the limit that the header sees. `CPPYYJSON_RECURSION_DEPTH_LIMIT` works with either backend.
+
+### Building this repository
+
+To build this repository itself with the vcpkg toolchain, the `vcpkg.json` manifest installs only GoogleTest by default; add `-DVCPKG_MANIFEST_FEATURES=system-yyjson` for the external yyjson, or `-DVCPKG_MANIFEST_FEATURES=bench` for the benchmark libraries.
