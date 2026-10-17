@@ -1040,10 +1040,6 @@ TEST(Reflection, UniquePointers)
 }
 
 // Empty structs, which are read and written as empty JSON objects
-struct EmptyStruct
-{
-    bool operator==(const EmptyStruct&) const = default;
-};
 struct EmptyFields
 {
     int a = 1;

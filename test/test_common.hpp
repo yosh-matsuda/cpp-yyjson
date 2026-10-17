@@ -286,6 +286,25 @@ namespace
     }
 
     std::string written(const auto& t) { return std::string(yyjson::write(t)); }
+
+    // reading `json` as `T` gives the same through a document, without one, into an empty `T` and merged into
+    // one, and writing the result gives the same with and without a document
+    template <typename T>
+    void expect_recursive(std::string_view json)
+    {
+        const auto expected = yyjson::read(json).cast<T>();
+        EXPECT_EQ(yyjson::read<T>(json), expected) << json;
+        EXPECT_TRUE(expect_direct_read<T>(json)) << json;
+        auto into = T();
+        yyjson::read_into(json, into);
+        EXPECT_EQ(into, expected) << json;
+        auto merged = T();
+        yyjson::merge_into(json, merged);
+        EXPECT_EQ(merged, expected) << json;
+        EXPECT_EQ(std::string_view(yyjson::write(expected)), std::string_view(yyjson::value(expected).write()))
+            << json;
+        EXPECT_EQ(yyjson::read(yyjson::write(expected)).template cast<T>(), expected) << json;
+    }
 }  // namespace
 
 
@@ -726,6 +745,12 @@ struct yyjson::caster<DocumentOf<T>>
     }
 };
 #endif
+
+// Empty structs, which are read and written as empty JSON objects
+struct EmptyStruct
+{
+    bool operator==(const EmptyStruct&) const = default;
+};
 
 // Enumerations, which are read and written by the names of their enumerators, and as integers when a value has no
 // name
