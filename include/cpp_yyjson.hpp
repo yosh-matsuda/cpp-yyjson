@@ -13189,7 +13189,9 @@ namespace yyjson
                 return buf;
             }
 
-            CPPYYJSON_ALWAYS_INLINE void read_string_into(std::string& out)
+            // Out of line: inlined into the reader of every string field, it made the readers of large structs
+            // too large for the micro-op cache, and the instruction fetch cost more than the call.
+            CPPYYJSON_NOINLINE void read_string_into(std::string& out)
             {
                 const auto s = scan_string();
                 if (!s.escaped) [[likely]]
