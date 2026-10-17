@@ -1784,14 +1784,20 @@ namespace yyjson
         template <std::size_t N>
         class field_key_matcher
         {
+        public:
+            // The same under every instruction set: the matchers are inline variables, which the translation
+            // units built with and without AVX2 share.
+            static constexpr std::size_t key_bytes = 32;
+
+        private:
             std::array<std::string_view, N> names_;
             std::array<std::size_t, N> order_ = {};  // indices of the names sorted by length
             std::array<std::size_t, N> sizes_ = {};  // the lengths of the names in that order
             std::array<bool, N> plain_ = {};         // whether a name is written in JSON as it is
-            // A plain name shorter than 16 characters followed by the closing quotation mark, as the 16 bytes
-            // loaded from the text in little-endian order compare with it under the mask.
-            std::array<std::array<std::uint64_t, 2>, N> key_ = {};
-            std::array<std::array<std::uint64_t, 2>, N> key_mask_ = {};
+            // A plain name shorter than `key_bytes` characters followed by the closing quotation mark, as the
+            // bytes loaded from the text in little-endian order compare with it under the mask.
+            std::array<std::array<std::uint64_t, key_bytes / 8>, N> key_ = {};
+            std::array<std::array<std::uint64_t, key_bytes / 8>, N> key_mask_ = {};
 
             // Compares names of the same length without calling `memcmp`, as they are short.  GCC warns
             // that the 8-byte loads read past a name shorter than 8 bytes, though they run only for a
@@ -1853,7 +1859,7 @@ namespace yyjson
                     plain_[i] = std::ranges::none_of(names_[i], [](char c) {
                         return c == '"' || c == '\\' || static_cast<unsigned char>(c) < 0x20;
                     });
-                    if (plain_[i] && names_[i].size() < 16)
+                    if (plain_[i] && names_[i].size() < key_bytes)
                     {
                         for (std::size_t j = 0; j <= names_[i].size(); ++j)
                         {
@@ -1871,16 +1877,35 @@ namespace yyjson
                 return std::endian::native == std::endian::little && key_mask_[index][0] != 0;
             }
 
-            // Whether the 16 characters at `p` begin with the name of the field `index` and the quotation mark
-            // that closes it.
+            // Whether the `key_bytes` characters at `p` begin with the name of the field `index` and the quotation
+            // mark that closes it.
             [[nodiscard]] CPPYYJSON_ALWAYS_INLINE bool is_raw_key_at(std::size_t index, const char* p) const noexcept
             {
-                std::uint64_t lo, hi;
-                std::memcpy(&lo, p, sizeof(lo));
-                std::memcpy(&hi, p + 8, sizeof(hi));
-                const auto diff_lo = (lo ^ key_[index][0]) & key_mask_[index][0];
-                const auto diff_hi = (hi ^ key_[index][1]) & key_mask_[index][1];
-                return (diff_lo | diff_hi) == 0;
+#if defined(__AVX2__)
+                const auto v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(p));
+                const auto k = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(key_[index].data()));
+                const auto m = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(key_mask_[index].data()));
+                return _mm256_testz_si256(_mm256_xor_si256(v, k), m) != 0;
+#elif defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+                const auto* const k = reinterpret_cast<const __m128i*>(key_[index].data());
+                const auto* const m = reinterpret_cast<const __m128i*>(key_mask_[index].data());
+                const auto lo = _mm_and_si128(
+                    _mm_xor_si128(_mm_loadu_si128(reinterpret_cast<const __m128i*>(p)), _mm_loadu_si128(k)),
+                    _mm_loadu_si128(m));
+                const auto hi = _mm_and_si128(
+                    _mm_xor_si128(_mm_loadu_si128(reinterpret_cast<const __m128i*>(p + 16)), _mm_loadu_si128(k + 1)),
+                    _mm_loadu_si128(m + 1));
+                return _mm_movemask_epi8(_mm_cmpeq_epi8(_mm_or_si128(lo, hi), _mm_setzero_si128())) == 0xFFFF;
+#else
+                auto diff = std::uint64_t{0};
+                for (std::size_t i = 0; i < key_bytes / 8; ++i)
+                {
+                    std::uint64_t w;
+                    std::memcpy(&w, p + 8 * i, sizeof(w));
+                    diff |= (w ^ key_[index][i]) & key_mask_[index][i];
+                }
+                return diff == 0;
+#endif
             }
 
             [[nodiscard]] CPPYYJSON_ALWAYS_INLINE constexpr std::size_t name_size(std::size_t index) const noexcept
@@ -15495,7 +15520,7 @@ namespace yyjson
                     {
                         // the key that is expected next is compared with the text without scanning it first
                         const auto n = matcher.name_size(hint);
-                        if (matcher.has_short_key(hint) && last_ - cur_ >= 16)
+                        if (matcher.has_short_key(hint) && last_ - cur_ >= std::ptrdiff_t{matcher.key_bytes})
                         {
                             if (matcher.is_raw_key_at(hint, cur_ + 1))
                             {

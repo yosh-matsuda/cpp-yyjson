@@ -301,17 +301,29 @@ TEST(DirectReader, Structs)
     // the names that the reader compares with the text in one or two loads, and their neighbours
     for (const auto* key : {"a", "b", "", "bb", "bbb", "fifteen_chars_x", "fifteen_chars_", "fifteen_chars_xy",
                             "sixteen_chars_xx", "sixteen_chars_x", "sixteen_chars_xxx", "seventeen_chars_x",
-                            "seventeen_chars_", "seventeen_chars_xy", "fifteen_chars_y", "\\u0061", "v"})
+                            "seventeen_chars_", "seventeen_chars_xy", "fifteen_chars_y",
+                            "thirty_one_chars_xxxxxxxxxxxxxx", "thirty_one_chars_xxxxxxxxxxxxx",
+                            "thirty_one_chars_xxxxxxxxxxxxxxx", "thirty_one_chars_xxxxxxxxxxxxxy",
+                            "thirty_one_charsxxxxxxxxxxxxxxx", "thirty_two_chars_xxxxxxxxxxxxxxx",
+                            "thirty_two_chars_xxxxxxxxxxxxxx", "thirty_two_chars_xxxxxxxxxxxxxxxx",
+                            "thirty_two_chars_xxxxxxxxxxxxxxy", "\\u0061", "v"})
     {
-        for (const auto* after : {"", ",\"a\":7", ",\"bb\":8,\"fifteen_chars_x\":9"})
+        // the members before the key make the reader expect the field after them, which it compares the key with
+        for (const auto* before : {"", R"("a":1,"bb":2,)",
+                                   R"("a":1,"bb":2,"fifteen_chars_x":3,"sixteen_chars_xx":4,"seventeen_chars_x":5,)",
+                                   R"("a":1,"bb":2,"fifteen_chars_x":3,"sixteen_chars_xx":4,"seventeen_chars_x":5,)"
+                                   R"("thirty_one_chars_xxxxxxxxxxxxxx":6,)"})
         {
-            EXPECT_TRUE((expect_direct_read<KeyLengths>(std::format(R"({{"{}":1{}}})", key, after)) ||
-                        std::string_view(key) == "v"))
-                << key;
-            EXPECT_TRUE((expect_direct_read<KeyLengths>(
-                std::format(R"({{"a":1,"bb":2,"{}":3{}}}{})", key, after, std::string(20, ' '))) ||
-                        std::string_view(key) == "v"))
-                << key;
+            for (const auto* after : {"", R"(,"a":7)", R"(,"bb":8,"fifteen_chars_x":9)",
+                                      R"(,"thirty_one_chars_xxxxxxxxxxxxxx":10,"thirty_two_chars_xxxxxxxxxxxxxxx":11)"})
+            {
+                for (const auto padding : {0, 40})
+                {
+                    const auto json = std::format(R"({{{}"{}":1{}}}{})", before, key, after,
+                                                  std::string(static_cast<std::size_t>(padding), ' '));
+                    EXPECT_TRUE((expect_direct_read<KeyLengths>(json) || std::string_view(key) == "v")) << json;
+                }
+            }
         }
     }
 
