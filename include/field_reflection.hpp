@@ -146,10 +146,10 @@ namespace field_reflection
         }
 
         template <class T>
-        constexpr auto type_name_storage = make_static_string<get_type_name<T>().size()>(get_type_name<T>());
+        inline constexpr auto type_name_storage = make_static_string<get_type_name<T>().size()>(get_type_name<T>());
 
         template <class T>
-        constexpr std::string_view type_name = type_name_storage<T>.view();
+        inline constexpr std::string_view type_name = type_name_storage<T>.view();
     }  // namespace detail_common
 
     using detail_common::type_name;
@@ -165,7 +165,7 @@ namespace field_reflection
         namespace detail
         {
             template <typename>
-            constexpr bool always_false = false;
+            inline constexpr bool always_false = false;
 
             template <typename T>
             concept tuple_like = requires { std::tuple_size<T>::value; };
@@ -436,12 +436,12 @@ namespace field_reflection
 
             constexpr std::size_t macro_max_fields_count = 100;
             template <typename T>
-            constexpr auto max_field_count =
+            inline constexpr auto max_field_count =
                 std::min(std::size_t{macro_max_fields_count}, sizeof(T) * CHAR_BIT);  // in consideration of bit field
 
             template <typename T, std::size_t N>
             requires std::is_aggregate_v<T>
-            constexpr std::size_t field_count_impl = []() {
+            inline constexpr std::size_t field_count_impl = []() {
                 if constexpr (constructible<T, N> && !constructible<T, N + 1>)
                 {
                     return N;
@@ -476,7 +476,7 @@ namespace field_reflection
             // otherwise. It is the S with which the rest of the members take exactly the rest of the initializers
             // when the member is initialized by S initializers in braces.
             template <typename T, std::size_t L, std::size_t Max, std::size_t S = 2>
-            constexpr std::size_t member_width = []() {
+            inline constexpr std::size_t member_width = []() {
                 if constexpr (S > Max - L)
                 {
                     return std::size_t{1};
@@ -493,7 +493,7 @@ namespace field_reflection
             }();
 
             template <typename T, std::size_t L, std::size_t Max>
-            constexpr std::size_t member_count_from = []() {
+            inline constexpr std::size_t member_count_from = []() {
                 if constexpr (L >= Max)
                 {
                     return std::size_t{0};
@@ -517,11 +517,18 @@ namespace field_reflection
                 }
             }();
 
+            // T{{arg}, ..., {arg}} with N initializers.  The lambda is in a concept rather than in the condition of
+            // `if constexpr` below, where MSVC 19.51 reports it as an undeclared identifier.
+            template <typename T, std::size_t N>
+            concept constructible_with_braced = []<std::size_t... Is>(std::index_sequence<Is...>) {
+                return requires { T{{any_copyable<T, Is>()}...}; };
+            }(std::make_index_sequence<N>());
+
             // The number of initializers of aggregate initialization counts the elements of C array members.
             // Count such a member as one field.
             template <typename T>
             requires std::is_aggregate_v<T>
-            constexpr std::size_t field_count_value = []() {
+            inline constexpr std::size_t field_count_value = []() {
                 constexpr auto max_args = field_count_impl<T, 0>;
                 if constexpr (max_args == std::numeric_limits<std::size_t>::max())
                 {
@@ -535,9 +542,7 @@ namespace field_reflection
                 }
                 // Fast path: a braced list initializes exactly one member without brace elision, so T has no C
                 // array members if each of the initializers in braces initializes T.
-                else if constexpr ([]<std::size_t... Is>(std::index_sequence<Is...>) {
-                                       return requires { T{{any_copyable<T, Is>()}...}; };
-                                   }(std::make_index_sequence<max_args>()))
+                else if constexpr (constructible_with_braced<T, max_args>)
                 {
                     return max_args;
                 }
@@ -555,7 +560,7 @@ namespace field_reflection
                 requires { requires field_count_value<T> <= max_field_count<T>; };
 
             template <field_countable T>
-            constexpr std::size_t field_count = field_count_value<T>;
+            inline constexpr std::size_t field_count = field_count_value<T>;
 
             // T{arg x L, Mid, arg x R}
             template <typename T, typename Mid, std::size_t L, std::size_t R>
@@ -587,7 +592,7 @@ namespace field_reflection
             // A variable template caches the result, while a lambda expression in a concept is instantiated again
             // whenever the constraints of an overload are checked.
             template <typename T>
-            constexpr bool is_decomposable = []() {
+            inline constexpr bool is_decomposable = []() {
 #if defined(FIELD_RFL_HAS_STRUCTURED_BINDING_SIZE)
                 if constexpr (requires { __builtin_structured_binding_size(T); })
                 {
@@ -1033,14 +1038,14 @@ namespace field_reflection
 
             // The name is parsed once and copied, so that the function name is not kept in the program.
             template <field_namable T, std::size_t N>
-            constexpr std::string_view field_name_raw = get_field_name<T, get_ptr<T, N>()>();
+            inline constexpr std::string_view field_name_raw = get_field_name<T, get_ptr<T, N>()>();
 
             template <field_namable T, std::size_t N>
-            constexpr auto field_name_storage =
+            inline constexpr auto field_name_storage =
                 detail_common::make_static_string<field_name_raw<T, N>.size()>(field_name_raw<T, N>);
 
             template <field_namable T, std::size_t N>
-            constexpr std::string_view field_name = field_name_storage<T, N>.view();
+            inline constexpr std::string_view field_name = field_name_storage<T, N>.view();
 
             template <field_referenceable T, std::size_t N>
             using field_type = std::tuple_element_t<N, typename decltype(field_type_tuple<T>())::type>;
@@ -1141,14 +1146,14 @@ namespace field_reflection
             }
 
             template <typename E>
-            constexpr long long enum_range_min = []() {
+            inline constexpr long long enum_range_min = []() {
                 using U = std::underlying_type_t<E>;
                 constexpr auto lower = static_cast<long long>(std::numeric_limits<U>::min());
                 return std::max(static_cast<long long>(enum_range<E>::min), lower);
             }();
 
             template <typename E>
-            constexpr long long enum_range_max = []() {
+            inline constexpr long long enum_range_max = []() {
                 using U = std::underlying_type_t<E>;
                 if constexpr (std::is_unsigned_v<U> && sizeof(U) >= sizeof(long long))
                 {
@@ -1164,7 +1169,7 @@ namespace field_reflection
             // A variable template evaluates each name in a separate constant evaluation, whose number of steps is
             // limited by the compiler.
             template <typename E, long long V>
-            constexpr std::string_view enum_name_of_value = get_enum_name<E, V>();
+            inline constexpr std::string_view enum_name_of_value = get_enum_name<E, V>();
 
             template <auto... Vs>
             consteval std::string_view get_enum_values_function_name()
@@ -1384,7 +1389,7 @@ namespace field_reflection
             // The results are variable templates, since the initializer of a constexpr local variable is evaluated
             // again whenever the enclosing function is evaluated (Clang).
             template <typename E, long long First, long long... Is>
-            constexpr auto enum_chunk_by_values = []() {
+            inline constexpr auto enum_chunk_by_values = []() {
                 using U = std::underlying_type_t<E>;
                 constexpr auto d = enum_name_detector::detector_value;
                 // A pack of values gives a shorter function name, but its separator ", " may appear in the name of the
@@ -1401,7 +1406,7 @@ namespace field_reflection
             }();
 
             template <typename E, long long First, long long... Is>
-            constexpr auto enum_chunk_by_tags = []() {
+            inline constexpr auto enum_chunk_by_tags = []() {
                 using U = std::underlying_type_t<E>;
                 constexpr auto d = enum_name_detector::detector_value;
                 return parse_enum_values_function_name<sizeof...(Is)>(
@@ -1411,7 +1416,7 @@ namespace field_reflection
             }();
 
             template <typename E, long long First, long long... Is>
-            constexpr auto enum_chunk_by_names = []() {
+            inline constexpr auto enum_chunk_by_names = []() {
                 constexpr std::string_view names[] = {enum_name_of_value<E, First + Is>...};
                 enum_chunk_result<sizeof...(Is)> result{true};
                 for (std::size_t i = 0; i < sizeof...(Is); ++i)
@@ -1444,7 +1449,7 @@ namespace field_reflection
             inline constexpr long long enum_chunk_size = 512;
 
             template <typename E, long long First, long long N>
-            constexpr auto enum_chunk = get_enum_chunk<E, First>(std::make_integer_sequence<long long, N>());
+            inline constexpr auto enum_chunk = get_enum_chunk<E, First>(std::make_integer_sequence<long long, N>());
 
             // Calls f(chunk, the first value of the chunk) for each chunk of the values in enum_range<E>.
             template <typename E, typename F>
@@ -1467,7 +1472,7 @@ namespace field_reflection
             };
 
             template <typename E>
-            constexpr enum_sizes enum_sizes_v = []() {
+            inline constexpr enum_sizes enum_sizes_v = []() {
                 enum_sizes sizes{};
                 for_each_enum_chunk<E>([&](const auto& chunk, long long) {
                     sizes.count += chunk.count;
@@ -1486,7 +1491,7 @@ namespace field_reflection
 
             // The chars have a null character at least, so that they are not empty.
             template <typename E>
-            constexpr auto enum_table_v = []() {
+            inline constexpr auto enum_table_v = []() {
                 using U = std::underlying_type_t<E>;
                 using Offset = enum_offset_t<enum_sizes_v<E>.chars_size + 1>;
                 enum_table<U, enum_sizes_v<E>.count, enum_sizes_v<E>.chars_size + 1> table{};
@@ -1508,9 +1513,10 @@ namespace field_reflection
 
             // The values in the range are distinct and sorted, so that there are no aliases.
             template <typename E>
-            constexpr auto enum_data_v = make_enum_data(enum_table_v<E>.values.data(), enum_table_v<E>.offsets.data(),
-                                                        enum_table_v<E>.chars.data(), enum_table_v<E>.values.size(),
-                                                        enum_table_v<E>.values.size());
+            inline constexpr auto enum_data_v =
+                make_enum_data(enum_table_v<E>.values.data(), enum_table_v<E>.offsets.data(),
+                               enum_table_v<E>.chars.data(), enum_table_v<E>.values.size(),
+                               enum_table_v<E>.values.size());
         }  // namespace detail
 
         // The options only extend the set of reflectable types with the C++26 backend, so they are ignored here.
@@ -1525,11 +1531,11 @@ namespace field_reflection
 
         template <typename T, reflect_options Opts = reflect_options{}>
         requires field_countable<T, Opts>
-        constexpr std::size_t field_count = detail::field_count<T>;
+        inline constexpr std::size_t field_count = detail::field_count<T>;
 
         template <typename T, std::size_t N, reflect_options Opts = reflect_options{}>
         requires field_namable<T, Opts> && (N < field_count<T, Opts>)
-        constexpr std::string_view field_name = detail::field_name<T, N>;
+        inline constexpr std::string_view field_name = detail::field_name<T, N>;
 
         template <typename T, std::size_t N, reflect_options Opts = reflect_options{}>
         requires field_referenceable<T, Opts> && (N < field_count<T, Opts>)
@@ -1608,7 +1614,7 @@ namespace field_reflection
             namespace meta = std::meta;
 
             template <typename T>
-            constexpr bool tuple_like_v = tuple_like<T>;
+            inline constexpr bool tuple_like_v = tuple_like<T>;
 
             // The results of the metafunctions are bound to local variables before the range-based for loops.
             // GCC 16.0.1 (e.g., g++-16 on Ubuntu 26.04) rejects the destruction of a temporary std::vector<meta::info>
@@ -1671,7 +1677,7 @@ namespace field_reflection
             }
 
             template <typename T, reflect_options Opts>
-            constexpr bool countable_v = is_countable<std::remove_cv_t<T>, Opts>();
+            inline constexpr bool countable_v = is_countable<std::remove_cv_t<T>, Opts>();
 
             // Members of base classes come first, in declaration order.
             consteval void collect_members(meta::info type, std::vector<meta::info>& members)
@@ -1697,10 +1703,10 @@ namespace field_reflection
             }
 
             template <typename T>
-            constexpr std::span<const meta::info> members_of_v = get_members<std::remove_cv_t<T>>();
+            inline constexpr std::span<const meta::info> members_of_v = get_members<std::remove_cv_t<T>>();
 
             template <typename T, std::size_t N>
-            constexpr meta::info member_at = members_of_v<T>[N];
+            inline constexpr meta::info member_at = members_of_v<T>[N];
 
             // The type of a field of cv T is cv-qualified unless it is a reference or a mutable member.
             template <typename T, std::size_t N>
@@ -1725,7 +1731,7 @@ namespace field_reflection
             }
 
             template <typename T>
-            constexpr bool has_bit_field_v = has_bit_field<std::remove_cv_t<T>>();
+            inline constexpr bool has_bit_field_v = has_bit_field<std::remove_cv_t<T>>();
 
             template <typename T>
             consteval bool has_unique_names()
@@ -1741,7 +1747,7 @@ namespace field_reflection
             }
 
             template <typename T>
-            constexpr bool has_unique_names_v = has_unique_names<std::remove_cv_t<T>>();
+            inline constexpr bool has_unique_names_v = has_unique_names<std::remove_cv_t<T>>();
 
             template <typename U, std::size_t N, typename T>
             constexpr decltype(auto) get_member(T& t) noexcept
@@ -1919,7 +1925,7 @@ namespace field_reflection
             }
 
             template <typename E>
-            constexpr auto enum_names_data_v = get_enum_names_data<E>();
+            inline constexpr auto enum_names_data_v = get_enum_names_data<E>();
 
             // The type of the offsets depends on the size of the names, so that the offsets are computed after them.
             template <typename E, typename U = std::underlying_type_t<E>,
@@ -1937,7 +1943,7 @@ namespace field_reflection
             }
 
             template <typename E>
-            constexpr auto enum_data_v = get_enum_data<E>();
+            inline constexpr auto enum_data_v = get_enum_data<E>();
 
 #if FIELD_RFL_ANNOTATIONS
             template <meta::info R, typename A>
@@ -1954,10 +1960,11 @@ namespace field_reflection
             }
 
             template <meta::info R, typename A>
-            constexpr auto annotations_v = get_annotations<R, A>(std::make_index_sequence<annotation_count<R, A>()>());
+            inline constexpr auto annotations_v =
+                get_annotations<R, A>(std::make_index_sequence<annotation_count<R, A>()>());
 
             template <meta::info R, typename A>
-            constexpr std::optional<A> annotation_v = []() -> std::optional<A> {
+            inline constexpr std::optional<A> annotation_v = []() -> std::optional<A> {
                 if constexpr (annotations_v<R, A>.empty()) return std::nullopt;
                 else return annotations_v<R, A>[0];
             }();
@@ -1977,11 +1984,12 @@ namespace field_reflection
 
         template <typename T, reflect_options Opts = reflect_options{}>
         requires field_countable<T, Opts>
-        constexpr std::size_t field_count = detail::members_of_v<T>.size();
+        inline constexpr std::size_t field_count = detail::members_of_v<T>.size();
 
         template <typename T, std::size_t N, reflect_options Opts = reflect_options{}>
         requires field_namable<T, Opts> && (N < field_count<T, Opts>)
-        constexpr std::string_view field_name = std::define_static_string(std::meta::identifier_of(detail::member_at<T, N>));
+        inline constexpr std::string_view field_name =
+            std::define_static_string(std::meta::identifier_of(detail::member_at<T, N>));
 
         template <typename T, std::size_t N, reflect_options Opts = reflect_options{}>
         requires field_referenceable<T, Opts> && (N < field_count<T, Opts>)
@@ -2066,21 +2074,21 @@ namespace field_reflection
         // Annotations (P3394) of type A attached to the N-th field
         template <typename T, std::size_t N, typename A, reflect_options Opts = reflect_options{}>
         requires field_countable<T, Opts> && (N < field_count<T, Opts>)
-        constexpr auto field_annotations = detail::annotations_v<detail::member_at<T, N>, A>;
+        inline constexpr auto field_annotations = detail::annotations_v<detail::member_at<T, N>, A>;
 
         // The first annotation of type A attached to the N-th field, if any
         template <typename T, std::size_t N, typename A, reflect_options Opts = reflect_options{}>
         requires field_countable<T, Opts> && (N < field_count<T, Opts>)
-        constexpr std::optional<A> field_annotation = detail::annotation_v<detail::member_at<T, N>, A>;
+        inline constexpr std::optional<A> field_annotation = detail::annotation_v<detail::member_at<T, N>, A>;
 
         // clang-format off
         // Annotations of type A attached to the declaration of type T
         template <typename T, typename A>
-        constexpr auto type_annotations = detail::annotations_v<std::meta::dealias(^^T), A>;
+        inline constexpr auto type_annotations = detail::annotations_v<std::meta::dealias(^^T), A>;
 
         // The first annotation of type A attached to the declaration of type T, if any
         template <typename T, typename A>
-        constexpr std::optional<A> type_annotation = detail::annotation_v<std::meta::dealias(^^T), A>;
+        inline constexpr std::optional<A> type_annotation = detail::annotation_v<std::meta::dealias(^^T), A>;
         // clang-format on
 #endif
 #endif
@@ -2152,7 +2160,7 @@ namespace field_reflection
             }
 
             template <reflect_options Opts, bool Pred, typename Func, typename T, typename... Ts>
-            constexpr visitor_kind visitor_kind_v = get_visitor_kind<Opts, Pred, Func, T, Ts...>(
+            inline constexpr visitor_kind visitor_kind_v = get_visitor_kind<Opts, Pred, Func, T, Ts...>(
                 std::make_index_sequence<field_reflection::field_count<std::remove_cvref_t<T>, Opts>>());
 
             // Calls func with the I-th fields. The copies of bit-fields are destroyed, and written back, when func
@@ -2387,15 +2395,15 @@ namespace field_reflection
         namespace detail
         {
             template <typename E>
-            constexpr std::size_t enum_count_value = enum_data_v<E>.count;
+            inline constexpr std::size_t enum_count_value = enum_data_v<E>.count;
 
             template <typename E>
-            constexpr auto enum_values_value = []<std::size_t... Is>(std::index_sequence<Is...>) {
+            inline constexpr auto enum_values_value = []<std::size_t... Is>(std::index_sequence<Is...>) {
                 return std::array<E, sizeof...(Is)>{static_cast<E>(enum_data_v<E>.values[Is])...};
             }(std::make_index_sequence<enum_count_value<E>>());
 
             template <typename E>
-            constexpr auto enum_names_value = []<std::size_t... Is>(std::index_sequence<Is...>) {
+            inline constexpr auto enum_names_value = []<std::size_t... Is>(std::index_sequence<Is...>) {
                 return std::array<std::string_view, sizeof...(Is)>{
                     enum_entry_name(enum_data_v<E>.offsets, enum_data_v<E>.chars, Is)...};
             }(std::make_index_sequence<enum_count_value<E>>());
@@ -2404,18 +2412,18 @@ namespace field_reflection
         // Number of distinct enumerator values of E
         template <typename E>
         requires std::is_enum_v<E>
-        constexpr std::size_t enum_count = detail::enum_count_value<std::remove_cv_t<E>>;
+        inline constexpr std::size_t enum_count = detail::enum_count_value<std::remove_cv_t<E>>;
 
         // Distinct enumerator values of E in ascending order
         template <typename E>
         requires std::is_enum_v<E>
-        constexpr std::array<std::remove_cv_t<E>, enum_count<E>> enum_values =
+        inline constexpr std::array<std::remove_cv_t<E>, enum_count<E>> enum_values =
             detail::enum_values_value<std::remove_cv_t<E>>;
 
         // Enumerator names corresponding to enum_values<E>. For aliases, the first declared name is used.
         template <typename E>
         requires std::is_enum_v<E>
-        constexpr std::array<std::string_view, enum_count<E>> enum_names =
+        inline constexpr std::array<std::string_view, enum_count<E>> enum_names =
             detail::enum_names_value<std::remove_cv_t<E>>;
 
         // Name of the enumerator whose value is equal to value, or an empty string if there is no such enumerator
