@@ -1784,14 +1784,20 @@ namespace yyjson
         template <std::size_t N>
         class field_key_matcher
         {
+        public:
+            // The same under every instruction set: the matchers are inline variables, which the translation
+            // units built with and without AVX2 share.
+            static constexpr std::size_t key_bytes = 32;
+
+        private:
             std::array<std::string_view, N> names_;
             std::array<std::size_t, N> order_ = {};  // indices of the names sorted by length
             std::array<std::size_t, N> sizes_ = {};  // the lengths of the names in that order
             std::array<bool, N> plain_ = {};         // whether a name is written in JSON as it is
-            // A plain name shorter than 16 characters followed by the closing quotation mark, as the 16 bytes
-            // loaded from the text in little-endian order compare with it under the mask.
-            std::array<std::array<std::uint64_t, 2>, N> key_ = {};
-            std::array<std::array<std::uint64_t, 2>, N> key_mask_ = {};
+            // A plain name shorter than `key_bytes` characters followed by the closing quotation mark, as the
+            // bytes loaded from the text in little-endian order compare with it under the mask.
+            std::array<std::array<std::uint64_t, key_bytes / 8>, N> key_ = {};
+            std::array<std::array<std::uint64_t, key_bytes / 8>, N> key_mask_ = {};
 
             // Compares names of the same length without calling `memcmp`, as they are short.  GCC warns
             // that the 8-byte loads read past a name shorter than 8 bytes, though they run only for a
@@ -1853,7 +1859,7 @@ namespace yyjson
                     plain_[i] = std::ranges::none_of(names_[i], [](char c) {
                         return c == '"' || c == '\\' || static_cast<unsigned char>(c) < 0x20;
                     });
-                    if (plain_[i] && names_[i].size() < 16)
+                    if (plain_[i] && names_[i].size() < key_bytes)
                     {
                         for (std::size_t j = 0; j <= names_[i].size(); ++j)
                         {
@@ -1871,16 +1877,35 @@ namespace yyjson
                 return std::endian::native == std::endian::little && key_mask_[index][0] != 0;
             }
 
-            // Whether the 16 characters at `p` begin with the name of the field `index` and the quotation mark
-            // that closes it.
+            // Whether the `key_bytes` characters at `p` begin with the name of the field `index` and the quotation
+            // mark that closes it.
             [[nodiscard]] CPPYYJSON_ALWAYS_INLINE bool is_raw_key_at(std::size_t index, const char* p) const noexcept
             {
-                std::uint64_t lo, hi;
-                std::memcpy(&lo, p, sizeof(lo));
-                std::memcpy(&hi, p + 8, sizeof(hi));
-                const auto diff_lo = (lo ^ key_[index][0]) & key_mask_[index][0];
-                const auto diff_hi = (hi ^ key_[index][1]) & key_mask_[index][1];
-                return (diff_lo | diff_hi) == 0;
+#if defined(__AVX2__)
+                const auto v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(p));
+                const auto k = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(key_[index].data()));
+                const auto m = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(key_mask_[index].data()));
+                return _mm256_testz_si256(_mm256_xor_si256(v, k), m) != 0;
+#elif defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+                const auto* const k = reinterpret_cast<const __m128i*>(key_[index].data());
+                const auto* const m = reinterpret_cast<const __m128i*>(key_mask_[index].data());
+                const auto lo = _mm_and_si128(
+                    _mm_xor_si128(_mm_loadu_si128(reinterpret_cast<const __m128i*>(p)), _mm_loadu_si128(k)),
+                    _mm_loadu_si128(m));
+                const auto hi = _mm_and_si128(
+                    _mm_xor_si128(_mm_loadu_si128(reinterpret_cast<const __m128i*>(p + 16)), _mm_loadu_si128(k + 1)),
+                    _mm_loadu_si128(m + 1));
+                return _mm_movemask_epi8(_mm_cmpeq_epi8(_mm_or_si128(lo, hi), _mm_setzero_si128())) == 0xFFFF;
+#else
+                auto diff = std::uint64_t{0};
+                for (std::size_t i = 0; i < key_bytes / 8; ++i)
+                {
+                    std::uint64_t w;
+                    std::memcpy(&w, p + 8 * i, sizeof(w));
+                    diff |= (w ^ key_[index][i]) & key_mask_[index][i];
+                }
+                return diff == 0;
+#endif
             }
 
             [[nodiscard]] CPPYYJSON_ALWAYS_INLINE constexpr std::size_t name_size(std::size_t index) const noexcept
@@ -15487,6 +15512,37 @@ namespace yyjson
                 return matcher.find(read_string(scratch_), hint);
             }
 
+            // Returns `hint` and moves `cur_` past the key when the key at `cur_` is that of the field `hint`, which
+            // is expected next, and `N` otherwise.  The key is compared with the text without scanning it first.
+            template <std::size_t N>
+            CPPYYJSON_ALWAYS_INLINE std::size_t expected_field(const yyjson::detail::field_key_matcher<N>& matcher,
+                                                               std::size_t hint)
+            {
+                // Named through the class: read through the reference `matcher`, it is not a constant expression
+                // before C++23, and Clang rejects the narrowing below.
+                constexpr auto key_bytes = std::ptrdiff_t{yyjson::detail::field_key_matcher<N>::key_bytes};
+                auto index = N;
+                if (hint < N)
+                {
+                    const auto n = matcher.name_size(hint);
+                    if (matcher.has_short_key(hint) && last_ - cur_ >= key_bytes)
+                    {
+                        if (matcher.is_raw_key_at(hint, cur_ + 1))
+                        {
+                            index = hint;
+                            cur_ += n + 2;
+                        }
+                    }
+                    else if (static_cast<std::size_t>(last_ - cur_) > n + 1 && cur_[n + 1] == '"' &&
+                             matcher.is_raw_name_at(hint, cur_ + 1))
+                    {
+                        index = hint;
+                        cur_ += n + 2;
+                    }
+                }
+                return index;
+            }
+
             // Reads the members of an object, assigning those that `matcher` finds with `assign(index)`.
             template <std::size_t N, typename Assign>
             CPPYYJSON_ALWAYS_INLINE void read_fields(const yyjson::detail::field_key_matcher<N>& matcher,
@@ -15494,26 +15550,7 @@ namespace yyjson
             {
                 auto hint = std::size_t{0};
                 read_members([&]() CPPYYJSON_LAMBDA_ALWAYS_INLINE {
-                    auto index = N;
-                    if (hint < N)
-                    {
-                        // the key that is expected next is compared with the text without scanning it first
-                        const auto n = matcher.name_size(hint);
-                        if (matcher.has_short_key(hint) && last_ - cur_ >= 16)
-                        {
-                            if (matcher.is_raw_key_at(hint, cur_ + 1))
-                            {
-                                index = hint;
-                                cur_ += n + 2;
-                            }
-                        }
-                        else if (static_cast<std::size_t>(last_ - cur_) > n + 1 && cur_[n + 1] == '"' &&
-                                 matcher.is_raw_name_at(hint, cur_ + 1))
-                        {
-                            index = hint;
-                            cur_ += n + 2;
-                        }
-                    }
+                    auto index = expected_field(matcher, hint);
                     if (index == N) index = find_field(matcher, hint);
                     read_colon();
                     if (index < N)
@@ -15526,26 +15563,138 @@ namespace yyjson
                 });
             }
 
+            // Reads the members of the object at `cur_` whose keys `Matcher` finds, from `cur_` at a key, with
+            // `hint` the field that is expected next.
+            template <const auto& Matcher, typename ReadField>
+            CPPYYJSON_NOINLINE void read_fields_rest(const char* open, std::uint32_t indent, std::size_t hint,
+                                                     const ReadField& read_field)
+            {
+                constexpr auto n = std::remove_cvref_t<decltype(Matcher)>::size;
+                for (;;)
+                {
+                    if (*cur_ != '"') [[unlikely]]
+                        fail();
+                    auto index = expected_field(Matcher, hint);
+                    if (index == n) index = find_field(Matcher, hint);
+                    read_colon();
+                    if (index < n)
+                    {
+                        [&]<std::size_t... Ks>(std::index_sequence<Ks...>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                            (void)((index == Ks && (read_field(std::integral_constant<std::size_t, Ks>{}), true)) ||
+                                   ...);
+                        }(std::make_index_sequence<n>{});
+                        hint = index + 1;
+                    }
+                    else
+                        skip_value();
+                    skip_ws();
+                    if (*cur_ == ',')
+                    {
+                        ++cur_;
+                        skip_ws_like(indent);
+                        continue;
+                    }
+                    if (*cur_ != '}') [[unlikely]]
+                        fail();
+                    close(open);
+                    return;
+                }
+            }
+
+            // Reads the members of the object at `cur_` with `read_field(std::integral_constant<std::size_t, K>)`
+            // for the field K that `Matcher` finds.  Keys usually come in the order of the fields, so the key of
+            // each field is compared in turn at a constant index, and the first key out of that order goes on in
+            // `read_fields_rest`.
+            template <const auto& Matcher, typename ReadField>
+            CPPYYJSON_ALWAYS_INLINE void read_fields_in_order(const ReadField& read_field)
+            {
+                using matcher_type = std::remove_cvref_t<decltype(Matcher)>;
+                constexpr auto n = matcher_type::size;
+                constexpr auto key_bytes = std::ptrdiff_t{matcher_type::key_bytes};
+                const char* const open = cur_;
+                ++cur_;
+                auto indent = skip_ws_measured();
+                if (*cur_ == '}')
+                {
+                    close(open);
+                    return;
+                }
+                // the field whose key is out of order, or `n + 1` when the object has ended
+                auto next = n;
+                const auto in_order = [&]<std::size_t K>(std::integral_constant<std::size_t, K>)
+                                          CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                    if (*cur_ != '"') [[unlikely]]
+                        fail();
+                    constexpr auto size = Matcher.name_size(K);
+                    auto found = false;
+                    if constexpr (Matcher.has_short_key(K))
+                        found = last_ - cur_ >= key_bytes && Matcher.is_raw_key_at(K, cur_ + 1);
+                    else
+                        found = static_cast<std::size_t>(last_ - cur_) > size + 1 && cur_[size + 1] == '"' &&
+                                Matcher.is_raw_name_at(K, cur_ + 1);
+                    if (!found) [[unlikely]]
+                    {
+                        next = K;
+                        return false;
+                    }
+                    cur_ += size + 2;
+                    read_colon();
+                    read_field(std::integral_constant<std::size_t, K>{});
+                    skip_ws();
+                    if (*cur_ == ',')
+                    {
+                        ++cur_;
+                        skip_ws_like(indent);
+                        return true;
+                    }
+                    if (*cur_ != '}') [[unlikely]]
+                        fail();
+                    close(open);
+                    next = n + 1;
+                    return false;
+                };
+                [&]<std::size_t... Ks>(std::index_sequence<Ks...>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                    (void)(in_order(std::integral_constant<std::size_t, Ks>{}) && ...);
+                }(std::make_index_sequence<n>{});
+                if (next <= n) read_fields_rest<Matcher>(open, indent, next, read_field);
+            }
+
+            // Structs of up to this many fields compare their keys in the order of the fields with
+            // `read_fields_in_order`.  The code that it repeats for each field outweighs what it saves on larger
+            // structs, whose time goes to the front end of the CPU; those dispatch on an index in `read_fields`.
+            static constexpr std::size_t ordered_fields_max = 8;
+
+            // Reads the members of a struct with `read_one(std::integral_constant<std::size_t, K>)` for the field K
+            // that `Matcher` finds.
+            template <const auto& Matcher, typename ReadOne>
+            CPPYYJSON_ALWAYS_INLINE void read_struct_fields(const ReadOne& read_one)
+            {
+                constexpr auto n = std::remove_cvref_t<decltype(Matcher)>::size;
+                if constexpr (n <= ordered_fields_max)
+                    read_fields_in_order<Matcher>(read_one);
+                else
+                    read_fields(Matcher, [&](std::size_t index) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                        [&]<std::size_t... Ks>(std::index_sequence<Ks...>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                            (void)((index == Ks && (read_one(std::integral_constant<std::size_t, Ks>{}), true)) || ...);
+                        }(std::make_index_sequence<n>{});
+                    });
+            }
+
             template <typename T>
             void read_reflected_fields(T& t)
             {
                 [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<T>();
-                constexpr auto& matcher = yyjson::detail::reflected_key_matcher<T>;
                 auto adjacent = adjacent_fields_of<T>{cur_};
-                read_fields(matcher, [&](std::size_t index) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
-                    [&]<std::size_t... Ks>(std::index_sequence<Ks...>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
-                        [[maybe_unused]] const auto read_one =
-                            [&]<std::size_t K>(std::integral_constant<std::size_t, K>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
-                                using yyjson::detail::reflected_field_index;
-                                using yyjson::detail::reflected_field_replaceable;
-                                const auto read = [&](auto& field) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
-                                    read_field(field, reflected_field_replaceable<reflected_field_index<T, K>>(t));
-                                };
-                                read_struct_field<T, K>(t, adjacent, read);
-                            };
-                        (void)((index == Ks && (read_one(std::integral_constant<std::size_t, Ks>{}), true)) || ...);
-                    }(std::make_index_sequence<yyjson::detail::reflected_fields<T>::size()>{});
-                });
+                const auto read_one =
+                    [&]<std::size_t K>(std::integral_constant<std::size_t, K>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                        using yyjson::detail::reflected_field_index;
+                        using yyjson::detail::reflected_field_replaceable;
+                        const auto read = [&](auto& field) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                            read_field(field, reflected_field_replaceable<reflected_field_index<T, K>>(t));
+                        };
+                        read_struct_field<T, K>(t, adjacent, read);
+                    };
+                read_struct_fields<yyjson::detail::reflected_key_matcher<T>>(read_one);
                 read_skipped_adjacent_fields(t, adjacent);
             }
 
@@ -15555,21 +15704,18 @@ namespace yyjson
                 [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<T>();
                 constexpr auto& members = visit_struct<T>::members;
                 auto adjacent = adjacent_fields_of<T>{cur_};
-                read_fields(visit_struct<T>::key_matcher, [&](std::size_t index) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
-                    [&]<std::size_t... Is>(std::index_sequence<Is...>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
-                        const auto replaceable = [&]<std::size_t I>(std::integral_constant<std::size_t, I>) {
+                const auto read_one =
+                    [&]<std::size_t I>(std::integral_constant<std::size_t, I>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                        constexpr auto size = std::tuple_size_v<std::remove_cvref_t<decltype(members)>>;
+                        const auto replaceable = [&]<std::size_t... Is>(std::index_sequence<Is...>) {
                             return yyjson::detail::has_own_bytes<I>(t.*std::get<Is>(members)...);
                         };
-                        [[maybe_unused]] const auto read_one =
-                            [&]<std::size_t I>(std::integral_constant<std::size_t, I>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
-                                const auto read = [&](auto& field) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
-                                    read_field(field, replaceable(std::integral_constant<std::size_t, I>{}));
-                                };
-                                read_struct_field<T, I>(t, adjacent, read);
-                            };
-                        (void)((index == Is && (read_one(std::integral_constant<std::size_t, Is>{}), true)) || ...);
-                    }(std::make_index_sequence<std::tuple_size_v<std::remove_cvref_t<decltype(members)>>>{});
-                });
+                        const auto read = [&](auto& field) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                            read_field(field, replaceable(std::make_index_sequence<size>{}));
+                        };
+                        read_struct_field<T, I>(t, adjacent, read);
+                    };
+                read_struct_fields<visit_struct<T>::key_matcher>(read_one);
                 read_skipped_adjacent_fields(t, adjacent);
             }
         };

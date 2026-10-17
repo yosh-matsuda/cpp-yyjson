@@ -631,6 +631,8 @@ struct KeyLengths
     int fifteen_chars_x = 0;
     int sixteen_chars_xx = 0;
     int seventeen_chars_x = 0;
+    int thirty_one_chars_xxxxxxxxxxxxxx = 0;
+    int thirty_two_chars_xxxxxxxxxxxxxxx = 0;
     std::vector<int> v;
 };
 
