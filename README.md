@@ -9,7 +9,7 @@ cpp-yyjson is a header-only C++ interface to [yyjson](https://github.com/ibireme
 ## Highlights
 
 *   **Fast with both APIs.** In the [benchmarks](#performance), the data binding API reads and writes C++ types faster than every library it is compared with, and the DOM API reads and writes documents at least as fast as every one of them.
-*   **One call each way.** `read<T>(json)` and `write(t)` convert structs through compile-time reflection, with no macro or registration. Containers, `std::optional`, `std::variant`, smart pointers, enumerations and recursive types work out of the box.
+*   **One call each way.** `read<T>(json)` and `write(t)` convert aggregate structs through compile-time reflection, with no macro or registration. Containers, `std::optional`, `std::variant`, smart pointers, enumerations and recursive types work out of the box.
 *   **Two APIs in one library.** Read JSON of a known shape into C++ types, and JSON of any shape into a DOM, and convert between the two.
 *   **Tolerant of changing JSON.** Unknown keys are ignored, missing keys keep their defaults, and `merge_into` applies a [JSON Merge Patch](https://www.rfc-editor.org/rfc/rfc7386) to an existing object.
 *   **A DOM that feels like the standard library.** Arrays and objects are C++20 ranges, objects yield key-value pairs for structured bindings, values work with `std::format`, and documents are built from containers and initializer lists.
@@ -167,6 +167,8 @@ auto obj = object(project);
 obj.emplace("stars", 1000);
 ```
 
+A mutable value refers to the strings it is built from instead of copying them, except rvalue strings, so `obj` reads the strings of `project`; pass `yyjson::copy_string` to copy them ([details](docs/reference.md#yyjsonvalue)).
+
 See the reference for the [immutable](docs/reference.md#immutable-json-classes) and [mutable](docs/reference.md#mutable-json-classes) classes and their [allocators](docs/reference.md#allocator-classes).
 
 ## Which API to use
@@ -252,6 +254,8 @@ Casters can also read into a field in place, write members that depend on the va
 
 ## Performance
 
+The numbers below were measured on an Intel Core i9-12900K with GCC 15.2, with cpp-yyjson using the bundled backend with AVX2 and link-time optimization. [docs/benchmark](docs/benchmark/README.md) gives the full environment and the library versions.
+
 ### Data binding API vs. Glaze and reflect-cpp
 
 cpp-yyjson, [Glaze](https://github.com/stephenberry/glaze) and [reflect-cpp](https://github.com/getml/reflect-cpp) read seven documents of [yyjson_benchmark](https://github.com/ibireme/yyjson_benchmark#json-datasets) and two short messages into the same C++ structs and write them back. The table gives how many times faster cpp-yyjson is:
@@ -273,8 +277,8 @@ A reused Glaze object keeps the members that the next document does not have, as
 
 cpp-yyjson is compared with [yyjson](https://github.com/ibireme/yyjson), [simdjson](https://github.com/simdjson/simdjson), [rapidjson](https://github.com/Tencent/rapidjson/) and [nlohmann-json](https://github.com/nlohmann/json) on the ten documents of [yyjson_benchmark](https://github.com/ibireme/yyjson_benchmark#json-datasets), from 0.1 MB to 66 MB. Reading parses a document and visits every element; writing turns a parsed document back into JSON text. The table gives how many times faster cpp-yyjson is, from the slowest to the fastest document:
 
-|       | vs. yyjson | vs. simdjson | vs. rapidjson | vs. nlohmann-json |
-| ----- | ---------- | ------------ | ------------- | ----------------- |
+|       | vs. yyjson 0.12.0 | vs. simdjson | vs. rapidjson | vs. nlohmann-json |
+| ----- | ----------------- | ------------ | ------------- | ----------------- |
 | Read  | 1.0 - 1.8x | 1.1 - 1.7x   | 1.4 - 4.5x    | -                 |
 | Write | 1.1 - 2.5x | -            | 3.3 - 11x     | 3.8 - 34x         |
 
