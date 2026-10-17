@@ -13,6 +13,9 @@ concurrency:
   group: test-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  CTEST_PARALLEL_LEVEL: 4
+
 jobs:
   windows-build:
     strategy:
