@@ -1158,6 +1158,18 @@ auto json_str = std::format("{}", obj);
 std::cout << std::format("{}", obj);
 ```
 
+The key of an object member, `key_string`, is formattable as well, with the same options as `std::string_view`:
+
+```cpp
+auto doc = read(R"({"a":1,"bc":[2]})");
+for (const auto obj = *doc.as_object(); const auto& [key, value] : obj)
+{
+    std::cout << std::format("{:>3}: {}", key, value) << std::endl;
+}
+//   a: 1
+//  bc: [2]
+```
+
 ### Object dependence safety
 
 Unlike the original yyjson, cpp-yyjson can safely add the same JSON value/array/object to the container multiple times.

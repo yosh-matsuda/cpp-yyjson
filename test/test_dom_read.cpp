@@ -506,6 +506,8 @@ TEST(Reader, ObjectExamples)
     auto obj = *doc.as_object();
     auto iter = obj.begin();
     EXPECT_EQ("first_key", iter->first);
+    EXPECT_EQ("first_key", std::format("{}", iter->first));
+    EXPECT_EQ("[ first_key]", std::format("[{:>10}]", iter->first));
     EXPECT_TRUE(iter->second.is_array());
     ++iter;
     EXPECT_EQ("second_key", iter->first);

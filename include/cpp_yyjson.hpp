@@ -16379,6 +16379,12 @@ struct std::formatter<yyjson::json_string>
     }
 };
 
+// A key formats as the string it holds, with the options of `std::string_view`.
+template <>
+struct std::formatter<yyjson::key_string> : std::formatter<std::string_view>
+{
+};
+
 template <typename T>
 requires requires(const T& t) {
     // clang-format off
