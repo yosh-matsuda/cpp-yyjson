@@ -15,11 +15,11 @@
 <text x="852.0" y="298" class="value" text-anchor="middle">1.63 ms</text>
 <text x="24" y="76" class="heading">New allocator / object per read</text>
 <text x="24" y="100" class="label">cpp-yyjson read&lt;T&gt;</text>
-<rect x="300" y="89" width="183.2" height="14" rx="2" fill="#2563eb"/>
-<text x="864" y="100" class="value">541 µs</text>
+<rect x="300" y="89" width="182.3" height="14" rx="2" fill="#2563eb"/>
+<text x="864" y="100" class="value">538 µs</text>
 <text x="24" y="124" class="label">cpp-yyjson DOM: read + cast&lt;T&gt;</text>
-<rect x="300" y="113" width="254.7" height="14" rx="2" fill="#93c5fd"/>
-<text x="864" y="124" class="value">752 µs</text>
+<rect x="300" y="113" width="256.4" height="14" rx="2" fill="#93c5fd"/>
+<text x="864" y="124" class="value">757 µs</text>
 <text x="24" y="148" class="label">Glaze glz::read</text>
 <rect x="300" y="137" width="280.4" height="14" rx="2" fill="#ca8a04"/>
 <text x="864" y="148" class="value">828 µs</text>
@@ -28,11 +28,11 @@
 <text x="864" y="172" class="value">1.51 ms</text>
 <text x="24" y="198" class="heading">Reused result object</text>
 <text x="24" y="222" class="label">cpp-yyjson read_into</text>
-<rect x="300" y="211" width="160.7" height="14" rx="2" fill="#2563eb"/>
-<text x="864" y="222" class="value">474 µs</text>
+<rect x="300" y="211" width="158.1" height="14" rx="2" fill="#2563eb"/>
+<text x="864" y="222" class="value">467 µs</text>
 <text x="24" y="246" class="label">cpp-yyjson merge_into</text>
-<rect x="300" y="235" width="163.0" height="14" rx="2" fill="#2563eb"/>
-<text x="864" y="246" class="value">481 µs</text>
+<rect x="300" y="235" width="160.2" height="14" rx="2" fill="#2563eb"/>
+<text x="864" y="246" class="value">473 µs</text>
 <text x="24" y="270" class="label">Glaze glz::read</text>
 <rect x="300" y="259" width="214.3" height="14" rx="2" fill="#ca8a04"/>
 <text x="864" y="270" class="value">633 µs</text>
