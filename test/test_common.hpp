@@ -720,8 +720,9 @@ struct DiamondChain<0>
     int a = 0;
     bool operator==(const DiamondChain&) const = default;
 };
-// the depth that the direct reader walks; MSVC runs out of heap space at 20 in this file
-#if defined(_MSC_VER) && !defined(__clang__)
+// the depth that the direct reader walks; MSVC runs out of heap space at 20 in this file, and clang-cl optimizing
+// for Windows takes a time and memory that grow with the number of paths, running out of memory at 30
+#if defined(_MSC_VER)
 constexpr std::size_t diamond_depth = 10;
 #else
 constexpr std::size_t diamond_depth = 40;
