@@ -2176,6 +2176,18 @@ namespace yyjson
         // the C++26 backend of field-reflection would find by name, is read by neither.
         template <typename T>
         concept integer_like = std::is_enum_v<T> || (std::integral<T> && !std::same_as<T, bool>);
+        // A floating-point type with a smaller range than `double`, such as `float`.
+        template <typename T>
+        concept narrower_than_double =
+            std::floating_point<T> && (std::numeric_limits<T>::max() < std::numeric_limits<double>::max());
+        // The number format in the upper half of the tag of a yyjson value that holds a `T`: a `float` is written
+        // with the shortest digits that read back as the same `float`, not those of the `double` of its value.
+        template <std::floating_point T>
+        inline constexpr std::uint64_t real_format = 0;
+#if YYJSON_VERSION_HEX >= 0x000B00
+        template <>
+        inline constexpr std::uint64_t real_format<float> = std::uint64_t{YYJSON_WRITE_FP_TO_FLOAT} << 32;
+#endif
         template <typename T>
         struct integer_of
         {
@@ -2882,7 +2894,13 @@ namespace yyjson
                 template <std::floating_point T, copy_string_args... Ts>
                 yyjson_mut_val* create_primitive(T v, Ts...) noexcept
                 {
-                    return yyjson_mut_real(ptrs->self, v);
+                    auto* const val = yyjson_mut_real(ptrs->self, static_cast<double>(v));
+                    if constexpr (yyjson::detail::real_format<T> != 0)
+                    {
+                        if (val != nullptr) [[likely]]
+                            val->tag |= yyjson::detail::real_format<T>;
+                    }
+                    return val;
                 }
                 auto create_string(std::string_view v, copy_string_t) noexcept
                 {
@@ -3217,7 +3235,7 @@ namespace yyjson
                     }
                     else if constexpr (std::floating_point<value_type>)
                     {
-                        dst->tag = YYJSON_TYPE_NUM | YYJSON_SUBTYPE_REAL;
+                        dst->tag = YYJSON_TYPE_NUM | YYJSON_SUBTYPE_REAL | yyjson::detail::real_format<value_type>;
                         dst->uni.f64 = static_cast<double>(t);
                     }
                     else if constexpr (std::same_as<const char*, value_type>)
@@ -7522,6 +7540,15 @@ namespace yyjson
                 detail::throw_bad_cast("overflow detected: {} is not constructible from JSON number {}",
                                        detail::type_name<U>(), value);
             }
+            else if constexpr (narrower_than_double<U>)
+            {
+                // a finite value beyond the range of U, such as `1e39` for `float`, rounds to infinity
+                const auto result = static_cast<U>(value);
+                if (std::isinf(static_cast<double>(result)) && !std::isinf(value)) [[unlikely]]
+                    detail::throw_bad_cast("overflow detected: {} is not constructible from JSON number {}",
+                                           detail::type_name<U>(), value);
+                return result;
+            }
             else if constexpr (json_scalar_constructible<U, double>)
             {
                 return U(value);
@@ -9259,7 +9286,7 @@ namespace yyjson
                     if (!std::isfinite(d)) [[unlikely]]
                         return nullptr;
                     auto num = yyjson_val{};
-                    num.tag = YYJSON_TYPE_NUM | YYJSON_SUBTYPE_REAL;
+                    num.tag = YYJSON_TYPE_NUM | YYJSON_SUBTYPE_REAL | yyjson::detail::real_format<U>;
                     num.uni.f64 = d;
                     return yyjson_write_number(&num, p);
                 }
@@ -10584,7 +10611,7 @@ namespace yyjson
             template <std::floating_point T>
             void write_primitive(T v)
             {
-                write_real(static_cast<double>(v));
+                write_real(static_cast<double>(v), static_cast<std::uint32_t>(yyjson::detail::real_format<T> >> 32));
             }
             void write_primitive(const std::string& v) { write_string(v); }
             void write_primitive(std::string&& v) { write_string(v); }

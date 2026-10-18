@@ -36,6 +36,45 @@ TEST(Reader, RealToIntegers)
     EXPECT_THROW((void)read<std::vector<std::vector<int>>>("[2]"), bad_cast);
 }
 
+TEST(Reader, RealToFloat)
+{
+    using namespace yyjson;
+
+    // a finite number that rounds to infinity as a `float` throws, while one that rounds to the largest `float`,
+    // an underflow to zero and an infinity of the text are read
+    constexpr auto max = std::numeric_limits<float>::max();
+    for (const auto* json : {"3.4028235e38", "3.4028235677973362e38"})
+    {
+        EXPECT_EQ(read(json).cast<float>(), max) << json;
+        EXPECT_EQ(read<float>(json), max) << json;
+    }
+    EXPECT_EQ(read<float>("-3.4028235e38"), -max);
+    EXPECT_EQ(read<float>("1e-50"), 0.0F);
+    EXPECT_EQ(read<float>("Infinity", ReadFlag::AllowInfAndNan), std::numeric_limits<float>::infinity());
+    EXPECT_EQ(read("-Infinity", ReadFlag::AllowInfAndNan).cast<float>(), -std::numeric_limits<float>::infinity());
+    EXPECT_TRUE(std::isnan(read<float>("NaN", ReadFlag::AllowInfAndNan)));
+    for (const auto* json : {"3.4028235677973366e38", "1e39", "-1e39", "1e300"})
+    {
+        EXPECT_THROW((void)read(json).cast<float>(), bad_cast) << json;
+        EXPECT_THROW((void)read<float>(json), bad_cast) << json;
+        EXPECT_THROW((void)read(json).cast<std::optional<float>>(), bad_cast) << json;
+    }
+    EXPECT_EQ(read<double>("1e39"), 1e39);
+    EXPECT_THROW((void)read<std::vector<float>>("[1.5,1e39]"), bad_cast);
+    EXPECT_THROW((void)read("[1.5,1e39]").cast<std::vector<float>>(), bad_cast);
+    for (const auto* json : {"[1.5,1e39]", "[1.5,2.5]", R"({"f":1e39})", R"({"f":-1.5})"})
+    {
+        expect_direct_read<std::vector<float>>(json);
+        expect_direct_read<std::map<std::string, float>>(json);
+    }
+
+    // a variant goes on to the next alternative
+    using float_or_double = std::variant<float, double>;
+    EXPECT_EQ(read("1e39").cast<float_or_double>(), float_or_double(1e39));
+    EXPECT_EQ(read<float_or_double>("1e39"), float_or_double(1e39));
+    EXPECT_EQ(read<float_or_double>("1.5"), float_or_double(1.5F));
+}
+
 TEST(Reader, NullToStrings)
 {
     using namespace yyjson;

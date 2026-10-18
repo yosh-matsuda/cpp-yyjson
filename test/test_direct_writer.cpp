@@ -421,4 +421,50 @@ TEST(DirectWriter, RangesOfNumbers)
     expect_direct_write(numbers);
 }
 
+struct FloatFields
+{
+    float f;
+    double d;
+};
+
+TEST(Writer, FloatDigits)
+{
+    using namespace yyjson;
+
+#if YYJSON_VERSION_HEX >= 0x000B00
+    // a `float` has the shortest digits that read back as the same `float`, a `double` those of the `double`
+    EXPECT_EQ(write(0.1F), "0.1");
+    EXPECT_EQ(value(0.1F).write(), "0.1");
+    EXPECT_EQ(write(std::numeric_limits<float>::max()), "3.4028235e38");
+    EXPECT_EQ(write(static_cast<double>(0.1F)), "0.10000000149011612");
+    EXPECT_EQ(value(static_cast<double>(0.1F)).write(), "0.10000000149011612");
+    EXPECT_EQ(write(FloatFields{0.1F, 0.1F}), R"({"f":0.1,"d":0.10000000149011612})");
+    EXPECT_EQ(value(FloatFields{0.1F, 0.1F}).write(), R"({"f":0.1,"d":0.10000000149011612})");
+    EXPECT_EQ(write(std::vector<float>{0.1F, -2.5F}), "[0.1,-2.5]");
+    EXPECT_EQ(array(std::vector<float>{0.1F, -2.5F}).write(), "[0.1,-2.5]");
+    EXPECT_EQ(write(std::vector<std::array<float, 2>>{{0.1F, 0.2F}}), "[[0.1,0.2]]");
+    EXPECT_EQ(value(std::vector<std::array<float, 2>>{{0.1F, 0.2F}}).write(), "[[0.1,0.2]]");
+    auto v = value();
+    v = 0.1F;
+    EXPECT_EQ(v.write(), "0.1");
+    v = 0.1;
+    EXPECT_EQ(v.write(), "0.1");
+    v = static_cast<double>(0.1F);
+    EXPECT_EQ(v.write(), "0.10000000149011612");
+#endif
+
+    // the text reads back as the same `float`, also when it is not finite
+    using limits = std::numeric_limits<float>;
+    auto floats = std::vector<float>{0.0F, -0.0F, 1e-45F, limits::min(), limits::max(), -limits::max()};
+    for (auto x = 1e-30F; x < 1e30F; x *= 1.37F) floats.push_back(x / 3);
+    EXPECT_EQ(read<std::vector<float>>(write(floats)), floats);
+    EXPECT_EQ(read(value(floats).write()).cast<std::vector<float>>(), floats);
+    for (const auto f : floats) EXPECT_EQ(read<float>(write(f)), f) << write(f);
+    floats.push_back(limits::infinity());
+    floats.push_back(-limits::infinity());
+    EXPECT_EQ(read<std::vector<float>>(write(floats, WriteFlag::AllowInfAndNan), ReadFlag::AllowInfAndNan), floats);
+    expect_direct_write(floats);
+    expect_direct_write(std::vector<std::array<float, 2>>{{0.1F, limits::infinity()}});
+}
+
 // NOLINTEND
