@@ -1,5 +1,5 @@
 /*===================================================*
-|  field-reflection version v1.0.2                   |
+|  field-reflection version v1.1.0                   |
 |  https://github.com/yosh-matsuda/field-reflection  |
 |                                                    |
 |  Copyright (c) 2026 Yoshiki Matsuda @yosh-matsuda  |
@@ -2461,5 +2461,36 @@ namespace field_reflection
             if (i == data.size) return std::nullopt;
             return static_cast<V>(data.values[i]);
         }
+
+#if FIELD_RFL_ANNOTATIONS
+        namespace detail
+        {
+            // The enumerator named enum_names<E>[I]: the first declared enumerator of the I-th value.
+            template <typename E, std::size_t I>
+            consteval std::meta::info get_enumerator_at()
+            {
+                for (const auto e : std::meta::enumerators_of(^^E))
+                {
+                    if (std::meta::extract<E>(e) == enum_values_value<E>[I]) return e;
+                }
+                return std::meta::info{};
+            }
+
+            template <typename E, std::size_t I>
+            inline constexpr std::meta::info enumerator_at = get_enumerator_at<E, I>();
+        }  // namespace detail
+
+        // Annotations of type A attached to the enumerator named enum_names<E>[I]
+        template <typename E, std::size_t I, typename A>
+        requires std::is_enum_v<E> && (I < enum_count<E>)
+        inline constexpr auto enumerator_annotations =
+            detail::annotations_v<detail::enumerator_at<std::remove_cv_t<E>, I>, A>;
+
+        // The first annotation of type A attached to the enumerator named enum_names<E>[I], if any
+        template <typename E, std::size_t I, typename A>
+        requires std::is_enum_v<E> && (I < enum_count<E>)
+        inline constexpr std::optional<A> enumerator_annotation =
+            detail::annotation_v<detail::enumerator_at<std::remove_cv_t<E>, I>, A>;
+#endif
     }  // inline namespace
 }  // namespace field_reflection
