@@ -8513,6 +8513,17 @@ static_inline u8 *write_inf_or_nan(u8 *buf, yyjson_write_flag flg,
     return NULL;
 }
 
+/* The shortest float and double writers are ports of xjb (see below). */
+#if YYJSON_ENDIAN == YYJSON_LITTLE_ENDIAN
+#   define YYJSON_WRITE_XJB 1
+#else
+#   define YYJSON_WRITE_XJB 0
+#endif
+
+#if YYJSON_WRITE_XJB
+static_inline u8 *write_f32_xjb(u8 *buf, u32 sig_raw, u32 exp_raw);
+#endif
+
 /**
  Write a float number (requires 40 bytes buffer).
  We follow the ECMAScript specification for printing floating-point numbers,
@@ -8521,12 +8532,15 @@ static_inline u8 *write_inf_or_nan(u8 *buf, yyjson_write_flag flg,
  2. Keep the decimal point to indicate that the number is floating-point.
  3. Remove positive sign in the exponent part.
  */
-static_noinline u8 *write_f32_raw(u8 *buf, u64 raw_f64,
-                                  yyjson_write_flag flg) {
+static_inline u8 *write_f32_raw_inline(u8 *buf, u64 raw_f64,
+                                       yyjson_write_flag flg) {
     u32 sig_bin, sig_dec, sig_raw;
-    i32 exp_bin, exp_dec, sig_len, dot_ofs;
-    u32 exp_raw, raw;
+    i32 exp_bin;
+#if !YYJSON_WRITE_XJB
+    i32 exp_dec, sig_len, dot_ofs;
     u8 *end;
+#endif
+    u32 exp_raw, raw;
     bool sign;
 
     /* cast double to float */
@@ -8552,6 +8566,22 @@ static_noinline u8 *write_f32_raw(u8 *buf, u64 raw_f64,
         return buf + 3;
     }
 
+#if YYJSON_WRITE_XJB
+    if (likely(exp_raw != 0)) {
+        sig_bin = sig_raw | ((u32)1 << F32_SIG_BITS);
+        exp_bin = (i32)exp_raw - F32_EXP_BIAS - F32_SIG_BITS;
+
+        /* fast path for small integer number without fraction */
+        if ((-F32_SIG_BITS <= exp_bin && exp_bin <= 0) &&
+            (u64_tz_bits(sig_bin) >= (u32)-exp_bin)) {
+            sig_dec = sig_bin >> -exp_bin; /* range: [1, 0xFFFFFF] */
+            buf = write_u32_len_1_to_8(sig_dec, buf);
+            byte_copy_2(buf, ".0");
+            return buf + 2;
+        }
+    }
+    return write_f32_xjb(buf, sig_raw, exp_raw);
+#else
     if (likely(exp_raw != 0)) {
         /* normal number */
         sig_bin = sig_raw | ((u32)1 << F32_SIG_BITS);
@@ -8638,25 +8668,28 @@ static_noinline u8 *write_f32_raw(u8 *buf, u64 raw_f64,
         /* write exponent part */
         return write_f32_exp(exp_dec, end);
     }
+#endif
+}
+
+/** Write a float number (requires 40 bytes buffer). */
+static_noinline u8 *write_f32_raw(u8 *buf, u64 raw_f64,
+                                  yyjson_write_flag flg) {
+    return write_f32_raw_inline(buf, raw_f64, flg);
 }
 
 /*
- The shortest double writer below is a C port of xjb64 from the xjb project
- (https://github.com/xjb714/xjb, src/ftoa_json.cpp), Copyright 2026 xjb714 and
- contributors, licensed under the Apache License, Version 2.0 (see LICENSE-xjb).
+ The shortest double and float writers below are C ports of xjb64 and xjb32
+ from the xjb project (https://github.com/xjb714/xjb, src/ftoa_json.cpp),
+ Copyright 2026 xjb714 and contributors, licensed under the Apache License,
+ Version 2.0 (see LICENSE-xjb).
  Changes from the original: written in C on top of the helpers and the
  pow10_sig_table of this file, positive exponents written without '+', zero,
  inf and nan left to the caller, a separate path for integral values, AVX-512
- and NEON code paths dropped.
+ and NEON code paths dropped, and the float writer sharing the layout and
+ exponent tables of the double writer.
  */
 
-#if YYJSON_ENDIAN == YYJSON_LITTLE_ENDIAN
-#   define YYJSON_WRITE_F64_XJB 1
-#else
-#   define YYJSON_WRITE_F64_XJB 0
-#endif
-
-#if YYJSON_WRITE_F64_XJB
+#if YYJSON_WRITE_XJB
 
 /** Exponent part of a double in scientific notation, indexed by `e10 + 324`:
     the ASCII bytes in the low bytes, the length in the highest byte, 0 for
@@ -9542,7 +9575,174 @@ static_inline u8 *write_f64_xjb(u8 *buf, u64 sig_raw, u32 exp_raw) {
     return buf + exp_pos;
 }
 
-#endif /* YYJSON_WRITE_F64_XJB */
+/** The 64 most significant bits of 10^(-1-k) for a float, indexed by
+    `45 + k`, rounded up unless exact. (generated from xjb) */
+static const u64 xjb_f32_pow10_table[77] = {
+    U64(0x8F7E32CE, 0x7BEA5C70), U64(0xE596B7B0, 0xC643C71A),
+    U64(0xB7ABC627, 0x050305AE), U64(0x92EFD1B8, 0xD0CF37BF),
+    U64(0xEB194F8E, 0x1AE525FE), U64(0xBC143FA4, 0xE250EB32),
+    U64(0x96769950, 0xB50D88F5), U64(0xF0BDC21A, 0xBB48DB21),
+    U64(0xC097CE7B, 0xC90715B4), U64(0x9A130B96, 0x3A6C115D),
+    U64(0xF684DF56, 0xC3E01BC7), U64(0xC5371912, 0x364CE306),
+    U64(0x9DC5ADA8, 0x2B70B59E), U64(0xFC6F7C40, 0x45812297),
+    U64(0xC9F2C9CD, 0x04674EDF), U64(0xA18F07D7, 0x36B90BE6),
+    U64(0x813F3978, 0xF8940985), U64(0xCECB8F27, 0xF4200F3A),
+    U64(0xA56FA5B9, 0x9019A5C8), U64(0x84595161, 0x401484A0),
+    U64(0xD3C21BCE, 0xCCEDA100), U64(0xA968163F, 0x0A57B400),
+    U64(0x87867832, 0x6EAC9000), U64(0xD8D726B7, 0x177A8000),
+    U64(0xAD78EBC5, 0xAC620000), U64(0x8AC72304, 0x89E80000),
+    U64(0xDE0B6B3A, 0x76400000), U64(0xB1A2BC2E, 0xC5000000),
+    U64(0x8E1BC9BF, 0x04000000), U64(0xE35FA931, 0xA0000000),
+    U64(0xB5E620F4, 0x80000000), U64(0x9184E72A, 0x00000000),
+    U64(0xE8D4A510, 0x00000000), U64(0xBA43B740, 0x00000000),
+    U64(0x9502F900, 0x00000000), U64(0xEE6B2800, 0x00000000),
+    U64(0xBEBC2000, 0x00000000), U64(0x98968000, 0x00000000),
+    U64(0xF4240000, 0x00000000), U64(0xC3500000, 0x00000000),
+    U64(0x9C400000, 0x00000000), U64(0xFA000000, 0x00000000),
+    U64(0xC8000000, 0x00000000), U64(0xA0000000, 0x00000000),
+    U64(0x80000000, 0x00000000), U64(0xCCCCCCCC, 0xCCCCCCCD),
+    U64(0xA3D70A3D, 0x70A3D70B), U64(0x83126E97, 0x8D4FDF3C),
+    U64(0xD1B71758, 0xE219652C), U64(0xA7C5AC47, 0x1B478424),
+    U64(0x8637BD05, 0xAF6C69B6), U64(0xD6BF94D5, 0xE57A42BD),
+    U64(0xABCC7711, 0x8461CEFD), U64(0x89705F41, 0x36B4A598),
+    U64(0xDBE6FECE, 0xBDEDD5BF), U64(0xAFEBFF0B, 0xCB24AAFF),
+    U64(0x8CBCCC09, 0x6F5088CC), U64(0xE12E1342, 0x4BB40E14),
+    U64(0xB424DC35, 0x095CD810), U64(0x901D7CF7, 0x3AB0ACDA),
+    U64(0xE69594BE, 0xC44DE15C), U64(0xB877AA32, 0x36A4B44A),
+    U64(0x9392EE8E, 0x921D5D08), U64(0xEC1E4A7D, 0xB69561A6),
+    U64(0xBCE50864, 0x92111AEB), U64(0x971DA050, 0x74DA7BEF),
+    U64(0xF1C90080, 0xBAF72CB2), U64(0xC16D9A00, 0x95928A28),
+    U64(0x9ABE14CD, 0x44753B53), U64(0xF79687AE, 0xD3EEC552),
+    U64(0xC6120625, 0x76589DDB), U64(0x9E74D1B7, 0x91E07E49),
+    U64(0xFD87B5F2, 0x8300CA0E), U64(0xCAD2F7F5, 0x359A3B3F),
+    U64(0xA2425FF7, 0x5E14FC32), U64(0x81CEB32C, 0x4B43FCF5),
+    U64(0xCFB11EAD, 0x453994BB)
+};
+
+/** Shift of the binary significand of a float by its biased exponent.
+    (generated from xjb) */
+static const u8 xjb_f32_shift_table[256] = {
+    34, 34, 35, 36, 33, 34, 35, 36, 34, 35, 36, 34, 35, 36, 33, 34,
+    35, 36, 34, 35, 36, 34, 35, 36, 33, 34, 35, 36, 34, 35, 36, 34,
+    35, 36, 33, 34, 35, 36, 34, 35, 36, 34, 35, 36, 33, 34, 35, 36,
+    34, 35, 36, 34, 35, 36, 34, 35, 36, 33, 34, 35, 36, 34, 35, 36,
+    34, 35, 36, 33, 34, 35, 36, 34, 35, 36, 34, 35, 36, 33, 34, 35,
+    36, 34, 35, 36, 34, 35, 36, 33, 34, 35, 36, 34, 35, 36, 34, 35,
+    36, 33, 34, 35, 36, 34, 35, 36, 34, 35, 36, 33, 34, 35, 36, 34,
+    35, 36, 34, 35, 36, 33, 34, 35, 36, 34, 35, 36, 34, 35, 36, 33,
+    34, 35, 36, 34, 35, 36, 34, 35, 36, 33, 34, 35, 36, 34, 35, 36,
+    34, 35, 36, 34, 35, 36, 33, 34, 35, 36, 34, 35, 36, 34, 35, 36,
+    33, 34, 35, 36, 34, 35, 36, 34, 35, 36, 33, 34, 35, 36, 34, 35,
+    36, 34, 35, 36, 33, 34, 35, 36, 34, 35, 36, 34, 35, 36, 33, 34,
+    35, 36, 34, 35, 36, 34, 35, 36, 33, 34, 35, 36, 34, 35, 36, 34,
+    35, 36, 33, 34, 35, 36, 34, 35, 36, 34, 35, 36, 33, 34, 35, 36,
+    34, 35, 36, 34, 35, 36, 33, 34, 35, 36, 34, 35, 36, 34, 35, 36,
+    33, 34, 35, 36, 34, 35, 36, 34, 35, 36, 34, 35, 36, 33, 34, 35
+};
+
+/** Returns the 8 decimal digits of `m` (below 10^8) as bytes from 0 to 9,
+    the most significant first. */
+static_inline u64 xjb_f32_bcd(u32 m) {
+    /* abcd in the low half, efgh in the high half */
+    u64 merge = ((u64)m << 32) +
+                ((u64)1 - ((u64)10000 << 32)) * (((u64)m * 109951163) >> 40);
+#if XJB_HAS_SSE2
+    __m128i y = _mm_cvtsi64_si128((i64)merge), y_div_100, z, z_div_10, bcd;
+    /* z = (y << 16) - ((100 << 16) - 1) * (y / 100) */
+    y_div_100 = _mm_srli_epi32(_mm_mulhi_epi16(y, _mm_set1_epi32(10486)), 4);
+    z = _mm_sub_epi32(_mm_slli_epi32(y, 16), _mm_add_epi32(
+        _mm_add_epi32(_mm_slli_epi32(y_div_100, 22),
+                      _mm_slli_epi32(y_div_100, 21)),
+        _mm_sub_epi32(_mm_slli_epi32(y_div_100, 18), y_div_100)));
+    /* bcd = (z << 8) - 2559 * (z / 10) */
+    z_div_10 = _mm_mulhi_epu16(z, _mm_set1_epi16(0x199a));
+    bcd = _mm_sub_epi16(
+        _mm_add_epi16(_mm_slli_epi16(z, 8), z_div_10),
+        _mm_add_epi16(_mm_slli_epi16(z_div_10, 11),
+                      _mm_slli_epi16(z_div_10, 9)));
+    return (u64)_mm_cvtsi128_si64(bcd);
+#else
+    u64 ab_cd = (merge << 16) + ((u64)1 - ((u64)100 << 16)) *
+                (((merge * 10486) >> 20) & U64(0x7F, 0x0000007F));
+    return (ab_cd << 8) + ((u64)1 - ((u64)10 << 8)) *
+           (((ab_cd * 103) >> 10) & U64(0x000F000F, 0x000F000F));
+#endif
+}
+
+/** Writes a finite, non-zero float without its sign, shortest and in the
+    format of `write_f32_raw` (requires 40 bytes buffer). */
+static_inline u8 *write_f32_xjb(u8 *buf, u32 sig_raw, u32 exp_raw) {
+    const u64 zero8 = U64(0x30303030, 0x30303030);
+    u64 sig_bin, cb, p10, hi64, lo64, half_ulp, dot_one, bcd, ascii, exp_res;
+    u64 m_up, up_down, one, lz, tz, len, ofs, dot_pos, move_pos, exp_pos;
+    u32 shift;
+    i64 exp_bin, k, e10;
+    u8 *dst;
+
+    sig_bin = sig_raw | ((u32)1 << F32_SIG_BITS);
+    exp_bin = (i64)exp_raw - 150;
+    if (unlikely(exp_raw == 0)) {
+        sig_bin = sig_raw;
+        exp_bin = 1 - 150;
+    }
+    shift = xjb_f32_shift_table[exp_raw];
+    k = (exp_bin * 1233) >> 12;
+    if (unlikely(sig_raw == 0)) {
+        /* irregular spacing: the significand is a power of 2 */
+        k = (exp_bin * 1233 - 512) >> 12;
+        shift = (u32)(37 + exp_bin + ((k * -1701 - 1701) >> 9));
+    }
+    p10 = xjb_f32_pow10_table[45 + k];
+    cb = sig_bin << shift;
+    u128_mul(cb, p10, &hi64, &lo64);
+    half_ulp = (p10 >> (65 - shift)) + ((sig_raw + 1) & 1);
+    dot_one = hi64 & (((u64)1 << 36) - 1);
+    m_up = (u32)((hi64 + half_ulp) >> 36);
+    up_down = m_up > (u32)((hi64 - half_ulp) >> 36);
+    /* the next digit, rounded, plus '0' */
+    one = (dot_one * 5 + (((u64)'0' << 35) + ((u64)1 << 34) - 7) +
+           (dot_one >> 32)) >> 35;
+    if (unlikely(sig_raw == 0)) {
+        if (exp_bin == 31 - 150 || exp_bin == 214 - 150 ||
+            exp_bin == 217 - 150) {
+            ++one;
+        }
+        up_down = m_up > (u32)((hi64 - (half_ulp >> 1)) >> 36);
+    }
+    one = xjb_select(up_down, '0', one);
+    lz = (u64)(m_up < 10000000) + (u64)(m_up < 1000000);
+    memset(buf, '0', 24);
+    bcd = xjb_f32_bcd((u32)m_up);
+    /* m_up is not 0 when up_down is set, and tz is used only then */
+    tz = u64_lz_bits(bcd | 1) >> 3;
+    ascii = (bcd >> (lz * 8)) | zero8;
+    len = xjb_select(up_down, (7 - lz) - tz, 8 - lz);
+    e10 = k + 8 - (i64)lz;
+    ofs = (u64)(e10 + 6) < 27 ? (u64)(e10 + 6) : 27;
+    dst = buf + xjb_f64_layout_table[ofs][17 + 0];
+    dot_pos = xjb_f64_layout_table[ofs][17 + 1];
+    move_pos = xjb_f64_layout_table[ofs][17 + 2];
+    memcpy(dst, &ascii, 8);
+    dst[8 - lz] = (u8)one;
+    byte_move_8(dst + move_pos, dst + dot_pos);
+    buf[dot_pos] = '.';
+    exp_pos = xjb_f64_layout_table[ofs][len];
+    if (unlikely(m_up < 100000)) {
+        /* subnormal with fewer digits, e.g. 1e-45 */
+        u64 u, lz2;
+        memcpy(&u, dst + 2, 8);
+        lz2 = u64_tz_bits(u & U64(0x0F0F0F0F, 0x0F0F0F0F)) / 8 + 2;
+        e10 -= (i64)lz2 - 1;
+        dst[0] = dst[lz2];
+        byte_move_8(dst + 2, dst + lz2 + 1);
+        exp_pos = exp_pos - lz2 + (exp_pos - lz2 != 1);
+    }
+    exp_res = xjb_f64_exp_table[e10 + 324];
+    memcpy(dst + exp_pos, &exp_res, 8);
+    return dst + exp_pos + (exp_res >> 56);
+}
+
+#endif /* YYJSON_WRITE_XJB */
 
 /**
  Write a double number (requires 40 bytes buffer).
@@ -9580,7 +9780,7 @@ static_inline u8 *write_f64_raw_inline(u8 *buf, u64 raw,
         return buf + 3;
     }
 
-#if YYJSON_WRITE_F64_XJB
+#if YYJSON_WRITE_XJB
     {
         /* fast path for small integer number without fraction */
         u32 shr = (u32)(F64_EXP_BIAS + F64_SIG_BITS) - (u32)exp_raw;
@@ -9949,6 +10149,12 @@ static_noinline u8 *write_f32_raw(u8 *buf, u64 raw, yyjson_write_flag flg) {
     return write_fp_reformat(buf, len, flg, false);
 }
 
+/** Write a float number (requires 40 bytes buffer). */
+static_inline u8 *write_f32_raw_inline(u8 *buf, u64 raw,
+                                       yyjson_write_flag flg) {
+    return write_f32_raw(buf, raw, flg);
+}
+
 /** Write a double number (requires 40 bytes buffer). */
 static_noinline u8 *write_f64_raw_fixed(u8 *buf, u64 raw,
                                         yyjson_write_flag flg, u32 prec) {
@@ -10025,7 +10231,8 @@ char *yyjson_write_number(const yyjson_val *val, char *buf) {
                 buf = (char *)write_f64_raw_fixed((u8 *)buf, raw, flg, prec);
             } else {
                 if (fmt & YYJSON_WRITE_FP_TO_FLOAT) {
-                    buf = (char *)write_f32_raw((u8 *)buf, raw, flg);
+                    buf = (char *)write_f32_raw_inline((u8 *)buf, raw,
+                                                       flg);
                 } else {
                     buf = (char *)write_f64_raw((u8 *)buf, raw, flg);
                 }
