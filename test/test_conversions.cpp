@@ -37,6 +37,44 @@ TEST(Reader, RealToIntegers)
     EXPECT_THROW((void)read("-Infinity", ReadFlag::AllowInfAndNan).cast<long>(), bad_cast);
     EXPECT_THROW((void)read<std::vector<int>>("[1.0,-2.5]"), bad_cast);
     EXPECT_THROW((void)read<std::uint16_t>("1e300"), bad_cast);
+
+    // `read<T>` hands an integer part with a fraction of zeros over without parsing the fraction, which must read
+    // as the DOM does, beyond 2^53 as well
+    for (const auto* json : {"-65.0", "0.000", "-0.0", "7.00e1", "1.000001", "9007199254740993.0",
+                             "-9007199254740992.00", "18014398509481985.0", "300.0", "-1.0"})
+    {
+        for (const auto& text : {std::string(json), std::format("[ {} ,{}]", json, json)})
+        {
+            using V = std::vector<std::int64_t>;
+            const auto expect_same = [&]<typename T>() {
+                std::optional<T> dom, direct;
+                try { dom = read(text).cast<T>(); } catch (const bad_cast&) {}
+                try { direct = read<T>(text); } catch (const bad_cast&) {}
+                EXPECT_EQ(direct, dom) << text;
+            };
+            if (text.front() == '[')
+            {
+                expect_same.template operator()<V>();
+                expect_same.template operator()<std::vector<std::uint8_t>>();
+            }
+            else
+            {
+                expect_same.template operator()<std::int64_t>();
+                expect_same.template operator()<std::uint8_t>();
+            }
+        }
+    }
+    EXPECT_EQ(read<std::int64_t>("9007199254740993.0"), 9007199254740992);
+    for (const auto* json : {"65.0e", "65.0.0", "65.0-"}) EXPECT_THROW((void)read<std::int64_t>(json), std::exception);
+    try
+    {
+        (void)read<std::uint8_t>("300.0");
+        ADD_FAILURE();
+    }
+    catch (const bad_cast& e)
+    {
+        EXPECT_STREQ(e.what(), "overflow detected: unsigned char is not constructible from JSON number 300");
+    }
     try
     {
         (void)read<int>("1.5");
