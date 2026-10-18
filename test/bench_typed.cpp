@@ -33,6 +33,7 @@
 #endif
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <format>
 #include <memory>
@@ -89,6 +90,43 @@ namespace
         }
     };
 
+    // canada read into `float`, last so that the other datasets keep their indices
+    struct canada_float
+    {
+        using type = bench_typed::canada::float_document;
+        static constexpr std::int64_t batch = 1;
+        static std::string label() { return std::format("{} as float", json_file_paths[0]); }
+        static std::string load() { return read_file(std::string(json_file_paths[0])); }
+    };
+
+    // canada read into `std::variant<std::int64_t, double>`
+    struct canada_variant
+    {
+        using type = bench_typed::canada::variant_document;
+        static constexpr std::int64_t batch = 1;
+        static std::string label() { return std::format("{} as variant<int64_t, double>", json_file_paths[0]); }
+        static std::string load() { return read_file(std::string(json_file_paths[0])); }
+    };
+
+    // canada with its coordinates rounded and written as reals, `-65.0`, read into `std::int64_t`.
+    // Glaze and reflect-cpp read no real into an integer, so only cpp-yyjson measures it.
+    struct canada_integral_reals
+    {
+        using type = bench_typed::canada::integer_document;
+        static constexpr std::int64_t batch = 1;
+        static constexpr bool cpp_yyjson_only = true;
+        static std::string label() { return std::format("{} rounded, as int64_t", json_file_paths[0]); }
+        static std::string load()
+        {
+            auto document = yyjson::read<bench_typed::canada::document>(read_file(std::string(json_file_paths[0])));
+            for (auto& feature : document.features)
+                for (auto& ring : feature.geometry.coordinates)
+                    for (auto& point : ring)
+                        for (auto& x : point) x = std::round(x);
+            return std::string(yyjson::write(document));
+        }
+    };
+
     constexpr auto typed_datasets = std::tuple{
         document_of<0, bench_typed::canada::document>{},
         document_of<1, bench_typed::citm_catalog::document>{},
@@ -99,8 +137,30 @@ namespace
         document_of<4, bench_typed::gsoc_2018::document>{},
         github_event_message{},
         twitter_status_message{},
+        canada_float{},
+        canada_variant{},
+        canada_integral_reals{},
     };
     constexpr auto typed_dataset_count = static_cast<int>(std::tuple_size_v<decltype(typed_datasets)>);
+
+    // The indices of the datasets that the library of this executable reads
+    template <typename D>
+    constexpr bool measured_dataset =
+#if defined(CPPYYJSON_GLAZE_BENCHMARKS) || defined(CPPYYJSON_REFLECTCPP_BENCHMARKS)
+        !requires { D::cpp_yyjson_only; };
+#else
+        true;
+#endif
+
+    void typed_dataset_args(benchmark::Benchmark* b)
+    {
+        [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+            ((measured_dataset<std::tuple_element_t<Is, decltype(typed_datasets)>>
+                  ? static_cast<void>(b->Arg(static_cast<std::int64_t>(Is)))
+                  : void()),
+             ...);
+        }(std::make_index_sequence<typed_dataset_count>{});
+    }
 
     template <template <typename> typename Bench>
     void dispatch(benchmark::State& state)
@@ -539,11 +599,13 @@ namespace
     // reflect-cpp returns the object in an `rfl::Result`, which a caller can use in place;
     // the rows keep it, without moving the object out.  It has no read into an existing
     // object, and writes either into a new string or into a stream, so it has no rows of
-    // reused objects or buffers.
+    // reused objects or buffers.  reflect-cpp rejects a missing key of a field that is not
+    // a `std::optional` by default; `rfl::DefaultIfMissing` lets it read the `nullable`
+    // `ref` of github_events, which some of the payloads leave out, as the other libraries do.
     template <typename D>
     auto reflectcpp_read(std::string_view json)
     {
-        return rfl::json::read<typename D::type, bench_typed::reflectcpp_rename>(json);
+        return rfl::json::read<typename D::type, bench_typed::reflectcpp_rename, rfl::DefaultIfMissing>(json);
     }
 
     template <typename D>
@@ -596,17 +658,17 @@ namespace
 #endif
 }  // namespace
 
-#define TYPED_READ(row)                          \
-    BENCHMARK(dispatch<row>)                     \
-        ->Name(#row)                             \
-        ->Unit(benchmark::kMicrosecond)          \
-        ->DenseRange(0, typed_dataset_count - 1) \
+#define TYPED_READ(row)                 \
+    BENCHMARK(dispatch<row>)            \
+        ->Name(#row)                    \
+        ->Unit(benchmark::kMicrosecond) \
+        ->Apply(typed_dataset_args)     \
         ->UseManualTime()
 #define TYPED_WRITE(row)                \
     BENCHMARK(dispatch<row>)            \
         ->Name(#row)                    \
         ->Unit(benchmark::kMicrosecond) \
-        ->DenseRange(0, typed_dataset_count - 1)
+        ->Apply(typed_dataset_args)
 
 #if !defined(CPPYYJSON_GLAZE_BENCHMARKS) && !defined(CPPYYJSON_REFLECTCPP_BENCHMARKS)
 TYPED_READ(typed_read_cpp_yyjson);

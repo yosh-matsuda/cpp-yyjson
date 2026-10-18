@@ -209,6 +209,15 @@ TYPED_DATASET_NAMES = {
     6: "gsoc-2018",
     7: "github_event",
     8: "twitter_status",
+    9: "canada_float",
+    10: "canada_variant",
+    11: "canada_integral_reals",
+}
+
+# The throughput charts compare the libraries across documents. The datasets from 9 on read
+# canada again into other number types, and the last of them is measured by cpp-yyjson only.
+TYPED_DOCUMENT_NAMES = {
+    index: name for index, name in TYPED_DATASET_NAMES.items() if index < 9
 }
 
 TYPED_COLORS = {
@@ -299,7 +308,7 @@ THROUGHPUT_CHARTS = {
             ("typed_read_reflectcpp", "reflectcpp", "reflect-cpp"),
         ],
         TYPED_COLORS,
-        TYPED_DATASET_NAMES,
+        TYPED_DOCUMENT_NAMES,
     ),
     "typed_write_throughput": (
         "Write throughput from C++ types",
@@ -311,7 +320,7 @@ THROUGHPUT_CHARTS = {
             ("typed_write_reflectcpp", "reflectcpp", "reflect-cpp"),
         ],
         TYPED_COLORS,
-        TYPED_DATASET_NAMES,
+        TYPED_DOCUMENT_NAMES,
     ),
 }
 

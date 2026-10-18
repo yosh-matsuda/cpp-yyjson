@@ -402,8 +402,11 @@ fi
 # leaves the option cached OFF, and every later run then measures the SSE2 paths
 # without saying so, which is worth more than 10% on the string-heavy rows.  Read
 # the answer off the archive rather than the cache, so that a stale build is caught
-# as well.
-backend_archive=$(find "${BUILD_DIR}" -name 'libcpp_yyjson.a' -print -quit 2>/dev/null)
+# as well.  A multi-config build keeps one archive per configuration, and the others
+# may predate the option, so read the one of the measured configuration.
+backend_archive="${BUILD_DIR}/${CONFIG}/libcpp_yyjson.a"
+[[ -f ${backend_archive} ]] || backend_archive="${BUILD_DIR}/libcpp_yyjson.a"
+[[ -f ${backend_archive} ]] || backend_archive=
 if [[ -n ${backend_archive} ]] && command -v objdump >/dev/null 2>&1; then
     # `grep -q` would close the pipe early and trip `pipefail`, so count instead.
     backend_ymm=$(objdump -d "${backend_archive}" 2>/dev/null | grep -c '%ymm' || true)
