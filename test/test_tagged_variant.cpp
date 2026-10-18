@@ -31,20 +31,17 @@ using TagShape = std::variant<TagCircle, TagRect>;
 using TagShapeOrNone = std::variant<std::monostate, TagCircle, TagRect, TagLabeled, TagSquare,
                                     std::map<std::string, std::string>>;
 template <>
-inline constexpr auto yyjson::variant_tag<TagShape> = yyjson::internal_tag("type", {"circle", "rect"});
+inline constexpr auto yyjson::annotations<TagShape> =
+    yyjson::annotate(yyjson::internal_tag("type", {"circle", "rect"}));
 template <>
-inline constexpr auto yyjson::variant_tag<TagShapeOrNone> =
-    yyjson::internal_tag("type", {"circle", "rect", "labeled", "square", "map"});
+inline constexpr auto yyjson::annotations<TagShapeOrNone> =
+    yyjson::annotate(yyjson::internal_tag("type", {"circle", "rect", "labeled", "square", "map"}));
 
 using TagBody = std::variant<TagCircle, TagRect, int>;
 using TagBodyOrNone = std::variant<std::monostate, TagCircle, std::string>;
 using TagEnumBody = std::variant<std::string, int, TagRect>;
-template <>
-inline constexpr auto yyjson::variant_tag<TagBody> = yyjson::adjacent_tag("kind", {"circle", "rect", "num"});
-template <>
-inline constexpr auto yyjson::variant_tag<TagBodyOrNone> = yyjson::adjacent_tag("t", {"circle", "text"});
-template <>
-inline constexpr auto yyjson::variant_tag<TagEnumBody> = yyjson::adjacent_tag("color", {"red", "green", "blue"});
+constexpr auto tag_body = yyjson::adjacent_tag("kind", {"circle", "rect", "num"});
+constexpr auto tag_body_or_none = yyjson::adjacent_tag("t", {"circle", "text"});
 
 // the tag is a field of the struct
 struct TagEnvelope
@@ -53,6 +50,8 @@ struct TagEnvelope
     TagBody data;
     bool operator==(const TagEnvelope&) const = default;
 };
+template <>
+inline constexpr auto yyjson::annotations<TagEnvelope> = yyjson::annotate(yyjson::field("data", tag_body));
 // the tag is written by the library
 struct TagBare
 {
@@ -61,12 +60,17 @@ struct TagBare
     std::optional<int> extra;
     bool operator==(const TagBare&) const = default;
 };
+template <>
+inline constexpr auto yyjson::annotations<TagBare> = yyjson::annotate(yyjson::field("body", tag_body_or_none));
 struct TagEnumEnvelope
 {
     TagEnumBody value;
     Color color = Color::red;
     bool operator==(const TagEnumEnvelope&) const = default;
 };
+template <>
+inline constexpr auto yyjson::annotations<TagEnumEnvelope> =
+    yyjson::annotate(yyjson::field("value", yyjson::adjacent_tag("color", {"red", "green", "blue"})));
 struct TagVisitable
 {
     TagBodyOrNone body;
@@ -74,7 +78,22 @@ struct TagVisitable
     int id = 0;
     bool operator==(const TagVisitable&) const = default;
 };
+template <>
+inline constexpr auto yyjson::annotations<TagVisitable> =
+    yyjson::annotate(yyjson::field("body", tag_body_or_none), yyjson::field("data", tag_body));
 VISITABLE_STRUCT(TagVisitable, body, data, id);
+// a variant type tagged differently in two fields, and left untagged in a third
+struct TagTwice
+{
+    TagBody first;
+    TagBody second;
+    TagBody untagged;
+    bool operator==(const TagTwice&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<TagTwice> =
+    yyjson::annotate(yyjson::field("first", tag_body),
+                     yyjson::field("second", yyjson::adjacent_tag("k2", {"c", "r", "n"}), yyjson::rename("2nd")));
 struct TagNested
 {
     std::vector<TagShapeOrNone> shapes;
@@ -92,20 +111,24 @@ struct TagHeavyThrows
     [[noreturn]] operator TagHeavy() const { throw 1; }
 };
 using TagHeavyOrNone = std::variant<std::monostate, TagCircle, TagHeavy>;
-template <>
-inline constexpr auto yyjson::variant_tag<TagHeavyOrNone> = yyjson::adjacent_tag("t", {"circle", "heavy"});
 struct TagHeavyBare
 {
     TagHeavyOrNone body;
 };
+template <>
+inline constexpr auto yyjson::annotations<TagHeavyBare> =
+    yyjson::annotate(yyjson::field("body", yyjson::adjacent_tag("t", {"circle", "heavy"})));
 // an alternative that writes the tag of its own variant of the same key
 struct TagHolder
 {
     TagBody data;
 };
+template <>
+inline constexpr auto yyjson::annotations<TagHolder> = yyjson::annotate(yyjson::field("data", tag_body));
 using TagOuter = std::variant<TagHolder, TagRect>;
 template <>
-inline constexpr auto yyjson::variant_tag<TagOuter> = yyjson::internal_tag("kind", {"holder", "rect"});
+inline constexpr auto yyjson::annotations<TagOuter> =
+    yyjson::annotate(yyjson::internal_tag("kind", {"holder", "rect"}));
 
 TEST(TaggedVariant, Internal)
 {
@@ -294,15 +317,20 @@ TEST(TaggedVariant, Adjacent)
     EXPECT_EQ(expect_merge_into(bares[0], R"({"body":null})"), R"({"id":1,"body":null,"extra":3})");
     EXPECT_EQ(expect_merge_into(bares[0], R"({"id":4})"), R"({"id":4,"t":"circle","body":{"r":2.0},"extra":3})");
 
-    // a variant tagged by `adjacent_tag` is not a value by itself
-    EXPECT_THROW((void)read<TagBody>(R"({"r":1})"), std::logic_error);
-    EXPECT_THROW((void)read<std::vector<TagBody>>(R"([1])"), std::logic_error);
-    EXPECT_THROW((void)read(R"(1)").cast<TagBody>(), std::logic_error);
-    EXPECT_THROW((void)read<std::optional<TagBody>>(R"(1)"), std::logic_error);
-    EXPECT_THROW((void)write(TagBody(1)), std::logic_error);
-    EXPECT_THROW((void)value(TagBody(1)), std::logic_error);
-    EXPECT_THROW((void)write(std::vector<TagBody>{1}), std::logic_error);
-    EXPECT_THROW((void)value(std::vector<TagBody>{1}), std::logic_error);
+    // `adjacent_tag` tags a field, so the variant type is untagged elsewhere and tagged per field
+    EXPECT_EQ(read<TagBody>(R"({"r":1})"), TagBody(TagCircle{1}));
+    EXPECT_EQ(read<std::vector<TagBody>>(R"([1])"), std::vector<TagBody>{1});
+    EXPECT_EQ(read(R"(1)").cast<TagBody>(), TagBody(1));
+    EXPECT_EQ(write(TagBody(1)), "1");
+    EXPECT_EQ(std::string(value(std::vector<TagBody>{1}).write()), "[1]");
+    const auto twice = TagTwice{TagRect{1, 2}, 3, TagCircle{4}};
+    const auto* twice_json = R"({"kind":"rect","first":{"w":1,"h":2},"k2":"n","2nd":3,"untagged":{"r":4.0}})";
+    EXPECT_EQ(write(twice), twice_json);
+    EXPECT_EQ(std::string(value(twice).write()), twice_json);
+    EXPECT_EQ(read<TagTwice>(twice_json), twice);
+    EXPECT_EQ(read(twice_json).cast<TagTwice>(), twice);
+    EXPECT_TRUE(expect_direct_read<TagTwice>(R"({"2nd":{"w":1,"h":2},"k2":"r","untagged":1,"first":3,"kind":"num"})"));
+    expect_direct_write(twice);
 
     // a variant without a value is not written
     auto heavy = TagHeavyBare{TagCircle{1}};

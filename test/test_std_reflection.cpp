@@ -17,7 +17,8 @@ struct ReflectedDerived : ReflectedBase
     bool operator==(const ReflectedDerived&) const = default;
 };
 template <>
-inline constexpr auto yyjson::field_rename<ReflectedDerived> = {yyjson::rename("name", "@name")};
+inline constexpr auto yyjson::annotations<ReflectedDerived> =
+    yyjson::annotate(yyjson::field("name", yyjson::rename("@name")));
 struct ReflectedWide
 {
     int f0 = 0;
@@ -194,47 +195,19 @@ TEST(Reflection, StdReflection)
 }
 #endif
 
+// Fields skipped by `[[=yyjson::skip]]` on the member with C++26 annotations, by `yyjson::annotations` otherwise
 #if FIELD_RFL_ANNOTATIONS
-// keys and skipped fields given by C++26 annotations
-struct AnnotatedProject
-{
-    [[= yyjson::rename("@context")]] std::string context;
-    [[= yyjson::rename("a/b\"c, longer than 16")]] std::string type;
-    int id = 0;
-    bool operator==(const AnnotatedProject&) const = default;
-};
-struct [[= yyjson::rename("context", "@context"), = yyjson::rename("type", "a/b\"c, longer than 16")]] TypeAnnotatedProject
-{
-    std::string context;
-    std::string type;
-    int id = 0;
-    bool operator==(const TypeAnnotatedProject&) const = default;
-};
-// the three ways to rename, one field each
-struct [[= yyjson::rename("b", "@b")]] CombinedRenames
-{
-    [[= yyjson::rename("@a")]] int a = 0;
-    int b = 0;
-    int c = 0;
-    int d = 0;
-    bool operator==(const CombinedRenames&) const = default;
-};
-template <>
-inline constexpr auto yyjson::field_rename<CombinedRenames> = {yyjson::rename("c", "@c")};
-struct AnnotatedSwappedKeys
-{
-    [[= yyjson::rename("b")]] int a = 0;
-    [[= yyjson::rename("a")]] int b = 0;
-    bool operator==(const AnnotatedSwappedKeys&) const = default;
-};
-
+#define SKIPPED_FIELD [[= yyjson::skip]]
+#else
+#define SKIPPED_FIELD
+#endif
 struct SkippedFields
 {
     int id = 0;
-    [[= yyjson::skip]] std::string cache = "default";
+    SKIPPED_FIELD std::string cache = "default";
     std::vector<int> list = {};
-    [[= yyjson::skip]] std::function<int()> callback = {};  // neither read nor written by this library
-    [[= yyjson::skip]] int* pointer = nullptr;
+    SKIPPED_FIELD std::function<int()> callback = {};  // neither read nor written by this library
+    SKIPPED_FIELD int* pointer = nullptr;
     std::optional<int> opt = {};
     bool operator==(const SkippedFields& other) const
     {
@@ -245,107 +218,69 @@ struct SkippedFields
 // a skipped field leaves its key to another field
 struct SkippedKeyReused
 {
-    [[= yyjson::skip]] int a = 7;
-    [[= yyjson::rename("a")]] int b = 0;
+    SKIPPED_FIELD int a = 7;
+    int b = 0;
     bool operator==(const SkippedKeyReused&) const = default;
 };
 struct AllSkipped
 {
-    [[= yyjson::skip]] int a = 1;
-    [[= yyjson::skip]] std::string b = "b";
+    SKIPPED_FIELD int a = 1;
+    SKIPPED_FIELD std::string b = "b";
     bool operator==(const AllSkipped&) const = default;
 };
 struct SkippedConst
 {
     int x = 0;
-    [[= yyjson::skip]] const int version = 3;
+    SKIPPED_FIELD const int version = 3;
     bool operator==(const SkippedConst&) const = default;
 };
 struct SkippedMutex
 {
     int x = 0;
-    [[= yyjson::skip]] std::mutex mutex = {};
+    SKIPPED_FIELD std::mutex mutex = {};
 };
+#if FIELD_RFL_ANNOTATIONS
+// the C++20 backend of field-reflection does not reflect a reference member
 struct SkippedReference
 {
     int x = 0;
-    [[= yyjson::skip]] const int& ref;
+    SKIPPED_FIELD const int& ref;
 };
+#endif
 // not a recursive type, as the field of its own type is skipped
 struct SkippedRecursion
 {
     int v = 0;
-    [[= yyjson::skip]] std::vector<SkippedRecursion> children;
+    SKIPPED_FIELD std::vector<SkippedRecursion> children;
     bool operator==(const SkippedRecursion&) const = default;
 };
-struct HoldsAnnotated
-{
-    AnnotatedProject project;
-    std::vector<SkippedFields> items;
-    std::map<std::string, TypeAnnotatedProject> by_name;
-    std::optional<CombinedRenames> combined;
-    AllSkipped none = {};
-    bool operator==(const HoldsAnnotated&) const = default;
-};
-
-TEST(Reflection, AnnotationRename)
-{
-    static_assert(yyjson::detail::field_key<AnnotatedProject, 0> == "@context");
-    static_assert(yyjson::detail::field_key<AnnotatedProject, 2> == "id");
-    static_assert(yyjson::detail::field_key<TypeAnnotatedProject, 1> == "a/b\"c, longer than 16");
-    static_assert(yyjson::detail::field_key<CombinedRenames, 0> == "@a");
-    static_assert(yyjson::detail::field_key<CombinedRenames, 1> == "@b");
-    static_assert(yyjson::detail::field_key<CombinedRenames, 2> == "@c");
-    static_assert(yyjson::detail::field_key<CombinedRenames, 3> == "d");
-
-    const auto* json = R"({"@context":"c","a/b\"c, longer than 16":"t","id":1,"context":"x","type":"y"})";
-    const auto* written_json = R"({"@context":"c","a/b\"c, longer than 16":"t","id":1})";
-    const auto check = [&]<typename T>(std::type_identity<T>) {
-        const auto expected = T{"c", "t", 1};
-        EXPECT_EQ(yyjson::read(json).cast<T>(), expected);
-        EXPECT_EQ(yyjson::read<T>(json), expected);
-        EXPECT_TRUE(expect_direct_read<T>(json));
-        EXPECT_TRUE(expect_direct_read<T>(R"({"\u0040context":"c","a\/b\"c, longer than 16":"t"})"));
-        EXPECT_TRUE(expect_direct_read<std::vector<T>>(std::string("[") + json + "," + json + "]"));
-        auto t = T{"old", "old", 9};
-        yyjson::read_into(R"({"@context":"c"})", t);
-        EXPECT_EQ(t, (T{"c", "", 0}));
-        yyjson::merge_into(R"({"id":2,"type":"x"})", t);
-        EXPECT_EQ(t, (T{"c", "", 2}));
-
-        EXPECT_EQ(std::string(yyjson::value(expected).write()), written_json);
-        EXPECT_EQ(std::string(yyjson::object(expected).write()), written_json);
-        EXPECT_EQ(std::string(yyjson::object(T(expected)).write()), written_json);
-        EXPECT_EQ(std::string(yyjson::write(expected)), written_json);
-        expect_direct_write(expected);
-        expect_direct_write(std::vector<T>{expected, T{}});
-        EXPECT_EQ(yyjson::read<T>(std::string(yyjson::write(expected, yyjson::WriteFlag::Pretty))), expected);
-    };
-    check(std::type_identity<AnnotatedProject>{});
-    check(std::type_identity<TypeAnnotatedProject>{});
-
-    const auto combined = CombinedRenames{1, 2, 3, 4};
-    const auto* combined_json = R"({"@a":1,"@b":2,"@c":3,"d":4})";
-    EXPECT_EQ(std::string(yyjson::write(combined)), combined_json);
-    EXPECT_EQ(std::string(yyjson::value(combined).write()), combined_json);
-    EXPECT_EQ(yyjson::read<CombinedRenames>(combined_json), combined);
-    EXPECT_EQ(yyjson::read(combined_json).cast<CombinedRenames>(), combined);
-    EXPECT_EQ(yyjson::read<CombinedRenames>(R"({"a":1,"b":2,"c":3,"d":4})"), (CombinedRenames{0, 0, 0, 4}));
-    EXPECT_TRUE(expect_direct_read<CombinedRenames>(combined_json));
-
-    const auto* swapped = R"({"a":1,"b":2})";
-    EXPECT_EQ(yyjson::read<AnnotatedSwappedKeys>(swapped), (AnnotatedSwappedKeys{2, 1}));
-    EXPECT_EQ(yyjson::read(swapped).cast<AnnotatedSwappedKeys>(), (AnnotatedSwappedKeys{2, 1}));
-    EXPECT_EQ(std::string(yyjson::write(AnnotatedSwappedKeys{1, 2})), R"({"b":1,"a":2})");
-    EXPECT_TRUE(expect_direct_read<AnnotatedSwappedKeys>(swapped));
-}
+#if FIELD_RFL_ANNOTATIONS
+template <>
+inline constexpr auto yyjson::annotations<SkippedKeyReused> = yyjson::annotate(yyjson::field("b", yyjson::rename("a")));
+#else
+template <>
+inline constexpr auto yyjson::annotations<SkippedFields> =
+    yyjson::annotate(yyjson::field("cache", yyjson::skip), yyjson::field("callback", yyjson::skip),
+                     yyjson::field("pointer", yyjson::skip));
+template <>
+inline constexpr auto yyjson::annotations<SkippedKeyReused> =
+    yyjson::annotate(yyjson::field("a", yyjson::skip), yyjson::field("b", yyjson::rename("a")));
+template <>
+inline constexpr auto yyjson::annotations<AllSkipped> =
+    yyjson::annotate(yyjson::field("a", yyjson::skip), yyjson::field("b", yyjson::skip));
+template <>
+inline constexpr auto yyjson::annotations<SkippedConst> = yyjson::annotate(yyjson::field("version", yyjson::skip));
+template <>
+inline constexpr auto yyjson::annotations<SkippedMutex> = yyjson::annotate(yyjson::field("mutex", yyjson::skip));
+template <>
+inline constexpr auto yyjson::annotations<SkippedRecursion> = yyjson::annotate(yyjson::field("children", yyjson::skip));
+#endif
 
 TEST(Reflection, AnnotationSkip)
 {
     using yyjson::detail::reflected_fields;
     static_assert(std::same_as<reflected_fields<SkippedFields>, std::index_sequence<0, 2, 5>>);
     static_assert(std::same_as<reflected_fields<AllSkipped>, std::index_sequence<>>);
-    static_assert(std::same_as<reflected_fields<AnnotatedProject>, std::index_sequence<0, 1, 2>>);
     static_assert(!yyjson::detail::recursive_type<SkippedRecursion>);
 
     auto value = 5;
@@ -416,13 +351,118 @@ TEST(Reflection, AnnotationSkip)
     auto mutex = SkippedMutex{.x = 1};
     EXPECT_EQ(std::string(yyjson::write(mutex)), R"({"x":1})");
     EXPECT_EQ(std::string(yyjson::value(mutex).write()), R"({"x":1})");
+#if FIELD_RFL_ANNOTATIONS
     const auto reference = SkippedReference{2, value};
     EXPECT_EQ(std::string(yyjson::write(reference)), R"({"x":2})");
     EXPECT_EQ(std::string(yyjson::value(reference).write()), R"({"x":2})");
+#endif
 
     const auto recursion = SkippedRecursion{1, {{2, {}}}};
     EXPECT_EQ(std::string(yyjson::write(recursion)), R"({"v":1})");
     EXPECT_EQ(yyjson::read<SkippedRecursion>(R"({"v":1,"children":[{"v":2}]})"), (SkippedRecursion{1, {}}));
+}
+
+#if FIELD_RFL_ANNOTATIONS
+// keys given by C++26 annotations
+struct AnnotatedProject
+{
+    [[= yyjson::rename("@context")]] std::string context;
+    [[= yyjson::rename("a/b\"c, longer than 16")]] std::string type;
+    int id = 0;
+    bool operator==(const AnnotatedProject&) const = default;
+};
+// keys given by `yyjson::annotations` to a struct that C++26 reflects
+struct TypeAnnotatedProject
+{
+    std::string context;
+    std::string type;
+    int id = 0;
+    bool operator==(const TypeAnnotatedProject&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<TypeAnnotatedProject> =
+    yyjson::annotate(yyjson::field("context", yyjson::rename("@context")),
+                     yyjson::field("type", yyjson::rename("a/b\"c, longer than 16")));
+// keys given by an annotation of the member and by `yyjson::annotations`
+struct CombinedRenames
+{
+    [[= yyjson::rename("@a")]] int a = 0;
+    int b = 0;
+    int c = 0;
+    int d = 0;
+    bool operator==(const CombinedRenames&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<CombinedRenames> =
+    yyjson::annotate(yyjson::field("b", yyjson::rename("@b")), yyjson::field("c", yyjson::rename("@c")));
+struct AnnotatedSwappedKeys
+{
+    [[= yyjson::rename("b")]] int a = 0;
+    [[= yyjson::rename("a")]] int b = 0;
+    bool operator==(const AnnotatedSwappedKeys&) const = default;
+};
+
+struct HoldsAnnotated
+{
+    AnnotatedProject project;
+    std::vector<SkippedFields> items;
+    std::map<std::string, TypeAnnotatedProject> by_name;
+    std::optional<CombinedRenames> combined;
+    AllSkipped none = {};
+    bool operator==(const HoldsAnnotated&) const = default;
+};
+
+TEST(Reflection, AnnotationRename)
+{
+    static_assert(std::same_as<yyjson::detail::reflected_fields<AnnotatedProject>, std::index_sequence<0, 1, 2>>);
+    static_assert(yyjson::detail::field_key<AnnotatedProject, 0> == "@context");
+    static_assert(yyjson::detail::field_key<AnnotatedProject, 2> == "id");
+    static_assert(yyjson::detail::field_key<TypeAnnotatedProject, 1> == "a/b\"c, longer than 16");
+    static_assert(yyjson::detail::field_key<CombinedRenames, 0> == "@a");
+    static_assert(yyjson::detail::field_key<CombinedRenames, 1> == "@b");
+    static_assert(yyjson::detail::field_key<CombinedRenames, 2> == "@c");
+    static_assert(yyjson::detail::field_key<CombinedRenames, 3> == "d");
+
+    const auto* json = R"({"@context":"c","a/b\"c, longer than 16":"t","id":1,"context":"x","type":"y"})";
+    const auto* written_json = R"({"@context":"c","a/b\"c, longer than 16":"t","id":1})";
+    const auto check = [&]<typename T>(std::type_identity<T>) {
+        const auto expected = T{"c", "t", 1};
+        EXPECT_EQ(yyjson::read(json).cast<T>(), expected);
+        EXPECT_EQ(yyjson::read<T>(json), expected);
+        EXPECT_TRUE(expect_direct_read<T>(json));
+        EXPECT_TRUE(expect_direct_read<T>(R"({"\u0040context":"c","a\/b\"c, longer than 16":"t"})"));
+        EXPECT_TRUE(expect_direct_read<std::vector<T>>(std::string("[") + json + "," + json + "]"));
+        auto t = T{"old", "old", 9};
+        yyjson::read_into(R"({"@context":"c"})", t);
+        EXPECT_EQ(t, (T{"c", "", 0}));
+        yyjson::merge_into(R"({"id":2,"type":"x"})", t);
+        EXPECT_EQ(t, (T{"c", "", 2}));
+
+        EXPECT_EQ(std::string(yyjson::value(expected).write()), written_json);
+        EXPECT_EQ(std::string(yyjson::object(expected).write()), written_json);
+        EXPECT_EQ(std::string(yyjson::object(T(expected)).write()), written_json);
+        EXPECT_EQ(std::string(yyjson::write(expected)), written_json);
+        expect_direct_write(expected);
+        expect_direct_write(std::vector<T>{expected, T{}});
+        EXPECT_EQ(yyjson::read<T>(std::string(yyjson::write(expected, yyjson::WriteFlag::Pretty))), expected);
+    };
+    check(std::type_identity<AnnotatedProject>{});
+    check(std::type_identity<TypeAnnotatedProject>{});
+
+    const auto combined = CombinedRenames{1, 2, 3, 4};
+    const auto* combined_json = R"({"@a":1,"@b":2,"@c":3,"d":4})";
+    EXPECT_EQ(std::string(yyjson::write(combined)), combined_json);
+    EXPECT_EQ(std::string(yyjson::value(combined).write()), combined_json);
+    EXPECT_EQ(yyjson::read<CombinedRenames>(combined_json), combined);
+    EXPECT_EQ(yyjson::read(combined_json).cast<CombinedRenames>(), combined);
+    EXPECT_EQ(yyjson::read<CombinedRenames>(R"({"a":1,"b":2,"c":3,"d":4})"), (CombinedRenames{0, 0, 0, 4}));
+    EXPECT_TRUE(expect_direct_read<CombinedRenames>(combined_json));
+
+    const auto* swapped = R"({"a":1,"b":2})";
+    EXPECT_EQ(yyjson::read<AnnotatedSwappedKeys>(swapped), (AnnotatedSwappedKeys{2, 1}));
+    EXPECT_EQ(yyjson::read(swapped).cast<AnnotatedSwappedKeys>(), (AnnotatedSwappedKeys{2, 1}));
+    EXPECT_EQ(std::string(yyjson::write(AnnotatedSwappedKeys{1, 2})), R"({"b":1,"a":2})");
+    EXPECT_TRUE(expect_direct_read<AnnotatedSwappedKeys>(swapped));
 }
 
 TEST(Reflection, AnnotationNested)

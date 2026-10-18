@@ -9,7 +9,7 @@
 // documents, which is also the order the libraries write them in.  Every key of the
 // documents has a member.  A key that is not a valid member name, such as `@context` or
 // the C++ keyword `public`, belongs to a member of another name, which
-// `yyjson::field_rename` maps to the key; the Glaze executable gives Glaze the same
+// `yyjson::annotations` maps to the key; the Glaze executable gives Glaze the same
 // mapping through `glz::meta<T>::rename_key`, and the reflect-cpp executable gives it to
 // reflect-cpp through the processor `reflectcpp_rename`.  Nothing is skipped, so a
 // library that is fast at skipping values gains little here.
@@ -627,38 +627,68 @@ namespace bench_typed
 }  // namespace bench_typed
 
 template <>
-inline constexpr auto yyjson::field_rename<bench_typed::twitter::user_t> = {yyjson::rename("protected_", "protected")};
+inline constexpr auto yyjson::annotations<bench_typed::twitter::user_t> =
+    yyjson::annotate(yyjson::field("protected_", yyjson::rename("protected")));
 template <>
-inline constexpr auto yyjson::field_rename<bench_typed::github_events::forkee_t> = {
-    yyjson::rename("private_", "private"),
-    yyjson::rename("public_", "public")};
+inline constexpr auto yyjson::annotations<bench_typed::github_events::forkee_t> = yyjson::annotate(
+    yyjson::field("private_", yyjson::rename("private")), yyjson::field("public_", yyjson::rename("public")));
 template <>
-inline constexpr auto yyjson::field_rename<bench_typed::github_events::event_t> = {yyjson::rename("public_", "public")};
+inline constexpr auto yyjson::annotations<bench_typed::github_events::event_t> =
+    yyjson::annotate(yyjson::field("public_", yyjson::rename("public")));
 template <>
-inline constexpr auto yyjson::field_rename<bench_typed::gsoc_2018::sponsor_t> = {yyjson::rename("type", "@type")};
+inline constexpr auto yyjson::annotations<bench_typed::gsoc_2018::sponsor_t> =
+    yyjson::annotate(yyjson::field("type", yyjson::rename("@type")));
 template <>
-inline constexpr auto yyjson::field_rename<bench_typed::gsoc_2018::author_t> = {yyjson::rename("type", "@type")};
+inline constexpr auto yyjson::annotations<bench_typed::gsoc_2018::author_t> =
+    yyjson::annotate(yyjson::field("type", yyjson::rename("@type")));
 template <>
-inline constexpr auto yyjson::field_rename<bench_typed::gsoc_2018::project_t> = {
-    yyjson::rename("context", "@context"),
-    yyjson::rename("type", "@type")};
+inline constexpr auto yyjson::annotations<bench_typed::gsoc_2018::project_t> = yyjson::annotate(
+    yyjson::field("context", yyjson::rename("@context")), yyjson::field("type", yyjson::rename("@type")));
+
+namespace bench_typed
+{
+    // Whether `yyjson::annotations<T>` gives a field another key.
+    template <typename T>
+    inline constexpr bool renamed = std::tuple_size_v<decltype(yyjson::annotations<T>.values)> != 0;
+
+    // The key that `yyjson::annotations<T>` gives the member `member`.
+    template <typename T>
+    constexpr std::string_view renamed_key(const std::string_view member)
+    {
+        auto key = member;
+        std::apply(
+            [&](const auto&... fields) {
+                (std::apply(
+                     [&](const auto&... values) {
+                         (
+                             [&](const auto& value) {
+                                 if constexpr (std::same_as<std::remove_cvref_t<decltype(value)>, yyjson::rename>)
+                                     if (fields.member == member) key = value.key();
+                             }(values),
+                             ...);
+                     },
+                     fields.values),
+                 ...);
+            },
+            yyjson::annotations<T>.values);
+        return key;
+    }
+}  // namespace bench_typed
 
 #if defined(CPPYYJSON_GLAZE_BENCHMARKS)
 template <typename T>
-requires (yyjson::detail::has_field_rename<T>)
+requires (bench_typed::renamed<T>)
 struct glz::meta<T>
 {
     static constexpr std::string_view rename_key(const std::string_view member)
     {
-        for (const auto& r : yyjson::field_rename<T>)
-            if (r.member() == member) return r.key();
-        return member;
+        return bench_typed::renamed_key<T>(member);
     }
 };
 #elif defined(CPPYYJSON_REFLECTCPP_BENCHMARKS)
 namespace bench_typed
 {
-    // A reflect-cpp processor that gives every field the key `yyjson::field_rename` maps
+    // A reflect-cpp processor that gives every field the key `yyjson::annotations` maps
     // its member to.  `rfl::Rename` would do the same, but it changes the type of the
     // member, and the aggregates are shared with the other libraries.
     struct reflectcpp_rename
@@ -666,7 +696,7 @@ namespace bench_typed
         template <typename T>
         static auto process(const auto& named_tuple)
         {
-            if constexpr (yyjson::detail::has_field_rename<T>)
+            if constexpr (renamed<T>)
                 return named_tuple.transform([]<typename F>(const F& field) {
                     return rfl::Field<key_of<T, F::name_>(), typename F::Type>(field.value());
                 });
@@ -678,11 +708,7 @@ namespace bench_typed
         template <typename T, auto Member>
         static constexpr auto key_of()
         {
-            constexpr auto key = [] {
-                for (const auto& r : yyjson::field_rename<T>)
-                    if (r.member() == Member.string_view()) return r.key();
-                return Member.string_view();
-            }();
+            constexpr auto key = renamed_key<T>(Member.string_view());
             auto chars = std::array<char, key.size() + 1>{};
             std::ranges::copy(key, chars.begin());
             return rfl::internal::StringLiteral<key.size() + 1>(chars);

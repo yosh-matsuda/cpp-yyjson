@@ -29,9 +29,10 @@ The `yyjson` namespace includes the following functions and classes. Typically, 
 | -------------------------------------------------- | -------------------------------------------------------------------------------- |
 | `yyjson::caster<T>`                                | Class template to specialize for a [user-defined caster](#user-defined-casters)  |
 | `yyjson::object_emitter`, `yyjson::array_emitter`  | Write the members of an object or an array [from a caster's `to_json`](#writing-members-with-an-emitter) |
-| `yyjson::field_rename<T>`, `yyjson::rename`        | Map fields to [JSON keys other than their names](#json-keys-other-than-field-names) |
-| `yyjson::skip`                                     | C++26 annotation that leaves a field out of [reading and writing](#c26-annotations) |
-| `yyjson::variant_tag<T>`, `yyjson::internal_tag`, `yyjson::adjacent_tag` | Name the alternatives of a `std::variant` by a [member of the object](#tagged-variants) |
+| `yyjson::annotations<T>`, `yyjson::annotate`, `yyjson::field` | Settings of the conversion of a type, and of each field of a struct |
+| `yyjson::rename`                                   | Give a field a [JSON key other than its name](#json-keys-other-than-field-names) |
+| `yyjson::skip`                                     | Leave a field out of [reading and writing](#skipped-fields) |
+| `yyjson::internal_tag`, `yyjson::adjacent_tag`     | Name the alternatives of a `std::variant` by a [member of the object](#tagged-variants) |
 | `yyjson::json_view`                                | Read-only view of a JSON value for a caster's [`from_json`](#reading-a-json-value-in-a-caster) |
 | `VISITABLE_STRUCT`                                 | Macro to [register the fields](#registration-of-field-names-of-structclass) of a struct |
 | `yyjson::readable<T>`, `yyjson::writable<T>`, `yyjson::castable<Json, T>` | Concepts that tell whether a type [can be read or written](#conversion-rules) |
@@ -1280,7 +1281,7 @@ The following types have no conversion of their own, and fail to compile where t
 | --- | --- |
 | raw pointers | `std::optional`, `std::unique_ptr`, `std::shared_ptr`, or a [translator](#translator) |
 | `std::chrono` durations and time points | a translator to a number or a string |
-| `std::function`, `std::any`, unions | leave the field out with `VISITABLE_STRUCT` or a [C++26 annotation](#c26-annotations) |
+| `std::function`, `std::any`, unions | leave the field out with [`yyjson::skip`](#skipped-fields) or `VISITABLE_STRUCT` |
 | `std::mutex` and other types that cannot be moved | the same, but the struct can then only be written |
 | a class with private fields, or a struct with a constructor of its own | a translator, or `VISITABLE_STRUCT` if the fields are public |
 | `std::forward_list`, `std::unique_ptr` of an array | `std::vector` or `std::list`; `std::forward_list` is written but not read |
@@ -1341,7 +1342,7 @@ In addition to the above, the following methods are provided for converting *arb
 2.  [Enumerations](#enumerations) by the names of their enumerators.
 3.  [Conversion using compile-time reflection](#automatic-casting-with-compile-time-reflection).
 4.  [Registration of field names with the `VISITABLE_STRUCT` macro](#registration-of-field-names-of-structclass).
-5.  [JSON keys other than field names](#json-keys-other-than-field-names) with `yyjson::field_rename` or C++26 annotations.
+5.  [JSON keys other than field names](#json-keys-other-than-field-names) with `yyjson::annotations` or C++26 annotations.
 6.  [User-defined casters](#user-defined-casters).
 
 ### Pre-defined STL casters
@@ -1476,9 +1477,9 @@ The other conditions depend on the C++ standard. C++26 static reflection is used
 | `const` member | written, not read | written, not read |
 | Reference member | not converted | written, not read |
 | Enumerators converted by [name](#enumerations) | values in [-128, 128] unless widened | all |
-| Keys and skipped fields given in the struct | no, use [`field_rename`](#json-keys-other-than-field-names) | [annotations](#c26-annotations) |
+| Keys and skipped fields given on the members | no, use [`yyjson::annotations`](#json-keys-other-than-field-names) | [annotations](#c26-annotations) |
 
-A struct that is written but not read fails to compile when it is read, by `cast<T>`, `yyjson::read<T>` or any other function. A struct that also has `begin()` and `end()` is still a JSON object of its fields; only `std::array` among the aggregates is a JSON array. With C++26, `yyjson::field_rename` of a derived class can rename the fields of its base classes as well. A struct with a constructor of its own and public fields can be registered with [`VISITABLE_STRUCT`](#registration-of-field-names-of-structclass) instead, and one with private fields needs a [user-defined caster](#user-defined-casters).
+A struct that is written but not read fails to compile when it is read, by `cast<T>`, `yyjson::read<T>` or any other function. A struct that also has `begin()` and `end()` is still a JSON object of its fields; only `std::array` among the aggregates is a JSON array. With C++26, `yyjson::annotations` of a derived class can rename the fields of its base classes as well. A struct with a constructor of its own and public fields can be registered with [`VISITABLE_STRUCT`](#registration-of-field-names-of-structclass) instead, and one with private fields needs a [user-defined caster](#user-defined-casters).
 
 Example:
 
@@ -1537,7 +1538,7 @@ auto deserialized = cast<X>(serialized);
 
 ### JSON keys other than field names
 
-A JSON key that is not a valid C++ identifier, such as `@context`, can still be read into and written from a field. Specialize the variable template `yyjson::field_rename` for the type with a list of `yyjson::rename("member", "key")`, the member name and the JSON key of each field to rename:
+A JSON key that is not a valid C++ identifier, such as `@context`, can still be read into and written from a field. Specialize the variable template `yyjson::annotations` for the type with `yyjson::annotate`, and give each field to rename a `yyjson::field("member", yyjson::rename("key"))`, the member name and the JSON key of the field:
 
 ```cpp
 struct Project
@@ -1548,8 +1549,9 @@ struct Project
 };
 
 template <>
-inline constexpr auto yyjson::field_rename<Project> = {yyjson::rename("context", "@context"),
-                                                       yyjson::rename("type", "@type")};
+inline constexpr auto yyjson::annotations<Project> =
+    yyjson::annotate(yyjson::field("context", yyjson::rename("@context")),
+                     yyjson::field("type", yyjson::rename("@type")));
 
 auto project = yyjson::read<Project>(R"({"@context":"https://schema.org","@type":"Project","name":"x"})");
 // -> Project{.context = "https://schema.org", .type = "Project", .name = "x"}
@@ -1557,34 +1559,50 @@ auto json = yyjson::write(project);
 // -> {"@context":"https://schema.org","@type":"Project","name":"x"}
 ```
 
-The `VISITABLE_STRUCT` macro takes the same pairs in parentheses instead of a member name:
+The `VISITABLE_STRUCT` macro also takes the pairs in parentheses instead of a member name, as a shorthand for `yyjson::rename`:
 
 ```cpp
 VISITABLE_STRUCT(Project, (context, "@context"), (type, "@type"), name);
 ```
 
 *   A field that is not listed keeps its member name as the key.
-*   Write the specialization `inline` as above, since it is a definition: without `inline`, a header that has it fails to link into more than one translation unit, as any variable defined in a header does. Its type is `std::initializer_list<yyjson::rename>`, which `auto` deduces from the braces.
-*   MSVC does not deduce `std::initializer_list` from the braces in an explicit specialization: it rejects more than one `yyjson::rename` there (error C3518) and deduces `yyjson::rename` from a single one. A single `yyjson::rename` is accepted as a list of one, so the form above works with one pair. With more than one pair, write the type in place of `auto`, which every compiler accepts:
-
-    ```cpp
-    template <>
-    inline constexpr std::initializer_list<yyjson::rename> yyjson::field_rename<Project> = {
-        yyjson::rename("context", "@context"), yyjson::rename("type", "@type")};
-    ```
+*   Write the specialization `inline` as above, since it is a definition: without `inline`, a header that has it fails to link into more than one translation unit, as any variable defined in a header does. Define it before the first use of the type.
 *   The keys are used everywhere the field names are: by `cast`, `object(t)` and `value(t)`, and by `yyjson::read<T>` and `yyjson::write`. A JSON key is compared after unescaping, so `"\u0040context"` is read into `context` as well, and a key is escaped as the write flags require.
-*   `yyjson::field_rename` works both for a struct that the compile-time reflection converts and for one that the `VISITABLE_STRUCT` macro registers. For the latter, define the specialization before the macro, and do not combine it with pairs in the macro.
-*   A pair that names a member which does not exist or is not registered, a member named twice, and two fields that end up with the same key all fail to compile with a `static_assert`.
+*   `yyjson::annotations` works both for a struct that the compile-time reflection converts and for one that the `VISITABLE_STRUCT` macro registers. For the latter, define the specialization before the macro, and give a field its key either by a pair in the macro or by `yyjson::field`, not by both.
+*   `yyjson::field` that names a member which does not exist or is not registered, a field renamed twice, the same setting given twice to a field, and two fields that end up with the same key all fail to compile with a `static_assert`.
+
+#### Skipped fields
+
+`yyjson::field("member", yyjson::skip)` leaves a field out of reading and writing:
+
+```cpp
+struct Task
+{
+    std::string name;
+    std::function<void()> on_change;
+};
+
+template <>
+inline constexpr auto yyjson::annotations<Task> = yyjson::annotate(yyjson::field("on_change", yyjson::skip));
+
+auto json = yyjson::write(Task{"x", [] {}});
+// -> {"name":"x"}
+```
+
+*   A skipped field is not written, and its key is ignored when reading, as an unknown key is. It may have a type that cannot be converted, such as `std::function` or a pointer, and a skipped `const` member does not make the struct unreadable. A skipped field takes no other setting, and another field may take its key.
+*   `yyjson::read<T>` and `cast<T>` leave a skipped field at its value in `T()`, and so does `read_into`, which gives `t` the same value as `t = read<T>(json)`. `merge_into` keeps the value of a skipped field.
+*   Reading still needs what the struct itself needs: `yyjson::read<T>` and `cast<T>` a default constructible and movable `T`, and `read_into` and `merge_into` a move-assignable one. A struct with a skipped `std::mutex` can therefore only be written, and one with a skipped `const` or reference member cannot be read by `read_into` or `merge_into`.
+*   `VISITABLE_STRUCT` converts only the members that it lists: leave a member out of the macro instead. `yyjson::skip` on a struct that the macro registers fails to compile.
 
 #### C++26 annotations
 
-With C++26 static reflection, e.g. GCC 16 with `-std=c++26 -freflection`, the JSON keys can be given in the struct itself by [annotations](https://wg21.link/p3394). `yyjson::rename("key")` on a field gives that field the key, and `yyjson::rename("member", "key")` on the struct gives the named member the key, as a pair of `yyjson::field_rename` does. `yyjson::skip` on a field leaves the field out of reading and writing:
+With C++26 static reflection, e.g. GCC 16 with `-std=c++26 -freflection`, the settings of a field can be written on the member itself as an [annotation](https://wg21.link/p3394): `[[=yyjson::rename("key")]]`, `[[=yyjson::skip]]` and `[[=yyjson::adjacent_tag(key, ids)]]` are the values that `yyjson::field` takes for the member.
 
 ```cpp
-struct [[=yyjson::rename("type", "@type")]] Project
+struct Project
 {
     [[=yyjson::rename("@context")]] std::string context;
-    std::string type;
+    [[=yyjson::rename("@type")]] std::string type;
     std::string name;
     [[=yyjson::skip]] std::function<void()> on_change;
 };
@@ -1594,15 +1612,14 @@ auto json = yyjson::write(project);
 // -> {"@context":"https://schema.org","@type":"Project","name":"x"}
 ```
 
-*   The annotations of the struct, of its fields and a `yyjson::field_rename` specialization can be combined, as long as no field is renamed twice. The annotation on the struct names the member, and the one on a field does not; the other form fails to compile.
-*   A skipped field is not written, and its key is ignored when reading, as an unknown key is. It may have a type that cannot be converted, such as `std::function` or a pointer, and a skipped `const` member does not make the struct unreadable. A skipped field cannot also be renamed.
-*   `yyjson::read<T>` and `cast<T>` leave a skipped field at its value in `T()`, and so does `read_into`, which gives `t` the same value as `t = read<T>(json)`. `merge_into` keeps the value of a skipped field.
-*   Reading still needs what the struct itself needs: `yyjson::read<T>` and `cast<T>` a default constructible and movable `T`, and `read_into` and `merge_into` a move-assignable one. A struct with a skipped `std::mutex` can therefore only be written, and one with a skipped `const` or reference member cannot be read by `read_into` or `merge_into`.
-*   The annotations apply to the structs that the compile-time reflection converts, not to those registered with `VISITABLE_STRUCT`. `yyjson::skip` is defined only when they are available, when the macro `FIELD_RFL_ANNOTATIONS` is `1`, while `yyjson::rename` is always available for `yyjson::field_rename`.
+*   The annotations of the members and a `yyjson::annotations` specialization can be combined, as long as no field gets the same setting twice, which fails to compile as above.
+*   The settings of a field go on the member or into `yyjson::annotations<T>`. An annotation on the struct itself is not read.
+*   The annotations apply to the structs that the compile-time reflection converts. An annotation of this library on a member of a struct that `VISITABLE_STRUCT` registers fails to compile; use the pairs of the macro or `yyjson::annotations` there.
+*   The annotations are read when the macro `FIELD_RFL_ANNOTATIONS` is `1`. `yyjson::rename`, `yyjson::skip` and the tags are always available for `yyjson::annotations`.
 
 ### Tagged variants
 
-JSON often tells the kind of an object by a member that names it, such as `"type": "circle"`, rather than by its shape. Specialize the variable template `yyjson::variant_tag` for a `std::variant` to read and write its alternatives by such a member, which is called the tag. `yyjson::internal_tag(key, ids)` puts the tag in the object of the alternative itself, and `yyjson::adjacent_tag(key, ids)` puts it in the object of the struct that holds the variant, next to the field of the variant. `ids` names the alternatives other than `std::monostate`, in the order of the template arguments:
+JSON often tells the kind of an object by a member that names it, such as `"type": "circle"`, rather than by its shape. A `std::variant` can read and write its alternatives by such a member, which is called the tag. `yyjson::internal_tag(key, ids)` puts the tag in the object of the alternative itself, and annotates the variant type in `yyjson::annotations<V>`. `yyjson::adjacent_tag(key, ids)` puts it in the object of the struct that holds the variant, next to the field of the variant, and annotates that field by `yyjson::field` or by a [C++26 annotation](#c26-annotations) of the member. `ids` names the alternatives other than `std::monostate`, in the order of the template arguments:
 
 ```cpp
 struct Circle
@@ -1617,7 +1634,7 @@ struct Rect
 
 using Shape = std::variant<Circle, Rect>;
 template <>
-inline constexpr auto yyjson::variant_tag<Shape> = yyjson::internal_tag("type", {"circle", "rect"});
+inline constexpr auto yyjson::annotations<Shape> = yyjson::annotate(yyjson::internal_tag("type", {"circle", "rect"}));
 
 auto shapes = yyjson::read<std::vector<Shape>>(R"([{"type":"circle","r":1.5},{"w":2,"h":3,"type":"rect"}])");
 // -> {Circle{1.5}, Rect{2, 3}}
@@ -1625,14 +1642,15 @@ auto json = yyjson::write(shapes);
 // -> [{"type":"circle","r":1.5},{"type":"rect","w":2,"h":3}]
 
 using Payload = std::variant<Circle, Rect, int>;
-template <>
-inline constexpr auto yyjson::variant_tag<Payload> = yyjson::adjacent_tag("kind", {"circle", "rect", "count"});
 
 struct Event
 {
     int id;
     Payload data;
 };
+template <>
+inline constexpr auto yyjson::annotations<Event> =
+    yyjson::annotate(yyjson::field("data", yyjson::adjacent_tag("kind", {"circle", "rect", "count"})));
 
 auto event = yyjson::read<Event>(R"({"id":1,"data":5,"kind":"count"})");
 // -> Event{1, 5}
@@ -1640,16 +1658,16 @@ auto json2 = yyjson::write(Event{2, Rect{1, 2}});
 // -> {"id":2,"kind":"rect","data":{"w":1,"h":2}}
 ```
 
-These are the internally and the adjacently tagged representations of [serde](https://serde.rs/enum-representations.html). Without a specialization, a variant tries its alternatives in turn, as [above](#pre-defined-stl-casters).
+These are the internally and the adjacently tagged representations of [serde](https://serde.rs/enum-representations.html). A variant without a tag tries its alternatives in turn, as [above](#pre-defined-stl-casters).
 
 *   The tag may be anywhere in its object, before or after the other members. When the object has more than one member of the key, the first one names the alternative. A tag that is missing, that is not a string or that names no alternative reads as `std::monostate` if the variant has it, and throws `yyjson::bad_cast` otherwise.
 *   `std::monostate` is written as JSON null without a tag, and JSON null reads as `std::monostate` in a variant that has it. Any other alternative is written with its tag first: the first member of its object for `internal_tag`, and the member right before the field of the variant for `adjacent_tag`.
-*   Write the specialization `inline`, as for [`yyjson::field_rename`](#json-keys-other-than-field-names). A variant that has `std::monostate` more than once, `ids` that do not name each of the other alternatives, an empty key, and empty or repeated names all fail to compile with a `static_assert`.
+*   Write the specialization `inline`, as for [the keys of fields](#json-keys-other-than-field-names). A variant that has `std::monostate` more than once, `ids` that do not name each of the other alternatives, an empty key, and empty or repeated names all fail to compile with a `static_assert`, as do `yyjson::annotations<V>` with more than one `internal_tag` or with a `yyjson::field`, and `internal_tag` given to a struct.
 *   `cast`, `value` and `object` of the DOM API read and write a tagged variant the same way as `yyjson::read<T>` and `yyjson::write`.
 
 With `internal_tag`, each alternative other than `std::monostate` is written as a JSON object: a struct, a map, or a type whose caster writes an object. Writing an alternative that is another kind of value throws `std::invalid_argument`. The alternative reads the whole object, its tag included, so a struct skips the tag as an unknown key and a map holds it as an element. A struct may also have a field of the key, which is read and written as any other field; the library then does not write the tag again, and the field has to name the alternative, or writing it throws `std::invalid_argument`. The same applies to a map that holds the key.
 
-With `adjacent_tag`, the variant is read and written only as a field of a struct that the compile-time reflection or `VISITABLE_STRUCT` converts. The variant on its own, such as the root, an element of a range or the value of a `std::optional`, throws `std::logic_error`. The struct may have a field of the key, a string or an [enumeration](#enumerations) whose names are the `ids`. That field is read and written as any other field, the library does not write the tag again, and the field has to name the alternative that the variant holds, or writing the struct throws `std::invalid_argument`:
+With `adjacent_tag`, the tag belongs to the field rather than to the variant type, and the struct may be one that the compile-time reflection or `VISITABLE_STRUCT` converts. The same variant type is untagged elsewhere, such as the root, an element of a range or another field, where it tries its alternatives in turn, and another field may tag it with another key. The struct may have a field of the key, a string or an [enumeration](#enumerations) whose names are the `ids`. That field is read and written as any other field, the library does not write the tag again, and the field has to name the alternative that the variant holds, or writing the struct throws `std::invalid_argument`:
 
 ```cpp
 enum class Kind { circle, rect, count };
@@ -1659,6 +1677,9 @@ struct TypedEvent
     Kind kind;
     Payload data;
 };
+template <>
+inline constexpr auto yyjson::annotations<TypedEvent> =
+    yyjson::annotate(yyjson::field("data", yyjson::adjacent_tag("kind", {"circle", "rect", "count"})));
 
 auto typed = yyjson::read<TypedEvent>(R"({"kind":"rect","data":{"w":1,"h":2}})");
 // -> TypedEvent{Kind::rect, Rect{1, 2}}
@@ -1704,8 +1725,8 @@ The forms are listed in the order to choose them. All but the last convert C++ v
 
 | Purpose | Form | Direction |
 | --- | --- | --- |
-| Give a struct JSON keys other than its field names | no caster: [`field_rename`, C++26 annotations or `VISITABLE_STRUCT`](#json-keys-other-than-field-names) | read and write |
-| Tell the alternatives of a `std::variant` by a member that names them | no caster: [`variant_tag`](#tagged-variants) | read and write |
+| Give a struct JSON keys other than its field names, or skip fields | no caster: [`yyjson::annotations`, C++26 annotations or `VISITABLE_STRUCT`](#json-keys-other-than-field-names) | read and write |
+| Tell the alternatives of a `std::variant` by a member that names them | no caster: [`internal_tag` or `adjacent_tag`](#tagged-variants) | read and write |
 | Keep a part of the JSON as it is | no caster: a field of [`yyjson::value`](#json-values-as-fields) | read and write |
 | Convert to and from another type, such as a struct to a string | [translator](#translator): `X from_json(U)` and `U to_json(const X&)` | read and write |
 | Read into a field that cannot be copied or moved | [in-place translator](#reading-into-an-existing-field): `void from_json(X&, U)` | read |

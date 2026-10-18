@@ -438,34 +438,11 @@ namespace yyjson
     {
     };
 
-    // The JSON key of a field: of the member that it names, in `field_rename` or in an annotation of a type, or
-    // of the field that it annotates.  It is a structural type, as an annotation has to be, which holds the
-    // strings in static storage where `std::define_static_string` can put them, as a pointer to a string literal
-    // cannot be the value of an annotation.
-    struct rename
+    namespace detail
     {
-        const char* member_data = nullptr;
-        std::size_t member_size = 0;  // 0 for the key of an annotated field
-        const char* key_data = nullptr;
-        std::size_t key_size = 0;
-
-        consteval explicit rename(std::string_view key) : key_data(static_string(key)), key_size(key.size()) {}
-        consteval explicit rename(std::string_view member, std::string_view key)
-            : member_data(static_string(member)),
-              member_size(member.size()),
-              key_data(static_string(key)),
-              key_size(key.size())
-        {
-        }
-
-        // A member name is never empty.  Comparing `member_data` with null instead is not a constant expression
-        // when GCC checks for undefined behavior.
-        [[nodiscard]] constexpr bool has_member() const noexcept { return member_size != 0; }
-        [[nodiscard]] constexpr std::string_view member() const noexcept { return {member_data, member_size}; }
-        [[nodiscard]] constexpr std::string_view key() const noexcept { return {key_data, key_size}; }
-
-    private:
-        static consteval const char* static_string(std::string_view s)
+        // A string in static storage, where `std::define_static_string` puts it, as an annotation value has to
+        // be a structural type and cannot point to a string literal.
+        consteval const char* static_string(std::string_view s)
         {
 #if defined(__cpp_lib_define_static)
             return std::define_static_string(s);
@@ -473,18 +450,30 @@ namespace yyjson
             return s.data();
 #endif
         }
+    }  // namespace detail
+
+    // The JSON key of a field, as `yyjson::field("member", yyjson::rename("key"))` in `yyjson::annotations<T>`
+    // or `[[=yyjson::rename("key")]]` on the member gives it.
+    struct rename
+    {
+        const char* key_data = nullptr;
+        std::size_t key_size = 0;
+
+        consteval explicit rename(std::string_view key) : key_data(detail::static_string(key)), key_size(key.size()) {}
+
+        [[nodiscard]] constexpr std::string_view key() const noexcept { return {key_data, key_size}; }
     };
 
-    // Gives fields of a reflected or `VISITABLE_STRUCT` type JSON keys other than their member names.  A
-    // specialization is `template <> inline constexpr auto yyjson::field_rename<T> = {yyjson::rename("member",
-    // "key"), ...};`.  MSVC rejects `auto` with more than one `rename` there (C3518), so the specialization for MSVC
-    // names the type: `inline constexpr std::initializer_list<yyjson::rename>`.
-    template <typename T>
-    inline constexpr std::initializer_list<rename> field_rename = {};
+    // A field that is neither read nor written, as `yyjson::field("member", yyjson::skip)` or
+    // `[[=yyjson::skip]]` gives it.  `T()` gives its value when `T` is read.
+    struct skip_t
+    {
+    };
+    inline constexpr skip_t skip{};
 
-    // How JSON names the alternative of a `std::variant`, as `variant_tag` gives it: by trying the alternatives in
-    // turn, by a member of the object of the alternative, or by a member of the object that holds the variant as a
-    // field next to it.
+    // How JSON names the alternative of a `std::variant`: by trying the alternatives in turn, by a member of the
+    // object of the alternative (`internal_tag`), or by a member of the object that holds the variant as a field
+    // next to it (`adjacent_tag`).
     enum class variant_tagging : std::uint8_t
     {
         untagged,
@@ -493,48 +482,149 @@ namespace yyjson
     };
 
     // The key of the member that names the alternative of a variant, and the names of its alternatives other than
-    // `std::monostate` in their order.  The names are kept as they are given, which `internal_tag` and
-    // `adjacent_tag` take from string literals.
-    template <std::size_t N>
+    // `std::monostate` in their order, as `internal_tag` and `adjacent_tag` give them.  With C++26 it is a
+    // structural type, which annotates a field as `[[=yyjson::adjacent_tag(...)]]`, and holds the strings in
+    // static storage.
+#if defined(__cpp_lib_define_static)
+    template <variant_tagging Tagging>
     struct variant_tag_spec
     {
-        variant_tagging tagging = variant_tagging::untagged;
-        std::string_view key;
-        std::array<std::string_view, N> ids = {};
-    };
+        static constexpr auto tagging = Tagging;
+        const char* key_data = nullptr;
+        std::size_t key_size = 0;
+        const char* const* ids_data = nullptr;
+        std::size_t ids_size = 0;
 
-    // `{"type": "circle", "radius": 1}`: the member `key` of the object that the alternative is written as.
-    template <std::size_t N>
-    consteval variant_tag_spec<N> internal_tag(std::string_view key, const std::string_view (&ids)[N])
+        [[nodiscard]] constexpr std::string_view key() const noexcept { return {key_data, key_size}; }
+        [[nodiscard]] constexpr std::size_t size() const noexcept { return ids_size; }
+        [[nodiscard]] constexpr std::string_view id(std::size_t i) const noexcept { return ids_data[i]; }
+    };
+    namespace detail
     {
-        auto spec = variant_tag_spec<N>{variant_tagging::internal, key};
-        std::ranges::copy(ids, spec.ids.begin());
-        return spec;
+        template <variant_tagging Tagging, std::size_t N>
+        consteval variant_tag_spec<Tagging> make_variant_tag(std::string_view key, const std::string_view (&ids)[N])
+        {
+            auto pointers = std::array<const char*, N>{};
+            for (std::size_t i = 0; i < N; ++i) pointers[i] = std::define_static_string(ids[i]);
+            return {std::define_static_string(key), key.size(), std::define_static_array(pointers).data(), N};
+        }
+    }  // namespace detail
+#else
+    template <variant_tagging Tagging, std::size_t N>
+    struct variant_tag_spec
+    {
+        static constexpr auto tagging = Tagging;
+        std::string_view key_;
+        std::array<std::string_view, N> ids_ = {};
+
+        [[nodiscard]] constexpr std::string_view key() const noexcept { return key_; }
+        [[nodiscard]] static constexpr std::size_t size() noexcept { return N; }
+        [[nodiscard]] constexpr std::string_view id(std::size_t i) const noexcept { return ids_[i]; }
+    };
+    namespace detail
+    {
+        template <variant_tagging Tagging, std::size_t N>
+        consteval variant_tag_spec<Tagging, N> make_variant_tag(std::string_view key, const std::string_view (&ids)[N])
+        {
+            auto spec = variant_tag_spec<Tagging, N>{key};
+            std::ranges::copy(ids, spec.ids_.begin());
+            return spec;
+        }
+    }  // namespace detail
+#endif
+
+    // `{"type": "circle", "radius": 1}`: the member `key` of the object that the alternative is written as.  It
+    // annotates a variant type: `yyjson::annotations<V> = yyjson::annotate(yyjson::internal_tag(...))`.
+    template <std::size_t N>
+    consteval auto internal_tag(std::string_view key, const std::string_view (&ids)[N])
+    {
+        return detail::make_variant_tag<variant_tagging::internal>(key, ids);
     }
 
     // `{"type": "circle", "shape": {"radius": 1}}`: the member `key` of the object of a struct, next to the field
-    // that holds the variant.
+    // that holds the variant.  It annotates the field: `yyjson::field("shape", yyjson::adjacent_tag(...))` or
+    // `[[=yyjson::adjacent_tag(...)]]`.
     template <std::size_t N>
-    consteval variant_tag_spec<N> adjacent_tag(std::string_view key, const std::string_view (&ids)[N])
+    consteval auto adjacent_tag(std::string_view key, const std::string_view (&ids)[N])
     {
-        auto spec = variant_tag_spec<N>{variant_tagging::adjacent, key};
-        std::ranges::copy(ids, spec.ids.begin());
-        return spec;
+        return detail::make_variant_tag<variant_tagging::adjacent>(key, ids);
     }
 
-    // Names the alternatives of the variant T in JSON.  A specialization is `template <> inline constexpr auto
-    // yyjson::variant_tag<T> = yyjson::internal_tag("type", {"circle", "rect"});` or the same with
-    // `yyjson::adjacent_tag`.  A variant without one tries its alternatives in turn.
-    template <typename T>
-    inline constexpr variant_tag_spec<0> variant_tag = {};
-
-#if FIELD_RFL_ANNOTATIONS
-    // Annotates a field of a reflected struct that is neither read nor written, as `[[=yyjson::skip]]`.
-    struct skip_t
+    namespace detail
     {
-    };
-    inline constexpr skip_t skip{};
+        template <typename A>
+        struct is_variant_tag_spec : std::false_type
+        {
+        };
+#if defined(__cpp_lib_define_static)
+        template <variant_tagging Tagging>
+        struct is_variant_tag_spec<variant_tag_spec<Tagging>> : std::true_type
+        {
+        };
+#else
+        template <variant_tagging Tagging, std::size_t N>
+        struct is_variant_tag_spec<variant_tag_spec<Tagging, N>> : std::true_type
+        {
+        };
 #endif
+        template <typename A>
+        concept internal_tag_annotation = is_variant_tag_spec<A>::value && A::tagging == variant_tagging::internal;
+        template <typename A>
+        concept adjacent_tag_annotation = is_variant_tag_spec<A>::value && A::tagging == variant_tagging::adjacent;
+
+        // The settings that `yyjson::field` takes for a field.
+        template <typename A>
+        concept field_setting = std::same_as<A, rename> || std::same_as<A, skip_t> || adjacent_tag_annotation<A>;
+    }  // namespace detail
+
+    // The settings of the field `member` of a struct, which `yyjson::annotate` takes.
+    template <typename... As>
+    struct field_annotation
+    {
+        std::string_view member;
+        std::tuple<As...> values;
+    };
+
+    template <typename... As>
+    consteval field_annotation<As...> field(std::string_view member, As... values)
+    {
+        static_assert(sizeof...(As) != 0, "yyjson::field needs a setting of the field");
+        static_assert((detail::field_setting<As> && ...),
+                      "yyjson::field takes yyjson::rename, yyjson::skip and yyjson::adjacent_tag");
+        return {member, {values...}};
+    }
+
+    // The settings of the conversion of a type, which `yyjson::annotations<T>` holds.
+    template <typename... As>
+    struct annotation_list
+    {
+        std::tuple<As...> values;
+    };
+
+    namespace detail
+    {
+        template <typename A>
+        struct is_field_annotation : std::false_type
+        {
+        };
+        template <typename... As>
+        struct is_field_annotation<field_annotation<As...>> : std::true_type
+        {
+        };
+    }  // namespace detail
+
+    template <typename... As>
+    consteval annotation_list<As...> annotate(As... values)
+    {
+        static_assert(((detail::is_field_annotation<As>::value || detail::internal_tag_annotation<As>) && ...),
+                      "yyjson::annotate takes yyjson::field(...) for a struct and yyjson::internal_tag for a variant");
+        return {{values...}};
+    }
+
+    // The settings of the conversion of T.  A specialization, which comes before the first use of T, is
+    // `template <> inline constexpr auto yyjson::annotations<T> = yyjson::annotate(...);`.
+    template <typename T>
+    inline constexpr auto annotations = annotate();
 
     template <typename T>
     struct caster
@@ -941,39 +1031,20 @@ namespace yyjson
             field_reflection::field_namable<T> &&
             ((field_reflection::field_count<T> > 0) || (std::is_empty_v<T> && !library_class<T>()));
 
-        // MSVC deduces `rename` rather than a list from `auto yyjson::field_rename<T> = {yyjson::rename(...)}` in an
-        // explicit specialization, so a single `rename` counts as a list of one.
         template <typename T>
-        concept single_field_rename = std::same_as<std::remove_cvref_t<decltype(field_rename<T>)>, rename>;
-
-        // A specialization of `field_rename` may have another type than the list of `yyjson::rename`, which
-        // `field_keys` rejects.
-        template <typename T>
-        concept field_rename_range =
-            single_field_rename<T> ||
-            (std::ranges::input_range<decltype((field_rename<T>))> &&
-             std::same_as<std::ranges::range_value_t<decltype((field_rename<T>))>, rename>);
-
-        template <typename T>
-        inline constexpr bool has_field_rename = [] {
-            if constexpr (single_field_rename<T>)
-                return true;
-            else if constexpr (field_rename_range<T>)
-                return std::ranges::begin(field_rename<T>) != std::ranges::end(field_rename<T>);
-            else
-                return true;
-        }();
+        using annotation_values_of = std::remove_cvref_t<decltype(annotations<T>.values)>;
 
         enum class field_key_error
         {
             none,
             unknown_member,
-            duplicate_member,
-            duplicate_key,
             renamed_twice,
-            no_member,
-            member_of_field,
-            skipped_renamed,
+            same_setting_twice,
+            skipped_with_setting,
+            skip_visitable,
+            annotated_visitable,
+            not_a_struct_setting,
+            duplicate_key,
         };
 
         template <std::size_t N>
@@ -984,56 +1055,73 @@ namespace yyjson
             std::array<bool, N> skipped = {};  // whether a field is annotated with `yyjson::skip`
         };
 
-        // Gives the fields the keys that `yyjson::rename` gives them, and keeps the first error.
+        // Applies the settings of `yyjson::field` and of the annotations of the members to the keys of the fields,
+        // and keeps the first error.  The functions are constexpr rather than consteval, so that the lambdas that
+        // call them need not be immediate functions, which clang before 19 and MSVC do not make them.
         template <std::size_t N>
         struct field_key_builder
         {
             std::array<std::string_view, N> members;
             field_key_table<N> table;
+            bool visitable = false;
             std::array<bool, N> renamed = {};
+            std::array<bool, N> tagged = {};
 
-            consteval void fail(field_key_error error)
+            constexpr void fail(field_key_error error)
             {
                 if (table.error == field_key_error::none) table.error = error;
             }
-            consteval void rename_field(std::size_t i, std::string_view key)
+            constexpr void rename_field(std::size_t i, std::string_view key)
             {
-                if (renamed[i]) return fail(field_key_error::duplicate_member);
-                if (table.skipped[i]) return fail(field_key_error::skipped_renamed);
+                if (renamed[i]) return fail(field_key_error::renamed_twice);
+                if (table.skipped[i]) return fail(field_key_error::skipped_with_setting);
                 renamed[i] = true;
                 table.keys[i] = key;
             }
-            // Pairs of a member and its key, as `field_rename` and the annotations of a type give them.
-            template <typename Renames>
-            consteval void rename_members(const Renames& renames)
+            constexpr void skip_field(std::size_t i)
             {
-                for (const rename& r : renames)
-                {
-                    if (!r.has_member()) return fail(field_key_error::no_member);
-                    std::size_t i = 0;
-                    while (i < N && members[i] != r.member()) ++i;
-                    if (i == N) return fail(field_key_error::unknown_member);
-                    rename_field(i, r.key());
-                }
+                if (visitable) return fail(field_key_error::skip_visitable);
+                if (table.skipped[i]) return fail(field_key_error::same_setting_twice);
+                if (renamed[i] || tagged[i]) return fail(field_key_error::skipped_with_setting);
+                table.skipped[i] = true;
             }
-            // The keys that the annotations of field i give it.
-            template <typename Renames>
-            consteval void rename_annotated_field(std::size_t i, const Renames& renames)
+            constexpr void tag_field(std::size_t i)
             {
-                for (const rename& r : renames)
+                if (tagged[i]) return fail(field_key_error::same_setting_twice);
+                if (table.skipped[i]) return fail(field_key_error::skipped_with_setting);
+                tagged[i] = true;
+            }
+            template <typename A>
+            constexpr void apply_setting(std::size_t i, const A& a)
+            {
+                if constexpr (std::same_as<A, rename>)
+                    rename_field(i, a.key());
+                else if constexpr (std::same_as<A, skip_t>)
+                    skip_field(i);
+                else
+                    tag_field(i);
+            }
+            // An element of `annotations<T>`.
+            template <typename A>
+            constexpr void apply_annotation(const A& a)
+            {
+                if constexpr (is_field_annotation<A>::value)
                 {
-                    if (r.has_member()) return fail(field_key_error::member_of_field);
-                    rename_field(i, r.key());
+                    std::size_t i = 0;
+                    while (i < N && members[i] != a.member) ++i;
+                    if (i == N) return fail(field_key_error::unknown_member);
+                    std::apply([&](const auto&... values) { (apply_setting(i, values), ...); }, a.values);
                 }
+                else
+                    fail(field_key_error::not_a_struct_setting);
             }
 
             // Duplicate keys are reported only when a key was given, so that a `VISITABLE_STRUCT` listing a
             // member twice still compiles as it did.  A skipped field has no key in JSON.
-            [[nodiscard]] consteval field_key_table<N> result() const
+            [[nodiscard]] constexpr field_key_table<N> result() const
             {
                 auto result = table;
-                if (result.error != field_key_error::none ||
-                    (result.keys == members && std::ranges::find(renamed, true) == renamed.end()))
+                if (result.error != field_key_error::none || std::ranges::find(renamed, true) == renamed.end())
                     return result;
                 for (std::size_t i = 0; i < N; ++i)
                 {
@@ -1047,101 +1135,67 @@ namespace yyjson
             }
         };
 
-        template <std::size_t N>
-        consteval field_key_table<N> make_field_keys(const std::array<std::string_view, N>& members,
-                                                     const std::array<std::string_view, N>& keys)
-        {
-            return field_key_builder<N>{members, {keys}}.result();
-        }
-
-        template <std::size_t N, typename Renames>
-        consteval field_key_table<N> make_field_keys(const std::array<std::string_view, N>& members,
-                                                     const std::array<std::string_view, N>& keys,
-                                                     const Renames& renames)
-        {
-            if (keys != members) return {keys, field_key_error::renamed_twice};
-            auto builder = field_key_builder<N>{members, {keys}};
-            builder.rename_members(renames);
-            return builder.result();
-        }
+        // Whether a field annotation of `annotations<T>` has `yyjson::adjacent_tag`, which is told from the types
+        // alone.
+        template <typename A>
+        inline constexpr bool adjacent_field_annotation = false;
+        template <typename... As>
+        inline constexpr bool adjacent_field_annotation<field_annotation<As...>> = (adjacent_tag_annotation<As> || ...);
+        template <typename T>
+        inline constexpr bool annotates_adjacent_fields = []<typename... As>(std::type_identity<std::tuple<As...>>) {
+            return (adjacent_field_annotation<As> || ...);
+        }(std::type_identity<annotation_values_of<T>>{});
 
 #if FIELD_RFL_ANNOTATIONS
-        // Gives the fields of a reflected struct the keys of the `yyjson::rename` annotations of the struct and
-        // then those of its fields.
+        using adjacent_tag_annotation_type = variant_tag_spec<variant_tagging::adjacent>;
+
+        // Whether a field of T has an annotation of this library, which gives it a key, skips it or tags it.
+        template <typename T>
+        inline constexpr bool annotated_members = [] {
+            if constexpr (field_reflection::field_countable<T>)
+                return []<std::size_t... Is>(std::index_sequence<Is...>) {
+                    return ((!field_reflection::field_annotations<T, Is, rename>.empty() ||
+                             !field_reflection::field_annotations<T, Is, skip_t>.empty() ||
+                             !field_reflection::field_annotations<T, Is, adjacent_tag_annotation_type>.empty()) ||
+                            ...);
+                }(std::make_index_sequence<field_reflection::field_count<T>>{});
+            else
+                return false;
+        }();
+
+        // Applies the annotations of the fields of a reflected struct.
         template <typename T, std::size_t N>
-        consteval void rename_annotated_fields(field_key_builder<N>& builder)
+        constexpr void annotate_reflected_fields(field_key_builder<N>& builder)
         {
-            builder.rename_members(field_reflection::type_annotations<T, rename>);
             [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                (builder.rename_annotated_field(Is, field_reflection::field_annotations<T, Is, rename>), ...);
+                (
+                    [&] {
+                        for (const rename& r : field_reflection::field_annotations<T, Is, rename>)
+                            builder.rename_field(Is, r.key());
+                        for (std::size_t k = 0; k < field_reflection::field_annotations<T, Is, skip_t>.size(); ++k)
+                            builder.skip_field(Is);
+                        for (std::size_t k = 0;
+                             k < field_reflection::field_annotations<T, Is, adjacent_tag_annotation_type>.size(); ++k)
+                            builder.tag_field(Is);
+                    }(),
+                    ...);
             }(std::make_index_sequence<N>{});
         }
+#endif
 
-        // Whether a reflected struct or its fields have annotations of this library, which give the fields
-        // keys or skip them.
+        // Whether `annotations<T>` or the annotations of the fields of the reflected struct T give the fields keys,
+        // skip them or tag them.
         template <typename T>
         inline constexpr bool annotated_fields = [] {
-            return !field_reflection::type_annotations<T, rename>.empty() ||
-                   []<std::size_t... Is>(std::index_sequence<Is...>) {
-                       return ((!field_reflection::field_annotations<T, Is, rename>.empty() ||
-                                !field_reflection::field_annotations<T, Is, skip_t>.empty()) ||
-                               ...);
-                   }(std::make_index_sequence<field_reflection::field_count<T>>{});
-        }();
-#else
-        template <typename T>
-        inline constexpr bool annotated_fields = false;
-#endif
-
-        // The JSON keys of the fields of T.  `Source::members` are the member names and `Source::keys` the
-        // keys before `field_rename`, which differ from the member names only where `VISITABLE_STRUCT`
-        // gives a member its key.  A reflected struct has `Source::skipped` too, and its annotations rename
-        // fields after `field_rename`.
-        template <typename T, typename Source>
-        struct field_keys
-        {
-            static_assert(!has_field_rename<T> || field_rename_range<T>,
-                          "yyjson::field_rename<T> must be a list of yyjson::rename: template <> inline constexpr "
-                          "auto yyjson::field_rename<T> = {yyjson::rename(\"member\", \"key\"), ...}; (MSVC: "
-                          "std::initializer_list<yyjson::rename> in place of auto)");
-            // A function rather than a lambda: clang before 19 and MSVC take a call to a consteval function in a
-            // lambda of a class template as a call outside a constant expression.
-            static consteval auto make_table()
-            {
-                constexpr auto n = Source::members.size();
-                auto builder = field_key_builder<n>{Source::members, {Source::keys}};
-                if constexpr (requires { Source::skipped; }) builder.table.skipped = Source::skipped;
-                if constexpr (has_field_rename<T> && field_rename_range<T>)
-                {
-                    if (Source::keys != Source::members)
-                        return field_key_table<n>{Source::keys, field_key_error::renamed_twice};
-                    if constexpr (single_field_rename<T>)
-                        builder.rename_members(std::array{field_rename<T>});
-                    else
-                        builder.rename_members(field_rename<T>);
-                }
+            if constexpr (std::tuple_size_v<annotation_values_of<T>> != 0)
+                return true;
 #if FIELD_RFL_ANNOTATIONS
-                if constexpr (requires { Source::skipped; }) rename_annotated_fields<T>(builder);
+            else if constexpr (!visitable<T>)
+                return annotated_members<T>;
 #endif
-                return builder.result();
-            }
-            static constexpr auto table = make_table();
-            static_assert(table.error != field_key_error::no_member,
-                          "a yyjson::rename in yyjson::field_rename or in an annotation of a type must name the "
-                          "member: yyjson::rename(\"member\", \"key\")");
-            static_assert(table.error != field_key_error::member_of_field,
-                          "a yyjson::rename annotation of a field takes only the key: [[=yyjson::rename(\"key\")]]");
-            static_assert(table.error != field_key_error::unknown_member,
-                          "yyjson::rename names a member that does not exist");
-            static_assert(table.error != field_key_error::duplicate_member,
-                          "yyjson::field_rename and the yyjson::rename annotations rename the same member twice");
-            static_assert(table.error != field_key_error::skipped_renamed,
-                          "a field annotated with yyjson::skip cannot be renamed");
-            static_assert(table.error != field_key_error::duplicate_key, "two fields have the same JSON key");
-            static_assert(table.error != field_key_error::renamed_twice,
-                          "a VISITABLE_STRUCT that gives its members keys cannot have a yyjson::field_rename");
-            static constexpr auto value = table.keys;
-        };
+            else
+                return false;
+        }();
 
         template <typename T>
         struct reflected_field_names
@@ -1150,17 +1204,58 @@ namespace yyjson
                 return std::array<std::string_view, sizeof...(Is)>{field_reflection::field_name<T, Is>...};
             }(std::make_index_sequence<field_reflection::field_count<T>>{});
             static constexpr auto keys = members;
+        };
+
+        // The JSON keys of the fields of T.  `Source::members` are the member names and `Source::keys` the
+        // keys that `VISITABLE_STRUCT` gives them, which differ from the member names only for a pair
+        // `(member, "key")`.  `annotations<T>` and, for a reflected struct, the annotations of the members rename
+        // and skip fields after that.
+        template <typename T, typename Source>
+        struct field_keys
+        {
+            // A function rather than a lambda: clang before 19 and MSVC take a call to a consteval function in a
+            // lambda of a class template as a call outside a constant expression.
+            static consteval auto make_table()
+            {
+                constexpr auto n = Source::members.size();
+                constexpr auto reflected = std::same_as<Source, reflected_field_names<T>>;
+                auto builder = field_key_builder<n>{Source::members, {Source::keys}, !reflected};
+                for (std::size_t i = 0; i < n; ++i) builder.renamed[i] = Source::keys[i] != Source::members[i];
+                std::apply([&](const auto&... a) { (builder.apply_annotation(a), ...); }, annotations<T>.values);
 #if FIELD_RFL_ANNOTATIONS
-            static constexpr auto skipped = []<std::size_t... Is>(std::index_sequence<Is...>) {
-                return std::array<bool, sizeof...(Is)>{!field_reflection::field_annotations<T, Is, skip_t>.empty()...};
-            }(std::make_index_sequence<field_reflection::field_count<T>>{});
+                if constexpr (reflected)
+                    annotate_reflected_fields<T>(builder);
+                else if constexpr (annotated_members<T>)
+                    builder.fail(field_key_error::annotated_visitable);
 #endif
+                return builder.result();
+            }
+            static constexpr auto table = make_table();
+            static_assert(table.error != field_key_error::unknown_member,
+                          "yyjson::field names a member that does not exist");
+            static_assert(table.error != field_key_error::renamed_twice,
+                          "a field is renamed twice, by yyjson::annotations, by an annotation of the member or by a "
+                          "(member, \"key\") pair of VISITABLE_STRUCT");
+            static_assert(table.error != field_key_error::same_setting_twice,
+                          "a field is given yyjson::skip or yyjson::adjacent_tag twice");
+            static_assert(table.error != field_key_error::skipped_with_setting,
+                          "a field annotated with yyjson::skip takes no other setting");
+            static_assert(table.error != field_key_error::skip_visitable,
+                          "VISITABLE_STRUCT converts only the members that it lists: leave the member out of it "
+                          "instead of yyjson::skip");
+            static_assert(table.error != field_key_error::annotated_visitable,
+                          "the members of a VISITABLE_STRUCT take no annotation of the conversion: use "
+                          "yyjson::annotations<T> or a (member, \"key\") pair");
+            static_assert(table.error != field_key_error::not_a_struct_setting,
+                          "yyjson::internal_tag annotates a variant, not a struct");
+            static_assert(table.error != field_key_error::duplicate_key, "two fields have the same JSON key");
+            static constexpr auto value = table.keys;
         };
 
         // The JSON key of field I of a reflected struct.
         template <typename T, std::size_t I>
         inline constexpr std::string_view field_key = [] {
-            if constexpr (has_field_rename<T> || annotated_fields<T>)
+            if constexpr (annotated_fields<T>)
                 return std::string_view(field_keys<T, reflected_field_names<T>>::value[I]);
             else
                 return std::string_view(field_reflection::field_name<T, I>);
@@ -1168,7 +1263,6 @@ namespace yyjson
 
         // The indices of the fields of a reflected struct that are read and written, which are all but those
         // annotated with `yyjson::skip`, as a `std::index_sequence`.  `reflected_field_index<T, K>` is the K-th.
-#if FIELD_RFL_ANNOTATIONS
         template <typename T>
         inline constexpr auto unskipped_field_indices = [] {
             constexpr auto& skipped = field_keys<T, reflected_field_names<T>>::table.skipped;
@@ -1210,12 +1304,6 @@ namespace yyjson
             else
                 return K;
         }();
-#else
-        template <typename T>
-        using reflected_fields = std::make_index_sequence<field_reflection::field_count<T>>;
-        template <typename T, std::size_t K>
-        inline constexpr std::size_t reflected_field_index = K;
-#endif
 
         template <typename... Ts>
         struct type_list
@@ -1448,21 +1536,29 @@ namespace yyjson
             return true;
         }
 
-        // The names of the alternatives of a variant that `variant_tag` tags.  `alternative(id)` is the index of the
-        // alternative that `id` names, or else that of `std::monostate`, which a missing or unknown tag reads as,
-        // or else `std::variant_npos`.
-        template <typename V>
-        struct variant_tags
+        // The tag of a variant that tries its alternatives in turn.
+        struct no_variant_tag
         {
             static constexpr auto tagging = variant_tagging::untagged;
         };
-        template <typename... Ts>
-        requires (variant_tag<std::variant<Ts...>>.tagging != variant_tagging::untagged)
-        struct variant_tags<std::variant<Ts...>>
+
+        // The names of the alternatives of the variant V that `Spec::value`, a `yyjson::internal_tag` or
+        // `yyjson::adjacent_tag`, tags.  `alternative(id)` is the index of the alternative that `id` names, or else
+        // that of `std::monostate`, which a missing or unknown tag reads as, or else `std::variant_npos`.
+        template <typename V, typename Spec>
+        struct variant_tag_table
         {
-            static constexpr auto& spec = variant_tag<std::variant<Ts...>>;
-            static constexpr auto tagging = spec.tagging;
-            static constexpr std::string_view key = spec.key;
+            static constexpr auto tagging = variant_tagging::untagged;
+            static_assert(std::remove_cvref_t<decltype(Spec::value)>::tagging == variant_tagging::untagged,
+                          "yyjson::internal_tag and yyjson::adjacent_tag tag only a std::variant");
+        };
+        template <typename... Ts, typename Spec>
+        requires (std::remove_cvref_t<decltype(Spec::value)>::tagging != variant_tagging::untagged)
+        struct variant_tag_table<std::variant<Ts...>, Spec>
+        {
+            static constexpr auto& spec = Spec::value;
+            static constexpr auto tagging = std::remove_cvref_t<decltype(spec)>::tagging;
+            static constexpr std::string_view key = spec.key();
             static constexpr std::size_t monostate = [] {
                 constexpr auto is_monostate = std::array<bool, sizeof...(Ts)>{std::same_as<Ts, std::monostate>...};
                 const auto it = std::ranges::find(is_monostate, true);
@@ -1470,20 +1566,32 @@ namespace yyjson
                                                 : static_cast<std::size_t>(it - is_monostate.begin());
             }();
             static_assert((0 + ... + std::same_as<Ts, std::monostate>) <= 1,
-                          "a variant that yyjson::variant_tag tags can have std::monostate only once");
-            static_assert(spec.ids.size() + (monostate != std::variant_npos) == sizeof...(Ts),
-                          "yyjson::variant_tag must name each alternative of the variant other than std::monostate");
-            static_assert(!key.empty(), "the key of yyjson::variant_tag must not be empty");
-            static_assert(distinct_names(spec.ids, spec.ids.size()) &&
-                              std::ranges::none_of(spec.ids, &std::string_view::empty),
-                          "the names of the alternatives in yyjson::variant_tag must be distinct and not empty");
+                          "a tagged variant can have std::monostate only once");
+            static_assert(spec.size() + (monostate != std::variant_npos) == sizeof...(Ts),
+                          "yyjson::internal_tag and yyjson::adjacent_tag must name each alternative of the variant "
+                          "other than std::monostate");
+            static_assert(!key.empty(), "the key of yyjson::internal_tag and yyjson::adjacent_tag must not be empty");
             // the name of each alternative, empty for `std::monostate`
             static constexpr auto ids = [] {
                 auto result = std::array<std::string_view, sizeof...(Ts)>{};
-                for (std::size_t i = 0, j = 0; i < sizeof...(Ts); ++i)
-                    if (i != monostate) result[i] = spec.ids[j++];
+                for (std::size_t i = 0, j = 0; i < sizeof...(Ts) && j < spec.size(); ++i)
+                    if (i != monostate) result[i] = spec.id(j++);
                 return result;
             }();
+            static_assert(
+                [] {
+                    if (spec.size() + (monostate != std::variant_npos) != sizeof...(Ts)) return true;
+                    for (std::size_t i = 0; i < sizeof...(Ts); ++i)
+                    {
+                        if (i == monostate) continue;
+                        if (ids[i].empty()) return false;
+                        for (std::size_t j = 0; j < i; ++j)
+                            if (j != monostate && ids[i] == ids[j]) return false;
+                    }
+                    return true;
+                }(),
+                "the names of the alternatives in yyjson::internal_tag and yyjson::adjacent_tag must be distinct and "
+                "not empty");
 
             [[nodiscard]] static constexpr std::size_t alternative(std::string_view id) noexcept
             {
@@ -1493,10 +1601,35 @@ namespace yyjson
             }
         };
 
+        // The `yyjson::internal_tag` in `annotations<V>`.
+        template <typename V>
+        struct internal_tag_of
+        {
+            using values_type = annotation_values_of<V>;
+            static constexpr auto index = []<typename... As>(std::type_identity<std::tuple<As...>>) {
+                static_assert((0 + ... + internal_tag_annotation<As>) <= 1,
+                              "yyjson::annotations of a variant has yyjson::internal_tag twice");
+                static_assert(!(is_field_annotation<As>::value || ...),
+                              "yyjson::field annotates a struct, not a variant");
+                auto result = sizeof...(As);
+                auto i = std::size_t{0};
+                ((result = internal_tag_annotation<As> ? i : result, ++i), ...);
+                return result;
+            }(std::type_identity<values_type>{});
+            static constexpr auto value = [] {
+                if constexpr (index == std::tuple_size_v<values_type>)
+                    return no_variant_tag{};
+                else
+                    return std::get<index>(annotations<V>.values);
+            }();
+        };
+
+        // The tag of a variant that is not a field of a struct, which only `yyjson::internal_tag` gives.
+        template <typename V>
+        using variant_tags = variant_tag_table<V, internal_tag_of<V>>;
+
         template <typename T>
         concept internally_tagged = variant_tags<std::remove_cvref_t<T>>::tagging == variant_tagging::internal;
-        template <typename T>
-        concept adjacently_tagged = variant_tags<std::remove_cvref_t<T>>::tagging == variant_tagging::adjacent;
 
         [[noreturn]] CPPYYJSON_COLD inline void throw_variant_tag_missing(std::string_view key, std::string_view type)
         {
@@ -1509,11 +1642,113 @@ namespace yyjson
             throw_bad_cast("{} is not constructible from JSON: the tag \"{}\": \"{}\" names no alternative", type, key,
                            id);
         }
-        [[noreturn]] CPPYYJSON_COLD inline void throw_adjacent_tag_alone(std::string_view type)
+
+        // The member name and the type of the field R of a reflected struct or of a `VISITABLE_STRUCT`, by its
+        // index among all the fields, skipped ones included.
+        template <typename S, std::size_t R>
+        inline constexpr std::string_view declared_member_name = [] {
+            if constexpr (visitable<S>)
+                return std::string_view(visit_struct<S>::field_names::members[R]);
+            else
+                return std::string_view(field_reflection::field_name<S, R>);
+        }();
+        template <typename S, std::size_t R, bool = visitable<S>>
+        struct declared_field_type_of
         {
-            throw std::logic_error(std::format(
-                "{} is tagged by yyjson::adjacent_tag, and is read and written only as a field of a struct", type));
-        }
+            using type = std::remove_cvref_t<decltype(field_reflection::get_field<R>(std::declval<S&>()))>;
+        };
+        template <typename S, std::size_t R>
+        struct declared_field_type_of<S, R, true>
+        {
+            using type = std::remove_cvref_t<decltype(std::declval<S&>().*std::get<R>(visit_struct<S>::members))>;
+        };
+        template <typename S, std::size_t R>
+        using declared_field_type = typename declared_field_type_of<S, R>::type;
+
+        // The `yyjson::adjacent_tag` of the field R of S, in `annotations<S>` or, with C++26, on the member.
+        template <typename S, std::size_t R>
+        struct adjacent_tag_of
+        {
+            // the index of the `yyjson::field` in `annotations<S>` that has it, the index of the tag in it, and the
+            // number of such tags
+            static constexpr auto location = [] {
+                auto result = std::array<std::size_t, 3>{std::variant_npos, std::variant_npos, 0};
+                if constexpr (annotates_adjacent_fields<S>)
+                {
+                    constexpr auto name = declared_member_name<S, R>;
+                    std::apply(
+                        [&](const auto&... entries) {
+                            auto j = std::size_t{0};
+                            (
+                                [&](const auto& entry) {
+                                    using E = std::remove_cvref_t<decltype(entry)>;
+                                    if constexpr (adjacent_field_annotation<E>)
+                                    {
+                                        if (entry.member == name)
+                                        {
+                                            [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                                                (
+                                                    [&] {
+                                                        using A = std::tuple_element_t<Ks, decltype(entry.values)>;
+                                                        if constexpr (adjacent_tag_annotation<A>)
+                                                        {
+                                                            result[0] = j;
+                                                            result[1] = Ks;
+                                                            ++result[2];
+                                                        }
+                                                    }(),
+                                                    ...);
+                                            }(std::make_index_sequence<std::tuple_size_v<decltype(entry.values)>>{});
+                                        }
+                                    }
+                                    ++j;
+                                }(entries),
+                                ...);
+                        },
+                        annotations<S>.values);
+                }
+                return result;
+            }();
+#if FIELD_RFL_ANNOTATIONS
+            static constexpr std::size_t annotated = [] {
+                if constexpr (!visitable<S> && annotated_members<S>)
+                    return field_reflection::field_annotations<S, R, adjacent_tag_annotation_type>.size();
+                else
+                    return std::size_t{0};
+            }();
+#else
+            static constexpr std::size_t annotated = 0;
+#endif
+            static_assert(location[2] + annotated <= 1, "a field is given yyjson::adjacent_tag twice");
+            static constexpr auto value = [] {
+#if FIELD_RFL_ANNOTATIONS
+                if constexpr (annotated != 0)
+                    return field_reflection::field_annotations<S, R, adjacent_tag_annotation_type>[0];
+                else
+#endif
+                    if constexpr (location[2] == 0)
+                    return no_variant_tag{};
+                else
+                    return std::get<location[1]>(std::get<location[0]>(annotations<S>.values).values);
+            }();
+        };
+
+        // The tag of the field R of S, by its index among all the fields.
+        template <typename S, std::size_t R>
+        using field_tags = variant_tag_table<declared_field_type<S, R>, adjacent_tag_of<S, R>>;
+
+        // Whether S may have a field that `yyjson::adjacent_tag` tags, which is told without looking at each field.
+        template <typename S>
+        inline constexpr bool may_have_adjacent_fields = [] {
+            if constexpr (annotates_adjacent_fields<S>)
+                return true;
+#if FIELD_RFL_ANNOTATIONS
+            else if constexpr (!visitable<S>)
+                return annotated_members<S>;
+#endif
+            else
+                return false;
+        }();
 
         // The fields of a reflected struct that are read and written, or of a `VISITABLE_STRUCT`, by their index
         // among them, which a key matcher of the struct gives.
@@ -1553,53 +1788,87 @@ namespace yyjson
             }(std::make_index_sequence<struct_field_count<S>>{});
         }
 
-        // A field of S that holds a variant tagged by `adjacent_tag`, and whether S has a field of its tag, which
-        // is then read and written as any other field, and checked against the variant when it is written.
-        // Otherwise the tag is written as a member just before the variant.
-        template <typename S, std::size_t I>
-        inline constexpr bool adjacent_field = adjacently_tagged<struct_field_type<S, I>>;
-        template <typename S, typename Field>
+        // Whether the field R of S, by its index among all the fields, is tagged by `adjacent_tag`.  The tag of
+        // each field is looked up only for a struct that may have one.
+        template <typename S, std::size_t R>
+        inline constexpr bool adjacent_declared_field = [] {
+            if constexpr (may_have_adjacent_fields<S>)
+                return field_tags<S, R>::tagging == variant_tagging::adjacent;
+            else
+                return false;
+        }();
+
+        // The index among all the fields of the field K of S, by its index among the fields that are read and
+        // written, and the tag of the field.
+        template <typename S, std::size_t K>
+        inline constexpr std::size_t struct_declared_index = [] {
+            if constexpr (visitable<S>)
+                return K;
+            else
+                return reflected_field_index<S, K>;
+        }();
+        template <typename S, std::size_t K>
+        using struct_field_tags = field_tags<S, struct_declared_index<S, K>>;
+
+        // A field of S that `yyjson::adjacent_tag` tags, and whether S has a field of its tag, which is then read
+        // and written as any other field, and checked against the variant when it is written.  Otherwise the tag
+        // is written as a member just before the variant.
+        template <typename S, std::size_t K>
+        inline constexpr bool adjacent_field = adjacent_declared_field<S, struct_declared_index<S, K>>;
+        template <typename S, typename Tags>
         inline constexpr bool writes_adjacent_tag = [] {
-            if constexpr (adjacently_tagged<Field>)
-                return struct_field_of_key<S>(variant_tags<std::remove_cvref_t<Field>>::key) == struct_field_count<S>;
+            if constexpr (Tags::tagging == variant_tagging::adjacent)
+                return struct_field_of_key<S>(Tags::key) == struct_field_count<S>;
             else
                 return false;
         }();
 
         template <typename S>
-        inline constexpr bool has_adjacent_fields = []<std::size_t... Is>(std::index_sequence<Is...>) {
-            return (adjacent_field<S, Is> || ...);
-        }(std::make_index_sequence<struct_field_count<S>>{});
+        inline constexpr bool has_adjacent_fields = [] {
+            if constexpr (may_have_adjacent_fields<S>)
+                return []<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                    return (adjacent_field<S, Ks> || ...);
+                }(std::make_index_sequence<struct_field_count<S>>{});
+            else
+                return false;
+        }();
 
         // Whether the object of S may have a member of `key`, of a field or of a tag that `writes_adjacent_tag`.
         template <typename S>
         consteval bool writes_member_of_key(std::string_view key)
         {
             if (struct_field_of_key<S>(key) != struct_field_count<S>) return true;
-            return [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                return ([&] {
-                    if constexpr (writes_adjacent_tag<S, struct_field_type<S, Is>>)
-                        return variant_tags<std::remove_cvref_t<struct_field_type<S, Is>>>::key == key;
-                    else
-                        return false;
-                }() || ...);
-            }(std::make_index_sequence<struct_field_count<S>>{});
+            if constexpr (has_adjacent_fields<S>)
+                return [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                    return ([&] {
+                        if constexpr (writes_adjacent_tag<S, struct_field_tags<S, Ks>>)
+                            return struct_field_tags<S, Ks>::key == key;
+                        else
+                            return false;
+                    }() || ...);
+                }(std::make_index_sequence<struct_field_count<S>>{});
+            else
+                return false;
         }
 
-        // The field of S that holds the tag of the field I tagged by `adjacent_tag`, or `struct_field_count<S>`,
+        // The field of S that holds the tag of the field K tagged by `adjacent_tag`, or `struct_field_count<S>`,
         // and whether the field J holds the tag of any.
-        template <typename S, std::size_t I>
-        inline constexpr std::size_t adjacent_tag_field =
-            struct_field_of_key<S>(variant_tags<std::remove_cvref_t<struct_field_type<S, I>>>::key);
+        template <typename S, std::size_t K>
+        inline constexpr std::size_t adjacent_tag_field = struct_field_of_key<S>(struct_field_tags<S, K>::key);
         template <typename S, std::size_t J>
-        inline constexpr bool holds_adjacent_tag = []<std::size_t... Is>(std::index_sequence<Is...>) {
-            return ([] {
-                if constexpr (adjacent_field<S, Is>)
-                    return adjacent_tag_field<S, Is> == J;
-                else
-                    return false;
-            }() || ...);
-        }(std::make_index_sequence<struct_field_count<S>>{});
+        inline constexpr bool holds_adjacent_tag = [] {
+            if constexpr (has_adjacent_fields<S>)
+                return []<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                    return ([] {
+                        if constexpr (adjacent_field<S, Ks>)
+                            return adjacent_tag_field<S, Ks> == J;
+                        else
+                            return false;
+                    }() || ...);
+                }(std::make_index_sequence<struct_field_count<S>>{});
+            else
+                return false;
+        }();
 
         // The number of members that the fields of S may write: one for each field and one for each tag that
         // `writes_adjacent_tag`.
@@ -1608,14 +1877,14 @@ namespace yyjson
             if constexpr (!has_adjacent_fields<S>)
                 return struct_field_count<S>;
             else
-                return []<std::size_t... Is>(std::index_sequence<Is...>) {
+                return []<std::size_t... Ks>(std::index_sequence<Ks...>) {
                     constexpr auto keys = [] {
-                        auto result = std::array<std::string_view, sizeof...(Is)>{};
+                        auto result = std::array<std::string_view, sizeof...(Ks)>{};
                         auto n = std::size_t{0};
                         (
                             [&] {
-                                if constexpr (writes_adjacent_tag<S, struct_field_type<S, Is>>)
-                                    result[n++] = variant_tags<std::remove_cvref_t<struct_field_type<S, Is>>>::key;
+                                if constexpr (writes_adjacent_tag<S, struct_field_tags<S, Ks>>)
+                                    result[n++] = struct_field_tags<S, Ks>::key;
                             }(),
                             ...);
                         return std::pair(result, n);
@@ -1623,7 +1892,7 @@ namespace yyjson
                     static_assert(distinct_names(keys.first, keys.second),
                                   "two fields tagged by yyjson::adjacent_tag with the same key need a field of that "
                                   "key");
-                    return sizeof...(Is) + keys.second;
+                    return sizeof...(Ks) + keys.second;
                 }(std::make_index_sequence<struct_field_count<S>>{});
         }();
 
@@ -1632,15 +1901,15 @@ namespace yyjson
         template <typename S>
         std::size_t written_adjacent_tags(const S& s) noexcept
         {
-            return [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+            return [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
                 auto n = std::size_t{0};
                 (
                     [&] {
-                        if constexpr (writes_adjacent_tag<S, struct_field_type<S, Is>>)
+                        using tags = struct_field_tags<S, Ks>;
+                        if constexpr (writes_adjacent_tag<S, tags>)
                         {
-                            const auto index = struct_field<Is>(s).index();
-                            n += index != variant_tags<struct_field_type<S, Is>>::monostate &&
-                                 index != std::variant_npos;
+                            const auto index = struct_field<Ks>(s).index();
+                            n += index != tags::monostate && index != std::variant_npos;
                         }
                     }(),
                     ...);
@@ -1652,16 +1921,15 @@ namespace yyjson
         template <typename S>
         void check_adjacent_tags(const S& s)
         {
-            [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+            [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
                 (
                     [&] {
-                        using field_type = struct_field_type<S, Is>;
-                        if constexpr (adjacently_tagged<field_type> && !writes_adjacent_tag<S, field_type>)
+                        using tags = struct_field_tags<S, Ks>;
+                        if constexpr (tags::tagging == variant_tagging::adjacent && !writes_adjacent_tag<S, tags>)
                         {
-                            using tags = variant_tags<field_type>;
                             constexpr auto t = struct_field_of_key<S>(tags::key);
                             using tag_type = struct_field_type<S, t>;
-                            const auto index = struct_field<Is>(s).index();
+                            const auto index = struct_field<Ks>(s).index();
                             // a variant without a value is left to `std::visit`, which throws
                             if (index == tags::monostate || index == std::variant_npos) return;
                             const auto& tag = struct_field<t>(s);
@@ -1679,7 +1947,7 @@ namespace yyjson
                                 throw std::invalid_argument(std::format(
                                     "the field \"{}\" of {} is \"{}\", but the field \"{}\" holds the alternative "
                                     "\"{}\"",
-                                    tags::key, type_name<S>(), id, struct_field_key<S, Is>, tags::ids[index]));
+                                    tags::key, type_name<S>(), id, struct_field_key<S, Ks>, tags::ids[index]));
                         }
                     }(),
                     ...);
@@ -1735,10 +2003,10 @@ namespace yyjson
         }
 
         // The alternative of the variant V that the tag in the object `obj` names.
-        template <typename V, typename Obj>
+        template <typename V, typename Tags, typename Obj>
         std::size_t tagged_alternative(const Obj& obj)
         {
-            using tags = variant_tags<V>;
+            using tags = Tags;
             for (auto&& [key, value] : obj)
             {
                 if (std::string_view(key) != tags::key) continue;
@@ -1756,11 +2024,11 @@ namespace yyjson
         }
 
         // Assigns the value of a field tagged by `adjacent_tag` from the object `obj` that holds it.
-        template <typename Field, typename Json, typename Obj>
+        template <typename Tags, typename Field, typename Json, typename Obj>
         void assign_adjacent_field(Field& field, const Json& value, const Obj& obj)
         {
             using V = std::remove_cvref_t<Field>;
-            field = cast_alternative<V>(tagged_alternative<V>(obj), value);
+            field = cast_alternative<V>(tagged_alternative<V, Tags>(obj), value);
         }
 
         // Finds the field that a JSON key names.  Keys usually come in the order that the fields are
@@ -1980,16 +2248,17 @@ namespace yyjson
             assign_struct_fields_by_key<T>(reflected_key_matcher<T>, obj, [&](std::size_t index, const auto& value,
                                                                               const auto&... object) {
                 // expanded here rather than in the fold, where MSVC finds no pack to expand
-                [[maybe_unused]] const auto assign_adjacent = [&](auto& field) {
-                    assign_adjacent_field(field, value, object...);
+                [[maybe_unused]] const auto assign_adjacent = [&]<typename Tags>(std::type_identity<Tags>,
+                                                                                 auto& field) {
+                    assign_adjacent_field<Tags>(field, value, object...);
                 };
                 [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
                     (void)((index == Ks &&
                             ([&] {
                                 constexpr auto i = reflected_field_index<T, Ks>;
                                 auto& field = field_reflection::get_field<i>(t);
-                                if constexpr (adjacently_tagged<decltype(field)>)
-                                    assign_adjacent(field);
+                                if constexpr (adjacent_field<T, Ks>)
+                                    assign_adjacent(std::type_identity<field_tags<T, i>>{}, field);
                                 else
                                     assign_reflected_field(field, value, reflected_field_replaceable<i>(t));
                             }(),
@@ -2006,28 +2275,29 @@ namespace yyjson
                                      const Json& obj)
         {
             [[maybe_unused]] const auto guard = recursion_guard<T>();
-            assign_struct_fields_by_key<T>(matcher, obj, [&](std::size_t index, const auto& value,
-                                                            const auto&... object) {
-                [[maybe_unused]] const auto assign_adjacent = [&](auto& field) {
-                    assign_adjacent_field(field, value, object...);
-                };
-                [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                    const auto replaceable = [&]<std::size_t I>(std::integral_constant<std::size_t, I>) {
-                        return has_own_bytes<I>(t.*std::get<Is>(members)...);
+            assign_struct_fields_by_key<T>(
+                matcher, obj, [&](std::size_t index, const auto& value, const auto&... object) {
+                    [[maybe_unused]] const auto assign_adjacent = [&]<typename Tags>(std::type_identity<Tags>,
+                                                                                     auto& field) {
+                        assign_adjacent_field<Tags>(field, value, object...);
                     };
-                    (void)((index == Is &&
+                    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                        const auto replaceable = [&]<std::size_t I>(std::integral_constant<std::size_t, I>) {
+                            return has_own_bytes<I>(t.*std::get<Is>(members)...);
+                        };
+                        (void)((index == Is &&
                             ([&] {
                                 auto& field = t.*std::get<Is>(members);
-                                if constexpr (adjacently_tagged<decltype(field)>)
-                                    assign_adjacent(field);
+                                if constexpr (adjacent_field<T, Is>)
+                                    assign_adjacent(std::type_identity<field_tags<T, Is>>{}, field);
                                 else
                                     assign_reflected_field(field, value,
                                                            replaceable(std::integral_constant<std::size_t, Is>{}));
                             }(),
                              true)) ||
                            ...);
-                }(std::index_sequence_for<Members...>{});
-            });
+                    }(std::index_sequence_for<Members...>{});
+                });
         }
 
         template <typename Obj, typename Field, typename... Ts>
@@ -2294,16 +2564,17 @@ namespace yyjson
                 return field_reflection::get_field<I>(t);
         }
 
-        // Emplaces a field of the struct S with `emitter`.  A variant tagged by `adjacent_tag` is written as the
-        // alternative that it holds, after its tag unless S has a field of it.
-        template <typename S, bool Plain, typename Emitter, typename Field, typename... Ts>
-        CPPYYJSON_ALWAYS_INLINE inline void emplace_struct_field(Emitter& emitter, std::string_view key,
-                                                                 Field&& field, Ts... ts)
+        // Emplaces the field R of the struct S, by its index among all the fields, with `emitter`.  A variant
+        // tagged by `adjacent_tag` is written as the alternative that it holds, after its tag unless S has a field
+        // of it.
+        template <typename S, std::size_t R, bool Plain, typename Emitter, typename Field, typename... Ts>
+        CPPYYJSON_ALWAYS_INLINE inline void emplace_struct_field(Emitter& emitter, std::string_view key, Field&& field,
+                                                                 Ts... ts)
         {
-            if constexpr (adjacently_tagged<Field>)
+            if constexpr (adjacent_declared_field<S, R>)
             {
-                using tags = variant_tags<std::remove_cvref_t<Field>>;
-                if constexpr (writes_adjacent_tag<S, Field>)
+                using tags = field_tags<S, R>;
+                if constexpr (writes_adjacent_tag<S, tags>)
                 {
                     if (const auto index = field.index(); index != tags::monostate && index != std::variant_npos)
                         emitter.template emplace<is_plain_key(tags::key)>(tags::key, tags::ids[index], ts...);
@@ -3579,8 +3850,8 @@ namespace yyjson
                                     if constexpr (yyjson::detail::has_adjacent_fields<value_type>)
                                         yyjson::detail::check_adjacent_tags(element);
                                     (yyjson::detail::emplace_struct_field<
-                                         value_type, yyjson::detail::is_plain_key(
-                                                         yyjson::detail::field_key<value_type, Is>)>(
+                                         value_type, Is,
+                                         yyjson::detail::is_plain_key(yyjson::detail::field_key<value_type, Is>)>(
                                          emitter, yyjson::detail::field_key<value_type, Is>,
                                          yyjson::detail::forward_field<Is>(std::forward<decltype(element)>(element)),
                                          ts...),
@@ -7861,7 +8132,7 @@ namespace yyjson
             if constexpr (detail::has_adjacent_fields<T>) detail::check_adjacent_tags(t);
             obj.assign_reflected_fields(detail::reflected_field_count(t), [&](auto& emitter) {
                 [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                    (detail::emplace_struct_field<T, detail::is_plain_key(detail::field_key<T, Is>)>(
+                    (detail::emplace_struct_field<T, Is, detail::is_plain_key(detail::field_key<T, Is>)>(
                          emitter, detail::field_key<T, Is>, detail::forward_field<Is>(t), ts...),
                      ...);
                 }(detail::reflected_fields<T>{});
@@ -7878,7 +8149,7 @@ namespace yyjson
             const auto field_count = detail::reflected_field_count(t);
             obj.assign_reflected_fields(field_count, [&](auto& emitter) {
                 [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                    (detail::emplace_struct_field<T, detail::is_plain_key(detail::field_key<T, Is>)>(
+                    (detail::emplace_struct_field<T, Is, detail::is_plain_key(detail::field_key<T, Is>)>(
                          emitter, detail::field_key<T, Is>, detail::forward_field<Is>(std::move(t)), ts...),
                      ...);
                 }(detail::reflected_fields<T>{});
@@ -8145,8 +8416,6 @@ namespace yyjson
                 using tags = variant_tags<std::variant<Ts...>>;
                 if constexpr (tags::tagging == variant_tagging::internal)
                     return tags::monostate != std::variant_npos ? json_kind_object | json_kind_null : json_kind_object;
-                else if constexpr (tags::tagging == variant_tagging::adjacent)
-                    return json_kind_all;
                 else
                     return static_cast<std::uint16_t>((0U | ... | accepted_json_kinds<Ts, Json>()));
             }
@@ -8388,9 +8657,7 @@ namespace yyjson
         static std::variant<Ts...> from_json(const Json& json)
         {
             using V = std::variant<Ts...>;
-            if constexpr (detail::adjacently_tagged<V>)
-                detail::throw_adjacent_tag_alone(detail::type_name<V>());
-            else if constexpr (detail::internally_tagged<V>)
+            if constexpr (detail::internally_tagged<V>)
             {
                 using tags = detail::variant_tags<V>;
                 if constexpr (tags::monostate != std::variant_npos)
@@ -8401,7 +8668,7 @@ namespace yyjson
                 if (!obj.has_value())
                     detail::throw_bad_cast("{} is not constructible from JSON other than an object",
                                            detail::type_name<V>());
-                return detail::cast_alternative<V>(detail::tagged_alternative<V>(*obj), json);
+                return detail::cast_alternative<V>(detail::tagged_alternative<V, tags>(*obj), json);
             }
             else
                 return from_untagged(json);
@@ -8447,8 +8714,6 @@ namespace yyjson
         static void to_json(writer::value_ref& val, const std::variant<Ts...>& t, Args...)
         {
             constexpr auto copy = (sizeof...(Args) != 0);
-            if constexpr (detail::adjacently_tagged<std::variant<Ts...>>)
-                detail::throw_adjacent_tag_alone(detail::type_name<std::variant<Ts...>>());
             std::visit(
                 [&val](const auto& v) {
                     if constexpr (copy)
@@ -8465,8 +8730,6 @@ namespace yyjson
         static void to_json(writer::value_ref& val, std::variant<Ts...>&& t, Args...)
         {
             constexpr auto copy = (sizeof...(Args) != 0);
-            if constexpr (detail::adjacently_tagged<std::variant<Ts...>>)
-                detail::throw_adjacent_tag_alone(detail::type_name<std::variant<Ts...>>());
             [[maybe_unused]] const auto index = t.index();
             std::visit(
                 [&val](auto&& v) {
@@ -10837,14 +11100,14 @@ namespace yyjson
                 *buf_.cur++ = '"';
             }
 
-            // A field of the struct S, as `yyjson::detail::emplace_struct_field` emplaces it.
-            template <typename S, typename Key, typename Field>
+            // The field R of the struct S, as `yyjson::detail::emplace_struct_field` emplaces it.
+            template <typename S, std::size_t R, typename Key, typename Field>
             CPPYYJSON_ALWAYS_INLINE void write_field(bool& first, Field&& field)
             {
-                if constexpr (yyjson::detail::adjacently_tagged<Field>)
+                if constexpr (yyjson::detail::adjacent_declared_field<S, R>)
                 {
-                    using tags = yyjson::detail::variant_tags<std::remove_cvref_t<Field>>;
-                    if constexpr (yyjson::detail::writes_adjacent_tag<S, Field>)
+                    using tags = yyjson::detail::field_tags<S, R>;
+                    if constexpr (yyjson::detail::writes_adjacent_tag<S, tags>)
                     {
                         if (const auto index = field.index(); index != tags::monostate && index != std::variant_npos)
                         {
@@ -10888,12 +11151,12 @@ namespace yyjson
                 constexpr auto& members = visit_struct<U>::members;
                 if constexpr (yyjson::detail::has_adjacent_fields<U>) yyjson::detail::check_adjacent_tags(t);
                 if constexpr (std::is_rvalue_reference_v<T&&>)
-                    (write_field<U, visitable_key<U, Is>>(
+                    (write_field<U, Is, visitable_key<U, Is>>(
                          first, yyjson::detail::writable_field(std::move(t.*std::get<Is>(members)))),
                      ...);
                 else
-                    (write_field<U, visitable_key<U, Is>>(first,
-                                                          yyjson::detail::writable_field(t.*std::get<Is>(members))),
+                    (write_field<U, Is, visitable_key<U, Is>>(first,
+                                                              yyjson::detail::writable_field(t.*std::get<Is>(members))),
                      ...);
             }
             template <typename T, std::size_t... Is>
@@ -10901,7 +11164,7 @@ namespace yyjson
             {
                 using U = std::remove_cvref_t<T>;
                 if constexpr (yyjson::detail::has_adjacent_fields<U>) yyjson::detail::check_adjacent_tags(t);
-                (write_field<U, reflected_key<U, Is>>(first, yyjson::detail::forward_field<Is>(std::forward<T>(t))),
+                (write_field<U, Is, reflected_key<U, Is>>(first, yyjson::detail::forward_field<Is>(std::forward<T>(t))),
                  ...);
             }
 
@@ -11128,9 +11391,7 @@ namespace yyjson
                 else if constexpr (std::derived_from<caster<U>, yyjson::detail::builtin_caster> &&
                                    is_variant<U>::value && std::same_as<V, value_ref>)
                 {
-                    if constexpr (yyjson::detail::adjacently_tagged<U>)
-                        yyjson::detail::throw_adjacent_tag_alone(yyjson::detail::type_name<U>());
-                    else if constexpr (yyjson::detail::internally_tagged<U>)
+                    if constexpr (yyjson::detail::internally_tagged<U>)
                         write_internally_tagged(std::forward<T>(t));
                     else
                         std::visit([&](auto&& v) { write_value(std::forward<decltype(v)>(v)); }, std::forward<T>(t));
@@ -11383,15 +11644,12 @@ namespace yyjson
         // `t = read<T>(json)` does.
         template <typename T>
         inline constexpr bool has_skipped_fields = [] {
-#if FIELD_RFL_ANNOTATIONS
             if constexpr (!yyjson::detail::visitable<T> && yyjson::detail::annotated_fields<T>)
                 return yyjson::detail::reflected_fields<T>::size() != field_reflection::field_count<T>;
             else
-#endif
                 return false;
         }();
 
-#if FIELD_RFL_ANNOTATIONS
         template <typename T>
         void reset_skipped_fields(T& t, T& defaults)
         {
@@ -11407,7 +11665,6 @@ namespace yyjson
                     ...);
             }(std::make_index_sequence<field_reflection::field_count<T>>{});
         }
-#endif
 
         // The value of `T()`, built at its first use, which gives a field the value that a JSON object without
         // its key gives it.  It is built again when a field that was moved from it is needed again.
@@ -11451,9 +11708,10 @@ namespace yyjson
                             defaults.template reset<I>(t);
                             return;
                         }
-                        if constexpr (yyjson::detail::adjacently_tagged<field_type>)
+                        if constexpr (yyjson::detail::adjacent_field<T, I>)
                         {
-                            yyjson::detail::assign_adjacent_field(field, value, object...);
+                            yyjson::detail::assign_adjacent_field<yyjson::detail::struct_field_tags<T, I>>(field, value,
+                                                                                                           object...);
                             return;
                         }
                         else if constexpr (reads_over_old_value<field_type>)
@@ -13986,9 +14244,7 @@ namespace yyjson
             template <typename T, typename Make>
             void read_variant(Make&& make)
             {
-                if constexpr (yyjson::detail::adjacently_tagged<T>)
-                    yyjson::detail::throw_adjacent_tag_alone(yyjson::detail::type_name<T>());
-                else if constexpr (yyjson::detail::internally_tagged<T>)
+                if constexpr (yyjson::detail::internally_tagged<T>)
                 {
                     using tags = yyjson::detail::variant_tags<std::remove_cv_t<T>>;
                     if constexpr (tags::monostate != std::variant_npos)
@@ -14014,10 +14270,10 @@ namespace yyjson
             // The alternative of the variant T that the first member of its tag in the object at `open` names,
             // which is looked for among the members before the value at `stop`, or in the whole object if `stop`
             // is null.  Gives `std::variant_npos` if the tag is not there, and leaves `cur_` in the object.
-            template <typename T>
+            template <typename T, typename Tags = yyjson::detail::variant_tags<std::remove_cv_t<T>>>
             std::size_t find_variant_tag(const char* open, const char* stop = nullptr)
             {
-                using tags = yyjson::detail::variant_tags<std::remove_cv_t<T>>;
+                using tags = Tags;
                 cur_ = open + 1;
                 skip_ws();
                 if (*cur_ == '}') return std::variant_npos;
@@ -14029,7 +14285,7 @@ namespace yyjson
                     const auto is_tag = read_short_string(buf) == tags::key;
                     read_colon();
                     if (cur_ == stop) return std::variant_npos;
-                    if (is_tag) return read_variant_tag<T>(buf);
+                    if (is_tag) return read_variant_tag<T, Tags>(buf);
                     skip_value();
                     skip_ws();
                     if (*cur_ != ',') return std::variant_npos;
@@ -14040,21 +14296,21 @@ namespace yyjson
 
             // The alternative of the variant T that the tag at `cur_` names.  A tag that is not a string is taken
             // as missing.
-            template <typename T>
+            template <typename T, typename Tags = yyjson::detail::variant_tags<std::remove_cv_t<T>>>
             std::size_t read_variant_tag(std::string& buf)
             {
-                using tags = yyjson::detail::variant_tags<std::remove_cv_t<T>>;
-                if (*cur_ != '"') return missing_variant_tag<T>();
+                using tags = Tags;
+                if (*cur_ != '"') return missing_variant_tag<T, Tags>();
                 const auto i = tags::alternative(read_short_string(buf));
                 if (i == std::variant_npos) [[unlikely]]
                     fail();
                 return i;
             }
 
-            template <typename T>
+            template <typename T, typename Tags = yyjson::detail::variant_tags<std::remove_cv_t<T>>>
             static std::size_t missing_variant_tag()
             {
-                using tags = yyjson::detail::variant_tags<std::remove_cv_t<T>>;
+                using tags = Tags;
                 if constexpr (tags::monostate == std::variant_npos) fail();
                 return tags::monostate;
             }
@@ -14134,6 +14390,7 @@ namespace yyjson
             void read_adjacent_field(T& t, adjacent_fields<T>& adjacent)
             {
                 using V = std::remove_cvref_t<yyjson::detail::struct_field_type<T, I>>;
+                using tags = yyjson::detail::struct_field_tags<T, I>;
                 constexpr auto j = yyjson::detail::adjacent_tag_field<T, I>;
                 if (adjacent.at[I] != nullptr) [[unlikely]]
                     fail();
@@ -14145,11 +14402,11 @@ namespace yyjson
                     {
                         cur_ = tag;
                         auto buf = std::string();
-                        index = read_variant_tag<V>(buf);
+                        index = read_variant_tag<V, tags>(buf);
                     }
                 }
                 else
-                    index = find_variant_tag<V>(adjacent.open, start);
+                    index = find_variant_tag<V, tags>(adjacent.open, start);
                 if (index == std::variant_npos)
                 {
                     cur_ = start;
@@ -14196,6 +14453,7 @@ namespace yyjson
             CPPYYJSON_NOINLINE void read_skipped_adjacent_field(T& t, adjacent_fields<T>& adjacent)
             {
                 using V = std::remove_cvref_t<yyjson::detail::struct_field_type<T, I>>;
+                using tags = yyjson::detail::struct_field_tags<T, I>;
                 constexpr auto j = yyjson::detail::adjacent_tag_field<T, I>;
                 const char* const end = cur_;
                 auto index = std::variant_npos;
@@ -14205,12 +14463,12 @@ namespace yyjson
                     {
                         cur_ = tag;
                         auto buf = std::string();
-                        index = read_variant_tag<V>(buf);
+                        index = read_variant_tag<V, tags>(buf);
                     }
                 }
                 else
-                    index = find_variant_tag<V>(adjacent.open);
-                if (index == std::variant_npos) index = missing_variant_tag<V>();
+                    index = find_variant_tag<V, tags>(adjacent.open);
+                if (index == std::variant_npos) index = missing_variant_tag<V, tags>();
                 const auto doc = std::move(adjacent.docs[I]);
                 struct_field<I>(t) =
                     yyjson::detail::cast_alternative<V>(index, const_value_ref(yyjson_doc_get_root(doc.get())));
@@ -15152,7 +15410,6 @@ namespace yyjson
                 read_skipped_adjacent_fields(t, adjacent);
                 if constexpr (has_skipped_fields<T>)
                 {
-#if FIELD_RFL_ANNOTATIONS
                     auto defaults = T();
                     [&]<std::size_t... Is>(std::index_sequence<Is...>) {
                         ((seen[Is] || (yyjson::detail::move_field(struct_field<Is>(t), struct_field<Is>(defaults)),
@@ -15160,7 +15417,6 @@ namespace yyjson
                          ...);
                     }(std::make_index_sequence<n>{});
                     reset_skipped_fields(t, defaults);
-#endif
                 }
                 else if (!seen.all()) [[unlikely]]
                 {
@@ -16650,63 +16906,63 @@ struct std::formatter<T>
 #define VISITABLE_STRUCT_IMPL1(X) std::string_view(CPPYYJSON_VISITABLE_SELECT(CPPYYJSON_VISITABLE_MEMBER_NAME_, X)),
 #define VISITABLE_STRUCT_IMPL2(X) std::string_view(CPPYYJSON_VISITABLE_SELECT(CPPYYJSON_VISITABLE_KEY_, X)),
 #define VISITABLE_STRUCT_IMPL4(X) &class_type::CPPYYJSON_VISITABLE_SELECT(CPPYYJSON_VISITABLE_MEMBER_, X),
-#define VISITABLE_STRUCT(CLASS, ...)                                                                                 \
-    static_assert(std::default_initializable<CLASS>, #CLASS " is not default initializable");                        \
-    template <>                                                                                                      \
-    struct yyjson::visit_struct<CLASS> : public std::true_type                                                       \
-    {                                                                                                                \
-        using class_type = CLASS;                                                                                    \
-        static constexpr auto field_count = CPPYYJSON_VA_ARGS_SIZE(__VA_ARGS__);                                     \
-        struct field_names                                                                                           \
-        {                                                                                                            \
-            static constexpr std::array<std::string_view, field_count> members{                                      \
-                CPPYYJSON_FOR_EACH(VISITABLE_STRUCT_IMPL1, __VA_ARGS__)};                                            \
-            static constexpr std::array<std::string_view, field_count> keys{                                         \
-                CPPYYJSON_FOR_EACH(VISITABLE_STRUCT_IMPL2, __VA_ARGS__)};                                            \
-        };                                                                                                           \
-        static constexpr auto names = yyjson::detail::field_keys<CLASS, field_names>::value;                         \
-        static constexpr std::tuple members{CPPYYJSON_FOR_EACH(VISITABLE_STRUCT_IMPL4, __VA_ARGS__)};                \
-        static constexpr yyjson::detail::field_key_matcher key_matcher{names};                                       \
-        template <typename Object>                                                                                   \
-        static auto from_json_impl(const Object& obj)                                                                \
-        {                                                                                                            \
-            auto result = CLASS();                                                                                   \
-            yyjson::detail::assign_visitable_fields(result, key_matcher, members, obj);                              \
-            return result;                                                                                           \
-        }                                                                                                            \
-        template <typename Emitter, typename T, typename... Ts>                                                      \
-        static void emplace_fields(Emitter& emitter, T&& t, Ts... ts)                                                \
-        {                                                                                                            \
-            if constexpr (yyjson::detail::has_adjacent_fields<CLASS>) yyjson::detail::check_adjacent_tags(t);        \
-            [&]<std::size_t... Is>(std::index_sequence<Is...>) {                                                     \
-                (yyjson::detail::emplace_struct_field<CLASS, yyjson::detail::is_plain_key(names[Is])>(               \
-                     emitter, names[Is], yyjson::detail::writable_field(std::forward<T>(t).*std::get<Is>(members)),  \
-                     ts...),                                                                                         \
-                 ...);                                                                                               \
-            }(std::make_index_sequence<field_count>{});                                                              \
-        }                                                                                                            \
-        template <typename Emitter, typename... Ts>                                                                  \
-        requires (!std::same_as<std::remove_cvref_t<Emitter>, yyjson::writer::object_ref>)                           \
-        static auto to_json_impl(Emitter& emitter, const CLASS& t, Ts... ts)                                         \
-        {                                                                                                            \
-            emplace_fields(emitter, t, ts...);                                                                       \
-        }                                                                                                            \
-        template <typename Emitter, typename... Ts>                                                                  \
-        requires (!std::same_as<std::remove_cvref_t<Emitter>, yyjson::writer::object_ref>)                           \
-        static auto to_json_impl(Emitter& emitter, CLASS&& t, Ts... ts)                                              \
-        {                                                                                                            \
-            emplace_fields(emitter, std::move(t), ts...);                                                            \
-        }                                                                                                            \
-        template <typename... Ts>                                                                                    \
-        static auto to_json_impl(writer::object_ref& obj, const CLASS& t, Ts... ts)                                  \
-        {                                                                                                            \
-            obj.assign_reflected_fields_max(yyjson::detail::struct_member_capacity<CLASS>,                            \
-                                            [&](auto& emitter) { emplace_fields(emitter, t, ts...); });              \
-        }                                                                                                            \
-        template <typename... Ts>                                                                                    \
-        static auto to_json_impl(writer::object_ref& obj, CLASS&& t, Ts... ts)                                       \
-        {                                                                                                            \
-            obj.assign_reflected_fields_max(yyjson::detail::struct_member_capacity<CLASS>,                            \
-                                            [&](auto& emitter) { emplace_fields(emitter, std::move(t), ts...); });   \
-        }                                                                                                            \
+#define VISITABLE_STRUCT(CLASS, ...)                                                                                \
+    static_assert(std::default_initializable<CLASS>, #CLASS " is not default initializable");                       \
+    template <>                                                                                                     \
+    struct yyjson::visit_struct<CLASS> : public std::true_type                                                      \
+    {                                                                                                               \
+        using class_type = CLASS;                                                                                   \
+        static constexpr auto field_count = CPPYYJSON_VA_ARGS_SIZE(__VA_ARGS__);                                    \
+        struct field_names                                                                                          \
+        {                                                                                                           \
+            static constexpr std::array<std::string_view, field_count> members{                                     \
+                CPPYYJSON_FOR_EACH(VISITABLE_STRUCT_IMPL1, __VA_ARGS__)};                                           \
+            static constexpr std::array<std::string_view, field_count> keys{                                        \
+                CPPYYJSON_FOR_EACH(VISITABLE_STRUCT_IMPL2, __VA_ARGS__)};                                           \
+        };                                                                                                          \
+        static constexpr auto names = yyjson::detail::field_keys<CLASS, field_names>::value;                        \
+        static constexpr std::tuple members{CPPYYJSON_FOR_EACH(VISITABLE_STRUCT_IMPL4, __VA_ARGS__)};               \
+        static constexpr yyjson::detail::field_key_matcher key_matcher{names};                                      \
+        template <typename Object>                                                                                  \
+        static auto from_json_impl(const Object& obj)                                                               \
+        {                                                                                                           \
+            auto result = CLASS();                                                                                  \
+            yyjson::detail::assign_visitable_fields(result, key_matcher, members, obj);                             \
+            return result;                                                                                          \
+        }                                                                                                           \
+        template <typename Emitter, typename T, typename... Ts>                                                     \
+        static void emplace_fields(Emitter& emitter, T&& t, Ts... ts)                                               \
+        {                                                                                                           \
+            if constexpr (yyjson::detail::has_adjacent_fields<CLASS>) yyjson::detail::check_adjacent_tags(t);       \
+            [&]<std::size_t... Is>(std::index_sequence<Is...>) {                                                    \
+                (yyjson::detail::emplace_struct_field<CLASS, Is, yyjson::detail::is_plain_key(names[Is])>(          \
+                     emitter, names[Is], yyjson::detail::writable_field(std::forward<T>(t).*std::get<Is>(members)), \
+                     ts...),                                                                                        \
+                 ...);                                                                                              \
+            }(std::make_index_sequence<field_count>{});                                                             \
+        }                                                                                                           \
+        template <typename Emitter, typename... Ts>                                                                 \
+        requires (!std::same_as<std::remove_cvref_t<Emitter>, yyjson::writer::object_ref>)                          \
+        static auto to_json_impl(Emitter& emitter, const CLASS& t, Ts... ts)                                        \
+        {                                                                                                           \
+            emplace_fields(emitter, t, ts...);                                                                      \
+        }                                                                                                           \
+        template <typename Emitter, typename... Ts>                                                                 \
+        requires (!std::same_as<std::remove_cvref_t<Emitter>, yyjson::writer::object_ref>)                          \
+        static auto to_json_impl(Emitter& emitter, CLASS&& t, Ts... ts)                                             \
+        {                                                                                                           \
+            emplace_fields(emitter, std::move(t), ts...);                                                           \
+        }                                                                                                           \
+        template <typename... Ts>                                                                                   \
+        static auto to_json_impl(writer::object_ref& obj, const CLASS& t, Ts... ts)                                 \
+        {                                                                                                           \
+            obj.assign_reflected_fields_max(yyjson::detail::struct_member_capacity<CLASS>,                          \
+                                            [&](auto& emitter) { emplace_fields(emitter, t, ts...); });             \
+        }                                                                                                           \
+        template <typename... Ts>                                                                                   \
+        static auto to_json_impl(writer::object_ref& obj, CLASS&& t, Ts... ts)                                      \
+        {                                                                                                           \
+            obj.assign_reflected_fields_max(yyjson::detail::struct_member_capacity<CLASS>,                          \
+                                            [&](auto& emitter) { emplace_fields(emitter, std::move(t), ts...); });  \
+        }                                                                                                           \
     }
