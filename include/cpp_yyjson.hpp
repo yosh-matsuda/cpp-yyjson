@@ -13299,8 +13299,10 @@ namespace yyjson
             // as `std::uint64_t`, a negative one that fits as `std::int64_t`, anything else as `double`.  With
             // `InArray`, for an element of an array of numbers, an integer part of one or two digits moves the
             // position by a constant on a predicted branch, so that the next element does not wait until the
-            // digits are counted.  Elsewhere the numbers are apart, and the branch only mispredicts.
-            template <bool InArray = false, typename F>
+            // digits are counted.  Elsewhere the numbers are apart, and the branch only mispredicts.  With
+            // `Integral`, for a type that reads only integral numbers, a fraction of zeros, as in `-65.0`, is not
+            // parsed: the integer part is handed over as the double it is.
+            template <bool InArray = false, bool Integral = false, typename F>
             CPPYYJSON_ALWAYS_INLINE decltype(auto) read_number(F&& f)
             {
                 const char* p = cur_;
@@ -13359,6 +13361,21 @@ namespace yyjson
                 }
                 else [[unlikely]]
                     fail();
+                if constexpr (Integral)
+                {
+                    // a double holds an integer part up to 2^53 exactly, as `read_real` would read it
+                    if (*p == '.' && p[1] == '0' && v <= std::uint64_t{1} << 53)
+                    {
+                        const char* q = p + 2;
+                        while (*q == '0') ++q;
+                        if (!is_digit(*q) && (*q | 0x20) != 'e')
+                        {
+                            cur_ = q;
+                            const auto d = static_cast<double>(v);
+                            return f(neg ? -d : d);
+                        }
+                    }
+                }
                 if (*p == '.' || (*p | 0x20) == 'e') return f(read_real(p, v, static_cast<int>(p - digits)));
                 if (!neg)
                 {
@@ -15467,7 +15484,7 @@ namespace yyjson
                                     return number(d);
                             }
 #endif
-                            return read_number<InArray>(number);
+                            return read_number<InArray, yyjson::detail::integer_like<T>>(number);
                     }
                 }
             }
