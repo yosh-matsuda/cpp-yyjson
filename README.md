@@ -192,11 +192,11 @@ Both APIs share the same conversions, so the types and the customizations below 
 
 ### Supported types
 
-The conversions cover numbers, strings, [enumerations](docs/reference.md#enumerations) by name, standard containers and maps, `std::optional`, smart pointers, `std::variant` (also [tagged](docs/reference.md#tagged-variants) by a member), tuples, aggregate structs by [compile-time reflection](docs/reference.md#automatic-casting-with-compile-time-reflection) or [`VISITABLE_STRUCT`](docs/reference.md#registration-of-field-names-of-structclass), [DOM values as fields](docs/reference.md#json-values-as-fields) and any type with a caster, nested in any combination. The concepts `yyjson::readable<T>` and `yyjson::writable<T>` check a type at compile time, and [Conversion rules](docs/reference.md#conversion-rules) lists the restrictions, such as `read<T>` needing types that own their strings.
+The conversions cover numbers, strings, [enumerations](docs/reference.md#enumerations) by name (or [by integer](docs/reference.md#formats-and-renamed-enumerators)), standard containers and maps, `std::optional`, smart pointers, `std::variant` (also [tagged](docs/reference.md#tagged-variants) by a member), tuples, aggregate structs by [compile-time reflection](docs/reference.md#automatic-casting-with-compile-time-reflection) or [`VISITABLE_STRUCT`](docs/reference.md#registration-of-field-names-of-structclass), [DOM values as fields](docs/reference.md#json-values-as-fields) and any type with a caster, nested in any combination. The concepts `yyjson::readable<T>` and `yyjson::writable<T>` check a type at compile time, and [Conversion rules](docs/reference.md#conversion-rules) lists the restrictions, such as `read<T>` needing types that own their strings.
 
 ### JSON keys and casters
 
-A JSON key that is not a valid C++ identifier is mapped to a field with `yyjson::annotations`, which also [skips fields](docs/reference.md#skipped-fields) and [tags variants](docs/reference.md#tagged-variants):
+A JSON key that is not a valid C++ identifier is mapped to a field with `yyjson::annotations`, which also [skips fields](docs/reference.md#skipped-fields), [renames enumerators](docs/reference.md#formats-and-renamed-enumerators) and [tags variants](docs/reference.md#tagged-variants):
 
 ```cpp
 struct Thing

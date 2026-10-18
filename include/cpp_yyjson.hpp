@@ -453,7 +453,8 @@ namespace yyjson
     }  // namespace detail
 
     // The JSON key of a field, as `yyjson::field("member", yyjson::rename("key"))` in `yyjson::annotations<T>`
-    // or `[[=yyjson::rename("key")]]` on the member gives it.
+    // or `[[=yyjson::rename("key")]]` on the member gives it, and the JSON name of an enumerator, as
+    // `yyjson::enumerator("e", yyjson::rename("name"))` or `[[=yyjson::rename("name")]]` on the enumerator gives it.
     struct rename
     {
         const char* key_data = nullptr;
@@ -594,6 +595,33 @@ namespace yyjson
         return {member, {values...}};
     }
 
+    // How an enumeration is written and read: by the names of its enumerators, as the integer of its underlying
+    // type, or by the name and as the integer when the value has no name.  It annotates the enumeration:
+    // `yyjson::annotations<E> = yyjson::annotate(yyjson::enum_format::integer)` or
+    // `enum class [[=yyjson::enum_format::integer]] E`.
+    enum class enum_format : std::uint8_t
+    {
+        name,
+        integer,
+        name_or_integer
+    };
+
+    // The settings of the enumerator `name` of an enumeration, which `yyjson::annotate` takes.
+    template <typename... As>
+    struct enumerator_annotation
+    {
+        std::string_view name;
+        std::tuple<As...> values;
+    };
+
+    template <typename... As>
+    consteval enumerator_annotation<As...> enumerator(std::string_view name, As... values)
+    {
+        static_assert(sizeof...(As) != 0, "yyjson::enumerator needs a setting of the enumerator");
+        static_assert((std::same_as<As, rename> && ...), "yyjson::enumerator takes yyjson::rename");
+        return {name, {values...}};
+    }
+
     // The settings of the conversion of a type, which `yyjson::annotations<T>` holds.
     template <typename... As>
     struct annotation_list
@@ -611,13 +639,27 @@ namespace yyjson
         struct is_field_annotation<field_annotation<As...>> : std::true_type
         {
         };
+        template <typename A>
+        struct is_enumerator_annotation : std::false_type
+        {
+        };
+        template <typename... As>
+        struct is_enumerator_annotation<enumerator_annotation<As...>> : std::true_type
+        {
+        };
+        // The settings that `annotations<E>` of an enumeration takes.
+        template <typename A>
+        concept enum_annotation = is_enumerator_annotation<A>::value || std::same_as<A, enum_format>;
     }  // namespace detail
 
     template <typename... As>
     consteval annotation_list<As...> annotate(As... values)
     {
-        static_assert(((detail::is_field_annotation<As>::value || detail::internal_tag_annotation<As>) && ...),
-                      "yyjson::annotate takes yyjson::field(...) for a struct and yyjson::internal_tag for a variant");
+        static_assert(((detail::is_field_annotation<As>::value || detail::internal_tag_annotation<As> ||
+                        detail::enum_annotation<As>) &&
+                       ...),
+                      "yyjson::annotate takes yyjson::field(...) for a struct, yyjson::internal_tag for a variant, "
+                      "and yyjson::enumerator(...) and yyjson::enum_format for an enumeration");
         return {{values...}};
     }
 
@@ -924,8 +966,8 @@ namespace yyjson
             (!requires { &caster_conversion_lookup<T>::to_json; } || requires { &caster<T>::to_json; });
 
         // An enumeration that its `caster` neither writes nor reads is a key of a JSON object as well, by the name
-        // of its enumerator as `enum_key_text` writes it.  One that a caster converts would need the caster to
-        // give a string, so that a map with such keys stays an array of pairs.
+        // of its enumerator or its integer as `enum_key_text` writes it.  One that a caster converts would need the
+        // caster to give a string, so that a map with such keys stays an array of pairs.
         template <typename T>
         concept enum_key = std::is_enum_v<T> && std::is_class_v<caster<T>> && (!std::is_final_v<caster<T>>) &&
                            (!caster_names_from_json<T>) && (!caster_names_to_json<T>);
@@ -1247,7 +1289,8 @@ namespace yyjson
                           "the members of a VISITABLE_STRUCT take no annotation of the conversion: use "
                           "yyjson::annotations<T> or a (member, \"key\") pair");
             static_assert(table.error != field_key_error::not_a_struct_setting,
-                          "yyjson::internal_tag annotates a variant, not a struct");
+                          "yyjson::internal_tag annotates a variant, and yyjson::enumerator and yyjson::enum_format "
+                          "an enumeration, not a struct");
             static_assert(table.error != field_key_error::duplicate_key, "two fields have the same JSON key");
             static constexpr auto value = table.keys;
         };
@@ -1536,6 +1579,231 @@ namespace yyjson
             return true;
         }
 
+        enum class enum_annotation_error
+        {
+            none,
+            not_an_enum_setting,
+            format_twice,
+            unknown_enumerator,
+            renamed_twice,
+            renamed_integer,
+            empty_name,
+            integer_name,
+            duplicate_name,
+        };
+
+        template <std::size_t N>
+        struct enum_name_table
+        {
+            std::array<std::string_view, N> names;
+            enum_format format = enum_format::name;
+            enum_annotation_error error = enum_annotation_error::none;
+            bool renamed = false;
+        };
+
+        // Applies `annotations<E>` and the annotations of an enumeration and of its enumerators to the names of
+        // `field_reflection::enum_names`, and keeps the first error.  The functions are constexpr for the reason
+        // that `field_key_builder` gives.
+        template <std::size_t N>
+        struct enum_name_builder
+        {
+            enum_name_table<N> table;
+            bool formatted = false;
+            std::array<bool, N> renamed = {};
+
+            constexpr void fail(enum_annotation_error error)
+            {
+                if (table.error == enum_annotation_error::none) table.error = error;
+            }
+            constexpr void set_format(enum_format format)
+            {
+                if (formatted) return fail(enum_annotation_error::format_twice);
+                formatted = true;
+                table.format = format;
+            }
+            constexpr void rename_enumerator(std::size_t i, std::string_view name)
+            {
+                if (renamed[i]) return fail(enum_annotation_error::renamed_twice);
+                renamed[i] = true;
+                table.renamed = true;
+                table.names[i] = name;
+            }
+            // An element of `annotations<E>`.  `declared` are the names before renaming.
+            template <typename A>
+            constexpr void apply_annotation(const A& a, const std::array<std::string_view, N>& declared)
+            {
+                if constexpr (std::same_as<A, enum_format>)
+                    set_format(a);
+                else if constexpr (is_enumerator_annotation<A>::value)
+                {
+                    std::size_t i = 0;
+                    while (i < N && declared[i] != a.name) ++i;
+                    if (i == N) return fail(enum_annotation_error::unknown_enumerator);
+                    std::apply(
+                        [&]<typename... Rs>(const Rs&... r) {
+                            if constexpr ((std::same_as<Rs, rename> && ...)) (rename_enumerator(i, r.key()), ...);
+                        },
+                        a.values);
+                }
+                else
+                    fail(enum_annotation_error::not_an_enum_setting);
+            }
+            [[nodiscard]] constexpr enum_name_table<N> result() const
+            {
+                auto result = table;
+                if (result.error != enum_annotation_error::none || !result.renamed) return result;
+                if (result.format == enum_format::integer) result.error = enum_annotation_error::renamed_integer;
+                for (std::size_t i = 0; i < N; ++i)
+                {
+                    const auto name = result.names[i];
+                    if (name.empty()) result.error = enum_annotation_error::empty_name;
+                    // the key of a map that is the integer of a value, as `enum_from_key` reads it
+                    const auto digits = !name.empty() && name[0] == '-' ? name.substr(1) : name;
+                    if (result.format == enum_format::name_or_integer && !digits.empty() &&
+                        std::ranges::all_of(digits, [](char c) { return c >= '0' && c <= '9'; }))
+                        result.error = enum_annotation_error::integer_name;
+                    for (std::size_t j = 0; j < i; ++j)
+                        if (name == result.names[j]) result.error = enum_annotation_error::duplicate_name;
+                }
+                return result;
+            }
+        };
+
+        // The conversion of the enumeration E: its `enum_format`, and the JSON names of the values of
+        // `field_reflection::enum_values<E>`, which are those of `field_reflection::enum_names<E>` unless an
+        // enumerator is renamed.  `std::byte`, which has no enumerators, is an integer.
+        template <typename E>
+        struct enum_conversion
+        {
+            static constexpr std::size_t count = field_reflection::enum_count<E>;
+            // A function rather than a lambda, for the reason that `field_keys::make_table` gives.
+            static consteval auto make_table()
+            {
+                constexpr auto& declared = field_reflection::enum_names<E>;
+                auto builder = enum_name_builder<count>{{declared}};
+                if constexpr (std::same_as<E, std::byte>) builder.table.format = enum_format::integer;
+                std::apply([&](const auto&... a) { (builder.apply_annotation(a, declared), ...); },
+                           annotations<E>.values);
+#if FIELD_RFL_ANNOTATIONS
+                for (const enum_format format : field_reflection::type_annotations<E, enum_format>)
+                    builder.set_format(format);
+                [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                    (
+                        [&] {
+                            for (const rename& r : field_reflection::enumerator_annotations<E, Is, rename>)
+                                builder.rename_enumerator(Is, r.key());
+                        }(),
+                        ...);
+                }(std::make_index_sequence<count>{});
+#endif
+                return builder.result();
+            }
+            static constexpr auto table = make_table();
+            static_assert(
+                table.error != enum_annotation_error::not_an_enum_setting,
+                "yyjson::annotations of an enumeration takes yyjson::enumerator(...) and yyjson::enum_format");
+            static_assert(table.error != enum_annotation_error::format_twice,
+                          "an enumeration is given yyjson::enum_format twice");
+            static_assert(table.error != enum_annotation_error::unknown_enumerator,
+                          "yyjson::enumerator names no enumerator of the enumeration: it names an alias, which takes "
+                          "the name of the enumerator declared first, or with C++20 an enumerator out of "
+                          "field_reflection::enum_range");
+            static_assert(table.error != enum_annotation_error::renamed_twice, "an enumerator is renamed twice");
+            static_assert(
+                table.error != enum_annotation_error::renamed_integer,
+                "an enumeration of yyjson::enum_format::integer is written without names, which yyjson::rename "
+                "would give");
+            static_assert(table.error != enum_annotation_error::empty_name,
+                          "yyjson::rename gives an enumerator an empty name");
+            static_assert(table.error != enum_annotation_error::integer_name,
+                          "an enumeration of yyjson::enum_format::name_or_integer writes the integer of a value "
+                          "without a name, which an enumerator renamed to an integer would be confused with");
+            static_assert(table.error != enum_annotation_error::duplicate_name,
+                          "two enumerators have the same JSON name");
+            static constexpr enum_format format = table.format;
+            static constexpr bool renamed = table.renamed;
+            static constexpr const auto& names = table.names;
+        };
+
+        template <typename E>
+        inline constexpr enum_format enum_format_of = enum_conversion<std::remove_cv_t<E>>::format;
+        // Enumerations that are written and read by the names of their enumerators, at least when a value has one,
+        // and as the integers of their underlying types, at least when a value has no name.
+        template <typename T>
+        concept enum_by_name = std::is_enum_v<T> && enum_format_of<T> != enum_format::integer;
+        template <typename T>
+        concept enum_by_integer = std::is_enum_v<T> && enum_format_of<T> != enum_format::name;
+        template <typename T>
+        concept enum_name_only = std::is_enum_v<T> && enum_format_of<T> == enum_format::name;
+        template <typename T>
+        concept enum_integer_only = std::is_enum_v<T> && enum_format_of<T> == enum_format::integer;
+
+        // The index of the value e in `field_reflection::enum_values<E>`, or `enum_count<E>` if no enumerator has
+        // it.  The values are in ascending order.
+        template <typename E>
+        constexpr std::size_t enum_index(E e) noexcept
+        {
+            constexpr auto& values = field_reflection::enum_values<E>;
+            using U = std::underlying_type_t<E>;
+            auto first = std::size_t{0};
+            auto last = values.size();
+            while (first < last)
+            {
+                const auto middle = first + (last - first) / 2;
+                if (static_cast<U>(values[middle]) < static_cast<U>(e))
+                    first = middle + 1;
+                else
+                    last = middle;
+            }
+            return first < values.size() && values[first] == e ? first : values.size();
+        }
+        // The JSON name of the value e, or an empty string if no enumerator has it.
+        template <typename E>
+        constexpr std::string_view enum_name_of(E e) noexcept
+        {
+            using conversion = enum_conversion<E>;
+            if constexpr (!conversion::renamed)
+                return field_reflection::enum_name(e);
+            else
+            {
+                const auto i = enum_index(e);
+                return i < conversion::count ? conversion::names[i] : std::string_view();
+            }
+        }
+        // The integer that an enumeration is written as.
+        template <typename E>
+        constexpr auto enum_integer(E e) noexcept
+        {
+            using U = std::underlying_type_t<E>;
+            if constexpr (std::signed_integral<U>)
+                return static_cast<std::int64_t>(e);
+            else
+                return static_cast<std::uint64_t>(e);
+        }
+        template <typename E>
+        [[noreturn]] CPPYYJSON_COLD void throw_unnamed_enum(E e)
+        {
+            throw_bad_cast(
+                "{} is written by the names of its enumerators, and none has the value {}: give it "
+                "yyjson::enum_format::integer or name_or_integer, or with C++20 widen "
+                "field_reflection::enum_range",
+                type_name<E>(), enum_integer(e));
+        }
+        // The name that `enum_format::name` writes, which the value must have.
+        template <typename E>
+        std::string_view enum_name_or_throw(E e)
+        {
+            const auto name = enum_name_of(e);
+            if (name.empty()) [[unlikely]]
+                throw_unnamed_enum(e);
+            return name;
+        }
+
+        // Whether the struct S has a field of the key `key` that is an enumeration of `enum_format::integer`, which
+        // cannot hold the name of an alternative of a tagged variant.
+        template <typename S>
+        constexpr bool integer_enum_field_of_key(std::string_view key);
+
         // The tag of a variant that tries its alternatives in turn.
         struct no_variant_tag
         {
@@ -1592,6 +1860,15 @@ namespace yyjson
                 }(),
                 "the names of the alternatives in yyjson::internal_tag and yyjson::adjacent_tag must be distinct and "
                 "not empty");
+            static_assert(
+                [] {
+                    if constexpr (tagging == variant_tagging::internal)
+                        return !(integer_enum_field_of_key<std::remove_cv_t<Ts>>(key) || ...);
+                    else
+                        return true;
+                }(),
+                "the field of the key of yyjson::internal_tag holds the name of an alternative, which an enumeration "
+                "of yyjson::enum_format::integer cannot");
 
             [[nodiscard]] static constexpr std::size_t alternative(std::string_view id) noexcept
             {
@@ -1611,6 +1888,8 @@ namespace yyjson
                               "yyjson::annotations of a variant has yyjson::internal_tag twice");
                 static_assert(!(is_field_annotation<As>::value || ...),
                               "yyjson::field annotates a struct, not a variant");
+                static_assert(!(enum_annotation<As> || ...),
+                              "yyjson::enumerator and yyjson::enum_format annotate an enumeration, not a variant");
                 auto result = sizeof...(As);
                 auto i = std::size_t{0};
                 ((result = internal_tag_annotation<As> ? i : result, ++i), ...);
@@ -1788,6 +2067,17 @@ namespace yyjson
             }(std::make_index_sequence<struct_field_count<S>>{});
         }
 
+        template <typename S>
+        constexpr bool integer_enum_field_of_key(std::string_view key)
+        {
+            if constexpr (reflectable<S> || visitable<S>)
+                return [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                    return ((enum_integer_only<struct_field_type<S, Is>> && struct_field_key<S, Is> == key) || ...);
+                }(std::make_index_sequence<struct_field_count<S>>{});
+            else
+                return false;
+        }
+
         // Whether the field R of S, by its index among all the fields, is tagged by `adjacent_tag`.  The tag of
         // each field is looked up only for a struct that may have one.
         template <typename S, std::size_t R>
@@ -1827,6 +2117,16 @@ namespace yyjson
         inline constexpr bool has_adjacent_fields = [] {
             if constexpr (may_have_adjacent_fields<S>)
                 return []<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                    static_assert(
+                        !([] {
+                            if constexpr (adjacent_field<S, Ks>)
+                                return integer_enum_field_of_key<S>(struct_field_tags<S, Ks>::key);
+                            else
+                                return false;
+                        }() ||
+                          ...),
+                        "the field of the key of yyjson::adjacent_tag holds the name of an alternative, which "
+                        "an enumeration of yyjson::enum_format::integer cannot");
                     return (adjacent_field<S, Ks> || ...);
                 }(std::make_index_sequence<struct_field_count<S>>{});
             else
@@ -1935,7 +2235,7 @@ namespace yyjson
                             const auto& tag = struct_field<t>(s);
                             auto id = std::string_view();
                             if constexpr (std::is_enum_v<tag_type>)
-                                id = field_reflection::enum_name(tag);
+                                id = enum_name_of(tag);
                             else
                             {
                                 static_assert(std::convertible_to<const tag_type&, std::string_view>,
@@ -2440,12 +2740,10 @@ namespace yyjson
             return true;
         }
 
-        // An enumeration is read and written by the names of its enumerators, and as the integer of its underlying
-        // type when its value has no name, such as a combination of flags.  The names are those of
-        // `field_reflection::enum_names`, which has the name declared first for each value: an alias, which only
-        // the C++26 backend of field-reflection would find by name, is read by neither.
+        // The integers, and the enumerations that are read from integers: those of `enum_format::integer` and
+        // `name_or_integer`.
         template <typename T>
-        concept integer_like = std::is_enum_v<T> || (std::integral<T> && !std::same_as<T, bool>);
+        concept integer_like = enum_by_integer<T> || (std::integral<T> && !std::same_as<T, bool>);
         // A floating-point type with a smaller range than `double`, such as `float`.
         template <typename T>
         concept narrower_than_double =
@@ -2472,16 +2770,17 @@ namespace yyjson
         template <typename T>
         using integer_of_t = typename integer_of<T>::type;
 
+        // The names of an enumeration that `enum_conversion` gives, which are read by a key matcher.
         template <typename E>
         inline constexpr auto enum_name_matcher =
-            field_key_matcher<field_reflection::enum_count<E>>(field_reflection::enum_names<E>);
+            field_key_matcher<enum_conversion<E>::count>(enum_conversion<E>::names);
         // Whether every name can be written as it is, with its quotation marks around it.
         template <typename E>
-        inline constexpr bool enum_names_plain = std::ranges::all_of(field_reflection::enum_names<E>, is_plain_key);
+        inline constexpr bool enum_names_plain = std::ranges::all_of(enum_conversion<E>::names, is_plain_key);
         template <typename E>
         inline constexpr std::size_t enum_name_max_size = [] {
             auto size = std::size_t{0};
-            for (const auto name : field_reflection::enum_names<E>) size = std::max(size, name.size());
+            for (const auto name : enum_conversion<E>::names) size = std::max(size, name.size());
             return size;
         }();
         template <typename E>
@@ -2492,52 +2791,64 @@ namespace yyjson
                 return field_reflection::enum_values<E>[i];
             return std::nullopt;
         }
-        // The integer that a value without a name is written as.
-        template <typename E>
-        constexpr auto enum_integer(E e) noexcept
-        {
-            using U = std::underlying_type_t<E>;
-            if constexpr (std::signed_integral<U>)
-                return static_cast<std::int64_t>(e);
-            else
-                return static_cast<std::uint64_t>(e);
-        }
 
-        // An enumeration as a key of a JSON object: the name of its enumerator, or else the decimal integer of its
-        // underlying type, which a key cannot be without quotes.  The integer is put in `buf`.
+        // An enumeration as a key of a JSON object, which follows its `enum_format`: the name of its enumerator, or
+        // the decimal integer of its underlying type, which a key cannot be without quotes.  The integer is put in
+        // `buf`.
         using enum_key_buffer = std::array<char, 20>;
         template <typename E>
-        std::string_view enum_key_text(E e, enum_key_buffer& buf) noexcept
+        std::string_view enum_key_text(E e, enum_key_buffer& buf)
         {
-            if (const auto name = field_reflection::enum_name(e); !name.empty()) return name;
-            const auto end = std::to_chars(buf.data(), buf.data() + buf.size(), enum_integer(e)).ptr;
-            return {buf.data(), static_cast<std::size_t>(end - buf.data())};
+            if constexpr (enum_name_only<E>)
+                return enum_name_or_throw(e);
+            else
+            {
+                if constexpr (enum_by_name<E>)
+                {
+                    if (const auto name = enum_name_of(e); !name.empty()) return name;
+                }
+                const auto end = std::to_chars(buf.data(), buf.data() + buf.size(), enum_integer(e)).ptr;
+                return {buf.data(), static_cast<std::size_t>(end - buf.data())};
+            }
         }
         // Reads a key that `enum_key_text` writes.  The integer has the form that it writes, without a sign `+`,
         // leading zeros or `-0`, so that each value has one key and a key that is not one fails.
         template <typename E>
         std::optional<E> enum_from_key(std::string_view key) noexcept
         {
-            if (const auto e = enum_from_name<E>(key); e.has_value()) return e;
-            const auto digits = key.substr(!key.empty() && key.front() == '-');
-            if (digits.empty() || (digits.front() == '0' && key.size() != 1)) return std::nullopt;
-            using U = std::underlying_type_t<E>;
-            using I = decltype(enum_integer(E{}));
-            auto value = I{};
-            const auto [end, ec] = std::from_chars(key.data(), key.data() + key.size(), value);
-            if (ec != std::errc{} || end != key.data() + key.size() ||
-                value < static_cast<I>(std::numeric_limits<U>::min()) ||
-                value > static_cast<I>(std::numeric_limits<U>::max()))
+            if constexpr (enum_by_name<E>)
+            {
+                if (const auto e = enum_from_name<E>(key); e.has_value()) return e;
+            }
+            if constexpr (!enum_by_integer<E>)
                 return std::nullopt;
-            return static_cast<E>(static_cast<U>(value));
+            else
+            {
+                const auto digits = key.substr(!key.empty() && key.front() == '-');
+                if (digits.empty() || (digits.front() == '0' && key.size() != 1)) return std::nullopt;
+                using U = std::underlying_type_t<E>;
+                using I = decltype(enum_integer(E{}));
+                auto value = I{};
+                const auto [end, ec] = std::from_chars(key.data(), key.data() + key.size(), value);
+                if (ec != std::errc{} || end != key.data() + key.size() ||
+                    value < static_cast<I>(std::numeric_limits<U>::min()) ||
+                    value > static_cast<I>(std::numeric_limits<U>::max()))
+                    return std::nullopt;
+                return static_cast<E>(static_cast<U>(value));
+            }
         }
         template <typename E>
         E read_enum_key(std::string_view key)
         {
             if (const auto e = enum_from_key<E>(key); e.has_value()) [[likely]]
                 return *e;
-            throw_bad_cast("JSON object key is neither the name of an enumerator of {} nor an integer of it",
-                           type_name<E>());
+            if constexpr (enum_name_only<E>)
+                throw_bad_cast("JSON object key is not the name of an enumerator of {}", type_name<E>());
+            else if constexpr (enum_integer_only<E>)
+                throw_bad_cast("JSON object key is not an integer of {}", type_name<E>());
+            else
+                throw_bad_cast("JSON object key is neither the name of an enumerator of {} nor an integer of it",
+                               type_name<E>());
         }
 
         template <typename F>
@@ -3371,7 +3682,7 @@ namespace yyjson
                 }
                 template <std::ranges::input_range Range, copy_string_args... Ts>
                 requires mutable_value_key_value_range<Range>
-                yyjson_mut_val* create_object(Range&& range, Ts... ts) noexcept
+                yyjson_mut_val* create_object(Range&& range, Ts... ts)
                 {
                     // range<pair<key, value>> -> object
                     using value_type = std::remove_cvref_t<std::tuple_element_t<1, std::ranges::range_value_t<Range>>>;
@@ -3438,7 +3749,7 @@ namespace yyjson
                 }
                 template <std::ranges::input_range Range, copy_string_args... Ts>
                 requires reader_value_ref_key_value_range<Range>
-                yyjson_mut_val* create_object(Range&& range, Ts... ts) noexcept
+                yyjson_mut_val* create_object(Range&& range, Ts... ts)
                 {
                     // range<pair<key, immut_value>> -> object
                     auto result = yyjson_mut_obj(ptrs->self);
@@ -7816,6 +8127,14 @@ namespace yyjson
                 return U(std::monostate());
         }
 
+        [[noreturn]] CPPYYJSON_COLD static void throw_enum_not_integer()
+        {
+            detail::throw_bad_cast(
+                "{} is read from the names of its enumerators, not from a JSON number: give it "
+                "yyjson::enum_format::integer or name_or_integer to read integers",
+                detail::type_name<T>());
+        }
+
         template <typename U = T>
         static U from_json_bool(bool value)
         {
@@ -7858,6 +8177,8 @@ namespace yyjson
             {
                 return U(value);
             }
+            else if constexpr (std::is_enum_v<U>)
+                throw_enum_not_integer();
             else
                 detail::throw_bad_cast("{} is not constructible from JSON number", detail::type_name<U>());
         }
@@ -7865,12 +8186,15 @@ namespace yyjson
         template <typename U = T>
         static U from_json_string(std::string_view value)
         {
-            if constexpr (std::is_enum_v<U>)
+            if constexpr (enum_by_name<U>)
             {
                 if (const auto e = enum_from_name<U>(value); e.has_value()) [[likely]]
                     return *e;
                 detail::throw_bad_cast("JSON string is not the name of an enumerator of {}", detail::type_name<U>());
             }
+            else if constexpr (std::is_enum_v<U>)
+                detail::throw_bad_cast("{} of yyjson::enum_format::integer is not constructible from JSON string",
+                                       detail::type_name<U>());
             else if constexpr (!json_string_constructible<U>)
                 detail::throw_bad_cast("{} is not constructible from JSON string", detail::type_name<U>());
             else if constexpr (std::constructible_from<U, std::string_view>)
@@ -7900,6 +8224,8 @@ namespace yyjson
             {
                 return U(value);
             }
+            else if constexpr (std::is_enum_v<U>)
+                throw_enum_not_integer();
             else
                 detail::throw_bad_cast("{} is not constructible from JSON integer", detail::type_name<U>());
         }
@@ -7931,6 +8257,8 @@ namespace yyjson
             {
                 return U(value);
             }
+            else if constexpr (std::is_enum_v<U>)
+                throw_enum_not_integer();
             else
                 detail::throw_bad_cast("{} is not constructible from JSON integer", detail::type_name<U>());
         }
@@ -7988,14 +8316,14 @@ namespace yyjson
                     if (unsafe_yyjson_is_real(val)) [[likely]]
                         return from_json_real(unsafe_yyjson_get_real(val));
                 }
-                else if constexpr (std::integral<T>)
+                else if constexpr (std::integral<T> || enum_integer_only<T>)
                 {
                     // yyjson tags a non-negative integer as unsigned
                     if (unsafe_yyjson_is_uint(val)) [[likely]]
                         return from_json_uint(unsafe_yyjson_get_uint(val));
                     if (unsafe_yyjson_is_sint(val)) return from_json_sint(unsafe_yyjson_get_sint(val));
                 }
-                else if constexpr (json_string_constructible<T> || std::is_enum_v<T>)
+                else if constexpr (json_string_constructible<T> || enum_by_name<T>)
                 {
                     if (unsafe_yyjson_is_str(val)) [[likely]]
                         return from_json_string(
@@ -8103,7 +8431,11 @@ namespace yyjson
         requires std::is_enum_v<T> && (!writer::detail::to_json_usr_translator<T>)
         static void to_json(writer::value_ref& v, T t, Ts...)
         {
-            if (const auto name = field_reflection::enum_name(t); !name.empty())
+            if constexpr (enum_name_only<T>)
+                v = enum_name_or_throw(t);
+            else if constexpr (enum_integer_only<T>)
+                v = enum_integer(t);
+            else if (const auto name = enum_name_of(t); !name.empty())
                 v = name;
             else
                 v = enum_integer(t);
@@ -8401,7 +8733,7 @@ namespace yyjson
                     kinds |= json_kind_real | json_kind_integral_real;
                 if constexpr (json_scalar_constructible<T, std::uint64_t>) kinds |= json_kind_uint;
                 if constexpr (json_scalar_constructible<T, std::int64_t>) kinds |= json_kind_sint;
-                if constexpr (json_string_constructible<T> || std::is_enum_v<T>) kinds |= json_kind_string;
+                if constexpr (json_string_constructible<T> || enum_by_name<T>) kinds |= json_kind_string;
                 return static_cast<std::uint16_t>(kinds);
             }
         }
@@ -9518,17 +9850,23 @@ namespace yyjson
                     return 20;
                 else if constexpr (std::is_enum_v<U> && to_json_inp_def<value_ref, U>)
                 {
-                    if constexpr (yyjson::detail::enum_names_plain<U>)
-                        return std::max(yyjson::detail::enum_name_max_size<U> + 2, std::size_t{20});
-                    else
+                    if constexpr (yyjson::detail::enum_integer_only<U>)
+                        return 20;
+                    else if constexpr (!yyjson::detail::enum_names_plain<U>)
                         return 0;
+                    else if constexpr (yyjson::detail::enum_name_only<U>)
+                        return yyjson::detail::enum_name_max_size<U> + 2;
+                    else
+                        return std::max(yyjson::detail::enum_name_max_size<U> + 2, std::size_t{20});
                 }
                 else
                     return 0;
             }
-            // Writes such a value without checking the space.
+            // Writes such a value without checking the space.  An enumeration of `enum_format::name` throws for a
+            // value without a name.
             template <typename T>
-            CPPYYJSON_ALWAYS_INLINE static char* put_bounded(char* p, T v) noexcept
+            CPPYYJSON_ALWAYS_INLINE static char* put_bounded(char* p, T v) noexcept(
+                !yyjson::detail::enum_name_only<std::remove_cvref_t<T>>)
             {
                 using U = std::remove_cvref_t<T>;
                 if constexpr (std::same_as<U, std::nullptr_t>)
@@ -9537,12 +9875,21 @@ namespace yyjson
                     return put_bool(p, v);
                 else if constexpr (std::is_enum_v<U>)
                 {
-                    if (const auto name = field_reflection::enum_name(v); !name.empty())
+                    if constexpr (!yyjson::detail::enum_integer_only<U>)
                     {
-                        *p = '"';
-                        std::memcpy(p + 1, name.data(), name.size());
-                        p[name.size() + 1] = '"';
-                        return p + name.size() + 2;
+                        const auto name = yyjson::detail::enum_name_of(v);
+                        if constexpr (yyjson::detail::enum_name_only<U>)
+                        {
+                            if (name.empty()) [[unlikely]]
+                                yyjson::detail::throw_unnamed_enum(v);
+                        }
+                        if (!name.empty())
+                        {
+                            *p = '"';
+                            std::memcpy(p + 1, name.data(), name.size());
+                            p[name.size() + 1] = '"';
+                            return p + name.size() + 2;
+                        }
                     }
                     return put_integer(p, yyjson::detail::enum_integer(v));
                 }
@@ -11080,19 +11427,28 @@ namespace yyjson
             template <typename E>
             void write_enum_key(E e)
             {
-                if (const auto name = field_reflection::enum_name(e); !name.empty())
+                if constexpr (yyjson::detail::enum_by_name<E>)
                 {
-                    if constexpr (yyjson::detail::enum_names_plain<E>)
+                    const auto name = yyjson::detail::enum_name_of(e);
+                    if constexpr (yyjson::detail::enum_name_only<E>)
                     {
-                        ensure(name.size() + 2);
-                        *buf_.cur = '"';
-                        std::memcpy(buf_.cur + 1, name.data(), name.size());
-                        buf_.cur[name.size() + 1] = '"';
-                        buf_.cur += name.size() + 2;
+                        if (name.empty()) [[unlikely]]
+                            yyjson::detail::throw_unnamed_enum(e);
                     }
-                    else
-                        write_string(name);
-                    return;
+                    if (!name.empty())
+                    {
+                        if constexpr (yyjson::detail::enum_names_plain<E>)
+                        {
+                            ensure(name.size() + 2);
+                            *buf_.cur = '"';
+                            std::memcpy(buf_.cur + 1, name.data(), name.size());
+                            buf_.cur[name.size() + 1] = '"';
+                            buf_.cur += name.size() + 2;
+                        }
+                        else
+                            write_string(name);
+                        return;
+                    }
                 }
                 ensure(24);
                 *buf_.cur++ = '"';
@@ -11359,7 +11715,9 @@ namespace yyjson
                         ensure(bounded_size<U>());
                         buf_.cur = put_bounded(buf_.cur, t);
                     }
-                    else if (const auto name = field_reflection::enum_name(t); !name.empty())
+                    else if constexpr (yyjson::detail::enum_name_only<U>)
+                        write_string(yyjson::detail::enum_name_or_throw(t));
+                    else if (const auto name = yyjson::detail::enum_name_of(t); !name.empty())
                         write_string(name);
                     else
                         write_integer(yyjson::detail::enum_integer(t));
