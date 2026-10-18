@@ -89,6 +89,15 @@ namespace
         }
     };
 
+    // canada read into `float`, last so that the other datasets keep their indices
+    struct canada_float
+    {
+        using type = bench_typed::canada::float_document;
+        static constexpr std::int64_t batch = 1;
+        static std::string label() { return std::format("{} as float", json_file_paths[0]); }
+        static std::string load() { return read_file(std::string(json_file_paths[0])); }
+    };
+
     constexpr auto typed_datasets = std::tuple{
         document_of<0, bench_typed::canada::document>{},
         document_of<1, bench_typed::citm_catalog::document>{},
@@ -99,6 +108,7 @@ namespace
         document_of<4, bench_typed::gsoc_2018::document>{},
         github_event_message{},
         twitter_status_message{},
+        canada_float{},
     };
     constexpr auto typed_dataset_count = static_cast<int>(std::tuple_size_v<decltype(typed_datasets)>);
 

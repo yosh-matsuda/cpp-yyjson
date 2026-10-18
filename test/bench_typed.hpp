@@ -35,7 +35,8 @@
 
 namespace bench_typed
 {
-    // canada.json: a GeoJSON polygon of 111 thousand coordinate pairs
+    // canada.json: a GeoJSON polygon of 111 thousand coordinate pairs, as `double` and as
+    // `float`, whose numbers are read by narrowing a `double` and written with fewer digits
     namespace canada
     {
         struct properties_t
@@ -44,27 +45,33 @@ namespace bench_typed
             bool operator==(const properties_t&) const = default;
         };
 
-        struct geometry_t
+        template <typename Real>
+        struct basic_geometry_t
         {
             std::string type;
-            std::vector<std::vector<std::array<double, 2>>> coordinates;
-            bool operator==(const geometry_t&) const = default;
+            std::vector<std::vector<std::array<Real, 2>>> coordinates;
+            bool operator==(const basic_geometry_t&) const = default;
         };
 
-        struct feature_t
+        template <typename Real>
+        struct basic_feature_t
         {
             std::string type;
             properties_t properties;
-            geometry_t geometry;
-            bool operator==(const feature_t&) const = default;
+            basic_geometry_t<Real> geometry;
+            bool operator==(const basic_feature_t&) const = default;
         };
 
-        struct document
+        template <typename Real>
+        struct basic_document
         {
             std::string type;
-            std::vector<feature_t> features;
-            bool operator==(const document&) const = default;
+            std::vector<basic_feature_t<Real>> features;
+            bool operator==(const basic_document&) const = default;
         };
+
+        using document = basic_document<double>;
+        using float_document = basic_document<float>;
     }  // namespace canada
 
     // citm_catalog.json: maps keyed by numeric IDs and small integer records

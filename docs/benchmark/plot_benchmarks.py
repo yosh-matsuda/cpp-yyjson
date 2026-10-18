@@ -209,6 +209,7 @@ TYPED_DATASET_NAMES = {
     6: "gsoc-2018",
     7: "github_event",
     8: "twitter_status",
+    9: "canada_float",
 }
 
 TYPED_COLORS = {
