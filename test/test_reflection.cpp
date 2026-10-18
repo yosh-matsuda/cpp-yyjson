@@ -923,7 +923,10 @@ TEST(Reflection, EnumFormats)
     EXPECT_THROW((void)yyjson::write(std::vector<Status>{static_cast<Status>(7)}), bad_cast);
     EXPECT_THROW((void)yyjson::write(std::map<Status, int>{{static_cast<Status>(7), 1}}), bad_cast);
     expect_direct_write(std::vector<Status>{static_cast<Status>(7)});
-    expect_direct_write(EnumFields{.f = static_cast<Flags>(3), .v = {unnamed}});
+    auto unnamed_fields = EnumFields();
+    unnamed_fields.f = static_cast<Flags>(3);
+    unnamed_fields.v = {unnamed};
+    expect_direct_write(unnamed_fields);
 }
 
 struct PairMapFields
