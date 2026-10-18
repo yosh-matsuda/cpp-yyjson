@@ -1250,6 +1250,8 @@ A range of key-value pairs converts to a JSON object, and from one. A key-value 
 
 A set such as `std::set<int>` or `std::unordered_set<std::string>` converts to a JSON array, and from one. Its elements are inserted in the order of the array, so a set without duplicates, such as `std::set`, keeps the first of equal elements, and a multiset keeps them all.
 
+A `float` is written with the shortest digits that read back as the same `float`, so `0.1f` becomes `0.1`, while the `double` of the same value becomes `0.10000000149011612`. With yyjson older than 0.11.0 a `float` is written as that `double`.
+
 If the conversion fails, the `yyjson::bad_cast` exception is thrown or a compile error occurs. In particular:
 
 *   JSON null does not convert to a string type such as `std::string` or `std::string_view`. Use `std::optional<std::string>` for a string that may be null.
@@ -1269,7 +1271,6 @@ Some conversions succeed where one might expect them to fail, or give JSON that 
 *   A `std::variant` takes the first alternative that accepts the value, and an integer accepts a real number by truncating it. `std::variant<int, double>` therefore reads `1.5` as the `int` `1`; with `double` first, every number is read as `double`.
 *   A map whose keys are neither strings nor [enumerations](#enumerations), such as `std::map<int, int>`, is a JSON array of `[key, value]` pairs, `[[1,2]]`, which the map is read back from, not an object with its keys in strings. A key that appears twice keeps its first value, and a `std::multimap` keeps them all. `merge_into` replaces such a map as it replaces a range. Convert the map to `std::map<std::string, int>` with a [translator](#translator) to have a JSON object.
 *   `char`, `signed char`, `unsigned char`, `std::int8_t` and `std::uint8_t` are numbers, and `std::u8string`, `std::u16string`, `std::u32string` and `std::wstring` are arrays of numbers. Only ranges of `char` are JSON strings.
-*   `float` is written with the digits of the `double` of the same value: `0.1f` becomes `0.10000000149011612`.
 *   When a struct is read, a key that the struct does not have is ignored, a field whose key is missing keeps its value in `T()`, and a key that appears twice gives the field its last value. There is no option to require a key or to reject unknown keys; declare a field `std::optional` and check it after reading to require it.
 
 The following types have no conversion of their own, and fail to compile where they are written. Some of them still compile where they are read, because a type that can be constructed from a JSON scalar or from null is read from that value: a raw pointer, a `std::function` and a `std::unique_ptr` of an array read only JSON null, a duration reads an integer as its count, and a union reads a number into its first member. Use the type or the form in the second column instead:
