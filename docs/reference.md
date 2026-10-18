@@ -1257,6 +1257,7 @@ If the conversion fails, the `yyjson::bad_cast` exception is thrown or a compile
 *   A JSON number or boolean does not convert to a container such as `std::vector<int>`, although the container is constructible from an integer as its size.
 *   Only JSON `true` and `false` convert to `bool`. A number, a string or null does not, although C++ converts them to `bool`.
 *   A string type such as `std::string` converts from a JSON string only, not from an array of integers. Another range of characters, such as `std::vector<char>`, converts from an array.
+*   A type of a fixed number of elements, such as `std::array`, a C array, `std::pair` or `std::tuple`, converts only from a JSON array or object with exactly that many elements. `[1]` does not convert to `std::array<int, 2>`, nor `[1, 2, 3]`.
 *   A struct read by [reflection](#automatic-casting-with-compile-time-reflection) or `VISITABLE_STRUCT` converts from a JSON object only, although C++20 initializes the first field of an aggregate from `T(v)`. To read a struct from another JSON value, define a [translator](#translator).
 
 A `yyjson::bad_cast` thrown while reading names the C++ type and the kind of the JSON value, such as `int is not constructible from JSON string`, but not the key of the member or the position in the document. The C++ type is spelled as the compiler spells it, such as `std::__cxx11::basic_string<char>`.
@@ -1415,7 +1416,7 @@ auto tpl_obj2 = cast<decltype(tpl_obj)>(json_obj);          // deserialize
 // -> {{"number", 1.5}, {"error", nullptr}, {"text", "abc"}}
 ```
 
-A JSON array or object with more elements than the tuple throws `yyjson::bad_cast`, and one with fewer leaves the remaining elements of the tuple value-initialized, as a `std::array` does.
+A JSON array or object with more or fewer elements than the tuple throws `yyjson::bad_cast`, as it does for a `std::array`.
 
 ### Enumerations
 
@@ -1498,7 +1499,7 @@ auto deserialized = cast<X>(serialized);
 // -> X{.a = 1, .b = std::nullopt, .c = "x"}
 ```
 
-A field that is a C array, such as `int a[3]` or `double m[2][3]`, converts to and from a JSON array as `std::array` does: a JSON array with more elements throws `yyjson::bad_cast`, and one with fewer leaves the remaining elements value-initialized. A `char` array is an array of integers, as `std::array<char, N>` is, and so is one nested in another array; use `std::string` for text. Only a `char` array given to `value` or `write` itself is a string, as a string literal is, which ends at the first NUL character or at the end of the array. This applies to the fields of a struct registered with `VISITABLE_STRUCT` as well.
+A field that is a C array, such as `int a[3]` or `double m[2][3]`, converts to and from a JSON array as `std::array` does: a JSON array with more or fewer elements throws `yyjson::bad_cast`. A `char` array is an array of integers, as `std::array<char, N>` is, and so is one nested in another array; use `std::string` for text. Only a `char` array given to `value` or `write` itself is a string, as a string literal is, which ends at the first NUL character or at the end of the array. This applies to the fields of a struct registered with `VISITABLE_STRUCT` as well.
 
 ```cpp
 struct Matrix

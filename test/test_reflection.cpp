@@ -70,12 +70,14 @@ TEST(Reflection, CArrayFields)
     EXPECT_TRUE(expect_direct_read<CArrays>(full_json));
     EXPECT_TRUE(expect_direct_read<std::vector<CArrays>>(std::format("[{},{{}}]", full_json)));
 
-    // a shorter JSON array value-initializes the rest, a longer one or any other value throws `bad_cast`, and
-    // `read_into` and `merge_into` replace the array, all as for `std::array`
+    // a JSON array of another length or any other value throws `bad_cast`, and `read_into` and `merge_into`
+    // replace the array, all as for `std::array`
     const auto same_errors = [](std::string s) { return s.starts_with("bad cast") ? std::string("bad cast") : s; };
     for (const auto* json :
          {R"({})", R"({"a":[9],"m":[[1],[2,3]],"c":[97],"s":["x"],"in":[{"x":1}],"o":[1]})",
-          R"({"a":[],"m":[],"c":[],"s":[],"in":[],"o":[]})", R"({"a":[1,2,3,4]})", R"({"m":[[1,2,3,4]]})",
+          R"({"a":[],"m":[],"c":[],"s":[],"in":[],"o":[]})", R"({"m":[[1,2,3]]})", R"({"m":[[1,2,3],[4,5]]})",
+          R"({"a":[9,8,7],"m":[[1,2,3],[4,5,6]],"c":[97,98,99,100],"s":["x","y"],"in":[{"x":1},{}],"o":[1,null]})",
+          R"({"a":[1,2,3,4]})", R"({"m":[[1,2,3,4]]})",
           R"({"m":[[1],[2],[3]]})", R"({"a":1})", R"({"a":null})", R"({"a":"abc"})", R"({"c":"abc"})",
           R"({"a":{"0":1}})", R"({"m":[1,2]})", R"({"a":["x"]})", R"({"c":[300]})", R"({"in":[1]})",
           R"({"s":null,"o":null})"})
@@ -104,14 +106,19 @@ TEST(Reflection, CArrayFields)
     }
 
     auto t = full;
-    yyjson::read_into(R"({"a":[9],"m":[[8]]})", t);
-    EXPECT_EQ(written(t), R"({"a":[9,0,0],"m":[[8.0,0.0,0.0],[0.0,0.0,0.0]],"c":[0,0,0,0],"s":["",""],)"
+    yyjson::read_into(R"({"a":[9,8,7],"m":[[8,7,6],[5,4,3]]})", t);
+    EXPECT_EQ(written(t), R"({"a":[9,8,7],"m":[[8.0,7.0,6.0],[5.0,4.0,3.0]],"c":[0,0,0,0],"s":["",""],)"
                           R"("in":[{"x":7,"s":""},{"x":7,"s":""}],"o":[null,null]})");
     t = full;
-    yyjson::merge_into(R"({"a":[9],"s":null,"in":[{"s":"q"}]})", t);
-    EXPECT_EQ(written(t), R"({"a":[9,0,0],"m":[[1.5,2.0,3.0],[4.0,5.0,6.0]],"c":[97,98,0,100],"s":["",""],)"
+    yyjson::merge_into(R"({"a":[9,8,7],"s":null,"in":[{"s":"q"},{}]})", t);
+    EXPECT_EQ(written(t), R"({"a":[9,8,7],"m":[[1.5,2.0,3.0],[4.0,5.0,6.0]],"c":[97,98,0,100],"s":["",""],)"
                           R"("in":[{"x":7,"s":"q"},{"x":7,"s":""}],"o":[1,null]})");
     EXPECT_THROW((void)yyjson::read<CArrays>(R"({"a":[1,2,3,4]})"), bad_cast);
+    EXPECT_THROW((void)yyjson::read<CArrays>(R"({"a":[1,2]})"), bad_cast);
+    EXPECT_THROW((void)yyjson::read<CArrays>(R"({"m":[[1,2,3],[4,5]]})"), bad_cast);
+    EXPECT_THROW((void)yyjson::read(R"({"m":[[1,2,3],[4,5]]})").cast<CArrays>(), bad_cast);
+    EXPECT_THROW(yyjson::read_into(R"({"a":[9]})", t), bad_cast);
+    EXPECT_THROW(yyjson::merge_into(R"({"a":[9]})", t), bad_cast);
     EXPECT_THROW((void)yyjson::read(R"({"m":[[1],[2],[3]]})").cast<CArrays>(), bad_cast);
     EXPECT_THROW(yyjson::read_into(R"({"a":1})", t), bad_cast);
     EXPECT_THROW(yyjson::merge_into(R"({"c":"abc"})", t), bad_cast);
@@ -124,10 +131,14 @@ TEST(Reflection, CArrayFields)
     EXPECT_EQ(std::string(yyjson::value(visitable).write()), visitable_json);
     EXPECT_EQ(written(yyjson::read(visitable_json).cast<VisitableCArrays>()), visitable_json);
     expect_direct_write(visitable);
-    EXPECT_TRUE(expect_direct_read<VisitableCArrays>(R"({"a":[1],"c":[[97]]})"));
+    EXPECT_TRUE(expect_direct_read<VisitableCArrays>(R"({"a":[1,2],"c":[[97,98],[99,100]]})"));
     expect_direct_read<VisitableCArrays>(R"({"a":[1,2,3]})");
+    expect_direct_read<VisitableCArrays>(R"({"a":[1]})");
+    expect_direct_read<VisitableCArrays>(R"({"c":[[1,2],[3]]})");
+    expect_read_into(visitable, R"({"c":[[1,2],[3,4]]})");
     expect_read_into(visitable, R"({"c":[[1]]})");
-    EXPECT_EQ(expect_merge_into(visitable, R"({"c":[[1]]})"), R"({"a":[1,2],"c":[[1,0],[0,0]]})");
+    EXPECT_EQ(expect_merge_into(visitable, R"({"c":[[1,2],[3,4]]})"), R"({"a":[1,2],"c":[[1,2],[3,4]]})");
+    EXPECT_EQ(expect_merge_into(visitable, R"({"c":[[1]]})").substr(0, 8), "bad cast");
 
     // the element type of a C array leads back to the struct
     const auto* recursive_json = R"({"v":[[{"v":[[],[{"v":[[],[]]}]]}],[]]})";
