@@ -7,6 +7,7 @@
 #include <bit>
 #include <chrono>
 #include <cmath>
+#include <complex>
 #include <deque>
 #include <format>
 #include <forward_list>

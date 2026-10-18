@@ -259,16 +259,19 @@ TEST(Reader, TranslatorFromJson)
     expect_direct_read<std::vector<Polyline>>("[[[1,2,3]]]");
     expect_direct_read<std::vector<Polyline>>("[1]");
     EXPECT_TRUE(expect_direct_read<std::vector<Meters>>("[1, 2.5]"));
-    EXPECT_TRUE(expect_direct_read<std::vector<BothForms>>("[1, 2.5]"));
-    EXPECT_TRUE(expect_direct_read<std::vector<WithJsonForm>>("[1, 2.5]"));
+    EXPECT_TRUE(expect_direct_read<std::vector<BothForms>>("[1, 2.0]"));
+    EXPECT_TRUE(expect_direct_read<std::vector<WithJsonForm>>("[1, 2.0]"));
+    expect_direct_read<std::vector<BothForms>>("[1, 2.5]");
+    expect_direct_read<std::vector<WithJsonForm>>("[1, 2.5]");
     expect_direct_read<std::vector<Meters>>(R"(["1"])");
     expect_direct_read<std::vector<BothForms>>(R"(["1"])");
     expect_direct_read<std::vector<WithJsonForm>>(R"(["1"])");
-    for (const auto* json : {painted_json, R"({"border":null,"both":1.5})", "{}"})
+    for (const auto* json : {painted_json, R"({"border":null,"both":1.0})", "{}"})
     {
         EXPECT_TRUE(expect_direct_read<Painted>(json)) << json;
     }
     expect_direct_read<Painted>(R"({"width":"1"})");
+    expect_direct_read<Painted>(R"({"both":1.5})");
 }
 
 // a translator of a C string, and a type that only a C string constructs
