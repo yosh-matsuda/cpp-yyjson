@@ -1414,19 +1414,6 @@ namespace yyjson
                 dst = std::move(src);
         }
 
-        // Gives the elements that a JSON array shorter than a C array does not have the value that `T()` gives
-        // them, as `cast<std::array<T, N>>` does.
-        template <typename F>
-        void value_initialize(F& f)
-        {
-            if constexpr (std::is_array_v<F>)
-            {
-                for (auto& e : f) value_initialize(e);
-            }
-            else
-                f = F();
-        }
-
         // Reads a C array from a JSON array as `cast<std::array<T, N>>` reads it.
         template <typename F, typename Json>
         void assign_c_array(F& field, const Json& json)
@@ -1437,8 +1424,8 @@ namespace yyjson
             if (!arr.has_value())
                 throw_bad_cast("a C array of {} is not constructible from JSON other than array",
                                type_name<std::remove_all_extents_t<F>>());
-            if (arr->size() > size)
-                throw_bad_cast("the size of JSON array is greater than the size of a C array of {}",
+            if (arr->size() != size)
+                throw_bad_cast("the size of JSON array differs from the size of a C array of {}",
                                type_name<std::remove_all_extents_t<F>>());
             auto i = std::size_t{0};
             for (const auto& e : *arr)
@@ -1449,7 +1436,6 @@ namespace yyjson
                     field[i] = cast<element_type>(e);
                 ++i;
             }
-            for (; i < size; ++i) value_initialize(field[i]);
         }
 
         // Whether the first `n` of `names` differ from each other.
@@ -7465,17 +7451,16 @@ namespace yyjson
         static void assign_fixed_size_range(T& result, const Json& arr)
         {
             using value_type = std::ranges::range_value_t<T>;
-            if (arr.size() > std::ranges::size(result))
-                detail::throw_bad_cast("the size of JSON array is greater than the size of {}", detail::type_name<T>());
+            if (arr.size() != std::ranges::size(result))
+                detail::throw_bad_cast("the size of JSON array differs from the size of {}", detail::type_name<T>());
             if constexpr (requires { std::tuple_size<T>::value; } && std::tuple_size_v<T> <= 16)
             {
                 // unrolled over the size of the type, which compilers do not always do for a loop over the
                 // size of the JSON array
-                const auto n = arr.size();
                 auto it = arr.begin();
                 auto out = std::ranges::begin(result);
                 [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                    (void)((Is < n && (*out = cast<value_type>(*it), ++it, ++out, true)) && ...);
+                    ((static_cast<void>(Is), *out = cast<value_type>(*it), ++it, ++out), ...);
                 }(std::make_index_sequence<std::tuple_size_v<T>>{});
             }
             else
@@ -8516,20 +8501,17 @@ namespace yyjson
                 {
                     auto result = Tuple<Ts...>();
 
-                    if (obj->size() > std::tuple_size_v<Tuple<Ts...>>)
-                        detail::throw_bad_cast("the size of JSON object is greater than the size of {}",
+                    if (obj->size() != std::tuple_size_v<Tuple<Ts...>>)
+                        detail::throw_bad_cast("the size of JSON object differs from the size of {}",
                                                detail::type_name<Tuple<Ts...>>());
 
-                    // the elements after those of the JSON value are left value-initialized
                     using indices = std::make_index_sequence<std::tuple_size_v<Tuple<Ts...>>>;
                     auto it = obj->begin();
-                    const auto size = obj->size();
-                    [&result, &it, size]<std::size_t... N>(std::index_sequence<N...>) {
-                        ((N < size ? (void)(std::get<N>(result) = std::tuple_element_t<N, Tuple<Ts...>>(
-                                                static_cast<std::tuple_element_t<0, Ts>>(std::get<0>(*it)),
-                                                cast<std::tuple_element_t<1, Ts>>(std::get<1>(*it))),
-                                            ++it)
-                                   : void()),
+                    [&result, &it]<std::size_t... N>(std::index_sequence<N...>) {
+                        ((std::get<N>(result) = std::tuple_element_t<N, Tuple<Ts...>>(
+                              static_cast<std::tuple_element_t<0, Ts>>(std::get<0>(*it)),
+                              cast<std::tuple_element_t<1, Ts>>(std::get<1>(*it))),
+                          ++it),
                          ...);
                     }(indices{});
 
@@ -8542,18 +8524,14 @@ namespace yyjson
                 {
                     auto result = Tuple<Ts...>();
 
-                    if (arr->size() > std::tuple_size_v<Tuple<Ts...>>)
-                        detail::throw_bad_cast("the size of JSON array is greater than the size of {}",
+                    if (arr->size() != std::tuple_size_v<Tuple<Ts...>>)
+                        detail::throw_bad_cast("the size of JSON array differs from the size of {}",
                                                detail::type_name<Tuple<Ts...>>());
 
-                    // the elements after those of the JSON value are left value-initialized
                     using indices = std::make_index_sequence<std::tuple_size_v<Tuple<Ts...>>>;
                     auto it = arr->begin();
-                    const auto size = arr->size();
-                    [&result, &it, size]<std::size_t... N>(std::index_sequence<N...>) {
-                        ((N < size ? (void)(std::get<N>(result) = cast<std::tuple_element_t<N, Tuple<Ts...>>>(*(it++)))
-                                   : void()),
-                         ...);
+                    [&result, &it]<std::size_t... N>(std::index_sequence<N...>) {
+                        ((std::get<N>(result) = cast<std::tuple_element_t<N, Tuple<Ts...>>>(*(it++))), ...);
                     }(indices{});
 
                     return result;
@@ -14295,8 +14273,7 @@ namespace yyjson
             }
 
             // Reads the value at `cur_` into the tuple T as its caster reads it from a document: the members of an
-            // object or the values of an array into the elements in order, leaving those after them
-            // value-initialized.
+            // object or the values of an array into the elements in order, as many as T has.
             template <typename T>
             T read_tuple()
             {
@@ -14339,6 +14316,7 @@ namespace yyjson
                                 }
                             });
                         });
+                        if (i != size) fail();
                         return result;
                     }
                     else if constexpr (tuple_from_object<T>)
@@ -14353,9 +14331,10 @@ namespace yyjson
                         const char* const open = cur_;
                         ++cur_;
                         skip_ws();
+                        auto i = std::size_t{0};
                         if (*cur_ != ']')
                         {
-                            for (auto i = std::size_t{0};; ++i)
+                            for (;; ++i)
                             {
                                 if (i == size) fail();
                                 each(i, [&]<typename E>(auto& e, std::type_identity<E>) {
@@ -14373,9 +14352,12 @@ namespace yyjson
                                 }
                                 if (*cur_ != ']') [[unlikely]]
                                     fail();
+                                ++i;
                                 break;
                             }
                         }
+                        if (i != size) [[unlikely]]
+                            fail();
                         close(open);
                         return result;
                     }
@@ -14763,8 +14745,15 @@ namespace yyjson
                     indent = skip_ws_measured();
                 else
                     skip_ws();
+                // a range of fixed size, such as `std::array`, is assigned element by element and must be filled
+                constexpr auto fixed_size = !yyjson::detail::back_insertable<T> &&
+                                            !yyjson::detail::insertable_set<T> && !yyjson::detail::pair_array_map<T>;
                 if (*cur_ == ']')
                 {
+                    if constexpr (fixed_size)
+                    {
+                        if (std::ranges::size(result) != 0) fail();
+                    }
                     close(open);
                     return;
                 }
@@ -14879,6 +14868,10 @@ namespace yyjson
                     }
                     if (*cur_ != ']') [[unlikely]]
                         fail();
+                    if constexpr (fixed_size)
+                    {
+                        if (count != std::ranges::size(result)) fail();
+                    }
                     close(open);
                     return;
                 }
@@ -15341,8 +15334,9 @@ namespace yyjson
                         break;
                     }
                 }
+                if (i != size) [[unlikely]]
+                    fail();
                 close(open);
-                for (; i < size; ++i) yyjson::detail::value_initialize(field[i]);
             }
 
             // Assigns the value at `cur_` to a field of a struct as `assign_reflected_field` assigns it from a

@@ -149,10 +149,9 @@ TEST(Reader, RangesOfFixedSizeRanges)
     using namespace yyjson;
     using points = std::vector<std::array<double, 2>>;
 
-    // the elements are filled where they are stored, and a short JSON array leaves the rest value-initialized
+    // the elements are filled where they are stored, and a JSON array of another length throws
     EXPECT_EQ(read("[[1,2.5],[3,4]]").cast<points>(), (points{{1.0, 2.5}, {3.0, 4.0}}));
-    EXPECT_EQ(read("[[1],[]]").cast<points>(), (points{{1.0, 0.0}, {0.0, 0.0}}));
-    for (const auto* json : {"[[1,2,3]]", "[1]", "[null]", R"([[1,"x"]])", R"([{"a":1}])"})
+    for (const auto* json : {"[[1,2,3]]", "[[1],[]]", "[[]]", "[1]", "[null]", R"([[1,"x"]])", R"([{"a":1}])"})
         EXPECT_THROW((void)read(json).cast<points>(), bad_cast) << json;
     for (const auto* json : {"[]", "[[1,2.5],[3,4]]", "[[1],[]]", "[[1,2,3]]", "[1]", "[null]", R"([[1,"x"]])"})
     {
@@ -161,10 +160,12 @@ TEST(Reader, RangesOfFixedSizeRanges)
         expect_direct_read<std::vector<std::array<std::array<int, 2>, 2>>>(json);
     }
     EXPECT_TRUE(expect_direct_read<points>("[[1,2.5],[3,4]]"));
-    EXPECT_TRUE(expect_direct_read<points>("[[1],[]]"));
-    EXPECT_TRUE((expect_direct_read<std::list<std::array<int, 3>>>("[[1,2,3],[4]]")));
+    EXPECT_TRUE((expect_direct_read<std::list<std::array<int, 3>>>("[[1,2,3],[4,5,6]]")));
     using nested = std::vector<std::array<std::array<int, 2>, 2>>;
-    EXPECT_EQ(read("[[[1,2],[3]]]").cast<nested>(), (nested{{{{1, 2}, {3, 0}}}}));
+    EXPECT_EQ(read("[[[1,2],[3,4]]]").cast<nested>(), (nested{{{{1, 2}, {3, 4}}}}));
+    EXPECT_THROW((void)read("[[[1,2],[3]]]").cast<nested>(), bad_cast);
+    EXPECT_THROW((void)yyjson::read<nested>("[[[1,2],[3]]]"), bad_cast);
+    EXPECT_THROW((void)yyjson::read<nested>("[[[1,2]]]"), bad_cast);
 
     // the size of the type decides how the elements are read, not the length of the JSON array
     auto long_json = std::string("[[");
@@ -195,7 +196,9 @@ TEST(Reader, RangesOfFixedSizeRanges)
     for (const auto* json : {R"({"a":"b","c":"d"})", R"([["a","b"],["c","d"]])", R"({"a":1})", R"({"a\n":"\u00e9"})"})
         expect_direct_read<string_pairs>(json);
     EXPECT_TRUE(expect_direct_read<string_pairs>(R"({"a\n":"\u00e9","c":"d"})"));
-    EXPECT_TRUE(expect_direct_read<string_pairs>(R"([["a","b"],["c"]])"));
+    EXPECT_TRUE(expect_direct_read<string_pairs>(R"([["a","b"],["c","d"]])"));
+    EXPECT_THROW((void)yyjson::read<string_pairs>(R"([["a","b"],["c"]])"), bad_cast);
+    expect_direct_read<string_pairs>(R"([["a","b"],["c"]])");
     EXPECT_TRUE((expect_direct_read<std::set<std::array<std::string, 2>>>(R"({"c":"d","a":"b"})")));
 }
 
@@ -373,35 +376,49 @@ TEST(Reader, VariantSkipsAlternatives)
     EXPECT_THROW((void)read("1").cast<array_or_map>(), bad_cast);
 }
 
-TEST(Reader, TupleLongerThanJson)
+TEST(Reader, FixedSizeShorterJson)
 {
     using namespace yyjson;
 
-    // the elements that the JSON value does not have are value-initialized, as those of a `std::array` are,
-    // instead of being read from the values that follow it
-    const auto doc = read(R"({"t":[1],"u":[],"v":{"a":1},"y":5,"z":"s"})");
+    // a JSON array or object with fewer values than a tuple, a pair or a `std::array` has elements throws, as one
+    // with more does, instead of leaving the rest value-initialized
+    const auto doc = read(R"({"t":[1],"u":[],"v":{"a":1},"w":{},"y":5})");
     const auto obj = *doc.as_object();
-    EXPECT_EQ((cast<std::pair<int, int>>(obj["t"])), (std::pair{1, 0}));
-    EXPECT_EQ((cast<std::tuple<int, int, std::string>>(obj["t"])), (std::tuple{1, 0, std::string()}));
-    EXPECT_EQ((cast<std::tuple<double, std::string>>(obj["u"])), (std::tuple{0.0, std::string()}));
     using pairs = std::tuple<std::pair<std::string, int>, std::pair<std::string, int>>;
-    EXPECT_EQ((cast<pairs>(obj["v"])), (pairs{{"a", 1}, {}}));
-    EXPECT_EQ((cast<std::array<int, 2>>(obj["t"])), (std::array{1, 0}));
+    EXPECT_THROW((void)(cast<std::pair<int, int>>(obj["t"])), bad_cast);
+    EXPECT_THROW((void)(cast<std::tuple<int, int, std::string>>(obj["t"])), bad_cast);
+    EXPECT_THROW((void)(cast<std::tuple<double, std::string>>(obj["u"])), bad_cast);
+    EXPECT_THROW((void)(cast<pairs>(obj["v"])), bad_cast);
+    EXPECT_THROW((void)(cast<std::tuple<std::pair<std::string, int>>>(obj["w"])), bad_cast);
+    EXPECT_THROW((void)(cast<std::array<int, 2>>(obj["t"])), bad_cast);
+    EXPECT_THROW((void)(cast<std::array<int, 1>>(obj["u"])), bad_cast);
+    EXPECT_EQ((cast<std::tuple<>>(obj["u"])), std::tuple<>());
+    EXPECT_EQ((cast<std::array<int, 0>>(obj["u"])), (std::array<int, 0>{}));
+    EXPECT_EQ((cast<std::tuple<>>(obj["w"])), std::tuple<>());
+    EXPECT_EQ((cast<std::tuple<int>>(obj["t"])), std::tuple{1});
 
     struct Fields
     {
         std::pair<int, int> t;
-        std::tuple<double, std::string> u;
-        pairs v;
         int y;
     };
-    const auto fields = doc.cast<Fields>();
-    EXPECT_EQ(fields.t, (std::pair{1, 0}));
-    EXPECT_EQ(fields.v, (pairs{{"a", 1}, {}}));
-    EXPECT_EQ(fields.y, 5);
-    const auto direct = yyjson::read<Fields>(R"({"t":[1],"u":[],"v":{"a":1},"y":5,"z":"s"})");
-    EXPECT_EQ(direct.t, (std::pair{1, 0}));
-    EXPECT_EQ(direct.v, (pairs{{"a", 1}, {}}));
+    for (const auto* json : {R"({"t":[1],"y":5})", R"({"t":[],"y":5})", R"({"t":[1,2,3],"y":5})"})
+    {
+        EXPECT_THROW((void)read(json).cast<Fields>(), bad_cast) << json;
+        EXPECT_THROW((void)yyjson::read<Fields>(json), bad_cast) << json;
+        expect_direct_read<Fields>(json);
+    }
+    for (const auto* json : {"[1]", "[]", R"({"a":1})", "{}"})
+    {
+        EXPECT_THROW((void)(yyjson::read<std::pair<int, int>>(json)), bad_cast) << json;
+        EXPECT_THROW((void)(yyjson::read<std::array<int, 2>>(json)), bad_cast) << json;
+        EXPECT_THROW((void)yyjson::read<pairs>(json), bad_cast) << json;
+        expect_direct_read<std::pair<int, int>>(json);
+        expect_direct_read<std::array<int, 2>>(json);
+        expect_direct_read<pairs>(json);
+    }
+    EXPECT_TRUE(expect_direct_read<Fields>(R"({"t":[1,2],"y":5})"));
+    EXPECT_TRUE((expect_direct_read<std::vector<std::array<int, 2>>>("[[1,2],[3,4]]")));
 }
 
 namespace
@@ -720,8 +737,8 @@ TEST(DirectReader, Tuples)
                          std::tuple<std::variant<int, std::string>, std::shared_ptr<int>>,
                          std::pair<std::tuple<int, int>, std::vector<std::pair<int, int>>>>(values);
 
-    for (const auto* json : {R"({"a":[1,"x"],"b":[["p",1.5],["q",2]],"c":{"k":3}})", R"({"a":[2],"b":[],"c":null})",
-                             R"({"c":{"k":1},"c":{"j":2},"a":[],"a":[3,"y"]})"})
+    for (const auto* json : {R"({"a":[1,"x"],"b":[["p",1.5],["q",2]],"c":{"k":3}})", R"({"a":[2,""],"b":[],"c":null})",
+                             R"({"c":{"k":1},"c":{"j":2},"a":[0,""],"a":[3,"y"]})"})
     {
         EXPECT_TRUE(expect_direct_read<WithTuples>(json)) << json;
     }
