@@ -171,29 +171,32 @@ TEST(TaggedVariant, Internal)
     }
     EXPECT_THROW((void)read<TagShape>(R"({"type":"circle","r":1)"), read_error);
 
-    // with it, such an object and null are `std::monostate`, and an alternative may have a field of the tag
-    for (const auto* json : {R"([null,{},{"type":"zzz","r":1},{"type":1},{"type":"labeled","n":2},)"
-                             R"({"n":3,"type":"labeled"},{"side":4,"type":"square"},{"type":"map","a":"b"},)"
-                             R"({"type":"circle","r":2}])",
+    // with it, null is `std::monostate`, and an alternative may have a field of the tag
+    for (const auto* json : {R"([null,{"type":"labeled","n":2},{"n":3,"type":"labeled"},{"side":4,"type":"square"},)"
+                             R"({"type":"map","a":"b"},{"type":"circle","r":2}])",
                              R"([{"type":"labeled"}])"})
         EXPECT_TRUE(expect_direct_read<std::vector<TagShapeOrNone>>(json)) << json;
+    // but an object still has to name an alternative
+    for (const auto* json : {R"({})", R"({"r":1})", R"({"type":"zzz","r":1})", R"({"type":1})", R"({"type":null})"})
+    {
+        EXPECT_THROW((void)read<TagShapeOrNone>(json), bad_cast) << json;
+        EXPECT_THROW((void)read(json).cast<TagShapeOrNone>(), bad_cast) << json;
+        expect_direct_read<std::vector<TagShapeOrNone>>(std::format("[{}]", json));
+    }
     const auto some = read<std::vector<TagShapeOrNone>>(
-        R"([null,{"type":"zzz"},{"n":2,"type":"labeled"},{"type":"square","side":4},{"a":"b","type":"map"}])");
-    EXPECT_EQ(some, (std::vector<TagShapeOrNone>{std::monostate(), std::monostate(), TagLabeled{"labeled", 2},
-                                                 TagSquare{4},
+        R"([null,{"n":2,"type":"labeled"},{"type":"square","side":4},{"a":"b","type":"map"}])");
+    EXPECT_EQ(some, (std::vector<TagShapeOrNone>{std::monostate(), TagLabeled{"labeled", 2}, TagSquare{4},
                                                  std::map<std::string, std::string>{{"a", "b"}, {"type", "map"}}}));
 
     // the tag is written first in the object of a struct, and `std::monostate` is written as null
     EXPECT_EQ(write(shapes), R"([{"type":"rect","w":2,"h":3},{"type":"circle","r":1.5}])");
-    EXPECT_EQ(write(some), R"([null,null,{"type":"labeled","n":2},{"type":"square","side":4},{"a":"b","type":"map"}])");
+    EXPECT_EQ(write(some), R"([null,{"type":"labeled","n":2},{"type":"square","side":4},{"a":"b","type":"map"}])");
     expect_direct_write(shapes);
     expect_direct_write(some);
     expect_direct_write(TagShape(TagCircle{1}));
     expect_direct_write(std::vector<TagShapeOrNone>{std::map<std::string, std::string>{{"b", "c"}}});
     EXPECT_EQ(write(TagShapeOrNone(std::map<std::string, std::string>{{"b", "c"}})), R"({"type":"map","b":"c"})");
-    EXPECT_EQ(read<std::vector<TagShapeOrNone>>(write(some)), (std::vector<TagShapeOrNone>{
-                                                                  std::monostate(), std::monostate(), some[2], some[3],
-                                                                  some[4]}));
+    EXPECT_EQ(read<std::vector<TagShapeOrNone>>(write(some)), some);
 
     // a field of the tag must name the alternative
     for (const auto& wrong : {TagShapeOrNone(TagLabeled{"rect", 1}), TagShapeOrNone(TagLabeled{}),
@@ -210,7 +213,34 @@ TEST(TaggedVariant, Internal)
     EXPECT_EQ(read(write(nested)).cast<TagNested>(), nested);
     expect_direct_write(nested);
     EXPECT_TRUE(expect_direct_read<TagNested>(write(nested)));
-    EXPECT_TRUE(expect_direct_read<TagNested>(R"({"shapes":[{"type":"zzz"}],"maybe":null})"));
+    EXPECT_TRUE(expect_direct_read<TagNested>(R"({"shapes":[null,{"type":"circle"}],"maybe":null})"));
+    EXPECT_THROW((void)read<TagNested>(R"({"shapes":[{"type":"zzz"}]})"), bad_cast);
+    expect_direct_read<TagNested>(R"({"shapes":[{"type":"zzz"}]})");
+
+    // `merge_into` merges an object without the tag or with the tag of the alternative into it, and reads an
+    // object with another tag as that alternative
+    const auto rect = TagShapeOrNone(TagRect{1, 2});
+    auto merged_directly = false;
+    EXPECT_EQ(expect_merge_into(rect, R"({"h":5})", &merged_directly), R"({"type":"rect","w":1,"h":5})");
+    EXPECT_TRUE(merged_directly);
+    EXPECT_EQ(expect_merge_into(rect, R"({"h":5,"type":"rect"})"), R"({"type":"rect","w":1,"h":5})");
+    EXPECT_EQ(expect_merge_into(rect, R"({"type":"circle","r":3})"), R"({"type":"circle","r":3.0})");
+    EXPECT_EQ(expect_merge_into(rect, R"({"type":"labeled"})"), R"({"type":"labeled","n":0})");
+    EXPECT_EQ(expect_merge_into(rect, "null"), "null");
+    EXPECT_EQ(expect_merge_into(TagShapeOrNone(std::map<std::string, std::string>{{"a", "b"}}), R"({"c":"d"})"),
+              R"({"type":"map","a":"b","c":"d"})");
+    for (const auto* json : {R"({"type":"zzz"})", R"({"type":1,"h":5})", R"({"h":"x"})"})
+        EXPECT_TRUE(expect_merge_into(rect, json).starts_with("bad cast")) << json;
+    // `std::monostate` has nothing to merge into
+    EXPECT_TRUE(expect_merge_into(TagShapeOrNone(), R"({"r":1})").starts_with("bad cast"));
+    EXPECT_EQ(expect_merge_into(TagShapeOrNone(), R"({"r":1,"type":"circle"})"), R"({"type":"circle","r":1.0})");
+    // a field and an element of a vector are merged as well, and `read_into` reads anew
+    const auto nested_merged = expect_merge_into(nested, R"({"maybe":{"h":7},"shapes":[{"type":"circle"}]})");
+    EXPECT_EQ(nested_merged, write(TagNested{{TagCircle{}}, TagRect{3, 7}, {}}));
+    expect_read_into(nested, R"({"maybe":{"h":7}})");
+    auto copy = nested;
+    EXPECT_THROW(read_into(R"({"maybe":{"h":7}})", copy), bad_cast);
+    EXPECT_TRUE(expect_merge_into(TagNested(), R"({"maybe":{"h":7}})").starts_with("bad cast"));
 }
 
 TEST(TaggedVariant, Adjacent)
@@ -225,15 +255,18 @@ TEST(TaggedVariant, Adjacent)
         EXPECT_TRUE(expect_direct_read<std::vector<TagEnvelope>>(json)) << json;
     EXPECT_EQ(read<TagEnvelope>(R"({"data":{"r":2},"kind":"circle"})"), (TagEnvelope{"circle", TagCircle{2}}));
     EXPECT_EQ(read(R"({"data":{"r":2},"kind":"circle"})").cast<TagEnvelope>(), (TagEnvelope{"circle", TagCircle{2}}));
+    // a tag without the variant must name the alternative that the variant holds in `TagEnvelope()`
     for (const auto* json : {R"({"data":{"r":2}})", R"({"data":{"r":2},"kind":"square"})",
-                             R"({"data":5,"kind":"rect"})", R"({"data":5,"kind":5})"})
+                             R"({"data":5,"kind":"rect"})", R"({"data":5,"kind":5})", R"({"kind":"num"})"})
     {
         EXPECT_THROW((void)read<TagEnvelope>(json), bad_cast) << json;
         EXPECT_THROW((void)read(json).cast<TagEnvelope>(), bad_cast) << json;
         expect_direct_read<std::vector<TagEnvelope>>(std::format("[{}]", json));
     }
-    // an object without the variant leaves it as it is
-    EXPECT_EQ(read<TagEnvelope>(R"({"kind":"num"})"), (TagEnvelope{"num", TagCircle{}}));
+    EXPECT_TRUE(expect_direct_read<TagEnvelope>(R"({"kind":"circle"})"));
+    EXPECT_EQ(read<TagEnvelope>(R"({"kind":"circle"})"), (TagEnvelope{"circle", TagCircle{}}));
+    EXPECT_EQ(read<TagEnvelope>(R"({})"), TagEnvelope());
+    EXPECT_EQ(read(R"({})").cast<TagEnvelope>(), TagEnvelope());
 
     // the struct without a field of the tag has it written before the variant, unless it holds `std::monostate`
     const auto bares = std::vector<TagBare>{{1, TagCircle{2}, 3}, {2, "text", std::nullopt}, {3, {}, 4}};
@@ -244,9 +277,18 @@ TEST(TaggedVariant, Adjacent)
     expect_direct_write(bares);
     expect_direct_write(bares[1]);
     EXPECT_TRUE(expect_direct_read<std::vector<TagBare>>(write(bares)));
-    EXPECT_TRUE(
-        expect_direct_read<std::vector<TagBare>>(R"([{"body":"x","t":"text"},{"body":1},{"body":"x","t":"no"}])"));
-    EXPECT_EQ(read<TagBare>(R"({"body":"x","t":"no"})").body.index(), 0U);
+    EXPECT_TRUE(expect_direct_read<std::vector<TagBare>>(R"([{"body":"x","t":"text"},{"body":null},{"id":2}])"));
+    EXPECT_EQ(read<TagBare>(R"({"body":null})").body.index(), 0U);
+    // a value other than null needs its tag, and a tag needs its value unless it names `std::monostate`, which no
+    // tag does
+    for (const auto* json :
+         {R"({"body":1})", R"({"body":"x"})", R"({"body":"x","t":"no"})", R"({"body":"x","t":5})",
+          R"({"body":null,"t":"circle"})", R"({"t":"circle"})", R"({"t":"no"})", R"({"t":"circle","id":1})"})
+    {
+        EXPECT_THROW((void)read<TagBare>(json), bad_cast) << json;
+        EXPECT_THROW((void)read(json).cast<TagBare>(), bad_cast) << json;
+        expect_direct_read<std::vector<TagBare>>(std::format("[{}]", json));
+    }
 
     // a field of the tag must name the alternative
     const auto envelopes = std::vector<TagEnvelope>{{"circle", TagCircle{1}}, {"num", 2}};
@@ -292,7 +334,7 @@ TEST(TaggedVariant, Adjacent)
     const auto pending = std::vector<std::pair<const char*, TagVisitable>>{
         {R"({"data":{"w":1,"h":2},"body":"x","id":1,"t":"text","kind":"rect"})", {"x", TagRect{1, 2}, 1}},
         {R"({"body":{"r":1},"data":3,"t":"circle","kind":"num","t":"text","kind":"rect"})", {TagCircle{1}, 3, 0}},
-        {R"({"kind":"num","data":3,"kind":"rect","body":"x"})", {{}, 3, 0}},
+        {R"({"kind":"num","data":3,"kind":"rect","body":null})", {{}, 3, 0}},
         {"{\n \"data\" : 7 , \"body\" : \"x\" ,\n \"t\" : \"text\" , \"kind\" : \"num\" , \"id\" : 2 }", {"x", 7, 2}}};
     for (const auto& [json, expected] : pending)
     {
@@ -332,17 +374,48 @@ TEST(TaggedVariant, Adjacent)
     EXPECT_EQ(read<TagEnumEnvelope>(R"({"value":{"w":3,"h":4},"color":"blue"})"),
               (TagEnumEnvelope{TagRect{3, 4}, Color::blue}));
 
-    // read over an old value and merged with the tag in the same object
-    expect_read_into(bares[0], R"({"body":"x","t":"text"})");
-    expect_read_into(bares[0], R"({"body":{"r":5}})");
+    // `read_into` reads as `read<T>` does, whatever the variant holds
+    for (const auto* json :
+         {R"({"body":"x","t":"text"})", R"({"body":{"r":5}})", R"({"t":"circle"})", R"({"body":{"r":5},"t":"circle"})"})
+        expect_read_into(bares[0], json);
+    auto bare = bares[0];
+    EXPECT_THROW(read_into(R"({"t":"circle"})", bare), bad_cast);
     expect_read_into(visitables[0], R"({"data":{"w":1,"h":2},"kind":"rect"})");
+    // `merge_into` merges a value without its tag or with the tag of the alternative into it, reads a value with
+    // another tag as that alternative, and takes a tag without its value if it names the alternative
     auto merged_directly = false;
     EXPECT_EQ(expect_merge_into(bares[0], R"({"body":"x","t":"text"})", &merged_directly),
               R"({"id":1,"t":"text","body":"x","extra":3})");
     EXPECT_TRUE(merged_directly);
-    EXPECT_EQ(expect_merge_into(bares[0], R"({"body":{"r":5}})"), R"({"id":1,"body":null,"extra":3})");
+    for (const auto* json :
+         {R"({"body":{"r":5}})", R"({"t":"circle","body":{"r":5}})", R"({"body":{"r":5},"t":"circle"})"})
+    {
+        merged_directly = false;
+        EXPECT_EQ(expect_merge_into(bares[0], json, &merged_directly),
+                  R"({"id":1,"t":"circle","body":{"r":5.0},"extra":3})")
+            << json;
+        EXPECT_TRUE(merged_directly) << json;
+    }
     EXPECT_EQ(expect_merge_into(bares[0], R"({"body":null})"), R"({"id":1,"body":null,"extra":3})");
+    EXPECT_EQ(expect_merge_into(bares[0], R"({"body":null,"t":"text"})"), R"({"id":1,"body":null,"extra":3})");
     EXPECT_EQ(expect_merge_into(bares[0], R"({"id":4})"), R"({"id":4,"t":"circle","body":{"r":2.0},"extra":3})");
+    EXPECT_EQ(expect_merge_into(bares[0], R"({"t":"circle","id":4})"),
+              R"({"id":4,"t":"circle","body":{"r":2.0},"extra":3})");
+    for (const auto* json :
+         {R"({"t":"text"})", R"({"body":"y"})", R"({"body":{"r":5},"t":"no"})", R"({"body":{"r":5},"t":1})"})
+        EXPECT_TRUE(expect_merge_into(bares[0], json).starts_with("bad cast")) << json;
+    EXPECT_TRUE(expect_merge_into(bares[2], R"({"body":{"r":1}})").starts_with("bad cast"));
+    EXPECT_EQ(expect_merge_into(bares[2], R"({"body":{"r":1},"t":"circle"})"),
+              R"({"id":3,"t":"circle","body":{"r":1.0},"extra":4})");
+    // the alternative keeps the members that the object does not have, also with a field of the tag
+    const auto envelope = TagEnvelope{"rect", TagRect{1, 2}};
+    for (const auto* json :
+         {R"({"data":{"h":5}})", R"({"kind":"rect","data":{"h":5}})", R"({"data":{"h":5},"kind":"rect"})"})
+        EXPECT_EQ(expect_merge_into(envelope, json), R"({"kind":"rect","data":{"w":1,"h":5}})") << json;
+    EXPECT_EQ(expect_merge_into(envelope, R"({"data":{"r":1},"kind":"circle"})"),
+              R"({"kind":"circle","data":{"r":1.0}})");
+    EXPECT_EQ(expect_merge_into(envelope, R"({"kind":"rect"})"), R"({"kind":"rect","data":{"w":1,"h":2}})");
+    EXPECT_TRUE(expect_merge_into(envelope, R"({"kind":"circle"})").starts_with("bad cast"));
 
     // `adjacent_tag` tags a field, so the variant type is untagged elsewhere and tagged per field
     EXPECT_EQ(read<TagBody>(R"({"r":1})"), TagBody(TagCircle{1}));
