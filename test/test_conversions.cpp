@@ -6,27 +6,46 @@ TEST(Reader, RealToIntegers)
 {
     using namespace yyjson;
 
-    // a real number is truncated toward zero into an integer, and fails if the result does not fit
-    EXPECT_EQ(read("1.5").cast<int>(), 1);
-    EXPECT_EQ(read("-1.5").cast<int>(), -1);
-    EXPECT_EQ(read("-0.5").cast<unsigned>(), 0U);
-    EXPECT_EQ(read("255.9").cast<std::uint8_t>(), 255);
-    EXPECT_EQ(read("-128.9").cast<std::int8_t>(), -128);
+    // a real number is read into an integer only if it is an integer that fits, which is checked before the
+    // conversion
+    for (const auto* json : {"1.0", "1e2", "-0.0", "2.5e1"})
+    {
+        EXPECT_EQ(read(json).cast<int>(), static_cast<int>(std::strtod(json, nullptr))) << json;
+        EXPECT_EQ(read<int>(json), static_cast<int>(std::strtod(json, nullptr))) << json;
+    }
+    EXPECT_EQ(read("255.0").cast<std::uint8_t>(), 255);
+    EXPECT_EQ(read("-128.0").cast<std::int8_t>(), -128);
     EXPECT_EQ(read("-9223372036854775808.0").cast<std::int64_t>(), std::numeric_limits<std::int64_t>::min());
     EXPECT_EQ(read("1.8446744073709550e19").cast<std::uint64_t>(), 18446744073709549568ULL);
+    EXPECT_EQ(read<std::uint64_t>("1e19"), 10000000000000000000ULL);
+    EXPECT_EQ(read("-1.0").cast<std::optional<int>>(), -1);
+    EXPECT_EQ(read<std::vector<int>>("[1.0,-2e0,3]"), (std::vector<int>{1, -2, 3}));
+    for (const auto* json : {"1.5", "-1.5", "-0.5", "255.9", "1e-1", "1e300", "-1e300"})
+    {
+        EXPECT_THROW((void)read(json).cast<int>(), bad_cast) << json;
+        EXPECT_THROW((void)read<int>(json), bad_cast) << json;
+        EXPECT_THROW((void)read(json).cast<std::optional<long>>(), bad_cast) << json;
+        EXPECT_THROW((void)read<std::optional<long>>(json), bad_cast) << json;
+    }
     EXPECT_THROW((void)read("256.0").cast<std::uint8_t>(), bad_cast);
     EXPECT_THROW((void)read("-1.0").cast<std::uint8_t>(), bad_cast);
     EXPECT_THROW((void)read("-129.0").cast<std::int8_t>(), bad_cast);
     EXPECT_THROW((void)read("9223372036854775808.0").cast<std::int64_t>(), bad_cast);
     EXPECT_THROW((void)read("18446744073709551616.0").cast<std::uint64_t>(), bad_cast);
-    EXPECT_THROW((void)read("1e300").cast<int>(), bad_cast);
+    EXPECT_THROW((void)read<std::uint64_t>("2e19"), bad_cast);
     EXPECT_THROW((void)read("NaN", ReadFlag::AllowInfAndNan).cast<int>(), bad_cast);
     EXPECT_THROW((void)read("-Infinity", ReadFlag::AllowInfAndNan).cast<long>(), bad_cast);
-    EXPECT_EQ(read("-1.5").cast<std::optional<int>>(), -1);
-    EXPECT_THROW((void)read("1e300").cast<std::optional<int>>(), bad_cast);
-    EXPECT_EQ(read<std::vector<int>>("[1.5,-2.5]"), (std::vector<int>{1, -2}));
-    EXPECT_THROW((void)read<std::vector<std::uint8_t>>("[1.5,-2.5]"), bad_cast);
+    EXPECT_THROW((void)read<std::vector<int>>("[1.0,-2.5]"), bad_cast);
     EXPECT_THROW((void)read<std::uint16_t>("1e300"), bad_cast);
+    try
+    {
+        (void)read<int>("1.5");
+        ADD_FAILURE();
+    }
+    catch (const bad_cast& e)
+    {
+        EXPECT_STREQ(e.what(), "int is not constructible from JSON number 1.5, which is not an integer");
+    }
 
     // a number is not the size of a container
     EXPECT_THROW((void)read("2").cast<std::vector<int>>(), bad_cast);
@@ -147,6 +166,38 @@ TEST(Reader, ValueKinds)
     }
     EXPECT_EQ((read("1").cast<std::variant<bool, int>>().index()), 1U);
     EXPECT_EQ(read("null").cast<std::optional<bool>>(), std::nullopt);
+
+    // nor is a number read from true and false, nor a class that is constructed from a number through `bool`, or
+    // from `bool` through a number
+    struct Flag
+    {
+        bool b;
+        Flag(bool v) : b(v) {}
+    };
+    struct Count
+    {
+        int n;
+        Count(int v) : n(v) {}
+    };
+    for (const auto* json : {"true", "false"})
+    {
+        EXPECT_THROW((void)read(json).cast<int>(), bad_cast) << json;
+        EXPECT_THROW((void)read<double>(json), bad_cast) << json;
+        EXPECT_THROW((void)read(json).cast<std::optional<float>>(), bad_cast) << json;
+        EXPECT_THROW((void)read<Count>(json), bad_cast) << json;
+        EXPECT_THROW((void)read(json).cast<std::chrono::seconds>(), bad_cast) << json;
+        EXPECT_THROW((void)read<std::complex<double>>(json), bad_cast) << json;
+        expect_direct_read<std::vector<std::int64_t>>("[" + std::string(json) + "]");
+    }
+    EXPECT_TRUE(read<Flag>("true").b);
+    EXPECT_FALSE(read("false").cast<Flag>().b);
+    EXPECT_THROW((void)read<Flag>("1"), bad_cast);
+    EXPECT_THROW((void)read("0.5").cast<Flag>(), bad_cast);
+    EXPECT_EQ(read<Count>("2").n, 2);
+    EXPECT_EQ(read("3").cast<std::chrono::seconds>(), std::chrono::seconds(3));
+    EXPECT_EQ(read<std::complex<double>>("1.5"), std::complex<double>(1.5));
+    EXPECT_EQ((read<std::variant<int, bool>>("true")), (std::variant<int, bool>(true)));
+    EXPECT_EQ((read("true").cast<std::variant<double, bool>>().index()), 1U);
 
     // a string is read from a JSON string only, while another range of characters is read from an array
     EXPECT_THROW((void)read("[104,105]").cast<std::string>(), bad_cast);
@@ -357,12 +408,16 @@ void expect_variants_as_trying_all(std::string_view json, yyjson::ReadFlag flag 
     for (const auto& e : arr)
     {
         const auto copy = yyjson::value(e);
+        const auto element = "[" + std::string(e.write(yyjson::WriteFlag::AllowInfAndNan)) + "]";
         (
             [&] {
                 EXPECT_EQ(cast_variant<Vs>(e), cast_variant_trying_all<Vs>(e))
                     << yyjson::detail::type_name<Vs>() << " from " << e.write();
                 EXPECT_EQ(cast_variant<Vs>(copy), cast_variant_trying_all<Vs>(copy))
                     << yyjson::detail::type_name<Vs>() << " from a copy of " << e.write();
+                // the direct reader reads text without the flags that change the JSON values
+                if constexpr (!yyjson::detail::reads_borrowed_strings<Vs>)
+                    if (flag == yyjson::ReadFlag::NoFlag) expect_direct_read<std::vector<Vs>>(element);
             }(),
             ...);
     }
@@ -376,9 +431,10 @@ TEST(Reader, VariantSkipsAlternatives)
     using namespace yyjson::detail;
 
     // the kinds of JSON values from which a type may be cast
-    constexpr auto numbers = json_kind_uint | json_kind_sint | json_kind_real;
-    static_assert(accepted_json_kinds<int, const_value_ref>() == (numbers | json_kind_bool));
-    static_assert(accepted_json_kinds<const double, const_value_ref>() == (numbers | json_kind_bool));
+    // an integer reads a real only if it is an integer, and neither reads true or false
+    static_assert(accepted_json_kinds<int, const_value_ref>() ==
+                  (json_kind_uint | json_kind_sint | json_kind_integral_real));
+    static_assert(accepted_json_kinds<const double, const_value_ref>() == json_kind_number);
     static_assert(accepted_json_kinds<std::nullptr_t, const_value_ref>() == json_kind_null);
     static_assert(accepted_json_kinds<std::array<int, 2>, const_value_ref>() == json_kind_array);
     static_assert(accepted_json_kinds<std::map<std::string, int>, const_value_ref>() == json_kind_object);
@@ -393,24 +449,24 @@ TEST(Reader, VariantSkipsAlternatives)
 
     // the alternative that a variant holds is the same as when every alternative is tried in order
     constexpr auto values = std::string_view(
-        R"([null,true,false,0,1,-1,300,-300,1.5,-2.5,1e300,18446744073709551615,-9223372036854775808,)"
+        R"([null,true,false,0,1,-1,300,-300,1.5,-2.5,2.0,-3e2,1e300,18446744073709551615,-9223372036854775808,)"
         R"("","s","1",[],[1],[1,2],[1.5,"a"],["a","b"],[[1,2]],{},{"a":1},{"x":1,"y":2},{"a":1,"b":2.0,"c":"x"}])");
     expect_variants_as_trying_all<
         std::variant<int, double>, std::variant<double, int>, std::variant<bool, int>,
         std::variant<std::uint8_t, std::string>, std::variant<std::monostate, int, std::string>,
         std::variant<std::array<int, 2>, double>, std::variant<std::optional<int>, std::string>,
         std::variant<std::optional<std::array<int, 2>>, std::array<double, 3>>,
-        std::variant<std::shared_ptr<int>, std::vector<std::string>>,
-        std::variant<ReadRecord, int>,
+        std::variant<std::shared_ptr<int>, std::vector<std::string>>, std::variant<ReadRecord, int>,
         std::variant<ReadPoint, int, std::vector<double>>,
         std::variant<std::variant<int, std::string>, std::vector<std::variant<double, std::string>>>,
         std::variant<std::nullptr_t, std::string_view, float>,
-        std::variant<std::array<int, 2>, std::map<std::string, int>, std::string_view>>(values);
+        std::variant<std::array<int, 2>, std::map<std::string, int>, std::string_view>,
+        std::variant<std::int8_t, std::uint64_t, double>, std::variant<int, std::optional<double>>>(values);
     expect_variants_as_trying_all<std::variant<std::vector<int>, std::string, double>,
                                   std::variant<std::nullptr_t, bool, std::string>>(values, ReadFlag::NumberAsRaw);
 
     using int_or_double = std::variant<std::array<int, 2>, int, double>;
-    EXPECT_EQ(read(R"([1.5])").cast<std::vector<int_or_double>>(), (std::vector<int_or_double>{1}));
+    EXPECT_EQ(read(R"([1.5, 2.0])").cast<std::vector<int_or_double>>(), (std::vector<int_or_double>{1.5, 2}));
     using array_or_map = std::variant<std::array<int, 2>, std::map<std::string, int>>;
     EXPECT_THROW((void)read("1").cast<array_or_map>(), bad_cast);
 }
@@ -508,10 +564,10 @@ TEST(DirectReader, Variants)
 #endif
 
     const auto values = std::vector<std::string>{
-        "null", "true", "false", "0", "1", "-1", "300", "-300", "1.5", "-2.5", "1e300", "18446744073709551615",
-        "-9223372036854775808", R"("")", R"("s")", R"("1")", "[]", "[1]", "[1,2]", R"([1.5,"a"])",
-        R"(["a","b"])", "[[1,2]]", "[1,2,", "{}", R"({"a":1})", R"({"x":1,"y":2})", R"({"a":1,"b":2.0,"c":"x"})",
-        R"({"i":"s"})", R"({"i":1,"k":"s"})", R"({"k":1})", "tru", R"("a)"};
+        "null", "true", "false", "0", "1", "-1", "300", "-300", "1.5", "-2.5", "2.0", "-3e2", "1e300",
+        "18446744073709551615", "-9223372036854775808", R"("")", R"("s")", R"("1")", "[]", "[1]", "[1,2]",
+        R"([1.5,"a"])", R"(["a","b"])", "[[1,2]]", "[1,2,", "{}", R"({"a":1})", R"({"x":1,"y":2})",
+        R"({"a":1,"b":2.0,"c":"x"})", R"({"i":"s"})", R"({"i":1,"k":"s"})", R"({"k":1})", "tru", R"("a)"};
     expect_direct_variants<
         std::variant<int, double>, std::variant<double, int>, std::variant<bool, int>,
         std::variant<std::uint8_t, std::string>, std::variant<std::monostate, int, std::string>,

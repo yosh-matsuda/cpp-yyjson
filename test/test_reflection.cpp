@@ -504,15 +504,15 @@ TEST(Reflection, Enums)
     EXPECT_TRUE(expect_direct_read<VisitableEnumFields>(R"({"c":"blue","v":["minus",-7]})"));
 
     // a name, or an integer that the underlying type holds, which is read as that type reads it from any number
-    EXPECT_EQ(written(yyjson::read<EnumFields>(R"({"c":1,"u":128,"w":-9223372036854775808,"f":2.9,"v":[2.0,-1]})")),
+    EXPECT_EQ(written(yyjson::read<EnumFields>(R"({"c":1,"u":128,"w":-9223372036854775808,"f":2e0,"v":[2.0,-1]})")),
               R"({"c":"green","u":"u_max","w":-9223372036854775808,"f":"b","v":["blue",-1],"m":{},)"
               R"("arr":["red","red"],"l":"b"})");
     for (const auto* json :
          {R"({"c":"green"})", R"({"c":"gr\u0065en"})", R"({"c":2})", R"({"c":-3})", R"({"c":1.5})", R"({"u":255})",
           R"({"u":"u_max"})", R"({"w":"big"})", R"({"w":1000})", R"({"w":18446744073709551615})", R"({"c":"Green"})",
           R"({"c":"purple"})", R"({"c":""})", R"({"c":true})", R"({"c":null})", R"({"c":[]})", R"({"c":{}})",
-          R"({"u":256})", R"({"u":-1})", R"({"u":-0.5})", R"({"u":256.0})", R"({"c":1e10})", R"({"f":"a"})",
-          R"({"v":["red",3,"x"]})", R"({"o":null})", R"({"o":"blue"})", R"({"m":{"y":"red","z":0}})",
+          R"({"u":256})", R"({"u":-1})", R"({"u":-0.5})", R"({"f":2.9})", R"({"u":256.0})", R"({"c":1e10})",
+          R"({"f":"a"})", R"({"v":["red",3,"x"]})", R"({"o":null})", R"({"o":"blue"})", R"({"m":{"y":"red","z":0}})",
           R"({"arr":["blue"]})", R"({"arr":["blue",1,2]})"})
     {
         expect_direct_read<EnumFields>(json);
@@ -528,7 +528,9 @@ TEST(Reflection, Enums)
     EXPECT_THROW((void)yyjson::read(R"({"u":-1})").cast<EnumFields>(), bad_cast);
     EXPECT_THROW((void)yyjson::read<std::vector<Color>>(R"([[]])"), bad_cast);
     EXPECT_THROW((void)yyjson::read(R"("purple")").cast<Color>(), bad_cast);
-    EXPECT_EQ(yyjson::read<EnumFields>(R"({"u":-0.5})").u, u_zero);
+    EXPECT_THROW((void)yyjson::read<EnumFields>(R"({"u":-0.5})"), bad_cast);
+    EXPECT_THROW((void)yyjson::read(R"({"f":2.9})").cast<EnumFields>(), bad_cast);
+    EXPECT_EQ(yyjson::read<EnumFields>(R"({"u":-0.0})").u, u_zero);
     auto t = fields;
     yyjson::read_into(R"({"c":"green","v":["red"]})", t);
     EXPECT_EQ(written(t), R"({"c":"green","u":"u_zero","w":"zero","f":"a","v":["red"],"m":{},"arr":["red","red"],)"

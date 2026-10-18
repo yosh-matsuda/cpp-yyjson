@@ -7229,20 +7229,50 @@ namespace yyjson
         template <typename T>
         concept accepts_any_type = std::is_class_v<T> && std::constructible_from<T, any_type_probe>;
 
-        // T is constructed from a JSON scalar given as Arg, which is not done when the result is not the value
-        // of the scalar: a container takes a number as its size and a struct as its first field, and C++
-        // converts numbers, pointers and null to `bool`, which is read from JSON true and false only.  MSVC
-        // checks the cast that T(Arg) is, which converts a `bool` to a scoped enumeration as well.
+        // MSVC checks the cast that T(Arg) is, which converts a `bool` to a scoped enumeration as well.
         template <typename T, typename Arg>
 #ifdef _MSC_VER
-        concept json_scalar_constructible =
-            (!std::ranges::range<T>) && (!json_aggregate<T>) && (!std::same_as<T, bool> || std::same_as<Arg, bool>) &&
-            (!accepts_any_type<T>) && (!std::is_enum_v<T>) && requires { T(std::declval<Arg>()); };
+        concept scalar_constructible = (!std::is_enum_v<T>) && requires { T(std::declval<Arg>()); };
 #else
-        concept json_scalar_constructible =
-            (!std::ranges::range<T>) && (!json_aggregate<T>) && (!std::same_as<T, bool> || std::same_as<Arg, bool>) &&
-            (!accepts_any_type<T>) && std::constructible_from<T, Arg>;
+        concept scalar_constructible = std::constructible_from<T, Arg>;
 #endif
+
+        // Convert only to `bool`, to an integer type other than `bool`, and to a floating-point type, so that a
+        // class is constructible from one of them only through a constructor that takes such a type.  C++
+        // converts numbers to `bool` and `bool` to numbers, which a constructor from Arg itself accepts.
+        struct bool_probe
+        {
+            template <std::same_as<bool> U>
+            operator U() const noexcept;
+        };
+        struct integer_probe
+        {
+            template <std::integral U>
+            requires (!std::same_as<U, bool>)
+            operator U() const noexcept;
+        };
+        struct floating_point_probe
+        {
+            template <std::floating_point U>
+            operator U() const noexcept;
+        };
+
+        // A class constructible from `bool` but not from a number, which is read from JSON true and false only.
+        template <typename T>
+        concept bool_only_class =
+            std::is_class_v<T> && scalar_constructible<T, bool_probe> && (!scalar_constructible<T, integer_probe>) &&
+            (!scalar_constructible<T, floating_point_probe>);
+
+        // T is constructed from a JSON scalar given as Arg, which is not done when the result is not the value
+        // of the scalar: a container takes a number as its size and a struct as its first field, and C++
+        // converts between numbers and `bool`.  JSON true and false are read into `bool` and into a class that
+        // has a constructor from `bool`, and a number into a type other than these two.
+        template <typename T, typename Arg>
+        concept json_scalar_constructible =
+            (!std::ranges::range<T>) && (!json_aggregate<T>) && (!accepts_any_type<T>) &&
+            (std::same_as<Arg, bool>
+                 ? std::same_as<T, bool> || (std::is_class_v<T> && scalar_constructible<T, bool_probe>)
+                 : !std::same_as<T, bool> && !bool_only_class<T> && scalar_constructible<T, Arg>);
 
         // `default_caster<T>::from_json_null` gives a T.
         template <typename T>
@@ -7529,13 +7559,17 @@ namespace yyjson
         {
             if constexpr (integer_like<U>)
             {
-                // the value is truncated toward zero, as the conversion does, if it fits in U
+                // the value is read only if it is an integer that fits in U, which is checked before the
+                // conversion, as converting a value out of range is undefined
                 using I = integer_of_t<U>;
                 constexpr auto upper = std::numeric_limits<I>::max() / 2 * 2.0 + 2.0;
                 constexpr auto lower = std::signed_integral<I> ? -upper : 0.0;
-                if (const auto t = std::trunc(value); t >= lower && t < upper)
+                if (std::trunc(value) != value) [[unlikely]]
+                    detail::throw_bad_cast("{} is not constructible from JSON number {}, which is not an integer",
+                                           detail::type_name<U>(), value);
+                if (value >= lower && value < upper) [[likely]]
                 {
-                    return static_cast<U>(static_cast<I>(t));
+                    return static_cast<U>(static_cast<I>(value));
                 }
                 detail::throw_bad_cast("overflow detected: {} is not constructible from JSON number {}",
                                        detail::type_name<U>(), value);
@@ -7983,8 +8017,9 @@ namespace yyjson
 
     namespace detail
     {
-        // The kinds of JSON values, as bits of a mask.
-        enum json_kind : std::uint8_t
+        // The kinds of JSON values, as bits of a mask.  A real number is `json_kind_integral_real` if it is finite
+        // and has no fractional part, which an integer type reads, and `json_kind_real` otherwise.
+        enum json_kind : std::uint16_t
         {
             json_kind_null = 1U << 0U,
             json_kind_bool = 1U << 1U,
@@ -7994,8 +8029,16 @@ namespace yyjson
             json_kind_string = 1U << 5U,
             json_kind_array = 1U << 6U,
             json_kind_object = 1U << 7U,
-            json_kind_all = 0xFFU,
+            json_kind_integral_real = 1U << 8U,
+            json_kind_all = 0x1FFU,
+            json_kind_integer = json_kind_uint | json_kind_sint | json_kind_integral_real,
+            json_kind_number = json_kind_integer | json_kind_real,
         };
+
+        inline std::uint16_t json_kind_of_real(double value) noexcept
+        {
+            return std::isfinite(value) && std::trunc(value) == value ? json_kind_integral_real : json_kind_real;
+        }
 
         template <typename Json>
         concept json_value_of_document =
@@ -8004,11 +8047,11 @@ namespace yyjson
         // The kind of a JSON value, or every kind for a raw value and for a JSON type other than a value
         // of a document.
         template <typename Json>
-        std::uint8_t json_kind_of(const Json& json) noexcept
+        std::uint16_t json_kind_of(const Json& json) noexcept
         {
             if constexpr (json_value_of_document<Json>)
             {
-                if (json.is_real()) return json_kind_real;
+                if (json.is_real()) return json_kind_of_real(*json.as_real());
                 if (json.is_uint()) return json_kind_uint;
                 if (json.is_sint()) return json_kind_sint;
                 if (json.is_string()) return json_kind_string;
@@ -8029,7 +8072,7 @@ namespace yyjson
         // The kinds of JSON values from which `cast<T>(json)` may succeed.  Every kind that it does not
         // reject at compile time is included, so that a kind left out is one that always fails.
         template <typename T, typename Json>
-        consteval std::uint8_t accepted_json_kinds()
+        consteval std::uint16_t accepted_json_kinds()
         {
             if constexpr (!json_value_of_document<Json>)
             {
@@ -8081,17 +8124,14 @@ namespace yyjson
                     kinds |= json_kind_array;
                 if constexpr (json_null_constructible<T>) kinds |= json_kind_null;
                 if constexpr (json_scalar_constructible<T, bool>) kinds |= json_kind_bool;
-                if constexpr (json_scalar_constructible<T, double>) kinds |= json_kind_real;
-                if constexpr ((std::integral<T> && !std::same_as<T, bool>) ||
-                              json_scalar_constructible<T, std::uint64_t>)
-                    kinds |= json_kind_uint;
-                if constexpr ((std::integral<T> && !std::same_as<T, bool>) ||
-                              json_scalar_constructible<T, std::int64_t>)
-                    kinds |= json_kind_sint;
-                if constexpr (json_string_constructible<T>) kinds |= json_kind_string;
-                if constexpr (std::is_enum_v<T>)
-                    kinds |= json_kind_string | json_kind_uint | json_kind_sint | json_kind_real;
-                return static_cast<std::uint8_t>(kinds);
+                if constexpr (integer_like<T>)
+                    kinds |= json_kind_integer;
+                else if constexpr (json_scalar_constructible<T, double>)
+                    kinds |= json_kind_real | json_kind_integral_real;
+                if constexpr (json_scalar_constructible<T, std::uint64_t>) kinds |= json_kind_uint;
+                if constexpr (json_scalar_constructible<T, std::int64_t>) kinds |= json_kind_sint;
+                if constexpr (json_string_constructible<T> || std::is_enum_v<T>) kinds |= json_kind_string;
+                return static_cast<std::uint16_t>(kinds);
             }
         }
 
@@ -8100,7 +8140,7 @@ namespace yyjson
         {
             static constexpr bool is_variant = true;
             template <typename Json>
-            static consteval std::uint8_t value()
+            static consteval std::uint16_t value()
             {
                 using tags = variant_tags<std::variant<Ts...>>;
                 if constexpr (tags::tagging == variant_tagging::internal)
@@ -8108,7 +8148,7 @@ namespace yyjson
                 else if constexpr (tags::tagging == variant_tagging::adjacent)
                     return json_kind_all;
                 else
-                    return static_cast<std::uint8_t>((0U | ... | accepted_json_kinds<Ts, Json>()));
+                    return static_cast<std::uint16_t>((0U | ... | accepted_json_kinds<Ts, Json>()));
             }
         };
 
@@ -8200,7 +8240,7 @@ namespace yyjson
         // throwing and catching an exception for an alternative that fails.  Checking every element would save it
         // for a range whose later elements differ too, but would read each range of the alternative twice.
         template <typename T, typename Json>
-        bool may_cast(const Json& json, std::uint8_t kind)
+        bool may_cast(const Json& json, std::uint16_t kind)
         {
             using n = nested_casts<T>;
             if ((accepted_json_kinds<T, Json>() & kind) == 0) return false;
@@ -8274,7 +8314,7 @@ namespace yyjson
         class variant_reread_guard
         {
         public:
-            explicit variant_reread_guard(std::uint8_t) noexcept {}
+            explicit variant_reread_guard(std::uint16_t) noexcept {}
             template <std::size_t I>
             [[nodiscard]] static constexpr bool stops_after() noexcept
             {
@@ -8286,12 +8326,12 @@ namespace yyjson
         class variant_reread_guard<std::variant<Ts...>, Json>
         {
             static constexpr auto rereading = std::array<bool, sizeof...(Ts)>{type_reaches<std::variant<Ts...>, Ts>...};
-            static constexpr auto kinds = std::array<std::uint8_t, sizeof...(Ts)>{accepted_json_kinds<Ts, Json>()...};
+            static constexpr auto kinds = std::array<std::uint16_t, sizeof...(Ts)>{accepted_json_kinds<Ts, Json>()...};
             // 1 when not counted, 0 when the limit stops it, and the factor in `variant_rereads` otherwise
             std::size_t n_ = 1;
 
         public:
-            explicit variant_reread_guard(std::uint8_t kind) noexcept
+            explicit variant_reread_guard(std::uint16_t kind) noexcept
             {
                 auto n = std::size_t{0};
                 for (std::size_t i = 0; i < sizeof...(Ts); ++i) n += rereading[i] && (kinds[i] & kind) != 0;
@@ -8370,14 +8410,14 @@ namespace yyjson
     private:
         template <typename Json>
         static constexpr auto alternative_kinds =
-            std::array<std::uint8_t, sizeof...(Ts)>{detail::accepted_json_kinds<Ts, Json>()...};
+            std::array<std::uint16_t, sizeof...(Ts)>{detail::accepted_json_kinds<Ts, Json>()...};
         // the kinds that an alternative after each accepts, whose kinds a value has to be checked against
         template <typename Json>
         static consteval auto make_later_kinds()
         {
-            auto result = std::array<std::uint8_t, sizeof...(Ts)>{};
+            auto result = std::array<std::uint16_t, sizeof...(Ts)>{};
             for (auto i = sizeof...(Ts) - 1; i > 0; --i)
-                result[i - 1] = static_cast<std::uint8_t>(result[i] | alternative_kinds<Json>[i]);
+                result[i - 1] = static_cast<std::uint16_t>(result[i] | alternative_kinds<Json>[i]);
             return result;
         }
         template <typename Json>
@@ -8443,7 +8483,7 @@ namespace yyjson
         // `detail::may_cast` for the alternative I, which is checked before it is cast when another alternative
         // may be tried.  False fails the alternative as a failed cast does.
         template <std::size_t I, typename Json, typename Guard>
-        static bool may_cast(const Json& json, std::uint8_t kind, const Guard& rereads)
+        static bool may_cast(const Json& json, std::uint16_t kind, const Guard& rereads)
         {
             using T = std::variant_alternative_t<I, std::variant<Ts...>>;
             if constexpr (detail::may_reject_nested<std::remove_cvref_t<T>>())
@@ -8471,7 +8511,7 @@ namespace yyjson
         // The variant is returned as it is constructed: one held in a `std::optional` until the end made GCC warn
         // with `-Wmaybe-uninitialized` where it was moved out.
         template <std::size_t I, typename Json, typename Guard>
-        static std::variant<Ts...> from_alternative(const Json& json, std::uint8_t kind, const Guard& rereads)
+        static std::variant<Ts...> from_alternative(const Json& json, std::uint16_t kind, const Guard& rereads)
         {
             if constexpr (I == sizeof...(Ts))
                 detail::throw_bad_cast("{} is not constructible from JSON", detail::type_name<std::variant<Ts...>>());
@@ -13847,7 +13887,7 @@ namespace yyjson
             }
 
             // The kinds of JSON values that the value at `cur_` may be, from its first character.
-            std::uint8_t kind_at() const noexcept
+            std::uint16_t kind_at() const noexcept
             {
                 using namespace yyjson::detail;
                 switch (*cur_)
@@ -13858,8 +13898,22 @@ namespace yyjson
                     case 't':
                     case 'f': return json_kind_bool;
                     case 'n': return json_kind_null;
-                    default: return json_kind_uint | json_kind_sint | json_kind_real;
+                    default: return json_kind_number;
                 }
+            }
+
+            // The kind of the number at `cur_`, which it reads, moving `cur_` past it.
+            std::uint16_t number_kind_at()
+            {
+                namespace d = yyjson::detail;
+                return read_number([](auto v) -> std::uint16_t {
+                    if constexpr (std::same_as<decltype(v), std::uint64_t>)
+                        return d::json_kind_uint;
+                    else if constexpr (std::same_as<decltype(v), std::int64_t>)
+                        return d::json_kind_sint;
+                    else
+                        return d::json_kind_of_real(v);
+                });
             }
 
             // `may_cast<T>` for the value at `cur_` in a document, leaving `cur_` anywhere in the value.
@@ -13869,20 +13923,11 @@ namespace yyjson
                 namespace d = yyjson::detail;
                 using n = d::nested_casts<T>;
                 constexpr auto kinds = d::accepted_json_kinds<T, const_value_ref>();
-                constexpr auto numbers = d::json_kind_uint | d::json_kind_sint | d::json_kind_real;
+                constexpr auto numbers = d::json_kind_number;
                 const auto kind = kind_at();
                 if constexpr ((kinds & numbers) != 0 && (kinds & numbers) != numbers)
                 {
-                    if (kind == numbers)
-                        return (read_number([](auto v) -> std::uint8_t {
-                                    if constexpr (std::same_as<decltype(v), std::uint64_t>)
-                                        return d::json_kind_uint;
-                                    else if constexpr (std::same_as<decltype(v), std::int64_t>)
-                                        return d::json_kind_sint;
-                                    else
-                                        return d::json_kind_real;
-                                }) &
-                                kinds) != 0;
+                    if (kind == numbers) return (number_kind_at() & kinds) != 0;
                 }
                 if ((kinds & kind) == 0) return false;
                 if constexpr (!d::may_reject_nested<T>())
@@ -14172,27 +14217,139 @@ namespace yyjson
                 cur_ = end;
             }
 
+            // The kinds that each alternative of the variant T accepts, and that an alternative after each accepts,
+            // as in `caster<std::variant>`.
+            template <typename T>
+            static constexpr auto alternative_kinds = []<std::size_t... Is>(std::index_sequence<Is...>) {
+                return std::array<std::uint16_t, sizeof...(Is)>{
+                    yyjson::detail::accepted_json_kinds<std::variant_alternative_t<Is, T>, const_value_ref>()...};
+            }(std::make_index_sequence<std::variant_size_v<T>>{});
+            template <typename T>
+            static constexpr auto later_alternative_kinds = [] {
+                auto result = std::array<std::uint16_t, std::variant_size_v<T>>{};
+                for (auto i = std::variant_size_v<T> - 1; i > 0; --i)
+                    result[i - 1] = static_cast<std::uint16_t>(result[i] | alternative_kinds<T>[i]);
+                return result;
+            }();
+
+            // Whether an alternative of the variant T that is tried for a JSON number reads some kinds of numbers
+            // but not all, so that the kind of the number decides which alternative reads it.
+            template <typename T>
+            static consteval bool partial_number_alternative()
+            {
+                constexpr auto numbers = yyjson::detail::json_kind_number;
+                for (const auto k : alternative_kinds<T>)
+                {
+                    if ((k & numbers) == numbers) return false;
+                    if ((k & numbers) != 0) return true;
+                }
+                return false;
+            }
+
             template <typename T, typename Make>
             void read_untagged_variant(Make&& make)
             {
                 const char* const start = cur_;
                 const auto kind = kind_at();
+                if constexpr (partial_number_alternative<T>())
+                {
+                    if (kind == yyjson::detail::json_kind_number)
+                    {
+                        read_number_variant<T>(make, start);
+                        return;
+                    }
+                }
                 const auto rereads = yyjson::detail::variant_reread_guard<std::remove_cv_t<T>, const_value_ref>(kind);
                 const auto found = [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                    static constexpr auto kinds = std::array<std::uint8_t, sizeof...(Is)>{
-                        yyjson::detail::accepted_json_kinds<std::variant_alternative_t<Is, T>, const_value_ref>()...};
-                    // the kinds that an alternative after each accepts, as in `caster<std::variant>`
-                    static constexpr auto later = [] {
-                        auto result = std::array<std::uint8_t, sizeof...(Is)>{};
-                        for (auto i = sizeof...(Is) - 1; i > 0; --i)
-                            result[i - 1] = static_cast<std::uint8_t>(result[i] | kinds[i]);
-                        return result;
-                    }();
+                    constexpr auto& kinds = alternative_kinds<T>;
+                    constexpr auto& later = later_alternative_kinds<T>;
                     return (((kinds[Is] & kind) != 0 &&
                              read_alternative<T, Is>(make, start, (later[Is] & kind) != 0, rereads)) ||
                             ...);
                 }(std::make_index_sequence<std::variant_size_v<T>>{});
                 if (!found) fail();
+            }
+
+            // A number read once for the alternatives of a variant, with its precise kind.
+            struct variant_number
+            {
+                std::uint16_t kind;
+                std::uint64_t u;
+                std::int64_t s;
+                double r;
+            };
+
+            // Reads the number at `cur_` into the variant T, whose alternatives accept only some kinds of numbers:
+            // a real that is not an integer skips the integer alternatives without trying them.  The number is read
+            // once and converted into each arithmetic alternative; another alternative reads it again.
+            template <typename T, typename Make>
+            void read_number_variant(Make& make, const char* start)
+            {
+                namespace d = yyjson::detail;
+                auto n = variant_number{};
+                n.kind = read_number([&](auto v) -> std::uint16_t {
+                    if constexpr (std::same_as<decltype(v), std::uint64_t>)
+                    {
+                        n.u = v;
+                        return d::json_kind_uint;
+                    }
+                    else if constexpr (std::same_as<decltype(v), std::int64_t>)
+                    {
+                        n.s = v;
+                        return d::json_kind_sint;
+                    }
+                    else
+                    {
+                        n.r = v;
+                        return d::json_kind_of_real(v);
+                    }
+                });
+                const char* const end = cur_;
+                const auto rereads = d::variant_reread_guard<std::remove_cv_t<T>, const_value_ref>(n.kind);
+                const auto found = [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                    constexpr auto& kinds = alternative_kinds<T>;
+                    constexpr auto& later = later_alternative_kinds<T>;
+                    return (((kinds[Is] & n.kind) != 0 &&
+                             read_number_alternative<T, Is>(make, n, start, end, (later[Is] & n.kind) != 0, rereads)) ||
+                            ...);
+                }(std::make_index_sequence<std::variant_size_v<T>>{});
+                if (!found)
+                {
+                    cur_ = start;
+                    fail();
+                }
+            }
+
+            template <typename T, std::size_t I, typename Make, typename Guard>
+            bool read_number_alternative(Make& make, const variant_number& n, const char* start, const char* end,
+                                         bool check, const Guard& rereads)
+            {
+                using alternative = std::remove_cv_t<std::variant_alternative_t<I, T>>;
+                if constexpr (std::is_arithmetic_v<alternative> && !std::same_as<alternative, bool> &&
+                              !from_json_val_usr_defined<alternative>)
+                {
+                    using dc = yyjson::detail::default_caster<alternative>;
+                    try
+                    {
+                        if (n.kind == yyjson::detail::json_kind_uint)
+                            make(std::in_place_index<I>, dc::from_json_uint(n.u));
+                        else if (n.kind == yyjson::detail::json_kind_sint)
+                            make(std::in_place_index<I>, dc::from_json_sint(n.s));
+                        else
+                            make(std::in_place_index<I>, dc::from_json_real(n.r));
+                    }
+                    catch (const bad_cast&)
+                    {
+                        return false;
+                    }
+                    cur_ = end;
+                    return true;
+                }
+                else
+                {
+                    cur_ = start;
+                    return read_alternative<T, I>(make, start, check, rereads);
+                }
             }
 
             // With `check`, when another alternative may be tried, the value is checked with `may_read` first.

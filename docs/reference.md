@@ -1255,10 +1255,11 @@ A `float` is written with the shortest digits that read back as the same `float`
 If the conversion fails, the `yyjson::bad_cast` exception is thrown or a compile error occurs. In particular:
 
 *   JSON null does not convert to a string type such as `std::string` or `std::string_view`. Use `std::optional<std::string>` for a string that may be null.
-*   A JSON number converts to an integer type only if it fits in the type. A real number is truncated toward zero first, so `1.5` gives `1`, and `1e300` or `NaN` fails.
+*   A JSON number converts to an integer type only if it is an integer that fits in the type. A real number converts if it has no fractional part, so `2.0` gives `2` and `1e2` gives `100`, while `1.5`, `NaN` and `1e300` fail.
 *   A JSON number converts to `float` only if it does not round to infinity, so `1e39` fails. A number that rounds to the largest `float` or underflows to zero converts, and so do the infinities and NaN that `ReadFlag::AllowInfAndNan` reads.
 *   A JSON number or boolean does not convert to a container such as `std::vector<int>`, although the container is constructible from an integer as its size.
 *   Only JSON `true` and `false` convert to `bool`. A number, a string or null does not, although C++ converts them to `bool`.
+*   JSON `true` and `false` convert only to `bool` and to a class with a constructor that takes `bool`. An integer or floating-point type does not read them, nor does a class that is constructible from numbers only, such as `std::chrono::seconds` or `std::complex<double>`. A class that is constructible from `bool` but from no number, such as `struct Flag { Flag(bool); };`, reads no JSON number.
 *   A string type such as `std::string` converts from a JSON string only, not from an array of integers. Another range of characters, such as `std::vector<char>`, converts from an array.
 *   A type of a fixed number of elements, such as `std::array`, a C array, `std::pair` or `std::tuple`, converts only from a JSON array or object with exactly that many elements. `[1]` does not convert to `std::array<int, 2>`, nor `[1, 2, 3]`.
 *   A struct read by [reflection](#automatic-casting-with-compile-time-reflection) or `VISITABLE_STRUCT` converts from a JSON object only, although C++20 initializes the first field of an aggregate from `T(v)`. To read a struct from another JSON value, define a [translator](#translator).
@@ -1267,8 +1268,8 @@ A `yyjson::bad_cast` thrown while reading names the C++ type and the kind of the
 
 Some conversions succeed where one might expect them to fail, or give JSON that their types do not suggest:
 
-*   An integer or floating-point type reads JSON `true` and `false` as `1` and `0`, while `bool` reads neither numbers nor anything else.
-*   A `std::variant` takes the first alternative that accepts the value, and an integer accepts a real number by truncating it. `std::variant<int, double>` therefore reads `1.5` as the `int` `1`; with `double` first, every number is read as `double`.
+*   A `std::variant` takes the first alternative that accepts the value, and an integer accepts a real number without a fractional part. `std::variant<int, double>` therefore reads `1.5` as `double` but `2.0` as the `int` `2`; with `double` first, every number is read as `double`.
+*   A class that is constructible from a number, such as `struct Count { Count(int); };`, reads every JSON number that C++ converts to the parameter of its constructor, so `1.5` gives `Count(1)`. Only the integer and enumeration types themselves reject a real number with a fractional part.
 *   A map whose keys are neither strings nor [enumerations](#enumerations), such as `std::map<int, int>`, is a JSON array of `[key, value]` pairs, `[[1,2]]`, which the map is read back from, not an object with its keys in strings. A key that appears twice keeps its first value, and a `std::multimap` keeps them all. `merge_into` replaces such a map as it replaces a range. Convert the map to `std::map<std::string, int>` with a [translator](#translator) to have a JSON object.
 *   `char`, `signed char`, `unsigned char`, `std::int8_t` and `std::uint8_t` are numbers, and `std::u8string`, `std::u16string`, `std::u32string` and `std::wstring` are arrays of numbers. Only ranges of `char` are JSON strings.
 *   When a struct is read, a key that the struct does not have is ignored, a field whose key is missing keeps its value in `T()`, and a key that appears twice gives the field its last value. There is no option to require a key or to reject unknown keys; declare a field `std::optional` and check it after reading to require it.
