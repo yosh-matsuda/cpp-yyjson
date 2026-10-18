@@ -103,7 +103,7 @@ void merge_into(std::string_view json_string, T& t, ReadFlag flag = ReadFlag::No
 
 `read_into` gives `t` the same value as `t = read<T>(json_string, flag)`: a field that the JSON object does not have gets its value in `T()`, a key of a map that the JSON object does not have is erased, and a range gets exactly the elements of the JSON array.
 
-`merge_into` applies the JSON string to `t` as a [JSON Merge Patch (RFC 7396)](https://www.rfc-editor.org/rfc/rfc7396) applies it to a JSON value. A JSON object is merged into a struct that the compile-time reflection or the `VISITABLE_STRUCT` macro converts, into a map with unique `std::string` keys, or into a `std::optional` of either, which gets a value first if it has none. Each member of the object is merged into the field or the value of the map that its key names:
+`merge_into` applies the JSON string to `t` as a [JSON Merge Patch (RFC 7396)](https://www.rfc-editor.org/rfc/rfc7396) applies it to a JSON value. A JSON object is merged into a struct that the compile-time reflection or the `VISITABLE_STRUCT` macro converts, into a map with unique `std::string` keys, into the alternative that a [tagged variant](#tagged-variants) holds, or into a `std::optional` of one of them, which gets a value first if it has none: a struct or a map gets its value in `T()`, and a tagged variant is read from the object. Each member of the object is merged into the field or the value of the map that its key names:
 
 *   `null` gives a field its value in `T()` and erases a key from a map.
 *   A JSON object is merged in the same way, and a key that a map does not have yet is added with a default value first.
@@ -1693,8 +1693,8 @@ auto json2 = yyjson::write(Event{2, Rect{1, 2}});
 
 These are the internally and the adjacently tagged representations of [serde](https://serde.rs/enum-representations.html). A variant without a tag tries its alternatives in turn, as [above](#pre-defined-stl-casters).
 
-*   The tag may be anywhere in its object, before or after the other members. When the object has more than one member of the key, the first one names the alternative. A tag that is missing, that is not a string or that names no alternative reads as `std::monostate` if the variant has it, and throws `yyjson::bad_cast` otherwise.
-*   `std::monostate` is written as JSON null without a tag, and JSON null reads as `std::monostate` in a variant that has it. Any other alternative is written with its tag first: the first member of its object for `internal_tag`, and the member right before the field of the variant for `adjacent_tag`.
+*   The tag may be anywhere in its object, before or after the other members. When the object has more than one member of the key, the first one names the alternative. A tag that is not a string or that names no alternative throws `yyjson::bad_cast`, and so does a missing one, also in a variant that has `std::monostate`, except for the cases of `adjacent_tag` below.
+*   `std::monostate` is written as JSON null without a tag, and only JSON null reads as `std::monostate`, in a variant that has it. Any other alternative is written with its tag first: the first member of its object for `internal_tag`, and the member right before the field of the variant for `adjacent_tag`.
 *   Write the specialization `inline`, as for [the keys of fields](#json-keys-other-than-field-names). A variant that has `std::monostate` more than once, `ids` that do not name each of the other alternatives, an empty key, and empty or repeated names all fail to compile with a `static_assert`, as do `yyjson::annotations<V>` with more than one `internal_tag` or with a `yyjson::field`, and `internal_tag` given to a struct.
 *   `cast`, `value` and `object` of the DOM API read and write a tagged variant the same way as `yyjson::read<T>` and `yyjson::write`.
 
@@ -1718,7 +1718,12 @@ auto typed = yyjson::read<TypedEvent>(R"({"kind":"rect","data":{"w":1,"h":2}})")
 // -> TypedEvent{Kind::rect, Rect{1, 2}}
 ```
 
-Two variants of the same key in one struct need such a field, and fail to compile without one. `read_into` and `merge_into` read the variant by the tag in the same object; an object without the member of the variant leaves the variant as it is, whether or not it has the tag.
+Two variants of the same key in one struct need such a field, and fail to compile without one. The tag and the member of the variant are two members of one object, and either may be missing:
+
+*   A member of the variant without the tag throws `yyjson::bad_cast`, unless it is JSON null, which reads as `std::monostate` in a variant that has it.
+*   A tag without the member of the variant leaves the field at its value in `T()`, and throws `yyjson::bad_cast` unless the variant holds the alternative that the tag names there. An object with neither member leaves the field at its value in `T()`.
+
+`read_into` reads a tagged variant as `read<T>` does. `merge_into` merges the JSON into the alternative that the variant holds when there is no tag or the tag names that alternative, and reads the JSON as the alternative that the tag names otherwise. With `internal_tag` the JSON is an object that holds the tag; with `adjacent_tag` it is the member of the variant, of any kind, and the tag is its sibling. A variant that holds `std::monostate` has nothing to merge into, so the JSON without a tag throws `yyjson::bad_cast` there. A tag without the member of the variant has to name the alternative that the variant holds, as for `read<T>`, and JSON null gives the field its value in `T()`, as for any field. A variant that is not tagged is replaced as a whole, as any other value.
 
 `yyjson::read<T>` reads a tagged variant without a document. It finds the tag by reading the keys of the members before it, so the tag is cheapest first in its object, where `yyjson::write` puts it. A value of an adjacently tagged variant that comes before its tag is read into a temporary document, which is cast once the tag is found.
 

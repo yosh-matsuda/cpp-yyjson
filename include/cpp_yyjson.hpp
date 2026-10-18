@@ -1874,7 +1874,7 @@ namespace yyjson
             {
                 for (std::size_t i = 0; i < sizeof...(Ts); ++i)
                     if (i != monostate && ids[i] == id) return i;
-                return monostate;
+                return std::variant_npos;
             }
         };
 
@@ -1920,6 +1920,21 @@ namespace yyjson
         {
             throw_bad_cast("{} is not constructible from JSON: the tag \"{}\": \"{}\" names no alternative", type, key,
                            id);
+        }
+        [[noreturn]] CPPYYJSON_COLD inline void throw_variant_tag_not_string(std::string_view key,
+                                                                             std::string_view type)
+        {
+            throw_bad_cast("{} is not constructible from JSON: the tag \"{}\" is not a string", type, key);
+        }
+        [[noreturn]] CPPYYJSON_COLD inline void throw_variant_tag_without_value(std::string_view key,
+                                                                                std::string_view id,
+                                                                                std::string_view field,
+                                                                                std::string_view type)
+        {
+            throw_bad_cast(
+                "{} is not constructible from JSON: the tag \"{}\": \"{}\" has no member \"{}\", and the "
+                "variant does not hold that alternative",
+                type, key, id, field);
         }
 
         // The member name and the type of the field R of a reflected struct or of a `VISITABLE_STRUCT`, by its
@@ -2302,7 +2317,8 @@ namespace yyjson
             }(std::make_index_sequence<std::variant_size_v<V>>{});
         }
 
-        // The alternative of the variant V that the tag in the object `obj` names.
+        // The alternative of the variant V that the first tag in the object `obj` names, or `std::variant_npos`
+        // if the object has no tag.  A tag that is not a string or that names no alternative throws.
         template <typename V, typename Tags, typename Obj>
         std::size_t tagged_alternative(const Obj& obj)
         {
@@ -2310,17 +2326,26 @@ namespace yyjson
             for (auto&& [key, value] : obj)
             {
                 if (std::string_view(key) != tags::key) continue;
-                if (const auto id = value.as_string(); id.has_value())
-                {
-                    if (const auto i = tags::alternative(*id); i != std::variant_npos) return i;
-                    throw_variant_tag_unknown(tags::key, *id, type_name<V>());
-                }
-                break;
+                const auto id = value.as_string();
+                if (!id.has_value()) throw_variant_tag_not_string(tags::key, type_name<V>());
+                if (const auto i = tags::alternative(*id); i != std::variant_npos) return i;
+                throw_variant_tag_unknown(tags::key, *id, type_name<V>());
             }
+            return std::variant_npos;
+        }
+
+        // The alternative of a variant tagged by `adjacent_tag` whose value `value` is in the object `obj`:
+        // the one that the tag names, or `std::monostate` for a null without a tag.
+        template <typename V, typename Tags, typename Json, typename Obj>
+        std::size_t adjacent_alternative(const Json& value, const Obj& obj)
+        {
+            using tags = Tags;
+            if (const auto index = tagged_alternative<V, Tags>(obj); index != std::variant_npos) return index;
             if constexpr (tags::monostate != std::variant_npos)
-                return tags::monostate;
-            else
-                throw_variant_tag_missing(tags::key, type_name<V>());
+            {
+                if (value.is_null()) return tags::monostate;
+            }
+            throw_variant_tag_missing(tags::key, type_name<V>());
         }
 
         // Assigns the value of a field tagged by `adjacent_tag` from the object `obj` that holds it.
@@ -2328,7 +2353,33 @@ namespace yyjson
         void assign_adjacent_field(Field& field, const Json& value, const Obj& obj)
         {
             using V = std::remove_cvref_t<Field>;
-            field = cast_alternative<V>(tagged_alternative<V, Tags>(obj), value);
+            field = cast_alternative<V>(adjacent_alternative<V, Tags>(value, obj), value);
+        }
+
+        // Throws if the object `obj` has the tag of a field of S tagged by `adjacent_tag` but not the field,
+        // unless the field of `s` holds the alternative of the tag already.
+        template <typename S, typename Obj>
+        void check_adjacent_tags_without_values(const S& s, const Obj& obj)
+        {
+            [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                (
+                    [&] {
+                        if constexpr (adjacent_field<S, Ks>)
+                        {
+                            using tags = struct_field_tags<S, Ks>;
+                            using V = struct_field_type<S, Ks>;
+                            for ([[maybe_unused]] auto&& [key, value] : obj)
+                            {
+                                if (std::string_view(key) == struct_field_key<S, Ks>) return;
+                            }
+                            const auto index = tagged_alternative<V, tags>(obj);
+                            if (index != std::variant_npos && index != struct_field<Ks>(s).index())
+                                throw_variant_tag_without_value(tags::key, tags::ids[index], struct_field_key<S, Ks>,
+                                                                type_name<S>());
+                        }
+                    }(),
+                    ...);
+            }(std::make_index_sequence<struct_field_count<S>>{});
         }
 
         // Finds the field that a JSON key names.  Keys usually come in the order that the fields are
@@ -2566,6 +2617,7 @@ namespace yyjson
                            ...);
                 }(std::make_index_sequence<reflected_fields<T>::size()>{});
             });
+            if constexpr (has_adjacent_fields<T>) check_adjacent_tags_without_values(t, obj);
         }
 
         // The same as `assign_reflected_fields` for a struct registered by `VISITABLE_STRUCT`, whose
@@ -2598,6 +2650,7 @@ namespace yyjson
                            ...);
                     }(std::index_sequence_for<Members...>{});
                 });
+            if constexpr (has_adjacent_fields<T>) check_adjacent_tags_without_values(t, obj);
         }
 
         template <typename Obj, typename Field, typename... Ts>
@@ -9000,7 +9053,9 @@ namespace yyjson
                 if (!obj.has_value())
                     detail::throw_bad_cast("{} is not constructible from JSON other than an object",
                                            detail::type_name<V>());
-                return detail::cast_alternative<V>(detail::tagged_alternative<V, tags>(*obj), json);
+                const auto index = detail::tagged_alternative<V, tags>(*obj);
+                if (index == std::variant_npos) detail::throw_variant_tag_missing(tags::key, detail::type_name<V>());
+                return detail::cast_alternative<V>(index, json);
             }
             else
                 return from_untagged(json);
@@ -11967,15 +12022,24 @@ namespace yyjson
                 t.erase(t.find(key));
             };
 
-        // A value that `merge_into` merges a JSON object into: a struct, a map, or an optional of either, which
-        // gets a value first if it has none.  Any other value is replaced.
+        // A variant tagged by `internal_tag`, whose alternative `merge_into` merges an object into unless the
+        // object names another alternative.
         template <typename T>
-        concept mergeable =
-            (!std::is_array_v<T>) &&
-            (struct_mergeable<T> || map_mergeable<T> ||
-             (yyjson::detail::is_std_optional<T>::value &&
-              std::derived_from<caster<T>, yyjson::detail::builtin_caster> &&
-              (struct_mergeable<typename T::value_type> || map_mergeable<typename T::value_type>)));
+        concept tagged_mergeable =
+            yyjson::detail::variant_json_kinds<T>::is_variant && yyjson::detail::internally_tagged<T> &&
+            std::derived_from<caster<T>, yyjson::detail::builtin_caster> &&
+            (!yyjson::detail::from_json_translator<T>::castable);
+
+        // A value that `merge_into` merges a JSON object into: a struct, a map, a variant tagged by `internal_tag`,
+        // or an optional of one of them, which gets a value first if it has none: `T()` for a struct or a map, and
+        // the variant read from the object.  Any other value is replaced.
+        template <typename T>
+        concept mergeable = (!std::is_array_v<T>) &&
+                            (struct_mergeable<T> || map_mergeable<T> || tagged_mergeable<T> ||
+                             (yyjson::detail::is_std_optional<T>::value &&
+                              std::derived_from<caster<T>, yyjson::detail::builtin_caster> &&
+                              (struct_mergeable<typename T::value_type> || map_mergeable<typename T::value_type> ||
+                               tagged_mergeable<typename T::value_type>)));
 
         template <typename T>
         CPPYYJSON_ALWAYS_INLINE inline constexpr const auto& struct_key_matcher() noexcept
@@ -12049,6 +12113,27 @@ namespace yyjson
         template <typename T>
         void merge_from(T& t, const const_value_ref& v);
 
+        // Merges `v` into the variant `t` tagged by Tags as the alternative `index` that its tag names: into the
+        // alternative that `t` holds when the tag names it or `index` is `std::variant_npos` for no tag, and as a
+        // new alternative otherwise.  `std::monostate` takes nothing to merge into.
+        template <typename Tags, typename V>
+        void merge_tagged(V& t, std::size_t index, const const_value_ref& v)
+        {
+            if (index != std::variant_npos && index != t.index())
+            {
+                t = yyjson::detail::cast_alternative<V>(index, v);
+                return;
+            }
+            if (t.index() == Tags::monostate || t.valueless_by_exception())
+                yyjson::detail::throw_variant_tag_missing(Tags::key, yyjson::detail::type_name<V>());
+            std::visit(
+                [&](auto& alternative) {
+                    if constexpr (!std::same_as<std::remove_cvref_t<decltype(alternative)>, std::monostate>)
+                        merge_from(alternative, v);
+                },
+                t);
+        }
+
         // Merges a JSON object into the fields of `t` that its keys name, as `merge_from` does.
         template <typename T>
         void merge_struct_from(T& t, const const_object_ref& obj)
@@ -12068,8 +12153,9 @@ namespace yyjson
                         }
                         if constexpr (yyjson::detail::adjacent_field<T, I>)
                         {
-                            yyjson::detail::assign_adjacent_field<yyjson::detail::struct_field_tags<T, I>>(field, value,
-                                                                                                           object...);
+                            using tags = yyjson::detail::struct_field_tags<T, I>;
+                            merge_tagged<tags>(field, yyjson::detail::tagged_alternative<field_type, tags>(object...),
+                                               value);
                             return;
                         }
                         else if constexpr (reads_over_old_value<field_type>)
@@ -12085,6 +12171,8 @@ namespace yyjson
                         yyjson::detail::assign_reflected_field(field, value, false);
                     });
                 });
+            if constexpr (yyjson::detail::has_adjacent_fields<T>)
+                yyjson::detail::check_adjacent_tags_without_values(t, obj);
         }
 
         template <typename T>
@@ -12109,7 +12197,8 @@ namespace yyjson
 
         // Merges a value of a document into `t` as a JSON Merge Patch (RFC 7386) merges it into a JSON value:
         // an object is merged into a struct or a map member by member, where null gives a field its value in
-        // `T()` and erases a key of a map, and any other value replaces `t` as `cast<T>` reads it.
+        // `T()` and erases a key of a map, or into the alternative of a variant tagged by `internal_tag` as
+        // `merge_tagged` merges it, and any other value replaces `t` as `cast<T>` reads it.
         template <typename T>
         void merge_from(T& t, const const_value_ref& v)
         {
@@ -12121,6 +12210,18 @@ namespace yyjson
                         merge_struct_from(t, *obj);
                     else if constexpr (map_mergeable<T>)
                         merge_map_from(t, *obj);
+                    else if constexpr (tagged_mergeable<T>)
+                    {
+                        using tags = yyjson::detail::variant_tags<T>;
+                        merge_tagged<tags>(t, yyjson::detail::tagged_alternative<T, tags>(*obj), v);
+                    }
+                    else if constexpr (tagged_mergeable<typename T::value_type>)
+                    {
+                        if (t.has_value())
+                            merge_from(*t, v);
+                        else
+                            t = v.template cast<T>();
+                    }
                     else
                     {
                         if (!t.has_value()) t.emplace();
@@ -14617,8 +14718,9 @@ namespace yyjson
                     if (*cur_ != '{') [[unlikely]]
                         fail();
                     const char* const start = cur_;
-                    auto index = find_variant_tag<T>(start);
-                    if (index == std::variant_npos) index = missing_variant_tag<T>();
+                    const auto index = find_variant_tag<T>(start);
+                    if (index == std::variant_npos) [[unlikely]]
+                        fail();
                     read_tagged_alternative<T>(make, index, start);
                 }
                 else
@@ -14652,25 +14754,30 @@ namespace yyjson
                 }
             }
 
-            // The alternative of the variant T that the tag at `cur_` names.  A tag that is not a string is taken
-            // as missing.
+            // The alternative of the variant T that the tag at `cur_` names.  A tag that is not a string or that
+            // names no alternative fails.
             template <typename T, typename Tags = yyjson::detail::variant_tags<std::remove_cv_t<T>>>
             std::size_t read_variant_tag(std::string& buf)
             {
                 using tags = Tags;
-                if (*cur_ != '"') return missing_variant_tag<T, Tags>();
+                if (*cur_ != '"') [[unlikely]]
+                    fail();
                 const auto i = tags::alternative(read_short_string(buf));
                 if (i == std::variant_npos) [[unlikely]]
                     fail();
                 return i;
             }
 
-            template <typename T, typename Tags = yyjson::detail::variant_tags<std::remove_cv_t<T>>>
-            static std::size_t missing_variant_tag()
+            // The alternative of a variant tagged by `adjacent_tag` whose value has no tag: `std::monostate` for a
+            // null, which `is_null` tells.
+            template <typename Tags>
+            static std::size_t untagged_adjacent_alternative(bool is_null)
             {
-                using tags = Tags;
-                if constexpr (tags::monostate == std::variant_npos) fail();
-                return tags::monostate;
+                if constexpr (Tags::monostate != std::variant_npos)
+                {
+                    if (is_null) return Tags::monostate;
+                }
+                fail();
             }
 
             // The string at `cur_`, from the text itself unless it has escapes.
@@ -14726,11 +14833,11 @@ namespace yyjson
 
             // Reads the field I of `t` from the value at `cur_`, which is a field tagged by `adjacent_tag` or the
             // field of a tag, as `read(field)` reads any other field.
-            template <typename T, std::size_t I, typename Read>
+            template <typename T, std::size_t I, bool Merge = false, typename Read>
             CPPYYJSON_ALWAYS_INLINE void read_struct_field(T& t, adjacent_fields_of<T>& adjacent, Read&& read)
             {
                 if constexpr (yyjson::detail::adjacent_field<T, I>)
-                    read_adjacent_field<T, I>(t, adjacent);
+                    read_adjacent_field<T, I, Merge>(t, adjacent);
                 else
                 {
                     if constexpr (yyjson::detail::holds_adjacent_tag<T, I>)
@@ -14742,9 +14849,10 @@ namespace yyjson
             }
 
             // Reads the value at `cur_` into the field I tagged by `adjacent_tag`, or into a document until the end
-            // of the object if its tag is not known yet, which is faster than reading the text again.  A second member of the field after one that was skipped is
-            // left to the document, which reads both.
-            template <typename T, std::size_t I>
+            // of the object if its tag is not known yet, which is faster than reading the text again.  `at[I]`
+            // keeps where the value is, and a second member of the field is left to the document, which reads both.
+            // With `Merge`, a value whose tag names the alternative that the field holds is merged into it.
+            template <typename T, std::size_t I, bool Merge>
             void read_adjacent_field(T& t, adjacent_fields<T>& adjacent)
             {
                 using V = std::remove_cvref_t<yyjson::detail::struct_field_type<T, I>>;
@@ -14765,12 +14873,21 @@ namespace yyjson
                 }
                 else
                     index = find_variant_tag<V, tags>(adjacent.open, start);
+                adjacent.at[I] = start;
                 if (index == std::variant_npos)
                 {
                     cur_ = start;
-                    adjacent.at[I] = start;
                     adjacent.docs[I].reset(read_local_document());
                     return;
+                }
+                if constexpr (Merge)
+                {
+                    if (index == struct_field<I>(t).index())
+                    {
+                        cur_ = start;
+                        merge_alternative<tags>(struct_field<I>(t));
+                        return;
+                    }
                 }
                 read_adjacent_alternative<T, I>(t, index, start);
             }
@@ -14787,8 +14904,8 @@ namespace yyjson
             }
 
             // Reads the fields tagged by `adjacent_tag` that came before their tags, after `cur_` has passed the
-            // object.
-            template <typename T>
+            // object, or merges them with `Merge`.
+            template <bool Merge = false, typename T>
             void read_skipped_adjacent_fields(T& t, adjacent_fields_of<T>& adjacent)
             {
                 if constexpr (yyjson::detail::has_adjacent_fields<T>)
@@ -14798,8 +14915,30 @@ namespace yyjson
                             [&] {
                                 if constexpr (yyjson::detail::adjacent_field<T, Is>)
                                 {
-                                    if (adjacent.at[Is] != nullptr) [[unlikely]]
-                                        read_skipped_adjacent_field<T, Is>(t, adjacent);
+                                    if (adjacent.docs[Is] != nullptr) [[unlikely]]
+                                        read_skipped_adjacent_field<T, Is, Merge>(t, adjacent);
+                                }
+                            }(),
+                            ...);
+                    }(std::make_index_sequence<struct_field_count<T>>{});
+                }
+            }
+
+            // Fails if the object has the tag of a field tagged by `adjacent_tag` but not the field, unless the
+            // field holds the alternative of the tag already.  Called after `cur_` has passed the object and the
+            // fields that it does not have are given their values.
+            template <typename T>
+            void check_adjacent_tags_without_values(const T& t, adjacent_fields_of<T>& adjacent)
+            {
+                if constexpr (yyjson::detail::has_adjacent_fields<T>)
+                {
+                    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                        (
+                            [&] {
+                                if constexpr (yyjson::detail::adjacent_field<T, Is>)
+                                {
+                                    if (adjacent.at[Is] == nullptr)
+                                        check_adjacent_tag_without_value<T, Is>(t, adjacent);
                                 }
                             }(),
                             ...);
@@ -14808,6 +14947,45 @@ namespace yyjson
             }
 
             template <typename T, std::size_t I>
+            CPPYYJSON_NOINLINE void check_adjacent_tag_without_value(const T& t, adjacent_fields<T>& adjacent)
+            {
+                using V = std::remove_cvref_t<yyjson::detail::struct_field_type<T, I>>;
+                using tags = yyjson::detail::struct_field_tags<T, I>;
+                constexpr auto j = yyjson::detail::adjacent_tag_field<T, I>;
+                const char* const end = cur_;
+                auto index = std::variant_npos;
+                if constexpr (j < struct_field_count<T>)
+                {
+                    if (const char* const tag = adjacent.at[j]; tag != nullptr)
+                    {
+                        cur_ = tag;
+                        auto buf = std::string();
+                        index = read_variant_tag<V, tags>(buf);
+                    }
+                }
+                else
+                    index = find_variant_tag<V, tags>(adjacent.open);
+                cur_ = end;
+                if (index != std::variant_npos && index != struct_field<I>(t).index()) [[unlikely]]
+                    fail();
+            }
+
+            // Merges the value at `cur_` into the alternative that the variant `v` tagged by Tags holds, which
+            // `std::monostate` cannot take.
+            template <typename Tags, typename V>
+            void merge_alternative(V& v)
+            {
+                if (v.index() == Tags::monostate || v.valueless_by_exception()) [[unlikely]]
+                    fail();
+                std::visit(
+                    [&](auto& alternative) {
+                        if constexpr (!std::same_as<std::remove_cvref_t<decltype(alternative)>, std::monostate>)
+                            merge_value(alternative);
+                    },
+                    v);
+            }
+
+            template <typename T, std::size_t I, bool Merge>
             CPPYYJSON_NOINLINE void read_skipped_adjacent_field(T& t, adjacent_fields<T>& adjacent)
             {
                 using V = std::remove_cvref_t<yyjson::detail::struct_field_type<T, I>>;
@@ -14826,10 +15004,15 @@ namespace yyjson
                 }
                 else
                     index = find_variant_tag<V, tags>(adjacent.open);
-                if (index == std::variant_npos) index = missing_variant_tag<V, tags>();
                 const auto doc = std::move(adjacent.docs[I]);
-                struct_field<I>(t) =
-                    yyjson::detail::cast_alternative<V>(index, const_value_ref(yyjson_doc_get_root(doc.get())));
+                const auto value = const_value_ref(yyjson_doc_get_root(doc.get()));
+                if constexpr (Merge)
+                    merge_tagged<tags>(struct_field<I>(t), index, value);
+                else
+                {
+                    if (index == std::variant_npos) index = untagged_adjacent_alternative<tags>(value.is_null());
+                    struct_field<I>(t) = yyjson::detail::cast_alternative<V>(index, value);
+                }
                 cur_ = end;
             }
 
@@ -15785,6 +15968,7 @@ namespace yyjson
                          ...);
                     }(std::make_index_sequence<n>{});
                 }
+                check_adjacent_tags_without_values(t, adjacent);
             }
 
             // Reads a field as `read_field` does, but on its first key in the object resets first what
@@ -15841,6 +16025,15 @@ namespace yyjson
                             merge_struct(t);
                         else if constexpr (map_mergeable<T>)
                             merge_map(t);
+                        else if constexpr (tagged_mergeable<T>)
+                            merge_tagged_variant(t);
+                        else if constexpr (tagged_mergeable<typename T::value_type>)
+                        {
+                            if (t.has_value())
+                                merge_tagged_variant(*t);
+                            else
+                                read_value_into(t);
+                        }
                         else
                         {
                             if (!t.has_value()) t.emplace();
@@ -15850,6 +16043,24 @@ namespace yyjson
                     }
                 }
                 read_value_into(t);
+            }
+
+            // Merges the object at `cur_` into the variant `t` tagged by `internal_tag` as `merge_tagged` does.
+            template <typename T>
+            void merge_tagged_variant(T& t)
+            {
+                using tags = yyjson::detail::variant_tags<T>;
+                const char* const start = cur_;
+                const auto index = find_variant_tag<T>(start);
+                cur_ = start;
+                if (index == std::variant_npos || index == t.index())
+                    merge_alternative<tags>(t);
+                else
+                    read_tagged_alternative<T>(
+                        [&](auto i, auto&&... args) -> T& {
+                            return emplace_alternative(t, i, std::forward<decltype(args)>(args)...);
+                        },
+                        index, start);
             }
 
             template <typename T>
@@ -15863,19 +16074,29 @@ namespace yyjson
                                                     CPPYYJSON_LAMBDA_ALWAYS_INLINE {
                                                         if constexpr (yyjson::detail::adjacent_field<T, I>)
                                                         {
-                                                            if (*cur_ == 'n')
-                                                            {
-                                                                read_literal("null");
-                                                                defaults.template reset<I>(t);
-                                                                return;
-                                                            }
+                                                            if (merge_adjacent_null<I>(t, adjacent, defaults)) return;
                                                         }
-                                                        read_struct_field<T, I>(t, adjacent, [&](auto&) {
-                                                            merge_field<I>(t, defaults);
-                                                        });
+                                                        read_struct_field<T, I, true>(
+                                                            t, adjacent, [&](auto&) { merge_field<I>(t, defaults); });
                                                     });
                 });
-                read_skipped_adjacent_fields(t, adjacent);
+                read_skipped_adjacent_fields<true>(t, adjacent);
+                check_adjacent_tags_without_values(t, adjacent);
+            }
+
+            // Gives the adjacently tagged field I its value in `T()` if its member at `cur_` is null, which skips
+            // the check of its tag.  A second member of the field is left to the document, as in
+            // `read_adjacent_field`.
+            template <std::size_t I, typename T, typename Adjacent>
+            CPPYYJSON_ALWAYS_INLINE bool merge_adjacent_null(T& t, Adjacent& adjacent, struct_defaults<T>& defaults)
+            {
+                if (*cur_ != 'n') return false;
+                if (adjacent.at[I] != nullptr) [[unlikely]]
+                    fail();
+                adjacent.at[I] = cur_;
+                read_literal("null");
+                defaults.template reset<I>(t);
+                return true;
             }
 
             template <std::size_t I, typename T>
@@ -16363,6 +16584,7 @@ namespace yyjson
                     }(std::make_index_sequence<yyjson::detail::reflected_fields<T>::size()>{});
                 });
                 read_skipped_adjacent_fields(t, adjacent);
+                check_adjacent_tags_without_values(t, adjacent);
             }
 
             template <typename T>
@@ -16387,6 +16609,7 @@ namespace yyjson
                     }(std::make_index_sequence<std::tuple_size_v<std::remove_cvref_t<decltype(members)>>>{});
                 });
                 read_skipped_adjacent_fields(t, adjacent);
+                check_adjacent_tags_without_values(t, adjacent);
             }
         };
     }  // namespace reader::detail
