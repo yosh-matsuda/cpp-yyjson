@@ -1254,6 +1254,7 @@ If the conversion fails, the `yyjson::bad_cast` exception is thrown or a compile
 
 *   JSON null does not convert to a string type such as `std::string` or `std::string_view`. Use `std::optional<std::string>` for a string that may be null.
 *   A JSON number converts to an integer type only if it fits in the type. A real number is truncated toward zero first, so `1.5` gives `1`, and `1e300` or `NaN` fails.
+*   A JSON number converts to `float` only if it does not round to infinity, so `1e39` fails. A number that rounds to the largest `float` or underflows to zero converts, and so do the infinities and NaN that `ReadFlag::AllowInfAndNan` reads.
 *   A JSON number or boolean does not convert to a container such as `std::vector<int>`, although the container is constructible from an integer as its size.
 *   Only JSON `true` and `false` convert to `bool`. A number, a string or null does not, although C++ converts them to `bool`.
 *   A string type such as `std::string` converts from a JSON string only, not from an array of integers. Another range of characters, such as `std::vector<char>`, converts from an array.

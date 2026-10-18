@@ -2176,6 +2176,10 @@ namespace yyjson
         // the C++26 backend of field-reflection would find by name, is read by neither.
         template <typename T>
         concept integer_like = std::is_enum_v<T> || (std::integral<T> && !std::same_as<T, bool>);
+        // A floating-point type with a smaller range than `double`, such as `float`.
+        template <typename T>
+        concept narrower_than_double =
+            std::floating_point<T> && (std::numeric_limits<T>::max() < std::numeric_limits<double>::max());
         template <typename T>
         struct integer_of
         {
@@ -7521,6 +7525,15 @@ namespace yyjson
                 }
                 detail::throw_bad_cast("overflow detected: {} is not constructible from JSON number {}",
                                        detail::type_name<U>(), value);
+            }
+            else if constexpr (narrower_than_double<U>)
+            {
+                // a finite value beyond the range of U, such as `1e39` for `float`, rounds to infinity
+                const auto result = static_cast<U>(value);
+                if (std::isinf(static_cast<double>(result)) && !std::isinf(value)) [[unlikely]]
+                    detail::throw_bad_cast("overflow detected: {} is not constructible from JSON number {}",
+                                           detail::type_name<U>(), value);
+                return result;
             }
             else if constexpr (json_scalar_constructible<U, double>)
             {
