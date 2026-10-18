@@ -196,7 +196,7 @@ The conversions cover numbers, strings, [enumerations](docs/reference.md#enumera
 
 ### JSON keys and casters
 
-A JSON key that is not a valid C++ identifier is mapped to a field with `yyjson::field_rename`:
+A JSON key that is not a valid C++ identifier is mapped to a field with `yyjson::annotations`, which also [skips fields](docs/reference.md#skipped-fields) and [tags variants](docs/reference.md#tagged-variants):
 
 ```cpp
 struct Thing
@@ -206,7 +206,8 @@ struct Thing
 };
 
 template <>
-inline constexpr auto yyjson::field_rename<Thing> = {yyjson::rename("context", "@context")};
+inline constexpr auto yyjson::annotations<Thing> =
+    yyjson::annotate(yyjson::field("context", yyjson::rename("@context")));
 
 auto thing = yyjson::read<Thing>(R"({"@context":"https://schema.org","name":"x"})");
 ```
