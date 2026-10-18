@@ -31,12 +31,16 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 namespace bench_typed
 {
     // canada.json: a GeoJSON polygon of 111 thousand coordinate pairs, as `double` and as
-    // `float`, whose numbers are read by narrowing a `double` and written with fewer digits
+    // `float`, whose numbers are read by narrowing a `double` and written with fewer digits.
+    // As `std::variant<std::int64_t, double>`, every number that is not an integer skips
+    // the integer; as `std::int64_t`, the coordinates rounded to reals such as `-65.0` are
+    // read into integers.
     namespace canada
     {
         struct properties_t
@@ -72,6 +76,8 @@ namespace bench_typed
 
         using document = basic_document<double>;
         using float_document = basic_document<float>;
+        using variant_document = basic_document<std::variant<std::int64_t, double>>;
+        using integer_document = basic_document<std::int64_t>;
     }  // namespace canada
 
     // citm_catalog.json: maps keyed by numeric IDs and small integer records

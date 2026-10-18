@@ -210,6 +210,8 @@ TYPED_DATASET_NAMES = {
     7: "github_event",
     8: "twitter_status",
     9: "canada_float",
+    10: "canada_variant",
+    11: "canada_integral_reals",
 }
 
 TYPED_COLORS = {
