@@ -30,8 +30,9 @@ The `yyjson` namespace includes the following functions and classes. Typically, 
 | `yyjson::caster<T>`                                | Class template to specialize for a [user-defined caster](#user-defined-casters)  |
 | `yyjson::object_emitter`, `yyjson::array_emitter`  | Write the members of an object or an array [from a caster's `to_json`](#writing-members-with-an-emitter) |
 | `yyjson::annotations<T>`, `yyjson::annotate`, `yyjson::field` | Settings of the conversion of a type, and of each field of a struct |
-| `yyjson::rename`                                   | Give a field a [JSON key other than its name](#json-keys-other-than-field-names) |
+| `yyjson::rename`                                   | Give a field a [JSON key other than its name](#json-keys-other-than-field-names), or an enumerator [another name](#formats-and-renamed-enumerators) |
 | `yyjson::skip`                                     | Leave a field out of [reading and writing](#skipped-fields) |
+| `yyjson::enum_format`, `yyjson::enumerator`        | Read and write an enumeration [by names or integers](#formats-and-renamed-enumerators), and the settings of an enumerator |
 | `yyjson::internal_tag`, `yyjson::adjacent_tag`     | Name the alternatives of a `std::variant` by a [member of the object](#tagged-variants) |
 | `yyjson::json_view`                                | Read-only view of a JSON value for a caster's [`from_json`](#reading-a-json-value-in-a-caster) |
 | `VISITABLE_STRUCT`                                 | Macro to [register the fields](#registration-of-field-names-of-structclass) of a struct |
@@ -1443,12 +1444,13 @@ auto json = write(logger);
 // -> {"name":"app","level":"warning"}
 ```
 
-*   A value that is not the value of an enumerator, such as a combination of flags, is written as the integer of the underlying type. A JSON number is read as well, under the rules of the underlying integer type.
-*   A JSON string that is not the name of an enumerator throws `yyjson::bad_cast`. The names are case-sensitive. When two enumerators have the same value, the one declared first gives the name, and the name of the other is not read.
-*   With C++20, field-reflection finds the enumerators only in the range [-128, 128], and the others are written as integers. Specialize `field_reflection::enum_range` to widen the range for an enumeration, at the cost of compile time. C++26 static reflection finds all of them.
-*   A map or a range of pairs whose keys are enumerations, such as `std::map<Level, int>`, is a JSON object whose keys are the names: `{"debug":1,"info":2}`. A key that is not the value of an enumerator is the decimal integer in a string, such as `"-1"`, and is read back only in that form, without a sign `+` or leading zeros.
-*   An enumeration with a user-defined caster is converted by the caster, for example to always write integers. A map with such keys is an array of `[key, value]` pairs, as a map with integer keys is.
-*   `std::byte` has no enumerators and converts to and from the integers 0 to 255.
+*   A JSON string that is not the name of an enumerator throws `yyjson::bad_cast`, and so does a JSON number. The names are case-sensitive. When two enumerators have the same value, the one declared first gives the name, and the name of the other is not read.
+*   A value that is not the value of an enumerator, such as a combination of flags, has no name, and writing it throws `yyjson::bad_cast` with a message that tells the type and the value. Give such an enumeration [another format](#formats-and-renamed-enumerators).
+*   With C++20, field-reflection finds the enumerators only in the range [-128, 128], and the others have no name either. Specialize `field_reflection::enum_range` to widen the range for an enumeration, at the cost of compile time. C++26 static reflection finds all of them.
+*   A map or a range of pairs whose keys are enumerations, such as `std::map<Level, int>`, is a JSON object whose keys are the names: `{"debug":1,"info":2}`.
+*   A `std::variant` with an enumeration takes a JSON string as the enumeration, so `std::variant<Level, int>` reads `5` as `int`.
+*   An enumeration with a user-defined caster is converted by the caster, which takes precedence over the format and the names. A map with such keys is an array of `[key, value]` pairs, as a map with integer keys is.
+*   `std::byte` has no enumerators and converts to and from the integers 0 to 255, as an enumeration of `yyjson::enum_format::integer`.
 
 ```cpp
 template <>
@@ -1458,6 +1460,36 @@ struct field_reflection::enum_range<Status>
     static constexpr int max = 1000;
 };
 ```
+
+#### Formats and renamed enumerators
+
+`yyjson::annotations<E>` of an enumeration takes a `yyjson::enum_format`, which chooses between the names and the integers of the underlying type, and `yyjson::enumerator("name", yyjson::rename("json-name"))`, which gives an enumerator another JSON name:
+
+```cpp
+enum class Permission : unsigned { read = 1, write = 2, execute = 4 };
+template <>
+inline constexpr auto yyjson::annotations<Permission> = yyjson::annotate(yyjson::enum_format::integer);
+
+enum class Status { todo, in_progress, done };
+template <>
+inline constexpr auto yyjson::annotations<Status> =
+    yyjson::annotate(yyjson::enumerator("in_progress", yyjson::rename("in-progress")));
+
+auto json = yyjson::write(std::tuple{Permission{5}, Status::in_progress});
+// -> [5,"in-progress"]
+```
+
+| `yyjson::enum_format` | Written as | Read from | Key of a map |
+| --- | --- | --- | --- |
+| `name` (default) | the name; a value without one throws | the names | the name |
+| `integer` | the integer of the underlying type | a JSON number | the integer in a string, such as `"-1"` |
+| `name_or_integer` | the name, or the integer for a value without one | the names and JSON numbers | the name, or the integer in a string |
+
+*   A JSON number is read under the rules of the underlying integer type: `2.0` is read as `2`, while `2.5` and a number out of its range throw `yyjson::bad_cast`. An integer key is read back only in the form it is written, without a sign `+` or leading zeros.
+*   `name_or_integer` is the format for flags and for enumerations with values that the C++20 backend does not find. A `std::variant` takes a JSON number as an enumeration of `integer` or `name_or_integer`, and a JSON string as one of `name` or `name_or_integer`.
+*   A renamed enumerator is read and written by its new name only, and the name declared in C++ is no longer read. Each enumerator may be renamed by one `yyjson::enumerator`.
+*   `yyjson::enumerator` that names no enumerator, which includes an alias and, with C++20, an enumerator out of `field_reflection::enum_range`, a setting other than `yyjson::rename`, an enumerator renamed twice, two enumerators that end up with the same name, two formats, and a renamed enumerator in an enumeration of `integer`, an empty name, and in an enumeration of `name_or_integer` a name of digits, such as `"5"` or `"-1"`, that a key of a map would confuse with an integer all fail to compile with a `static_assert`.
+*   With C++26 annotations, `[[=yyjson::enum_format::integer]]` on the enumeration and `[[=yyjson::rename("json-name")]]` on an enumerator give the same settings; see [C++26 annotations](#c26-annotations).
 
 ### Automatic casting with compile-time reflection
 
@@ -1614,6 +1646,7 @@ auto json = yyjson::write(project);
 
 *   The annotations of the members and a `yyjson::annotations` specialization can be combined, as long as no field gets the same setting twice, which fails to compile as above.
 *   The settings of a field go on the member or into `yyjson::annotations<T>`. An annotation on the struct itself is not read.
+*   An enumeration takes `[[=yyjson::enum_format::integer]]` or another [format](#formats-and-renamed-enumerators) on its declaration, `enum class [[=yyjson::enum_format::integer]] Permission : unsigned { ... };`, and an enumerator takes `[[=yyjson::rename("json-name")]]`, `in_progress [[=yyjson::rename("in-progress")]],`. These combine with `yyjson::annotations<E>` as the settings of fields do. An annotation on an alias, an enumerator with the value of one declared before it, is not read.
 *   The annotations apply to the structs that the compile-time reflection converts. An annotation of this library on a member of a struct that `VISITABLE_STRUCT` registers fails to compile; use the pairs of the macro or `yyjson::annotations` there.
 *   The annotations are read when the macro `FIELD_RFL_ANNOTATIONS` is `1`. `yyjson::rename`, `yyjson::skip` and the tags are always available for `yyjson::annotations`.
 
@@ -1665,9 +1698,9 @@ These are the internally and the adjacently tagged representations of [serde](ht
 *   Write the specialization `inline`, as for [the keys of fields](#json-keys-other-than-field-names). A variant that has `std::monostate` more than once, `ids` that do not name each of the other alternatives, an empty key, and empty or repeated names all fail to compile with a `static_assert`, as do `yyjson::annotations<V>` with more than one `internal_tag` or with a `yyjson::field`, and `internal_tag` given to a struct.
 *   `cast`, `value` and `object` of the DOM API read and write a tagged variant the same way as `yyjson::read<T>` and `yyjson::write`.
 
-With `internal_tag`, each alternative other than `std::monostate` is written as a JSON object: a struct, a map, or a type whose caster writes an object. Writing an alternative that is another kind of value throws `std::invalid_argument`. The alternative reads the whole object, its tag included, so a struct skips the tag as an unknown key and a map holds it as an element. A struct may also have a field of the key, which is read and written as any other field; the library then does not write the tag again, and the field has to name the alternative, or writing it throws `std::invalid_argument`. The same applies to a map that holds the key.
+With `internal_tag`, each alternative other than `std::monostate` is written as a JSON object: a struct, a map, or a type whose caster writes an object. Writing an alternative that is another kind of value throws `std::invalid_argument`. The alternative reads the whole object, its tag included, so a struct skips the tag as an unknown key and a map holds it as an element. A struct may also have a field of the key, a string or an enumeration as for `adjacent_tag` below, which is read and written as any other field; the library then does not write the tag again, and the field has to name the alternative, or writing it throws `std::invalid_argument`. The same applies to a map that holds the key.
 
-With `adjacent_tag`, the tag belongs to the field rather than to the variant type, and the struct may be one that the compile-time reflection or `VISITABLE_STRUCT` converts. The same variant type is untagged elsewhere, such as the root, an element of a range or another field, where it tries its alternatives in turn, and another field may tag it with another key. The struct may have a field of the key, a string or an [enumeration](#enumerations) whose names are the `ids`. That field is read and written as any other field, the library does not write the tag again, and the field has to name the alternative that the variant holds, or writing the struct throws `std::invalid_argument`:
+With `adjacent_tag`, the tag belongs to the field rather than to the variant type, and the struct may be one that the compile-time reflection or `VISITABLE_STRUCT` converts. The same variant type is untagged elsewhere, such as the root, an element of a range or another field, where it tries its alternatives in turn, and another field may tag it with another key. The struct may have a field of the key, a string or an [enumeration](#enumerations) whose names, renamed ones included, are the `ids`; an enumeration of `yyjson::enum_format::integer` there fails to compile. That field is read and written as any other field, the library does not write the tag again, and the field has to name the alternative that the variant holds, or writing the struct throws `std::invalid_argument`:
 
 ```cpp
 enum class Kind { circle, rect, count };

@@ -71,6 +71,24 @@ struct TagEnumEnvelope
 template <>
 inline constexpr auto yyjson::annotations<TagEnumEnvelope> =
     yyjson::annotate(yyjson::field("value", yyjson::adjacent_tag("color", {"red", "green", "blue"})));
+// a tag of an enumeration compares the JSON names of the enumerators, renamed ones included
+enum class TagKind
+{
+    text,
+    number
+};
+template <>
+inline constexpr auto yyjson::annotations<TagKind> =
+    yyjson::annotate(yyjson::enumerator("number", yyjson::rename("#num")));
+struct TagRenamedEnvelope
+{
+    TagKind kind = TagKind::text;
+    std::variant<std::string, int> value;
+    bool operator==(const TagRenamedEnvelope&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<TagRenamedEnvelope> =
+    yyjson::annotate(yyjson::field("value", yyjson::adjacent_tag("kind", {"text", "#num"})));
 struct TagVisitable
 {
     TagBodyOrNone body;
@@ -250,6 +268,15 @@ TEST(TaggedVariant, Adjacent)
     EXPECT_EQ(read<std::vector<TagEnumEnvelope>>(write(enums)), enums);
     EXPECT_TRUE(expect_direct_read<std::vector<TagEnumEnvelope>>(write(enums)));
     EXPECT_THROW((void)write(TagEnumEnvelope{1, Color::red}), std::invalid_argument);
+    const auto renamed = std::vector<TagRenamedEnvelope>{{TagKind::text, "s"}, {TagKind::number, 1}};
+    EXPECT_EQ(write(renamed), R"([{"kind":"text","value":"s"},{"kind":"#num","value":1}])");
+    expect_direct_write(renamed);
+    EXPECT_EQ(read<std::vector<TagRenamedEnvelope>>(write(renamed)), renamed);
+    EXPECT_EQ(read(write(renamed)).cast<std::vector<TagRenamedEnvelope>>(), renamed);
+    EXPECT_TRUE(expect_direct_read<std::vector<TagRenamedEnvelope>>(write(renamed)));
+    EXPECT_THROW((void)write(TagRenamedEnvelope{TagKind::number, "s"}), std::invalid_argument);
+    EXPECT_THROW((void)read<TagRenamedEnvelope>(R"({"kind":"number","value":1})"), bad_cast);
+    EXPECT_THROW((void)read(R"({"kind":"number","value":1})").cast<TagRenamedEnvelope>(), bad_cast);
 
     // a struct of visit_struct, with two variants of different tags
     const auto visitables = std::vector<TagVisitable>{{TagCircle{1}, 3, 1}, {{}, TagRect{1, 2}, 2}};

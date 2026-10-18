@@ -51,6 +51,10 @@ namespace
         {
             return std::format("error {}: {}", static_cast<int>(e.code()), e.what());
         }
+        catch (const yyjson::bad_cast& e)
+        {
+            return std::format("bad_cast: {}", e.what());
+        }
     }
 
     const auto direct_write_flags = std::vector<yyjson::WriteFlag>{
@@ -756,8 +760,7 @@ struct EmptyStruct
     bool operator==(const EmptyStruct&) const = default;
 };
 
-// Enumerations, which are read and written by the names of their enumerators, and as integers when a value has no
-// name
+// Enumerations, which are read and written by the names of their enumerators only
 enum class Color
 {
     red,
