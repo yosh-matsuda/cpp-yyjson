@@ -179,6 +179,12 @@ TEST(Reader, ValueKinds)
         int n;
         Count(int v) : n(v) {}
     };
+    // `std::complex` would do in C++20, but C++26 makes it tuple-like, read from `[re, im]`
+    struct Scale
+    {
+        double x;
+        Scale(double v) : x(v) {}
+    };
     for (const auto* json : {"true", "false"})
     {
         EXPECT_THROW((void)read(json).cast<int>(), bad_cast) << json;
@@ -186,7 +192,7 @@ TEST(Reader, ValueKinds)
         EXPECT_THROW((void)read(json).cast<std::optional<float>>(), bad_cast) << json;
         EXPECT_THROW((void)read<Count>(json), bad_cast) << json;
         EXPECT_THROW((void)read(json).cast<std::chrono::seconds>(), bad_cast) << json;
-        EXPECT_THROW((void)read<std::complex<double>>(json), bad_cast) << json;
+        EXPECT_THROW((void)read<Scale>(json), bad_cast) << json;
         expect_direct_read<std::vector<std::int64_t>>("[" + std::string(json) + "]");
     }
     EXPECT_TRUE(read<Flag>("true").b);
@@ -195,7 +201,7 @@ TEST(Reader, ValueKinds)
     EXPECT_THROW((void)read("0.5").cast<Flag>(), bad_cast);
     EXPECT_EQ(read<Count>("2").n, 2);
     EXPECT_EQ(read("3").cast<std::chrono::seconds>(), std::chrono::seconds(3));
-    EXPECT_EQ(read<std::complex<double>>("1.5"), std::complex<double>(1.5));
+    EXPECT_EQ(read<Scale>("1.5").x, 1.5);
     EXPECT_EQ((read<std::variant<int, bool>>("true")), (std::variant<int, bool>(true)));
     EXPECT_EQ((read("true").cast<std::variant<double, bool>>().index()), 1U);
 
