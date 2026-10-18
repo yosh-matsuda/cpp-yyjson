@@ -456,13 +456,6 @@ TEST(Reader, BorrowedTranslatorSources)
 #endif
 }
 
-// MSVC rejects `auto` with more than one `rename` in an explicit specialization of `field_rename` (C3518).
-#if defined(_MSC_VER) && !defined(__clang__)
-#define RENAME_LIST std::initializer_list<yyjson::rename>
-#else
-#define RENAME_LIST auto
-#endif
-
 struct RenamedRecord
 {
     std::string context;
@@ -472,9 +465,9 @@ struct RenamedRecord
     bool operator==(const RenamedRecord&) const = default;
 };
 template <>
-inline constexpr RENAME_LIST yyjson::field_rename<RenamedRecord> = {
-    yyjson::rename("context", "@context"),
-    yyjson::rename("type", "a/b\"c, longer than 16")};
+inline constexpr auto yyjson::annotations<RenamedRecord> =
+    yyjson::annotate(yyjson::field("context", yyjson::rename("@context")),
+                     yyjson::field("type", yyjson::rename("a/b\"c, longer than 16")));
 
 struct VisitableRenamed
 {
@@ -494,11 +487,11 @@ struct VisitableTraitRenamed
     std::vector<int> list;
     bool operator==(const VisitableTraitRenamed&) const = default;
 };
+// `yyjson::annotations` renaming a member that `VISITABLE_STRUCT` lists without a key, next to a pair
 template <>
-inline constexpr RENAME_LIST yyjson::field_rename<VisitableTraitRenamed> = {
-    yyjson::rename("type", "a/b\"c, longer than 16"),
-    yyjson::rename("context", "@context")};
-VISITABLE_STRUCT(VisitableTraitRenamed, context, type, id, list);
+inline constexpr auto yyjson::annotations<VisitableTraitRenamed> =
+    yyjson::annotate(yyjson::field("type", yyjson::rename("a/b\"c, longer than 16")));
+VISITABLE_STRUCT(VisitableTraitRenamed, (context, "@context"), type, id, list);
 
 struct SwappedKeys
 {
@@ -507,9 +500,10 @@ struct SwappedKeys
     bool operator==(const SwappedKeys&) const = default;
 };
 template <>
-inline constexpr RENAME_LIST yyjson::field_rename<SwappedKeys> = {yyjson::rename("a", "b"), yyjson::rename("b", "a")};
+inline constexpr auto yyjson::annotations<SwappedKeys> =
+    yyjson::annotate(yyjson::field("a", yyjson::rename("b")), yyjson::field("b", yyjson::rename("a")));
 
-// `field_rename` listing the members in another order than they are declared
+// `yyjson::annotations` listing the members in another order than they are declared
 struct ReorderedRenamed
 {
     int x = 0;
@@ -517,10 +511,10 @@ struct ReorderedRenamed
     bool operator==(const ReorderedRenamed&) const = default;
 };
 template <>
-inline constexpr RENAME_LIST yyjson::field_rename<ReorderedRenamed> = {yyjson::rename("y", "@y"),
-                                                                      yyjson::rename("x", "@x")};
+inline constexpr auto yyjson::annotations<ReorderedRenamed> =
+    yyjson::annotate(yyjson::field("y", yyjson::rename("@y")), yyjson::field("x", yyjson::rename("@x")));
 
-// A single `rename` rather than a list, which MSVC deduces from `auto field_rename<T> = {yyjson::rename(...)}`
+// A single field renamed
 struct SingleRenamed
 {
     int x = 0;
@@ -528,7 +522,7 @@ struct SingleRenamed
     bool operator==(const SingleRenamed&) const = default;
 };
 template <>
-inline constexpr yyjson::rename yyjson::field_rename<SingleRenamed> = yyjson::rename("x", "@x");
+inline constexpr auto yyjson::annotations<SingleRenamed> = yyjson::annotate(yyjson::field("x", yyjson::rename("@x")));
 
 struct VisitableSwappedKeys
 {
@@ -550,23 +544,49 @@ namespace
 {
     using key_array = std::array<std::string_view, 2>;
     constexpr auto members_ab = key_array{"a", "b"};
-    consteval auto renamed_keys(const key_array& keys, std::initializer_list<yyjson::rename> renames)
+    // The keys of the members `members`, which `VISITABLE_STRUCT` gives `keys` if `visitable`, after `annotations`.
+    template <typename... As>
+    consteval auto annotated_keys(const key_array& members, const key_array& keys, bool visitable,
+                                  const As&... annotations)
     {
-        return yyjson::detail::make_field_keys(members_ab, keys, renames);
+        auto builder = yyjson::detail::field_key_builder<2>{members, {keys}, visitable};
+        for (std::size_t i = 0; i < 2; ++i) builder.renamed[i] = keys[i] != members[i];
+        (builder.apply_annotation(annotations), ...);
+        return builder.result();
+    }
+    template <typename... As>
+    consteval auto annotated_keys(const As&... annotations)
+    {
+        return annotated_keys(members_ab, members_ab, false, annotations...);
     }
     using enum yyjson::detail::field_key_error;
-    static_assert(renamed_keys(members_ab, {yyjson::rename("b", "x")}).keys == key_array{"a", "x"});
-    static_assert(renamed_keys(members_ab, {yyjson::rename("c", "x")}).error == unknown_member);
-    static_assert(renamed_keys(members_ab, {yyjson::rename("a", "x"), yyjson::rename("a", "y")}).error ==
-                  duplicate_member);
-    static_assert(renamed_keys(members_ab, {yyjson::rename("a", "b")}).error == duplicate_key);
-    static_assert(renamed_keys(members_ab, {yyjson::rename("x")}).error == no_member);
-    static_assert(renamed_keys(key_array{"x", "b"}, {yyjson::rename("b", "y")}).error == renamed_twice);
-    static_assert(yyjson::rename("m", "k").member() == "m" && yyjson::rename("m", "k").key() == "k");
-    static_assert(!yyjson::rename("k").has_member() && yyjson::rename("k").key() == "k");
-    static_assert(yyjson::detail::make_field_keys(members_ab, key_array{"b", "b"}).error == duplicate_key);
+    using yyjson::field, yyjson::rename, yyjson::skip;
+    static_assert(annotated_keys(field("b", rename("x"))).keys == key_array{"a", "x"});
+    static_assert(annotated_keys(field("c", rename("x"))).error == unknown_member);
+    static_assert(annotated_keys(field("a", rename("x")), field("a", rename("y"))).error == renamed_twice);
+    static_assert(annotated_keys(field("a", rename("x"), rename("y"))).error == renamed_twice);
+    static_assert(annotated_keys(field("a", rename("b"))).error == duplicate_key);
+    static_assert(annotated_keys(field("a", skip), field("a", skip)).error == same_setting_twice);
+    static_assert(annotated_keys(field("a", skip, rename("x"))).error == skipped_with_setting);
+    static_assert(annotated_keys(field("a", rename("x"), skip)).error == skipped_with_setting);
+    static_assert(annotated_keys(field("a", yyjson::adjacent_tag("t", {"x"}), skip)).error == skipped_with_setting);
+    static_assert(annotated_keys(field("a", yyjson::adjacent_tag("t", {"x"})),
+                                 field("a", yyjson::adjacent_tag("u", {"x"})))
+                      .error == same_setting_twice);
+    static_assert(annotated_keys(yyjson::internal_tag("t", {"x"})).error == not_a_struct_setting);
+    // a skipped field has no key, which another field may take
+    static_assert(annotated_keys(field("a", skip), field("b", rename("a"))).error == none);
+    static_assert(annotated_keys(field("a", skip)).skipped == std::array{true, false});
+    // `VISITABLE_STRUCT` leaves out a member instead of skipping it, and gives a key that is not given again
+    static_assert(annotated_keys(members_ab, members_ab, true, field("a", skip)).error == skip_visitable);
+    static_assert(annotated_keys(members_ab, key_array{"x", "b"}, true, field("a", rename("y"))).error ==
+                  renamed_twice);
+    static_assert(annotated_keys(members_ab, key_array{"x", "b"}, true, field("b", rename("y"))).keys ==
+                  key_array{"x", "y"});
+    static_assert(annotated_keys(members_ab, key_array{"b", "b"}, true).error == duplicate_key);
     // a `VISITABLE_STRUCT` listing a member twice compiles as before, unless it names keys
-    static_assert(yyjson::detail::make_field_keys(key_array{"a", "a"}, key_array{"a", "a"}).error == none);
+    static_assert(annotated_keys(key_array{"a", "a"}, key_array{"a", "a"}, true).error == none);
+    static_assert(rename("k").key() == "k");
 }  // namespace
 
 TEST(Reader, FieldRename)

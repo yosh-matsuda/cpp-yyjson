@@ -966,7 +966,8 @@ struct RenamedCause
     std::chrono::seconds duration_s;
 };
 template <>
-inline constexpr auto yyjson::field_rename<RenamedCause> = {yyjson::rename("duration_s", "duration")};
+inline constexpr auto yyjson::annotations<RenamedCause> =
+    yyjson::annotate(yyjson::field("duration_s", yyjson::rename("duration")));
 struct VisitableRenamedCause
 {
     std::chrono::seconds duration_s;
