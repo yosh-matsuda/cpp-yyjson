@@ -1,7 +1,7 @@
 #include "test_common.hpp"
 
 // the snippets are those of README.md, which declare variables only to show their types
-#if defined(__GNUC__)
+#if defined(__GNUC__) || defined(__clang__)
 #pragma GCC diagnostic ignored "-Wunused-variable"
 #elif defined(_MSC_VER)
 #pragma warning(disable : 4189)
