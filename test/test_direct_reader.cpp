@@ -280,7 +280,8 @@ TEST(DirectReader, Structs)
     for (const auto* json : {
              R"({"i":1,"j":2.5,"k":"s"})", R"({"k":"s","j":2.5,"i":1})", R"({"i":1})", R"({})",
              R"({"x":{"y":[1,{"z":null}],"w":"\"}"},"i":1,"q":[[],{}]})", R"({"\u0069":3,"k":"\u0041"})",
-             R"({"i":1,"i":2})", R"( { "i" : 1 , "j" : 2 } )", "{\n  \"i\": 1,\n  \"k\": \"s\"\n}"})
+             R"({"i":1,"i":2})", R"( { "i" : 1 , "j" : 2 } )", "{\n  \"i\": 1,\n  \"k\": \"s\"\n}",
+             R"({"i":1,"j":2.5,"k":"s","x":0,"i":2})", R"({"i":1,"k":"s","j":2.5})"})
     {
         EXPECT_TRUE((expect_direct_read<ReflectionRecord>(json))) << json;
         EXPECT_TRUE((expect_direct_read<VisitableRecord>(json))) << json;
