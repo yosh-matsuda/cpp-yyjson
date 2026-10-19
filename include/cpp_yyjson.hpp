@@ -4789,9 +4789,8 @@ namespace yyjson
                 }
                 [[nodiscard]] std::optional<double> as_num() const noexcept
                 {
-                    if (is_real()) return yyjson_mut_get_real(base::val_);
-                    if (is_int()) [[likely]]
-                        return yyjson_mut_get_sint(base::val_);
+                    if (is_num()) [[likely]]
+                        return yyjson_mut_get_num(base::val_);
                     return std::nullopt;
                 }
                 [[nodiscard]] std::optional<std::string_view> as_string() const noexcept
@@ -6482,9 +6481,8 @@ namespace yyjson
             }
             [[nodiscard]] std::optional<double> as_num() const noexcept
             {
-                if (is_real()) return yyjson_get_real(val_);
-                if (is_int()) [[likely]]
-                    return yyjson_get_sint(val_);
+                if (is_num()) [[likely]]
+                    return yyjson_get_num(val_);
                 return std::nullopt;
             }
             [[nodiscard]] std::optional<std::string_view> as_string() const noexcept

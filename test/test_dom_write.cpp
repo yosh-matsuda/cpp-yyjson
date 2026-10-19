@@ -379,6 +379,7 @@ TEST(Writer, ValueConversion)
     EXPECT_EQ(1, *value(1).as_int());
     EXPECT_TRUE(value(1U).is_uint());
     EXPECT_EQ(1U, *value(1U).as_uint());
+    EXPECT_EQ(18446744073709551615.0, *value(std::numeric_limits<std::uint64_t>::max()).as_num());
     EXPECT_TRUE(value(-1).is_num());
     EXPECT_TRUE(value(-1).is_sint());
     EXPECT_EQ(-1, *value(-1).as_sint());
