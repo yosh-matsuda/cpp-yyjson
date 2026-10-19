@@ -925,7 +925,7 @@ TEST(DirectReader, ReservesRest)
     {
         if (i != 0) json += next(3) == 0 ? " , " : ",";
         json += '"';
-        for (auto k = next(24); k != 0; --k) json += pieces[next(pieces.size())];
+        for (auto k = next(24); k != 0; --k) json += pieces[next(static_cast<std::uint32_t>(pieces.size()))];
         json += '"';
     }
     json += "]";

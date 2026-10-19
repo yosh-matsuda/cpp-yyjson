@@ -394,8 +394,12 @@ struct PaddedRecord
 
 struct OverlappedRecord
 {
-    // `flag` may be placed in the tail padding of `padded`
+    // `flag` may be placed in the tail padding of `padded`; MSVC ignores the standard attribute
+#if defined(_MSC_VER)
+    [[msvc::no_unique_address]] PaddedRecord padded;
+#else
     [[no_unique_address]] PaddedRecord padded;
+#endif
     bool flag = false;
     bool operator==(const OverlappedRecord&) const = default;
 };
