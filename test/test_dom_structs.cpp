@@ -278,6 +278,7 @@ void test_key_order()
     check(R"({"unknown":0,"id":1,"Id":5,"idx":6,"ab ":7,"ba":3,"long_name_11":"x","a_very_long_name_with_2":"y"})",
           T{1, -2, 3, "default", "default", "default"});
     check(R"({"id":1,"nested":{"id":9,"ab":9},"ab":2})", T{1, 2, -3, "default", "default", "default"});
+    check(R"({"id":1,"ab":2,"x":0,"ba":3,"name":"n"})", T{1, 2, 3, "n", "default", "default"});
 
     // the last one of duplicate keys wins
     check(R"({"id":1,"ab":2,"id":3,"name":"a","name":"b"})", T{3, 2, -3, "b", "default", "default"});
