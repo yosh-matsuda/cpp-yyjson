@@ -2,6 +2,8 @@
 // cast from a document reads.  The texts are those of JSONTestSuite and the number tests of yyjson_benchmark, and
 // documents generated at random and then damaged.
 
+// `std::getenv` reads the settings of the run, which the CRT of MSVC marks as unsafe
+#define _CRT_SECURE_NO_WARNINGS
 #include <gtest/gtest.h>
 #include <algorithm>
 #include <array>
@@ -755,9 +757,6 @@ namespace
 
     std::uint64_t env_or(const char* name, std::uint64_t fallback)
     {
-#ifdef _MSC_VER
-#pragma warning(suppress : 4996)
-#endif
         const auto* value = std::getenv(name);  // NOLINT(concurrency-mt-unsafe)
         return value != nullptr ? std::strtoull(value, nullptr, 10) : fallback;
     }

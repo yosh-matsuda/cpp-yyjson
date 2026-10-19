@@ -1,5 +1,12 @@
 #include "test_common.hpp"
 
+// `constructor_copy_value` and `count_children` are deprecated to keep them out of user code, not out of the tests
+#if defined(__GNUC__)
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#elif defined(_MSC_VER)
+#pragma warning(disable : 4996)
+#endif
+
 // NOLINTBEGIN
 
 TEST(Format, JsonObjects)
