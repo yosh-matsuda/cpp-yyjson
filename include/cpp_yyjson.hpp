@@ -4816,8 +4816,15 @@ namespace yyjson
                 }
                 [[nodiscard]] std::optional<double> as_num() const noexcept
                 {
+#if YYJSON_VERSION_HEX >= 0x000700
                     if (is_num()) [[likely]]
                         return yyjson_mut_get_num(base::val_);
+#else
+                    if (is_real()) return yyjson_mut_get_real(base::val_);
+                    if (is_uint()) return static_cast<double>(yyjson_mut_get_uint(base::val_));
+                    if (is_sint()) [[likely]]
+                        return static_cast<double>(yyjson_mut_get_sint(base::val_));
+#endif
                     return std::nullopt;
                 }
                 [[nodiscard]] std::optional<std::string_view> as_string() const noexcept
@@ -6508,8 +6515,15 @@ namespace yyjson
             }
             [[nodiscard]] std::optional<double> as_num() const noexcept
             {
+#if YYJSON_VERSION_HEX >= 0x000700
                 if (is_num()) [[likely]]
                     return yyjson_get_num(val_);
+#else
+                if (is_real()) return yyjson_get_real(val_);
+                if (is_uint()) return static_cast<double>(yyjson_get_uint(val_));
+                if (is_sint()) [[likely]]
+                    return static_cast<double>(yyjson_get_sint(val_));
+#endif
                 return std::nullopt;
             }
             [[nodiscard]] std::optional<std::string_view> as_string() const noexcept
