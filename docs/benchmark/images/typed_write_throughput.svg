@@ -26,48 +26,48 @@
 <text x="24" y="102" class="value">GB/s</text>
 <line x1="64" y1="392" x2="956" y2="392" class="axis"/>
 <rect x="82.8" y="362.6" width="15.4" height="29.4" fill="#2563eb"/>
-<rect x="98.2" y="367.0" width="15.4" height="25.0" fill="#93c5fd"/>
+<rect x="98.2" y="366.8" width="15.4" height="25.2" fill="#93c5fd"/>
 <rect x="113.6" y="366.5" width="15.4" height="25.5" fill="#ca8a04"/>
-<rect x="128.9" y="374.8" width="15.4" height="17.2" fill="#16a34a"/>
+<rect x="128.9" y="374.9" width="15.4" height="17.1" fill="#16a34a"/>
 <text x="113.6" y="412" class="value" text-anchor="middle">canada</text>
-<rect x="181.9" y="279.5" width="15.4" height="112.5" fill="#2563eb"/>
-<rect x="197.3" y="348.6" width="15.4" height="43.4" fill="#93c5fd"/>
-<rect x="212.7" y="310.4" width="15.4" height="81.6" fill="#ca8a04"/>
+<rect x="181.9" y="281.4" width="15.4" height="110.6" fill="#2563eb"/>
+<rect x="197.3" y="349.9" width="15.4" height="42.1" fill="#93c5fd"/>
+<rect x="212.7" y="309.1" width="15.4" height="82.9" fill="#ca8a04"/>
 <rect x="228.0" y="369.4" width="15.4" height="22.6" fill="#16a34a"/>
 <text x="212.7" y="412" class="value" text-anchor="middle">citm_catalog</text>
-<rect x="281.1" y="216.7" width="15.4" height="175.3" fill="#2563eb"/>
-<rect x="296.4" y="332.7" width="15.4" height="59.3" fill="#93c5fd"/>
-<rect x="311.8" y="304.0" width="15.4" height="88.0" fill="#ca8a04"/>
-<rect x="327.1" y="360.6" width="15.4" height="31.4" fill="#16a34a"/>
+<rect x="281.1" y="215.5" width="15.4" height="176.5" fill="#2563eb"/>
+<rect x="296.4" y="336.6" width="15.4" height="55.4" fill="#93c5fd"/>
+<rect x="311.8" y="302.8" width="15.4" height="89.2" fill="#ca8a04"/>
+<rect x="327.1" y="360.5" width="15.4" height="31.5" fill="#16a34a"/>
 <text x="311.8" y="412" class="value" text-anchor="middle">twitter</text>
-<rect x="380.2" y="247.0" width="15.4" height="145.0" fill="#2563eb"/>
-<rect x="395.5" y="332.7" width="15.4" height="59.3" fill="#93c5fd"/>
-<rect x="410.9" y="304.4" width="15.4" height="87.6" fill="#ca8a04"/>
-<rect x="426.3" y="360.6" width="15.4" height="31.4" fill="#16a34a"/>
+<rect x="380.2" y="245.7" width="15.4" height="146.3" fill="#2563eb"/>
+<rect x="395.5" y="336.6" width="15.4" height="55.4" fill="#93c5fd"/>
+<rect x="410.9" y="303.6" width="15.4" height="88.4" fill="#ca8a04"/>
+<rect x="426.3" y="360.5" width="15.4" height="31.5" fill="#16a34a"/>
 <text x="410.9" y="412" class="value" text-anchor="middle">twitterescaped</text>
-<rect x="479.3" y="211.1" width="15.4" height="180.9" fill="#2563eb"/>
-<rect x="494.6" y="334.8" width="15.4" height="57.2" fill="#93c5fd"/>
-<rect x="510.0" y="289.2" width="15.4" height="102.8" fill="#ca8a04"/>
-<rect x="525.4" y="350.5" width="15.4" height="41.5" fill="#16a34a"/>
+<rect x="479.3" y="208.9" width="15.4" height="183.1" fill="#2563eb"/>
+<rect x="494.6" y="339.8" width="15.4" height="52.2" fill="#93c5fd"/>
+<rect x="510.0" y="289.6" width="15.4" height="102.4" fill="#ca8a04"/>
+<rect x="525.4" y="350.7" width="15.4" height="41.3" fill="#16a34a"/>
 <text x="510.0" y="412" class="value" text-anchor="middle">poet</text>
-<rect x="578.4" y="217.4" width="15.4" height="174.6" fill="#2563eb"/>
-<rect x="593.7" y="293.8" width="15.4" height="98.2" fill="#93c5fd"/>
-<rect x="609.1" y="282.1" width="15.4" height="109.9" fill="#ca8a04"/>
-<rect x="624.5" y="353.1" width="15.4" height="38.9" fill="#16a34a"/>
+<rect x="578.4" y="222.6" width="15.4" height="169.4" fill="#2563eb"/>
+<rect x="593.7" y="299.7" width="15.4" height="92.3" fill="#93c5fd"/>
+<rect x="609.1" y="282.0" width="15.4" height="110.0" fill="#ca8a04"/>
+<rect x="624.5" y="352.7" width="15.4" height="39.3" fill="#16a34a"/>
 <text x="609.1" y="412" class="value" text-anchor="middle">github_events</text>
-<rect x="677.5" y="154.6" width="15.4" height="237.4" fill="#2563eb"/>
-<rect x="692.9" y="260.1" width="15.4" height="131.9" fill="#93c5fd"/>
-<rect x="708.2" y="297.8" width="15.4" height="94.2" fill="#ca8a04"/>
-<rect x="723.6" y="346.8" width="15.4" height="45.2" fill="#16a34a"/>
+<rect x="677.5" y="156.3" width="15.4" height="235.7" fill="#2563eb"/>
+<rect x="692.9" y="261.9" width="15.4" height="130.1" fill="#93c5fd"/>
+<rect x="708.2" y="297.4" width="15.4" height="94.6" fill="#ca8a04"/>
+<rect x="723.6" y="347.0" width="15.4" height="45.0" fill="#16a34a"/>
 <text x="708.2" y="412" class="value" text-anchor="middle">gsoc-2018</text>
-<rect x="776.6" y="259.1" width="15.4" height="132.9" fill="#2563eb"/>
-<rect x="792.0" y="332.8" width="15.4" height="59.2" fill="#93c5fd"/>
-<rect x="807.3" y="297.2" width="15.4" height="94.8" fill="#ca8a04"/>
-<rect x="822.7" y="362.6" width="15.4" height="29.4" fill="#16a34a"/>
+<rect x="776.6" y="254.2" width="15.4" height="137.8" fill="#2563eb"/>
+<rect x="792.0" y="337.0" width="15.4" height="55.0" fill="#93c5fd"/>
+<rect x="807.3" y="298.0" width="15.4" height="94.0" fill="#ca8a04"/>
+<rect x="822.7" y="362.7" width="15.4" height="29.3" fill="#16a34a"/>
 <text x="807.3" y="412" class="value" text-anchor="middle">github_event</text>
-<rect x="875.7" y="265.8" width="15.4" height="126.2" fill="#2563eb"/>
-<rect x="891.1" y="329.3" width="15.4" height="62.7" fill="#93c5fd"/>
-<rect x="906.4" y="288.3" width="15.4" height="103.7" fill="#ca8a04"/>
+<rect x="875.7" y="265.6" width="15.4" height="126.4" fill="#2563eb"/>
+<rect x="891.1" y="334.7" width="15.4" height="57.3" fill="#93c5fd"/>
+<rect x="906.4" y="290.0" width="15.4" height="102.0" fill="#ca8a04"/>
 <rect x="921.8" y="361.5" width="15.4" height="30.5" fill="#16a34a"/>
 <text x="906.4" y="412" class="value" text-anchor="middle">twitter_status</text>
 </svg>

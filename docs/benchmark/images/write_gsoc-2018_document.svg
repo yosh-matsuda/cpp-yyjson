@@ -15,8 +15,8 @@
 <text x="852.0" y="298" class="value" text-anchor="middle">14.2 ms</text>
 <text x="24" y="76" class="heading">New output buffer per write</text>
 <text x="24" y="100" class="label">cpp-yyjson</text>
-<rect x="300" y="89" width="16.1" height="14" rx="2" fill="#2563eb"/>
-<text x="864" y="100" class="value">415 µs</text>
+<rect x="300" y="89" width="16.0" height="14" rx="2" fill="#2563eb"/>
+<text x="864" y="100" class="value">413 µs</text>
 <text x="24" y="124" class="label">yyjson</text>
 <rect x="300" y="113" width="40.2" height="14" rx="2" fill="#16a34a"/>
 <text x="864" y="124" class="value">1.04 ms</text>
@@ -28,7 +28,7 @@
 <text x="864" y="172" class="value">13.2 ms</text>
 <text x="24" y="198" class="heading">Reused output buffer</text>
 <text x="24" y="222" class="label">cpp-yyjson</text>
-<rect x="300" y="211" width="16.1" height="14" rx="2" fill="#2563eb"/>
+<rect x="300" y="211" width="16.0" height="14" rx="2" fill="#2563eb"/>
 <text x="864" y="222" class="value">414 µs</text>
 <text x="24" y="246" class="label">yyjson</text>
 <rect x="300" y="235" width="40.3" height="14" rx="2" fill="#16a34a"/>
