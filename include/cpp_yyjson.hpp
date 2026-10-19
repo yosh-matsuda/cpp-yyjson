@@ -7828,6 +7828,13 @@ namespace yyjson
                 t.emplace(std::move(key), std::move(value));
             };
 
+        // A range of a fixed size, such as `std::array`, whose elements are assigned up to its size rather than
+        // inserted.
+        template <typename T>
+        concept fixed_size_range = std::ranges::sized_range<T> &&
+                                   std::ranges::output_range<T, std::ranges::range_value_t<T>> &&
+                                   (!back_insertable<T>) && (!insertable_set<T>) && (!pair_array_map<T>);
+
         // The type that an element of a range is read as from a JSON array: the element of the range, but a pair
         // of a mutable key and value for a `pair_array_map`, whose elements have const keys.
         template <typename T>
@@ -7858,9 +7865,7 @@ namespace yyjson
                 // `std::vector<bool>` is not an output range in C++20, whose proxy reference cannot be assigned
                 // through a const reference, but it is back insertable.  A range of a fixed size is assigned up to
                 // its size, which `std::forward_list` does not have.
-                requires (std::ranges::output_range<T, std::ranges::range_value_t<T>> &&
-                          std::ranges::sized_range<T>) ||
-                             back_insertable<T> || insertable_set<T> || pair_array_map<T>;
+                requires fixed_size_range<T> || back_insertable<T> || insertable_set<T> || pair_array_map<T>;
                 requires requires(const Json& arr) { cast<array_element_t<T>>(arr.front()); };
             };
 
@@ -7954,8 +7959,7 @@ namespace yyjson
         template <typename T, typename Json>
         concept fixed_size_assignable_in_place =
             std::same_as<Json, reader::const_value_ref> && (!reader::detail::from_json_val_usr_defined<T>) &&
-            (!from_json_unusable<T>) && (!back_insertable<T>) && (!insertable_set<T>) && (!pair_array_map<T>) &&
-            std::ranges::sized_range<T> && array_castable_range<T, reader::const_array_ref>;
+            (!from_json_unusable<T>) && fixed_size_range<T> && array_castable_range<T, reader::const_array_ref>;
 
         template <typename M>
         struct member_pointee;
@@ -8118,8 +8122,11 @@ namespace yyjson
                     result.emplace(std::move(kv.first), std::move(kv.second));
                 }
             }
-            else  // TODO: fixed size range concept
+            else
+            {
+                static_assert(fixed_size_range<T>);
                 assign_fixed_size_range(result, arr);
+            }
 
             return result;
         }
@@ -15759,8 +15766,7 @@ namespace yyjson
                 else
                     skip_ws();
                 // a range of fixed size, such as `std::array`, is assigned element by element and must be filled
-                constexpr auto fixed_size = !yyjson::detail::back_insertable<T> &&
-                                            !yyjson::detail::insertable_set<T> && !yyjson::detail::pair_array_map<T>;
+                constexpr auto fixed_size = yyjson::detail::fixed_size_range<T>;
                 if (*cur_ == ']')
                 {
                     if constexpr (fixed_size)
