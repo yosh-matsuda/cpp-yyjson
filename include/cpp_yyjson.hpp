@@ -90,6 +90,13 @@
 #define CPPYYJSON_RECURSION_DEPTH_LIMIT 256
 #endif
 
+// MSVC reports the code after a call that always throws for some T as unreachable (C4702) once it is inlined, which
+// a template cannot avoid.
+#if defined(_MSC_VER) && !defined(__clang__)
+#pragma warning(push)
+#pragma warning(disable : 4702)
+#endif
+
 namespace yyjson
 {
     inline constexpr auto yyjson_required_version = 0x000600;
@@ -17443,6 +17450,10 @@ struct std::formatter<T>
 
     auto format(const T& t, auto& ctx) const { return std::format_to(ctx.out(), "{}", std::string_view(t.write())); }
 };
+
+#if defined(_MSC_VER) && !defined(__clang__)
+#pragma warning(pop)
+#endif
 
 #define CPPYYJSON_STRIGIFY_IMPL(x) #x
 #define STRIGIFY(x) CPPYYJSON_STRIGIFY_IMPL(x)
