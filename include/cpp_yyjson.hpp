@@ -1959,6 +1959,17 @@ namespace yyjson
         template <typename S, std::size_t R>
         using declared_field_type = typename declared_field_type_of<S, R>::type;
 
+        // The K-th setting of the I-th `yyjson::field` in `annotations<S>`, or no tag if Count is 0. The indices are
+        // template parameters so that MSVC does not instantiate the discarded `std::get` with an index of npos.
+        template <typename S, std::size_t I, std::size_t K, std::size_t Count>
+        consteval auto adjacent_tag_in_annotations()
+        {
+            if constexpr (Count == 0)
+                return no_variant_tag{};
+            else
+                return std::get<K>(std::get<I>(annotations<S>.values).values);
+        }
+
         // The `yyjson::adjacent_tag` of the field R of S, in `annotations<S>` or, with C++26, on the member.
         template <typename S, std::size_t R>
         struct adjacent_tag_of
@@ -2020,10 +2031,7 @@ namespace yyjson
                     return field_reflection::field_annotations<S, R, adjacent_tag_annotation_type>[0];
                 else
 #endif
-                    if constexpr (location[2] == 0)
-                    return no_variant_tag{};
-                else
-                    return std::get<location[1]>(std::get<location[0]>(annotations<S>.values).values);
+                    return adjacent_tag_in_annotations<S, location[0], location[1], location[2]>();
             }();
         };
 
