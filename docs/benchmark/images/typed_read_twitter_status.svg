@@ -15,23 +15,23 @@
 <text x="852.0" y="298" class="value" text-anchor="middle">8.62 µs</text>
 <text x="24" y="76" class="heading">New allocator / object per read</text>
 <text x="24" y="100" class="label">cpp-yyjson read&lt;T&gt;</text>
-<rect x="300" y="89" width="77.4" height="14" rx="2" fill="#2563eb"/>
+<rect x="300" y="89" width="77.1" height="14" rx="2" fill="#2563eb"/>
 <text x="864" y="100" class="value">1.21 µs</text>
-<text x="24" y="124" class="label">Glaze glz::read</text>
-<rect x="300" y="113" width="116.1" height="14" rx="2" fill="#ca8a04"/>
-<text x="864" y="124" class="value">1.81 µs</text>
-<text x="24" y="148" class="label">cpp-yyjson DOM: read + cast&lt;T&gt;</text>
-<rect x="300" y="137" width="132.6" height="14" rx="2" fill="#93c5fd"/>
-<text x="864" y="148" class="value">2.07 µs</text>
+<text x="24" y="124" class="label">cpp-yyjson DOM: read + cast&lt;T&gt;</text>
+<rect x="300" y="113" width="109.0" height="14" rx="2" fill="#93c5fd"/>
+<text x="864" y="124" class="value">1.70 µs</text>
+<text x="24" y="148" class="label">Glaze glz::read</text>
+<rect x="300" y="137" width="116.1" height="14" rx="2" fill="#ca8a04"/>
+<text x="864" y="148" class="value">1.81 µs</text>
 <text x="24" y="172" class="label">reflect-cpp rfl::json::read</text>
 <rect x="300" y="161" width="511.1" height="14" rx="2" fill="#16a34a"/>
 <text x="864" y="172" class="value">7.99 µs</text>
 <text x="24" y="198" class="heading">Reused result object</text>
 <text x="24" y="222" class="label">cpp-yyjson read_into</text>
-<rect x="300" y="211" width="65.2" height="14" rx="2" fill="#2563eb"/>
-<text x="864" y="222" class="value">1.02 µs</text>
+<rect x="300" y="211" width="66.5" height="14" rx="2" fill="#2563eb"/>
+<text x="864" y="222" class="value">1.04 µs</text>
 <text x="24" y="246" class="label">cpp-yyjson merge_into</text>
-<rect x="300" y="235" width="71.1" height="14" rx="2" fill="#2563eb"/>
+<rect x="300" y="235" width="70.9" height="14" rx="2" fill="#2563eb"/>
 <text x="864" y="246" class="value">1.11 µs</text>
 <text x="24" y="270" class="label">Glaze glz::read</text>
 <rect x="300" y="259" width="90.0" height="14" rx="2" fill="#ca8a04"/>

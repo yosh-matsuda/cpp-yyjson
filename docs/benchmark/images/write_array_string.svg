@@ -14,11 +14,11 @@
 <line x1="852.0" y1="50" x2="852.0" y2="132" class="grid"/>
 <text x="852.0" y="150" class="value" text-anchor="middle">9.69 ms</text>
 <text x="24" y="74" class="label">cpp-yyjson</text>
-<rect x="300" y="63" width="434.4" height="14" rx="2" fill="#2563eb"/>
-<text x="864" y="74" class="value">7.63 ms</text>
+<rect x="300" y="63" width="435.7" height="14" rx="2" fill="#2563eb"/>
+<text x="864" y="74" class="value">7.65 ms</text>
 <text x="24" y="98" class="label">cpp-yyjson single</text>
-<rect x="300" y="87" width="437.2" height="14" rx="2" fill="#2563eb"/>
-<text x="864" y="98" class="value">7.68 ms</text>
+<rect x="300" y="87" width="438.4" height="14" rx="2" fill="#2563eb"/>
+<text x="864" y="98" class="value">7.70 ms</text>
 <text x="24" y="122" class="label">yyjson</text>
 <rect x="300" y="111" width="511.1" height="14" rx="2" fill="#16a34a"/>
 <text x="864" y="122" class="value">8.98 ms</text>

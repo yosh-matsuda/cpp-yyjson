@@ -15,8 +15,8 @@
 <text x="852.0" y="298" class="value" text-anchor="middle">8.61 ms</text>
 <text x="24" y="76" class="heading">New allocator / object per read</text>
 <text x="24" y="100" class="label">cpp-yyjson read&lt;T&gt;</text>
-<rect x="300" y="89" width="159.4" height="14" rx="2" fill="#2563eb"/>
-<text x="864" y="100" class="value">2.49 ms</text>
+<rect x="300" y="89" width="158.7" height="14" rx="2" fill="#2563eb"/>
+<text x="864" y="100" class="value">2.48 ms</text>
 <text x="24" y="124" class="label">Glaze glz::read</text>
 <rect x="300" y="113" width="168.8" height="14" rx="2" fill="#ca8a04"/>
 <text x="864" y="124" class="value">2.63 ms</text>
@@ -34,6 +34,6 @@
 <rect x="300" y="235" width="163.8" height="14" rx="2" fill="#2563eb"/>
 <text x="864" y="246" class="value">2.56 ms</text>
 <text x="24" y="270" class="label">cpp-yyjson merge_into</text>
-<rect x="300" y="259" width="163.8" height="14" rx="2" fill="#2563eb"/>
+<rect x="300" y="259" width="163.9" height="14" rx="2" fill="#2563eb"/>
 <text x="864" y="270" class="value">2.56 ms</text>
 </svg>
