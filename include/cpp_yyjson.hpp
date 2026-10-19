@@ -2540,6 +2540,12 @@ namespace yyjson
                 return plain_[index] && equal(names_[index].data(), p, names_[index].size());
             }
 
+            // Whether the `name_size(index)` characters at `p` are the name of the field `index`.
+            [[nodiscard]] CPPYYJSON_ALWAYS_INLINE bool is_name_at(std::size_t index, const char* p) const noexcept
+            {
+                return equal(names_[index].data(), p, names_[index].size());
+            }
+
             // Returns N when no field has the name.
             [[nodiscard]] CPPYYJSON_ALWAYS_INLINE constexpr std::size_t find(std::string_view key,
                                                                              std::size_t hint) const noexcept
@@ -2555,20 +2561,58 @@ namespace yyjson
             }
         };
 
-        // Calls `assign(index, value)` with the index of the field that each key of the object names,
-        // and skips the keys that name no field.
-        template <std::size_t N, typename Json, typename Assign>
-        void assign_fields_by_key(const field_key_matcher<N>& matcher, const Json& obj, Assign&& assign)
+        // `assign_fields_in_order` for the `count` keys from `it` on, with `hint` the field expected next.
+        template <const auto& Matcher, typename Iter, typename Assign>
+        CPPYYJSON_NOINLINE void assign_fields_rest(Iter it, std::size_t count, std::size_t hint, const Assign& assign)
         {
-            std::size_t hint = 0;
-            for (auto&& [key, value] : obj)
+            constexpr auto n = std::remove_cvref_t<decltype(Matcher)>::size;
+            for (; count != 0; --count, ++it)
             {
-                if (const auto index = matcher.find(key, hint); index < N)
+                auto&& [key, value] = *it;
+                if (const auto index = Matcher.find(key, hint); index < n)
                 {
-                    assign(index, value);
+                    [&]<std::size_t... Ks>(std::index_sequence<Ks...>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                        (void)((index == Ks && (assign(std::integral_constant<std::size_t, Ks>{}, value), true)) ||
+                               ...);
+                    }(std::make_index_sequence<n>{});
                     hint = index + 1;
                 }
             }
+        }
+
+        // Calls `assign(std::integral_constant<std::size_t, K>, value)` for the field K that each key of the
+        // object names, and skips the keys that name no field.  Keys usually come in the order of the fields, so
+        // the key of each field is compared in turn with its name, whose length is a constant, and the first key
+        // out of that order goes on in `assign_fields_rest`.
+        template <const auto& Matcher, typename Json, typename Assign>
+        CPPYYJSON_ALWAYS_INLINE inline void assign_fields_in_order(const Json& obj, const Assign& assign)
+        {
+            constexpr auto n = std::remove_cvref_t<decltype(Matcher)>::size;
+            auto count = obj.size();
+            auto it = obj.begin();
+            auto next = n;
+            const auto in_order = [&]<std::size_t K>(std::integral_constant<std::size_t, K>)
+                                      CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                if (count == 0)
+                {
+                    next = n + 1;
+                    return false;
+                }
+                auto&& [key, value] = *it;
+                if (key.size() != Matcher.name_size(K) || !Matcher.is_name_at(K, key.data())) [[unlikely]]
+                {
+                    next = K;
+                    return false;
+                }
+                assign(std::integral_constant<std::size_t, K>{}, value);
+                --count;
+                ++it;
+                return true;
+            };
+            [&]<std::size_t... Ks>(std::index_sequence<Ks...>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                (void)(in_order(std::integral_constant<std::size_t, Ks>{}) && ...);
+            }(std::make_index_sequence<n>{});
+            if (next <= n && count != 0) assign_fields_rest<Matcher>(it, count, next, assign);
         }
 
         template <typename T>
@@ -2592,78 +2636,54 @@ namespace yyjson
                 }(std::make_index_sequence<field_reflection::field_count<T>>{});
         }
 
-        // `assign_fields_by_key` for the fields of the struct T, which calls `assign(index, value, obj)` instead
+        // `assign_fields_in_order` for the fields of the struct T, which calls `assign(k, value, obj)` instead
         // when T has a field that `adjacent_tag` tags, to read its tag from the object.  `assign` must not name
         // the object: a lambda captures it even from a discarded `if constexpr` branch, which keeps the object
         // in memory and slows down `cast` of every struct.
-        template <typename T, std::size_t N, typename Json, typename Assign>
-        CPPYYJSON_ALWAYS_INLINE inline void assign_struct_fields_by_key(const field_key_matcher<N>& matcher,
-                                                                        const Json& obj, Assign&& assign)
+        template <typename T, const auto& Matcher, typename Json, typename Assign>
+        CPPYYJSON_ALWAYS_INLINE inline void assign_struct_fields_by_key(const Json& obj, const Assign& assign)
         {
             if constexpr (has_adjacent_fields<T>)
-                assign_fields_by_key(matcher, obj,
-                                     [&](std::size_t index, const auto& value) { assign(index, value, obj); });
+                assign_fields_in_order<Matcher>(
+                    obj, [&]<std::size_t K>(std::integral_constant<std::size_t, K> k, const auto& value)
+                             CPPYYJSON_LAMBDA_ALWAYS_INLINE { assign(k, value, obj); });
             else
-                assign_fields_by_key(matcher, obj, std::forward<Assign>(assign));
+                assign_fields_in_order<Matcher>(obj, assign);
         }
 
         template <typename T, typename Json>
         void assign_reflected_fields(T& t, const Json& obj)
         {
             [[maybe_unused]] const auto guard = recursion_guard<T>();
-            assign_struct_fields_by_key<T>(reflected_key_matcher<T>, obj, [&](std::size_t index, const auto& value,
-                                                                              const auto&... object) {
-                // expanded here rather than in the fold, where MSVC finds no pack to expand
-                [[maybe_unused]] const auto assign_adjacent = [&]<typename Tags>(std::type_identity<Tags>,
-                                                                                 auto& field) {
-                    assign_adjacent_field<Tags>(field, value, object...);
-                };
-                [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
-                    (void)((index == Ks &&
-                            ([&] {
-                                constexpr auto i = reflected_field_index<T, Ks>;
-                                auto& field = field_reflection::get_field<i>(t);
-                                if constexpr (adjacent_field<T, Ks>)
-                                    assign_adjacent(std::type_identity<field_tags<T, i>>{}, field);
-                                else
-                                    assign_reflected_field(field, value, reflected_field_replaceable<i>(t));
-                            }(),
-                             true)) ||
-                           ...);
-                }(std::make_index_sequence<reflected_fields<T>::size()>{});
-            });
+            assign_struct_fields_by_key<T, reflected_key_matcher<T>>(
+                obj, [&]<std::size_t K>(std::integral_constant<std::size_t, K>, const auto& value,
+                                        const auto&... object) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                    constexpr auto i = reflected_field_index<T, K>;
+                    auto& field = field_reflection::get_field<i>(t);
+                    if constexpr (adjacent_field<T, K>)
+                        assign_adjacent_field<field_tags<T, i>>(field, value, object...);
+                    else
+                        assign_reflected_field(field, value, reflected_field_replaceable<i>(t));
+                });
             if constexpr (has_adjacent_fields<T>) check_adjacent_tags_without_values(t, obj);
         }
 
         // The same as `assign_reflected_fields` for a struct registered by `VISITABLE_STRUCT`, whose
         // fields are given as pointers to members in the order of their names.
-        template <typename T, std::size_t N, typename Json, typename... Members>
-        void assign_visitable_fields(T& t, const field_key_matcher<N>& matcher, const std::tuple<Members...>& members,
-                                     const Json& obj)
+        template <typename T, typename Json, typename... Members>
+        void assign_visitable_fields(T& t, const std::tuple<Members...>& members, const Json& obj)
         {
             [[maybe_unused]] const auto guard = recursion_guard<T>();
-            assign_struct_fields_by_key<T>(
-                matcher, obj, [&](std::size_t index, const auto& value, const auto&... object) {
-                    [[maybe_unused]] const auto assign_adjacent = [&]<typename Tags>(std::type_identity<Tags>,
-                                                                                     auto& field) {
-                        assign_adjacent_field<Tags>(field, value, object...);
-                    };
-                    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                        const auto replaceable = [&]<std::size_t I>(std::integral_constant<std::size_t, I>) {
+            assign_struct_fields_by_key<T, visit_struct<T>::key_matcher>(
+                obj, [&]<std::size_t I>(std::integral_constant<std::size_t, I>, const auto& value,
+                                        const auto&... object) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                    auto& field = t.*std::get<I>(members);
+                    if constexpr (adjacent_field<T, I>)
+                        assign_adjacent_field<field_tags<T, I>>(field, value, object...);
+                    else
+                        assign_reflected_field(field, value, [&]<std::size_t... Is>(std::index_sequence<Is...>) {
                             return has_own_bytes<I>(t.*std::get<Is>(members)...);
-                        };
-                        (void)((index == Is &&
-                            ([&] {
-                                auto& field = t.*std::get<Is>(members);
-                                if constexpr (adjacent_field<T, Is>)
-                                    assign_adjacent(std::type_identity<field_tags<T, Is>>{}, field);
-                                else
-                                    assign_reflected_field(field, value,
-                                                           replaceable(std::integral_constant<std::size_t, Is>{}));
-                            }(),
-                             true)) ||
-                           ...);
-                    }(std::index_sequence_for<Members...>{});
+                        }(std::index_sequence_for<Members...>{}));
                 });
             if constexpr (has_adjacent_fields<T>) check_adjacent_tags_without_values(t, obj);
         }
@@ -12160,36 +12180,34 @@ namespace yyjson
         {
             [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<T>();
             auto defaults = struct_defaults<T>();
-            yyjson::detail::assign_struct_fields_by_key<T>(
-                struct_key_matcher<T>(), obj,
-                [&](std::size_t index, const const_value_ref& value, const auto&... object) {
-                    with_struct_field<T>(index, [&]<std::size_t I>(std::integral_constant<std::size_t, I>) {
-                        auto& field = struct_field<I>(t);
-                        using field_type = std::remove_cvref_t<decltype(field)>;
-                        if (value.is_null())
+            yyjson::detail::assign_struct_fields_by_key<T, struct_key_matcher<T>()>(
+                obj, [&]<std::size_t I>(std::integral_constant<std::size_t, I>, const const_value_ref& value,
+                                        const auto&... object) {
+                    auto& field = struct_field<I>(t);
+                    using field_type = std::remove_cvref_t<decltype(field)>;
+                    if (value.is_null())
+                    {
+                        defaults.template reset<I>(t);
+                        return;
+                    }
+                    if constexpr (yyjson::detail::adjacent_field<T, I>)
+                    {
+                        using tags = yyjson::detail::struct_field_tags<T, I>;
+                        merge_tagged<tags>(field, yyjson::detail::tagged_alternative<field_type, tags>(object...),
+                                           value);
+                        return;
+                    }
+                    else if constexpr (reads_over_old_value<field_type>)
+                        defaults.template reset<I>(t);
+                    else if constexpr (mergeable<field_type>)
+                    {
+                        if (value.is_object())
                         {
-                            defaults.template reset<I>(t);
+                            merge_from(field, value);
                             return;
                         }
-                        if constexpr (yyjson::detail::adjacent_field<T, I>)
-                        {
-                            using tags = yyjson::detail::struct_field_tags<T, I>;
-                            merge_tagged<tags>(field, yyjson::detail::tagged_alternative<field_type, tags>(object...),
-                                               value);
-                            return;
-                        }
-                        else if constexpr (reads_over_old_value<field_type>)
-                            defaults.template reset<I>(t);
-                        else if constexpr (mergeable<field_type>)
-                        {
-                            if (value.is_object())
-                            {
-                                merge_from(field, value);
-                                return;
-                            }
-                        }
-                        yyjson::detail::assign_reflected_field(field, value, false);
-                    });
+                    }
+                    yyjson::detail::assign_reflected_field(field, value, false);
                 });
             if constexpr (yyjson::detail::has_adjacent_fields<T>)
                 yyjson::detail::check_adjacent_tags_without_values(t, obj);
@@ -17666,7 +17684,7 @@ struct std::formatter<T>
         static auto from_json_impl(const Object& obj)                                                               \
         {                                                                                                           \
             auto result = CLASS();                                                                                  \
-            yyjson::detail::assign_visitable_fields(result, key_matcher, members, obj);                             \
+            yyjson::detail::assign_visitable_fields(result, members, obj);                                          \
             return result;                                                                                          \
         }                                                                                                           \
         template <typename Emitter, typename T, typename... Ts>                                                     \
