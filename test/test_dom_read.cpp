@@ -384,6 +384,7 @@ TEST(Reader, ValueExamples)
         EXPECT_TRUE(doc.is_uint());
         EXPECT_FALSE(doc.is_sint());
         EXPECT_THROW(cast<std::int64_t>(doc), bad_cast);
+        EXPECT_EQ(static_cast<double>(val), doc.as_num().value());
     }
     {
         auto val = 3.141592;
