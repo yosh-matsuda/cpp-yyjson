@@ -379,6 +379,114 @@ TEST(DirectReader, Containers)
     }
 }
 
+TEST(DirectReader, ScalarRoots)
+{
+    using namespace yyjson;
+
+    EXPECT_TRUE((expect_direct_read<int>("42")));
+    EXPECT_TRUE((expect_direct_read<int>(" \n-7\t")));
+    EXPECT_TRUE((expect_direct_read<double>("1.5e300")));
+    EXPECT_TRUE((expect_direct_read<std::uint64_t>("18446744073709551615")));
+    EXPECT_TRUE((expect_direct_read<std::string>(R"("a\"b\u00e9")")));
+    EXPECT_TRUE((expect_direct_read<std::string>(std::format(R"( "{}" )", std::string(100, 'x')))));
+    EXPECT_TRUE((expect_direct_read<bool>("true")));
+    EXPECT_TRUE((expect_direct_read<bool>("false")));
+    EXPECT_TRUE((expect_direct_read<std::optional<int>>("null")));
+    EXPECT_TRUE((expect_direct_read<std::nullptr_t>("null")));
+    EXPECT_TRUE((expect_direct_read<std::variant<std::monostate, int, std::string>>(R"("s")")));
+    EXPECT_TRUE((expect_direct_read<std::variant<std::monostate, int, std::string>>("null")));
+    // a text that ends right after the root, without the terminating null character
+    EXPECT_TRUE((expect_direct_read<int>(std::string_view("123", 2))));
+    EXPECT_TRUE((expect_direct_read<std::string>(std::string_view(R"("ab"x)", 4))));
+    EXPECT_TRUE((expect_direct_read<bool>(std::string_view("truex", 4))));
+
+    // invalid text, and values of another kind than T
+    for (const auto* json : {"1 2", "1]", "01", "1.", "-", "1e", "tru", "nul", "truex", "\"a", "\"a\" \"b\"", "\"\\x\"",
+                             "1e999", "[1]x", "nan", "Infinity"})
+    {
+        expect_direct_read<int>(json);
+        expect_direct_read<double>(json);
+        expect_direct_read<std::string>(json);
+        expect_direct_read<std::optional<bool>>(json);
+    }
+    for (const auto* json : {"1", "\"s\"", "true", "null"})
+    {
+        expect_direct_read<std::vector<int>>(json);
+        expect_direct_read<ReadRecord>(json);
+        expect_direct_read<int>(json);
+        expect_direct_read<std::string>(json);
+    }
+
+    EXPECT_TRUE(expect_read_into(5, "6"));
+    EXPECT_TRUE(expect_read_into(std::string("long enough to have a capacity of its own"), R"("s")"));
+    EXPECT_TRUE(expect_read_into(std::optional<int>(1), "null"));
+    auto i = 1;
+    merge_into("2", i);
+    EXPECT_EQ(i, 2);
+
+    // a value that a caster reads from a document of its own
+    using reader::detail::direct_reader;
+    for (const auto* json : {"1.5", "-2", "\"s\""})
+    {
+        const char* first;
+        const char* last;
+        const auto root = direct_reader::find_root(json, ReadFlag::NoFlag, first, last);
+        ASSERT_EQ(root, direct_reader::root_kind::scalar);
+        if (*json == '"')
+        {
+            EXPECT_EQ(direct_reader(root, first, last, ReadFlag::NoFlag).read_root<DocumentOf<std::string>>(),
+                      DocumentOf<std::string>{"s"});
+        }
+        else
+        {
+            EXPECT_EQ(direct_reader(root, first, last, ReadFlag::NoFlag).read_root<DocumentOf<double>>(),
+                      DocumentOf<double>{std::stod(json)});
+        }
+    }
+}
+
+TEST(DirectReader, RelaxingFlags)
+{
+    using namespace yyjson;
+
+    // the flags that only allow more text read strict JSON without a document, and leave the rest to it
+    for (const auto flag : {ReadFlag::AllowComments, ReadFlag::AllowTrailingCommas, ReadFlag::AllowInfAndNan,
+                            ReadFlag::AllowBom, ReadFlag::AllowExtNumber, ReadFlag::AllowExtEscape,
+                            ReadFlag::AllowExtWhitespace, ReadFlag::AllowSingleQuotedStr, ReadFlag::AllowUnquotedKey,
+                            ReadFlag::Json5, ReadFlag::AllowComments | ReadFlag::AllowInvalidUnicode})
+    {
+        EXPECT_TRUE((expect_direct_read<std::vector<double>>("[1, 2.5]", flag)));
+        EXPECT_TRUE((expect_direct_read<ReadRecord>(R"({"name":"r","points":[[1,2]],"tag":"t"})", flag)));
+        EXPECT_TRUE((expect_direct_read<std::string>(R"("a\n")", flag)));
+        EXPECT_TRUE((expect_direct_read<double>("-1e-5", flag)));
+        for (const auto* json : {"[1,2,]", "[1/*c*/,2]", "/*c*/[1]", "[1]//c", "[1,\n// c\n2]", "{\"a\":1,}", "[1e999]",
+                                 "[NaN,-Infinity]", "[inf]", "1e999", "nan", "\xEF\xBB\xBF[1]", "\xEF\xBB\xBF 1",
+                                 " \xEF\xBB\xBF[1]", "[0x10,+1,.5]", "['a']", "{a:1}", "[\"\\x41\"]", "[1\v]"})
+        {
+            expect_direct_read<std::vector<double>>(json, flag);
+            expect_direct_read<std::map<std::string, int>>(json, flag);
+            expect_direct_read<std::vector<std::string>>(json, flag);
+            expect_direct_read<double>(json, flag);
+        }
+    }
+    EXPECT_TRUE((expect_direct_read<std::vector<int>>("\xEF\xBB\xBF [1]", ReadFlag::AllowBom)));
+    EXPECT_TRUE(
+        (expect_direct_read<int>("\xEF\xBB\xBF"
+                                 "1",
+                                 ReadFlag::AllowBom)));
+    EXPECT_TRUE(expect_read_into(std::vector<int>{3}, "\xEF\xBB\xBF[1]", ReadFlag::AllowBom));
+
+    // the flags that change what the text reads as are left to the document
+    for (const auto flag :
+         {ReadFlag::NumberAsRaw, ReadFlag::BignumAsRaw, ReadFlag::AllowComments | ReadFlag::NumberAsRaw})
+    {
+        EXPECT_EQ((read_directly<std::vector<int>>("[1]", flag)), std::nullopt);
+        EXPECT_EQ((read_directly<int>("1", flag)), std::nullopt);
+        expect_direct_read<std::vector<std::string>>("[1, 18446744073709551616]", flag);
+        expect_direct_read<std::vector<int>>("[1] [2]", flag);
+    }
+}
+
 TEST(DirectReader, EmptyArrayFields)
 {
     using namespace yyjson;

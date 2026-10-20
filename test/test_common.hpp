@@ -149,24 +149,37 @@ namespace
     constexpr auto reads_directly = false;
 #endif
 
-    template <typename T>
-    std::optional<std::string> read_directly(std::string_view json, yyjson::ReadFlag flag)
-    {
 #if YYJSON_VERSION_HEX >= 0x000C00
-        const auto is_ws = [](char c) { return c == ' ' || c == '\n' || c == '\r' || c == '\t'; };
-        while (!json.empty() && is_ws(json.front())) json.remove_prefix(1);
-        while (!json.empty() && is_ws(json.back())) json.remove_suffix(1);
-        if (json.size() < 2) return std::nullopt;
+    // Calls `f` with the reader without a document of the root of `json`, as `yyjson::read<T>` makes it, and
+    // returns what `f` returns, or nothing when that reader does not read the text or fails.
+    template <typename F>
+    std::optional<std::string> read_root_directly(std::string_view json, yyjson::ReadFlag flag, F&& f)
+    {
+        using yyjson::reader::detail::direct_reader;
+        const char* first;
+        const char* last;
+        const auto root = direct_reader::find_root(json, flag, first, last);
+        if (root == direct_reader::root_kind::none) return std::nullopt;
         try
         {
-            const auto t =
-                yyjson::reader::detail::direct_reader(json.data(), json.data() + json.size() - 1, flag).read_root<T>();
-            return read_or_error([&]() -> const T& { return t; });
+            auto reader = direct_reader(root, first, last, flag);
+            return f(reader);
         }
         catch (...)
         {
             return std::nullopt;
         }
+    }
+#endif
+
+    template <typename T>
+    std::optional<std::string> read_directly(std::string_view json, yyjson::ReadFlag flag)
+    {
+#if YYJSON_VERSION_HEX >= 0x000C00
+        return read_root_directly(json, flag, [](auto& reader) {
+            const auto t = reader.template read_root<T>();
+            return read_or_error([&]() -> const T& { return t; });
+        });
 #else
         static_cast<void>(json);
         static_cast<void>(flag);
@@ -199,26 +212,11 @@ namespace
     {
         const auto expected = read_or_error([&] { return yyjson::read<T>(json, flag); });
 #if YYJSON_VERSION_HEX >= 0x000C00
-        auto direct = std::optional<std::string>();
-        {
+        const auto direct = read_root_directly(json, flag, [&](auto& reader) {
             auto u = t;
-            auto trimmed = json;
-            const auto is_ws = [](char c) { return c == ' ' || c == '\n' || c == '\r' || c == '\t'; };
-            while (!trimmed.empty() && is_ws(trimmed.front())) trimmed.remove_prefix(1);
-            while (!trimmed.empty() && is_ws(trimmed.back())) trimmed.remove_suffix(1);
-            if (trimmed.size() >= 2)
-            {
-                try
-                {
-                    yyjson::reader::detail::direct_reader(trimmed.data(), trimmed.data() + trimmed.size() - 1, flag)
-                        .read_root_into(u);
-                    direct = read_or_error([&] { return u; });
-                }
-                catch (...)
-                {
-                }
-            }
-        }
+            reader.read_root_into(u);
+            return read_or_error([&] { return u; });
+        });
         if (direct)
         {
             EXPECT_EQ(*direct, expected) << json;
