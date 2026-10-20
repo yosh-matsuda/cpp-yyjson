@@ -378,6 +378,12 @@ TEST(Reader, ValueExamples)
         EXPECT_EQ(std::format("{}", val), doc.write());
     }
     {
+        // a negative integer that `int` does not hold
+        auto doc = read("-2147483649");
+        EXPECT_FALSE(doc.as_uint().has_value());
+        EXPECT_THROW(cast<std::uint64_t>(doc), bad_cast);
+    }
+    {
         auto val = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) + 1;
         auto doc = read(std::format("{}", val));
         EXPECT_TRUE(doc.is_int());

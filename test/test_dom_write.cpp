@@ -650,6 +650,11 @@ TEST(Writer, ValueConversion)
     EXPECT_TRUE(v.is_num());
     EXPECT_TRUE(v.is_sint());
     EXPECT_EQ(-1, *v.as_sint());
+    // a negative integer that `int` does not hold
+    v = -2147483649LL;
+    EXPECT_FALSE(v.as_uint().has_value());
+    EXPECT_EQ(-2147483649LL, v.cast<std::int64_t>());
+    EXPECT_EQ(-2147483649.0, v.cast<double>());
     v = -1.5;
     EXPECT_TRUE(v.is_num());
     EXPECT_TRUE(v.is_real());

@@ -5642,7 +5642,7 @@ namespace yyjson
                     if (is_uint()) return yyjson_mut_get_uint(base::val_);
                     if (is_int()) [[likely]]
                     {
-                        auto ret = yyjson_mut_get_int(base::val_);
+                        auto ret = yyjson_mut_get_sint(base::val_);
                         if (ret >= 0) return ret;
                     }
                     return std::nullopt;
@@ -7412,7 +7412,7 @@ namespace yyjson
                 if (is_uint()) return yyjson_get_uint(val_);
                 if (is_int()) [[likely]]
                 {
-                    auto ret = yyjson_get_int(val_);
+                    auto ret = yyjson_get_sint(val_);
                     if (ret >= 0) return ret;
                 }
                 return std::nullopt;
