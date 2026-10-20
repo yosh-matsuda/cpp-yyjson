@@ -282,7 +282,7 @@ cpp-yyjson is compared with [yyjson](https://github.com/ibireme/yyjson), [simdjs
 
 |       | vs. yyjson 0.12.0 | vs. simdjson | vs. rapidjson | vs. nlohmann-json |
 | ----- | ----------------- | ------------ | ------------- | ----------------- |
-| Read  | 1.0 - 1.8x | 1.1 - 1.7x   | 1.4 - 4.7x    | -                 |
+| Read  | 1.0 - 1.8x | 1.0 - 1.6x   | 1.4 - 4.6x    | 8.8 - 24x         |
 | Write | 1.2 - 2.5x | 2.5 - 6.0x   | 3.2 - 10x     | 3.8 - 34x         |
 
 ![Read throughput per document](docs/benchmark/images/read_throughput.svg)
