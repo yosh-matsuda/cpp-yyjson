@@ -3,6 +3,7 @@
 #include <rapidjson/document.h>
 #include <rapidjson/stringbuffer.h>
 #include <rapidjson/writer.h>
+#include <simdjson.h>
 #include <cpp_yyjson.hpp>
 #if defined(CPPYYJSON_GLAZE_BENCHMARKS)
 #include <glaze/glaze.hpp>
@@ -205,6 +206,20 @@ const nlohmann::json& nlohmann_dataset_doc(const dataset_source& source)
         cached_index = source.index;
     }
     return doc;
+}
+
+// simdjson serializes the elements of its DOM, which refer to the parser that read them.
+simdjson::dom::element simdjson_dataset_root(const dataset_source& source)
+{
+    static auto cached_index = NO_DATASET;
+    static auto parser = simdjson::dom::parser();
+    static auto root = simdjson::dom::element();
+    if (cached_index != source.index)
+    {
+        if (parser.parse(source.json).get(root)) throw std::runtime_error("simdjson failed to read the dataset");
+        cached_index = source.index;
+    }
+    return root;
 }
 
 #if defined(CPPYYJSON_GLAZE_BENCHMARKS)
@@ -1023,6 +1038,26 @@ void write_nlohmann_dataset(benchmark::State& state)
     state.SetBytesProcessed(static_cast<std::int64_t>(state.iterations() * written));
 }
 
+// simdjson writes its DOM only into a new string: `simdjson::minify(element)` is the same function.
+void write_simdjson_dataset(benchmark::State& state)
+{
+    const auto& source = dataset(state.range(0));
+    const auto root = simdjson_dataset_root(source);
+    auto validated = false;
+    auto written = std::size_t{0};
+    for (auto _ : state)
+    {
+        auto result = simdjson::to_string(root);
+        written = result.size();
+        if (!validate_dataset_json_once(state, validated, result, source.root_size))
+        {
+            break;
+        }
+    }
+    state.SetLabel(std::string(json_file_paths[state.range(0)]));
+    state.SetBytesProcessed(static_cast<std::int64_t>(state.iterations() * written));
+}
+
 #if defined(CPPYYJSON_GLAZE_BENCHMARKS)
 void write_glaze_dataset(benchmark::State& state)
 {
@@ -1098,6 +1133,7 @@ BENCHMARK(write_cpp_yyjson_single_dataset)->Unit(benchmark::kMillisecond)->Dense
 BENCHMARK(write_rapidjson_dataset)->Unit(benchmark::kMillisecond)->DenseRange(0, json_file_paths.size() - 1);
 BENCHMARK(write_rapidjson_single_dataset)->Unit(benchmark::kMillisecond)->DenseRange(0, json_file_paths.size() - 1);
 BENCHMARK(write_nlohmann_dataset)->Unit(benchmark::kMillisecond)->DenseRange(0, json_file_paths.size() - 1);
+BENCHMARK(write_simdjson_dataset)->Unit(benchmark::kMillisecond)->DenseRange(0, json_file_paths.size() - 1);
 
 BENCHMARK(write_cpp_yyjson_array_int64)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_cpp_yyjson_single_array_int64)->Unit(benchmark::kMillisecond);
