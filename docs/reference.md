@@ -1419,6 +1419,76 @@ yyjson::read<Request>(R"({"method":"GET","path":"/"})");  // throws: Request has
 *   `yyjson::additional_properties(false)` makes the object of a struct reject a key that names no field of it. With `true`, the object may have such keys under `yyjson::strict` as well, which ignores them; use it for a struct that reads only some of the keys of a larger object.
 *   Their names are those of the keywords of [JSON Schema](https://json-schema.org/understanding-json-schema/reference/object) that say the same. With [C++26 annotations](#c26-annotations), write `[[=yyjson::required]]` on the member and `struct [[=yyjson::additional_properties(false)]] Request` on the struct.
 
+#### Constraints
+
+A field can restrict the values that it reads, as a schema would: give `yyjson::field` the constraints of the field, or write them on the member as [C++26 annotations](#c26-annotations). Reading a value that does not satisfy them throws `yyjson::bad_cast`, with the [path and the position](#errors-of-conversion) of the value:
+
+```cpp
+struct User
+{
+    std::string name;
+    int age = 0;
+    std::vector<std::string> tags;
+};
+template <>
+inline constexpr auto yyjson::annotations<User> =
+    yyjson::annotate(yyjson::field("name", yyjson::min_length(1), yyjson::max_length(32)),
+                     yyjson::field("age", yyjson::minimum(0), yyjson::maximum(150)),
+                     yyjson::field("tags", yyjson::max_items(8)));
+
+yyjson::read<User>(R"({"name":"Ann","age":30})");   // -> User{"Ann", 30, {}}
+yyjson::read<User>(R"({"name":"Ann","age":-1})");   // throws: the value of the key "age" of User is less than the minimum 0 at /age (line 1, column 21, pos 20)
+```
+
+| Constraint | The field | Rejects a value, with the message after `the value of the key "k" of T` |
+| --- | --- | --- |
+| `yyjson::minimum(m)` | a number | less than `m`: `is less than the minimum m` |
+| `yyjson::maximum(m)` | a number | greater than `m`: `is greater than the maximum m` |
+| `yyjson::exclusive_minimum(m)` | a number | `m` or less: `is not greater than the exclusive minimum m` |
+| `yyjson::exclusive_maximum(m)` | a number | `m` or greater: `is not less than the exclusive maximum m` |
+| `yyjson::multiple_of(m)` | a number | not an integer multiple of `m`: `is not a multiple of m` |
+| `yyjson::min_length(n)` | a string | of fewer than `n` code points: `is shorter than the minimum length n` |
+| `yyjson::max_length(n)` | a string | of more than `n` code points: `is longer than the maximum length n` |
+| `yyjson::pattern("regex")` | a string | in which the regular expression matches nowhere: `does not match the pattern "regex"` |
+| `yyjson::min_items(n)` | a range or a map | with fewer than `n` elements: `has fewer items than the minimum n` |
+| `yyjson::max_items(n)` | a range or a map | with more than `n` elements: `has more items than the maximum n` |
+| `yyjson::validate<f>` | any | for which `f(value)` returns `false`: `is rejected by yyjson::validate` |
+
+*   The names are those of the keywords of [JSON Schema](https://json-schema.org/understanding-json-schema/reference/numeric), and so is what they accept, except that `pattern` uses the engine that the program gives, as below. A field may have several constraints, but each one once.
+*   A constraint applies to the value of a `std::optional` field when it has one. `yyjson::validate<f>` takes a function or a lambda without captures, whose parameter is the type of the field or, for a `std::optional<U>` field, `U`.
+*   The bounds of a number are integers or reals, of any type. A value is compared with them exactly, so `yyjson::maximum(9007199254740992.0)` rejects the `std::int64_t` `9007199254740993`, which the conversion to `double` would round to the bound. NaN is in no bounds. `multiple_of` takes a number greater than `0`, and an integer value is checked against an integer `m` exactly. Otherwise the quotient must be an integer in floating point, as JSON Schema validators check it: `0.75` is a multiple of `0.25`, but `0.3` is not one of `0.1`, whose quotient is `2.9999999999999996`.
+*   The length of a string is counted in Unicode code points, as JSON Schema counts it, so `"日本語"` has the length 3. It assumes valid UTF-8, which `yyjson::read` checks unless `ReadFlag::AllowInvalidUnicode` is given.
+*   A constraint is checked when its key is read into the field: by `yyjson::read<T>`, `read_into`, `merge_into` and `cast<T>`, with or without [`yyjson::strict`](#strict-reading). A key that the object leaves out is not checked, and the field keeps its default value even when the constraints reject it; require the key with `yyjson::required` to avoid that. Neither is a key whose value is `null`, which gives the field its value in `T()` (and in `merge_into` resets it), so a `std::optional<int>` field that defaults to `5` keeps `5` under `yyjson::maximum(3)`; reject `null` with [`yyjson::strict`](#strict-reading). `merge_into` checks a struct field that it merges into by its own constraints.
+*   Writing does not check the constraints: `yyjson::write` writes a value that they would reject.
+*   `f` of `yyjson::validate<f>` may be called more than once for the same value, since `yyjson::read<T>` reads the text again through the DOM to tell the error when it rejects the text. An exception that `f` throws propagates out of the read.
+*   A constraint on a field of a type that it does not apply to, such as `minimum` on a string, a `validate<f>` whose `f` takes another type, a bound of NaN, a `multiple_of` of `0` or less, a constraint on a [skipped field](#skipped-fields) and one on the field of an [adjacent tag](#tagged-variants) all fail to compile with a `static_assert`.
+
+`yyjson::pattern` matches a string with a regular expression engine of the program's choice, so that the library includes none. Specialize `yyjson::pattern_matcher<>` before the first read of a struct that has a pattern, with a constructor from the `std::string_view` of the pattern and a `const` call operator that tells whether it matches the `std::string_view` of a string anywhere in it, as JSON Schema's `pattern` does. Each field constructs its matcher once, on its first read. As any explicit specialization, it is one for the whole program: every translation unit that reads a struct with a pattern has to see the same specialization before that read, so two libraries in one program that both use `yyjson::pattern` have to agree on it. With `std::regex`:
+
+```cpp
+#include <regex>
+
+template <>
+struct yyjson::pattern_matcher<>
+{
+    std::regex regex;
+    explicit pattern_matcher(std::string_view pattern) : regex(pattern.begin(), pattern.end()) {}
+    bool operator()(std::string_view s) const { return std::regex_search(s.begin(), s.end(), regex); }
+};
+
+struct Product
+{
+    std::string code;
+};
+template <>
+inline constexpr auto yyjson::annotations<Product> =
+    yyjson::annotate(yyjson::field("code", yyjson::pattern("^[A-Z]{3}-[0-9]{4}$")));
+
+yyjson::read<Product>(R"({"code":"abc"})");  // throws: the value of the key "code" of Product does not match the pattern "^[A-Z]{3}-[0-9]{4}$" at /code (line 1, column 9, pos 8)
+```
+
+A pattern without a specialization of `yyjson::pattern_matcher<>` fails to compile with a `static_assert` that asks for it.
+
 #### Compile errors of types that cannot be converted
 
 Calling `yyjson::write`, `yyjson::read<T>`, `yyjson::read_into` or `yyjson::merge_into` with a type that cannot be converted in that direction calls a deleted overload. Its template argument `cannot_be_written` or `cannot_be_read` names the path from `T` to the first field or element that cannot be converted, with these types of the namespace `yyjson::diagnostic`:
@@ -1747,7 +1817,7 @@ auto json = yyjson::write(Task{"x", [] {}});
 
 #### C++26 annotations
 
-With C++26 static reflection, e.g. GCC 16 with `-std=c++26 -freflection`, the settings of a field can be written on the member itself as an [annotation](https://wg21.link/p3394): `[[=yyjson::rename("key")]]`, `[[=yyjson::skip]]`, `[[=yyjson::required]]` and `[[=yyjson::adjacent_tag(key, ids)]]` are the values that `yyjson::field` takes for the member.
+With C++26 static reflection, e.g. GCC 16 with `-std=c++26 -freflection`, the settings of a field can be written on the member itself as an [annotation](https://wg21.link/p3394): `[[=yyjson::rename("key")]]`, `[[=yyjson::skip]]`, `[[=yyjson::required]]`, `[[=yyjson::adjacent_tag(key, ids)]]` and the [constraints](#constraints), such as `[[=yyjson::minimum(0)]]` and `[[=yyjson::validate<f>]]`, are the values that `yyjson::field` takes for the member.
 
 ```cpp
 struct Project
