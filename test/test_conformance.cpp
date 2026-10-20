@@ -315,7 +315,16 @@ namespace
 
     // The flags that only allow text that is not strict JSON, which the reader without a document is given too.
     constexpr auto relaxed = yyjson::ReadFlag::AllowComments | yyjson::ReadFlag::AllowTrailingCommas |
-                             yyjson::ReadFlag::AllowInfAndNan | yyjson::ReadFlag::AllowBom;
+#if YYJSON_VERSION_HEX >= 0x000B00
+                             yyjson::ReadFlag::AllowBom |
+#endif
+                             yyjson::ReadFlag::AllowInfAndNan;
+
+    constexpr auto suite_flags = std::array{yyjson::ReadFlag::NoFlag, yyjson::ReadFlag::AllowInvalidUnicode, relaxed,
+#if YYJSON_VERSION_HEX >= 0x000C00
+                                            yyjson::ReadFlag::Json5
+#endif
+    };
 }  // namespace
 
 // JSONTestSuite: the texts of `y_` files are accepted, those of `n_` files rejected, and the reader without a
@@ -329,8 +338,7 @@ TEST(Conformance, JSONTestSuite)
         const auto name = path.filename().string();
         const auto text = *read_file(path);
         SCOPED_TRACE(name);
-        for (const auto flag :
-             {yyjson::ReadFlag::NoFlag, yyjson::ReadFlag::AllowInvalidUnicode, relaxed, yyjson::ReadFlag::Json5})
+        for (const auto flag : suite_flags)
         {
             const auto accepted = parses(text, flag);
             if (name.starts_with("y_"))
