@@ -133,8 +133,8 @@ if(CPPYYJSON_BUILD_BENCH)
     add_executable("${PROJECT_NAME}_bench_write" bench_write.cpp)
     target_link_libraries(
       "${PROJECT_NAME}_bench_write"
-      PRIVATE ${PROJECT_NAME} benchmark::benchmark rapidjson nlohmann_json
-      nlohmann_json::nlohmann_json)
+      PRIVATE ${PROJECT_NAME} benchmark::benchmark simdjson::simdjson rapidjson
+      nlohmann_json nlohmann_json::nlohmann_json)
 
   add_executable("${PROJECT_NAME}_bench_typed" bench_typed.cpp)
   target_link_libraries("${PROJECT_NAME}_bench_typed"
@@ -152,7 +152,7 @@ if(CPPYYJSON_BUILD_BENCH)
   add_executable(glaze_bench_write bench_write.cpp)
   target_link_libraries(
     glaze_bench_write PRIVATE ${PROJECT_NAME} benchmark::benchmark glaze::glaze
-                              rapidjson nlohmann_json nlohmann_json::nlohmann_json)
+                              simdjson::simdjson rapidjson nlohmann_json nlohmann_json::nlohmann_json)
   add_executable(glaze_bench_typed bench_typed.cpp)
   target_link_libraries(
     glaze_bench_typed PRIVATE ${PROJECT_NAME} benchmark::benchmark glaze::glaze)
@@ -171,7 +171,7 @@ if(CPPYYJSON_BUILD_BENCH)
   target_compile_definitions(yyjson_bench_read PRIVATE CPPYYJSON_RAW_YYJSON_BENCHMARKS)
 
   add_executable(yyjson_bench_write bench_write.cpp)
-  target_link_libraries(yyjson_bench_write PRIVATE benchmark::benchmark yyjson::yyjson)
+  target_link_libraries(yyjson_bench_write PRIVATE benchmark::benchmark yyjson::yyjson simdjson::simdjson)
   target_compile_features(yyjson_bench_write PRIVATE cxx_std_20)
   target_compile_definitions(yyjson_bench_write PRIVATE CPPYYJSON_RAW_YYJSON_BENCHMARKS)
 
