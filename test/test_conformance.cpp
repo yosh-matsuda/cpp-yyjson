@@ -154,10 +154,11 @@ namespace
         using yyjson::reader::detail::direct_reader;
         const char* first;
         const char* last;
-        if (!direct_reader::find_root(json, flag, first, last)) return {direct_status::skipped, {}};
+        const auto root = direct_reader::find_root(json, flag, first, last);
+        if (root == direct_reader::root_kind::none) return {direct_status::skipped, {}};
         try
         {
-            auto reader = direct_reader(first, last, flag);
+            auto reader = direct_reader(root, first, last, flag);
             return {direct_status::read, written(read(reader))};
         }
         catch (const yyjson::reader::detail::direct_read_unsupported&)
@@ -311,6 +312,10 @@ namespace
         const auto first = json.find_first_not_of(" \t\r\n");
         return first != std::string_view::npos && (json[first] == '[' || json[first] == '{');
     }
+
+    // The flags that only allow text that is not strict JSON, which the reader without a document is given too.
+    constexpr auto relaxed = yyjson::ReadFlag::AllowComments | yyjson::ReadFlag::AllowTrailingCommas |
+                             yyjson::ReadFlag::AllowInfAndNan | yyjson::ReadFlag::AllowBom;
 }  // namespace
 
 // JSONTestSuite: the texts of `y_` files are accepted, those of `n_` files rejected, and the reader without a
@@ -324,7 +329,8 @@ TEST(Conformance, JSONTestSuite)
         const auto name = path.filename().string();
         const auto text = *read_file(path);
         SCOPED_TRACE(name);
-        for (const auto flag : {yyjson::ReadFlag::NoFlag, yyjson::ReadFlag::AllowInvalidUnicode})
+        for (const auto flag :
+             {yyjson::ReadFlag::NoFlag, yyjson::ReadFlag::AllowInvalidUnicode, relaxed, yyjson::ReadFlag::Json5})
         {
             const auto accepted = parses(text, flag);
             if (name.starts_with("y_"))
@@ -336,10 +342,12 @@ TEST(Conformance, JSONTestSuite)
                 EXPECT_FALSE(accepted);
             }
             const auto status = expect_same<ConfJson>(text, flag);
-            // A valid text with an array or an object at its root does not fall back to the document.  The reader
-            // without a document leaves a control character in a string, which yyjson accepts with
-            // `ReadFlag::AllowInvalidUnicode`, to the document.
-            if (status.cast && is_container_root(text) && YYJSON_VERSION_HEX >= 0x000C00 && !name.starts_with("n_"))
+            // A valid text does not fall back to the document.  The reader without a document leaves a control
+            // character in a string, which yyjson accepts with `ReadFlag::AllowInvalidUnicode`, to the document, and
+            // so the text that only the other flags allow.
+            if (status.cast && YYJSON_VERSION_HEX >= 0x000C00 && !name.starts_with("n_") &&
+                (flag == yyjson::ReadFlag::NoFlag || flag == yyjson::ReadFlag::AllowInvalidUnicode ||
+                 parses(text, yyjson::ReadFlag::NoFlag)))
             {
                 EXPECT_TRUE(status.direct == direct_status::read || status.direct == direct_status::unsupported);
             }
@@ -358,7 +366,9 @@ TEST(Conformance, Numbers)
     for (const auto& path : paths)
     {
         const auto name = path.filename().string();
-        if (name.starts_with("nan_inf")) continue;  // only with ReadFlag::AllowInfAndNan, which needs a document
+        // the files of infinities and NaN, and of numbers too large for a double, are read with
+        // `ReadFlag::AllowInfAndNan` too, which the reader without a document leaves to the document
+        const auto nan_inf = name.starts_with("nan_inf");
         auto file = std::istringstream(*read_file(path));
         auto line = std::string();
         while (std::getline(file, line))
@@ -373,6 +383,16 @@ TEST(Conformance, Numbers)
             {
                 EXPECT_FALSE(parses(member, yyjson::ReadFlag::NoFlag));
             }
+            for (const auto flag : {yyjson::ReadFlag::NoFlag, yyjson::ReadFlag::AllowInfAndNan})
+            {
+                if (nan_inf && flag == yyjson::ReadFlag::NoFlag) continue;
+                expect_same<ConfJson>(line, flag);
+                expect_same<double>(line, flag);
+                expect_same<std::int64_t>(line, flag);
+                expect_same<std::vector<double>>(element, flag);
+                expect_same<std::map<std::string, double>>(member, flag);
+            }
+            if (nan_inf) continue;
             expect_same<ConfJson>(element);
             expect_same<std::vector<double>>(element);
             expect_same<std::vector<float>>(element);

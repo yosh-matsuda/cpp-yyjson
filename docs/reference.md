@@ -83,7 +83,17 @@ auto points = read<std::vector<Point>>(R"([{"x":1,"y":2},{"x":3,"y":4}])");
 
 Most types are read straight from the string: numbers, strings, `bool`, `nullptr`, ranges, maps, the pre-defined STL casters, and structs that the compile-time reflection or the `VISITABLE_STRUCT` macro converts. A `std::variant` tries its alternatives on the string in the same order as the cast tries them on a value, and a [tagged variant](#tagged-variants) reads the alternative that its tag names. A tuple-like type, such as `std::tuple` or `std::pair`, is read from an array or an object as its caster reads it from a value; only a tuple of key-value pairs whose keys are not `std::string` is read like a user-defined `from_json` below. A [translator `from_json`](#translator) is read as its parameter type and then converted, and a `from_json` that takes a [`yyjson::json_view`](#reading-a-json-value-in-a-caster) is given a view of the string. A user-defined `from_json` that takes a JSON value of the DOM API is given one, so the value that it converts is read into a temporary document, while the values around it are still read directly. When `T` holds such values as the elements of a range or a map, also as an alternative of a `std::variant`, a temporary document for each element would cost more than one document for the whole string, so `read<T>` then reads the string into a document and casts it, as `read(json_string, flag).cast<T>()` does.
 
-The string is read without a document when its root is an array or an object and `flag` is `NoFlag` or `AllowInvalidUnicode`. Otherwise, and whenever the direct read fails, `read<T>` reads the string into a document and casts it, which is how it gives the result and the exception of `cast<T>` in every case. A user-defined `from_json` may therefore be called twice for the same JSON value, when the direct read fails after calling it. Do not rely on the number of calls.
+The root of the string may be any JSON value: `read<int>("42")` reads the number without a document as well. Whether the string is read without a document depends on `flag`:
+
+| `flag` | How `read<T>` reads the string |
+| --- | --- |
+| `NoFlag`, `AllowInvalidUnicode` | Without a document. |
+| `AllowComments`, `AllowTrailingCommas`, `AllowInfAndNan`, `AllowBom`, `AllowExtNumber`, `AllowExtEscape`, `AllowExtWhitespace`, `AllowSingleQuotedStr`, `AllowUnquotedKey`, `Json5`, alone or combined with each other and with `AllowInvalidUnicode` | Without a document, as strict JSON. A string that uses the syntax that the flags allow is read again into a document. |
+| `ReadInsitu`, `NumberAsRaw` or `BignumAsRaw`, alone or combined with any other flag | Into a document, which is then cast. |
+
+The flags of the second row only allow text that strict JSON does not, and do not change how strict JSON is read, so a string that does not use what they allow is read as fast as with `NoFlag`. A string that does, for example one with a comment, is read directly up to the comment and then again from the start into a document. The result is the same, but the work before the comment is done twice, so such a string takes longer than with `read(json_string, flag).cast<T>()`. `AllowBom` skips a byte order mark at the start of the string, where yyjson skips it, and reads the rest directly.
+
+Whenever the direct read fails, `read<T>` reads the string into a document and casts it, which is how it gives the result and the exception of `cast<T>` in every case. A user-defined `from_json` may therefore be called twice for the same JSON value, when the direct read fails after calling it. Do not rely on the number of calls.
 
 A `T` that would refer to the JSON value, such as `std::string_view`, `const char*` or a struct or a range that holds one, is a compile error for `read<T>`, `read_into` and `merge_into`, because the string or the document that it would point into does not outlive the call. Use `std::string`, or cast such types from a `yyjson::reader::value` that outlives them. The parameter of a [translator `from_json`](#translator) may still be a `std::string_view`, which is valid during the call.
 
@@ -2059,7 +2069,7 @@ To change the limit, define `CPPYYJSON_RECURSION_DEPTH_LIMIT` before including `
 
 When the JSON has a C++ type, `yyjson::read<T>` and `yyjson::write` are the fastest way to convert it. They skip the document that `read(json).cast<T>()` and `value(t).write()` build, and in the [benchmark](benchmark/README.md#data-binding-api) they take 71% to 94% and 28% to 85% of the time of those, respectively.
 
-`read<T>` reads the string directly when its root is an array or an object and the read flag is `NoFlag` or `AllowInvalidUnicode`. With any other flag, such as `ReadFlag::AllowComments`, it reads a document and casts it, which gives the same result more slowly.
+`read<T>` reads the string directly with every read flag except `ReadInsitu`, `NumberAsRaw` and `BignumAsRaw`, which make it read a document and cast it. A flag that allows more than strict JSON, such as `ReadFlag::AllowComments` or `ReadFlag::Json5`, costs nothing while the string is strict JSON. A string that uses the extended syntax is read directly up to it and then again into a document, so when most strings use it, `read(json, flag).cast<T>()` is faster ([details](#reading-a-json-string-into-a-c-object-directly)).
 
 ### Reuse the result object and the output string
 

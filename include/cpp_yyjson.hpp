@@ -12805,7 +12805,8 @@ namespace yyjson
         // Reads JSON text into C++ values as `cast<T>` reads them from a document, without the document.  The
         // root is an object or an array whose closing bracket is the last character other than white space, so
         // that every scan for a character that ends a token stops at that bracket at the latest; only strings
-        // and literals, which end in characters that may be missing, check the bound.
+        // and literals, which end in characters that may be missing, check the bound.  Any other root is read from
+        // a copy that ends in a bracket.
         template <typename T>
         concept builtin_variant = yyjson::detail::variant_json_kinds<T>::is_variant &&
                                   std::derived_from<caster<T>, yyjson::detail::builtin_caster>;
@@ -12853,13 +12854,17 @@ namespace yyjson
             friend class yyjson::json_array_view;
 
             const char* cur_;
-            const char* first_;  // the opening bracket of the root
-            const char* last_;   // the closing bracket of the root
+            const char* first_;  // the opening bracket of the root, or the first character of a scalar root
+            const char* last_;   // the closing bracket of the root, or the character after a scalar root
+            const char* end_;    // where the root ends
             ReadFlag flg_;
             bool inv_;
             bool into_ = false;
             std::string scratch_;
             std::string c_string_;  // the source of a translator that takes a `const char*`
+            // the copy of a scalar root, in the array unless it is longer
+            char scalar_[64];
+            std::unique_ptr<char[]> scalar_large_;
             struct free_alc
             {
                 void operator()(yyjson_alc* alc) const noexcept { yyjson_alc_dyn_free(alc); }
@@ -12912,36 +12917,122 @@ namespace yyjson
             int view_reads_ = 8;
 
         public:
+            enum class root_kind
+            {
+                none,       // this reader does not read the text
+                container,  // `first` and `last` are the brackets of the root
+                scalar,     // `first` and `last` are the first and the last character of the root
+            };
+
+            // The flags that yyjson honors and this reader reads by, which yyjson ignores if it is built without the
+            // non-standard features.
+#if YYJSON_DISABLE_NON_STANDARD
+            static constexpr auto reader_flags = ReadFlag::NoFlag;
+#else
+            static constexpr auto reader_flags = ReadFlag::AllowInvalidUnicode;
+#endif
+
+            // Reads the root that opens at `first` and closes at `last`.  The text is read as strict JSON whatever
+            // flags are given, but `reader_flags`.
             direct_reader(const char* first, const char* last, ReadFlag flg) noexcept
                 : cur_(first),
                   first_(first),
                   last_(last),
-                  flg_(flg),
-                  inv_((flg & ReadFlag::AllowInvalidUnicode) != ReadFlag::NoFlag)
+                  end_(last + 1),
+                  flg_(flg & reader_flags),
+                  inv_(flg_ != ReadFlag::NoFlag)
             {
             }
 
-            // Finds the brackets of the root of `json` between white space, and returns whether this reader reads
-            // it: the root is an object or an array, and no flag but `ReadFlag::AllowInvalidUnicode` is given.
-            CPPYYJSON_ALWAYS_INLINE static bool find_root(std::string_view json, ReadFlag flg, const char*& first,
-                                                          const char*& last) noexcept
+            // Reads the root that `find_root` found.
+            direct_reader(root_kind root, const char* first, const char* last, ReadFlag flg)
+                : direct_reader(first, last, flg)
             {
-                if ((to_underlying(flg) & ~yyjson_read_flag{YYJSON_READ_ALLOW_INVALID_UNICODE}) != 0) [[unlikely]]
-                    return false;
+                if (root == root_kind::scalar) [[unlikely]]
+                    copy_scalar_root(first, last);
+            }
+
+            // The reader points into itself.
+            direct_reader(const direct_reader&) = delete;
+            direct_reader& operator=(const direct_reader&) = delete;
+
+            // The flags that only allow text that is not strict JSON, and read strict JSON as without them.  A
+            // reader that reads the text as strict JSON gives the same result as yyjson with them, or fails.
+            static constexpr auto relaxing_flags = yyjson_read_flag{
+                YYJSON_READ_ALLOW_TRAILING_COMMAS | YYJSON_READ_ALLOW_COMMENTS | YYJSON_READ_ALLOW_INF_AND_NAN |
+                YYJSON_READ_ALLOW_INVALID_UNICODE | YYJSON_READ_ALLOW_BOM | YYJSON_READ_ALLOW_EXT_NUMBER |
+                YYJSON_READ_ALLOW_EXT_ESCAPE | YYJSON_READ_ALLOW_EXT_WHITESPACE | YYJSON_READ_ALLOW_SINGLE_QUOTED_STR |
+                YYJSON_READ_ALLOW_UNQUOTED_KEY};
+
+            // Finds the root of `json` between white space, and returns whether this reader reads it: the root is an
+            // object or an array, or a string, a number or a literal, and no flag but those that only relax the
+            // syntax is given.
+            CPPYYJSON_ALWAYS_INLINE static root_kind find_root(std::string_view json, ReadFlag flg, const char*& first,
+                                                               const char*& last) noexcept
+            {
+#if YYJSON_DISABLE_NON_STANDARD
+                // yyjson ignores them
+                flg = static_cast<ReadFlag>(to_underlying(flg) & ~relaxing_flags);
+#endif
+                if (flg != ReadFlag::NoFlag) [[unlikely]]
+                {
+                    if (!relaxes_only(flg, json)) return root_kind::none;
+                }
                 first = json.data();
                 last = json.data() + json.size();
                 while (first != last && is_ws(*first)) ++first;
                 while (first != last && is_ws(last[-1])) --last;
-                if (last - first < 2 || !((*first == '{' && last[-1] == '}') || (*first == '[' && last[-1] == ']')))
-                    return false;
+                if (last - first >= 2 && ((*first == '{' && last[-1] == '}') || (*first == '[' && last[-1] == ']')))
+                    [[likely]]
+                {
 #if YYJSON_READER_DEPTH_LIMIT
-                // yyjson rejects the text, and this reader would not count the depth
-                if (!within_depth_limit(first, last)) return false;
+                    // yyjson rejects the text, and this reader would not count the depth
+                    if (!within_depth_limit(first, last)) return root_kind::none;
 #endif
-                --last;
+                    --last;
+                    return root_kind::container;
+                }
+                return scalar_or_none(first, last);
+            }
+
+        private:
+            // Whether `flg` only relaxes the syntax, and skips the byte order mark that it allows, which yyjson skips
+            // only at the start.
+            CPPYYJSON_COLD static bool relaxes_only(ReadFlag flg, std::string_view& json) noexcept
+            {
+                if ((to_underlying(flg) & ~relaxing_flags) != 0) return false;
+                if ((flg & ReadFlag::AllowBom) != ReadFlag::NoFlag && json.starts_with("\xEF\xBB\xBF"))
+                    json.remove_prefix(3);
                 return true;
             }
 
+            CPPYYJSON_COLD static root_kind scalar_or_none(const char* first, const char*& last) noexcept
+            {
+                if (first == last || !(*first == '"' || *first == '-' || is_digit(*first) || *first == 't' ||
+                                       *first == 'f' || *first == 'n'))
+                    return root_kind::none;
+                --last;
+                return root_kind::scalar;
+            }
+
+            // Reads the scalar root from a copy of it that ends in a bracket, as a root container does, because the
+            // text may end right after it.
+            CPPYYJSON_NOINLINE void copy_scalar_root(const char* first, const char* last)
+            {
+                const auto n = static_cast<std::size_t>(last - first) + 1;
+                char* text = scalar_;
+                if (n >= sizeof(scalar_))
+                {
+                    scalar_large_ = std::make_unique_for_overwrite<char[]>(n + 1);
+                    text = scalar_large_.get();
+                }
+                std::memcpy(text, first, n);
+                text[n] = ']';
+                cur_ = first_ = text;
+                last_ = end_ = text + n;
+            }
+
+        public:
             // Whether reading T calls `with_document` for each element of a range or a map: then a document of the
             // whole text is cheaper.  The nodes follow `read_value`, `read_object`, `read_array_into` and
             // `read_field`, and `Loop` is whether the value is an element.  A node is `local` if it calls
@@ -13192,13 +13283,13 @@ namespace yyjson
                         {
                             auto result = T();
                             read_array_into<T, true>(result);
-                            if (cur_ != last_ + 1) fail();
+                            if (cur_ != end_) fail();
                             return result;
                         }
                     }
                 }
                 auto result = read_value<T>();
-                if (cur_ != last_ + 1) fail();
+                if (cur_ != end_) fail();
                 return result;
             }
 
@@ -13207,7 +13298,7 @@ namespace yyjson
             {
                 into_ = true;
                 read_value_into(t);
-                if (cur_ != last_ + 1) fail();
+                if (cur_ != end_) fail();
             }
 
             template <typename T>
@@ -13215,7 +13306,7 @@ namespace yyjson
             {
                 into_ = true;
                 merge_value(t);
-                if (cur_ != last_ + 1) fail();
+                if (cur_ != end_) fail();
             }
 
         private:
@@ -14410,8 +14501,8 @@ namespace yyjson
             yyjson_doc* read_local_document()
             {
                 const char* const p = cur_;
-                // a value in the root ends before its closing bracket, which only the root itself reaches
-                const char* const end = p == first_ ? last_ + 1 : last_;
+                // a value in the root ends before its closing bracket, and only the root itself reaches `end_`
+                const char* const end = p == first_ ? end_ : last_;
                 if (alc_ == nullptr)
                 {
                     alc_.reset(yyjson_alc_dyn_new());
@@ -17370,13 +17461,15 @@ namespace yyjson
             return reader::read(json, read_flag).template cast<U>();
         else
         {
+            using reader::detail::direct_reader;
             const char* first;
             const char* last;
-            if (reader::detail::direct_reader::find_root(json, read_flag, first, last)) [[likely]]
+            if (const auto root = direct_reader::find_root(json, read_flag, first, last);
+                root != direct_reader::root_kind::none) [[likely]]
             {
                 try
                 {
-                    return reader::detail::direct_reader(first, last, read_flag).read_root<U>();
+                    return direct_reader(root, first, last, read_flag).read_root<U>();
                 }
                 catch (const std::bad_alloc&)
                 {
@@ -17405,13 +17498,15 @@ namespace yyjson
             t = reader::read(json, read_flag).template cast<T>();
         else
         {
+            using reader::detail::direct_reader;
             const char* first;
             const char* last;
-            if (reader::detail::direct_reader::find_root(json, read_flag, first, last)) [[likely]]
+            if (const auto root = direct_reader::find_root(json, read_flag, first, last);
+                root != direct_reader::root_kind::none) [[likely]]
             {
                 try
                 {
-                    reader::detail::direct_reader(first, last, read_flag).read_root_into(t);
+                    direct_reader(root, first, last, read_flag).read_root_into(t);
                     return;
                 }
                 catch (const std::bad_alloc&)
@@ -17440,13 +17535,15 @@ namespace yyjson
         yyjson::detail::assert_reads_through_casters<T>();
         if constexpr (!reader::detail::direct_reader::reads_documents_in_loop<T>)
         {
+            using reader::detail::direct_reader;
             const char* first;
             const char* last;
-            if (reader::detail::direct_reader::find_root(json, read_flag, first, last)) [[likely]]
+            if (const auto root = direct_reader::find_root(json, read_flag, first, last);
+                root != direct_reader::root_kind::none) [[likely]]
             {
                 try
                 {
-                    reader::detail::direct_reader(first, last, read_flag).merge_root(t);
+                    direct_reader(root, first, last, read_flag).merge_root(t);
                     return;
                 }
                 catch (const std::bad_alloc&)

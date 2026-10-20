@@ -185,19 +185,18 @@ TEST(JsonView, TextAndDocument)
     using namespace yyjson;
     using reader::detail::direct_reader;
 
+    // from a buffer that ends with the text, for the address sanitizer to see a read beyond it
     const auto direct = []<typename T>(std::type_identity<T>, const std::string& json) {
         const auto text = std::make_unique_for_overwrite<char[]>(json.size());
         std::memcpy(text.get(), json.data(), json.size());
-        return direct_reader(text.get(), text.get() + json.size() - 1, ReadFlag::NoFlag).read_root<T>();
+        const char* first;
+        const char* last;
+        const auto root = direct_reader::find_root({text.get(), json.size()}, ReadFlag::NoFlag, first, last);
+        return direct_reader(root, first, last, ReadFlag::NoFlag).read_root<T>();
     };
     const auto check = [&]<typename T>(std::type_identity<T> type, const std::string& json) {
         const auto expected = read(json).cast<T>();
-        // the reader reads only an object or an array at the root, without the white space around it
-        const auto root = json.substr(json.find_first_not_of(' '), json.find_last_not_of(' ') + 1);
-        if (root.front() == '[' || root.front() == '{')
-        {
-            EXPECT_EQ(direct(type, root.substr(0, root.find_last_not_of(' ') + 1)), expected) << json.substr(0, 200);
-        }
+        EXPECT_EQ(direct(type, json), expected) << json.substr(0, 200);
         EXPECT_EQ(read<T>(json), expected) << json.substr(0, 200);
         // a caster is given a view of a copy of a value of a mutable document
         EXPECT_EQ(writer::value(read(json)).cast<T>(), expected) << json.substr(0, 200);
