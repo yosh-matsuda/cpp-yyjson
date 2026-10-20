@@ -30,7 +30,6 @@ READ_COLORS = {
     "c_yyjson": "#16a34a",
     "rapidjson": "#dc2626",
     "simdjson": "#9333ea",
-    "glaze": "#ca8a04",
 }
 
 CONTRACTS = {
@@ -163,8 +162,6 @@ READ_VARIANTS = {
         "simdjson",
         "simdjson On Demand (pad)",
     ),
-    "read_glaze": ("fixed", "fresh", "glaze", "Glaze"),
-    "read_glaze_single": ("fixed", "reused", "glaze", "Glaze"),
 }
 
 WRITE_COLORS = {
@@ -177,7 +174,6 @@ WRITE_COLORS = {
     "rapidjson": "#dc2626",
     "nlohmann-json": "#f97316",
     "simdjson": READ_COLORS["simdjson"],
-    "Glaze": "#ca8a04",
 }
 
 WRITE_POLICIES = {
@@ -195,8 +191,6 @@ WRITE_DATASET_VARIANTS = {
     "write_rapidjson_single_dataset": ("reused", "rapidjson", "rapidjson"),
     "write_nlohmann_dataset": ("fresh", "nlohmann-json", "nlohmann-json"),
     "write_simdjson_dataset": ("fresh", "simdjson", "simdjson"),
-    "write_glaze_dataset": ("fresh", "Glaze", "Glaze"),
-    "write_glaze_single_dataset": ("reused", "Glaze", "Glaze"),
 }
 
 # The typed benchmarks number their own datasets, in the order of `typed_datasets` in
