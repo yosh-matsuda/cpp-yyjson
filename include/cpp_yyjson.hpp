@@ -5493,19 +5493,19 @@ namespace yyjson
                 }
                 template <create_value_callable T, typename... Ts>
                 requires copy_string_args<Ts...> && (!base_of_value<T>) && (!reader::detail::base_of_value_ref<T>)
-                auto emplace_back(T&& t, Ts... ts)
+                auto emplace_back(T&& t, Ts... ts) -> array_iter<DocType>
                 {
                     return array_iter<DocType>(*this, array_append(std::forward<T>(t), ts...));
                 }
                 template <base_of_value T, typename... Ts>
                 requires copy_string_args<Ts...>
-                auto emplace_back(T&& t, Ts...) noexcept
+                auto emplace_back(T&& t, Ts...) noexcept -> array_iter<DocType>
                 {
                     return array_iter<DocType>(*this, array_append(std::forward<T>(t)));
                 }
                 template <reader::detail::base_of_value_ref T, typename... Ts>
                 requires copy_string_args<Ts...>
-                auto emplace_back(T&& t, Ts...) noexcept
+                auto emplace_back(T&& t, Ts...) noexcept -> array_iter<DocType>
                 {
                     return array_iter<DocType>(*this, array_append(std::forward<T>(t)));
                 }
@@ -6171,20 +6171,20 @@ namespace yyjson
                 }
                 template <key_type KeyType, create_value_callable T, typename... Ts>
                 requires copy_string_args<Ts...> && (!base_of_value<T>) && (!reader::detail::base_of_value_ref<T>)
-                auto emplace(KeyType&& key, T&& t, Ts... ts)
+                auto emplace(KeyType&& key, T&& t, Ts... ts) -> object_iter<DocType>
                 {
                     return object_iter<DocType>(*this,
                                                 object_append(std::forward<KeyType>(key), std::forward<T>(t), ts...));
                 }
                 template <key_type KeyType, base_of_value T, typename... Ts>
                 requires copy_string_args<Ts...>
-                auto emplace(KeyType&& key, T&& t, Ts...) noexcept
+                auto emplace(KeyType&& key, T&& t, Ts...) noexcept -> object_iter<DocType>
                 {
                     return object_iter<DocType>(*this, object_append(std::forward<KeyType>(key), std::forward<T>(t)));
                 }
                 template <key_type KeyType, reader::detail::base_of_value_ref T, typename... Ts>
                 requires copy_string_args<Ts...>
-                auto emplace(KeyType&& key, T&& t, Ts...) noexcept
+                auto emplace(KeyType&& key, T&& t, Ts...) noexcept -> object_iter<DocType>
                 {
                     return object_iter<DocType>(*this, object_append(std::forward<KeyType>(key), std::forward<T>(t)));
                 }
