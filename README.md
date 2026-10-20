@@ -289,7 +289,7 @@ cpp-yyjson is compared with [yyjson](https://github.com/ibireme/yyjson), [simdjs
 
 ![Write throughput per document](docs/benchmark/images/write_throughput.svg)
 
-simdjson is compared by its fastest method, On Demand, and has no serializer. See [docs/benchmark](docs/benchmark/README.md#dom-api) for the environment, every document and how to reproduce the numbers.
+simdjson reads by its fastest method, On Demand, and writes its DOM with `simdjson::to_string`. See [docs/benchmark](docs/benchmark/README.md#dom-api) for the environment, every document and how to reproduce the numbers.
 
 ## Bundled backend
 
