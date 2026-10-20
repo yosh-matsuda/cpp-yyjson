@@ -384,6 +384,16 @@ namespace
             EXPECT_THROW(yyjson::read_into(json, into), yyjson::bad_cast) << depth;
             EXPECT_THROW(yyjson::merge_into(json, into), yyjson::bad_cast) << depth;
             EXPECT_EQ(yyjson::detail::recursion_depth, 0) << depth;
+            // the path would be as long as the values are deep
+            try
+            {
+                (void)yyjson::read<T>(json);
+            }
+            catch (const yyjson::bad_cast& e)
+            {
+                EXPECT_EQ(e.path(), "") << depth;
+                EXPECT_FALSE(e.position().has_value()) << depth;
+            }
         }
     }
 
@@ -412,6 +422,14 @@ TEST(Reader, RecursiveTypes)
 
     // a value of a recursive type that does not match throws as any other
     EXPECT_THROW((void)yyjson::read<RecTree>(R"({"v":1,"kids":[{"v":"x"}]})"), yyjson::bad_cast);
+    try
+    {
+        (void)yyjson::read<RecTree>(R"({"v":1,"kids":[{"v":2},{"kids":[{"v":"x"}]}]})");
+    }
+    catch (const yyjson::bad_cast& e)
+    {
+        EXPECT_EQ(e.path(), "/kids/1/kids/0/v");
+    }
     EXPECT_THROW((void)yyjson::read<RecNest>(R"([[],[1]])"), yyjson::bad_cast);
 
     // merging replaces arrays and merges objects at every level

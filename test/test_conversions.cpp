@@ -73,7 +73,9 @@ TEST(Reader, RealToIntegers)
     }
     catch (const bad_cast& e)
     {
-        EXPECT_STREQ(e.what(), "overflow detected: unsigned char is not constructible from JSON number 300");
+        EXPECT_STREQ(e.what(),
+                     "overflow detected: unsigned char is not constructible from JSON number 300 "
+                     "(line 1, column 1, pos 0)");
     }
     try
     {
@@ -82,7 +84,9 @@ TEST(Reader, RealToIntegers)
     }
     catch (const bad_cast& e)
     {
-        EXPECT_STREQ(e.what(), "int is not constructible from JSON number 1.5, which is not an integer");
+        EXPECT_STREQ(e.what(),
+                     "int is not constructible from JSON number 1.5, which is not an integer "
+                     "(line 1, column 1, pos 0)");
     }
 
     // a number is not the size of a container
