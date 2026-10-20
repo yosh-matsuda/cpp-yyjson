@@ -424,6 +424,7 @@ TEST(DirectReader, ScalarRoots)
     merge_into("2", i);
     EXPECT_EQ(i, 2);
 
+#if YYJSON_VERSION_HEX >= 0x000C00
     // a value that a caster reads from a document of its own
     using reader::detail::direct_reader;
     for (const auto* json : {"1.5", "-2", "\"s\""})
@@ -443,8 +444,10 @@ TEST(DirectReader, ScalarRoots)
                       DocumentOf<double>{std::stod(json)});
         }
     }
+#endif
 }
 
+#if YYJSON_VERSION_HEX >= 0x000C00
 TEST(DirectReader, RelaxingFlags)
 {
     using namespace yyjson;
@@ -486,6 +489,7 @@ TEST(DirectReader, RelaxingFlags)
         expect_direct_read<std::vector<int>>("[1] [2]", flag);
     }
 }
+#endif
 
 TEST(DirectReader, EmptyArrayFields)
 {
