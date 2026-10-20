@@ -11,7 +11,7 @@ cpp-yyjson is a header-only C++ interface to [yyjson](https://github.com/ibireme
 *   **Fast with both APIs.** In the [benchmarks](#performance), the data binding API reads and writes C++ types faster than every library it is compared with, and the DOM API reads and writes documents at least as fast as every one of them.
 *   **One call each way.** `read<T>(json)` and `write(t)` convert aggregate structs through compile-time reflection, with no macro or registration. Containers, `std::optional`, `std::variant`, smart pointers, enumerations and recursive types work out of the box.
 *   **Two APIs in one library.** Read JSON of a known shape into C++ types, and JSON of any shape into a DOM, and convert between the two.
-*   **Tolerant of changing JSON.** Unknown keys are ignored, missing keys keep their defaults, and `merge_into` applies a [JSON Merge Patch](https://www.rfc-editor.org/rfc/rfc7396) to an existing object.
+*   **Tolerant of changing JSON, or strict when asked.** Unknown keys are ignored, missing keys keep their defaults, and `merge_into` applies a [JSON Merge Patch](https://www.rfc-editor.org/rfc/rfc7396) to an existing object. [`yyjson::strict`](docs/reference.md#strict-reading) rejects unknown, missing and repeated keys instead.
 *   **A DOM that feels like the standard library.** Arrays and objects are C++20 ranges, objects yield key-value pairs for structured bindings, values work with `std::format`, and documents are built from containers and initializer lists.
 *   **A faster yyjson inside.** The [bundled backend](#bundled-backend) adds SIMD string paths and other optimizations to yyjson, with the same API, input and output.
 
@@ -178,6 +178,7 @@ See the reference for the [immutable](docs/reference.md#immutable-json-classes) 
 | Convert JSON text to a C++ type | `read<T>(json)` |
 | Read many documents of the same shape | `read_into(json, t)` |
 | Apply a partial update | `merge_into(json, t)` |
+| Reject JSON that has more or less than the type | `read<T>(json, yyjson::strict)` |
 | Convert a C++ object to JSON text | `write(t)`, or `write(t, out)` to reuse the string |
 | Read JSON of unknown or varying shape | `read(json)` and the DOM |
 | Keep a member of unknown shape in a C++ type | a field of type `yyjson::value` |

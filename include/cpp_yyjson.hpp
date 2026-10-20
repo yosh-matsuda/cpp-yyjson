@@ -872,6 +872,39 @@ namespace yyjson
     };
     inline constexpr skip_t skip{};
 
+    // A field whose key a JSON object must have, as `yyjson::field("member", yyjson::required)` or
+    // `[[=yyjson::required]]` gives it.  Reading an object without the key throws `yyjson::bad_cast`, except in
+    // `yyjson::merge_into`.
+    struct required_t
+    {
+    };
+    inline constexpr required_t required{};
+
+    // Whether the object of a struct may have keys that name no field, as
+    // `yyjson::annotations<T> = yyjson::annotate(yyjson::additional_properties(false))` or
+    // `struct [[=yyjson::additional_properties(false)]] T` gives it.  With `false`, reading an object with such a key
+    // throws `yyjson::bad_cast`; with `true`, the struct takes such keys under `yyjson::strict` too.  Without it,
+    // the keys are skipped, and `yyjson::strict` rejects them.
+    struct additional_properties
+    {
+        bool allowed = true;
+
+        consteval explicit additional_properties(bool allowed) : allowed(allowed) {}
+    };
+
+    // Reads a value strictly, when it is given to `yyjson::read`, `yyjson::read_into`, `yyjson::merge_into` and
+    // `cast`: an object read into a struct must have the key of every field that is not a `std::optional`, and no
+    // key that names no field, unless `yyjson::additional_properties(true)` annotates the struct; the value of a
+    // `std::optional` field must not be null; and the objects read into structs or maps of unique keys and the
+    // arrays read into sets must not repeat a key or an element.  In the objects that `yyjson::merge_into` merges
+    // into, only the keys that name no field and the repeated keys are checked.  It applies to every value that the
+    // call reads, including those that a `caster` specialization reads with `cast` or `yyjson::read`.
+    struct strict_t
+    {
+        explicit strict_t() = default;
+    };
+    inline constexpr strict_t strict{};
+
     // How JSON names the alternative of a `std::variant`: by trying the alternatives in turn, by a member of the
     // object of the alternative (`internal_tag`), or by a member of the object that holds the variant as a field
     // next to it (`adjacent_tag`).
@@ -975,7 +1008,8 @@ namespace yyjson
 
         // The settings that `yyjson::field` takes for a field.
         template <typename A>
-        concept field_setting = std::same_as<A, rename> || std::same_as<A, skip_t> || adjacent_tag_annotation<A>;
+        concept field_setting = std::same_as<A, rename> || std::same_as<A, skip_t> || std::same_as<A, required_t> ||
+                                adjacent_tag_annotation<A>;
     }  // namespace detail
 
     // The settings of the field `member` of a struct, which `yyjson::annotate` takes.
@@ -991,7 +1025,7 @@ namespace yyjson
     {
         static_assert(sizeof...(As) != 0, "yyjson::field needs a setting of the field");
         static_assert((detail::field_setting<As> && ...),
-                      "yyjson::field takes yyjson::rename, yyjson::skip and yyjson::adjacent_tag");
+                      "yyjson::field takes yyjson::rename, yyjson::skip, yyjson::required and yyjson::adjacent_tag");
         return {member, {values...}};
     }
 
@@ -1055,11 +1089,12 @@ namespace yyjson
     template <typename... As>
     consteval annotation_list<As...> annotate(As... values)
     {
-        static_assert(((detail::is_field_annotation<As>::value || detail::internal_tag_annotation<As> ||
-                        detail::enum_annotation<As>) &&
+        static_assert(((detail::is_field_annotation<As>::value || std::same_as<As, additional_properties> ||
+                        detail::internal_tag_annotation<As> || detail::enum_annotation<As>) &&
                        ...),
-                      "yyjson::annotate takes yyjson::field(...) for a struct, yyjson::internal_tag for a variant, "
-                      "and yyjson::enumerator(...) and yyjson::enum_format for an enumeration");
+                      "yyjson::annotate takes yyjson::field(...) and yyjson::additional_properties for a struct, "
+                      "yyjson::internal_tag for a variant, and yyjson::enumerator(...) and yyjson::enum_format for an "
+                      "enumeration");
         return {{values...}};
     }
 
@@ -1077,6 +1112,11 @@ namespace yyjson
     auto cast(const Json& json) -> decltype(json.template cast<T>())
     {
         return json.template cast<T>();
+    }
+    template <typename T, typename Json>
+    auto cast(const Json& json, strict_t s) -> decltype(json.template cast<T>(s))
+    {
+        return json.template cast<T>(s);
     }
 
     class json_string : public std::string_view
@@ -1487,6 +1527,15 @@ namespace yyjson
             annotated_visitable,
             not_a_struct_setting,
             duplicate_key,
+            additional_twice,
+        };
+
+        // `yyjson::additional_properties` of a struct, if it has one.
+        enum class additional_keys : std::uint8_t
+        {
+            unset,
+            denied,
+            allowed
         };
 
         template <std::size_t N>
@@ -1494,7 +1543,9 @@ namespace yyjson
         {
             std::array<std::string_view, N> keys;
             field_key_error error = field_key_error::none;
-            std::array<bool, N> skipped = {};  // whether a field is annotated with `yyjson::skip`
+            std::array<bool, N> skipped = {};   // whether a field is annotated with `yyjson::skip`
+            std::array<bool, N> required = {};  // whether a field is annotated with `yyjson::required`
+            additional_keys additional = additional_keys::unset;
         };
 
         // Applies the settings of `yyjson::field` and of the annotations of the members to the keys of the fields,
@@ -1524,7 +1575,7 @@ namespace yyjson
             {
                 if (visitable) return fail(field_key_error::skip_visitable);
                 if (table.skipped[i]) return fail(field_key_error::same_setting_twice);
-                if (renamed[i] || tagged[i]) return fail(field_key_error::skipped_with_setting);
+                if (renamed[i] || tagged[i] || table.required[i]) return fail(field_key_error::skipped_with_setting);
                 table.skipped[i] = true;
             }
             constexpr void tag_field(std::size_t i)
@@ -1533,6 +1584,17 @@ namespace yyjson
                 if (table.skipped[i]) return fail(field_key_error::skipped_with_setting);
                 tagged[i] = true;
             }
+            constexpr void require_field(std::size_t i)
+            {
+                if (table.required[i]) return fail(field_key_error::same_setting_twice);
+                if (table.skipped[i]) return fail(field_key_error::skipped_with_setting);
+                table.required[i] = true;
+            }
+            constexpr void set_additional(additional_properties a)
+            {
+                if (table.additional != additional_keys::unset) return fail(field_key_error::additional_twice);
+                table.additional = a.allowed ? additional_keys::allowed : additional_keys::denied;
+            }
             template <typename A>
             constexpr void apply_setting(std::size_t i, const A& a)
             {
@@ -1540,6 +1602,8 @@ namespace yyjson
                     rename_field(i, a.key());
                 else if constexpr (std::same_as<A, skip_t>)
                     skip_field(i);
+                else if constexpr (std::same_as<A, required_t>)
+                    require_field(i);
                 else
                     tag_field(i);
             }
@@ -1554,6 +1618,8 @@ namespace yyjson
                     if (i == N) return fail(field_key_error::unknown_member);
                     std::apply([&](const auto&... values) { (apply_setting(i, values), ...); }, a.values);
                 }
+                else if constexpr (std::same_as<A, additional_properties>)
+                    set_additional(a);
                 else
                     fail(field_key_error::not_a_struct_setting);
             }
@@ -1598,9 +1664,19 @@ namespace yyjson
                 return []<std::size_t... Is>(std::index_sequence<Is...>) {
                     return ((!field_reflection::field_annotations<T, Is, rename>.empty() ||
                              !field_reflection::field_annotations<T, Is, skip_t>.empty() ||
+                             !field_reflection::field_annotations<T, Is, required_t>.empty() ||
                              !field_reflection::field_annotations<T, Is, adjacent_tag_annotation_type>.empty()) ||
                             ...);
                 }(std::make_index_sequence<field_reflection::field_count<T>>{});
+            else
+                return false;
+        }();
+
+        // Whether the struct T is annotated with `yyjson::additional_properties`.
+        template <typename T>
+        inline constexpr bool annotated_type = [] {
+            if constexpr (std::is_class_v<T>)
+                return !field_reflection::type_annotations<T, additional_properties>.empty();
             else
                 return false;
         }();
@@ -1616,6 +1692,8 @@ namespace yyjson
                             builder.rename_field(Is, r.key());
                         for (std::size_t k = 0; k < field_reflection::field_annotations<T, Is, skip_t>.size(); ++k)
                             builder.skip_field(Is);
+                        for (std::size_t k = 0; k < field_reflection::field_annotations<T, Is, required_t>.size(); ++k)
+                            builder.require_field(Is);
                         for (std::size_t k = 0;
                              k < field_reflection::field_annotations<T, Is, adjacent_tag_annotation_type>.size(); ++k)
                             builder.tag_field(Is);
@@ -1633,7 +1711,7 @@ namespace yyjson
                 return true;
 #if FIELD_RFL_ANNOTATIONS
             else if constexpr (!visitable<T>)
-                return annotated_members<T>;
+                return annotated_members<T> || annotated_type<T>;
 #endif
             else
                 return false;
@@ -1669,6 +1747,11 @@ namespace yyjson
                     annotate_reflected_fields<T>(builder);
                 else if constexpr (annotated_members<T>)
                     builder.fail(field_key_error::annotated_visitable);
+                if constexpr (annotated_type<T>)
+                {
+                    for (const additional_properties& a : field_reflection::type_annotations<T, additional_properties>)
+                        builder.set_additional(a);
+                }
 #endif
                 return builder.result();
             }
@@ -1679,7 +1762,9 @@ namespace yyjson
                           "a field is renamed twice, by yyjson::annotations, by an annotation of the member or by a "
                           "(member, \"key\") pair of VISITABLE_STRUCT");
             static_assert(table.error != field_key_error::same_setting_twice,
-                          "a field is given yyjson::skip or yyjson::adjacent_tag twice");
+                          "a field is given yyjson::skip, yyjson::required or yyjson::adjacent_tag twice");
+            static_assert(table.error != field_key_error::additional_twice,
+                          "yyjson::annotations of a struct has yyjson::additional_properties twice");
             static_assert(table.error != field_key_error::skipped_with_setting,
                           "a field annotated with yyjson::skip takes no other setting");
             static_assert(table.error != field_key_error::skip_visitable,
@@ -1897,6 +1982,53 @@ namespace yyjson
         };
         template <typename T, typename... Ds>
         using dependent_t = typename dependent_type<T, Ds...>::type;
+
+        // Whether the values that are being read on this thread are read under `yyjson::strict`.  A flag rather than
+        // a template argument, so that it reaches the casts that a `caster` specialization makes, and costs the
+        // code that does not use it nothing but a load on the paths that it checks.
+        inline constinit thread_local bool strict_reading = false;
+
+        class strict_scope
+        {
+            bool outer_ = strict_reading;
+
+        public:
+            strict_scope() noexcept { strict_reading = true; }
+            ~strict_scope() { strict_reading = outer_; }
+            strict_scope(const strict_scope&) = delete;
+            strict_scope& operator=(const strict_scope&) = delete;
+        };
+
+        // The key of the tag of `yyjson::internal_tag` in the object that is being read as an alternative of the
+        // variant, which the struct of the alternative takes as a key of its own.  The object is told by its
+        // address in the document or in the text.  An alternative that is a variant tagged in the same object
+        // adds its key on top.
+        class internal_tag_key
+        {
+            static inline constinit thread_local const internal_tag_key* innermost_ = nullptr;
+            const void* object_;
+            std::string_view key_;
+            const internal_tag_key* outer_;
+
+        public:
+            internal_tag_key(const void* object, std::string_view key) noexcept
+                : object_(object), key_(key), outer_(innermost_)
+            {
+                innermost_ = this;
+            }
+            ~internal_tag_key() { innermost_ = outer_; }
+            internal_tag_key(const internal_tag_key&) = delete;
+            internal_tag_key& operator=(const internal_tag_key&) = delete;
+
+            [[nodiscard]] static bool contains(const void* object, std::string_view key) noexcept
+            {
+                for (const auto* p = innermost_; p != nullptr && p->object_ == object; p = p->outer_)
+                {
+                    if (p->key_ == key) return true;
+                }
+                return false;
+            }
+        };
 
         // The value that a cast which fails is about.  The exception records it as it is thrown, and the public
         // `cast` that it leaves finds the path to it, so that the casts nested within one catch nothing: a handler
@@ -2342,6 +2474,8 @@ namespace yyjson
                               "yyjson::annotations of a variant has yyjson::internal_tag twice");
                 static_assert(!(is_field_annotation<As>::value || ...),
                               "yyjson::field annotates a struct, not a variant");
+                static_assert(!(std::same_as<As, additional_properties> || ...),
+                              "yyjson::additional_properties annotates a struct, not a variant");
                 static_assert(!(enum_annotation<As> || ...),
                               "yyjson::enumerator and yyjson::enum_format annotate an enumeration, not a variant");
                 auto result = sizeof...(As);
@@ -2674,6 +2808,144 @@ namespace yyjson
                 }(std::make_index_sequence<struct_field_count<S>>{});
         }();
 
+        // Whether `cast<T>` may read null, as `accepted_json_kinds` tells.
+        template <typename T>
+        consteval bool may_read_null();
+
+        // The rules of the keys of the object of the struct S beyond reading its fields, by the index of a field
+        // among those that are read: the fields annotated with `yyjson::required`, the `std::optional` fields, which
+        // `yyjson::strict` lets the object leave out, and `yyjson::additional_properties`.  The keys are checked
+        // without `yyjson::strict` when `always` is true.
+        template <typename S>
+        struct struct_key_rules
+        {
+            static constexpr std::size_t n = struct_field_count<S>;
+
+        private:
+            static constexpr bool has_table = [] {
+                if constexpr (visitable<S>)
+                    return requires { typename visit_struct<S>::field_names; };
+                else
+                    return annotated_fields<S>;
+            }();
+            static consteval const auto& table() noexcept
+            {
+                if constexpr (visitable<S>)
+                    return field_keys<S, typename visit_struct<S>::field_names>::table;
+                else
+                    return field_keys<S, reflected_field_names<S>>::table;
+            }
+
+        public:
+            static constexpr auto required = []<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                if constexpr (has_table)
+                    return std::array<bool, n>{table().required[struct_declared_index<S, Ks>]...};
+                else
+                    return std::array<bool, n>{};
+            }(std::make_index_sequence<n>{});
+            static constexpr auto optional = []<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                return std::array<bool, n>{is_std_optional<struct_field_type<S, Ks>>::value...};
+            }(std::make_index_sequence<n>{});
+            static constexpr auto keys = []<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                return std::array<std::string_view, n>{struct_field_key<S, Ks>...};
+            }(std::make_index_sequence<n>{});
+            static constexpr auto additional = [] {
+                if constexpr (has_table)
+                    return table().additional;
+                else
+                    return additional_keys::unset;
+            }();
+            static constexpr bool always =
+                additional == additional_keys::denied || std::ranges::find(required, true) != required.end();
+            static_assert(
+                [] {
+                    for (std::size_t i = 0; i < n; ++i)
+                        if (required[i] && optional[i]) return false;
+                    return true;
+                }(),
+                "a std::optional field may be left out of the object, which yyjson::required does not let it: give "
+                "the field a type other than std::optional, or leave out yyjson::required");
+        };
+
+        // Whether the object of the struct T has its keys checked without `yyjson::strict`.
+        template <typename T>
+        inline constexpr bool checks_keys_always = [] {
+            // a variant or an enumeration has `annotations<T>` too, but no fields
+            if constexpr (visitable<T> || (reflectable<T> && annotated_fields<T>))
+                return struct_key_rules<T>::always;
+            else
+                return false;
+        }();
+
+        // Whether `key` names a member of the object `object` of S that is not a field: the tag of a field tagged
+        // by `adjacent_tag` that `writes_adjacent_tag`, or the tag of `yyjson::internal_tag` when the object is read
+        // as an alternative.
+        template <typename S>
+        bool is_tag_key(std::string_view key, const void* object) noexcept
+        {
+            if constexpr (has_adjacent_fields<S>)
+            {
+                const auto adjacent = [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                    return ([&] {
+                        if constexpr (writes_adjacent_tag<S, struct_field_tags<S, Ks>>)
+                            return struct_field_tags<S, Ks>::key == key;
+                        else
+                            return false;
+                    }() || ...);
+                }(std::make_index_sequence<struct_field_count<S>>{});
+                if (adjacent) return true;
+            }
+            return internal_tag_key::contains(object, key);
+        }
+
+        [[noreturn]] CPPYYJSON_COLD inline void throw_unknown_key(cast_target at, std::string_view key,
+                                                                  std::string_view type)
+        {
+            throw_bad_cast_at(at, "{} has no field of the key \"{}\"", type, key);
+        }
+        [[noreturn]] CPPYYJSON_COLD inline void throw_repeated_key(cast_target at, std::string_view key,
+                                                                   std::string_view type)
+        {
+            throw_bad_cast_at(at, "the object read into {} has the key \"{}\" twice", type, key);
+        }
+        [[noreturn]] CPPYYJSON_COLD inline void throw_missing_key(cast_target at, std::string_view key,
+                                                                  std::string_view type)
+        {
+            throw_bad_cast_at(at, "{} is not constructible from JSON without the key \"{}\"", type, key);
+        }
+        [[noreturn]] CPPYYJSON_COLD inline void throw_strict_null(cast_target at, std::string_view type)
+        {
+            throw_bad_cast_at(at, "{} is not constructible from null under yyjson::strict", type);
+        }
+        [[noreturn]] CPPYYJSON_COLD inline void throw_repeated_element(cast_target at, std::string_view type)
+        {
+            throw_bad_cast_at(at, "the array read into {} has an element twice", type);
+        }
+
+        // A range that keeps one element of each key, as a set or a map does and a multiset or a multimap does not.
+        template <typename T>
+        concept unique_keys = requires(T& t, std::ranges::range_value_t<T> v) {
+            { t.insert(std::move(v)) } -> std::same_as<std::pair<typename T::iterator, bool>>;
+        };
+
+        // Calls `insert()`, which adds an element to `result`, and returns false if it did not add one because
+        // `result` has its key, which is checked only when `strict` is true.
+        template <typename T, typename Insert>
+        CPPYYJSON_ALWAYS_INLINE inline bool insert_unique(T& result, [[maybe_unused]] bool strict, Insert&& insert)
+        {
+            if constexpr (unique_keys<T>)
+            {
+                if (strict) [[unlikely]]
+                {
+                    const auto size = std::ranges::size(result);
+                    std::forward<Insert>(insert)();
+                    return std::ranges::size(result) != size;
+                }
+            }
+            std::forward<Insert>(insert)();
+            return true;
+        }
+
         // The tags that `writes_adjacent_tag` writes for `s`, one for each variant that does not hold
         // `std::monostate`.
         template <typename S>
@@ -2737,6 +3009,15 @@ namespace yyjson
         void assign_reflected_field(Field& field, const Json& value, bool replaceable)
         {
             using field_type = std::remove_cvref_t<Field>;
+            if constexpr (is_std_optional<field_type>::value)
+            {
+                if constexpr (std::derived_from<caster<field_type>, builtin_caster> &&
+                              !may_read_null<typename field_type::value_type>())
+                {
+                    if (value.is_null() && strict_reading) [[unlikely]]
+                        throw_strict_null(target_of(value), type_name<field_type>());
+                }
+            }
             if constexpr (c_array<field_type>)
             {
                 assign_c_array(field, value);
@@ -3036,9 +3317,10 @@ namespace yyjson
         // Calls `assign(std::integral_constant<std::size_t, K>, value)` for the field K that each key of the
         // object names, and skips the keys that name no field.  Keys usually come in the order of the fields, so
         // the key of each field is compared in turn with its name, whose length is a constant, and the first key
-        // out of that order goes on in `assign_fields_rest`.
+        // out of that order goes on in `assign_fields_rest`.  Returns whether the object has the key of each field
+        // in that order and no other key, which leaves nothing for `check_struct_keys` to check.
         template <const auto& Matcher, typename Json, typename Assign>
-        CPPYYJSON_ALWAYS_INLINE inline void assign_fields_in_order(const Json& obj, const Assign& assign)
+        CPPYYJSON_ALWAYS_INLINE inline bool assign_fields_in_order(const Json& obj, const Assign& assign)
         {
             constexpr auto n = std::remove_cvref_t<decltype(Matcher)>::size;
             auto count = obj.size();
@@ -3066,6 +3348,72 @@ namespace yyjson
                 (void)(in_order(std::integral_constant<std::size_t, Ks>{}) && ...);
             }(std::make_index_sequence<n>{});
             if (next <= n && count != 0) assign_fields_rest<Matcher>(it, count, next, assign);
+            return next == n && count == 0;
+        }
+
+        // Calls `f(key, value)` for each member of the object `obj`.
+        template <typename F>
+        void for_each_member(const yyjson_val* obj, F&& f)
+        {
+            auto iter = yyjson_obj_iter();
+            yyjson_obj_iter_init(const_cast<yyjson_val*>(obj), &iter);
+            while (auto* key = yyjson_obj_iter_next(&iter))
+                f(std::string_view(yyjson_get_str(key), yyjson_get_len(key)), yyjson_obj_iter_get_val(key));
+        }
+        template <typename F>
+        void for_each_member(const yyjson_mut_val* obj, F&& f)
+        {
+            auto iter = yyjson_mut_obj_iter();
+            yyjson_mut_obj_iter_init(const_cast<yyjson_mut_val*>(obj), &iter);
+            while (auto* key = yyjson_mut_obj_iter_next(&iter))
+                f(std::string_view(yyjson_mut_get_str(key), yyjson_mut_get_len(key)), yyjson_mut_obj_iter_get_val(key));
+        }
+
+        // Checks the keys of the object `obj` read into the struct T as `struct_key_rules<T>` and `yyjson::strict`
+        // tell, after its fields are read from an object that does not have the keys of the fields in their order.
+        // With `Merge`, the keys that the object leaves out are not checked.
+        template <typename T, bool Merge, const auto& Matcher, typename Val>
+        CPPYYJSON_NOINLINE CPPYYJSON_COLD void check_struct_keys(const Val* obj)
+        {
+            using rules = struct_key_rules<T>;
+            constexpr auto n = rules::n;
+            const auto strict = strict_reading;
+            const auto deny =
+                rules::additional == additional_keys::denied || (rules::additional == additional_keys::unset && strict);
+            auto seen = std::bitset<n>();
+            for_each_member(obj, [&](std::string_view k, const Val* value) {
+                if (const auto i = Matcher.find(k, 0); i < n)
+                {
+                    if (seen[i] && strict) throw_repeated_key(target_of(value), k, type_name<T>());
+                    seen.set(i);
+                }
+                else if (deny && !is_tag_key<T>(k, obj))
+                    throw_unknown_key(target_of(value), k, type_name<T>());
+            });
+            if constexpr (!Merge)
+            {
+                for (std::size_t i = 0; i < n; ++i)
+                {
+                    if (!seen[i] && (rules::required[i] || (strict && !rules::optional[i])))
+                        throw_missing_key(target_of(obj), rules::keys[i], type_name<T>());
+                }
+            }
+        }
+
+        // The `yyjson_val` or `yyjson_mut_val` of the object `obj` to pass to `check_irregular_struct_keys`.  Passing
+        // the object ref itself, or reading the pointer through its base class, keeps GCC from passing `obj` to
+        // the caller by value, and that cost every cast up to 13 %.
+        template <typename Obj>
+        CPPYYJSON_ALWAYS_INLINE inline auto struct_keys_of(const Obj& obj) noexcept
+        {
+            return dependent_t<writer::detail::json_value_access, Obj>::get_exact(obj);
+        }
+
+        // Calls `check_struct_keys` if the keys of the object are to be checked.
+        template <typename T, bool Merge, const auto& Matcher, typename Val>
+        CPPYYJSON_ALWAYS_INLINE inline void check_irregular_struct_keys(const Val* obj)
+        {
+            if (checks_keys_always<T> || strict_reading) check_struct_keys<T, Merge, Matcher>(obj);
         }
 
         template <typename T>
@@ -3094,21 +3442,22 @@ namespace yyjson
         // the object: a lambda captures it even from a discarded `if constexpr` branch, which keeps the object
         // in memory and slows down `cast` of every struct.
         template <typename T, const auto& Matcher, typename Json, typename Assign>
-        CPPYYJSON_ALWAYS_INLINE inline void assign_struct_fields_by_key(const Json& obj, const Assign& assign)
+        CPPYYJSON_ALWAYS_INLINE inline bool assign_struct_fields_by_key(const Json& obj, const Assign& assign)
         {
             if constexpr (has_adjacent_fields<T>)
-                assign_fields_in_order<Matcher>(
+                return assign_fields_in_order<Matcher>(
                     obj, [&]<std::size_t K>(std::integral_constant<std::size_t, K> k, const auto& value)
                              CPPYYJSON_LAMBDA_ALWAYS_INLINE { assign(k, value, obj); });
             else
-                assign_fields_in_order<Matcher>(obj, assign);
+                return assign_fields_in_order<Matcher>(obj, assign);
         }
 
         template <typename T, typename Json>
         void assign_reflected_fields(T& t, const Json& obj)
         {
             [[maybe_unused]] const auto guard = recursion_guard<T>();
-            assign_struct_fields_by_key<T, reflected_key_matcher<T>>(
+            const auto* const keys = struct_keys_of(obj);
+            const auto in_order = assign_struct_fields_by_key<T, reflected_key_matcher<T>>(
                 obj, [&]<std::size_t K>(std::integral_constant<std::size_t, K>, const auto& value,
                                         const auto&... object) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
                     constexpr auto i = reflected_field_index<T, K>;
@@ -3118,6 +3467,8 @@ namespace yyjson
                     else
                         assign_reflected_field(field, value, reflected_field_replaceable<i>(t));
                 });
+            if (!in_order) [[unlikely]]
+                check_irregular_struct_keys<T, false, reflected_key_matcher<T>>(keys);
             if constexpr (has_adjacent_fields<T>) check_adjacent_tags_without_values(t, obj);
         }
 
@@ -3127,7 +3478,8 @@ namespace yyjson
         void assign_visitable_fields(T& t, const std::tuple<Members...>& members, const Json& obj)
         {
             [[maybe_unused]] const auto guard = recursion_guard<T>();
-            assign_struct_fields_by_key<T, visit_struct<T>::key_matcher>(
+            const auto* const keys = struct_keys_of(obj);
+            const auto in_order = assign_struct_fields_by_key<T, visit_struct<T>::key_matcher>(
                 obj, [&]<std::size_t I>(std::integral_constant<std::size_t, I>, const auto& value,
                                         const auto&... object) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
                     auto& field = t.*std::get<I>(members);
@@ -3138,6 +3490,8 @@ namespace yyjson
                             return has_own_bytes<I>(t.*std::get<Is>(members)...);
                         }(std::index_sequence_for<Members...>{}));
                 });
+            if (!in_order) [[unlikely]]
+                check_irregular_struct_keys<T, false, visit_struct<T>::key_matcher>(keys);
             if constexpr (has_adjacent_fields<T>) check_adjacent_tags_without_values(t, obj);
         }
 
@@ -5148,6 +5502,13 @@ namespace yyjson
                     yyjson::detail::assert_from_json_usable<U>();
                     return default_caster<U>::from_json(const_value_ref(doc_, val_));
                 }
+                // Casts as `cast<T>()` with `yyjson::strict`, which rejects JSON that has more or less than T takes.
+                template <typename T>
+                auto cast(yyjson::strict_t) const -> decltype(this->template cast<T>())
+                {
+                    const auto scope = yyjson::detail::strict_scope();
+                    return this->template cast<T>();
+                }
                 template <typename T>
                 requires (!base_of_value<T>)
                 explicit operator T() const
@@ -5651,6 +6012,13 @@ namespace yyjson
                 {
                     yyjson::detail::assert_from_json_usable<U>();
                     return default_caster<U>::from_json(const_array_ref(*this));
+                }
+                // Casts as `cast<T>()` with `yyjson::strict`, which rejects JSON that has more or less than T takes.
+                template <typename T>
+                auto cast(yyjson::strict_t) const -> decltype(this->template cast<T>())
+                {
+                    const auto scope = yyjson::detail::strict_scope();
+                    return this->template cast<T>();
                 }
                 template <typename T>
                 requires (!base_of_value<T>)
@@ -6439,6 +6807,13 @@ namespace yyjson
                     yyjson::detail::assert_from_json_usable<U>();
                     return default_caster<U>::from_json(const_object_ref(*this));
                 }
+                // Casts as `cast<T>()` with `yyjson::strict`, which rejects JSON that has more or less than T takes.
+                template <typename T>
+                auto cast(yyjson::strict_t) const -> decltype(this->template cast<T>())
+                {
+                    const auto scope = yyjson::detail::strict_scope();
+                    return this->template cast<T>();
+                }
                 template <typename T>
                 requires (!base_of_value<T>)
                 explicit operator T() const
@@ -7119,6 +7494,13 @@ namespace yyjson
                 yyjson::detail::assert_from_json_usable<U>();
                 return detail::default_caster<U>::from_json(*this);
             }
+            // Casts as `cast<T>()` with `yyjson::strict`, which rejects JSON that has more or less than T takes.
+            template <typename T>
+            auto cast(yyjson::strict_t) const -> decltype(this->template cast<T>())
+            {
+                const auto scope = yyjson::detail::strict_scope();
+                return this->template cast<T>();
+            }
 
             template <typename T>
             requires (!detail::base_of_value_ref<T>)
@@ -7237,6 +7619,13 @@ namespace yyjson
             {
                 yyjson::detail::assert_from_json_usable<U>();
                 return detail::default_caster<U>::from_json(*this);
+            }
+            // Casts as `cast<T>()` with `yyjson::strict`, which rejects JSON that has more or less than T takes.
+            template <typename T>
+            auto cast(yyjson::strict_t) const -> decltype(this->template cast<T>())
+            {
+                const auto scope = yyjson::detail::strict_scope();
+                return this->template cast<T>();
             }
             template <typename T>
             requires (!detail::base_of_value_ref<T>)
@@ -7386,6 +7775,13 @@ namespace yyjson
             {
                 yyjson::detail::assert_from_json_usable<U>();
                 return detail::default_caster<U>::from_json(*this);
+            }
+            // Casts as `cast<T>()` with `yyjson::strict`, which rejects JSON that has more or less than T takes.
+            template <typename T>
+            auto cast(yyjson::strict_t) const -> decltype(this->template cast<T>())
+            {
+                const auto scope = yyjson::detail::strict_scope();
+                return this->template cast<T>();
             }
             template <typename T>
             requires (!detail::base_of_value_ref<T>)
@@ -8787,10 +9183,15 @@ namespace yyjson
             auto result = T();
             reserve_if_possible(result, obj.size());
             auto position = emplace_position<T>::first(result);
+            const auto strict = unique_keys<T> && strict_reading;
             for (auto&& kv : obj)
             {
-                emplace_key_value<false>(result, position, object_key<T>(kv.first, detail::target_of(kv.second)),
-                                         detail::cast_nested<value_type>(kv.second));
+                if (!insert_unique(result, strict, [&] {
+                        emplace_key_value<false>(result, position,
+                                                 object_key<T>(kv.first, detail::target_of(kv.second)),
+                                                 detail::cast_nested<value_type>(kv.second));
+                    })) [[unlikely]]
+                    throw_repeated_key(detail::target_of(kv.second), std::string_view(kv.first), type_name<T>());
             }
             return result;
         }
@@ -8852,15 +9253,25 @@ namespace yyjson
             {
                 // the end is the right hint for the elements of a sorted set, which are written in order
                 reserve_if_possible(result, arr.size());
-                for (const auto& e : arr) result.insert(result.end(), detail::cast_nested<value_type>(e));
+                const auto strict = unique_keys<T> && strict_reading;
+                for (const auto& e : arr)
+                {
+                    if (!insert_unique(result, strict, [&] {
+                            result.insert(result.end(), detail::cast_nested<value_type>(e));
+                        })) [[unlikely]]
+                        throw_repeated_element(detail::target_of(e), type_name<T>());
+                }
             }
             else if constexpr (pair_array_map<T>)
             {
                 reserve_if_possible(result, arr.size());
+                const auto strict = unique_keys<T> && strict_reading;
                 for (const auto& e : arr)
                 {
                     auto kv = detail::cast_nested<array_element_t<T>>(e);
-                    result.emplace(std::move(kv.first), std::move(kv.second));
+                    if (!insert_unique(result, strict,
+                                       [&] { result.emplace(std::move(kv.first), std::move(kv.second)); })) [[unlikely]]
+                        throw_repeated_element(detail::target_of(e), type_name<T>());
                 }
             }
             else
@@ -9569,6 +9980,12 @@ namespace yyjson
             }
         }
 
+        template <typename T>
+        consteval bool may_read_null()
+        {
+            return (accepted_json_kinds<T, reader::const_value_ref>() & json_kind_null) != 0;
+        }
+
         template <typename... Ts>
         struct variant_json_kinds<std::variant<Ts...>>
         {
@@ -9835,6 +10252,7 @@ namespace yyjson
                 const auto index = detail::tagged_alternative<V, tags>(*obj);
                 if (index == std::variant_npos)
                     detail::throw_variant_tag_missing(detail::target_of(json), tags::key, detail::type_name<V>());
+                const auto key = detail::internal_tag_key(detail::target_of(json).value(), tags::key);
                 return detail::cast_alternative<V>(index, json);
             }
             else
@@ -10154,6 +10572,13 @@ namespace yyjson
                 return v.val_;
             }
             static const yyjson_val* get(const reader::abstract_value_ref& v) noexcept { return v.val_; }
+            // `get` that reads the value through the type of `v`, not through its base: a parameter read only so
+            // can be passed by value in its place (GCC's IPA-SRA).
+            template <typename Json>
+            static auto get_exact(const Json& v) noexcept -> decltype(get(v))
+            {
+                return v.val_;
+            }
             template <typename DocType>
             static yyjson_mut_doc* document(const abstract_value<DocType>& v) noexcept
             {
@@ -12909,7 +13334,7 @@ namespace yyjson
         // alternative that `t` holds when the tag names it or `index` is `std::variant_npos` for no tag, and as a
         // new alternative otherwise.  `std::monostate` takes nothing to merge into.
         template <typename Tags, typename V>
-        void merge_tagged(V& t, std::size_t index, const const_value_ref& v)
+        void merge_tagged_alternative(V& t, std::size_t index, const const_value_ref& v)
         {
             if (index != std::variant_npos && index != t.index())
             {
@@ -12927,13 +13352,28 @@ namespace yyjson
                 t);
         }
 
+        // Calls `merge_tagged_alternative`, and lets the alternative of an internally tagged variant have its tag
+        // key while the keys of its object are checked.
+        template <typename Tags, typename V>
+        void merge_tagged(V& t, std::size_t index, const const_value_ref& v)
+        {
+            if constexpr (Tags::tagging == yyjson::variant_tagging::internal)
+            {
+                const auto key = yyjson::detail::internal_tag_key(yyjson::detail::target_of(v).value(), Tags::key);
+                merge_tagged_alternative<Tags>(t, index, v);
+            }
+            else
+                merge_tagged_alternative<Tags>(t, index, v);
+        }
+
         // Merges a JSON object into the fields of `t` that its keys name, as `merge_from` does.
         template <typename T>
         void merge_struct_from(T& t, const const_object_ref& obj)
         {
             [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<T>();
             auto defaults = struct_defaults<T>();
-            yyjson::detail::assign_struct_fields_by_key<T, struct_key_matcher<T>()>(
+            const auto* const keys = yyjson::detail::struct_keys_of(obj);
+            const auto in_order = yyjson::detail::assign_struct_fields_by_key<T, struct_key_matcher<T>()>(
                 obj, [&]<std::size_t I>(std::integral_constant<std::size_t, I>, const const_value_ref& value,
                                         const auto&... object) {
                     auto& field = struct_field<I>(t);
@@ -12962,14 +13402,30 @@ namespace yyjson
                     }
                     yyjson::detail::assign_reflected_field(field, value, false);
                 });
+            if (!in_order) [[unlikely]]
+                yyjson::detail::check_irregular_struct_keys<T, true, struct_key_matcher<T>()>(keys);
             if constexpr (yyjson::detail::has_adjacent_fields<T>)
                 yyjson::detail::check_adjacent_tags_without_values(t, obj);
+        }
+
+        // Throws if the object `obj` has a key twice.
+        CPPYYJSON_NOINLINE CPPYYJSON_COLD inline void check_unique_keys(const const_object_ref& obj,
+                                                                        std::string_view type)
+        {
+            auto keys = std::vector<std::pair<std::string_view, yyjson::detail::cast_target>>();
+            keys.reserve(obj.size());
+            for (auto&& [k, value] : obj) keys.emplace_back(std::string_view(k), yyjson::detail::target_of(value));
+            std::ranges::stable_sort(keys, {}, &decltype(keys)::value_type::first);
+            const auto it = std::ranges::adjacent_find(keys, {}, &decltype(keys)::value_type::first);
+            if (it != keys.end()) yyjson::detail::throw_repeated_key(std::next(it)->second, it->first, type);
         }
 
         template <typename T>
         void merge_map_from(T& t, const const_object_ref& obj)
         {
             using key_type = typename T::key_type;
+            if (yyjson::detail::strict_reading) [[unlikely]]
+                check_unique_keys(obj, yyjson::detail::type_name<T>());
             auto key = key_type();
             for (auto&& [k, value] : obj)
             {
@@ -13486,6 +13942,8 @@ namespace yyjson
             ReadFlag flg_;
             bool inv_;
             bool into_ = false;
+            // whether `yyjson::strict` reads the text, which `strict_reading` tells once per read
+            bool strict_ = yyjson::detail::strict_reading;
             std::string scratch_;
             std::string c_string_;  // the source of a translator that takes a `const char*`
             // the copy of a scalar root, in the array unless it is longer
@@ -15411,6 +15869,19 @@ namespace yyjson
                     return result;
                 }
             }
+            // `view_cast` with `yyjson::strict`, also for the casts of the document that the caster of U reads.
+            template <typename U>
+            U view_cast(const char* p, yyjson::strict_t)
+            {
+                struct restore
+                {
+                    bool& strict;
+                    bool outer;
+                    ~restore() { strict = outer; }
+                } const guard{strict_, std::exchange(strict_, true)};
+                const auto scope = yyjson::detail::strict_scope();
+                return view_cast<U>(p);
+            }
 
             // The first member or element of the container at `p`, or null if it is empty.
             const char* view_first(const char* p)
@@ -15667,6 +16138,7 @@ namespace yyjson
                     const auto index = find_variant_tag<T>(start);
                     if (index == std::variant_npos) [[unlikely]]
                         fail();
+                    const auto key = yyjson::detail::internal_tag_key(start, tags::key);
                     read_tagged_alternative<T>(make, index, start);
                 }
                 else
@@ -16498,12 +16970,17 @@ namespace yyjson
                     auto result = T();
                     auto key_buf = std::string();
                     auto position = yyjson::detail::emplace_position<T>::first(result);
+                    constexpr auto back = !yyjson::detail::object_emplaceable_range<T, json_object>;
+                    const auto strict = !back && yyjson::detail::unique_keys<T> && strict_;
                     read_members([&] {
                         // the key is kept in `key_buf` while the value is read if it has escapes
                         const auto key = read_key<T>(key_buf);
                         read_colon();
-                        yyjson::detail::emplace_key_value<!yyjson::detail::object_emplaceable_range<T, json_object>>(
-                            result, position, key, read_value<value_type>());
+                        if (!yyjson::detail::insert_unique(result, strict, [&] {
+                                yyjson::detail::emplace_key_value<back>(result, position, key,
+                                                                        read_value<value_type>());
+                            })) [[unlikely]]
+                            fail();
                     });
                     return result;
                 }
@@ -16772,11 +17249,19 @@ namespace yyjson
                             result.push_back(read_element<value_type>());
                     }
                     else if constexpr (yyjson::detail::insertable_set<T>)
-                        result.insert(result.end(), read_element<value_type>());
+                    {
+                        if (!yyjson::detail::insert_unique(result, strict_, [&] {
+                                result.insert(result.end(), read_element<value_type>());
+                            })) [[unlikely]]
+                            fail();
+                    }
                     else if constexpr (yyjson::detail::pair_array_map<T>)
                     {
                         auto kv = read_element<value_type>();
-                        result.emplace(std::move(kv.first), std::move(kv.second));
+                        if (!yyjson::detail::insert_unique(result, strict_, [&] {
+                                result.emplace(std::move(kv.first), std::move(kv.second));
+                            })) [[unlikely]]
+                            fail();
                     }
                     else
                     {
@@ -16882,17 +17367,20 @@ namespace yyjson
                 [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<T>();
                 constexpr auto n = struct_field_count<T>;
                 auto seen = std::bitset<n>();
+                const char* const open = cur_;
                 auto adjacent = adjacent_fields_of<T>{cur_};
-                read_fields(struct_key_matcher<T>(), [&](std::size_t index) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
-                    const auto first = !seen[index];
-                    seen.set(index);
-                    with_struct_field<T>(index, [&]<std::size_t I>(std::integral_constant<std::size_t, I>)
-                                                    CPPYYJSON_LAMBDA_ALWAYS_INLINE {
-                                                        read_struct_field<T, I>(t, adjacent, [&](auto&) {
-                                                            read_field_over<I>(t, first);
-                                                        });
-                                                    });
-                });
+                const auto in_order =
+                    read_fields(struct_key_matcher<T>(), [&](std::size_t index) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                        const auto first = !seen[index];
+                        seen.set(index);
+                        with_struct_field<T>(
+                            index,
+                            [&]<std::size_t I>(std::integral_constant<std::size_t, I>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                                read_struct_field<T, I>(t, adjacent, [&](auto&) { read_field_over<I>(t, first); });
+                            });
+                    });
+                if (!in_order) [[unlikely]]
+                    check_irregular_struct_keys<T, false, struct_key_matcher<T>()>(open);
                 read_skipped_adjacent_fields(t, adjacent);
                 if constexpr (has_skipped_fields<T>)
                 {
@@ -16998,6 +17486,14 @@ namespace yyjson
                 const char* const start = cur_;
                 const auto index = find_variant_tag<T>(start);
                 cur_ = start;
+                const auto key = yyjson::detail::internal_tag_key(start, tags::key);
+                merge_tagged_alternative(t, index, start);
+            }
+
+            template <typename T>
+            void merge_tagged_alternative(T& t, std::size_t index, const char* start)
+            {
+                using tags = yyjson::detail::variant_tags<T>;
                 if (index == std::variant_npos || index == t.index())
                     merge_alternative<tags>(t);
                 else
@@ -17013,18 +17509,22 @@ namespace yyjson
             {
                 [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<T>();
                 auto defaults = struct_defaults<T>();
+                const char* const open = cur_;
                 auto adjacent = adjacent_fields_of<T>{cur_};
-                read_fields(struct_key_matcher<T>(), [&](std::size_t index) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
-                    with_struct_field<T>(index, [&]<std::size_t I>(std::integral_constant<std::size_t, I>)
-                                                    CPPYYJSON_LAMBDA_ALWAYS_INLINE {
-                                                        if constexpr (yyjson::detail::adjacent_field<T, I>)
-                                                        {
-                                                            if (merge_adjacent_null<I>(t, adjacent, defaults)) return;
-                                                        }
-                                                        read_struct_field<T, I, true>(
-                                                            t, adjacent, [&](auto&) { merge_field<I>(t, defaults); });
-                                                    });
-                });
+                const auto in_order =
+                    read_fields(struct_key_matcher<T>(), [&](std::size_t index) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                        with_struct_field<T>(
+                            index,
+                            [&]<std::size_t I>(std::integral_constant<std::size_t, I>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                                if constexpr (yyjson::detail::adjacent_field<T, I>)
+                                {
+                                    if (merge_adjacent_null<I>(t, adjacent, defaults)) return;
+                                }
+                                read_struct_field<T, I, true>(t, adjacent, [&](auto&) { merge_field<I>(t, defaults); });
+                            });
+                    });
+                if (!in_order) [[unlikely]]
+                    check_irregular_struct_keys<T, true, struct_key_matcher<T>()>(open);
                 read_skipped_adjacent_fields<true>(t, adjacent);
                 check_adjacent_tags_without_values(t, adjacent);
             }
@@ -17071,6 +17571,8 @@ namespace yyjson
             template <typename T>
             void merge_map(T& t)
             {
+                // the document checks that the keys are unique
+                if (strict_) fail();
                 auto key_buf = std::string();
                 auto lookup = typename T::key_type();
                 auto next = t.begin();
@@ -17151,6 +17653,11 @@ namespace yyjson
             template <typename T>
             void read_map_over(T& result)
             {
+                if (strict_) [[unlikely]]
+                {
+                    result = read_value<T>();
+                    return;
+                }
                 using value_type = std::remove_cvref_t<std::tuple_element_t<1, std::ranges::range_value_t<T>>>;
                 auto key_buf = std::string();
                 auto lookup = typename T::key_type();
@@ -17337,6 +17844,11 @@ namespace yyjson
                         {
                             if (*cur_ == 'n')
                             {
+                                if constexpr (!yyjson::detail::may_read_null<value_type>())
+                                {
+                                    if (strict_) [[unlikely]]
+                                        fail();
+                                }
                                 read_literal("null");
                                 return;
                             }
@@ -17497,15 +18009,73 @@ namespace yyjson
                 return index;
             }
 
-            // Reads the members of an object, assigning those that `matcher` finds with `assign(index)`.
+            // Checks the keys of the object at `open`, whose fields of the struct T have been read, as the
+            // `check_struct_keys` of a document does, and fails where that throws.
+            template <typename T, bool Merge, const auto& Matcher>
+            CPPYYJSON_NOINLINE CPPYYJSON_COLD void check_struct_keys(const char* open)
+            {
+                using rules = yyjson::detail::struct_key_rules<T>;
+                using yyjson::detail::additional_keys;
+                constexpr auto n = rules::n;
+                const auto deny = rules::additional == additional_keys::denied ||
+                                  (rules::additional == additional_keys::unset && strict_);
+                auto seen = std::bitset<n>();
+                const char* const saved = cur_;
+                cur_ = open + 1;
+                skip_ws();
+                if (*cur_ != '}')
+                {
+                    auto buf = std::string();
+                    for (;;)
+                    {
+                        const auto key = read_short_string(buf);
+                        if (const auto i = Matcher.find(key, 0); i < n)
+                        {
+                            if (seen[i] && strict_) fail();
+                            seen.set(i);
+                        }
+                        else if (deny && !yyjson::detail::is_tag_key<T>(key, open))
+                            fail();
+                        read_colon();
+                        skip_value();
+                        skip_ws();
+                        if (*cur_ != ',') break;
+                        ++cur_;
+                        skip_ws();
+                    }
+                }
+                if constexpr (!Merge)
+                {
+                    for (std::size_t i = 0; i < n; ++i)
+                    {
+                        if (!seen[i] && (rules::required[i] || (strict_ && !rules::optional[i]))) fail();
+                    }
+                }
+                cur_ = saved;
+            }
+
+            // Calls `check_struct_keys` if the keys of the object are to be checked.
+            template <typename T, bool Merge, const auto& Matcher>
+            CPPYYJSON_ALWAYS_INLINE void check_irregular_struct_keys(const char* open)
+            {
+                if (yyjson::detail::checks_keys_always<T> || strict_) check_struct_keys<T, Merge, Matcher>(open);
+            }
+
+            // Reads the members of an object, assigning those that `matcher` finds with `assign(index)`.  Returns
+            // whether the object has the key of each field in their order and no other key.
             template <std::size_t N, typename Assign>
-            CPPYYJSON_ALWAYS_INLINE void read_fields(const yyjson::detail::field_key_matcher<N>& matcher,
+            CPPYYJSON_ALWAYS_INLINE bool read_fields(const yyjson::detail::field_key_matcher<N>& matcher,
                                                      Assign&& assign)
             {
                 auto hint = std::size_t{0};
+                auto irregular = false;
                 read_members([&]() CPPYYJSON_LAMBDA_ALWAYS_INLINE {
                     auto index = expected_field(matcher, hint);
-                    if (index == N) index = find_field(matcher, hint);
+                    if (index == N)
+                    {
+                        index = find_field(matcher, hint);
+                        irregular = true;
+                    }
                     read_colon();
                     if (index < N)
                     {
@@ -17515,6 +18085,7 @@ namespace yyjson
                     else
                         skip_value();
                 });
+                return !irregular && hint == N;
             }
 
             // Reads the members of the object at `cur_` whose keys `Matcher` finds, from `cur_` at a key, with
@@ -17558,9 +18129,10 @@ namespace yyjson
             // Reads the members of the object at `cur_` with `read_field(std::integral_constant<std::size_t, K>)`
             // for the field K that `Matcher` finds.  Keys usually come in the order of the fields, so the key of
             // each field is compared in turn at a constant index, and the first key out of that order goes on in
-            // `read_fields_rest`.
+            // `read_fields_rest`.  Returns whether the object has the key of each field in their order and no other
+            // key.
             template <const auto& Matcher, typename ReadField>
-            CPPYYJSON_ALWAYS_INLINE void read_fields_in_order(const ReadField& read_field)
+            CPPYYJSON_ALWAYS_INLINE bool read_fields_in_order(const ReadField& read_field)
             {
                 using matcher_type = std::remove_cvref_t<decltype(Matcher)>;
                 constexpr auto n = matcher_type::size;
@@ -17571,9 +18143,10 @@ namespace yyjson
                 if (*cur_ == '}')
                 {
                     close(open);
-                    return;
+                    return n == 0;
                 }
-                // the field whose key is out of order, or `n + 1` when the object has ended
+                // the field whose key is out of order, or past `n` when the object has ended: `n + 1` after the
+                // last field, and `n + 2` before it
                 auto next = n;
                 const auto in_order = [&]<std::size_t K>(std::integral_constant<std::size_t, K>)
                                           CPPYYJSON_LAMBDA_ALWAYS_INLINE {
@@ -17604,13 +18177,18 @@ namespace yyjson
                     if (*cur_ != '}') [[unlikely]]
                         fail();
                     close(open);
-                    next = n + 1;
+                    next = K + 1 == n ? n + 1 : n + 2;
                     return false;
                 };
                 [&]<std::size_t... Ks>(std::index_sequence<Ks...>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
                     (void)(in_order(std::integral_constant<std::size_t, Ks>{}) && ...);
                 }(std::make_index_sequence<n>{});
-                if (next <= n) read_fields_rest<Matcher>(open, indent, next, read_field);
+                if (next <= n)
+                {
+                    read_fields_rest<Matcher>(open, indent, next, read_field);
+                    return false;
+                }
+                return next == n + 1;
             }
 
             // Structs of up to this many fields compare their keys in the order of the fields with
@@ -17619,15 +18197,16 @@ namespace yyjson
             static constexpr std::size_t ordered_fields_max = 8;
 
             // Reads the members of a struct with `read_one(std::integral_constant<std::size_t, K>)` for the field K
-            // that `Matcher` finds.
+            // that `Matcher` finds.  Returns whether the object has the key of each field in their order and no
+            // other key.
             template <const auto& Matcher, typename ReadOne>
-            CPPYYJSON_ALWAYS_INLINE void read_struct_fields(const ReadOne& read_one)
+            CPPYYJSON_ALWAYS_INLINE bool read_struct_fields(const ReadOne& read_one)
             {
                 constexpr auto n = std::remove_cvref_t<decltype(Matcher)>::size;
                 if constexpr (n <= ordered_fields_max)
-                    read_fields_in_order<Matcher>(read_one);
+                    return read_fields_in_order<Matcher>(read_one);
                 else
-                    read_fields(Matcher, [&](std::size_t index) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                    return read_fields(Matcher, [&](std::size_t index) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
                         [&]<std::size_t... Ks>(std::index_sequence<Ks...>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
                             (void)((index == Ks && (read_one(std::integral_constant<std::size_t, Ks>{}), true)) || ...);
                         }(std::make_index_sequence<n>{});
@@ -17638,6 +18217,7 @@ namespace yyjson
             void read_reflected_fields(T& t)
             {
                 [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<T>();
+                const char* const open = cur_;
                 auto adjacent = adjacent_fields_of<T>{cur_};
                 const auto read_one =
                     [&]<std::size_t K>(std::integral_constant<std::size_t, K>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
@@ -17648,7 +18228,8 @@ namespace yyjson
                         };
                         read_struct_field<T, K>(t, adjacent, read);
                     };
-                read_struct_fields<yyjson::detail::reflected_key_matcher<T>>(read_one);
+                if (!read_struct_fields<yyjson::detail::reflected_key_matcher<T>>(read_one)) [[unlikely]]
+                    check_irregular_struct_keys<T, false, yyjson::detail::reflected_key_matcher<T>>(open);
                 read_skipped_adjacent_fields(t, adjacent);
                 check_adjacent_tags_without_values(t, adjacent);
             }
@@ -17658,6 +18239,7 @@ namespace yyjson
             {
                 [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<T>();
                 constexpr auto& members = visit_struct<T>::members;
+                const char* const open = cur_;
                 auto adjacent = adjacent_fields_of<T>{cur_};
                 const auto read_one =
                     [&]<std::size_t I>(std::integral_constant<std::size_t, I>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
@@ -17670,7 +18252,8 @@ namespace yyjson
                         };
                         read_struct_field<T, I>(t, adjacent, read);
                     };
-                read_struct_fields<visit_struct<T>::key_matcher>(read_one);
+                if (!read_struct_fields<visit_struct<T>::key_matcher>(read_one)) [[unlikely]]
+                    check_irregular_struct_keys<T, false, visit_struct<T>::key_matcher>(open);
                 read_skipped_adjacent_fields(t, adjacent);
                 check_adjacent_tags_without_values(t, adjacent);
             }
@@ -17790,6 +18373,18 @@ namespace yyjson
             {
                 if (rd_ != nullptr) return rd_->template view_cast<U>(pos_);
                 return reader::const_value_ref(val_).template cast<U>();
+            }
+        }
+        // Casts as `cast<U>()` with `yyjson::strict`, which rejects JSON that has more or less than U takes.
+        template <typename U>
+        [[nodiscard]] U cast(yyjson::strict_t s) const
+        {
+            if constexpr (std::same_as<U, json_view>)
+                return *this;
+            else
+            {
+                if (rd_ != nullptr) return rd_->template view_cast<U>(pos_, s);
+                return reader::const_value_ref(val_).template cast<U>(s);
             }
         }
     };
@@ -17938,6 +18533,11 @@ namespace yyjson
         {
             return (rd_ != nullptr ? json_view(*rd_, pos_) : json_view(val_)).template cast<U>();
         }
+        template <typename U>
+        [[nodiscard]] U cast(yyjson::strict_t s) const
+        {
+            return (rd_ != nullptr ? json_view(*rd_, pos_) : json_view(val_)).template cast<U>(s);
+        }
     };
 
     // The elements of an array of a `json_view`, which in the text are read from the start of the array.
@@ -18030,6 +18630,11 @@ namespace yyjson
         [[nodiscard]] U cast() const
         {
             return (rd_ != nullptr ? json_view(*rd_, pos_) : json_view(val_)).template cast<U>();
+        }
+        template <typename U>
+        [[nodiscard]] U cast(yyjson::strict_t s) const
+        {
+            return (rd_ != nullptr ? json_view(*rd_, pos_) : json_view(val_)).template cast<U>(s);
         }
     };
 
@@ -18212,6 +18817,41 @@ namespace yyjson
         yyjson::detail::merge_text(json, t, read_flag);
     }
 #endif
+
+    // Read as the overloads above with `yyjson::strict`, which rejects JSON that has more or less than T takes.
+    template <typename T>
+    [[nodiscard]] T read(std::string_view json, ReadFlag read_flag, strict_t)
+    {
+        const auto scope = yyjson::detail::strict_scope();
+        return yyjson::read<T>(json, read_flag);
+    }
+    template <typename T>
+    [[nodiscard]] T read(std::string_view json, strict_t s)
+    {
+        return yyjson::read<T>(json, ReadFlag::NoFlag, s);
+    }
+    template <typename T>
+    void read_into(std::string_view json, T& t, ReadFlag read_flag, strict_t)
+    {
+        const auto scope = yyjson::detail::strict_scope();
+        yyjson::read_into(json, t, read_flag);
+    }
+    template <typename T>
+    void read_into(std::string_view json, T& t, strict_t s)
+    {
+        yyjson::read_into(json, t, ReadFlag::NoFlag, s);
+    }
+    template <typename T>
+    void merge_into(std::string_view json, T& t, ReadFlag read_flag, strict_t)
+    {
+        const auto scope = yyjson::detail::strict_scope();
+        yyjson::merge_into(json, t, read_flag);
+    }
+    template <typename T>
+    void merge_into(std::string_view json, T& t, strict_t s)
+    {
+        yyjson::merge_into(json, t, ReadFlag::NoFlag, s);
+    }
 
     // A type that cannot be read is rejected by name, along with the field or the element of it that cannot be
     // read, in `cannot_be_read`.  See `yyjson::diagnostic`.

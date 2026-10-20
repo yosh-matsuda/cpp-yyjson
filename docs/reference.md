@@ -61,11 +61,16 @@ The data binding API converts between JSON text and C++ types without building a
 
 ### Reading a JSON string into a C++ object directly
 
-`yyjson::read<T>` reads a JSON string into a C++ object without building a `yyjson::reader::value` first. It accepts every type that `yyjson::cast` can convert a JSON value to and follows the same conversion rules, so the result is the same as `read(json_string, flag).cast<T>()`. So are the exceptions: `yyjson::read_error` when the text is not valid JSON, and `yyjson::bad_cast` when it cannot be converted to `T`, which also tells the [position](#errors-of-conversion) in the text of the value that failed.
+`yyjson::read<T>` reads a JSON string into a C++ object without building a `yyjson::reader::value` first. It accepts every type that `yyjson::cast` can convert a JSON value to and follows the same conversion rules, so the result is the same as `read(json_string, flag).cast<T>()`. So are the exceptions: `yyjson::read_error` when the text is not valid JSON, and `yyjson::bad_cast` when it cannot be converted to `T`, which also tells the [position](#errors-of-conversion) in the text of the value that failed. With `yyjson::strict`, it also rejects JSON that has more or less than `T` takes, as described in [Strict reading](#strict-reading).
 
 ```cpp
 template <typename T>
 T read(std::string_view json_string, ReadFlag flag = ReadFlag::NoFlag);
+
+template <typename T>
+T read(std::string_view json_string, ReadFlag flag, strict_t);
+template <typename T>
+T read(std::string_view json_string, strict_t);
 ```
 
 ```cpp
@@ -109,6 +114,8 @@ void read_into(std::string_view json_string, T& t, ReadFlag flag = ReadFlag::NoF
 
 template <typename T>
 void merge_into(std::string_view json_string, T& t, ReadFlag flag = ReadFlag::NoFlag);
+
+// and the overloads with `strict_t` after `flag` or in place of it, as `read<T>` has
 ```
 
 `read_into` gives `t` the same value as `t = read<T>(json_string, flag)`: a field that the JSON object does not have gets its value in `T()`, a key of a map that the JSON object does not have is erased, and a range gets exactly the elements of the JSON array.
@@ -1330,7 +1337,7 @@ Some conversions succeed where one might expect them to fail, or give JSON that 
 *   A class that is constructible from a number, such as `struct Count { Count(int); };`, reads every JSON number that C++ converts to the parameter of its constructor, so `1.5` gives `Count(1)`. Only the integer and enumeration types themselves reject a real number with a fractional part.
 *   A map whose keys are neither strings nor [enumerations](#enumerations), such as `std::map<int, int>`, is a JSON array of `[key, value]` pairs, `[[1,2]]`, which the map is read back from, not an object with its keys in strings. A key that appears twice keeps its first value, and a `std::multimap` keeps them all. `merge_into` replaces such a map as it replaces a range. Convert the map to `std::map<std::string, int>` with a [translator](#translator) to have a JSON object.
 *   `char`, `signed char`, `unsigned char`, `std::int8_t` and `std::uint8_t` are numbers, and `std::u8string`, `std::u16string`, `std::u32string` and `std::wstring` are arrays of numbers. Only ranges of `char` are JSON strings.
-*   When a struct is read, a key that the struct does not have is ignored, a field whose key is missing keeps its value in `T()`, and a key that appears twice gives the field its last value. There is no option to require a key or to reject unknown keys; declare a field `std::optional` and check it after reading to require it.
+*   When a struct is read, a key that the struct does not have is ignored, a field whose key is missing keeps its value in `T()`, and a key that appears twice gives the field its last value. [`yyjson::strict`](#strict-reading) rejects all three, and `yyjson::required` and `yyjson::additional_properties(false)` reject a missing key and an unknown key for a single field or struct.
 
 The following types have no conversion of their own, and fail to compile where they are written. Some of them still compile where they are read, because a type that can be constructed from a JSON scalar or from null is read from that value: a raw pointer, a `std::function` and a `std::unique_ptr` of an array read only JSON null, a duration reads an integer as its count, and a union reads a number into its first member. Use the type or the form in the second column instead:
 
@@ -1355,6 +1362,62 @@ struct Event
 static_assert(yyjson::readable<Event>);
 static_assert(!yyjson::writable<Event>);  // a duration is not written
 ```
+
+#### Strict reading
+
+`yyjson::strict` makes a read reject JSON that has more or less than the C++ type takes, where the read would otherwise ignore what it does not need and leave what it does not find at its default value. Give it as the last argument of `yyjson::read<T>`, `yyjson::read_into`, `yyjson::merge_into`, the `cast<T>` member function or `yyjson::cast<T>`:
+
+```cpp
+struct Point
+{
+    int x;
+    int y;
+    std::optional<int> z;
+};
+
+yyjson::read<Point>(R"({"x":1,"y":2,"w":3})");                  // -> Point{1, 2, std::nullopt}
+yyjson::read<Point>(R"({"x":1,"y":2,"w":3})", yyjson::strict);  // throws: Point has no field of the key "w" at /w (line 1, column 18, pos 17)
+yyjson::read<Point>(R"({"x":1})", yyjson::strict);              // throws: Point is not constructible from JSON without the key "y" (line 1, column 1, pos 0)
+yyjson::read<Point>(R"({"x":1,"y":2})", yyjson::strict);        // -> Point{1, 2, std::nullopt}
+yyjson::read(R"({"x":1,"y":2,"z":null})").cast<Point>(yyjson::strict);  // throws: std::optional<int> is not constructible from null under yyjson::strict at /z
+```
+
+Each row below is a `yyjson::bad_cast` that the same read without `yyjson::strict` does not throw:
+
+| JSON | Without `yyjson::strict` | With `yyjson::strict` |
+| --- | --- | --- |
+| an object with a key that names no field of the struct, or names a [skipped field](#skipped-fields) | the key is ignored | `T has no field of the key "k"` |
+| an object without the key of a field that is not a `std::optional` | the field gets its value in `T()` | `T is not constructible from JSON without the key "k"` |
+| an object with a key twice, read into a struct or a map with unique keys | the struct gets the last value, the map the first | `the object read into T has the key "k" twice` |
+| an array with an element twice, read into a `std::set` or another set with unique elements; a `std::map` read from an array of pairs with a key twice | the first one is kept | `the array read into T has an element twice` |
+| `null` as the value of a `std::optional` field | the field gets `std::nullopt` | `std::optional<U> is not constructible from null under yyjson::strict` |
+
+*   A `std::optional` field may be left out of the object, but its value must not be `null`: a field whose value may be `null` has a type that reads `null` as a value, such as `std::variant<std::monostate, U>`, `std::shared_ptr` or `std::nullptr_t`, which still take it.
+*   `merge_into` lets the object leave out any key and gives `null` its meaning of a merge patch, which resets the field, in the objects that it merges into. It still rejects an unknown key and a repeated key or element. A value that replaces a field, such as the array of a `std::vector`, is read as `read_into` reads it with `yyjson::strict`.
+*   The tag key of an [internally tagged variant](#tagged-variants) is a key of the alternative's object, and the key of an adjacent tag is a key of the struct that has it. An untagged `std::variant` takes the first alternative that the strict read accepts, so `std::variant<Circle, Rect>` reads `{"w":1,"h":2}` as `Rect` with `yyjson::strict` and as `Circle` without it.
+*   Multimaps, multisets, ranges and the other types that hold what they are given are read as without `yyjson::strict`.
+*   The option holds for every value that the call reads, including what a [user-defined caster](#user-defined-casters) reads with `cast` or `yyjson::read` while the call runs on the same thread. A `from_json` that casts without `yyjson::strict` therefore reads strictly when it is called by a strict read.
+*   A read without `yyjson::strict` costs nothing more for it. A strict read checks the keys only of an object whose keys do not match the fields in order, so reading the objects that `yyjson::write` wrote is as fast as without it.
+
+Two annotations require a key or reject unknown keys for one field or one struct, with or without `yyjson::strict`:
+
+```cpp
+struct Request
+{
+    std::string method;
+    std::optional<std::string> body;
+};
+template <>
+inline constexpr auto yyjson::annotations<Request> =
+    yyjson::annotate(yyjson::field("method", yyjson::required), yyjson::additional_properties(false));
+
+yyjson::read<Request>(R"({"body":"x"})");                 // throws: Request is not constructible from JSON without the key "method" (line 1, column 1, pos 0)
+yyjson::read<Request>(R"({"method":"GET","path":"/"})");  // throws: Request has no field of the key "path" at /path (line 1, column 24, pos 23)
+```
+
+*   `yyjson::required` makes the object of a struct require the key of a field, except in the objects that `merge_into` merges into, where a merge patch may leave out any key, with `yyjson::strict` too. It is a compile error on a `std::optional` field, which may be left out by its type.
+*   `yyjson::additional_properties(false)` makes the object of a struct reject a key that names no field of it. With `true`, the object may have such keys under `yyjson::strict` as well, which ignores them; use it for a struct that reads only some of the keys of a larger object.
+*   Their names are those of the keywords of [JSON Schema](https://json-schema.org/understanding-json-schema/reference/object) that say the same. With [C++26 annotations](#c26-annotations), write `[[=yyjson::required]]` on the member and `struct [[=yyjson::additional_properties(false)]] Request` on the struct.
 
 #### Compile errors of types that cannot be converted
 
@@ -1684,7 +1747,7 @@ auto json = yyjson::write(Task{"x", [] {}});
 
 #### C++26 annotations
 
-With C++26 static reflection, e.g. GCC 16 with `-std=c++26 -freflection`, the settings of a field can be written on the member itself as an [annotation](https://wg21.link/p3394): `[[=yyjson::rename("key")]]`, `[[=yyjson::skip]]` and `[[=yyjson::adjacent_tag(key, ids)]]` are the values that `yyjson::field` takes for the member.
+With C++26 static reflection, e.g. GCC 16 with `-std=c++26 -freflection`, the settings of a field can be written on the member itself as an [annotation](https://wg21.link/p3394): `[[=yyjson::rename("key")]]`, `[[=yyjson::skip]]`, `[[=yyjson::required]]` and `[[=yyjson::adjacent_tag(key, ids)]]` are the values that `yyjson::field` takes for the member.
 
 ```cpp
 struct Project
@@ -1701,7 +1764,7 @@ auto json = yyjson::write(project);
 ```
 
 *   The annotations of the members and a `yyjson::annotations` specialization can be combined, as long as no field gets the same setting twice, which fails to compile as above.
-*   The settings of a field go on the member or into `yyjson::annotations<T>`. An annotation on the struct itself is not read.
+*   The settings of a field go on the member or into `yyjson::annotations<T>`. Of the annotations on the struct itself, only [`yyjson::additional_properties`](#strict-reading) is read.
 *   An enumeration takes `[[=yyjson::enum_format::integer]]` or another [format](#formats-and-renamed-enumerators) on its declaration, `enum class [[=yyjson::enum_format::integer]] Permission : unsigned { ... };`, and an enumerator takes `[[=yyjson::rename("json-name")]]`, `in_progress [[=yyjson::rename("in-progress")]],`. These combine with `yyjson::annotations<E>` as the settings of fields do. An annotation on an alias, an enumerator with the value of one declared before it, is not read.
 *   The annotations apply to the structs that the compile-time reflection converts. An annotation of this library on a member of a struct that `VISITABLE_STRUCT` registers fails to compile; use the pairs of the macro or `yyjson::annotations` there.
 *   The annotations are read when the macro `FIELD_RFL_ANNOTATIONS` is `1`. `yyjson::rename`, `yyjson::skip` and the tags are always available for `yyjson::annotations`.
@@ -2050,7 +2113,7 @@ struct yyjson::caster<X>
 };
 ```
 
-A `json_view` is a read-only view with the reading functions of `yyjson::reader::const_value_ref`: `is_*`, `as_*` and `cast<U>()`. `as_array()` and `as_object()` give views of the elements and the members, which iterate, and have `size()`, `empty()`, `operator[]` and `cast<U>()`; the view of an object also has `find(key)` and `contains(key)`, which find the first member of the key. `operator[]` throws `std::out_of_range` for an index or a key that is not there.
+A `json_view` is a read-only view with the reading functions of `yyjson::reader::const_value_ref`: `is_*`, `as_*` and `cast<U>()`, also with [`yyjson::strict`](#strict-reading). `as_array()` and `as_object()` give views of the elements and the members, which iterate, and have `size()`, `empty()`, `operator[]` and `cast<U>()`; the view of an object also has `find(key)` and `contains(key)`, which find the first member of the key. `operator[]` throws `std::out_of_range` for an index or a key that is not there.
 
 `cast` gives the caster a view of the value in the document. The value of a mutable document, such as a `yyjson::value`, is copied into an immutable document first, which is freed when the caster returns. `yyjson::read<T>` gives it a view of the value in the string instead, with no document, also when the values are the elements of a range or a map. The view reads only what the caster asks for, and the rest of the value is checked after the caster returns, so invalid JSON fails as it does with `cast`. The results are the same. The view, and the strings that it gives, are valid until the caster returns.
 
