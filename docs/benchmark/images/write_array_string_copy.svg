@@ -6,17 +6,17 @@
 <line x1="300.0" y1="50" x2="300.0" y2="132" class="grid"/>
 <text x="300.0" y="150" class="value" text-anchor="middle">0.000 ms</text>
 <line x1="438.0" y1="50" x2="438.0" y2="132" class="grid"/>
-<text x="438.0" y="150" class="value" text-anchor="middle">5.30 ms</text>
+<text x="438.0" y="150" class="value" text-anchor="middle">5.32 ms</text>
 <line x1="576.0" y1="50" x2="576.0" y2="132" class="grid"/>
 <text x="576.0" y="150" class="value" text-anchor="middle">10.6 ms</text>
 <line x1="714.0" y1="50" x2="714.0" y2="132" class="grid"/>
-<text x="714.0" y="150" class="value" text-anchor="middle">15.9 ms</text>
+<text x="714.0" y="150" class="value" text-anchor="middle">16.0 ms</text>
 <line x1="852.0" y1="50" x2="852.0" y2="132" class="grid"/>
-<text x="852.0" y="150" class="value" text-anchor="middle">21.2 ms</text>
+<text x="852.0" y="150" class="value" text-anchor="middle">21.3 ms</text>
 <text x="24" y="74" class="label">cpp-yyjson</text>
-<rect x="300" y="63" width="502.7" height="14" rx="2" fill="#2563eb"/>
+<rect x="300" y="63" width="500.4" height="14" rx="2" fill="#2563eb"/>
 <text x="864" y="74" class="value">19.3 ms</text>
 <text x="24" y="98" class="label">yyjson</text>
 <rect x="300" y="87" width="511.1" height="14" rx="2" fill="#16a34a"/>
-<text x="864" y="98" class="value">19.6 ms</text>
+<text x="864" y="98" class="value">19.7 ms</text>
 </svg>
