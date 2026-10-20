@@ -5,9 +5,6 @@
 #include <rapidjson/writer.h>
 #include <simdjson.h>
 #include <cpp_yyjson.hpp>
-#if defined(CPPYYJSON_GLAZE_BENCHMARKS)
-#include <glaze/glaze.hpp>
-#endif
 #include <format>
 #include <nlohmann/json.hpp>
 #include <numeric>
@@ -221,29 +218,6 @@ simdjson::dom::element simdjson_dataset_root(const dataset_source& source)
     }
     return root;
 }
-
-#if defined(CPPYYJSON_GLAZE_BENCHMARKS)
-// See `glaze_generic` in bench_read.cpp for why the integers are kept as integers.
-const glz::generic_u64& glaze_dataset_doc(const dataset_source& source)
-{
-    static auto cached_index = NO_DATASET;
-    static auto doc = glz::generic_u64();
-    if (cached_index != source.index)
-    {
-        doc = glz::generic_u64();
-        if (glz::read_json(doc, source.json)) throw std::runtime_error("glaze failed to read the dataset");
-        cached_index = source.index;
-    }
-    return doc;
-}
-
-// Glaze writes control characters such as NUL into strings as they are by default, which
-// gives JSON that no conforming parser reads (gsoc-2018 has one).  yyjson escapes them.
-struct glaze_write_opts : glz::opts
-{
-    bool escape_control_characters = true;
-};
-#endif
 
 bool validate_dataset_json_once(benchmark::State& state, bool& validated, std::string_view result,
                                 std::size_t expected_root_size)
@@ -1058,56 +1032,6 @@ void write_simdjson_dataset(benchmark::State& state)
     state.SetBytesProcessed(static_cast<std::int64_t>(state.iterations() * written));
 }
 
-#if defined(CPPYYJSON_GLAZE_BENCHMARKS)
-void write_glaze_dataset(benchmark::State& state)
-{
-    const auto& source = dataset(state.range(0));
-    const auto& doc = glaze_dataset_doc(source);
-    auto validated = false;
-    auto written = std::size_t{0};
-    for (auto _ : state)
-    {
-        auto result = glz::write<glaze_write_opts{}>(doc);
-        if (!result)
-        {
-            state.SkipWithError("glaze failed to write the dataset");
-            break;
-        }
-        written = result->size();
-        if (!validate_dataset_json_once(state, validated, *result, source.root_size))
-        {
-            break;
-        }
-    }
-    state.SetLabel(std::string(json_file_paths[state.range(0)]));
-    state.SetBytesProcessed(static_cast<std::int64_t>(state.iterations() * written));
-}
-
-void write_glaze_single_dataset(benchmark::State& state)
-{
-    const auto& source = dataset(state.range(0));
-    const auto& doc = glaze_dataset_doc(source);
-    auto buffer = std::string();
-    auto validated = false;
-    auto written = std::size_t{0};
-    for (auto _ : state)
-    {
-        if (glz::write<glaze_write_opts{}>(doc, buffer))
-        {
-            state.SkipWithError("glaze failed to write the dataset");
-            break;
-        }
-        written = buffer.size();
-        if (!validate_dataset_json_once(state, validated, buffer, source.root_size))
-        {
-            break;
-        }
-    }
-    state.SetLabel(std::string(json_file_paths[state.range(0)]));
-    state.SetBytesProcessed(static_cast<std::int64_t>(state.iterations() * written));
-}
-#endif
-
 #if defined(CPPYYJSON_RAW_YYJSON_BENCHMARKS)
 BENCHMARK(write_c_yyjson_dataset)->Unit(benchmark::kMillisecond)->DenseRange(0, json_file_paths.size() - 1);
 BENCHMARK(write_c_yyjson_single_dataset)->Unit(benchmark::kMillisecond)->DenseRange(0, json_file_paths.size() - 1);
@@ -1124,9 +1048,6 @@ BENCHMARK(write_c_yyjson_array_object)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_c_yyjson_object_range)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_c_yyjson_object_append)->Unit(benchmark::kMillisecond);
 BENCHMARK(write_c_yyjson_object_append_string_copy)->Unit(benchmark::kMillisecond);
-#elif defined(CPPYYJSON_GLAZE_BENCHMARKS)
-BENCHMARK(write_glaze_dataset)->Unit(benchmark::kMillisecond)->DenseRange(0, json_file_paths.size() - 1);
-BENCHMARK(write_glaze_single_dataset)->Unit(benchmark::kMillisecond)->DenseRange(0, json_file_paths.size() - 1);
 #else
 BENCHMARK(write_cpp_yyjson_dataset)->Unit(benchmark::kMillisecond)->DenseRange(0, json_file_paths.size() - 1);
 BENCHMARK(write_cpp_yyjson_single_dataset)->Unit(benchmark::kMillisecond)->DenseRange(0, json_file_paths.size() - 1);
