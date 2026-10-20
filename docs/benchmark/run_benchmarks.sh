@@ -43,12 +43,10 @@ CPP_WRITE=cpp_yyjson_bench_write
 CPP_TYPED=cpp_yyjson_bench_typed
 C_READ=yyjson_bench_read
 C_WRITE=yyjson_bench_write
-GLAZE_READ=glaze_bench_read
-GLAZE_WRITE=glaze_bench_write
 GLAZE_TYPED=glaze_bench_typed
 REFLECTCPP_TYPED=reflectcpp_bench_typed
 ALL_TARGETS=("${CPP_READ}" "${CPP_WRITE}" "${CPP_TYPED}" "${C_READ}" "${C_WRITE}"
-    "${GLAZE_READ}" "${GLAZE_WRITE}" "${GLAZE_TYPED}" "${REFLECTCPP_TYPED}")
+    "${GLAZE_TYPED}" "${REFLECTCPP_TYPED}")
 
 COMPETITOR_FILTER='^(typed_)?(read|write)_(rapidjson|simdjson|nlohmann|c_yyjson|glaze|reflectcpp)'
 
@@ -118,14 +116,13 @@ Scope (which benchmarks are measured):
   --scope cpp-write      cpp-yyjson write rows only, typed writes included (~11 min)
   --scope competitors    rapidjson/simdjson/nlohmann-json/yyjson/Glaze/reflect-cpp rows
                          only (~50 min)
-  --scope read           every generic read benchmark, cpp-yyjson, yyjson and Glaze
+  --scope read           every dataset read benchmark, cpp-yyjson and yyjson
                          executables (~41 min)
-  --scope write          every generic write benchmark, cpp-yyjson, yyjson and Glaze
-                         executables (~17 min)
+  --scope write          every write benchmark, cpp-yyjson and yyjson executables
+                         (~17 min)
   --scope typed          reading into and writing from C++ types, cpp-yyjson, Glaze and
                          reflect-cpp (~16 min, estimate)
-  --scope glaze          every Glaze row: generic read, generic write and typed
-                         (~9 min, estimate)
+  --scope glaze          the Glaze typed rows (~3 min, estimate)
   --scope all            everything (~76 min)
   --filter REGEX         Google Benchmark filter, overrides the scope default; an
                          executable none of whose benchmarks match it is skipped
@@ -213,13 +210,13 @@ case ${SCOPE} in
         ;;
     competitors)
         TARGETS=("${CPP_READ}" "${CPP_WRITE}" "${C_READ}" "${C_WRITE}"
-            "${GLAZE_READ}" "${GLAZE_WRITE}" "${GLAZE_TYPED}" "${REFLECTCPP_TYPED}")
+            "${GLAZE_TYPED}" "${REFLECTCPP_TYPED}")
         [[ ${FILTER_SET} -eq 1 ]] || FILTER=${COMPETITOR_FILTER}
         ;;
-    read) TARGETS=("${CPP_READ}" "${C_READ}" "${GLAZE_READ}") ;;
-    write) TARGETS=("${CPP_WRITE}" "${C_WRITE}" "${GLAZE_WRITE}") ;;
+    read) TARGETS=("${CPP_READ}" "${C_READ}") ;;
+    write) TARGETS=("${CPP_WRITE}" "${C_WRITE}") ;;
     typed) TARGETS=("${CPP_TYPED}" "${GLAZE_TYPED}" "${REFLECTCPP_TYPED}") ;;
-    glaze) TARGETS=("${GLAZE_READ}" "${GLAZE_WRITE}" "${GLAZE_TYPED}") ;;
+    glaze) TARGETS=("${GLAZE_TYPED}") ;;
     all) TARGETS=("${ALL_TARGETS[@]}") ;;
     *) fail "unknown scope: ${SCOPE}" ;;
 esac
@@ -808,13 +805,11 @@ if [[ ${DO_PLOT} -eq 1 ]]; then
     if [[ ${missing} -eq 1 ]]; then
         warn "not all result files are present; skipping the charts"
     else
-        # The Glaze and typed results were added later than the others, so the charts are
-        # drawn without them until they have been measured.
+        # The typed results were added later than the others, so their charts are drawn
+        # only once they have been measured.
         read_json=("${RESULT_DIR}/${CPP_READ}.json" "${RESULT_DIR}/${C_READ}.json")
         write_json=("${RESULT_DIR}/${CPP_WRITE}.json" "${RESULT_DIR}/${C_WRITE}.json")
         typed_json=()
-        [[ ! -f ${RESULT_DIR}/${GLAZE_READ}.json ]] || read_json+=("${RESULT_DIR}/${GLAZE_READ}.json")
-        [[ ! -f ${RESULT_DIR}/${GLAZE_WRITE}.json ]] || write_json+=("${RESULT_DIR}/${GLAZE_WRITE}.json")
         # A typed chart compares the libraries, so it waits for all of them.
         if [[ -f ${RESULT_DIR}/${CPP_TYPED}.json && -f ${RESULT_DIR}/${GLAZE_TYPED}.json &&
             -f ${RESULT_DIR}/${REFLECTCPP_TYPED}.json ]]; then

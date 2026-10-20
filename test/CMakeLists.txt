@@ -140,26 +140,16 @@ if(CPPYYJSON_BUILD_BENCH)
   target_link_libraries("${PROJECT_NAME}_bench_typed"
                         PRIVATE ${PROJECT_NAME} benchmark::benchmark)
 
-  # Glaze benchmarks.  Glaze requires C++23, which the rest of the project does
-  # not, so its rows are built from the same sources into executables of their
+  # Glaze benchmark.  Glaze requires C++23, which the rest of the project does
+  # not, so its rows are built from the same source into an executable of its
   # own, the way the upstream yyjson rows are.  cpp-yyjson is linked in as the
   # reference the Glaze results are checked against.
   find_package(glaze CONFIG REQUIRED)
-  add_executable(glaze_bench_read bench_read.cpp)
-  target_link_libraries(
-    glaze_bench_read PRIVATE ${PROJECT_NAME} benchmark::benchmark glaze::glaze
-                             simdjson::simdjson rapidjson)
-  add_executable(glaze_bench_write bench_write.cpp)
-  target_link_libraries(
-    glaze_bench_write PRIVATE ${PROJECT_NAME} benchmark::benchmark glaze::glaze
-                              simdjson::simdjson rapidjson nlohmann_json nlohmann_json::nlohmann_json)
   add_executable(glaze_bench_typed bench_typed.cpp)
   target_link_libraries(
     glaze_bench_typed PRIVATE ${PROJECT_NAME} benchmark::benchmark glaze::glaze)
-  foreach(target glaze_bench_read glaze_bench_write glaze_bench_typed)
-    target_compile_features(${target} PRIVATE cxx_std_23)
-    target_compile_definitions(${target} PRIVATE CPPYYJSON_GLAZE_BENCHMARKS)
-  endforeach()
+  target_compile_features(glaze_bench_typed PRIVATE cxx_std_23)
+  target_compile_definitions(glaze_bench_typed PRIVATE CPPYYJSON_GLAZE_BENCHMARKS)
 
   # Upstream yyjson C API benchmarks
   find_package(yyjson CONFIG REQUIRED)
@@ -202,7 +192,7 @@ if(CPPYYJSON_BUILD_BENCH)
   # which is the comparison the benchmarks are about.
   foreach(target "${PROJECT_NAME}_bench_read" "${PROJECT_NAME}_bench_write"
                  "${PROJECT_NAME}_bench_typed" yyjson_bench_read yyjson_bench_write
-                 glaze_bench_read glaze_bench_write glaze_bench_typed
+                 glaze_bench_typed
                  reflectcpp_bench_typed)
     cpp_yyjson_enable_lto(${target})
     if(NOT MSVC AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64)$")
