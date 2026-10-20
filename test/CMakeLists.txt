@@ -128,7 +128,7 @@ if(CPPYYJSON_BUILD_BENCH)
   add_executable("${PROJECT_NAME}_bench_read" bench_read.cpp)
   target_link_libraries(
     "${PROJECT_NAME}_bench_read" PRIVATE ${PROJECT_NAME} benchmark::benchmark
-    simdjson::simdjson rapidjson)
+    simdjson::simdjson rapidjson nlohmann_json nlohmann_json::nlohmann_json)
 
     add_executable("${PROJECT_NAME}_bench_write" bench_write.cpp)
     target_link_libraries(
@@ -156,7 +156,7 @@ if(CPPYYJSON_BUILD_BENCH)
   add_executable(yyjson_bench_read bench_read.cpp)
   target_link_libraries(
     yyjson_bench_read PRIVATE benchmark::benchmark yyjson::yyjson
-                              simdjson::simdjson rapidjson)
+                              simdjson::simdjson rapidjson nlohmann_json::nlohmann_json)
   target_compile_features(yyjson_bench_read PRIVATE cxx_std_20)
   target_compile_definitions(yyjson_bench_read PRIVATE CPPYYJSON_RAW_YYJSON_BENCHMARKS)
 
