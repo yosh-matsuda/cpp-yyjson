@@ -193,6 +193,147 @@ static_assert(yyjson::detail::recursive_type<std::vector<RecTree>>);
 static_assert(!yyjson::detail::recursive_type<ReflectionRecord>);
 static_assert(!yyjson::detail::recursive_type<DiamondChain<40>>);
 static_assert(!yyjson::detail::recursive_type<PimplOwner>);
+static_assert(yyjson::readable<RecTree> && yyjson::writable<RecTree>);
+static_assert(yyjson::readable<RecList> && yyjson::writable<RecList>);
+static_assert(yyjson::readable<RecUList> && yyjson::writable<RecUList>);
+static_assert(yyjson::readable<RecDict> && yyjson::writable<RecDict>);
+static_assert(yyjson::readable<RecA> && yyjson::writable<RecA>);
+static_assert(yyjson::readable<RecVisitable> && yyjson::writable<RecVisitable>);
+static_assert(yyjson::readable<RecJson> && yyjson::writable<RecJson>);
+static_assert(yyjson::readable<RecExpr> && yyjson::writable<RecExpr>);
+static_assert(yyjson::readable<RecTagged> && yyjson::writable<RecTagged>);
+
+// The fields of a recursive type are checked as those of any other type, through each type on the cycle
+class RecPrivate
+{
+    int x = 0;
+
+public:
+    int get() const { return x; }
+};
+struct RecBadTree
+{
+    RecPrivate p;
+    std::vector<RecBadTree> kids;
+};
+struct RecBadB;
+struct RecBadA
+{
+    int v = 0;
+    std::vector<RecBadB> bs;
+};
+struct RecBadB
+{
+    RecPrivate p;
+    std::vector<RecBadA> as;
+};
+struct RecBadPtr
+{
+    std::unique_ptr<RecBadPtr> next;
+    RecPrivate p;
+};
+struct RecBadVisitable
+{
+    RecPrivate p;
+    std::vector<RecBadVisitable> kids;
+};
+VISITABLE_STRUCT(RecBadVisitable, p, kids);
+struct RecBadVariant
+{
+    std::vector<std::variant<RecPrivate, RecBadVariant>> v;
+};
+struct RecDuration
+{
+    std::chrono::seconds d;
+    std::vector<RecDuration> kids;
+};
+struct RecBadHolder
+{
+    int x = 0;
+    std::optional<RecBadTree> o;
+    std::tuple<int, RecBadA> t;
+    std::map<std::string, RecBadB> m;
+};
+struct RecBadVectorHolder
+{
+    std::vector<RecBadTree> v;
+};
+// A recursive type that holds a pair, a tuple or a map of another one is checked without writing them.
+struct RecBadInRecursive
+{
+    std::vector<RecBadInRecursive> kids;
+    std::map<std::string, RecBadTree> m;
+    std::pair<int, RecBadTree> p;
+    std::tuple<RecBadTree> t;
+    std::map<std::string, RecBadVisitable> vm;
+};
+// An aggregate with `begin()` and `end()` is converted by its fields, so those are checked.
+struct RecBadRangeAggregate
+{
+    std::vector<int> v;
+    RecPrivate p;
+    std::vector<RecBadRangeAggregate> kids;
+    auto begin() const { return v.begin(); }
+    auto end() const { return v.end(); }
+};
+static_assert(!yyjson::readable<RecBadTree> && !yyjson::writable<RecBadTree>);
+static_assert(!yyjson::readable<RecBadA> && !yyjson::writable<RecBadA>);
+static_assert(!yyjson::readable<RecBadB> && !yyjson::writable<RecBadB>);
+static_assert(!yyjson::readable<RecBadPtr> && !yyjson::writable<RecBadPtr>);
+static_assert(!yyjson::readable<RecBadVisitable> && !yyjson::writable<RecBadVisitable>);
+static_assert(!yyjson::readable<RecBadVariant> && !yyjson::writable<RecBadVariant>);
+static_assert(yyjson::readable<RecDuration> && !yyjson::writable<RecDuration>);
+static_assert(!yyjson::readable<RecBadHolder> && !yyjson::writable<RecBadHolder>);
+static_assert(!yyjson::readable<RecBadVectorHolder> && !yyjson::writable<RecBadVectorHolder>);
+static_assert(!yyjson::readable<RecBadInRecursive> && !yyjson::writable<RecBadInRecursive>);
+static_assert(!yyjson::readable<RecBadRangeAggregate> && !yyjson::writable<RecBadRangeAggregate>);
+static_assert(!yyjson::readable<std::vector<RecBadTree>> && !yyjson::writable<std::vector<RecBadTree>>);
+// `castable`, `cast` and the DOM constructors check one level, as they do for any type
+static_assert(yyjson::castable<yyjson::reader::const_value_ref, RecBadTree>);
+
+namespace
+{
+    template <typename T>
+    concept rec_reads_through_call = requires(std::string_view json, T& t) { yyjson::read<T>(json); } ||
+                                     requires(std::string_view json, T& t) { yyjson::read_into(json, t); } ||
+                                     requires(std::string_view json, T& t) { yyjson::merge_into(json, t); };
+    template <typename T>
+    concept rec_writes_through_call = requires(const T& t) { yyjson::write(t); };
+    static_assert(!rec_reads_through_call<RecBadTree> && !rec_writes_through_call<RecBadTree>);
+    static_assert(rec_reads_through_call<RecDuration> && !rec_writes_through_call<RecDuration>);
+    static_assert(rec_reads_through_call<RecTree> && rec_writes_through_call<RecTree>);
+
+    template <std::size_t N>
+    consteval auto rec_cause_name(const char (&s)[N])
+    {
+        return yyjson::detail::diagnostic_name<N - 1>(std::string_view(s, N - 1));
+    }
+}  // namespace
+static_assert(std::same_as<yyjson::detail::read_cause<RecBadTree>,
+                           yyjson::diagnostic::field<RecBadTree, rec_cause_name("p"),
+                                                     yyjson::diagnostic::not_readable<RecPrivate>>>);
+static_assert(std::same_as<
+              yyjson::detail::write_cause<RecBadA>,
+              yyjson::diagnostic::field<
+                  RecBadA, rec_cause_name("bs"),
+                  yyjson::diagnostic::element<
+                      std::vector<RecBadB>, yyjson::diagnostic::field<RecBadB, rec_cause_name("p"),
+                                                                      yyjson::diagnostic::not_writable<RecPrivate>>>>>);
+static_assert(std::same_as<yyjson::detail::write_cause<RecDuration>,
+                           yyjson::diagnostic::field<RecDuration, rec_cause_name("d"),
+                                                     yyjson::diagnostic::not_writable<std::chrono::seconds>>>);
+static_assert(
+    std::same_as<
+        yyjson::detail::read_cause<RecBadVectorHolder>,
+        yyjson::diagnostic::field<
+            RecBadVectorHolder, rec_cause_name("v"),
+            yyjson::diagnostic::element<std::vector<RecBadTree>,
+                                        yyjson::diagnostic::field<RecBadTree, rec_cause_name("p"),
+                                                                  yyjson::diagnostic::not_readable<RecPrivate>>>>>);
+static_assert(std::same_as<yyjson::detail::write_cause<RecBadRangeAggregate>,
+                           yyjson::diagnostic::field<RecBadRangeAggregate, rec_cause_name("p"),
+                                                     yyjson::diagnostic::not_writable<RecPrivate>>>);
+
 // GCC 16 warns that `PimplImpl` is completed after the walk above found it incomplete, which is what this test checks
 #if defined(__GNUC__) && !defined(__clang__) && __GNUC__ >= 16
 #pragma GCC diagnostic push
