@@ -77,6 +77,7 @@ jobs:
         - { name: "LLVM 21", os: "ubuntu-24.04", install: "brew", c: "$(brew --prefix llvm@21)/bin/clang", cxx: "$(brew --prefix llvm@21)/bin/clang++", brewpkg: "llvm@21" }
         - { name: "LLVM 22", os: "ubuntu-24.04", install: "brew", c: "$(brew --prefix llvm@22)/bin/clang", cxx: "$(brew --prefix llvm@22)/bin/clang++", brewpkg: "llvm@22" }
         - { name: "LLVM 22 (C++23)", os: "ubuntu-24.04", install: "brew", c: "$(brew --prefix llvm@22)/bin/clang", cxx: "$(brew --prefix llvm@22)/bin/clang++", brewpkg: "llvm@22", std: "23" }
+        - { name: "LLVM 22 (C++26)", os: "ubuntu-24.04", install: "brew", c: "$(brew --prefix llvm@22)/bin/clang", cxx: "$(brew --prefix llvm@22)/bin/clang++", brewpkg: "llvm@22", std: "26" }
     name: Ubuntu - ${{ matrix.compiler.name }}
     runs-on: ${{ matrix.compiler.os }}
     timeout-minutes: 120
