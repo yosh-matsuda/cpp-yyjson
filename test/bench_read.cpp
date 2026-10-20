@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cpp_yyjson.hpp>
 #include <format>
+#include <nlohmann/json.hpp>
 #include <string>
 #include "bench_data.hpp"
 
@@ -366,6 +367,71 @@ std::pair<json_count, json_stats> iterate_all_rapidjson(const auto& json)
                 ++stats.total_true_cnt;
             else
                 ++stats.total_false_cnt;
+        }
+    };
+    iterate_all_elements(iterate_all_elements, json);
+    return {counter, stats};
+}
+
+std::pair<json_count, json_stats> iterate_all_nlohmann(const nlohmann::json& json)
+{
+    using value_t = nlohmann::json::value_t;
+    auto counter = json_count();
+    auto stats = json_stats();
+    const auto iterate_all_elements = [&counter, &stats](auto self, const nlohmann::json& v0) -> void {
+        switch (v0.type())
+        {
+            case value_t::array:
+            {
+                const auto& arr = v0.get_ref<const nlohmann::json::array_t&>();
+                ++counter.cnt_array;
+                stats.total_arr_elm_cnt += arr.size();
+                for (const auto& v1 : arr)
+                {
+                    self(self, v1);
+                }
+                break;
+            }
+            case value_t::object:
+            {
+                const auto& obj = v0.get_ref<const nlohmann::json::object_t&>();
+                ++counter.cnt_object;
+                stats.total_obj_elm_cnt += obj.size();
+                for (const auto& [k, v1] : obj)
+                {
+                    stats.total_str_len += k.size();
+                    self(self, v1);
+                }
+                break;
+            }
+            case value_t::string:
+                ++counter.cnt_string;
+                stats.total_str_len += v0.get_ref<const nlohmann::json::string_t&>().size();
+                break;
+            case value_t::number_integer:
+                ++counter.cnt_int;
+                stats.total_int += v0.get_ref<const nlohmann::json::number_integer_t&>();
+                break;
+            case value_t::number_unsigned:
+                ++counter.cnt_int;
+                stats.total_int += static_cast<std::int64_t>(v0.get_ref<const nlohmann::json::number_unsigned_t&>());
+                break;
+            case value_t::number_float:
+                ++counter.cnt_real;
+                stats.total_real += v0.get_ref<const nlohmann::json::number_float_t&>();
+                break;
+            case value_t::null:
+                ++counter.cnt_null;
+                break;
+            case value_t::boolean:
+                ++counter.cnt_bool;
+                if (v0.get_ref<const nlohmann::json::boolean_t&>())
+                    ++stats.total_true_cnt;
+                else
+                    ++stats.total_false_cnt;
+                break;
+            default:
+                throw std::logic_error("");
         }
     };
     iterate_all_elements(iterate_all_elements, json);
@@ -1328,6 +1394,32 @@ void read_simdjson_ond_pad_single_copy(benchmark::State& state)
     state.SetBytesProcessed(state.iterations() * json.size());
 }
 
+// nlohmann-json allocates every value on its own and has no parser or allocator to reuse,
+// so it has no reused row.
+void read_nlohmann(benchmark::State& state)
+{
+    const auto json = read_file(std::get<0>(json_files[state.range(0)]));
+    for (auto _ : state)
+    {
+        auto counter = json_count();
+        auto stats = json_stats();
+        auto start = std::chrono::steady_clock::now();
+        {
+            const auto doc = nlohmann::json::parse(json);
+            std::tie(counter, stats) = iterate_all_nlohmann(doc);
+        }
+        state.SetIterationTime(
+            std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::steady_clock::now() - start)
+                .count());
+        if (counter != std::get<1>(json_files[state.range(0)]))
+            state.SkipWithError(std::format("JSON counter mismatch\n{}", counter.str()).c_str());
+        if (stats != std::get<2>(json_files[state.range(0)]))
+            state.SkipWithError(std::format("JSON stats mismatch\n{}", stats.str()).c_str());
+    }
+    state.SetLabel(std::get<0>(json_files[state.range(0)]));
+    state.SetBytesProcessed(state.iterations() * json.size());
+}
+
 #if defined(CPPYYJSON_RAW_YYJSON_BENCHMARKS)
 BENCHMARK(read_c_yyjson)->Unit(benchmark::kMillisecond)->DenseRange(0, json_files.size() - 1)->UseManualTime();
 BENCHMARK(read_c_yyjson_single)->Unit(benchmark::kMillisecond)->DenseRange(0, json_files.size() - 1)->UseManualTime();
@@ -1406,6 +1498,7 @@ BENCHMARK(read_simdjson_dom_pad_single_copy)
     ->Unit(benchmark::kMillisecond)
     ->DenseRange(0, json_files.size() - 1)
     ->UseManualTime();
+BENCHMARK(read_nlohmann)->Unit(benchmark::kMillisecond)->DenseRange(0, json_files.size() - 1)->UseManualTime();
 #endif
 
 BENCHMARK_MAIN();

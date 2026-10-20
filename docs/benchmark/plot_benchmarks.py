@@ -30,6 +30,7 @@ READ_COLORS = {
     "c_yyjson": "#16a34a",
     "rapidjson": "#dc2626",
     "simdjson": "#9333ea",
+    "nlohmann": "#f97316",
 }
 
 CONTRACTS = {
@@ -162,6 +163,7 @@ READ_VARIANTS = {
         "simdjson",
         "simdjson On Demand (pad)",
     ),
+    "read_nlohmann": ("fixed", "fresh", "nlohmann", "nlohmann-json"),
 }
 
 WRITE_COLORS = {
@@ -172,7 +174,7 @@ WRITE_COLORS = {
     "cpp-yyjson macro": "#2563eb",
     "yyjson": "#16a34a",
     "rapidjson": "#dc2626",
-    "nlohmann-json": "#f97316",
+    "nlohmann-json": READ_COLORS["nlohmann"],
     "simdjson": READ_COLORS["simdjson"],
 }
 
@@ -278,6 +280,7 @@ THROUGHPUT_CHARTS = {
                 "simdjson On Demand (copy + pad)",
             ),
             ("read_rapidjson", "rapidjson", "rapidjson"),
+            ("read_nlohmann", "nlohmann", "nlohmann-json"),
         ],
         READ_COLORS,
         DATASET_NAMES,
