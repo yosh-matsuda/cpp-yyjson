@@ -2863,6 +2863,8 @@ namespace yyjson
         concept back_insertable =
             std::ranges::range<T> && requires(T& t, std::ranges::range_value_t<T> v) { t.push_back(v); };
 
+        // Use as `template <typename... Ts> requires copy_string_args<Ts...>`.  As the type-constraint of the pack,
+        // `template <copy_string_args... Ts>`, it crashes clang 22 in C++26 mode.
         template <typename... Args>
         concept copy_string_args =
             ((sizeof...(Args) == 1 && (std::same_as<Args, copy_string_t> && ...)) || sizeof...(Args) == 0);
@@ -3316,49 +3318,51 @@ namespace yyjson
                                    std::conditional_t<to_json_obj_def<T>, object_ref,
                                                       std::conditional_t<to_json_arr_def<T>, array_ref, value_ref>>>;
 
-            template <to_json_def T, copy_string_args... Ts>
+            template <to_json_def T, typename... Ts>
+            requires copy_string_args<Ts...>
             auto to_json_wrapper(T&& t, Ts... ts)
             {
                 return default_caster<std::remove_cvref_t<T>>::to_json(std::forward<T>(t), ts...);
             }
-            template <to_json_usr_ext T, copy_string_args... Ts>
+            template <to_json_usr_ext T, typename... Ts>
+            requires copy_string_args<Ts...>
             auto to_json_wrapper(T&& t, Ts... ts)
             {
                 return caster<std::remove_cvref_t<T>>::to_json(std::forward<T>(t), ts...);
             }
-            template <to_json_usr_noext T, copy_string_args... Ts>
-            requires (!to_json_usr_ext<T>)
+            template <to_json_usr_noext T, typename... Ts>
+            requires copy_string_args<Ts...> && (!to_json_usr_ext<T>)
             auto to_json_wrapper(T&& t, Ts...)
             {
                 return caster<std::remove_cvref_t<T>>::to_json(std::forward<T>(t));
             }
-            template <to_json_usr_only_ext T, copy_string_args... Ts>
-            requires (!to_json_usr_ext<T>)
+            template <to_json_usr_only_ext T, typename... Ts>
+            requires copy_string_args<Ts...> && (!to_json_usr_ext<T>)
             auto to_json_wrapper(T&& t, Ts...)
             {
                 return caster<std::remove_cvref_t<T>>::to_json(std::forward<T>(t), copy_string);
             }
 
-            template <typename V, typename T, copy_string_args... Ts>
-            requires to_json_inp_def<V, T>
+            template <typename V, typename T, typename... Ts>
+            requires copy_string_args<Ts...> && to_json_inp_def<V, T>
             auto to_json_wrapper(V& v, T&& t, Ts... ts)
             {
                 return default_caster<std::remove_cvref_t<T>>::to_json(v, std::forward<T>(t), ts...);
             }
-            template <typename V, typename T, copy_string_args... Ts>
-            requires to_json_inp_usr_ext<V, T>
+            template <typename V, typename T, typename... Ts>
+            requires copy_string_args<Ts...> && to_json_inp_usr_ext<V, T>
             auto to_json_wrapper(V& v, T&& t, Ts... ts)
             {
                 return caster<std::remove_cvref_t<T>>::to_json(v, std::forward<T>(t), ts...);
             }
-            template <typename V, typename T, copy_string_args... Ts>
-            requires to_json_inp_usr_noext<V, T> && (!to_json_inp_usr_ext<V, T>)
+            template <typename V, typename T, typename... Ts>
+            requires copy_string_args<Ts...> && to_json_inp_usr_noext<V, T> && (!to_json_inp_usr_ext<V, T>)
             auto to_json_wrapper(V& v, T&& t, Ts...)
             {
                 return caster<std::remove_cvref_t<T>>::to_json(v, std::forward<T>(t));
             }
-            template <typename V, typename T, copy_string_args... Ts>
-            requires to_json_inp_usr_only_ext<V, T> && (!to_json_inp_usr_ext<V, T>)
+            template <typename V, typename T, typename... Ts>
+            requires copy_string_args<Ts...> && to_json_inp_usr_only_ext<V, T> && (!to_json_inp_usr_ext<V, T>)
             auto to_json_wrapper(V& v, T&& t, Ts...)
             {
                 return caster<std::remove_cvref_t<T>>::to_json(v, std::forward<T>(t), copy_string);
@@ -3374,14 +3378,15 @@ namespace yyjson
                 }
             };
             // A caster taking an emitter is given one that writes into the reference.
-            template <typename V, typename T, copy_string_args... Ts>
-            requires to_json_emit_usr<V, T>
+            template <typename V, typename T, typename... Ts>
+            requires copy_string_args<Ts...> && to_json_emit_usr<V, T>
             void to_json_wrapper(V& v, T&& t, Ts... ts)
             {
                 auto emitter = emitter_access::make<to_json_emitter<V, T>>(v);
                 to_json_wrapper(emitter, std::forward<T>(t), ts...);
             }
-            template <to_json_defined T, copy_string_args... Ts>
+            template <to_json_defined T, typename... Ts>
+            requires copy_string_args<Ts...>
             auto convert(T&& t, Ts... ts)
             {
                 auto result = to_json_wrapper(std::forward<T>(t), ts...);
@@ -3656,28 +3661,32 @@ namespace yyjson
                     if (ptrs != json_value.doc_.ptrs)
                         ptrs->children.emplace_back(std::forward<T>(json_value).doc_.ptrs);
                 }
-                template <std::same_as<std::nullptr_t> T, copy_string_args... Ts>
+                template <std::same_as<std::nullptr_t> T, typename... Ts>
+                requires copy_string_args<Ts...>
                 yyjson_mut_val* create_primitive(T, Ts...) noexcept
                 {
                     return yyjson_mut_null(ptrs->self);
                 }
-                template <std::same_as<bool> T, copy_string_args... Ts>
+                template <std::same_as<bool> T, typename... Ts>
+                requires copy_string_args<Ts...>
                 yyjson_mut_val* create_primitive(T v, Ts...) noexcept
                 {
                     return yyjson_mut_bool(ptrs->self, v);
                 }
-                template <std::unsigned_integral T, copy_string_args... Ts>
-                requires (!std::same_as<T, bool>)
+                template <std::unsigned_integral T, typename... Ts>
+                requires copy_string_args<Ts...> && (!std::same_as<T, bool>)
                 yyjson_mut_val* create_primitive(T v, Ts...) noexcept
                 {
                     return yyjson_mut_uint(ptrs->self, v);
                 }
-                template <std::signed_integral T, copy_string_args... Ts>
+                template <std::signed_integral T, typename... Ts>
+                requires copy_string_args<Ts...>
                 yyjson_mut_val* create_primitive(T v, Ts...) noexcept
                 {
                     return yyjson_mut_sint(ptrs->self, v);
                 }
-                template <std::floating_point T, copy_string_args... Ts>
+                template <std::floating_point T, typename... Ts>
+                requires copy_string_args<Ts...>
                 yyjson_mut_val* create_primitive(T v, Ts...) noexcept
                 {
                     auto* const val = yyjson_mut_real(ptrs->self, static_cast<double>(v));
@@ -3715,7 +3724,8 @@ namespace yyjson
                 {
                     return create_primitive(std::string_view(v));
                 }
-                template <to_json_inp_defined T, copy_string_args... Ts>
+                template <to_json_inp_defined T, typename... Ts>
+                requires copy_string_args<Ts...>
                 yyjson_mut_val* create_primitive(T&& t, Ts... ts)
                 {
                     // T -(convert)-> value / array / object
@@ -3723,15 +3733,16 @@ namespace yyjson
                     to_json_wrapper(vr, std::forward<T>(t), ts...);
                     return vr.val_;
                 }
-                template <typename T, copy_string_args... Ts>
-                requires (!to_json_inp_defined<T>) && convertible_to_create_primitive_callable<T>
+                template <typename T, typename... Ts>
+                requires copy_string_args<Ts...> && (!to_json_inp_defined<T>) &&
+                         convertible_to_create_primitive_callable<T>
                 yyjson_mut_val* create_primitive(T&& t, Ts... ts)
                 {
                     // T -(convert)-> value
                     return create_primitive(convert(std::forward<T>(t), ts...), ts...);
                 }
-                template <typename T, copy_string_args... Ts>
-                requires (!to_json_inp_defined<T>) && convertible_to_json_value<T>
+                template <typename T, typename... Ts>
+                requires copy_string_args<Ts...> && (!to_json_inp_defined<T>) && convertible_to_json_value<T>
                 yyjson_mut_val* create_primitive(T&& t, Ts... ts)
                 {
                     // T -(convert)-> a JSON value, copied
@@ -3748,15 +3759,15 @@ namespace yyjson
                     // empty array
                     return yyjson_mut_arr(ptrs->self);
                 }
-                template <typename T, copy_string_args... Ts>
-                requires (!to_json_arr_defined<T>) && convertible_to_create_array_callable<T>
+                template <typename T, typename... Ts>
+                requires copy_string_args<Ts...> && (!to_json_arr_defined<T>) && convertible_to_create_array_callable<T>
                 yyjson_mut_val* create_array(T&& t, Ts... ts)
                 {
                     // T -(convert)-> array
                     return create_array(convert(std::forward<T>(t), ts...), ts...);
                 }
-                template <std::ranges::input_range Range, copy_string_args... Args>
-                requires create_value_range<Range>
+                template <std::ranges::input_range Range, typename... Args>
+                requires copy_string_args<Args...> && create_value_range<Range>
                 yyjson_mut_val* create_array(Range&& range, Args... args)
                 {
                     // range<T> -> array
@@ -3854,7 +3865,8 @@ namespace yyjson
                     }
                     return result;
                 }
-                template <to_json_arr_defined T, copy_string_args... Ts>
+                template <to_json_arr_defined T, typename... Ts>
+                requires copy_string_args<Ts...>
                 yyjson_mut_val* create_array(T&& t, Ts... ts)
                 {
                     // T -(convert)-> array
@@ -3870,22 +3882,23 @@ namespace yyjson
                     // empty object
                     return yyjson_mut_obj(ptrs->self);
                 }
-                template <typename T, copy_string_args... Ts>
-                requires (!to_json_obj_defined<T>) && convertible_to_create_object_callable<T>
+                template <typename T, typename... Ts>
+                requires copy_string_args<Ts...> && (!to_json_obj_defined<T>) &&
+                         convertible_to_create_object_callable<T>
                 yyjson_mut_val* create_object(T&& t, Ts... ts)
                 {
                     // T -(convert)-> object
                     return create_object(convert(std::forward<T>(t), ts...), ts...);
                 }
-                template <std::ranges::input_range Range, copy_string_args... Ts>
-                requires create_value_key_value_range<Range>
+                template <std::ranges::input_range Range, typename... Ts>
+                requires copy_string_args<Ts...> && create_value_key_value_range<Range>
                 yyjson_mut_val* create_object(Range&& range, Ts... ts)
                 {
                     // range<T> -> object
                     return yyjson_mut_obj_with_range(nullptr, std::forward<Range>(range), ts...);
                 }
-                template <std::ranges::input_range Range, copy_string_args... Ts>
-                requires mutable_value_key_value_range<Range>
+                template <std::ranges::input_range Range, typename... Ts>
+                requires copy_string_args<Ts...> && mutable_value_key_value_range<Range>
                 yyjson_mut_val* create_object(Range&& range, Ts... ts)
                 {
                     // range<pair<key, value>> -> object
@@ -3951,8 +3964,8 @@ namespace yyjson
                     }
                     return result;
                 }
-                template <std::ranges::input_range Range, copy_string_args... Ts>
-                requires reader_value_ref_key_value_range<Range>
+                template <std::ranges::input_range Range, typename... Ts>
+                requires copy_string_args<Ts...> && reader_value_ref_key_value_range<Range>
                 yyjson_mut_val* create_object(Range&& range, Ts... ts)
                 {
                     // range<pair<key, immut_value>> -> object
@@ -3966,7 +3979,8 @@ namespace yyjson
                     }
                     return result;
                 }
-                template <to_json_obj_defined T, copy_string_args... Ts>
+                template <to_json_obj_defined T, typename... Ts>
+                requires copy_string_args<Ts...>
                 yyjson_mut_val* create_object(T&& t, Ts... ts)
                 {
                     // T -(convert)-> object
@@ -3977,25 +3991,27 @@ namespace yyjson
                     return vr.val_;
                 }
 
-                template <create_primitive_callable T, copy_string_args... Ts>
+                template <create_primitive_callable T, typename... Ts>
+                requires copy_string_args<Ts...>
                 yyjson_mut_val* create_value(T&& t, Ts... ts)
                 {
                     return create_primitive(char_array_as_string(std::forward<T>(t)), ts...);
                 }
-                template <create_array_callable T, copy_string_args... Ts>
-                requires (!create_primitive_callable<T>) && (!create_object_callable<T>)
+                template <create_array_callable T, typename... Ts>
+                requires copy_string_args<Ts...> && (!create_primitive_callable<T>) && (!create_object_callable<T>)
                 yyjson_mut_val* create_value(T&& t, Ts... ts)
                 {
                     return create_array(std::forward<T>(t), ts...);
                 }
-                template <create_object_callable T, copy_string_args... Ts>
-                requires (!create_primitive_callable<T>)
+                template <create_object_callable T, typename... Ts>
+                requires copy_string_args<Ts...> && (!create_primitive_callable<T>)
                 yyjson_mut_val* create_value(T&& t, Ts... ts)
                 {
                     return create_object(std::forward<T>(t), ts...);
                 }
 
-                template <create_value_callable T, copy_string_args... Ts>
+                template <create_value_callable T, typename... Ts>
+                requires copy_string_args<Ts...>
                 auto set_value(yyjson_mut_val* dst, T&& t, Ts... ts)
                 {
                     using value_type = std::remove_cvref_t<T>;
@@ -4105,7 +4121,8 @@ namespace yyjson
 
                 // Stores the key of a member of a map, which an enumeration gives by `enum_key_text`: a name, which
                 // has static storage, or an integer, which is copied.  Neither needs an escape if no name does.
-                template <typename Key, copy_string_args... Ts>
+                template <typename Key, typename... Ts>
+                requires copy_string_args<Ts...>
                 bool set_key(yyjson_mut_val* dst, Key&& key, Ts... ts)
                 {
                     using E = std::remove_cvref_t<Key>;
@@ -4124,7 +4141,8 @@ namespace yyjson
                     else
                         return set_value(dst, std::forward<Key>(key), ts...);
                 }
-                template <typename Key, copy_string_args... Ts>
+                template <typename Key, typename... Ts>
+                requires copy_string_args<Ts...>
                 yyjson_mut_val* create_key(Key&& key, Ts... ts)
                 {
                     if constexpr (yyjson::detail::enum_key<std::remove_cvref_t<Key>>)
@@ -4139,7 +4157,8 @@ namespace yyjson
                 // The same as `set_value` for `dst` that is not linked into the document yet.  An array or
                 // an object is built on `dst` itself, instead of on a value of its own whose header is then
                 // copied into `dst`.  The cases follow the order in which `create_value` picks them.
-                template <create_value_callable T, copy_string_args... Ts>
+                template <create_value_callable T, typename... Ts>
+                requires copy_string_args<Ts...>
                 bool set_new_value(yyjson_mut_val* dst, T&& t, Ts... ts)
                 {
                     if constexpr (set_value_in_place<std::remove_cvref_t<T>>)
@@ -4195,8 +4214,8 @@ namespace yyjson
                 }
 
                 // Builds an array of a sized range on `dst`, or on a new value if `dst` is null.
-                template <std::ranges::input_range Range, copy_string_args... Ts>
-                requires sized_create_value_range<Range>
+                template <std::ranges::input_range Range, typename... Ts>
+                requires copy_string_args<Ts...> && sized_create_value_range<Range>
                 yyjson_mut_val* yyjson_mut_arr_with_sized_range(yyjson_mut_val* dst, Range&& range, Ts... ts)
                 {
                     using value_type = std::remove_cvref_t<std::ranges::range_value_t<Range>>;
@@ -4214,8 +4233,8 @@ namespace yyjson
                     }
                 }
 
-                template <std::ranges::input_range Range, copy_string_args... Ts>
-                requires create_element_callable<std::ranges::range_value_t<Range>>
+                template <std::ranges::input_range Range, typename... Ts>
+                requires copy_string_args<Ts...> && create_element_callable<std::ranges::range_value_t<Range>>
                 yyjson_mut_val* yyjson_mut_arr_with_range(yyjson_mut_val* dst, Range&& range, Ts... ts)
                 {
                     const auto count = std::ranges::size(range);
@@ -4248,7 +4267,8 @@ namespace yyjson
                     return nullptr;
                 }
 
-                template <tuple_like Tuple, std::size_t... Is, copy_string_args... Ts>
+                template <tuple_like Tuple, std::size_t... Is, typename... Ts>
+                requires copy_string_args<Ts...>
                 yyjson_mut_val* yyjson_mut_arr_with_tuple_impl(Tuple&& tuple, std::index_sequence<Is...>, Ts... ts)
                 {
                     constexpr auto count = sizeof...(Is);
@@ -4278,7 +4298,8 @@ namespace yyjson
                     return nullptr;
                 }
 
-                template <tuple_like Tuple, copy_string_args... Ts>
+                template <tuple_like Tuple, typename... Ts>
+                requires copy_string_args<Ts...>
                 yyjson_mut_val* yyjson_mut_arr_with_tuple(Tuple&& tuple, Ts... ts)
                 {
                     using tuple_type = std::remove_cvref_t<Tuple>;
@@ -4286,7 +4307,8 @@ namespace yyjson
                         std::forward<Tuple>(tuple), std::make_index_sequence<std::tuple_size_v<tuple_type>>{}, ts...);
                 }
 
-                template <std::ranges::sized_range Range, copy_string_args... Ts>
+                template <std::ranges::sized_range Range, typename... Ts>
+                requires copy_string_args<Ts...>
                 yyjson_mut_val* yyjson_mut_arr_with_visitable_objects(yyjson_mut_val* dst, Range&& range, Ts... ts)
                 {
                     using value_type = std::remove_cvref_t<std::ranges::range_value_t<Range>>;
@@ -4330,7 +4352,8 @@ namespace yyjson
                     return nullptr;
                 }
 
-                template <std::ranges::sized_range Range, copy_string_args... Ts>
+                template <std::ranges::sized_range Range, typename... Ts>
+                requires copy_string_args<Ts...>
                 yyjson_mut_val* yyjson_mut_arr_with_reflected_objects(yyjson_mut_val* dst, Range&& range, Ts... ts)
                 {
                     using value_type = std::remove_cvref_t<std::ranges::range_value_t<Range>>;
@@ -4338,7 +4361,8 @@ namespace yyjson
                         dst, std::forward<Range>(range), yyjson::detail::reflected_fields<value_type>{}, ts...);
                 }
 
-                template <std::ranges::sized_range Range, std::size_t... Is, copy_string_args... Ts>
+                template <std::ranges::sized_range Range, std::size_t... Is, typename... Ts>
+                requires copy_string_args<Ts...>
                 yyjson_mut_val* yyjson_mut_arr_with_reflected_objects_impl(yyjson_mut_val* dst, Range&& range,
                                                                            std::index_sequence<Is...>, Ts... ts)
                 {
@@ -4391,8 +4415,9 @@ namespace yyjson
                     return nullptr;
                 }
 
-                template <std::ranges::input_range Range, copy_string_args... Ts>
-                requires key_value_like_create_value_callable<std::ranges::range_value_t<Range>>
+                template <std::ranges::input_range Range, typename... Ts>
+                requires copy_string_args<Ts...> &&
+                         key_value_like_create_value_callable<std::ranges::range_value_t<Range>>
                 yyjson_mut_val* yyjson_mut_obj_with_range(yyjson_mut_val* dst, Range&& range, Ts... ts)
                 {
                     const auto count = std::ranges::size(range);
@@ -4453,7 +4478,8 @@ namespace yyjson
 
                     // `NoEsc` marks the key `YYJSON_SUBTYPE_NOESC`, as `yyjson_mut_obj_add_*` does for a key
                     // without characters to escape, so that yyjson copies it without scanning.
-                    template <bool NoEsc = false, typename Field, copy_string_args... Ts>
+                    template <bool NoEsc = false, typename Field, typename... Ts>
+                    requires copy_string_args<Ts...>
                     void emplace(std::string_view field_name, Field&& field, Ts... ts)
                     {
                         if (!success) [[unlikely]]
@@ -4650,16 +4676,16 @@ namespace yyjson
                     check_error();
                     set_root();
                 }
-                template <create_array_callable T, copy_string_args... Ts>
-                requires is_value_type
+                template <create_array_callable T, typename... Ts>
+                requires copy_string_args<Ts...> && is_value_type
                 explicit abstract_value(construct_array_type_t, T&& t, Ts... ts)
                     : val_(doc_.create_array(std::forward<T>(t), ts...))
                 {
                     check_error();
                     set_root();
                 }
-                template <create_object_callable T, copy_string_args... Ts>
-                requires is_value_type
+                template <create_object_callable T, typename... Ts>
+                requires copy_string_args<Ts...> && is_value_type
                 explicit abstract_value(construct_object_type_t, T&& t, Ts... ts)
                     : val_(doc_.create_object(std::forward<T>(t), ts...))
                 {
@@ -4668,8 +4694,8 @@ namespace yyjson
                 }
 
             public:
-                template <create_value_callable T, copy_string_args... Ts>
-                requires is_value_type
+                template <create_value_callable T, typename... Ts>
+                requires copy_string_args<Ts...> && is_value_type
                 abstract_value(T&& t, Ts... ts) : val_(doc_.create_value(std::forward<T>(t), ts...))  // NOLINT
                 {
                     check_error();
@@ -5189,8 +5215,8 @@ namespace yyjson
                     : base(base::construct_array_type)
                 {
                 }
-                template <create_array_callable T, copy_string_args... Ts>
-                requires base::is_value_type
+                template <create_array_callable T, typename... Ts>
+                requires copy_string_args<Ts...> && base::is_value_type
                 const_array_base(T&& t, Ts... ts)  // NOLINT
                     : base(base::construct_array_type, std::forward<T>(t), ts...)
                 {
@@ -5281,7 +5307,8 @@ namespace yyjson
                     return yyjson_mut_arr_iter{prev_size, prev_size + 1, prev_size != 0 ? prev_tail : appended,
                                                nullptr, base::val_};
                 }
-                template <create_value_callable T, copy_string_args... Ts>
+                template <create_value_callable T, typename... Ts>
+                requires copy_string_args<Ts...>
                 auto array_append_no_iter(T&& t, Ts... ts)
                 {
                     auto new_val = base::doc_.create_value(std::forward<T>(t), ts...);
@@ -5289,7 +5316,8 @@ namespace yyjson
                     assert(success);
                     return new_val;
                 }
-                template <create_value_callable T, copy_string_args... Ts>
+                template <create_value_callable T, typename... Ts>
+                requires copy_string_args<Ts...>
                 auto array_append(T&& t, Ts... ts)
                 {
                     auto* const prev_tail = static_cast<yyjson_mut_val*>(base::val_->uni.ptr);
@@ -5362,7 +5390,8 @@ namespace yyjson
                     const auto prev_size = yyjson_mut_arr_size(base::val_);
                     return appended_iter(prev_tail, array_append_no_iter(std::forward<T>(json_value)), prev_size);
                 }
-                template <create_value_callable T, copy_string_args... Ts>
+                template <create_value_callable T, typename... Ts>
+                requires copy_string_args<Ts...>
                 auto array_prepend(T&& t, Ts... ts)
                 {
                     auto new_val = base::doc_.create_value(std::forward<T>(t), ts...);
@@ -5417,7 +5446,8 @@ namespace yyjson
                     assert(success);
                     return base::array_iter_begin();
                 }
-                template <create_value_callable T, copy_string_args... Ts>
+                template <create_value_callable T, typename... Ts>
+                requires copy_string_args<Ts...>
                 auto array_insert(const std::size_t idx, T&& t, Ts... ts)
                 {
                     auto new_val = base::doc_.create_value(std::forward<T>(t), ts...);
@@ -5495,8 +5525,8 @@ namespace yyjson
 
             public:
                 // Work around MSVC cl missing inherited constrained constructors in constructibility checks.
-                template <create_array_callable T, copy_string_args... Ts>
-                requires base::is_value_type
+                template <create_array_callable T, typename... Ts>
+                requires copy_string_args<Ts...> && base::is_value_type
                 mutable_array_base(T&& t, Ts... ts) : base(std::forward<T>(t), ts...)  // NOLINT
                 {
                 }
@@ -5578,34 +5608,38 @@ namespace yyjson
                     assert(success);
                     return result;
                 }
-                template <create_value_callable T, copy_string_args... Ts>
-                requires (!base_of_value<T>) && (!reader::detail::base_of_value_ref<T>)
+                template <create_value_callable T, typename... Ts>
+                requires copy_string_args<Ts...> && (!base_of_value<T>) && (!reader::detail::base_of_value_ref<T>)
                 auto emplace_back(T&& t, Ts... ts)
                 {
                     return array_iter<DocType>(*this, array_append(std::forward<T>(t), ts...));
                 }
-                template <base_of_value T, copy_string_args... Ts>
+                template <base_of_value T, typename... Ts>
+                requires copy_string_args<Ts...>
                 auto emplace_back(T&& t, Ts...) noexcept
                 {
                     return array_iter<DocType>(*this, array_append(std::forward<T>(t)));
                 }
-                template <reader::detail::base_of_value_ref T, copy_string_args... Ts>
+                template <reader::detail::base_of_value_ref T, typename... Ts>
+                requires copy_string_args<Ts...>
                 auto emplace_back(T&& t, Ts...) noexcept
                 {
                     return array_iter<DocType>(*this, array_append(std::forward<T>(t)));
                 }
-                template <create_value_callable T, copy_string_args... Ts>
-                requires (!base_of_value<T>) && (!reader::detail::base_of_value_ref<T>)
+                template <create_value_callable T, typename... Ts>
+                requires copy_string_args<Ts...> && (!base_of_value<T>) && (!reader::detail::base_of_value_ref<T>)
                 void emplace_back_no_iter(T&& t, Ts... ts)
                 {
                     array_append_no_iter(std::forward<T>(t), ts...);
                 }
-                template <base_of_value T, copy_string_args... Ts>
+                template <base_of_value T, typename... Ts>
+                requires copy_string_args<Ts...>
                 void emplace_back_no_iter(T&& t, Ts...) noexcept
                 {
                     array_append_no_iter(std::forward<T>(t));
                 }
-                template <reader::detail::base_of_value_ref T, copy_string_args... Ts>
+                template <reader::detail::base_of_value_ref T, typename... Ts>
+                requires copy_string_args<Ts...>
                 void emplace_back_no_iter(T&& t, Ts...) noexcept
                 {
                     array_append_no_iter(std::forward<T>(t));
@@ -5642,18 +5676,20 @@ namespace yyjson
                     assert(success);
                     return result;
                 }
-                template <create_value_callable T, copy_string_args... Ts>
-                requires (!base_of_value<T>) && (!reader::detail::base_of_value_ref<T>)
+                template <create_value_callable T, typename... Ts>
+                requires copy_string_args<Ts...> && (!base_of_value<T>) && (!reader::detail::base_of_value_ref<T>)
                 auto emplace_front(T&& t, Ts... ts)
                 {
                     return array_iter<DocType>(*this, array_prepend(std::forward<T>(t), ts...));
                 }
-                template <base_of_value T, copy_string_args... Ts>
+                template <base_of_value T, typename... Ts>
+                requires copy_string_args<Ts...>
                 auto emplace_front(T&& t, Ts...) noexcept
                 {
                     return array_iter<DocType>(*this, array_prepend(std::forward<T>(t)));
                 }
-                template <reader::detail::base_of_value_ref T, copy_string_args... Ts>
+                template <reader::detail::base_of_value_ref T, typename... Ts>
+                requires copy_string_args<Ts...>
                 auto emplace_front(T&& t, Ts...) noexcept
                 {
                     return array_iter<DocType>(*this, array_prepend(std::forward<T>(t)));
@@ -5690,18 +5726,20 @@ namespace yyjson
                     assert(success);
                     return result;
                 }
-                template <create_value_callable T, copy_string_args... Ts>
-                requires (!base_of_value<T>) && (!reader::detail::base_of_value_ref<T>)
+                template <create_value_callable T, typename... Ts>
+                requires copy_string_args<Ts...> && (!base_of_value<T>) && (!reader::detail::base_of_value_ref<T>)
                 auto emplace(const std::size_t idx, T&& t, Ts... ts)
                 {
                     return array_iter<DocType>(*this, array_insert(idx, std::forward<T>(t), ts...));
                 }
-                template <base_of_value T, copy_string_args... Ts>
+                template <base_of_value T, typename... Ts>
+                requires copy_string_args<Ts...>
                 auto emplace(const std::size_t idx, T&& t, Ts...) noexcept
                 {
                     return array_iter<DocType>(*this, array_insert(idx, std::forward<T>(t)));
                 }
-                template <reader::detail::base_of_value_ref T, copy_string_args... Ts>
+                template <reader::detail::base_of_value_ref T, typename... Ts>
+                requires copy_string_args<Ts...>
                 auto emplace(const std::size_t idx, T&& t, Ts...) noexcept
                 {
                     return array_iter<DocType>(*this, array_insert(idx, std::forward<T>(t)));
@@ -5931,8 +5969,8 @@ namespace yyjson
                     : base(base::construct_object_type)
                 {
                 }
-                template <create_object_callable T, copy_string_args... Ts>
-                requires base::is_value_type
+                template <create_object_callable T, typename... Ts>
+                requires copy_string_args<Ts...> && base::is_value_type
                 const_object_base(T&& t, Ts... ts)  // NOLINT
                     : base(base::construct_object_type, std::forward<T>(t), ts...)
                 {
@@ -6038,8 +6076,8 @@ namespace yyjson
                     return yyjson_mut_obj_iter{prev_size, prev_size + 1, prev_size != 0 ? prev_tail : appended_key,
                                                nullptr, base::val_};
                 }
-                template <typename Key, create_value_callable T, copy_string_args... Ts>
-                requires key_type<std::remove_cvref_t<Key&&>>
+                template <typename Key, create_value_callable T, typename... Ts>
+                requires copy_string_args<Ts...> && key_type<std::remove_cvref_t<Key&&>>
                 auto object_append_no_iter(Key&& key, T&& t, Ts... ts)
                 {
                     const auto add_key =
@@ -6049,8 +6087,8 @@ namespace yyjson
                     assert(success);
                     return add_key;
                 }
-                template <typename Key, create_value_callable T, copy_string_args... Ts>
-                requires key_type<std::remove_cvref_t<Key&&>>
+                template <typename Key, create_value_callable T, typename... Ts>
+                requires copy_string_args<Ts...> && key_type<std::remove_cvref_t<Key&&>>
                 auto object_append(Key&& key, T&& t, Ts... ts)
                 {
                     auto* const prev_tail = static_cast<yyjson_mut_val*>(base::val_->uni.ptr);
@@ -6059,7 +6097,8 @@ namespace yyjson
                         prev_tail, object_append_no_iter(std::forward<Key>(key), std::forward<T>(t), ts...),
                         prev_size);
                 }
-                template <typename Key, base_of_value T, copy_string_args... Ts>
+                template <typename Key, base_of_value T, typename... Ts>
+                requires copy_string_args<Ts...>
                 auto object_append_no_iter(Key&& key, T&& json_value, Ts... ts) noexcept
                 {
                     const auto add_key =
@@ -6101,7 +6140,8 @@ namespace yyjson
                     }
                     return add_key;
                 }
-                template <typename Key, base_of_value T, copy_string_args... Ts>
+                template <typename Key, base_of_value T, typename... Ts>
+                requires copy_string_args<Ts...>
                 auto object_append(Key&& key, T&& json_value, Ts... ts) noexcept
                 {
                     auto* const prev_tail = static_cast<yyjson_mut_val*>(base::val_->uni.ptr);
@@ -6111,7 +6151,8 @@ namespace yyjson
                         object_append_no_iter(std::forward<Key>(key), std::forward<T>(json_value), ts...),
                         prev_size);
                 }
-                template <typename Key, reader::detail::base_of_value_ref T, copy_string_args... Ts>
+                template <typename Key, reader::detail::base_of_value_ref T, typename... Ts>
+                requires copy_string_args<Ts...>
                 auto object_append_no_iter(Key&& key, T&& json_value, Ts... ts) noexcept
                 {
                     const auto add_key =
@@ -6121,7 +6162,8 @@ namespace yyjson
                     assert(success);
                     return add_key;
                 }
-                template <typename Key, reader::detail::base_of_value_ref T, copy_string_args... Ts>
+                template <typename Key, reader::detail::base_of_value_ref T, typename... Ts>
+                requires copy_string_args<Ts...>
                 auto object_append(Key&& key, T&& json_value, Ts... ts) noexcept
                 {
                     auto* const prev_tail = static_cast<yyjson_mut_val*>(base::val_->uni.ptr);
@@ -6144,8 +6186,8 @@ namespace yyjson
 
             public:
                 // Work around MSVC cl missing inherited constrained constructors in constructibility checks.
-                template <create_object_callable T, copy_string_args... Ts>
-                requires base::is_value_type
+                template <create_object_callable T, typename... Ts>
+                requires copy_string_args<Ts...> && base::is_value_type
                 mutable_object_base(T&& t, Ts... ts) : base(std::forward<T>(t), ts...)  // NOLINT
                 {
                 }
@@ -6222,7 +6264,8 @@ namespace yyjson
                     }
                     return *this;
                 }
-                template <key_type KeyType, copy_string_args... Ts>
+                template <key_type KeyType, typename... Ts>
+                requires copy_string_args<Ts...>
                 auto emplace(KeyType&& key, empty_array_t, Ts... ts) noexcept
                 {
                     auto result = base::doc_.template get_empty_value_ref<array_ref>();
@@ -6232,7 +6275,8 @@ namespace yyjson
                     assert(success);
                     return result;
                 }
-                template <key_type KeyType, copy_string_args... Ts>
+                template <key_type KeyType, typename... Ts>
+                requires copy_string_args<Ts...>
                 auto emplace(KeyType&& key, empty_object_t, Ts... ts) noexcept
                 {
                     auto result = base::doc_.template get_empty_value_ref<object_ref>();
@@ -6242,37 +6286,41 @@ namespace yyjson
                     assert(success);
                     return result;
                 }
-                template <key_type KeyType, create_value_callable T, copy_string_args... Ts>
-                requires (!base_of_value<T>) && (!reader::detail::base_of_value_ref<T>)
+                template <key_type KeyType, create_value_callable T, typename... Ts>
+                requires copy_string_args<Ts...> && (!base_of_value<T>) && (!reader::detail::base_of_value_ref<T>)
                 auto emplace(KeyType&& key, T&& t, Ts... ts)
                 {
                     return object_iter<DocType>(*this,
                                                 object_append(std::forward<KeyType>(key), std::forward<T>(t), ts...));
                 }
-                template <key_type KeyType, base_of_value T, copy_string_args... Ts>
+                template <key_type KeyType, base_of_value T, typename... Ts>
+                requires copy_string_args<Ts...>
                 auto emplace(KeyType&& key, T&& t, Ts... ts) noexcept
                 {
                     return object_iter<DocType>(*this,
                                                 object_append(std::forward<KeyType>(key), std::forward<T>(t), ts...));
                 }
-                template <key_type KeyType, reader::detail::base_of_value_ref T, copy_string_args... Ts>
+                template <key_type KeyType, reader::detail::base_of_value_ref T, typename... Ts>
+                requires copy_string_args<Ts...>
                 auto emplace(KeyType&& key, T&& t, Ts... ts) noexcept
                 {
                     return object_iter<DocType>(*this,
                                                 object_append(std::forward<KeyType>(key), std::forward<T>(t), ts...));
                 }
-                template <key_type KeyType, create_value_callable T, copy_string_args... Ts>
-                requires (!base_of_value<T>) && (!reader::detail::base_of_value_ref<T>)
+                template <key_type KeyType, create_value_callable T, typename... Ts>
+                requires copy_string_args<Ts...> && (!base_of_value<T>) && (!reader::detail::base_of_value_ref<T>)
                 void emplace_no_iter(KeyType&& key, T&& t, Ts... ts)
                 {
                     object_append_no_iter(std::forward<KeyType>(key), std::forward<T>(t), ts...);
                 }
-                template <key_type KeyType, base_of_value T, copy_string_args... Ts>
+                template <key_type KeyType, base_of_value T, typename... Ts>
+                requires copy_string_args<Ts...>
                 void emplace_no_iter(KeyType&& key, T&& t, Ts... ts) noexcept
                 {
                     object_append_no_iter(std::forward<KeyType>(key), std::forward<T>(t), ts...);
                 }
-                template <key_type KeyType, reader::detail::base_of_value_ref T, copy_string_args... Ts>
+                template <key_type KeyType, reader::detail::base_of_value_ref T, typename... Ts>
+                requires copy_string_args<Ts...>
                 void emplace_no_iter(KeyType&& key, T&& t, Ts... ts) noexcept
                 {
                     object_append_no_iter(std::forward<KeyType>(key), std::forward<T>(t), ts...);
@@ -6311,7 +6359,8 @@ namespace yyjson
                 {
                     return object_iter<DocType>(*this, object_append(std::forward<KeyType>(key), list, copy_string));
                 }
-                template <key_type KeyType, typename T, copy_string_args... Ts>
+                template <key_type KeyType, typename T, typename... Ts>
+                requires copy_string_args<Ts...>
                 auto try_emplace(KeyType&& key, T&& t, Ts... ts) -> std::pair<object_iter<DocType>, bool>
                 {
                     auto it = find(key);
@@ -8656,8 +8705,8 @@ namespace yyjson
 #endif
 
         // The names have static storage, which the document can point to without a copy.
-        template <copy_string_args... Ts>
-        requires std::is_enum_v<T> && (!writer::detail::to_json_usr_translator<T>)
+        template <typename... Ts>
+        requires copy_string_args<Ts...> && std::is_enum_v<T> && (!writer::detail::to_json_usr_translator<T>)
         static void to_json(writer::value_ref& v, T t, Ts...)
         {
             if constexpr (enum_name_only<T>)
@@ -8670,23 +8719,23 @@ namespace yyjson
                 v = enum_integer(t);
         }
 
-        template <copy_string_args... Ts>
-        requires visitable<T> && (!writer::detail::to_json_usr_translator<T>) &&
+        template <typename... Ts>
+        requires copy_string_args<Ts...> && visitable<T> && (!writer::detail::to_json_usr_translator<T>) &&
                  (writer::detail::visitable_fields_creatable<T>())
         static void to_json(writer::object_ref& obj, const T& t, Ts... ts)
         {
             visit_struct<T>::to_json_impl(obj, t, ts...);
         }
-        template <copy_string_args... Ts>
-        requires visitable<T> && (!writer::detail::to_json_usr_translator<T>) &&
+        template <typename... Ts>
+        requires copy_string_args<Ts...> && visitable<T> && (!writer::detail::to_json_usr_translator<T>) &&
                  (writer::detail::visitable_fields_creatable<T>())
         static void to_json(writer::object_ref& obj, T&& t, Ts... ts)
         {
             visit_struct<T>::to_json_impl(obj, std::move(t), ts...);
         }
 
-        template <copy_string_args... Ts>
-        requires (!visitable<T>) && (!writer::detail::to_json_usr_translator<T>) &&
+        template <typename... Ts>
+        requires copy_string_args<Ts...> && (!visitable<T>) && (!writer::detail::to_json_usr_translator<T>) &&
                  writer::detail::to_json_with_reflection<T>
         static void to_json(writer::object_ref& obj, const T& t, Ts... ts)
         {
@@ -8699,8 +8748,8 @@ namespace yyjson
                 }(detail::reflected_fields<T>{});
             });
         }
-        template <copy_string_args... Ts>
-        requires (!visitable<T>) && (!writer::detail::to_json_usr_translator<T>) &&
+        template <typename... Ts>
+        requires copy_string_args<Ts...> && (!visitable<T>) && (!writer::detail::to_json_usr_translator<T>) &&
                  writer::detail::to_json_with_reflection<T>
         static void to_json(writer::object_ref& obj, T&& t, Ts... ts)
         {
@@ -8734,8 +8783,8 @@ namespace yyjson
                 return is_owning_pointer<P>::make(cast<T>(json));
             }
 
-            template <copy_string_args... Ts>
-            requires json_value_type && requires(writer::value_ref& v, const T& t) {
+            template <typename... Ts>
+            requires copy_string_args<Ts...> && json_value_type && requires(writer::value_ref& v, const T& t) {
                 v = t;
                 v = std::pair<const T&, copy_string_t>(t, copy_string);
             }
@@ -8815,8 +8864,8 @@ namespace yyjson
             return cast<T>(json);
         }
 
-        template <detail::copy_string_args... Ts>
-        requires requires(writer::value_ref& v, const T& t) {
+        template <typename... Ts>
+        requires detail::copy_string_args<Ts...> && requires(writer::value_ref& v, const T& t) {
             v = t;
             v = std::pair<const T&, copy_string_t>(t, copy_string);
         }
@@ -8832,8 +8881,8 @@ namespace yyjson
                 if (t.has_value()) v = *t;
             }
         }
-        template <detail::copy_string_args... Ts>
-        requires requires(writer::value_ref& v, const T& t) {
+        template <typename... Ts>
+        requires detail::copy_string_args<Ts...> && requires(writer::value_ref& v, const T& t) {
             v = t;
             v = std::pair<const T&, copy_string_t>(t, copy_string);
         }
@@ -8854,7 +8903,8 @@ namespace yyjson
     template <>
     struct caster<std::monostate>
     {
-        template <detail::copy_string_args... Ts>
+        template <typename... Ts>
+        requires detail::copy_string_args<Ts...>
         static auto to_json(std::monostate, Ts...)
         {
             return nullptr;
@@ -9625,9 +9675,9 @@ namespace yyjson
         }
 
     public:
-
-        template <detail::copy_string_args... Args>
-        requires (detail::variant_alternative_writable<Ts, std::variant<Ts...>> && ...)
+        template <typename... Args>
+        requires detail::copy_string_args<Args...> &&
+                 (detail::variant_alternative_writable<Ts, std::variant<Ts...>> && ...)
         static void to_json(writer::value_ref& val, const std::variant<Ts...>& t, Args...)
         {
             constexpr auto copy = (sizeof...(Args) != 0);
@@ -9642,8 +9692,9 @@ namespace yyjson
             if constexpr (detail::internally_tagged<std::variant<Ts...>>) write_internal_tag(val, t.index());
         }
 
-        template <detail::copy_string_args... Args>
-        requires (detail::variant_alternative_writable<Ts, std::variant<Ts...>> && ...)
+        template <typename... Args>
+        requires detail::copy_string_args<Args...> &&
+                 (detail::variant_alternative_writable<Ts, std::variant<Ts...>> && ...)
         static void to_json(writer::value_ref& val, std::variant<Ts...>&& t, Args...)
         {
             constexpr auto copy = (sizeof...(Args) != 0);
@@ -9851,8 +9902,9 @@ namespace yyjson
             detail::throw_bad_cast("{} is not constructible from JSON", detail::type_name<Tuple<Ts...>>());
         }
 
-        template <detail::copy_string_args... Args>
-        requires requires { (std::declval<writer::array_ref&>().emplace_back(std::declval<Ts>()), ...); }
+        template <typename... Args>
+        requires detail::copy_string_args<Args...> &&
+                 requires { (std::declval<writer::array_ref&>().emplace_back(std::declval<Ts>()), ...); }
         static auto to_json(writer::array_ref& arr, const Tuple<Ts...>& t, Args... args)
         {
             using indices = std::make_index_sequence<std::tuple_size_v<Tuple<Ts...>>>;
@@ -9860,8 +9912,9 @@ namespace yyjson
                 (arr.emplace_back_no_iter(std::get<N>(t), args...), ...);
             }(indices{});
         }
-        template <detail::copy_string_args... Args>
-        requires requires { (std::declval<writer::array_ref&>().emplace_back(std::declval<Ts>()), ...); }
+        template <typename... Args>
+        requires detail::copy_string_args<Args...> &&
+                 requires { (std::declval<writer::array_ref&>().emplace_back(std::declval<Ts>()), ...); }
         static auto to_json(writer::array_ref& arr, Tuple<Ts...>&& t, Args... args)
         {
             using indices = std::make_index_sequence<std::tuple_size_v<Tuple<Ts...>>>;
@@ -9870,12 +9923,13 @@ namespace yyjson
             }(indices{});
         }
 
-        template <detail::copy_string_args... Args>
-        requires (detail::key_value_like<Ts> && ...) && requires {
-            (std::declval<writer::object_ref&>().emplace(std::get<0>(std::declval<Ts>()),
-                                                         std::get<1>(std::declval<Ts>())),
-             ...);
-        }
+        template <typename... Args>
+        requires detail::copy_string_args<Args...> && (detail::key_value_like<Ts> && ...) &&
+                 requires {
+                     (std::declval<writer::object_ref&>().emplace(std::get<0>(std::declval<Ts>()),
+                                                                  std::get<1>(std::declval<Ts>())),
+                      ...);
+                 }
         static auto to_json(writer::object_ref& obj, const Tuple<Ts...>& t, Args... args)
         {
             using indices = std::make_index_sequence<std::tuple_size_v<Tuple<Ts...>>>;
@@ -9883,12 +9937,13 @@ namespace yyjson
                 (obj.emplace_no_iter(std::get<0>(std::get<N>(t)), std::get<1>(std::get<N>(t)), args...), ...);
             }(indices{});
         }
-        template <detail::copy_string_args... Args>
-        requires (detail::key_value_like<Ts> && ...) && requires {
-            (std::declval<writer::object_ref&>().emplace(std::get<0>(std::declval<Ts>()),
-                                                         std::get<1>(std::declval<Ts>())),
-             ...);
-        }
+        template <typename... Args>
+        requires detail::copy_string_args<Args...> && (detail::key_value_like<Ts> && ...) &&
+                 requires {
+                     (std::declval<writer::object_ref&>().emplace(std::get<0>(std::declval<Ts>()),
+                                                                  std::get<1>(std::declval<Ts>())),
+                      ...);
+                 }
         static auto to_json(writer::object_ref& obj, Tuple<Ts...>&& t, Args... args)
         {
             using indices = std::make_index_sequence<std::tuple_size_v<Tuple<Ts...>>>;
@@ -9904,7 +9959,8 @@ namespace yyjson
     template <>
     struct caster<std::vector<bool>> : detail::builtin_caster
     {
-        template <detail::copy_string_args... Ts>
+        template <typename... Ts>
+        requires detail::copy_string_args<Ts...>
         static auto to_json(writer::array_ref& arr, const std::vector<bool>& bv, Ts...)
         {
             for (bool v : bv) arr.emplace_back(v);
@@ -9913,7 +9969,8 @@ namespace yyjson
     template <>
     struct caster<std::vector<bool>::reference>
     {
-        template <detail::copy_string_args... Ts>
+        template <typename... Ts>
+        requires detail::copy_string_args<Ts...>
         static auto to_json(const std::vector<bool>::reference& v, Ts...)
         {
             return static_cast<bool>(v);
@@ -18301,8 +18358,8 @@ namespace yyjson
 
         // Appends the member of `key` and `t`, written as `yyjson::value(t)`.  A document copies `key` and the
         // strings of `t`, so `copy_string` is accepted and changes nothing.
-        template <typename Key, writer::detail::emplaceable T, detail::copy_string_args... Ts>
-        requires detail::key_type<std::remove_cvref_t<Key>>
+        template <typename Key, writer::detail::emplaceable T, typename... Ts>
+        requires detail::copy_string_args<Ts...> && detail::key_type<std::remove_cvref_t<Key>>
         void emplace(Key&& key, T&& t, Ts...)
         {
 #if YYJSON_VERSION_HEX >= 0x000C00
@@ -18344,12 +18401,12 @@ namespace yyjson
             }
         }
         // Appends the member of `key` and an object, whose members `func(object_emitter&)` appends.
-        template <typename Key, std::invocable<object_emitter&> Func, detail::copy_string_args... Ts>
-        requires detail::key_type<std::remove_cvref_t<Key>>
+        template <typename Key, std::invocable<object_emitter&> Func, typename... Ts>
+        requires detail::copy_string_args<Ts...> && detail::key_type<std::remove_cvref_t<Key>>
         void emplace_object(Key&& key, Func&& func, Ts... ts);
         // Appends the member of `key` and an array, whose elements `func(array_emitter&)` appends.
-        template <typename Key, std::invocable<array_emitter&> Func, detail::copy_string_args... Ts>
-        requires detail::key_type<std::remove_cvref_t<Key>>
+        template <typename Key, std::invocable<array_emitter&> Func, typename... Ts>
+        requires detail::copy_string_args<Ts...> && detail::key_type<std::remove_cvref_t<Key>>
         void emplace_array(Key&& key, Func&& func, Ts... ts);
     };
 
@@ -18383,7 +18440,8 @@ namespace yyjson
 
         // Appends `t`, written as `yyjson::value(t)`.  A document copies the strings of `t`, so `copy_string` is
         // accepted and changes nothing.
-        template <writer::detail::emplaceable T, detail::copy_string_args... Ts>
+        template <writer::detail::emplaceable T, typename... Ts>
+        requires detail::copy_string_args<Ts...>
         void emplace_back(T&& t, Ts...)
         {
 #if YYJSON_VERSION_HEX >= 0x000C00
@@ -18442,8 +18500,8 @@ namespace yyjson
         }
     };
 
-    template <typename Key, std::invocable<object_emitter&> Func, detail::copy_string_args... Ts>
-    requires detail::key_type<std::remove_cvref_t<Key>>
+    template <typename Key, std::invocable<object_emitter&> Func, typename... Ts>
+    requires detail::copy_string_args<Ts...> && detail::key_type<std::remove_cvref_t<Key>>
     void object_emitter::emplace_object(Key&& key, Func&& func, Ts...)
     {
 #if YYJSON_VERSION_HEX >= 0x000C00
@@ -18464,8 +18522,8 @@ namespace yyjson
         auto child = object_emitter(obj);
         std::forward<Func>(func)(child);
     }
-    template <typename Key, std::invocable<array_emitter&> Func, detail::copy_string_args... Ts>
-    requires detail::key_type<std::remove_cvref_t<Key>>
+    template <typename Key, std::invocable<array_emitter&> Func, typename... Ts>
+    requires detail::copy_string_args<Ts...> && detail::key_type<std::remove_cvref_t<Key>>
     void object_emitter::emplace_array(Key&& key, Func&& func, Ts...)
     {
 #if YYJSON_VERSION_HEX >= 0x000C00
