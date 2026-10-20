@@ -176,6 +176,7 @@ WRITE_COLORS = {
     "yyjson": "#16a34a",
     "rapidjson": "#dc2626",
     "nlohmann-json": "#f97316",
+    "simdjson": READ_COLORS["simdjson"],
     "Glaze": "#ca8a04",
 }
 
@@ -193,6 +194,7 @@ WRITE_DATASET_VARIANTS = {
     "write_rapidjson_dataset": ("fresh", "rapidjson", "rapidjson"),
     "write_rapidjson_single_dataset": ("reused", "rapidjson", "rapidjson"),
     "write_nlohmann_dataset": ("fresh", "nlohmann-json", "nlohmann-json"),
+    "write_simdjson_dataset": ("fresh", "simdjson", "simdjson"),
     "write_glaze_dataset": ("fresh", "Glaze", "Glaze"),
     "write_glaze_single_dataset": ("reused", "Glaze", "Glaze"),
 }
@@ -292,6 +294,7 @@ THROUGHPUT_CHARTS = {
         [
             ("write_cpp_yyjson_dataset", "cpp-yyjson", "cpp-yyjson"),
             ("write_c_yyjson_dataset", "yyjson", "yyjson"),
+            ("write_simdjson_dataset", "simdjson", "simdjson"),
             ("write_rapidjson_dataset", "rapidjson", "rapidjson"),
             ("write_nlohmann_dataset", "nlohmann-json", "nlohmann-json"),
         ],
