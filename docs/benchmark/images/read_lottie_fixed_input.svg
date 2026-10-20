@@ -1,72 +1,75 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="980" height="570" viewBox="0 0 980 570">
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="594" viewBox="0 0 980 594">
 <rect width="100%" height="100%" fill="#ffffff"/>
 <style>text{font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,sans-serif;fill:#172033}.title{font-size:20px;font-weight:700}.heading{font-size:13px;font-weight:600;fill:#334155}.label{font-size:13px}.value{font-size:12px;fill:#475569}.axis{stroke:#cbd5e1;stroke-width:1}.grid{stroke:#e2e8f0;stroke-width:1}</style>
 <text x="24" y="34" class="title">Read-only fixed-length input: lottie</text>
-<line x1="300" y1="544" x2="852" y2="544" class="axis"/>
-<line x1="300.0" y1="50" x2="300.0" y2="544" class="grid"/>
-<text x="300.0" y="562" class="value" text-anchor="middle">0.000 ms</text>
-<line x1="438.0" y1="50" x2="438.0" y2="544" class="grid"/>
-<text x="438.0" y="562" class="value" text-anchor="middle">257 µs</text>
-<line x1="576.0" y1="50" x2="576.0" y2="544" class="grid"/>
-<text x="576.0" y="562" class="value" text-anchor="middle">514 µs</text>
-<line x1="714.0" y1="50" x2="714.0" y2="544" class="grid"/>
-<text x="714.0" y="562" class="value" text-anchor="middle">771 µs</text>
-<line x1="852.0" y1="50" x2="852.0" y2="544" class="grid"/>
-<text x="852.0" y="562" class="value" text-anchor="middle">1.03 ms</text>
+<line x1="300" y1="568" x2="852" y2="568" class="axis"/>
+<line x1="300.0" y1="50" x2="300.0" y2="568" class="grid"/>
+<text x="300.0" y="586" class="value" text-anchor="middle">0.000 ms</text>
+<line x1="438.0" y1="50" x2="438.0" y2="568" class="grid"/>
+<text x="438.0" y="586" class="value" text-anchor="middle">1.68 ms</text>
+<line x1="576.0" y1="50" x2="576.0" y2="568" class="grid"/>
+<text x="576.0" y="586" class="value" text-anchor="middle">3.36 ms</text>
+<line x1="714.0" y1="50" x2="714.0" y2="568" class="grid"/>
+<text x="714.0" y="586" class="value" text-anchor="middle">5.05 ms</text>
+<line x1="852.0" y1="50" x2="852.0" y2="568" class="grid"/>
+<text x="852.0" y="586" class="value" text-anchor="middle">6.73 ms</text>
 <text x="24" y="76" class="heading">New parser / allocator per parse</text>
 <text x="24" y="100" class="label">cpp-yyjson (copy + in-situ)</text>
-<rect x="300" y="89" width="268.4" height="14" rx="2" fill="#2563eb"/>
-<text x="864" y="100" class="value">500 µs</text>
+<rect x="300" y="89" width="42.0" height="14" rx="2" fill="#2563eb"/>
+<text x="864" y="100" class="value">511 µs</text>
 <text x="24" y="124" class="label">cpp-yyjson</text>
-<rect x="300" y="113" width="269.1" height="14" rx="2" fill="#2563eb"/>
-<text x="864" y="124" class="value">501 µs</text>
+<rect x="300" y="113" width="42.2" height="14" rx="2" fill="#2563eb"/>
+<text x="864" y="124" class="value">514 µs</text>
 <text x="24" y="148" class="label">yyjson (copy + in-situ)</text>
-<rect x="300" y="137" width="287.7" height="14" rx="2" fill="#16a34a"/>
-<text x="864" y="148" class="value">536 µs</text>
+<rect x="300" y="137" width="44.2" height="14" rx="2" fill="#16a34a"/>
+<text x="864" y="148" class="value">538 µs</text>
 <text x="24" y="172" class="label">yyjson</text>
-<rect x="300" y="161" width="288.0" height="14" rx="2" fill="#16a34a"/>
-<text x="864" y="172" class="value">537 µs</text>
+<rect x="300" y="161" width="44.2" height="14" rx="2" fill="#16a34a"/>
+<text x="864" y="172" class="value">538 µs</text>
 <text x="24" y="196" class="label">simdjson On Demand (copy + pad)</text>
-<rect x="300" y="185" width="299.8" height="14" rx="2" fill="#9333ea"/>
-<text x="864" y="196" class="value">559 µs</text>
+<rect x="300" y="185" width="44.8" height="14" rx="2" fill="#9333ea"/>
+<text x="864" y="196" class="value">546 µs</text>
 <text x="24" y="220" class="label">simdjson DOM</text>
-<rect x="300" y="209" width="336.6" height="14" rx="2" fill="#9333ea"/>
-<text x="864" y="220" class="value">627 µs</text>
+<rect x="300" y="209" width="52.0" height="14" rx="2" fill="#9333ea"/>
+<text x="864" y="220" class="value">633 µs</text>
 <text x="24" y="244" class="label">simdjson DOM (copy + pad)</text>
-<rect x="300" y="233" width="338.2" height="14" rx="2" fill="#9333ea"/>
-<text x="864" y="244" class="value">630 µs</text>
+<rect x="300" y="233" width="52.1" height="14" rx="2" fill="#9333ea"/>
+<text x="864" y="244" class="value">635 µs</text>
 <text x="24" y="268" class="label">rapidjson (copy + in-situ)</text>
-<rect x="300" y="257" width="426.2" height="14" rx="2" fill="#dc2626"/>
-<text x="864" y="268" class="value">794 µs</text>
+<rect x="300" y="257" width="66.7" height="14" rx="2" fill="#dc2626"/>
+<text x="864" y="268" class="value">813 µs</text>
 <text x="24" y="292" class="label">rapidjson</text>
-<rect x="300" y="281" width="511.1" height="14" rx="2" fill="#dc2626"/>
-<text x="864" y="292" class="value">952 µs</text>
-<text x="24" y="318" class="heading">Reused parser / allocator</text>
-<text x="24" y="342" class="label">cpp-yyjson (copy + in-situ)</text>
-<rect x="300" y="331" width="268.3" height="14" rx="2" fill="#2563eb"/>
-<text x="864" y="342" class="value">500 µs</text>
-<text x="24" y="366" class="label">cpp-yyjson</text>
-<rect x="300" y="355" width="268.8" height="14" rx="2" fill="#2563eb"/>
-<text x="864" y="366" class="value">501 µs</text>
-<text x="24" y="390" class="label">yyjson</text>
-<rect x="300" y="379" width="286.1" height="14" rx="2" fill="#16a34a"/>
-<text x="864" y="390" class="value">533 µs</text>
+<rect x="300" y="281" width="77.6" height="14" rx="2" fill="#dc2626"/>
+<text x="864" y="292" class="value">946 µs</text>
+<text x="24" y="316" class="label">nlohmann-json</text>
+<rect x="300" y="305" width="511.1" height="14" rx="2" fill="#f97316"/>
+<text x="864" y="316" class="value">6.23 ms</text>
+<text x="24" y="342" class="heading">Reused parser / allocator</text>
+<text x="24" y="366" class="label">cpp-yyjson (copy + in-situ)</text>
+<rect x="300" y="355" width="42.1" height="14" rx="2" fill="#2563eb"/>
+<text x="864" y="366" class="value">513 µs</text>
+<text x="24" y="390" class="label">cpp-yyjson</text>
+<rect x="300" y="379" width="42.1" height="14" rx="2" fill="#2563eb"/>
+<text x="864" y="390" class="value">513 µs</text>
 <text x="24" y="414" class="label">yyjson (copy + in-situ)</text>
-<rect x="300" y="403" width="286.4" height="14" rx="2" fill="#16a34a"/>
-<text x="864" y="414" class="value">534 µs</text>
-<text x="24" y="438" class="label">simdjson On Demand (copy + pad)</text>
-<rect x="300" y="427" width="300.0" height="14" rx="2" fill="#9333ea"/>
-<text x="864" y="438" class="value">559 µs</text>
-<text x="24" y="462" class="label">simdjson DOM</text>
-<rect x="300" y="451" width="335.6" height="14" rx="2" fill="#9333ea"/>
-<text x="864" y="462" class="value">625 µs</text>
-<text x="24" y="486" class="label">simdjson DOM (copy + pad)</text>
-<rect x="300" y="475" width="337.8" height="14" rx="2" fill="#9333ea"/>
-<text x="864" y="486" class="value">629 µs</text>
-<text x="24" y="510" class="label">rapidjson (copy + in-situ)</text>
-<rect x="300" y="499" width="430.2" height="14" rx="2" fill="#dc2626"/>
-<text x="864" y="510" class="value">801 µs</text>
-<text x="24" y="534" class="label">rapidjson</text>
-<rect x="300" y="523" width="501.3" height="14" rx="2" fill="#dc2626"/>
-<text x="864" y="534" class="value">934 µs</text>
+<rect x="300" y="403" width="44.0" height="14" rx="2" fill="#16a34a"/>
+<text x="864" y="414" class="value">537 µs</text>
+<text x="24" y="438" class="label">yyjson</text>
+<rect x="300" y="427" width="44.1" height="14" rx="2" fill="#16a34a"/>
+<text x="864" y="438" class="value">538 µs</text>
+<text x="24" y="462" class="label">simdjson On Demand (copy + pad)</text>
+<rect x="300" y="451" width="44.7" height="14" rx="2" fill="#9333ea"/>
+<text x="864" y="462" class="value">545 µs</text>
+<text x="24" y="486" class="label">simdjson DOM</text>
+<rect x="300" y="475" width="51.8" height="14" rx="2" fill="#9333ea"/>
+<text x="864" y="486" class="value">632 µs</text>
+<text x="24" y="510" class="label">simdjson DOM (copy + pad)</text>
+<rect x="300" y="499" width="52.1" height="14" rx="2" fill="#9333ea"/>
+<text x="864" y="510" class="value">634 µs</text>
+<text x="24" y="534" class="label">rapidjson (copy + in-situ)</text>
+<rect x="300" y="523" width="66.9" height="14" rx="2" fill="#dc2626"/>
+<text x="864" y="534" class="value">815 µs</text>
+<text x="24" y="558" class="label">rapidjson</text>
+<rect x="300" y="547" width="79.4" height="14" rx="2" fill="#dc2626"/>
+<text x="864" y="558" class="value">968 µs</text>
 </svg>
