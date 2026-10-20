@@ -16,6 +16,7 @@
 #include <memory>
 #include <optional>
 #include <random>
+#include <set>
 #include <sstream>
 #include <string>
 #include <tuple>
@@ -132,7 +133,15 @@ namespace
         }
         catch (const yyjson::bad_cast& e)
         {
-            return std::format("bad cast: {}", e.what());
+            // a document cast knows no text, so the position that `yyjson::read<T>` adds is left out
+            auto what = std::string_view(e.what());
+            if (const auto pos = e.position())
+            {
+                const auto suffix = std::format(" (line {}, column {}, pos {})", pos->line, pos->column, pos->pos);
+                EXPECT_TRUE(what.ends_with(suffix)) << what;
+                what.remove_suffix(std::min(suffix.size(), what.size()));
+            }
+            return std::format("bad cast: {}", what);
         }
     }
 
@@ -194,6 +203,85 @@ namespace
         bool cast;  // whether the cast from a document succeeds
     };
 
+    // The value that the position of a failure of `yyjson::read<T>` starts is the value that its path names
+    template <typename T>
+    void expect_position(std::string_view json, yyjson::ReadFlag flag)
+    {
+#if YYJSON_VERSION_HEX >= 0x000900
+        if ((flag & yyjson::ReadFlag::ReadInsitu) != yyjson::ReadFlag::NoFlag) return;
+        auto position = std::optional<yyjson::text_position>();
+        auto path = std::string();
+        try
+        {
+            (void)yyjson::read<T>(json, flag);
+            return;
+        }
+        catch (const yyjson::bad_cast& e)
+        {
+            position = e.position();
+            path = e.path();
+        }
+        catch (...)
+        {
+            return;
+        }
+        if (!position.has_value()) return;
+        ASSERT_LT(position->pos, json.size()) << json;
+        const auto write = [](yyjson_val* v) {
+            auto len = std::size_t{0};
+            const auto out = std::unique_ptr<char, decltype(&std::free)>(
+                yyjson_val_write(v, YYJSON_WRITE_ALLOW_INF_AND_NAN | YYJSON_WRITE_ALLOW_INVALID_UNICODE, &len),
+                &std::free);
+            return out == nullptr ? std::string("(none)") : std::string(out.get(), len);
+        };
+        // a key that an object has more than once names all of its members
+        const auto doc = yyjson::read(json, flag);
+        auto candidates =
+            std::vector<yyjson_val*>{const_cast<yyjson_val*>(yyjson::writer::detail::json_value_access::get(doc))};
+        for (auto rest_path = std::string_view(path); !rest_path.empty();)
+        {
+            rest_path.remove_prefix(1);
+            const auto end = std::min(rest_path.find('/'), rest_path.size());
+            auto token = std::string();
+            for (std::size_t i = 0; i < end; ++i)
+            {
+                if (rest_path[i] == '~' && i + 1 < end)
+                    token += rest_path[++i] == '0' ? '~' : '/';
+                else
+                    token += rest_path[i];
+            }
+            rest_path.remove_prefix(end);
+            auto next = std::vector<yyjson_val*>();
+            for (auto* v : candidates)
+            {
+                if (yyjson_is_arr(v))
+                {
+                    next.push_back(yyjson_arr_get(v, std::stoul(token)));
+                    continue;
+                }
+                auto iter = yyjson_obj_iter_with(v);
+                while (auto* key = yyjson_obj_iter_next(&iter))
+                {
+                    if (std::string_view(yyjson_get_str(key), yyjson_get_len(key)) == token)
+                        next.push_back(yyjson_obj_iter_get_val(key));
+                }
+            }
+            candidates = std::move(next);
+        }
+        auto expected = std::set<std::string>();
+        for (auto* v : candidates) expected.insert(write(v));
+        const auto rest = std::unique_ptr<yyjson_doc, decltype(&yyjson_doc_free)>(
+            yyjson_read_opts(const_cast<char*>(json.data() + position->pos), json.size() - position->pos,
+                             static_cast<yyjson_read_flag>(flag) | YYJSON_READ_STOP_WHEN_DONE, nullptr, nullptr),
+            &yyjson_doc_free);
+        ASSERT_NE(rest, nullptr) << json;
+        EXPECT_TRUE(expected.contains(write(yyjson_doc_get_root(rest.get())))) << json << "\nat " << path;
+#else
+        static_cast<void>(json);
+        static_cast<void>(flag);
+#endif
+    }
+
     // Reads `text` as T in every way, and expects the result of the cast from a document, or for `merge_into`
     // the result of merging the document.  Returns what the reader without a document did with it.
     template <typename T>
@@ -203,6 +291,7 @@ namespace
         const auto json = copy.view();
         const auto expected = read_or_error([&] { return yyjson::read(json, flag).template cast<T>(); });
         EXPECT_EQ(read_or_error([&] { return yyjson::read<T>(json, flag); }), expected) << text;
+        expect_position<T>(json, flag);
         EXPECT_EQ(read_or_error([&] {
                       auto t = T();
                       yyjson::read_into(json, t, flag);
@@ -247,7 +336,10 @@ namespace
         {
             const auto merged = read_or_error([&] {
                 auto t = start != nullptr ? *start : T();
-                yyjson::reader::detail::merge_from(t, yyjson::read(json, flag));
+                // `yyjson::merge_into` names the path from the root, as a cast does
+                const auto doc = yyjson::read(json, flag);
+                yyjson::detail::with_cast_path(yyjson::writer::detail::json_value_access::get(doc),
+                                               [&] { yyjson::reader::detail::merge_from(t, doc); });
                 return t;
             });
             EXPECT_EQ(read_or_error([&] {

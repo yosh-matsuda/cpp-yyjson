@@ -42,7 +42,7 @@ The `yyjson` namespace includes the following functions and classes. Typically, 
 | --------------------- | -------------------------------------------------------- |
 | `yyjson::read_error`  | The JSON string is not valid JSON                        |
 | `yyjson::write_error` | The value cannot be written as JSON, such as NaN without `WriteFlag::AllowInfAndNan` |
-| `yyjson::bad_cast`    | A JSON value cannot be converted to the C++ type         |
+| `yyjson::bad_cast`    | A JSON value cannot be converted to the C++ type; [names the value](#errors-of-conversion) by its path and its position in the text |
 
 | Utility              |                                                 |
 | -------------------- | ----------------------------------------------- |
@@ -61,7 +61,7 @@ The data binding API converts between JSON text and C++ types without building a
 
 ### Reading a JSON string into a C++ object directly
 
-`yyjson::read<T>` reads a JSON string into a C++ object without building a `yyjson::reader::value` first. It accepts every type that `yyjson::cast` can convert a JSON value to and follows the same conversion rules, so the result is the same as `read(json_string, flag).cast<T>()`. So are the exceptions: `yyjson::read_error` when the text is not valid JSON, and `yyjson::bad_cast` when it cannot be converted to `T`.
+`yyjson::read<T>` reads a JSON string into a C++ object without building a `yyjson::reader::value` first. It accepts every type that `yyjson::cast` can convert a JSON value to and follows the same conversion rules, so the result is the same as `read(json_string, flag).cast<T>()`. So are the exceptions: `yyjson::read_error` when the text is not valid JSON, and `yyjson::bad_cast` when it cannot be converted to `T`, which also tells the [position](#errors-of-conversion) in the text of the value that failed.
 
 ```cpp
 template <typename T>
@@ -1276,7 +1276,53 @@ If the conversion fails, the `yyjson::bad_cast` exception is thrown or a compile
 *   A type of a fixed number of elements, such as `std::array`, a C array, `std::pair` or `std::tuple`, converts only from a JSON array or object with exactly that many elements. `[1]` does not convert to `std::array<int, 2>`, nor `[1, 2, 3]`.
 *   A struct read by [reflection](#automatic-casting-with-compile-time-reflection) or `VISITABLE_STRUCT` converts from a JSON object only, although C++20 initializes the first field of an aggregate from `T(v)`. To read a struct from another JSON value, define a [translator](#translator).
 
-A `yyjson::bad_cast` thrown while reading names the C++ type and the kind of the JSON value, such as `int is not constructible from JSON string`, but not the key of the member or the position in the document. The C++ type is spelled as the compiler spells it, such as `std::__cxx11::basic_string<char>`.
+#### Errors of conversion
+
+A `yyjson::bad_cast` thrown while reading names the C++ type and the kind of the JSON value, such as `int is not constructible from JSON string`, followed by the path of the value from the value being cast, and by its position in the text when the text was read by `read<T>`, `read_into` or `merge_into`. The C++ type is spelled as the compiler spells it, such as `std::__cxx11::basic_string<char>`.
+
+```cpp
+struct Item { int x; };
+struct Doc { std::vector<Item> items; };
+
+try
+{
+    auto doc = yyjson::read<Doc>(R"({"items":[{"x":1},{"x":"a"}]})");
+}
+catch (const yyjson::bad_cast& e)
+{
+    e.what();      // "int is not constructible from JSON string at /items/1/x (line 1, column 24, pos 23)"
+    e.path();      // "/items/1/x"
+    e.position();  // yyjson::text_position{.line = 1, .column = 24, .pos = 23}
+}
+```
+
+```cpp
+namespace yyjson
+{
+    struct text_position
+    {
+        std::size_t line = 0;    // from 1
+        std::size_t column = 0;  // from 1, in characters
+        std::size_t pos = 0;     // from 0, in bytes
+        bool operator==(const text_position&) const = default;
+    };
+
+    class bad_cast : public std::runtime_error
+    {
+    public:
+        using std::runtime_error::runtime_error;
+        const char* what() const noexcept override;
+        std::string_view path() const noexcept;
+        std::optional<text_position> position() const noexcept;
+    };
+}
+```
+
+*   `path()` is a [JSON Pointer](https://www.rfc-editor.org/rfc/rfc6901) from the value that `cast`, `read<T>`, `read_into` or `merge_into` was called on: an index for an element of an array, a key for a member of an object, with `~` written as `~0` and `/` as `~1`. It is empty for that value itself. A key that an object has more than once is named by the same path for each of its members, while the position tells which one failed.
+*   `position()` is where the value starts in the text: the line and the column, counted as `yyjson_locate_pos` counts them, with a character for each UTF-8 sequence and without the byte order mark, and the offset `pos` in bytes from the start of the string. A document cast by `cast` has no text and gives no position, nor does a text read with `ReadFlag::AllowExtWhitespace` or `ReadFlag::Json5`, whose whitespace could not be told from a value, or one with a comment or a single-quoted string before the value.
+*   `what()` writes the path after ` at ` and the position in parentheses, leaving out what is not known. The control characters of a key are written as `\u0000` to `\u001f` there, since a C string ends at a null character; `path()` holds the key as it is.
+*   A `bad_cast` that a [user-defined caster](#user-defined-casters) throws gets the path of the value given to the caster, and that of the values its `from_json` casts in turn.
+*   The `bad_cast` of the [recursion limit](#recursive-types) has no path, which would be as long as the values are deep, and no position. Neither has a `bad_cast` thrown while writing.
 
 Some conversions succeed where one might expect them to fail, or give JSON that their types do not suggest:
 

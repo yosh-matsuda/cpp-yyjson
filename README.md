@@ -60,7 +60,7 @@ auto out = std::string();
 write(project, out);
 ```
 
-Invalid JSON throws `yyjson::read_error`, and JSON that does not fit the type throws `yyjson::bad_cast`.
+Invalid JSON throws `yyjson::read_error`, and JSON that does not fit the type throws `yyjson::bad_cast`, which names the value that failed by its path and its position, as in `int is not constructible from JSON string at /items/1/x (line 1, column 24, pos 23)`.
 
 ### Reading into an existing object
 
