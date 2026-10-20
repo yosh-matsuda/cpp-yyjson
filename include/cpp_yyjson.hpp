@@ -3355,14 +3355,16 @@ namespace yyjson
                 directly_create_reflected_object_impl<std::remove_cvref_t<T>>(
                     yyjson::detail::reflected_fields<std::remove_cvref_t<T>>{});
             // Whether every member of a visitable struct can be written, as for a reflected struct above.
+            // `CheckRecursive` checks the members of a recursive struct as well, which `yyjson::writable` does
+            // once for each such struct that a type leads to.
             template <typename T, std::size_t I>
             using visitable_member_t =
                 std::remove_cvref_t<decltype(std::declval<const T&>().*std::get<I>(visit_struct<T>::members))>;
-            template <typename T>
+            template <typename T, bool CheckRecursive = false>
             consteval bool visitable_fields_creatable()
             {
                 using members = std::remove_cv_t<decltype(visit_struct<T>::members)>;
-                if constexpr (yyjson::detail::recursive_type<T>)
+                if constexpr (!CheckRecursive && yyjson::detail::recursive_type<T>)
                     return true;
                 else
                     return []<std::size_t... Is>(std::index_sequence<Is...>) {
@@ -7460,18 +7462,6 @@ namespace yyjson
             reads_with_usable_from_json(closure_t<type_list<read_type_node<T>>>{});
     }  // namespace detail
 
-    // `yyjson::read<T>(json)` reads a T from JSON text: `yyjson::castable<yyjson::reader::const_value_ref, T>`
-    // holds and the value owns its strings.  `yyjson::read_into` and `yyjson::merge_into` also need T to be
-    // move-assignable and not const.
-    template <typename T>
-    concept readable = (!std::is_reference_v<T>) && castable<reader::const_value_ref, std::remove_cv_t<T>> &&
-                       detail::reads_owned_values<std::remove_cv_t<T>>;
-
-    // `yyjson::write(t)` writes a T as JSON text.
-    template <typename T>
-    concept writable = writer::detail::create_value_callable<const T&> || writer::detail::base_of_value<T> ||
-                       reader::detail::base_of_value_ref<T>;
-
     // The types that a compile error names when `yyjson::read<T>`, `yyjson::read_into`, `yyjson::merge_into` or
     // `yyjson::write` is given a type that it cannot convert, in the template argument `cannot_be_read` or
     // `cannot_be_written`.  `field<S, name, Cause>` is a field of the struct S and `element<C, Cause>` an element
@@ -7531,11 +7521,18 @@ namespace yyjson
             return diagnostic_name<s.size()>(s);
         }
 
-        template <typename T, auto Name>
-        struct field_label
+        // The label of a field, whose name is computed only when a cause is named through it.
+        template <typename T, std::size_t I>
+        struct reflected_field_label
         {
             template <typename Cause>
-            using wrap = diagnostic::field<T, Name, Cause>;
+            using wrap = diagnostic::field<T, reflected_member_name<T, I>(), Cause>;
+        };
+        template <typename T, std::size_t I>
+        struct visitable_field_label
+        {
+            template <typename Cause>
+            using wrap = diagnostic::field<T, visitable_member_name<T, I>(), Cause>;
         };
         template <typename T>
         struct element_label
@@ -7548,31 +7545,77 @@ namespace yyjson
         {
         };
 
-        // A caster of the user converts T, whose members this library does not look into.
+        // `writer::detail::create_value_callable` for a type that the writer writes, which checks the fields of a
+        // recursive struct no further than the struct itself.
         template <typename T>
-        concept user_converted = std::is_class_v<caster<T>> && (!std::is_final_v<caster<T>>) &&
-                                 (!std::derived_from<caster<T>, builtin_caster>) &&
-                                 !requires {
-                                     &caster_conversion_lookup<T>::from_json;
-                                     &caster_conversion_lookup<T>::to_json;
-                                 };
+        concept writes_value = writer::detail::create_value_callable<const T&> || writer::detail::base_of_value<T> ||
+                               reader::detail::base_of_value_ref<T>;
 
-        // The fields and elements of T through which a failure to convert T is looked for.
         template <typename T>
+        consteval bool recursive_fields_readable();
+
+        // An aggregate with `begin()` and `end()` is written field by field into a JSON object, as other structs
+        // are, and is read from one.  `std::array` is the aggregate that is a JSON array.
+        template <typename T>
+        concept reflected_range_aggregate =
+            std::is_class_v<T> && std::is_aggregate_v<T> && (!std_array<T>) && reflectable<T>;
+
+        // How a type is read or written, for checking a recursive type and for naming the cause of an error.
+        // `opaque<T>` holds for a T that a caster of the user converts, whose members this library does not look
+        // into, and `converts_recursive<T>()` tells whether a recursive T and its own fields can be converted.
+        struct read_conversion
+        {
+            template <typename T>
+            static constexpr bool opaque = !reads_by_default<T>;
+            template <typename T>
+            static consteval bool converts_recursive()
+            {
+                if constexpr (opaque<T>)
+                    return true;
+                else
+                    return recursive_fields_readable<T>();
+            }
+        };
+        struct write_conversion
+        {
+            template <typename T>
+            static constexpr bool opaque = caster_names_to_json<T> && !std::derived_from<caster<T>, builtin_caster>;
+            template <typename T>
+            static consteval bool converts_recursive()
+            {
+                if constexpr (!writes_value<T>)
+                    return false;
+                else if constexpr (opaque<T>)
+                    return true;
+                else if constexpr (visitable<T>)
+                    return writer::detail::visitable_fields_creatable<T, true>();
+                else if constexpr (!std_array<T> && reflectable<T>)
+                    return []<std::size_t... Is>(std::index_sequence<Is...>) {
+                        return (writes_value<field_reflection::field_type<T, Is>> && ...);
+                    }(reflected_fields<T>{});
+                else
+                    return true;
+            }
+        };
+
+        // The fields and elements of T that are converted with it, through which a failure to convert T is looked
+        // for.
+        template <typename P, typename T>
         consteval auto cause_children()
         {
             if constexpr (std::is_array_v<T>)
                 return type_list<cause_child<element_label<T>, std::remove_extent_t<T>>>{};
-            else if constexpr (!std::is_class_v<T> || user_converted<T>)
+            else if constexpr (!std::is_class_v<T>)
+                return type_list<>{};
+            else if constexpr (P::template opaque<T>)
                 return type_list<>{};
             else if constexpr (visitable<T>)
                 return []<std::size_t... Is>(std::index_sequence<Is...>) {
                     return type_list<
-                        cause_child<field_label<T, visitable_member_name<T, Is>()>,
+                        cause_child<visitable_field_label<T, Is>,
                                     std::remove_reference_t<decltype(std::declval<T&>().*
                                                                      std::get<Is>(visit_struct<T>::members))>>...>{};
-                }(std::make_index_sequence<
-                           std::tuple_size_v<std::remove_cv_t<decltype(visit_struct<T>::members)>>>{});
+                }(std::make_index_sequence<std::tuple_size_v<std::remove_cv_t<decltype(visit_struct<T>::members)>>>{});
             else if constexpr (is_std_optional<T>::value)
                 return type_list<cause_child<element_label<T>, typename T::value_type>>{};
             else if constexpr (owning_pointer<T>)
@@ -7581,6 +7624,14 @@ namespace yyjson
                 return []<std::size_t... Is>(std::index_sequence<Is...>) {
                     return type_list<cause_child<element_label<T>, std::variant_alternative_t<Is, T>>...>{};
                 }(std::make_index_sequence<std::variant_size_v<T>>{});
+            // An aggregate with `begin()` and `end()` is converted by its fields, as `reflected_range_aggregate`
+            // says, and not as a range.
+            else if constexpr (reflected_range_aggregate<T> ||
+                               (!std::ranges::range<T> && !tuple_like<T> && reflectable<T>))
+                return []<std::size_t... Is>(std::index_sequence<Is...>) {
+                    return type_list<
+                        cause_child<reflected_field_label<T, Is>, field_reflection::field_type<T, Is>>...>{};
+                }(reflected_fields<T>{});
             else if constexpr (std::ranges::range<T> && requires {
                                    typename T::key_type;
                                    typename T::mapped_type;
@@ -7593,16 +7644,61 @@ namespace yyjson
                 return []<std::size_t... Is>(std::index_sequence<Is...>) {
                     return type_list<cause_child<element_label<T>, std::tuple_element_t<Is, T>>...>{};
                 }(std::make_index_sequence<std::tuple_size_v<T>>{});
-            else if constexpr (reflectable<T>)
-                return []<std::size_t... Is>(std::index_sequence<Is...>) {
-                    return type_list<cause_child<field_label<T, reflected_member_name<T, Is>()>,
-                                                 field_reflection::field_type<T, Is>>...>{};
-                }(reflected_fields<T>{});
             else
                 return type_list<>{};
         }
 
-        struct read_cause_policy
+        // A node of the graph in which a type leads to its fields and elements that are converted with it.
+        template <typename P, typename T>
+        struct conversion_node
+        {
+            template <typename... Labels, typename... Cs>
+            static auto nodes(type_list<cause_child<Labels, Cs>...>)
+                -> type_list<conversion_node<P, std::remove_cvref_t<Cs>>...>;
+            using edges = decltype(nodes(cause_children<P, T>()));
+        };
+        template <typename P, typename T>
+        consteval bool converts_if_recursive()
+        {
+            if constexpr (recursive_type<T>)
+                return P::template converts_recursive<T>();
+            else
+                return true;
+        }
+        template <typename P, typename... Ts>
+        consteval bool converts_recursive_nodes(type_list<conversion_node<P, Ts>...>)
+        {
+            return (converts_if_recursive<P, Ts>() && ...);
+        }
+        // The fields of a recursive type are not checked where the type is, which would depend on itself.  They
+        // are checked once for every recursive type that T leads to, which finds every field on a cycle, since
+        // every cycle of types passes through one.
+        template <typename P, typename T>
+        concept converts_recursive_types = converts_recursive_nodes<P>(closure_t<type_list<conversion_node<P, T>>>{});
+
+        // `yyjson::castable<yyjson::reader::const_value_ref, T>` that also checks the fields of recursive types.
+        // Those are checked first: a type that holds a recursive type which cannot be converted can make the
+        // check of the type itself instantiate the code that converts it, which fails to compile.
+        template <typename T>
+        concept read_castable =
+            converts_recursive_types<read_conversion, std::remove_cv_t<T>> && castable<reader::const_value_ref, T>;
+    }  // namespace detail
+
+    // `yyjson::read<T>(json)` reads a T from JSON text: `yyjson::castable<yyjson::reader::const_value_ref, T>`
+    // holds, as it does for the fields of the recursive types that T holds, and the value owns its strings.
+    // `yyjson::read_into` and `yyjson::merge_into` also need T to be move-assignable and not const.
+    template <typename T>
+    concept readable = (!std::is_reference_v<T>) && detail::read_castable<std::remove_cv_t<T>> &&
+                       detail::reads_owned_values<std::remove_cv_t<T>>;
+
+    // `yyjson::write(t)` writes a T as JSON text.
+    template <typename T>
+    concept writable =
+        detail::converts_recursive_types<detail::write_conversion, std::remove_cvref_t<T>> && detail::writes_value<T>;
+
+    namespace detail
+    {
+        struct read_cause_policy : read_conversion
         {
             template <typename T>
             static consteval bool converts()
@@ -7610,12 +7706,12 @@ namespace yyjson
                 if constexpr (std::is_array_v<T>)
                     return converts<std::remove_extent_t<T>>();
                 else
-                    return !std::is_reference_v<T> && !std::is_const_v<T> && castable<reader::const_value_ref, T>;
+                    return !std::is_reference_v<T> && !std::is_const_v<T> && read_castable<T>;
             }
             template <typename T>
             using leaf = diagnostic::not_readable<T>;
         };
-        struct write_cause_policy
+        struct write_cause_policy : write_conversion
         {
             template <typename T>
             static consteval bool converts()
@@ -7676,7 +7772,7 @@ namespace yyjson
         struct conversion_cause_on_path<P, type_list<Vs...>, T>
         {
             using children = typename decltype(children_cause<P, type_list<Vs..., std::remove_cv_t<T>>>(
-                cause_children<std::remove_cvref_t<T>>()))::type;
+                cause_children<P, std::remove_cvref_t<T>>()))::type;
             using type = std::conditional_t<std::is_void_v<children>, typename P::template leaf<T>, children>;
         };
         template <typename P, typename T>
@@ -7688,7 +7784,7 @@ namespace yyjson
 
         // The cause that a call names when T cannot be converted, computed only then.
         template <typename T>
-        using read_cause = typename std::conditional_t<castable<reader::const_value_ref, T>, std::type_identity<void>,
+        using read_cause = typename std::conditional_t<read_castable<T>, std::type_identity<void>,
                                                        conversion_cause<read_cause_policy, T>>::type;
         template <typename T>
         using write_cause = typename std::conditional_t<writable<T>, std::type_identity<void>,
@@ -7740,10 +7836,12 @@ namespace yyjson
               caster<std::remove_cvref_t<T>>::from_json(field, json);
           } || detail::from_json_translator<std::remove_cvref_t<T>>::in_place)));
 
-    template <json_object Json, yyjson::detail::reflectable T>
+    // `CheckRecursive` checks the fields of a recursive struct as well, which `yyjson::readable` does once for each
+    // such struct that a type leads to.
+    template <json_object Json, yyjson::detail::reflectable T, bool CheckRecursive = false>
     constexpr bool all_fields_castable_impl()
     {
-        if constexpr (detail::recursive_type<T>)
+        if constexpr (!CheckRecursive && detail::recursive_type<T>)
             return true;
         else
             return []<std::size_t... I>(std::index_sequence<I...>) {
@@ -7933,12 +8031,6 @@ namespace yyjson
         template <typename T>
         using array_element_t = typename array_element<T>::type;
 
-        // An aggregate with `begin()` and `end()` is written field by field into a JSON object, as other structs
-        // are, and is read from one.  `std::array` is the aggregate that is a JSON array.
-        template <typename T>
-        concept reflected_range_aggregate =
-            std::is_class_v<T> && std::is_aggregate_v<T> && (!std_array<T>) && reflectable<T>;
-
         // A string is a range of characters, but is read from a JSON string only.
         template <typename T, typename Json>
         concept array_castable_range =
@@ -8054,13 +8146,13 @@ namespace yyjson
 
         // Whether every field of a visitable struct can be given the value read, as `field_assignable` tells for a
         // reflected struct.  Only the fields of a recursive struct are not checked, but whether one is const,
-        // which the default caster could not read.
-        template <typename T, typename Json>
+        // which the default caster could not read, unless `CheckRecursive` is given.
+        template <typename T, typename Json, bool CheckRecursive = false>
         consteval bool visitable_fields_assignable()
         {
             using members = std::remove_cv_t<decltype(visit_struct<T>::members)>;
             return []<std::size_t... Is>(std::index_sequence<Is...>) {
-                if constexpr (recursive_type<T>)
+                if constexpr (!CheckRecursive && recursive_type<T>)
                     return (!std::is_const_v<std::remove_all_extents_t<
                                 typename member_pointee<std::tuple_element_t<Is, members>>::type>> &&
                             ...);
@@ -8069,6 +8161,17 @@ namespace yyjson
                                              typename member_pointee<std::tuple_element_t<Is, members>>::type> &&
                             ...);
             }(std::make_index_sequence<std::tuple_size_v<members>>{});
+        }
+
+        template <typename T>
+        consteval bool recursive_fields_readable()
+        {
+            if constexpr (visitable<T>)
+                return visitable_fields_assignable<T, reader::const_object_ref, true>();
+            else if constexpr (reflectable<T> && (!std::ranges::input_range<T> || reflected_range_aggregate<T>))
+                return all_fields_castable_impl<reader::const_object_ref, T, true>();
+            else
+                return true;
         }
 
         // Whether every field of a reflected or visitable struct, or every element of a C array field, can be
@@ -9366,7 +9469,7 @@ namespace yyjson
         template <typename... Args>
         requires detail::copy_string_args<Args...> &&
                  requires(writer::array_ref& arr) { (arr.emplace_back(std::declval<Ts>()), ...); }
-        static auto to_json(writer::array_ref& arr, const Tuple<Ts...>& t, Args... args)
+        static void to_json(writer::array_ref& arr, const Tuple<Ts...>& t, Args... args)
         {
             using indices = std::make_index_sequence<std::tuple_size_v<Tuple<Ts...>>>;
             [&arr, &t, args...]<std::size_t... N>(std::index_sequence<N...>) {
@@ -9376,7 +9479,7 @@ namespace yyjson
         template <typename... Args>
         requires detail::copy_string_args<Args...> &&
                  requires(writer::array_ref& arr) { (arr.emplace_back(std::declval<Ts>()), ...); }
-        static auto to_json(writer::array_ref& arr, Tuple<Ts...>&& t, Args... args)
+        static void to_json(writer::array_ref& arr, Tuple<Ts...>&& t, Args... args)
         {
             using indices = std::make_index_sequence<std::tuple_size_v<Tuple<Ts...>>>;
             [&arr, &t, args...]<std::size_t... N>(std::index_sequence<N...>) {
@@ -9389,7 +9492,7 @@ namespace yyjson
                  requires(writer::object_ref& obj) {
                      (obj.emplace(std::get<0>(std::declval<Ts>()), std::get<1>(std::declval<Ts>())), ...);
                  }
-        static auto to_json(writer::object_ref& obj, const Tuple<Ts...>& t, Args... args)
+        static void to_json(writer::object_ref& obj, const Tuple<Ts...>& t, Args... args)
         {
             using indices = std::make_index_sequence<std::tuple_size_v<Tuple<Ts...>>>;
             [&obj, &t, args...]<std::size_t... N>(std::index_sequence<N...>) {
@@ -9401,7 +9504,7 @@ namespace yyjson
                  requires(writer::object_ref& obj) {
                      (obj.emplace(std::get<0>(std::declval<Ts>()), std::get<1>(std::declval<Ts>())), ...);
                  }
-        static auto to_json(writer::object_ref& obj, Tuple<Ts...>&& t, Args... args)
+        static void to_json(writer::object_ref& obj, Tuple<Ts...>&& t, Args... args)
         {
             using indices = std::make_index_sequence<std::tuple_size_v<Tuple<Ts...>>>;
             [&obj, &t, args...]<std::size_t... N>(std::index_sequence<N...>) {
@@ -17257,7 +17360,7 @@ namespace yyjson
     // when T holds them in a range or a map, the whole text is read into one document first.  If reading without
     // a document fails, the text is read into a document for the exception, unless it is `std::bad_alloc`.
     template <typename T>
-    requires (!std::is_reference_v<T>) && castable<reader::const_value_ref, T>
+    requires (!std::is_reference_v<T>) && detail::read_castable<T>
     [[nodiscard]] T read(std::string_view json, ReadFlag read_flag = ReadFlag::NoFlag)
     {
         yyjson::detail::assert_reads_owned_strings<T>();
@@ -17293,7 +17396,7 @@ namespace yyjson
     // reads documents of the same shape over and over reuses their memory.  If it fails, `t` is left valid but
     // with unspecified contents.
     template <typename T>
-    requires (!std::is_const_v<T>) && castable<reader::const_value_ref, T> && std::is_move_assignable_v<T>
+    requires (!std::is_const_v<T>) && detail::read_castable<T> && std::is_move_assignable_v<T>
     void read_into(std::string_view json, T& t, ReadFlag read_flag = ReadFlag::NoFlag)
     {
         yyjson::detail::assert_reads_owned_strings<T>();
@@ -17330,7 +17433,7 @@ namespace yyjson
     // value, as `yyjson::read_into` reads it.  Fields and keys that the object does not have are kept.  If it
     // fails, `t` is left valid but with unspecified contents.
     template <typename T>
-    requires (!std::is_const_v<T>) && castable<reader::const_value_ref, T> && std::is_move_assignable_v<T>
+    requires (!std::is_const_v<T>) && detail::read_castable<T> && std::is_move_assignable_v<T>
     void merge_into(std::string_view json, T& t, ReadFlag read_flag = ReadFlag::NoFlag)
     {
         yyjson::detail::assert_reads_owned_strings<T>();
@@ -17360,7 +17463,7 @@ namespace yyjson
     }
 #else
     template <typename T>
-    requires (!std::is_reference_v<T>) && castable<reader::const_value_ref, T>
+    requires (!std::is_reference_v<T>) && detail::read_castable<T>
     [[nodiscard]] T read(std::string_view json, ReadFlag read_flag = ReadFlag::NoFlag)
     {
         yyjson::detail::assert_reads_owned_strings<T>();
@@ -17369,7 +17472,7 @@ namespace yyjson
     }
 
     template <typename T>
-    requires (!std::is_const_v<T>) && castable<reader::const_value_ref, T> && std::is_move_assignable_v<T>
+    requires (!std::is_const_v<T>) && detail::read_castable<T> && std::is_move_assignable_v<T>
     void read_into(std::string_view json, T& t, ReadFlag read_flag = ReadFlag::NoFlag)
     {
         yyjson::detail::assert_reads_owned_strings<T>();
@@ -17378,7 +17481,7 @@ namespace yyjson
     }
 
     template <typename T>
-    requires (!std::is_const_v<T>) && castable<reader::const_value_ref, T> && std::is_move_assignable_v<T>
+    requires (!std::is_const_v<T>) && detail::read_castable<T> && std::is_move_assignable_v<T>
     void merge_into(std::string_view json, T& t, ReadFlag read_flag = ReadFlag::NoFlag)
     {
         yyjson::detail::assert_reads_owned_strings<T>();
@@ -17390,15 +17493,15 @@ namespace yyjson
     // A type that cannot be read is rejected by name, along with the field or the element of it that cannot be
     // read, in `cannot_be_read`.  See `yyjson::diagnostic`.
     template <typename T, typename cannot_be_read = detail::read_cause<T>>
-    requires (!std::is_reference_v<T>) && (!castable<reader::const_value_ref, T>)
+    requires (!std::is_reference_v<T>) && (!detail::read_castable<T>)
     T read(std::string_view json, ReadFlag read_flag = ReadFlag::NoFlag) = CPPYYJSON_DELETED_FUNCTION(
         "T cannot be read from JSON: `cannot_be_read` names the field or element that cannot be");
     template <typename T, typename cannot_be_read = detail::read_cause<T>>
-    requires (!std::is_const_v<T>) && (!castable<reader::const_value_ref, T>)
+    requires (!std::is_const_v<T>) && (!detail::read_castable<T>)
     void read_into(std::string_view json, T& t, ReadFlag read_flag = ReadFlag::NoFlag) = CPPYYJSON_DELETED_FUNCTION(
         "T cannot be read from JSON: `cannot_be_read` names the field or element that cannot be");
     template <typename T, typename cannot_be_read = detail::read_cause<T>>
-    requires (!std::is_const_v<T>) && (!castable<reader::const_value_ref, T>)
+    requires (!std::is_const_v<T>) && (!detail::read_castable<T>)
     void merge_into(std::string_view json, T& t, ReadFlag read_flag = ReadFlag::NoFlag) = CPPYYJSON_DELETED_FUNCTION(
         "T cannot be read from JSON: `cannot_be_read` names the field or element that cannot be");
 
@@ -17772,24 +17875,24 @@ struct std::formatter<T>
         }                                                                                                           \
         template <typename Emitter, typename... Ts>                                                                 \
         requires (!std::same_as<std::remove_cvref_t<Emitter>, yyjson::writer::object_ref>)                          \
-        static auto to_json_impl(Emitter& emitter, const CLASS& t, Ts... ts)                                        \
+        static void to_json_impl(Emitter& emitter, const CLASS& t, Ts... ts)                                        \
         {                                                                                                           \
             emplace_fields(emitter, t, ts...);                                                                      \
         }                                                                                                           \
         template <typename Emitter, typename... Ts>                                                                 \
         requires (!std::same_as<std::remove_cvref_t<Emitter>, yyjson::writer::object_ref>)                          \
-        static auto to_json_impl(Emitter& emitter, CLASS&& t, Ts... ts)                                             \
+        static void to_json_impl(Emitter& emitter, CLASS&& t, Ts... ts)                                             \
         {                                                                                                           \
             emplace_fields(emitter, std::move(t), ts...);                                                           \
         }                                                                                                           \
         template <typename... Ts>                                                                                   \
-        static auto to_json_impl(writer::object_ref& obj, const CLASS& t, Ts... ts)                                 \
+        static void to_json_impl(writer::object_ref& obj, const CLASS& t, Ts... ts)                                 \
         {                                                                                                           \
             obj.assign_reflected_fields_max(yyjson::detail::struct_member_capacity<CLASS>,                          \
                                             [&](auto& emitter) { emplace_fields(emitter, t, ts...); });             \
         }                                                                                                           \
         template <typename... Ts>                                                                                   \
-        static auto to_json_impl(writer::object_ref& obj, CLASS&& t, Ts... ts)                                      \
+        static void to_json_impl(writer::object_ref& obj, CLASS&& t, Ts... ts)                                      \
         {                                                                                                           \
             obj.assign_reflected_fields_max(yyjson::detail::struct_member_capacity<CLASS>,                          \
                                             [&](auto& emitter) { emplace_fields(emitter, std::move(t), ts...); });  \
