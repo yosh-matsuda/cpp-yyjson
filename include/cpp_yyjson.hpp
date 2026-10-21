@@ -882,6 +882,14 @@ namespace yyjson
     };
     inline constexpr required_t required{};
 
+    // A field whose key a JSON object may leave out under `yyjson::strict`, as
+    // `yyjson::field("member", yyjson::optional_key)` or `[[=yyjson::optional_key]]` gives it, which a
+    // `std::optional` field already is.  The field keeps the value that it has in `T()` when the key is missing.
+    struct optional_key_t
+    {
+    };
+    inline constexpr optional_key_t optional_key{};
+
     // Whether the object of a struct may have keys that name no field, as
     // `yyjson::annotations<T> = yyjson::annotate(yyjson::additional_properties(false))` or
     // `struct [[=yyjson::additional_properties(false)]] T` gives it.  With `false`, reading an object with such a key
@@ -1205,7 +1213,7 @@ namespace yyjson
         // The settings that `yyjson::field` takes for a field.
         template <typename A>
         concept field_setting = std::same_as<A, rename> || std::same_as<A, skip_t> || std::same_as<A, required_t> ||
-                                adjacent_tag_annotation<A> || constraint_setting<A>;
+                                std::same_as<A, optional_key_t> || adjacent_tag_annotation<A> || constraint_setting<A>;
     }  // namespace detail
 
     // The settings of the field `member` of a struct, which `yyjson::annotate` takes.
@@ -1221,8 +1229,8 @@ namespace yyjson
     {
         static_assert(sizeof...(As) != 0, "yyjson::field needs a setting of the field");
         static_assert((detail::field_setting<As> && ...),
-                      "yyjson::field takes yyjson::rename, yyjson::skip, yyjson::required, yyjson::adjacent_tag and "
-                      "the constraints such as yyjson::minimum and yyjson::validate<f>");
+                      "yyjson::field takes yyjson::rename, yyjson::skip, yyjson::required, yyjson::optional_key, "
+                      "yyjson::adjacent_tag and the constraints such as yyjson::minimum and yyjson::validate<f>");
         return {member, {values...}};
     }
 
@@ -1725,6 +1733,7 @@ namespace yyjson
             not_a_struct_setting,
             duplicate_key,
             additional_twice,
+            required_optional_key,
             constrained_tagged,
             multiple_of_not_positive,
         };
@@ -1794,6 +1803,7 @@ namespace yyjson
             field_key_error error = field_key_error::none;
             std::array<bool, N> skipped = {};   // whether a field is annotated with `yyjson::skip`
             std::array<bool, N> required = {};  // whether a field is annotated with `yyjson::required`
+            std::array<bool, N> optional_key = {};  // whether a field is annotated with `yyjson::optional_key`
             additional_keys additional = additional_keys::unset;
             std::array<field_constraints, N> constraints = {};
             bool constrained = false;  // whether a field has a constraint
@@ -1826,7 +1836,8 @@ namespace yyjson
             {
                 if (visitable) return fail(field_key_error::skip_visitable);
                 if (table.skipped[i]) return fail(field_key_error::same_setting_twice);
-                if (renamed[i] || tagged[i] || table.required[i] || table.constraints[i].set != 0)
+                if (renamed[i] || tagged[i] || table.required[i] || table.optional_key[i] ||
+                    table.constraints[i].set != 0)
                     return fail(field_key_error::skipped_with_setting);
                 table.skipped[i] = true;
             }
@@ -1840,7 +1851,15 @@ namespace yyjson
             {
                 if (table.required[i]) return fail(field_key_error::same_setting_twice);
                 if (table.skipped[i]) return fail(field_key_error::skipped_with_setting);
+                if (table.optional_key[i]) return fail(field_key_error::required_optional_key);
                 table.required[i] = true;
+            }
+            constexpr void make_key_optional(std::size_t i)
+            {
+                if (table.optional_key[i]) return fail(field_key_error::same_setting_twice);
+                if (table.skipped[i]) return fail(field_key_error::skipped_with_setting);
+                if (table.required[i]) return fail(field_key_error::required_optional_key);
+                table.optional_key[i] = true;
             }
             template <typename A>
             constexpr void constrain_field(std::size_t i, const A& a)
@@ -1868,6 +1887,8 @@ namespace yyjson
                     skip_field(i);
                 else if constexpr (std::same_as<A, required_t>)
                     require_field(i);
+                else if constexpr (std::same_as<A, optional_key_t>)
+                    make_key_optional(i);
                 else if constexpr (constraint_setting<A>)
                     constrain_field(i, a);
                 else
@@ -1953,6 +1974,7 @@ namespace yyjson
                     return ((!field_reflection::field_annotations<T, Is, rename>.empty() ||
                              !field_reflection::field_annotations<T, Is, skip_t>.empty() ||
                              !field_reflection::field_annotations<T, Is, required_t>.empty() ||
+                             !field_reflection::field_annotations<T, Is, optional_key_t>.empty() ||
                              !field_reflection::field_annotations<T, Is, adjacent_tag_annotation_type>.empty() ||
                              constraint_annotated<T, Is, constraint_types>) ||
                             ...);
@@ -1983,6 +2005,9 @@ namespace yyjson
                             builder.skip_field(Is);
                         for (std::size_t k = 0; k < field_reflection::field_annotations<T, Is, required_t>.size(); ++k)
                             builder.require_field(Is);
+                        for (std::size_t k = 0; k < field_reflection::field_annotations<T, Is, optional_key_t>.size();
+                             ++k)
+                            builder.make_key_optional(Is);
                         for (std::size_t k = 0;
                              k < field_reflection::field_annotations<T, Is, adjacent_tag_annotation_type>.size(); ++k)
                             builder.tag_field(Is);
@@ -2052,8 +2077,11 @@ namespace yyjson
                           "a field is renamed twice, by yyjson::annotations, by an annotation of the member or by a "
                           "(member, \"key\") pair of VISITABLE_STRUCT");
             static_assert(table.error != field_key_error::same_setting_twice,
-                          "a field is given yyjson::skip, yyjson::required, yyjson::adjacent_tag or a constraint "
-                          "such as yyjson::minimum twice");
+                          "a field is given yyjson::skip, yyjson::required, yyjson::optional_key, "
+                          "yyjson::adjacent_tag or a constraint such as yyjson::minimum twice");
+            static_assert(table.error != field_key_error::required_optional_key,
+                          "a field annotated with yyjson::required may not be left out of the object, which "
+                          "yyjson::optional_key lets it: give the field only one of them");
             static_assert(table.error != field_key_error::additional_twice,
                           "yyjson::annotations of a struct has yyjson::additional_properties twice");
             static_assert(table.error != field_key_error::skipped_with_setting,
@@ -3106,8 +3134,9 @@ namespace yyjson
         consteval bool may_read_null();
 
         // The rules of the keys of the object of the struct S beyond reading its fields, by the index of a field
-        // among those that are read: the fields annotated with `yyjson::required`, the `std::optional` fields, which
-        // `yyjson::strict` lets the object leave out, and `yyjson::additional_properties`.  The keys are checked
+        // among those that are read: the fields annotated with `yyjson::required`, the `std::optional` fields and
+        // those annotated with `yyjson::optional_key`, which `yyjson::strict` lets the object leave out, and
+        // `yyjson::additional_properties`.  The keys are checked
         // without `yyjson::strict` when `always` is true.
         template <typename S>
         struct struct_key_rules
@@ -3137,7 +3166,11 @@ namespace yyjson
                     return std::array<bool, n>{};
             }(std::make_index_sequence<n>{});
             static constexpr auto optional = []<std::size_t... Ks>(std::index_sequence<Ks...>) {
-                return std::array<bool, n>{is_std_optional<struct_field_type<S, Ks>>::value...};
+                if constexpr (has_table)
+                    return std::array<bool, n>{(is_std_optional<struct_field_type<S, Ks>>::value ||
+                                                table().optional_key[struct_declared_index<S, Ks>])...};
+                else
+                    return std::array<bool, n>{is_std_optional<struct_field_type<S, Ks>>::value...};
             }(std::make_index_sequence<n>{});
             static constexpr auto keys = []<std::size_t... Ks>(std::index_sequence<Ks...>) {
                 return std::array<std::string_view, n>{struct_field_key<S, Ks>...};
@@ -3151,11 +3184,9 @@ namespace yyjson
             static constexpr bool always =
                 additional == additional_keys::denied || std::ranges::find(required, true) != required.end();
             static_assert(
-                [] {
-                    for (std::size_t i = 0; i < n; ++i)
-                        if (required[i] && optional[i]) return false;
-                    return true;
-                }(),
+                []<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                    return !((required[Ks] && is_std_optional<struct_field_type<S, Ks>>::value) || ...);
+                }(std::make_index_sequence<n>{}),
                 "a std::optional field may be left out of the object, which yyjson::required does not let it: give "
                 "the field a type other than std::optional, or leave out yyjson::required");
         };
