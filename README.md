@@ -200,7 +200,7 @@ See the reference for the [immutable](docs/reference.md#immutable-json-classes) 
 | Build or modify JSON that has no C++ type | `value`, `array` and `object` |
 | Convert part of a document | `cast<T>(value)` on that part |
 
-Both APIs give the same results for the same type. To convert a whole object, `read<T>(json)` and `write(t)` are faster than `read(json).cast<T>()` and `value(t).write()` because they skip the document; the DOM is the choice when you inspect, modify or convert only a part of the JSON.
+Both APIs give the same results for the same type, for JSON whose objects have no key twice. To convert a whole object, `read<T>(json)` and `write(t)` are faster than `read(json).cast<T>()` and `value(t).write()` because they skip the document; the DOM is the choice when you inspect, modify or convert only a part of the JSON.
 
 ## Conversions and customization
 
