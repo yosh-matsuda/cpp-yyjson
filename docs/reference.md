@@ -65,7 +65,7 @@ The data binding API converts between JSON text and C++ types without building a
 
 ### Reading a JSON string into a C++ object directly
 
-`yyjson::read<T>` reads a JSON string into a C++ object without building a `yyjson::reader::value` first. It accepts every type that `yyjson::cast` can convert a JSON value to and follows the same conversion rules, so the result is the same as `read(json_string, flag).cast<T>()`. So are the exceptions: `yyjson::read_error` when the text is not valid JSON, and `yyjson::bad_cast` when it cannot be converted to `T`, which also tells the [position](#errors-of-conversion) in the text of the value that failed. With `yyjson::strict`, it also rejects JSON that has more or less than `T` takes, as described in [Strict reading](#strict-reading).
+`yyjson::read<T>` reads a JSON string into a C++ object without building a `yyjson::reader::value` first. It accepts every type that `yyjson::cast` can convert a JSON value to and follows the same conversion rules, so the result is the same as `read(json_string, flag).cast<T>()`, unless an object has a [key twice](#what-a-read-checks). So are the exceptions: `yyjson::read_error` when the text is not valid JSON, and `yyjson::bad_cast` when it cannot be converted to `T`, which also tells the [position](#errors-of-conversion) in the text of the value that failed. With `yyjson::strict`, it also rejects JSON that has more or less than `T` takes, as described in [Strict reading](#strict-reading).
 
 ```cpp
 template <typename T>
@@ -136,7 +136,7 @@ void merge_into(std::string_view json_string, T& t, strict_t);
 *   A JSON object is merged in the same way, and a key that a map does not have yet is added with a default value first.
 *   Any other value replaces the field or the value of the map, as `read_into` reads it. A JSON array therefore replaces a range as a whole.
 
-Fields and keys that the object does not name keep their values. A member that appears twice is applied twice, in order.
+Fields and keys that the object does not name keep their values. Which members of a key that appears twice are applied, and in which order, is [unspecified](#what-a-read-checks).
 
 ```cpp
 using namespace yyjson;
@@ -160,7 +160,7 @@ Some fields are not merged but replaced, with their value in `T()` first:
 *   A field converted by a user-defined caster, a [translator](#translator) or an [in-place translator](#reading-into-an-existing-field), since the caster reads the whole value.
 *   A struct with a field that cannot be move-assigned, such as `std::atomic`, which is read as `read<T>` reads it.
 
-If either function throws, `t` is left valid but with unspecified contents. Merging the same JSON string again gives the same result as merging it once, which is how `merge_into` falls back to a document after a direct read that failed halfway. A string with a key twice in an object is the exception: merging it again applies both members over what the first merge left, so the fallback may give another result, or have a [`yyjson::validate<f>`](#constraints) reject a value on the way.
+If either function throws, `t` is left valid but with unspecified contents. Merging the same JSON string again gives the same result as merging it once, which is how `merge_into` falls back to a document after a direct read that failed halfway. A string with a [key twice](#what-a-read-checks) in an object is the exception, whose result is unspecified, and the fallback may also have a [`yyjson::validate<f>`](#constraints) reject a value that the members of the key give on the way.
 
 With Clang and libstdc++, `std::is_default_constructible_v` is `false` for a struct that has a default member initializer, a defaulted `operator==` and a `std::map` of its own type, so `merge_into` replaces such a struct instead of merging into it. Removing the default member initializer or the defaulted `operator==` avoids this.
 
@@ -1347,7 +1347,7 @@ Some conversions succeed where one might expect them to fail, or give JSON that 
 *   A class that is constructible from a number, such as `struct Count { Count(int); };`, reads every JSON number that C++ converts to the parameter of its constructor, so `1.5` gives `Count(1)`. Only the integer and enumeration types themselves reject a real number with a fractional part.
 *   A map whose keys are neither strings nor [enumerations](#enumerations), such as `std::map<int, int>`, is a JSON array of `[key, value]` pairs, `[[1,2]]`, which the map is read back from, not an object with its keys in strings. A key that appears twice keeps its first value, and a `std::multimap` keeps them all. `merge_into` replaces such a map as it replaces a range. Convert the map to `std::map<std::string, int>` with a [translator](#translator) to have a JSON object.
 *   `char`, `signed char`, `unsigned char`, `std::int8_t` and `std::uint8_t` are numbers, and `std::u8string`, `std::u16string`, `std::u32string` and `std::wstring` are arrays of numbers. Only ranges of `char` are JSON strings.
-*   When a struct is read, a key that the struct does not have is ignored, a field whose key is missing keeps its value in `T()`, and a key that appears twice gives the field its last value. [`yyjson::strict`](#strict-reading) rejects all three, and `yyjson::required` and `yyjson::additional_properties(false)` reject a missing key and an unknown key for a single field or struct.
+*   When a struct is read, a key that the struct does not have is ignored, a field whose key is missing keeps its value in `T()`, and a key that appears twice gives the field the value of [one of its members](#what-a-read-checks). [`yyjson::strict`](#strict-reading) rejects all three, and `yyjson::required` and `yyjson::additional_properties(false)` reject a missing key and an unknown key for a single field or struct.
 
 The following types have no conversion of their own, and fail to compile where they are written. Some of them still compile where they are read, because a type that can be constructed from a JSON scalar or from null is read from that value: a raw pointer, a `std::function` and a `std::unique_ptr` of an array read only JSON null, a duration reads an integer as its count, and a union reads a number into its first member. Use the type or the form in the second column instead:
 
@@ -1372,6 +1372,18 @@ struct Event
 static_assert(yyjson::readable<Event>);
 static_assert(!yyjson::writable<Event>);  // a duration is not written
 ```
+
+#### What a read checks
+
+A read checks the JSON at three levels:
+
+*   The text, which has to be JSON as [RFC 8259](https://www.rfc-editor.org/rfc/rfc8259) defines it, or as the `ReadFlag`s relax it. Text that is not throws `yyjson::read_error`. An object may have a key more than once: a document keeps every member in order, and `operator[]`, `find` and `contains` of an object find the first.
+*   The shape, which has to convert to the C++ type by the rules above. [`yyjson::strict`](#strict-reading), `yyjson::required`, `yyjson::additional_properties(false)` and the [tags](#tagged-variants) of variants add rules for the keys of objects. A value that breaks them throws `yyjson::bad_cast`.
+*   The value of a field, which has to satisfy the [constraints](#constraints) of the field. They are checked on the C++ value that the field gets, and a value that breaks them throws `yyjson::bad_cast`.
+
+`yyjson::read<T>`, `read_into` and `merge_into` check all three as they read, and `cast<T>` the last two on a document. What a program looks up in a document by itself is not what the library checks, and not necessarily what a cast gives a field: check what a field gets by its constraints or by a [`yyjson::validate<f>`](#constraints).
+
+When an object has a key more than once, which of the members a read takes is unspecified: the one that gives a field of a struct or an element of a map its value, the one that names the alternative of a tagged variant, and those that `merge_into` applies and their order. Each field gets the value of one of the members, which its constraints check. `yyjson::strict` rejects a key twice where the type reads it: in the object of a struct or of a map with unique keys, and as a tag. The keys that a struct ignores, such as those that `yyjson::additional_properties(true)` lets it have, are not checked, and neither are the objects in a value that is ignored, nor those in a document that is only read.
 
 #### Strict reading
 
@@ -1416,7 +1428,7 @@ Each row below is a `yyjson::bad_cast` that the same read without `yyjson::stric
 | --- | --- | --- |
 | an object with a key that names no field of the struct, or names a [skipped field](#skipped-fields) | the key is ignored | `T has no field of the key "k"` |
 | an object without the key of a field that is not a `std::optional` nor annotated with `yyjson::optional_key`, also when the field has a default member initializer | the field gets its value in `T()` | `T is not constructible from JSON without the key "k"` |
-| an object with a key twice, read into a struct or a map with unique keys, or with the key of a [tag](#tagged-variants) twice | the struct gets the last value, the map and the tag the first | `the object read into T has the key "k" twice` |
+| an object with a key twice, read into a struct or a map with unique keys, or with the key of a [tag](#tagged-variants) twice | one of the members, [unspecified](#what-a-read-checks) which, gives the value or names the alternative | `the object read into T has the key "k" twice` |
 | an array with an element twice, read into a `std::set` or another set with unique elements; a `std::map` read from an array of pairs with a key twice | the first one is kept | `the array read into T has an element twice` |
 | `null` as the value of a `std::optional` field | the field keeps its value in `T()`, which is `std::nullopt` unless a default member initializer gives it another | `std::optional<U> is not constructible from null under yyjson::strict` |
 
@@ -1934,7 +1946,7 @@ auto json2 = yyjson::write(Event{2, Rect{1, 2}});
 
 These are the internally and the adjacently tagged representations of [serde](https://serde.rs/enum-representations.html). A variant without a tag tries its alternatives in turn, as [above](#pre-defined-stl-casters).
 
-*   The tag may be anywhere in its object, before or after the other members. When the object has more than one member of the key, the first one names the alternative, and [`yyjson::strict`](#strict-reading) rejects the object. A tag that is not a string or that names no alternative throws `yyjson::bad_cast`, and so does a missing one, also in a variant that has `std::monostate`, except for the cases of `adjacent_tag` below.
+*   The tag may be anywhere in its object, before or after the other members. When the object has more than one member of the key, one of them names the alternative, [unspecified](#what-a-read-checks) which, and [`yyjson::strict`](#strict-reading) rejects the object. A tag that is not a string or that names no alternative throws `yyjson::bad_cast`, and so does a missing one, also in a variant that has `std::monostate`, except for the cases of `adjacent_tag` below.
 *   `std::monostate` is written as JSON null without a tag, and only JSON null reads as `std::monostate`, in a variant that has it. Any other alternative is written with its tag first: the first member of its object for `internal_tag`, and the member right before the field of the variant for `adjacent_tag`.
 *   Write the specialization `inline`, as for [the keys of fields](#json-keys-other-than-field-names). A variant that has `std::monostate` more than once, `ids` that do not name each of the other alternatives, an empty key, and empty or repeated names all fail to compile with a `static_assert`, as do `yyjson::annotations<V>` with more than one `internal_tag` or with a `yyjson::field`, and `internal_tag` given to a struct.
 *   `cast`, `value` and `object` of the DOM API read and write a tagged variant the same way as `yyjson::read<T>` and `yyjson::write`.
