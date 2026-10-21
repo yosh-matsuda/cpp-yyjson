@@ -180,6 +180,46 @@ struct yyjson::caster<ViewedPart<Reads>>
     }
 };
 
+// a caster that recovers from a cast that fails, which throws `yyjson::bad_cast` whichever reader reads the value
+struct ViewedLimited
+{
+    int x = 0;
+    bool operator==(const ViewedLimited&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<ViewedLimited> = yyjson::annotate(yyjson::field("x", yyjson::maximum(0)));
+
+template <typename T, bool Strict>
+struct ViewedRecovered
+{
+    int result = 0;
+    bool operator==(const ViewedRecovered&) const = default;
+};
+
+template <typename T, bool Strict>
+struct yyjson::caster<ViewedRecovered<T, Strict>>
+{
+    static ViewedRecovered<T, Strict> from_json(yyjson::json_view v)
+    {
+        try
+        {
+            if constexpr (Strict)
+                (void)v.cast<T>(yyjson::strict);
+            else
+                (void)v.cast<T>();
+            return {1};
+        }
+        catch (const yyjson::bad_cast&)
+        {
+            return {2};
+        }
+        catch (...)
+        {
+            return {3};
+        }
+    }
+};
+
 TEST(JsonView, TextAndDocument)
 {
     using namespace yyjson;
@@ -303,6 +343,23 @@ TEST(JsonView, TextAndDocument)
     EXPECT_THROW((void)read<std::vector<ViewedPart<1>>>(R"([{"b":1}])"), std::out_of_range);
     EXPECT_THROW((void)read(R"([{"b":1}])").cast<std::vector<ViewedPart<1>>>(), std::out_of_range);
     EXPECT_EQ(read<ViewedPart<1>>(R"({"b":[1,{"a":2}],"a":3})").value, 3);
+
+    // a cast that the direct reader fails throws `yyjson::bad_cast` to the caster, as the cast from a document does
+    const auto recovered = [&]<typename T, bool Strict = false>(std::type_identity<T>, const std::string& json,
+                                                                std::bool_constant<Strict> = {}) {
+        check(std::type_identity<ViewedRecovered<T, Strict>>{}, json);
+        EXPECT_EQ((read<ViewedRecovered<T, Strict>>(json).result), 2) << json;
+    };
+    recovered(std::type_identity<ViewedLimited>{}, R"({"x":1})");
+    recovered(std::type_identity<ViewedLimited>{}, R"({"x":"a"})");
+    recovered(std::type_identity<ViewedLimited>{}, R"([0])");
+    recovered(std::type_identity<ViewedLimited>{}, R"({})", std::true_type{});
+    recovered(std::type_identity<ViewedLimited>{}, R"({"x":0,"y":0})", std::true_type{});
+    recovered(std::type_identity<std::vector<int>>{}, R"({"a":1})");
+    recovered(std::type_identity<std::array<int, 2>>{}, R"([1])");
+    recovered(std::type_identity<std::variant<int, std::string>>{}, R"(true)");
+    EXPECT_EQ((read<ViewedRecovered<ViewedLimited, false>>(R"({"x":0})").result), 1);
+    EXPECT_THROW(((void)read<ViewedRecovered<ViewedLimited, false>>(R"({"x":tru})")), read_error);
 
     // a view is cast from a document as from any value of it
     const auto doc = read(R"({"a":[1,2]})");
