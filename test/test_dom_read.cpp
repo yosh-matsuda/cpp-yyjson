@@ -284,6 +284,17 @@ TEST(Reader, ValueConversion)
     static_assert(std::same_as<decltype(std::declval<const const_value_ref&>().inspect()), value_variant>);
 }
 
+TEST(Reader, RawCast)
+{
+    using namespace yyjson;
+
+    // raw JSON is cast to no scalar, as from a mutable document
+    const auto doc = read("[1]", ReadFlag::NumberAsRaw);
+    EXPECT_THROW((void)doc.cast<std::vector<bool>>(), bad_cast);
+    EXPECT_THROW((void)read<bool>("1", ReadFlag::NumberAsRaw), bad_cast);
+    EXPECT_THROW((void)read<std::vector<bool>>("[1]", ReadFlag::NumberAsRaw), bad_cast);
+}
+
 TEST(Reader, Inspect)
 {
     using namespace yyjson::reader;  // NOLINT
