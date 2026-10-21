@@ -172,7 +172,7 @@ TEST(ReadInto, Roots)
     expect_read_into(std::map<int, int>{{1, 1}}, R"({"2":5})");
     expect_read_into(std::multimap<std::string, int>{{"x", 1}}, R"({"x":5,"x":6})");
 
-    // members in the order of the map, inserted next to it, out of it, and repeated
+    // members in the order of the map, inserted next to it, out of it, and repeated, also into an unordered map
     const auto ordered = std::map<std::string, std::string>{{"a", "1"}, {"b", "2"}, {"c", "3"}, {"d", "4"}};
     for (const auto* json : {R"({"a":"5","b":"6","c":"7","d":"8"})", R"({"a":"5","b":"6"})", R"({"c":"5","d":"6"})",
                              R"({"0":"5","a":"6","bb":"7","d":"8","e":"9"})", R"({"d":"5","c":"6","b":"7"})",
@@ -180,12 +180,19 @@ TEST(ReadInto, Roots)
                              R"({"a":"5","bb":"6","bb":"7","b":"8"})", R"({"a":"5","b":"6","0":"7"})",
                              R"({"a":"5","b":"6","a":"7"})", R"({"a":"5","c":"6","a":"7","c":"8"})",
                              R"({"x":"5"})", "{}"})
+    {
         EXPECT_TRUE(expect_read_into(ordered, json) || YYJSON_VERSION_HEX < 0x000C00) << json;
+        EXPECT_TRUE(expect_read_into(std::unordered_map(ordered.begin(), ordered.end()), json) ||
+                    YYJSON_VERSION_HEX < 0x000C00)
+            << json;
+    }
     // many members out of the order of the map, some of them twice
     auto many = std::string(R"({"c":"0")");
     for (auto i = 40; i-- > 0;) many += std::format(R"(,"k{}":"{}")", i % 30, i);
     many += R"(,"a":"1","d":"2"})";
     EXPECT_TRUE(expect_read_into(ordered, many) || YYJSON_VERSION_HEX < 0x000C00);
+    EXPECT_TRUE(expect_read_into(std::unordered_map(ordered.begin(), ordered.end()), many) ||
+                YYJSON_VERSION_HEX < 0x000C00);
     expect_read_into(std::map<std::string, int>{}, R"({"b":1,"a":2})");
     expect_read_into(std::map<std::string, int, std::greater<>>{{"a", 1}, {"b", 2}}, R"({"b":3,"a":4,"c":5})");
     expect_read_into(std::map<std::string, int, std::greater<>>{{"a", 1}, {"b", 2}}, R"({"c":3,"b":4,"a":5})");

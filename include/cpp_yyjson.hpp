@@ -18341,6 +18341,8 @@ namespace yyjson
                     }
                 }
 
+                [[nodiscard]] std::size_t size() const noexcept { return size_; }
+
                 [[nodiscard]] bool contains(const void* p) const noexcept
                 {
                     for (auto i = slot(p);; i = (i + 1) & (slots_.size() - 1))
@@ -18415,25 +18417,22 @@ namespace yyjson
                 }
                 else
                 {
-                    auto old = T();
-                    old.swap(result);
-                    auto position = yyjson::detail::emplace_position<T>::first(result);
-                    auto next = old.begin();
+                    // `named` holds the nodes that a member has named, and the others are erased at the end
+                    auto named = node_set(result.size());
                     read_members([&] {
                         const auto key = read_key<T>(key_buf);
                         read_colon();
-                        // the members are usually in the order of the previous document
-                        auto it = next != old.end() && next->first == key ? next : old.find(lookup_key(lookup, key));
-                        if (it != old.end())
-                        {
-                            next = std::next(it);
-                            auto node = old.extract(it);
-                            read_value_into(node.mapped());
-                            result.insert(std::move(node));
-                        }
+                        const auto it = result.find(lookup_key(lookup, key));
+                        if (it == result.end())
+                            named.insert(&*result.emplace(lookup, read_value<value_type>()).first);
+                        else if (named.insert(&*it))
+                            read_value_into(it->second);
                         else
-                            yyjson::detail::emplace_key_value<false>(result, position, key, read_value<value_type>());
+                            std::ignore = read_value<value_type>();
                     });
+                    if (named.size() != result.size())
+                        for (auto it = result.begin(); it != result.end();)
+                            it = named.contains(&*it) ? std::next(it) : result.erase(it);
                 }
             }
 
