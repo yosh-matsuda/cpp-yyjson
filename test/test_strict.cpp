@@ -373,6 +373,12 @@ TEST(Strict, Structs)
     expect_rejected<StrictPoint>(R"({"w":3,"x":1,"y":2})", R"(StrictPoint has no field of the key "w")", "/w");
     expect_rejected<StrictPoint>(R"({"x":1,"y":2,"x":3})", R"(the object read into StrictPoint has the key "x" twice)",
                                  "/x");
+    // a key twice after a key out of order, which comes the second time in the order of the fields
+    expect_rejected<StrictPoint>(R"({"y":2,"x":1,"y":3})", R"(the object read into StrictPoint has the key "y" twice)",
+                                 "/y");
+    // each object of an array has its own keys
+    expect_strict<std::vector<StrictPoint>>(R"([{"y":2,"x":1},{"z":3,"y":2,"x":1},{"y":2,"x":1}])",
+                                            {{1, 2, {}}, {1, 2, 3}, {1, 2, {}}});
     expect_rejected<StrictPoint>(R"({"x":1,"y":2,"z":null})",
                                  "std::optional<int> is not constructible from null under yyjson::strict", "/z");
 
@@ -398,6 +404,10 @@ TEST(Strict, Structs)
                                  R"(StrictLarge is not constructible from JSON without the key "i")");
     expect_rejected<StrictLarge>(R"({"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8,"i":9,"k":0})",
                                  R"(StrictLarge has no field of the key "k")", "/k");
+    expect_rejected<StrictLarge>(R"({"c":3,"a":1,"b":2,"c":4,"d":4,"e":5,"f":6,"g":7,"h":8,"i":9})",
+                                 R"(the object read into StrictLarge has the key "c" twice)", "/c");
+    expect_rejected<StrictLarge>(R"({"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8,"i":9})",
+                                 R"(StrictLarge is not constructible from JSON without the key "a")");
 
     expect_strict<StrictVisitable>(R"({"a":1})", {1, {}});
     expect_rejected<StrictVisitable>(R"({"b":1})",
@@ -439,6 +449,15 @@ TEST(Strict, Annotations)
     EXPECT_STREQ(e.what(), R"(StrictRequired is not constructible from JSON without the key "b")");
     expect_rejected<StrictRequired>(R"({"b":2})",
                                     R"(StrictRequired is not constructible from JSON without the key "a")");
+    EXPECT_THROW((void)yyjson::read<StrictRequired>("{}"), yyjson::bad_cast);
+    EXPECT_THROW((void)yyjson::read<StrictRequired>(R"({"c":0,"a":1})"), yyjson::bad_cast);
+    EXPECT_EQ(yyjson::read<StrictRequired>(R"({"c":0,"b":2,"a":1})"), (StrictRequired{1, 2}));
+#if YYJSON_VERSION_HEX >= 0x000C00
+    EXPECT_FALSE(read_directly<StrictRequired>("{}", yyjson::ReadFlag::NoFlag).has_value());
+    EXPECT_FALSE(read_directly<StrictRequired>(R"({"c":0,"a":1})", yyjson::ReadFlag::NoFlag).has_value());
+    EXPECT_TRUE(read_directly<StrictRequired>(R"({"c":0,"b":2,"a":1})", yyjson::ReadFlag::NoFlag).has_value());
+    EXPECT_FALSE(read_directly<StrictClosed>(R"({"a":1,"c":2,"b":3})", yyjson::ReadFlag::NoFlag).has_value());
+#endif
 
     // `yyjson::additional_properties(false)` without `yyjson::strict`, and `(true)` under it
     EXPECT_EQ(yyjson::read<StrictClosed>(R"({"a":1})"), (StrictClosed{1, {}}));
@@ -449,6 +468,8 @@ TEST(Strict, Annotations)
     EXPECT_THROW((void)yyjson::read(R"({"c":2,"a":1})").cast<StrictClosed>(), yyjson::bad_cast);
     expect_strict<StrictOpen>(R"({"a":1,"c":2})", {1});
     expect_rejected<StrictOpen>(R"({"c":2})", R"(StrictOpen is not constructible from JSON without the key "a")");
+    expect_rejected<StrictOpen>(R"({"a":1,"c":2,"a":3})", R"(the object read into StrictOpen has the key "a" twice)",
+                                "/a");
 
     // the key of a skipped field names no field
     EXPECT_EQ(yyjson::read<StrictSkipped>(R"({"a":1,"s":2})"), (StrictSkipped{1, 0}));

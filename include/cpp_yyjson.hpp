@@ -18063,10 +18063,9 @@ namespace yyjson
                 [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<T>();
                 constexpr auto n = struct_field_count<T>;
                 auto seen = std::bitset<n>();
-                const char* const open = cur_;
                 auto adjacent = adjacent_fields_of<T>{cur_};
-                const auto in_order =
-                    read_fields(struct_key_matcher<T>(), [&](std::size_t index) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                read_fields<T, false, struct_key_matcher<T>()>(
+                    [&](std::size_t index) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
                         const auto first = !seen[index];
                         seen.set(index);
                         with_struct_field<T>(
@@ -18075,8 +18074,6 @@ namespace yyjson
                                 read_struct_field<T, I>(t, adjacent, [&](auto&) { read_field_over<I>(t, first); });
                             });
                     });
-                if (!in_order) [[unlikely]]
-                    check_irregular_struct_keys<T, false, struct_key_matcher<T>()>(open);
                 read_skipped_adjacent_fields(t, adjacent);
                 if constexpr (has_skipped_fields<T>)
                 {
@@ -18217,10 +18214,9 @@ namespace yyjson
             {
                 [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<T>();
                 auto defaults = struct_defaults<T>();
-                const char* const open = cur_;
                 auto adjacent = adjacent_fields_of<T>{cur_};
-                const auto in_order =
-                    read_fields(struct_key_matcher<T>(), [&](std::size_t index) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                read_fields<T, true, struct_key_matcher<T>()>(
+                    [&](std::size_t index) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
                         with_struct_field<T>(
                             index,
                             [&]<std::size_t I>(std::integral_constant<std::size_t, I>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
@@ -18231,8 +18227,6 @@ namespace yyjson
                                 read_struct_field<T, I, true>(t, adjacent, [&](auto&) { merge_field<I>(t, defaults); });
                             });
                     });
-                if (!in_order) [[unlikely]]
-                    check_irregular_struct_keys<T, true, struct_key_matcher<T>()>(open);
                 read_skipped_adjacent_fields<true>(t, adjacent);
                 check_adjacent_tags_without_values(t, adjacent);
             }
@@ -18679,13 +18673,7 @@ namespace yyjson
             CPPYYJSON_NOINLINE std::size_t find_field(const yyjson::detail::field_key_matcher<N>& matcher,
                                                       std::size_t hint)
             {
-                if (const auto* end = plain_string_end(cur_, [] { return nullptr; })) [[likely]]
-                {
-                    const auto key = std::string_view(cur_ + 1, static_cast<std::size_t>(end - cur_ - 2));
-                    cur_ = end;
-                    return matcher.find(key, hint);
-                }
-                return matcher.find(read_string(scratch_), hint);
+                return matcher.find(read_short_string(scratch_), hint);
             }
 
             // Returns `hint` and moves `cur_` past the key when the key at `cur_` is that of the field `hint`, which
@@ -18719,116 +18707,161 @@ namespace yyjson
                 return index;
             }
 
-            // Checks the keys of the object at `open`, whose fields of the struct T have been read, as the
-            // `check_struct_keys` of a document does, and fails where that throws.
-            template <typename T, bool Merge, const auto& Matcher>
-            CPPYYJSON_NOINLINE CPPYYJSON_COLD void check_struct_keys(const char* open)
+            // Fails if a field of the struct T from `count` on, whose key the object does not have, may not be left
+            // out, as the `check_struct_keys` of a document throws.
+            template <typename T>
+            CPPYYJSON_NOINLINE CPPYYJSON_COLD void check_fields_from(std::size_t count)
+            {
+                using rules = yyjson::detail::struct_key_rules<T>;
+                for (auto i = count; i < rules::n; ++i)
+                {
+                    if (rules::required[i] || (strict_ && !rules::optional[i])) fail();
+                }
+            }
+
+            // Checks the fields of the struct T after an object that has the keys of its fields from 0 to `count`
+            // in their order and then ends.
+            template <typename T, bool Merge>
+            CPPYYJSON_ALWAYS_INLINE void check_fields_after_prefix(std::size_t count)
+            {
+                if constexpr (!Merge)
+                {
+                    if (yyjson::detail::checks_keys_always<T> || strict_) check_fields_from<T>(count);
+                }
+            }
+
+            // Fails if the key at `at`, which names no field of the struct T, may not be in the object at `open`, as
+            // the `check_struct_keys` of a document throws.
+            template <typename T>
+            void check_unknown_key(const char* open, const char* at)
             {
                 using rules = yyjson::detail::struct_key_rules<T>;
                 using yyjson::detail::additional_keys;
-                constexpr auto n = rules::n;
                 const auto deny = rules::additional == additional_keys::denied ||
                                   (rules::additional == additional_keys::unset && strict_);
-                auto seen = std::bitset<n>();
-                auto tags = std::vector<std::string>();
+                if (!deny && !strict_) return;
                 const char* const saved = cur_;
+                auto buf = std::string();
+                cur_ = at;
+                const auto key = std::string(read_short_string(buf));
+                if (!yyjson::detail::is_tag_key<T>(key, open))
+                {
+                    if (deny) fail();
+                    cur_ = saved;
+                    return;
+                }
+                if (!strict_)
+                {
+                    cur_ = saved;
+                    return;
+                }
+                // a tag key may be in the object once, which the keys before it are scanned for
                 cur_ = open + 1;
                 skip_ws();
-                if (*cur_ != '}')
+                while (cur_ != at)
                 {
-                    auto buf = std::string();
-                    for (;;)
-                    {
-                        const auto key = read_short_string(buf);
-                        if (const auto i = Matcher.find(key, 0); i < n)
-                        {
-                            if (seen[i] && strict_) fail();
-                            seen.set(i);
-                        }
-                        else if (deny || strict_)
-                        {
-                            if (!yyjson::detail::is_tag_key<T>(key, open))
-                            {
-                                if (deny) fail();
-                            }
-                            else if (strict_)
-                            {
-                                if (std::ranges::find(tags, key) != tags.end()) fail();
-                                tags.emplace_back(key);
-                            }
-                        }
-                        read_colon();
-                        skip_value();
-                        skip_ws();
-                        if (*cur_ != ',') break;
-                        ++cur_;
-                        skip_ws();
-                    }
-                }
-                if constexpr (!Merge)
-                {
-                    for (std::size_t i = 0; i < n; ++i)
-                    {
-                        if (!seen[i] && (rules::required[i] || (strict_ && !rules::optional[i]))) fail();
-                    }
+                    if (read_short_string(buf) == key) fail();
+                    read_colon();
+                    skip_value();
+                    skip_ws();
+                    ++cur_;
+                    skip_ws();
                 }
                 cur_ = saved;
             }
 
-            // Calls `check_struct_keys` if the keys of the object are to be checked.
-            template <typename T, bool Merge, const auto& Matcher>
-            CPPYYJSON_ALWAYS_INLINE void check_irregular_struct_keys(const char* open)
+            // The fields of a struct that an object has had, which are tracked when its keys are checked.  The
+            // keys of the fields from `run` on have come in their order since the last key that
+            // `find_tracked_field` found, and are added to `words` by `see_run` at the next one or at the end of the
+            // object.  Keys in the order of the fields are then read without a step of their own.  It is left
+            // uninitialized until `find_tracked_field` resets it at the first key out of order.
+            template <std::size_t N>
+            struct seen_fields
             {
-                if (yyjson::detail::checks_keys_always<T> || strict_) check_struct_keys<T, Merge, Matcher>(open);
+                std::array<std::uint64_t, (N + 63) / 64 + (N == 0)> words;
+                std::size_t run;
+
+                void reset() noexcept
+                {
+                    words.fill(0);
+                    run = 0;
+                }
+                [[nodiscard]] bool test(std::size_t i) const noexcept { return (words[i / 64] >> (i % 64)) & 1U; }
+                void set(std::size_t i) noexcept { words[i / 64] |= std::uint64_t{1} << (i % 64); }
+            };
+
+            // Adds the fields from `seen.run` to `hint` to `seen`, and fails if one of them is there under
+            // `yyjson::strict`.
+            template <std::size_t N>
+            void see_run(seen_fields<N>& seen, std::size_t hint)
+            {
+                for (auto i = seen.run; i < hint; ++i)
+                {
+                    if (seen.test(i) && strict_) fail();
+                    seen.set(i);
+                }
             }
 
-            // Reads the members of an object, assigning those that `matcher` finds with `assign(index)`.  Returns
-            // whether the object has the key of each field in their order and no other key.
-            template <std::size_t N, typename Assign>
-            CPPYYJSON_ALWAYS_INLINE bool read_fields(const yyjson::detail::field_key_matcher<N>& matcher,
-                                                     Assign&& assign)
+            // `find_field` for an object at `open` of the struct T whose keys are checked: tracks the fields in
+            // `seen`, which it resets if `first`, and checks a key that names no field with `check_unknown_key`.
+            template <typename T, const auto& Matcher, std::size_t N>
+            CPPYYJSON_NOINLINE CPPYYJSON_COLD std::size_t find_tracked_field(const char* open, std::size_t hint,
+                                                                             seen_fields<N>& seen, bool first)
             {
-                auto hint = std::size_t{0};
-                auto irregular = false;
-                read_members([&]() CPPYYJSON_LAMBDA_ALWAYS_INLINE {
-                    auto index = expected_field(matcher, hint);
-                    if (index == N)
-                    {
-                        index = find_field(matcher, hint);
-                        irregular = true;
-                    }
-                    read_colon();
-                    if (index < N)
-                    {
-                        assign(index);
-                        hint = index + 1;
-                    }
-                    else
-                        skip_value();
-                });
-                return !irregular && hint == N;
+                if (first) seen.reset();
+                const char* const at = cur_;
+                const auto index = find_field(Matcher, hint);
+                see_run(seen, hint);
+                if (index == N) check_unknown_key<T>(open, at);
+                seen.run = index < N ? index : hint;
+                return index;
             }
 
-            // Reads the members of the object at `cur_` whose keys `Matcher` finds, from `cur_` at a key, with
-            // `hint` the field that is expected next.
-            template <const auto& Matcher, typename ReadField>
-            CPPYYJSON_NOINLINE void read_fields_rest(const char* open, std::uint32_t indent, std::size_t hint,
-                                                     const ReadField& read_field)
+            // Checks the fields of the struct T after an object that has had a key out of order, with `hint` the
+            // field after the last key.
+            template <typename T, bool Merge, std::size_t N>
+            CPPYYJSON_NOINLINE CPPYYJSON_COLD void check_fields_after_irregular(seen_fields<N>& seen, std::size_t hint)
+            {
+                using rules = yyjson::detail::struct_key_rules<T>;
+                see_run(seen, hint);
+                if constexpr (!Merge)
+                {
+                    for (std::size_t i = 0; i < N; ++i)
+                    {
+                        if (!seen.test(i) && (rules::required[i] || (strict_ && !rules::optional[i]))) fail();
+                    }
+                }
+            }
+
+            // Reads the members of the object at `open` of the struct T from `cur_` at a key on, with `hint` the
+            // field that is expected next, and assigns those that `Matcher` finds with `assign(index)`.  The
+            // object has had the keys of the fields before `hint` in their order.  Checks the keys of the object
+            // as the `check_struct_keys` of a document does, and fails where that throws.  The keys that come in
+            // the order of the fields are compared with the text, and the others are found out of line.
+            template <typename T, bool Merge, const auto& Matcher, typename Assign>
+            CPPYYJSON_ALWAYS_INLINE void read_fields_from(const char* open, std::uint32_t indent, std::size_t hint,
+                                                          const Assign& assign)
             {
                 constexpr auto n = std::remove_cvref_t<decltype(Matcher)>::size;
+                seen_fields<n> seen;
+                auto irregular = false;
                 for (;;)
                 {
                     if (*cur_ != '"') [[unlikely]]
                         fail();
                     auto index = expected_field(Matcher, hint);
-                    if (index == n) index = find_field(Matcher, hint);
+                    if (index == n) [[unlikely]]
+                    {
+                        if (yyjson::detail::checks_keys_always<T> || strict_) [[unlikely]]
+                            index = find_tracked_field<T, Matcher>(open, hint, seen, !irregular);
+                        else
+                            index = find_field(Matcher, hint);
+                        irregular = true;
+                    }
                     read_colon();
                     if (index < n)
                     {
-                        [&]<std::size_t... Ks>(std::index_sequence<Ks...>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
-                            (void)((index == Ks && (read_field(std::integral_constant<std::size_t, Ks>{}), true)) ||
-                                   ...);
-                        }(std::make_index_sequence<n>{});
+                        assign(index);
                         hint = index + 1;
                     }
                     else
@@ -18843,17 +18876,57 @@ namespace yyjson
                     if (*cur_ != '}') [[unlikely]]
                         fail();
                     close(open);
+                    if (irregular) [[unlikely]]
+                    {
+                        if (yyjson::detail::checks_keys_always<T> || strict_)
+                            check_fields_after_irregular<T, Merge>(seen, hint);
+                    }
+                    else if (hint < n) [[unlikely]]
+                        check_fields_after_prefix<T, Merge>(hint);
                     return;
                 }
             }
 
-            // Reads the members of the object at `cur_` with `read_field(std::integral_constant<std::size_t, K>)`
-            // for the field K that `Matcher` finds.  Keys usually come in the order of the fields, so the key of
-            // each field is compared in turn at a constant index, and the first key out of that order goes on in
-            // `read_fields_rest`.  Returns whether the object has the key of each field in their order and no other
-            // key.
-            template <const auto& Matcher, typename ReadField>
-            CPPYYJSON_ALWAYS_INLINE bool read_fields_in_order(const ReadField& read_field)
+            // `read_fields_from` out of line for `read_fields_in_order`, assigning the field K with
+            // `read_field(std::integral_constant<std::size_t, K>)`.
+            template <typename T, bool Merge, const auto& Matcher, typename ReadField>
+            CPPYYJSON_NOINLINE void read_fields_rest(const char* open, std::uint32_t indent, std::size_t hint,
+                                                     const ReadField& read_field)
+            {
+                constexpr auto n = std::remove_cvref_t<decltype(Matcher)>::size;
+                read_fields_from<T, Merge, Matcher>(
+                    open, indent, hint, [&](std::size_t index) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                        [&]<std::size_t... Ks>(std::index_sequence<Ks...>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                            (void)((index == Ks && (read_field(std::integral_constant<std::size_t, Ks>{}), true)) ||
+                                   ...);
+                        }(std::make_index_sequence<n>{});
+                    });
+            }
+
+            // Reads the members of the object of the struct T at `cur_`, assigning those that `Matcher` finds with
+            // `assign(index)`, and checks its keys as the `check_struct_keys` of a document does.
+            template <typename T, bool Merge, const auto& Matcher, typename Assign>
+            CPPYYJSON_ALWAYS_INLINE void read_fields(const Assign& assign)
+            {
+                constexpr auto n = std::remove_cvref_t<decltype(Matcher)>::size;
+                const char* const open = cur_;
+                ++cur_;
+                const auto indent = skip_ws_measured();
+                if (*cur_ == '}')
+                {
+                    close(open);
+                    if constexpr (n != 0) check_fields_after_prefix<T, Merge>(0);
+                    return;
+                }
+                read_fields_from<T, Merge, Matcher>(open, indent, 0, assign);
+            }
+
+            // Reads the members of the object of the struct T at `cur_` with
+            // `read_field(std::integral_constant<std::size_t, K>)` for the field K that `Matcher` finds, and checks
+            // its keys.  Keys usually come in the order of the fields, so the key of each field is compared in turn
+            // at a constant index, and the first key out of that order goes on in `read_fields_rest`.
+            template <typename T, bool Merge, const auto& Matcher, typename ReadField>
+            CPPYYJSON_ALWAYS_INLINE void read_fields_in_order(const ReadField& read_field)
             {
                 using matcher_type = std::remove_cvref_t<decltype(Matcher)>;
                 constexpr auto n = matcher_type::size;
@@ -18864,10 +18937,11 @@ namespace yyjson
                 if (*cur_ == '}')
                 {
                     close(open);
-                    return n == 0;
+                    if constexpr (n != 0) check_fields_after_prefix<T, Merge>(0);
+                    return;
                 }
-                // the field whose key is out of order, or past `n` when the object has ended: `n + 1` after the
-                // last field, and `n + 2` before it
+                // the field whose key is out of order, or past `n` when the object has ended after the field K:
+                // `2 * n - K`, which is `n + 1` after the last field
                 auto next = n;
                 const auto in_order = [&]<std::size_t K>(std::integral_constant<std::size_t, K>)
                                           CPPYYJSON_LAMBDA_ALWAYS_INLINE {
@@ -18898,18 +18972,16 @@ namespace yyjson
                     if (*cur_ != '}') [[unlikely]]
                         fail();
                     close(open);
-                    next = K + 1 == n ? n + 1 : n + 2;
+                    next = 2 * n - K;
                     return false;
                 };
                 [&]<std::size_t... Ks>(std::index_sequence<Ks...>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
                     (void)(in_order(std::integral_constant<std::size_t, Ks>{}) && ...);
                 }(std::make_index_sequence<n>{});
                 if (next <= n)
-                {
-                    read_fields_rest<Matcher>(open, indent, next, read_field);
-                    return false;
-                }
-                return next == n + 1;
+                    read_fields_rest<T, Merge, Matcher>(open, indent, next, read_field);
+                else if (next != n + 1) [[unlikely]]
+                    check_fields_after_prefix<T, Merge>(2 * n + 1 - next);
             }
 
             // Structs of up to this many fields compare their keys in the order of the fields with
@@ -18917,17 +18989,17 @@ namespace yyjson
             // structs, whose time goes to the front end of the CPU; those dispatch on an index in `read_fields`.
             static constexpr std::size_t ordered_fields_max = 8;
 
-            // Reads the members of a struct with `read_one(std::integral_constant<std::size_t, K>)` for the field K
-            // that `Matcher` finds.  Returns whether the object has the key of each field in their order and no
-            // other key.
-            template <const auto& Matcher, typename ReadOne>
-            CPPYYJSON_ALWAYS_INLINE bool read_struct_fields(const ReadOne& read_one)
+            // Reads the members of the object of the struct T with
+            // `read_one(std::integral_constant<std::size_t, K>)` for the field K that `Matcher` finds, and checks its
+            // keys.
+            template <typename T, bool Merge, const auto& Matcher, typename ReadOne>
+            CPPYYJSON_ALWAYS_INLINE void read_struct_fields(const ReadOne& read_one)
             {
                 constexpr auto n = std::remove_cvref_t<decltype(Matcher)>::size;
                 if constexpr (n <= ordered_fields_max)
-                    return read_fields_in_order<Matcher>(read_one);
+                    read_fields_in_order<T, Merge, Matcher>(read_one);
                 else
-                    return read_fields(Matcher, [&](std::size_t index) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                    read_fields<T, Merge, Matcher>([&](std::size_t index) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
                         [&]<std::size_t... Ks>(std::index_sequence<Ks...>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
                             (void)((index == Ks && (read_one(std::integral_constant<std::size_t, Ks>{}), true)) || ...);
                         }(std::make_index_sequence<n>{});
@@ -18938,7 +19010,6 @@ namespace yyjson
             void read_reflected_fields(T& t)
             {
                 [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<T>();
-                const char* const open = cur_;
                 auto adjacent = adjacent_fields_of<T>{cur_};
                 const auto read_one =
                     [&]<std::size_t K>(std::integral_constant<std::size_t, K>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
@@ -18949,8 +19020,7 @@ namespace yyjson
                         };
                         read_struct_field<T, K>(t, adjacent, read);
                     };
-                if (!read_struct_fields<yyjson::detail::reflected_key_matcher<T>>(read_one)) [[unlikely]]
-                    check_irregular_struct_keys<T, false, yyjson::detail::reflected_key_matcher<T>>(open);
+                read_struct_fields<T, false, yyjson::detail::reflected_key_matcher<T>>(read_one);
                 read_skipped_adjacent_fields(t, adjacent);
                 check_adjacent_tags_without_values(t, adjacent);
             }
@@ -18960,7 +19030,6 @@ namespace yyjson
             {
                 [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<T>();
                 constexpr auto& members = visit_struct<T>::members;
-                const char* const open = cur_;
                 auto adjacent = adjacent_fields_of<T>{cur_};
                 const auto read_one =
                     [&]<std::size_t I>(std::integral_constant<std::size_t, I>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
@@ -18973,8 +19042,7 @@ namespace yyjson
                         };
                         read_struct_field<T, I>(t, adjacent, read);
                     };
-                if (!read_struct_fields<visit_struct<T>::key_matcher>(read_one)) [[unlikely]]
-                    check_irregular_struct_keys<T, false, visit_struct<T>::key_matcher>(open);
+                read_struct_fields<T, false, visit_struct<T>::key_matcher>(read_one);
                 read_skipped_adjacent_fields(t, adjacent);
                 check_adjacent_tags_without_values(t, adjacent);
             }
