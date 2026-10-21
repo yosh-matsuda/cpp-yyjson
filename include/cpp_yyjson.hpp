@@ -10220,6 +10220,10 @@ namespace yyjson
             }
             if constexpr (requires { json.inspect(); })
             {
+                // `inspect` takes raw JSON for a bool
+                if (yyjson_is_raw(const_cast<yyjson_val*>(json.val_))) [[unlikely]]
+                    detail::throw_bad_cast_at(detail::target_of(json), "{} is not constructible from raw json",
+                                              detail::type_name<T>());
                 return json.inspect([&json](const auto& value) -> T {
                     using value_type = std::remove_cvref_t<decltype(value)>;
                     if constexpr (std::same_as<value_type, reader::const_object_ref>)
