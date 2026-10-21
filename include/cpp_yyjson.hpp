@@ -16981,6 +16981,8 @@ namespace yyjson
                         merge_alternative<tags>(struct_field<I>(t));
                         return;
                     }
+                    struct_field<I>(t) = read_new_alternative<V>(index, start);
+                    return;
                 }
                 read_adjacent_alternative<T, I>(t, index, start);
             }
@@ -18172,11 +18174,23 @@ namespace yyjson
                 if (index == std::variant_npos || index == t.index())
                     merge_alternative<tags>(t);
                 else
-                    read_tagged_alternative<T>(
-                        [&](auto i, auto&&... args) -> T& {
-                            return emplace_alternative(t, i, std::forward<decltype(args)>(args)...);
-                        },
-                        index, start);
+                    t = read_new_alternative<T>(index, start);
+            }
+
+            // Reads the alternative `index` of the variant T from the object at `start` into a new variant, for a
+            // merge that changes the alternative.  Reading it into the variant that is merged into would leave the
+            // variant holding it when the read fails, and the document that merges the patch again would then
+            // merge into it instead of reading it, which does not check the keys that it requires.
+            template <typename T>
+            CPPYYJSON_NOINLINE T read_new_alternative(std::size_t index, const char* start)
+            {
+                auto result = std::optional<T>();
+                read_tagged_alternative<T>(
+                    [&](auto i, auto&&... args) -> T& {
+                        return result.emplace(i, std::forward<decltype(args)>(args)...);
+                    },
+                    index, start);
+                return std::move(*result);
             }
 
             template <typename T>

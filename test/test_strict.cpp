@@ -149,6 +149,19 @@ struct StrictBare
 template <>
 inline constexpr auto yyjson::annotations<StrictBare> =
     yyjson::annotate(yyjson::field("body", yyjson::adjacent_tag("t", {"circle", "rect", "number"})));
+// an alternative with a required key, tagged internally and adjacently
+using StrictRequiredShape = std::variant<StrictCircle, StrictRequired>;
+template <>
+inline constexpr auto yyjson::annotations<StrictRequiredShape> =
+    yyjson::annotate(yyjson::internal_tag("type", {"circle", "required"}));
+struct StrictRequiredBare
+{
+    std::variant<StrictCircle, StrictRequired> body;
+    bool operator==(const StrictRequiredBare&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<StrictRequiredBare> =
+    yyjson::annotate(yyjson::field("body", yyjson::adjacent_tag("t", {"circle", "required"})));
 
 // read by a caster that casts its member itself
 struct StrictWrapped
@@ -558,6 +571,21 @@ TEST(Strict, Merge)
     yyjson::merge_into(R"({"type":"circle","r":2})", s, yyjson::strict);
     EXPECT_EQ(s, StrictShape(StrictCircle{2}));
     EXPECT_THROW(yyjson::merge_into(R"({"type":"circle","w":2})", s, yyjson::strict), yyjson::bad_cast);
+
+    // a patch that changes the alternative reads it anew, with the keys that it requires, also in the document that
+    // merges the patch again after the direct read failed
+    auto shape = StrictRequiredShape(StrictCircle{1});
+    EXPECT_THROW(yyjson::merge_into(R"({"type":"required","a":1})", shape), yyjson::bad_cast);
+    shape = StrictCircle{1};
+    yyjson::merge_into(R"({"type":"required","a":1,"b":2})", shape);
+    EXPECT_EQ(shape, StrictRequiredShape(StrictRequired{1, 2}));
+    auto bare = StrictRequiredBare{StrictCircle{1}};
+    EXPECT_THROW(yyjson::merge_into(R"({"t":"required","body":{"a":1}})", bare), yyjson::bad_cast);
+    bare = StrictRequiredBare{StrictCircle{1}};
+    yyjson::merge_into(R"({"body":{"a":1,"b":2},"t":"required"})", bare);
+    EXPECT_EQ(bare, (StrictRequiredBare{StrictRequired{1, 2}}));
+    s = StrictCircle{1};
+    EXPECT_THROW(yyjson::merge_into(R"({"type":"rect","w":2})", s, yyjson::strict), yyjson::bad_cast);
 }
 
 TEST(Strict, Scope)
