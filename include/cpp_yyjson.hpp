@@ -1080,6 +1080,15 @@ namespace yyjson
             using parameter = typename validator_parameter<decltype(F)>::type;
             return static_cast<bool>(F(*static_cast<const parameter*>(value)));
         }
+
+        // Clang 18 and older reject `static_string` in the initializer of a variable template as taking the
+        // address of a consteval function, so the validator is built in a consteval function.
+        template <auto F>
+        consteval validator make_validator()
+        {
+            constexpr auto parameter = type_name<typename validator_parameter<decltype(F)>::type>();
+            return {&call_validator<F>, static_string(parameter), parameter.size()};
+        }
     }  // namespace detail
 
     // A function or a lambda that takes the value of a field, or the value of a `std::optional` field, and returns
@@ -1087,10 +1096,7 @@ namespace yyjson
     // it.  Reading a value that it rejects throws `yyjson::bad_cast`.
     template <auto F>
     requires requires { typename detail::validator_parameter<decltype(F)>::type; }
-    inline constexpr validator validate{
-        &detail::call_validator<F>,
-        detail::static_string(detail::type_name<typename detail::validator_parameter<decltype(F)>::type>()),
-        detail::type_name<typename detail::validator_parameter<decltype(F)>::type>().size()};
+    inline constexpr validator validate = detail::make_validator<F>();
 
     // Reads a value strictly, when it is given to `yyjson::read`, `yyjson::read_into`, `yyjson::merge_into` and
     // `cast`: an object read into a struct must have the key of every field that is not a `std::optional`, and no
