@@ -143,6 +143,12 @@ struct ConstrainedAnnotated
 };
 #endif
 
+// a bound is compared as a double, so a long double that it would round does not compile
+template <auto V>
+concept bound_accepted = requires { typename std::integral_constant<bool, (yyjson::minimum(V), true)>; };
+static_assert(bound_accepted<1.5L> && bound_accepted<9007199254740992.0L>);
+static_assert(!bound_accepted<9007199254740993.0L> || sizeof(long double) == sizeof(double));
+
 namespace
 {
     template <typename F>
