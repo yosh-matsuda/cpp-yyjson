@@ -16072,10 +16072,25 @@ namespace yyjson
                 {
                     const auto guard = cursor_guard{*this, cur_};
                     cur_ = p;
-                    decltype(auto) result = read_value<U>();
-                    view_add_end(p, cur_);
-                    return result;
+                    try
+                    {
+                        decltype(auto) result = read_value<U>();
+                        view_add_end(p, cur_);
+                        return result;
+                    }
+                    catch (const direct_read_failure&)
+                    {
+                        return view_cast_document<U>(p);
+                    }
                 }
+            }
+            // Casts the value at `p` from a document after the direct read of U failed, for the caster to get the
+            // `yyjson::bad_cast` or the result that the cast of a view of a document gives.  Text that is not valid
+            // JSON fails again in the document.
+            template <typename U>
+            CPPYYJSON_NOINLINE CPPYYJSON_COLD U view_cast_document(const char* p)
+            {
+                return const_value_ref(view_document(p)).template cast<U>();
             }
 
             // The first member or element of the container at `p`, or null if it is empty.
