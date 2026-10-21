@@ -193,7 +193,7 @@ namespace
     void expect_rejected(std::string_view json, std::string_view message, std::string_view path)
     {
         const auto check = [&](const yyjson::bad_cast& e) {
-            EXPECT_TRUE(std::string_view(e.what()).starts_with(message)) << json << "\n" << e.what();
+            EXPECT_TRUE(message_of(e).starts_with(message)) << json << "\n" << e.what();
             EXPECT_EQ(e.path(), path) << json;
         };
         check(bad_cast_of([&] { (void)yyjson::read<T>(json); }));

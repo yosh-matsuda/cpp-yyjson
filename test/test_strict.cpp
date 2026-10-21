@@ -342,7 +342,7 @@ namespace
     void expect_rejected(std::string_view json, std::string_view message, std::string_view path = "")
     {
         const auto check = [&](const yyjson::bad_cast& e) {
-            EXPECT_TRUE(std::string_view(e.what()).starts_with(message)) << json << "\n" << e.what();
+            EXPECT_TRUE(message_of(e).starts_with(message)) << json << "\n" << e.what();
             EXPECT_EQ(e.path(), path) << json;
         };
         check(bad_cast_of([&] { (void)yyjson::read<T>(json, yyjson::strict); }));
@@ -394,7 +394,7 @@ TEST(Strict, Structs)
     EXPECT_EQ(e.path(), "/1");
     EXPECT_EQ(e.position(), (yyjson::text_position{1, 17, 16}));
     e = bad_cast_of([] { (void)yyjson::read<StrictPoint>(R"({"x":1,"y":2,"w":3})", yyjson::strict); });
-    EXPECT_STREQ(e.what(), R"(StrictPoint has no field of the key "w" at /w (line 1, column 18, pos 17))");
+    EXPECT_EQ(message_of(e), R"(StrictPoint has no field of the key "w" at /w (line 1, column 18, pos 17))");
 
     expect_strict<StrictLarge>(R"({"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8,"i":9})",
                                {1, 2, 3, 4, 5, 6, 7, 8, 9, {}});
@@ -443,10 +443,10 @@ TEST(Strict, Annotations)
     EXPECT_EQ(yyjson::read<StrictRequired>(R"({"b":2})"), (StrictRequired{0, 2}));
     EXPECT_EQ(yyjson::read(R"({"b":2,"c":3})").cast<StrictRequired>(), (StrictRequired{0, 2}));
     auto e = bad_cast_of([] { (void)yyjson::read<StrictRequired>(R"({"a":1})"); });
-    EXPECT_STREQ(e.what(),
-                 R"(StrictRequired is not constructible from JSON without the key "b" (line 1, column 1, pos 0))");
+    EXPECT_EQ(message_of(e),
+              R"(StrictRequired is not constructible from JSON without the key "b" (line 1, column 1, pos 0))");
     e = bad_cast_of([] { (void)yyjson::read(R"({"a":1})").cast<StrictRequired>(); });
-    EXPECT_STREQ(e.what(), R"(StrictRequired is not constructible from JSON without the key "b")");
+    EXPECT_EQ(message_of(e), R"(StrictRequired is not constructible from JSON without the key "b")");
     expect_rejected<StrictRequired>(R"({"b":2})",
                                     R"(StrictRequired is not constructible from JSON without the key "a")");
     EXPECT_THROW((void)yyjson::read<StrictRequired>("{}"), yyjson::bad_cast);
@@ -464,7 +464,7 @@ TEST(Strict, Annotations)
     EXPECT_EQ(yyjson::read<StrictClosed>(R"({"a":1,"b":null})"), (StrictClosed{1, {}}));
     e = bad_cast_of([] { (void)yyjson::read<StrictClosed>(R"({"a":1,"c":2})"); });
     EXPECT_EQ(e.path(), "/c");
-    EXPECT_STREQ(e.what(), R"(StrictClosed has no field of the key "c" at /c (line 1, column 12, pos 11))");
+    EXPECT_EQ(message_of(e), R"(StrictClosed has no field of the key "c" at /c (line 1, column 12, pos 11))");
     EXPECT_THROW((void)yyjson::read(R"({"c":2,"a":1})").cast<StrictClosed>(), yyjson::bad_cast);
     expect_strict<StrictOpen>(R"({"a":1,"c":2})", {1});
     expect_rejected<StrictOpen>(R"({"c":2})", R"(StrictOpen is not constructible from JSON without the key "a")");
