@@ -40,10 +40,9 @@
 
 namespace
 {
-    // `e.what()` without the "struct ", "class " and "enum " that MSVC writes before the name of a type
-    inline std::string message_of(const std::exception& e)
+    // `message` without the "struct ", "class " and "enum " that MSVC writes before the name of a type
+    inline std::string without_type_keywords(std::string message)
     {
-        auto message = std::string(e.what());
 #if defined(_MSC_VER) && !defined(__clang__)
         for (const std::string_view keyword : {"struct ", "class ", "enum "})
         {
@@ -56,6 +55,9 @@ namespace
 #endif
         return message;
     }
+
+    // `e.what()` without the "struct ", "class " and "enum " that MSVC writes before the name of a type
+    inline std::string message_of(const std::exception& e) { return without_type_keywords(e.what()); }
 
     // what writing `t` gives, or the error it throws
     template <typename F>
