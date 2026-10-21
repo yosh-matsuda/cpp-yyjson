@@ -348,6 +348,15 @@ namespace yyjson
                 }
             }
 
+            // Makes the mutable value `to` the target of `e` in the place of the immutable value `from`, which is a
+            // copy of it, so that the path goes on to the value in the copy.
+            static void move_target(bad_cast& e, const yyjson_val* from, const yyjson_mut_val* to) noexcept
+            {
+                if (e.state_ == nullptr || e.state_->value != from || e.state_->mutable_value) return;
+                e.state_->value = to;
+                e.state_->mutable_value = true;
+            }
+
             // Called by a cast of `v` that `e` leaves.  The path is left as it is if it cannot be extended.
             template <typename Val>
             CPPYYJSON_COLD static void add_path(bad_cast& e, const Val* v) noexcept
@@ -2327,11 +2336,21 @@ namespace yyjson
             static inline constinit thread_local const internal_tag_key* innermost_ = nullptr;
             const void* object_;
             std::string_view key_;
+            const void* original_ = nullptr;
             const internal_tag_key* outer_;
 
         public:
             internal_tag_key(const void* object, std::string_view key) noexcept
                 : object_(object), key_(key), outer_(innermost_)
+            {
+                innermost_ = this;
+            }
+            // The object `copy` takes the keys of `original`, of which it is a copy in another document.
+            struct copy_t
+            {
+            };
+            internal_tag_key(const void* copy, const void* original, copy_t) noexcept
+                : object_(copy), original_(original), outer_(innermost_)
             {
                 innermost_ = this;
             }
@@ -2343,7 +2362,10 @@ namespace yyjson
             {
                 for (const auto* p = innermost_; p != nullptr && p->object_ == object; p = p->outer_)
                 {
-                    if (p->key_ == key) return true;
+                    if (p->original_ != nullptr)
+                        object = p->original_;
+                    else if (p->key_ == key)
+                        return true;
                 }
                 return false;
             }
@@ -3989,14 +4011,26 @@ namespace yyjson
             const auto deny =
                 rules::additional == additional_keys::denied || (rules::additional == additional_keys::unset && strict);
             auto seen = std::bitset<n>();
+            auto tags = std::vector<std::string_view>();
             for_each_member(obj, [&](std::string_view k, const Val* value) {
                 if (const auto i = Matcher.find(k, 0); i < n)
                 {
                     if (seen[i] && strict) throw_repeated_key(target_of(value), k, type_name<T>());
                     seen.set(i);
                 }
-                else if (deny && !is_tag_key<T>(k, obj))
-                    throw_unknown_key(target_of(value), k, type_name<T>());
+                else if (deny || strict)
+                {
+                    if (!is_tag_key<T>(k, obj))
+                    {
+                        if (deny) throw_unknown_key(target_of(value), k, type_name<T>());
+                    }
+                    else if (strict)
+                    {
+                        if (std::ranges::find(tags, k) != tags.end())
+                            throw_repeated_key(target_of(value), k, type_name<T>());
+                        tags.push_back(k);
+                    }
+                }
             });
             if constexpr (!Merge)
             {
@@ -16473,6 +16507,9 @@ namespace yyjson
             template <typename U>
             U view_cast(const char* p)
             {
+                // a view kept by a caster is cast as strictly as the read that calls the caster now
+                if (yyjson::detail::strict_reading && !strict_) [[unlikely]]
+                    return view_cast<U>(p, yyjson::strict);
                 // the strings that U borrows are those of a document, as they are for a view of a document
                 if constexpr (std::same_as<U, std::string_view>)
                 {
@@ -18657,6 +18694,7 @@ namespace yyjson
                 const auto deny = rules::additional == additional_keys::denied ||
                                   (rules::additional == additional_keys::unset && strict_);
                 auto seen = std::bitset<n>();
+                auto tags = std::vector<std::string>();
                 const char* const saved = cur_;
                 cur_ = open + 1;
                 skip_ws();
@@ -18671,8 +18709,18 @@ namespace yyjson
                             if (seen[i] && strict_) fail();
                             seen.set(i);
                         }
-                        else if (deny && !yyjson::detail::is_tag_key<T>(key, open))
-                            fail();
+                        else if (deny || strict_)
+                        {
+                            if (!yyjson::detail::is_tag_key<T>(key, open))
+                            {
+                                if (deny) fail();
+                            }
+                            else if (strict_)
+                            {
+                                if (std::ranges::find(tags, key) != tags.end()) fail();
+                                tags.emplace_back(key);
+                            }
+                        }
                         read_colon();
                         skip_value();
                         skip_ws();
@@ -19308,7 +19356,22 @@ namespace yyjson
                     &yyjson_doc_free);
                 if (doc == nullptr) [[unlikely]]
                     throw std::bad_alloc();
-                return std::forward<F>(f)(json_view(yyjson_doc_get_root(doc.get())));
+                const auto* const original = writer::detail::json_value_access::get(json);
+                auto* const root = yyjson_doc_get_root(doc.get());
+                const auto tag_keys = internal_tag_key(root, original, internal_tag_key::copy_t{});
+                auto failure = std::exception_ptr();
+                try
+                {
+                    return std::forward<F>(f)(json_view(root));
+                }
+                catch (bad_cast& e)
+                {
+                    // the path to the value in the copy is the path to it in `json`
+                    bad_cast_access::add_path(e, root);
+                    bad_cast_access::move_target(e, root, original);
+                    failure = std::current_exception();
+                }
+                std::rethrow_exception(failure);
             }
         };
     }  // namespace detail
@@ -19457,34 +19520,40 @@ namespace yyjson
 
     // Read as the overloads above with `yyjson::strict`, which rejects JSON that has more or less than T takes.
     template <typename T>
+    requires (!std::is_reference_v<T>) && detail::read_castable<T>
     [[nodiscard]] T read(std::string_view json, ReadFlag read_flag, strict_t)
     {
         const auto scope = yyjson::detail::strict_scope();
         return yyjson::read<T>(json, read_flag);
     }
     template <typename T>
+    requires (!std::is_reference_v<T>) && detail::read_castable<T>
     [[nodiscard]] T read(std::string_view json, strict_t s)
     {
         return yyjson::read<T>(json, ReadFlag::NoFlag, s);
     }
     template <typename T>
+    requires (!std::is_const_v<T>) && detail::read_castable<T> && std::is_move_assignable_v<T>
     void read_into(std::string_view json, T& t, ReadFlag read_flag, strict_t)
     {
         const auto scope = yyjson::detail::strict_scope();
         yyjson::read_into(json, t, read_flag);
     }
     template <typename T>
+    requires (!std::is_const_v<T>) && detail::read_castable<T> && std::is_move_assignable_v<T>
     void read_into(std::string_view json, T& t, strict_t s)
     {
         yyjson::read_into(json, t, ReadFlag::NoFlag, s);
     }
     template <typename T>
+    requires (!std::is_const_v<T>) && detail::read_castable<T> && std::is_move_assignable_v<T>
     void merge_into(std::string_view json, T& t, ReadFlag read_flag, strict_t)
     {
         const auto scope = yyjson::detail::strict_scope();
         yyjson::merge_into(json, t, read_flag);
     }
     template <typename T>
+    requires (!std::is_const_v<T>) && detail::read_castable<T> && std::is_move_assignable_v<T>
     void merge_into(std::string_view json, T& t, strict_t s)
     {
         yyjson::merge_into(json, t, ReadFlag::NoFlag, s);
@@ -19503,6 +19572,30 @@ namespace yyjson
     template <typename T, typename cannot_be_read = detail::read_cause<T>>
     requires (!std::is_const_v<T>) && (!detail::read_castable<T>)
     void merge_into(std::string_view json, T& t, ReadFlag read_flag = ReadFlag::NoFlag) = CPPYYJSON_DELETED_FUNCTION(
+        "T cannot be read from JSON: `cannot_be_read` names the field or element that cannot be");
+    template <typename T, typename cannot_be_read = detail::read_cause<T>>
+    requires (!std::is_reference_v<T>) && (!detail::read_castable<T>)
+    T read(std::string_view json, ReadFlag read_flag, strict_t) = CPPYYJSON_DELETED_FUNCTION(
+        "T cannot be read from JSON: `cannot_be_read` names the field or element that cannot be");
+    template <typename T, typename cannot_be_read = detail::read_cause<T>>
+    requires (!std::is_reference_v<T>) && (!detail::read_castable<T>)
+    T read(std::string_view json, strict_t) = CPPYYJSON_DELETED_FUNCTION(
+        "T cannot be read from JSON: `cannot_be_read` names the field or element that cannot be");
+    template <typename T, typename cannot_be_read = detail::read_cause<T>>
+    requires (!std::is_const_v<T>) && (!detail::read_castable<T>)
+    void read_into(std::string_view json, T& t, ReadFlag read_flag, strict_t) = CPPYYJSON_DELETED_FUNCTION(
+        "T cannot be read from JSON: `cannot_be_read` names the field or element that cannot be");
+    template <typename T, typename cannot_be_read = detail::read_cause<T>>
+    requires (!std::is_const_v<T>) && (!detail::read_castable<T>)
+    void read_into(std::string_view json, T& t, strict_t) = CPPYYJSON_DELETED_FUNCTION(
+        "T cannot be read from JSON: `cannot_be_read` names the field or element that cannot be");
+    template <typename T, typename cannot_be_read = detail::read_cause<T>>
+    requires (!std::is_const_v<T>) && (!detail::read_castable<T>)
+    void merge_into(std::string_view json, T& t, ReadFlag read_flag, strict_t) = CPPYYJSON_DELETED_FUNCTION(
+        "T cannot be read from JSON: `cannot_be_read` names the field or element that cannot be");
+    template <typename T, typename cannot_be_read = detail::read_cause<T>>
+    requires (!std::is_const_v<T>) && (!detail::read_castable<T>)
+    void merge_into(std::string_view json, T& t, strict_t) = CPPYYJSON_DELETED_FUNCTION(
         "T cannot be read from JSON: `cannot_be_read` names the field or element that cannot be");
 
     namespace writer::detail

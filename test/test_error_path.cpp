@@ -50,6 +50,19 @@ template <>
 inline constexpr auto yyjson::annotations<PathShape> =
     yyjson::annotate(yyjson::internal_tag("type", {"circle", "rect"}));
 
+#if YYJSON_VERSION_HEX >= 0x000C00
+// read by a caster that casts its view, of a copy of a mutable value
+struct PathViewed
+{
+    PathItem item;
+};
+template <>
+struct yyjson::caster<PathViewed>
+{
+    static PathViewed from_json(const yyjson::json_view& v) { return {v.cast<PathItem>()}; }
+};
+#endif
+
 template <>
 struct yyjson::caster<PathPoint>
 {
@@ -128,6 +141,9 @@ TEST(ErrorPath, NamesThePath)
     expect_path<PathUser>(R"({"p":{"x":1,"y":"a"},"s":1})", "/p/y", R"("a")");
     expect_path<PathUser>(R"({"p":{"x":1,"y":2},"s":"a"})", "/s", R"("a")");
     expect_path<PathUser>(R"({"p":[],"s":1})", "/p", "[]");
+#if YYJSON_VERSION_HEX >= 0x000C00
+    expect_path<std::vector<PathViewed>>(R"([{"x":1},{"x":"a"}])", "/1/x", R"("a")");
+#endif
 }
 
 TEST(ErrorPath, NamesTheValueThatFails)

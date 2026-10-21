@@ -1,3 +1,5 @@
+#include <mutex>
+
 #include "test_common.hpp"
 
 // NOLINTBEGIN
@@ -198,7 +200,56 @@ struct yyjson::caster<StrictViewedParts>
                 parts[1].as_array().value().cast<std::vector<StrictPoint>>(yyjson::strict)};
     }
 };
+// an alternative read by a caster that casts its view, which takes the tag as the struct that it reads
+struct StrictViewedCircle
+{
+    StrictCircle c;
+    bool operator==(const StrictViewedCircle&) const = default;
+};
+template <>
+struct yyjson::caster<StrictViewedCircle>
+{
+    static StrictViewedCircle from_json(const yyjson::json_view& v) { return {v.cast<StrictCircle>()}; }
+};
+using StrictViewedShape = std::variant<StrictViewedCircle, StrictRect>;
+template <>
+inline constexpr auto yyjson::annotations<StrictViewedShape> =
+    yyjson::annotate(yyjson::internal_tag("type", {"circle", "rect"}));
+// casts a view without `yyjson::strict` while a strict read runs on the thread
+struct StrictScopedView
+{
+    StrictPoint p;
+};
+template <>
+struct yyjson::caster<StrictScopedView>
+{
+    static StrictScopedView from_json(const yyjson::json_view& v)
+    {
+        const auto scope = yyjson::detail::strict_scope();
+        return {v.cast<StrictPoint>()};
+    }
+};
 #endif
+
+// the overloads with `yyjson::strict` take the types that those without it take
+template <typename T>
+concept strict_reads = requires(T& t) {
+    yyjson::read<T>("", yyjson::strict);
+    yyjson::read<T>("", yyjson::ReadFlag::NoFlag, yyjson::strict);
+};
+template <typename T>
+concept strict_reads_into = requires(T& t) {
+    yyjson::read_into("", t, yyjson::strict);
+    yyjson::read_into("", t, yyjson::ReadFlag::NoFlag, yyjson::strict);
+};
+template <typename T>
+concept strict_merges_into = requires(T& t) {
+    yyjson::merge_into("", t, yyjson::strict);
+    yyjson::merge_into("", t, yyjson::ReadFlag::NoFlag, yyjson::strict);
+};
+static_assert(strict_reads<StrictPoint> && strict_reads_into<StrictPoint> && strict_merges_into<StrictPoint>);
+static_assert(!strict_reads<std::mutex> && !strict_reads_into<std::mutex> && !strict_merges_into<std::mutex>);
+static_assert(!strict_reads_into<const StrictPoint> && !strict_merges_into<const StrictPoint>);
 
 #if FIELD_RFL_ANNOTATIONS
 struct[[= yyjson::additional_properties(false)]] StrictAnnotated
@@ -438,6 +489,20 @@ TEST(Strict, Variants)
     expect_rejected<StrictBare>(R"({"id":1,"t":"rect","body":{"w":1,"h":2},"u":0})",
                                 R"(StrictBare has no field of the key "u")", "/u");
 
+    // a tag key twice, of which the read without `yyjson::strict` takes the first
+    expect_rejected<StrictShape>(R"({"type":"circle","type":"rect","r":1})",
+                                 R"(the object read into StrictCircle has the key "type" twice)", "/type");
+    expect_rejected<StrictBare>(R"({"id":1,"t":"rect","t":"circle","body":{"w":1,"h":2}})",
+                                R"(the object read into StrictBare has the key "t" twice)", "/t");
+    expect_rejected<StrictItem>(R"({"kind":"shape","type":"circle","r":1,"kind":"text"})",
+                                R"(the object read into StrictClosedCircle has the key "kind" twice)", "/kind");
+    EXPECT_EQ(yyjson::read<StrictShape>(R"({"type":"circle","type":"rect","r":1})"), StrictShape(StrictCircle{1}));
+    EXPECT_EQ(yyjson::read<StrictBare>(R"({"id":1,"t":"rect","t":"circle","body":{"w":1,"h":2}})"),
+              (StrictBare{1, StrictRect{1, 2}}));
+    auto shape = StrictShape(StrictCircle{});
+    EXPECT_THROW(yyjson::merge_into(R"({"type":"circle","type":"rect","r":1})", shape, yyjson::strict),
+                 yyjson::bad_cast);
+
     // a closed alternative takes its tag without `yyjson::strict`
     EXPECT_EQ(yyjson::read<StrictClosedShape>(R"({"type":"circle","r":1})"), StrictClosedShape(StrictClosedCircle{1}));
     EXPECT_EQ(yyjson::read(R"({"r":1,"type":"circle"})").cast<StrictClosedShape>(),
@@ -522,6 +587,16 @@ TEST(Strict, Scope)
         EXPECT_THROW((void)yyjson::read<StrictViewedParts>(json), yyjson::bad_cast) << json;
         EXPECT_THROW((void)yyjson::read(json).cast<StrictViewedParts>(), yyjson::bad_cast) << json;
     }
+    // the copy of a mutable value that a view is given takes the tag of its alternative
+    expect_strict<StrictViewedShape>(R"({"type":"circle","r":1})", StrictViewedCircle{{1}});
+    expect_rejected<StrictViewedShape>(R"({"type":"circle","r":1,"w":0})",
+                                       R"(StrictCircle has no field of the key "w")", "/w");
+    // a view cast without it while a strict read runs reads strictly
+    EXPECT_EQ(yyjson::read<StrictScopedView>(R"({"x":1,"y":2})").p, (StrictPoint{1, 2, {}}));
+    EXPECT_TRUE(read_directly<StrictScopedView>(R"({"x":1,"y":2})", yyjson::ReadFlag::NoFlag).has_value());
+    EXPECT_FALSE(read_directly<StrictScopedView>(R"({"x":1,"y":2,"w":0})", yyjson::ReadFlag::NoFlag).has_value());
+    EXPECT_THROW((void)yyjson::read<StrictScopedView>(R"({"x":1,"y":2,"w":0})"), yyjson::bad_cast);
+    EXPECT_THROW((void)yyjson::read(R"({"x":1,"y":2,"w":0})").cast<StrictScopedView>(), yyjson::bad_cast);
 #endif
     EXPECT_EQ(yyjson::read<std::vector<StrictPoint>>(R"([{"x":1,"w":0}])"), (std::vector{StrictPoint{1, 0, {}}}));
 
