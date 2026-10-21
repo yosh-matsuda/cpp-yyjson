@@ -5,6 +5,7 @@
 #include <array>
 #include <atomic>
 #include <bit>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <complex>
@@ -39,6 +40,23 @@
 
 namespace
 {
+    // `e.what()` without the "struct ", "class " and "enum " that MSVC writes before the name of a type
+    inline std::string message_of(const std::exception& e)
+    {
+        auto message = std::string(e.what());
+#if defined(_MSC_VER) && !defined(__clang__)
+        for (const std::string_view keyword : {"struct ", "class ", "enum "})
+        {
+            for (auto i = message.find(keyword); i != std::string::npos; i = message.find(keyword, i + 1))
+            {
+                const auto c = i == 0 ? ' ' : message[i - 1];
+                if (std::isalnum(static_cast<unsigned char>(c)) == 0 && c != '_') message.erase(i, keyword.size());
+            }
+        }
+#endif
+        return message;
+    }
+
     // what writing `t` gives, or the error it throws
     template <typename F>
     std::string written_or_error(F&& write)
