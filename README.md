@@ -25,6 +25,7 @@ The data binding API converts between JSON text and C++ types without building a
 
 ```cpp
 #include "cpp_yyjson.hpp"
+#include <iostream>
 #include <map>
 
 using namespace yyjson;
@@ -43,24 +44,37 @@ struct Project
     std::vector<Release> releases;
 };
 
-auto project = read<Project>(R"({
-    "name": "cpp-yyjson",
-    "tags": ["json", "c++20"],
-    "releases": [{"version": "1.2.0", "downloads": {"linux": 10, "windows": 5}}]
-})");
-// -> Project{"cpp-yyjson", {"json", "c++20"}, {Release{"1.2.0", std::nullopt, {{"linux", 10}, {"windows", 5}}}}}
+int main()
+{
+    auto project = read<Project>(R"({
+        "name": "cpp-yyjson",
+        "tags": ["json", "c++20"],
+        "releases": [{"version": "1.2.0", "downloads": {"linux": 10, "windows": 5}}]
+    })");
+    // -> Project{"cpp-yyjson", {"json", "c++20"}, {Release{"1.2.0", std::nullopt, {{"linux", 10}, {"windows", 5}}}}}
 
-auto json = write(project);
-// -> {"name":"cpp-yyjson","tags":["json","c++20"],"releases":[{"version":"1.2.0","downloads":{"linux":10,"windows":5}}]}
+    auto json = write(project);
+    // -> {"name":"cpp-yyjson","tags":["json","c++20"],"releases":[{"version":"1.2.0","downloads":{"linux":10,"windows":5}}]}
 
-auto pretty = write(project, WriteFlag::Pretty);
+    auto pretty = write(project, WriteFlag::Pretty);
 
-// Reuse the capacity of the output string in a loop
-auto out = std::string();
-write(project, out);
+    // Reuse the capacity of the output string in a loop
+    auto out = std::string();
+    write(project, out);
+
+    try
+    {
+        project = read<Project>(R"({"releases": [{"downloads": {"linux": "ten"}}]})");
+    }
+    catch (const bad_cast& e)
+    {
+        std::cerr << e.what() << '\n';
+        // -> int is not constructible from JSON string at /releases/0/downloads/linux (line 1, column 39, pos 38)
+    }
+}
 ```
 
-Invalid JSON throws `yyjson::read_error`, and JSON that does not fit the type throws `yyjson::bad_cast`, which names the value that failed by its path and its position, as in `int is not constructible from JSON string at /items/1/x (line 1, column 24, pos 23)`.
+Invalid JSON throws `yyjson::read_error`, and JSON that does not fit the type throws `yyjson::bad_cast`, which names the value that failed by its path and its position, as above ([details](docs/reference.md#errors-of-conversion)).
 
 ### Reading into an existing object
 
