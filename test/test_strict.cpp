@@ -544,7 +544,11 @@ namespace
 TEST(Strict, Containers)
 {
     expect_strict<std::set<int>>("[1,2,3]", {1, 2, 3});
-    expect_rejected<std::set<int>>("[1,2,1]", "the array read into std::set<int> has an element twice", "/2");
+    // the name of a type with default template arguments differs between the compilers
+    expect_rejected<std::set<int>>("[1,2,1]",
+                                   without_type_keywords(std::format("the array read into {} has an element twice",
+                                                                     yyjson::detail::type_name<std::set<int>>())),
+                                   "/2");
     expect_rejected<std::unordered_set<int>>("[1,2,1]", "the array read into", "/2");
     expect_strict<std::multiset<int>>("[1,2,1]", {1, 1, 2});
     EXPECT_EQ(yyjson::read<std::set<int>>("[1,2,1]"), (std::set<int>{1, 2}));
