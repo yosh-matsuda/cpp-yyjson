@@ -258,8 +258,12 @@ namespace
     template <typename T>
     std::string expect_merge_into(const T& t, std::string_view json, bool* merged_directly = nullptr)
     {
-        // comments are read only through a document
-        const auto expected = merged(t, json, yyjson::ReadFlag::AllowComments);
+        // what merging through a document gives, which `merge_into` falls back to
+        const auto expected = read_or_error([&] {
+            auto u = t;
+            yyjson::detail::merge_text(json, u, yyjson::ReadFlag::NoFlag);
+            return u;
+        });
         EXPECT_EQ(merged(t, json), expected) << json;
 #if YYJSON_VERSION_HEX >= 0x000C00
         auto trimmed = json;
