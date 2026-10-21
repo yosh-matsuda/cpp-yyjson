@@ -482,6 +482,65 @@ TEST(Strict, Annotations)
 #endif
 }
 
+namespace
+{
+    // what the reader without a document gives, under `yyjson::strict`, reading `json` over `t` or merging it into
+    // `t`, or nothing when it leaves the text to the document
+    template <typename T>
+    std::optional<std::string> strictly_over(T t, std::string_view json, bool merge)
+    {
+#if YYJSON_VERSION_HEX >= 0x000C00
+        const auto scope = yyjson::detail::strict_scope();
+        return read_root_directly(json, yyjson::ReadFlag::NoFlag, [&](auto& reader) {
+            if (merge)
+                reader.merge_root(t);
+            else
+                reader.read_root_into(t);
+            return read_or_error([&]() -> const T& { return t; });
+        });
+#else
+        static_cast<void>(t);
+        static_cast<void>(json);
+        static_cast<void>(merge);
+        return std::nullopt;
+#endif
+    }
+
+    // `read_into` and `merge_into` under `yyjson::strict` read `json` over `t` as the document does, also without it
+    template <typename T>
+    void expect_strict_over(const T& t, std::string_view json, bool merge, const T& expected)
+    {
+        auto u = t;
+        if (merge)
+            yyjson::merge_into(json, u, yyjson::strict);
+        else
+            yyjson::read_into(json, u, yyjson::strict);
+        EXPECT_EQ(u, expected) << json;
+        if (reads_directly)
+        {
+            const auto direct = strictly_over(t, json, merge);
+            ASSERT_TRUE(direct.has_value()) << json;
+            EXPECT_EQ(*direct, read_or_error([&]() -> const T& { return expected; })) << json;
+        }
+    }
+
+    // and reject a key that `json` names twice, which the reader without a document leaves to the document
+    template <typename T>
+    void expect_rejected_over(const T& t, std::string_view json, bool merge, std::string_view path)
+    {
+        const auto e = bad_cast_of([&] {
+            auto u = t;
+            if (merge)
+                yyjson::merge_into(json, u, yyjson::strict);
+            else
+                yyjson::read_into(json, u, yyjson::strict);
+        });
+        EXPECT_TRUE(std::string_view(e.what()).find(" twice") != std::string_view::npos) << json << "\n" << e.what();
+        EXPECT_EQ(e.path(), path) << json;
+        EXPECT_FALSE(strictly_over(t, json, merge).has_value()) << json;
+    }
+}  // namespace
+
 TEST(Strict, Containers)
 {
     expect_strict<std::set<int>>("[1,2,3]", {1, 2, 3});
@@ -505,6 +564,37 @@ TEST(Strict, Containers)
     auto c = StrictContainers{{}, {{"a", 0}}, {}};
     EXPECT_THROW(yyjson::read_into(R"({"points":[],"map":{"a":1,"a":2},"set":[]})", c, yyjson::strict),
                  yyjson::bad_cast);
+}
+
+TEST(Strict, MapsOver)
+{
+    // `read_into` and `merge_into` read a map in place under `yyjson::strict`, and a key named twice fails, whether
+    // the map had it, the object added it or, in a merge, null erased it
+    const auto check = []<typename M>(std::type_identity<M>) {
+        const auto old = M{{"a", 1}, {"b", 2}};
+        expect_strict_over(old, R"({"a":3,"b":4})", false, M{{"a", 3}, {"b", 4}});
+        expect_strict_over(old, R"({"c":5,"b":4})", false, M{{"b", 4}, {"c", 5}});
+        expect_strict_over(old, R"({"b":4,"0":1,"a":3,"z":6})", false, M{{"0", 1}, {"a", 3}, {"b", 4}, {"z", 6}});
+        expect_strict_over(old, "{}", false, M());
+        for (const auto& [json, path] : {std::pair{R"({"a":3,"a":4})", "/a"},
+                                         {R"({"a":3,"b":4,"a":5})", "/a"},
+                                         {R"({"b":4,"a":3,"b":5})", "/b"},
+                                         {R"({"0":1,"0":2})", "/0"},
+                                         {R"({"b":4,"z":1,"z":2})", "/z"}})
+            expect_rejected_over(old, json, false, path);
+
+        expect_strict_over(old, R"({"a":3,"c":5})", true, M{{"a", 3}, {"b", 2}, {"c", 5}});
+        expect_strict_over(old, R"({"a":null,"x":null,"c":5})", true, M{{"b", 2}, {"c", 5}});
+        for (const auto& [json, path] : {std::pair{R"({"a":3,"a":4})", "/a"},
+                                         {R"({"c":3,"c":4})", "/c"},
+                                         {R"({"a":null,"a":4})", "/a"},
+                                         {R"({"a":4,"a":null})", "/a"},
+                                         {R"({"x":null,"x":4})", "/x"},
+                                         {R"({"x":null,"x":null})", "/x"}})
+            expect_rejected_over(old, json, true, path);
+    };
+    check(std::type_identity<std::map<std::string, int>>());
+    check(std::type_identity<std::unordered_map<std::string, int>>());
 }
 
 TEST(Strict, Variants)

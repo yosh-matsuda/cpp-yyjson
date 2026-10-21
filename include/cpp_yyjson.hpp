@@ -18275,8 +18275,11 @@ namespace yyjson
             template <typename T>
             void merge_map(T& t)
             {
-                // the document checks that the keys are unique
-                if (strict_) fail();
+                if (strict_) [[unlikely]]
+                {
+                    merge_map_strictly(t);
+                    return;
+                }
                 auto key_buf = std::string();
                 auto lookup = typename T::key_type();
                 auto next = t.begin();
@@ -18353,17 +18356,42 @@ namespace yyjson
                 }
             };
 
+            // Merges as `merge_map` does, failing if the object names a key twice.  Every key named has a node in
+            // `named`, and a key named by null is erased at the end, so that a node of the map is never named
+            // twice and a freed node does not come back as one named before.
+            template <typename T>
+            CPPYYJSON_NOINLINE void merge_map_strictly(T& t)
+            {
+                using key_type = typename T::key_type;
+                auto key_buf = std::string();
+                auto lookup = key_type();
+                auto next = t.begin();
+                auto named = node_set(16);
+                auto nulls = std::vector<key_type>();
+                read_members([&] {
+                    const auto key = read_key<T>(key_buf);
+                    read_colon();
+                    auto it = next != t.end() && next->first == key ? next : t.find(lookup_key(lookup, key));
+                    if (it == t.end()) it = t.try_emplace(next, lookup);
+                    next = std::next(it);
+                    if (!named.insert(&*it)) fail();
+                    if (*cur_ == 'n')
+                    {
+                        read_literal("null");
+                        nulls.push_back(it->first);
+                    }
+                    else
+                        merge_value(it->second);
+                });
+                for (const auto& key : nulls) t.erase(key);
+            }
+
             // Reads the members of the object at `cur_` into `result`, reading the value of a key that `result`
             // has over the old value and dropping the keys that the object does not have.  A key that the object
-            // has twice keeps its first value, as `read<T>` keeps it.
+            // has twice keeps its first value, as `read<T>` keeps it, and fails under strict.
             template <typename T>
             void read_map_over(T& result)
             {
-                if (strict_) [[unlikely]]
-                {
-                    result = read_value<T>();
-                    return;
-                }
                 using value_type = std::remove_cvref_t<std::tuple_element_t<1, std::ranges::range_value_t<T>>>;
                 auto key_buf = std::string();
                 auto lookup = typename T::key_type();
@@ -18390,7 +18418,10 @@ namespace yyjson
                             lookup_key(lookup, key);
                             if (ahead == result.end() || result.key_comp()(lookup, ahead->first))
                             {
+                                const auto size = result.size();
                                 result.emplace_hint(ahead, lookup, read_value<value_type>());
+                                if (strict_ && result.size() == size) [[unlikely]]
+                                    fail();
                                 return;
                             }
                             named.emplace(result.size());
@@ -18405,7 +18436,11 @@ namespace yyjson
                         }
                         next = std::next(it);
                         if (result.key_comp()(it->first, ahead->first) || !named->insert(&*it))
+                        {
+                            if (strict_) [[unlikely]]
+                                fail();
                             std::ignore = read_value<value_type>();
+                        }
                         else
                             read_value_into(it->second);
                     });
@@ -18428,7 +18463,11 @@ namespace yyjson
                         else if (named.insert(&*it))
                             read_value_into(it->second);
                         else
+                        {
+                            if (strict_) [[unlikely]]
+                                fail();
                             std::ignore = read_value<value_type>();
+                        }
                     });
                     if (named.size() != result.size())
                         for (auto it = result.begin(); it != result.end();)
