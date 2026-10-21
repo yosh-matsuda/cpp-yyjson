@@ -19,6 +19,17 @@ struct StrictRequired
 };
 template <>
 inline constexpr auto yyjson::annotations<StrictRequired> = yyjson::annotate(yyjson::field("b", yyjson::required));
+// fields that `yyjson::strict` lets the object leave out, which keep the value they have in `T()`
+struct StrictDefaulted
+{
+    int a = 0;
+    int b = 7;
+    std::vector<int> c = {1};
+    bool operator==(const StrictDefaulted&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<StrictDefaulted> = yyjson::annotate(
+    yyjson::field("b", yyjson::optional_key), yyjson::field("c", yyjson::optional_key, yyjson::max_items(1)));
 struct StrictClosed
 {
     int a = 0;
@@ -196,6 +207,12 @@ struct[[= yyjson::additional_properties(false)]] StrictAnnotated
     int b = 0;
     bool operator==(const StrictAnnotated&) const = default;
 };
+struct StrictAnnotatedDefaulted
+{
+    int a = 0;
+    [[= yyjson::optional_key]] int b = 7;
+    bool operator==(const StrictAnnotatedDefaulted&) const = default;
+};
 #endif
 
 namespace
@@ -322,6 +339,28 @@ TEST(Strict, Structs)
     expect_rejected<StrictVisitable>(R"({"b":1})",
                                      R"(StrictVisitable is not constructible from JSON without the key "a")");
     expect_rejected<StrictVisitable>(R"({"a":1,"c":1})", R"(StrictVisitable has no field of the key "c")", "/c");
+}
+
+TEST(Strict, OptionalKey)
+{
+    expect_strict<StrictDefaulted>(R"({"a":1})", {1, 7, {1}});
+    expect_strict<StrictDefaulted>(R"({"c":[2],"a":1,"b":3})", {1, 3, {2}});
+    expect_strict<StrictDefaulted>(R"({"a":1,"c":[]})", {1, 7, {}});
+    expect_rejected<StrictDefaulted>(R"({"b":3})",
+                                     R"(StrictDefaulted is not constructible from JSON without the key "a")");
+    expect_rejected<StrictDefaulted>(R"({"a":1,"x":0})", R"(StrictDefaulted has no field of the key "x")", "/x");
+    // the value of the key is read and checked as without it, and null is not left out
+    expect_rejected<StrictDefaulted>(R"({"a":1,"c":[1,2]})", "", "/c");
+    expect_rejected<StrictDefaulted>(R"({"a":1,"b":null})", "", "/b");
+    EXPECT_THROW((void)yyjson::read<StrictDefaulted>(R"({"a":1,"c":[1,2]})"), yyjson::bad_cast);
+    // nothing changes without `yyjson::strict`, and the key is always written
+    expect_lenient<StrictDefaulted>(R"({"b":3})", {0, 3, {1}});
+    EXPECT_EQ(yyjson::write(StrictDefaulted()), R"({"a":0,"b":7,"c":[1]})");
+#if FIELD_RFL_ANNOTATIONS
+    expect_strict<StrictAnnotatedDefaulted>(R"({"a":1})", {1, 7});
+    expect_rejected<StrictAnnotatedDefaulted>(
+        R"({"b":1})", R"(StrictAnnotatedDefaulted is not constructible from JSON without the key "a")");
+#endif
 }
 
 TEST(Strict, Annotations)
