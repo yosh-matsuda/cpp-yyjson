@@ -935,6 +935,9 @@ namespace yyjson
                 if constexpr (std::floating_point<V>)
                 {
                     if (v != v) throw "a bound of a number is not NaN";
+                    // the bounds are compared as a double, which a bound must not round
+                    if (static_cast<V>(static_cast<double>(v)) != v)
+                        throw "a bound of a number is a long double that a double does not represent";
                     kind = kind_t::real;
                     real = static_cast<double>(v);
                 }
