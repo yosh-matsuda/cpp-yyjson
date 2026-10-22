@@ -1,6 +1,6 @@
 # Guide
 
-This guide answers the questions that come up when a program starts to use cpp-yyjson, one task at a time, with the shortest code that does it and a link to the details. The examples include `cpp_yyjson.hpp` and the standard headers that they use. What the library does in each case is described in [Converting C++ types](conversions.md), [Validation and errors](validation.md) and the [Reference](reference.md).
+This guide answers the questions that come up when a program starts to use cpp-yyjson, one task at a time, with the shortest code that does it and a link to the details. The examples include `cpp_yyjson.hpp` and the standard headers that they use. What the library does in each case is described in [Converting C++ types](conversions.md), [Validation and errors](validation.md) and the [Reference](reference.md). Questions that are not tasks, such as what happens to an unknown key or whether a document can be shared between threads, are answered in the [FAQ](faq.md).
 
 ## Contents
 
