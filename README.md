@@ -4,37 +4,14 @@ Fast JSON for C++20: read and write your own types directly, or work with JSON o
 
 [![CI](https://github.com/yosh-matsuda/cpp-yyjson/actions/workflows/tests.yml/badge.svg)](https://github.com/yosh-matsuda/cpp-yyjson/actions/workflows/tests.yml)
 
-cpp-yyjson is a header-only C++ interface to [yyjson](https://github.com/ibireme/yyjson) with two APIs. The data binding API converts JSON text to and from your structs by their field names, with no macro and no JSON tree in between. The DOM API reads and builds documents with C++20 ranges, `std::optional` and initializer lists. Both run on a [fork of yyjson](#bundled-backend) that keeps its API and output and makes it faster.
-
-## Highlights
-
-*   **Fast with both APIs.** In the [benchmarks](#performance), the data binding API reads and writes C++ types faster than every library it is compared with, and the DOM API reads and writes documents at least as fast as every one of them.
-*   **One call each way.** `read<T>(json)` and `write(t)` convert aggregate structs through compile-time reflection, with no macro or registration. Containers, `std::optional`, `std::variant`, smart pointers, enumerations and recursive types work out of the box.
-*   **Two APIs in one library.** Read JSON of a known shape into C++ types, and JSON of any shape into a DOM, and convert between the two.
-*   **Tolerant of changing JSON, or strict when asked.** Unknown keys are ignored, missing keys keep their defaults, and `merge_into` applies a [JSON Merge Patch](https://www.rfc-editor.org/rfc/rfc7396) to an existing object. [`yyjson::strict`](docs/validation.md#strict-reading) rejects unknown, missing and repeated keys instead. Fields can also take [constraints](docs/validation.md#constraints) such as `yyjson::minimum(0)` or `yyjson::pattern("^[a-z]+$")`.
-*   **A DOM that feels like the standard library.** Arrays and objects are C++20 ranges, objects yield key-value pairs for structured bindings, values work with `std::format`, and documents are built from containers and initializer lists.
-*   **A faster yyjson inside.** The [bundled backend](#bundled-backend) adds SIMD string paths and other optimizations to yyjson, with the same API, input and output.
-
-## Data binding API
-
-The data binding API converts between JSON text and C++ types without building a JSON document in between.
-
-### Reading and writing C++ types
-
-`yyjson::read<T>` reads a JSON string into a C++ type, and `yyjson::write` writes one back:
-
 ```cpp
 #include "cpp_yyjson.hpp"
 #include <iostream>
-#include <map>
-
-using namespace yyjson;
 
 struct Release
 {
     std::string version;
-    std::optional<std::string> notes;            // left out of the JSON when empty
-    std::map<std::string, int> downloads;
+    std::optional<std::string> notes;  // left out of the JSON when empty
 };
 
 struct Project
@@ -46,35 +23,148 @@ struct Project
 
 int main()
 {
-    auto project = read<Project>(R"({
-        "name": "cpp-yyjson",
-        "tags": ["json", "c++20"],
-        "releases": [{"version": "1.2.0", "downloads": {"linux": 10, "windows": 5}}]
-    })");
-    // -> Project{"cpp-yyjson", {"json", "c++20"}, {Release{"1.2.0", std::nullopt, {{"linux", 10}, {"windows", 5}}}}}
-
-    auto json = write(project);
-    // -> {"name":"cpp-yyjson","tags":["json","c++20"],"releases":[{"version":"1.2.0","downloads":{"linux":10,"windows":5}}]}
-
-    auto pretty = write(project, WriteFlag::Pretty);
-
-    // Reuse the capacity of the output string in a loop
-    auto out = std::string();
-    write(project, out);
-
-    try
-    {
-        project = read<Project>(R"({"releases": [{"downloads": {"linux": "ten"}}]})");
-    }
-    catch (const bad_cast& e)
-    {
-        std::cerr << e.what() << '\n';
-        // -> int is not constructible from JSON string at /releases/0/downloads/linux (line 1, column 39, pos 38)
-    }
+    auto project = yyjson::read<Project>(R"({"name":"cpp-yyjson","tags":["json"],"releases":[{"version":"2.1.0"}]})");
+    project.tags.push_back("c++20");
+    std::cout << yyjson::write(project) << '\n';
+    // -> {"name":"cpp-yyjson","tags":["json","c++20"],"releases":[{"version":"2.1.0"}]}
 }
 ```
 
-Invalid JSON throws `yyjson::read_error`, and JSON that does not fit the type throws `yyjson::bad_cast`, which names the value that failed by its path and its position, as above ([details](docs/validation.md#errors-of-conversion)).
+No macro and no registration: aggregate structs are converted by compile-time reflection, and the text is read into them without a JSON tree in between. JSON that does not fit says where:
+
+```cpp
+struct User
+{
+    std::string name;
+    int age;
+};
+
+template <>
+inline constexpr auto yyjson::annotations<User> = yyjson::annotate(yyjson::field("age", yyjson::minimum(0)));
+
+yyjson::read<User>(R"({"name":"Ann","age":"30"})");
+// bad_cast: int is not constructible from JSON string at /age (line 1, column 21, pos 20)
+yyjson::read<User>(R"({"name":"Ann","age":-1})");
+// bad_cast: the value of the key "age" of User is less than the minimum 0 at /age (line 1, column 21, pos 20)
+yyjson::read<User>(R"({"name":"Ann","age":30,"admin":true})", yyjson::strict);
+// bad_cast: User has no field of the key "admin" at /admin (line 1, column 32, pos 31)
+yyjson::read<User>(R"({"name":"Ann"})", yyjson::strict);
+// bad_cast: User is not constructible from JSON without the key "age" (line 1, column 1, pos 0)
+```
+
+JSON of any shape is read into a DOM whose arrays and objects are C++20 ranges:
+
+```cpp
+auto rates = yyjson::read(R"({"USD":129.66,"EUR":140.35})");
+for (const auto& [currency, rate] : *rates.as_object())
+{
+    std::cout << currency << ": " << *rate.as_real() << '\n';
+}
+```
+
+cpp-yyjson is a C++ interface to [yyjson](https://github.com/ibireme/yyjson): a single header, and a [fork of yyjson](#bundled-backend) that keeps its API and output and makes it faster, which CMake builds as a static library.
+
+## Highlights
+
+*   **Fast with both APIs.** In the [benchmarks](#performance), the data binding API reads and writes C++ types faster than Glaze and reflect-cpp, and the DOM API reads and writes documents at least as fast as yyjson, simdjson, RapidJSON and nlohmann-json.
+*   **One call each way.** `read<T>(json)` and `write(t)` convert structs, containers, `std::optional`, `std::variant`, smart pointers, enumerations and recursive types, nested in any combination.
+*   **Tolerant, or strict when asked.** By default unknown keys are ignored and missing keys keep their defaults; [`yyjson::strict`](docs/validation.md#strict-reading) rejects them, and [constraints](docs/validation.md#constraints) such as `yyjson::minimum(0)` or `yyjson::pattern("^[a-z]+$")` check the values. `merge_into` applies a [JSON Merge Patch](https://www.rfc-editor.org/rfc/rfc7396) to an existing object.
+*   **Two APIs in one library.** Read JSON of a known shape into C++ types and JSON of any shape into a DOM, and convert between the two.
+*   **A DOM that feels like the standard library.** Arrays and objects are ranges, objects yield key-value pairs for structured bindings, values work with `std::format`, and documents are built from containers and initializer lists.
+
+## Installation
+
+Fetch the repository with CMake and link `cpp_yyjson::cpp_yyjson`, which compiles the [bundled backend](#bundled-backend) and adds the include directory:
+
+```cmake
+include(FetchContent)
+FetchContent_Declare(cpp_yyjson
+    GIT_REPOSITORY https://github.com/yosh-matsuda/cpp-yyjson.git
+    GIT_TAG v2.1.0
+    GIT_SHALLOW TRUE
+    GIT_SUBMODULES "")  # the only submodule holds benchmark data
+FetchContent_MakeAvailable(cpp_yyjson)
+
+target_link_libraries(my_app PRIVATE cpp_yyjson::cpp_yyjson)
+cpp_yyjson_enable_lto(my_app)  # optional: optimize the backend together with my_app
+```
+
+A clone works the same way with `add_subdirectory`, and an installed cpp-yyjson with `find_package`:
+
+```cmake
+add_subdirectory(<PATH_TO_CLONE_DIR>/cpp-yyjson ${CMAKE_CURRENT_BINARY_DIR}/cpp-yyjson)
+# or
+find_package(cpp_yyjson CONFIG REQUIRED)
+```
+
+### Requirements
+
+*   C++20 compiler with range support
+    *   GCC 13-16
+    *   LLVM 17-22
+    *   AppleClang 16 (Xcode 16.2), 17 (Xcode 26.3), and 21 (Xcode 26.6)
+    *   MSVC `cl` and `clang-cl` on `windows-2022` and `windows-2025`
+*   C++26 with GCC 16 and `-std=c++26 -freflection` is also supported; its static reflection converts structs with base classes or more than 100 fields, and takes annotations such as `[[=yyjson::rename("@context")]]` ([details](docs/conversions.md#automatic-casting-with-compile-time-reflection))
+*   [yyjson](https://github.com/ibireme/yyjson) 0.6.0 or later, only when it is used instead of the [bundled backend](#bundled-backend); before 0.12.0, the data binding API goes through a document
+
+### CMake options
+
+| Option | Effect |
+| --- | --- |
+| `CPPYYJSON_ENABLE_AVX2=ON` | Compiles the backend with AVX2 in addition to SSE2; the binary then requires an AVX2-capable CPU. |
+| `CPPYYJSON_USE_BUNDLED_YYJSON=OFF` | Uses an external yyjson package instead of the bundled backend. |
+| `CPPYYJSON_READER_DEPTH_LIMIT`, `CPPYYJSON_WRITER_DEPTH_LIMIT`, `CPPYYJSON_DISABLE_FILE` | The yyjson [compile-time options](https://ibireme.github.io/yyjson/doc/doxygen/html/building-and-testing.html#compile-time-options) of the same name with `YYJSON_`. |
+| `CPPYYJSON_DISABLE_HUGE_PAGES=ON` | Turns off the huge pages of the bundled backend. |
+| `CPPYYJSON_RECURSION_DEPTH_LIMIT` | Limits how deeply values of [recursive types](docs/conversions.md#recursive-types) are read. |
+
+[Build configuration](docs/reference.md#build-configuration) covers link-time optimization, the options with an external yyjson and building this repository.
+
+## How do I...
+
+| Task | Use |
+| --- | --- |
+| [Read JSON into a struct and write it back](docs/guide.md#read-json-into-a-struct-and-write-it-back) | `read<T>(json)`, `write(t)` |
+| [Read a JSON file](docs/guide.md#read-a-json-file) | read the file into a string, then `read<T>` |
+| [Use a JSON key other than the member name](docs/guide.md#use-a-json-key-other-than-the-member-name) | `yyjson::rename` in `yyjson::annotations<T>` |
+| [Leave a member out of the JSON](docs/guide.md#leave-a-member-out-of-the-json) | `yyjson::skip` |
+| [Reject unknown or missing keys](docs/guide.md#reject-unknown-keys) | `read<T>(json, yyjson::strict)` |
+| [Restrict the values of a field](docs/guide.md#restrict-the-values-of-a-field) | constraints such as `yyjson::minimum` and `yyjson::pattern` |
+| [Read objects whose kind a member names](docs/guide.md#read-objects-whose-kind-a-member-names) | a `std::variant` with `yyjson::internal_tag` |
+| [Convert a type of another library, such as a date](docs/guide.md#convert-dates-and-times) | a translator, `yyjson::caster<T>` |
+| [Read many documents of the same shape](docs/guide.md#read-many-documents-of-the-same-shape) | `read_into(json, t)` |
+| [Apply a partial update](docs/guide.md#apply-a-partial-update) | `merge_into(json, t)` |
+| [Look up values in JSON of unknown shape](docs/guide.md#look-up-values-in-json-of-unknown-shape) | `read(json)` and the DOM |
+| [Keep a member of unknown shape](docs/guide.md#keep-a-member-of-unknown-shape) | a field of type `yyjson::value` |
+| [Build JSON without a C++ type](docs/guide.md#build-json-without-a-c-type) | `value`, `array` and `object` |
+| [Read JSON with comments or trailing commas](docs/guide.md#read-json-with-comments-trailing-commas-or-json5) | `yyjson::ReadFlag` |
+
+The [Guide](docs/guide.md) has these and more, and lists [what cpp-yyjson does not do](docs/guide.md#what-cpp-yyjson-does-not-do) with the workarounds; the [FAQ](docs/faq.md) answers the questions that are not tasks.
+
+Both APIs give the same results for the same type, for JSON whose objects have no key twice. To convert a whole object, `read<T>(json)` and `write(t)` are faster than `read(json).cast<T>()` and `value(t).write()` because they skip the document; the DOM is the choice when you inspect, modify or convert only a part of the JSON.
+
+## Data binding API
+
+The data binding API converts between JSON text and C++ types without building a JSON document in between.
+
+### Reading and writing C++ types
+
+`yyjson::read<T>` reads a JSON string into a C++ type, and `yyjson::write` writes one back, as in the example at the top. With the structs of that example:
+
+```cpp
+using namespace yyjson;
+
+auto project = read<Project>(R"({"name": "cpp-yyjson", "tags": [], "releases": [{"version": "2.0.0", "notes": "data binding"}]})");
+
+auto json = write(project);  // a yyjson::json_string, which is a std::string_view that owns its buffer
+auto pretty = write(project, WriteFlag::Pretty);
+
+auto out = std::string();
+write(project, out);  // reuses the capacity of out, e.g. in a loop
+
+auto relaxed = read<Project>(R"({"name": "x", "tags": [], "releases": [],})", ReadFlag::AllowTrailingCommas);
+```
+
+Invalid JSON throws `yyjson::read_error`, and JSON that does not fit the type throws `yyjson::bad_cast`, which names the value that failed by its path and its position, as at the top ([details](docs/validation.md#errors-of-conversion)). [Supported types](#supported-types) lists what converts.
 
 ### Reading into an existing object
 
@@ -184,23 +274,6 @@ obj.emplace("stars", 1000);
 A mutable value refers to the strings it is built from instead of copying them, except rvalue strings, so `obj` reads the strings of `project`; pass `yyjson::copy_string` to copy them ([details](docs/reference.md#yyjsonvalue)).
 
 See the reference for the [immutable](docs/reference.md#immutable-json-classes) and [mutable](docs/reference.md#mutable-json-classes) classes and their [allocators](docs/reference.md#allocator-classes).
-
-## Which API to use
-
-| Task | Recommended |
-| --- | --- |
-| Convert JSON text to a C++ type | `read<T>(json)` |
-| Read many documents of the same shape | `read_into(json, t)` |
-| Apply a partial update | `merge_into(json, t)` |
-| Reject JSON that has more or less than the type | `read<T>(json, yyjson::strict)` |
-| Restrict the values of a field, as a schema would | [constraints](docs/validation.md#constraints) in `yyjson::annotations<T>` |
-| Convert a C++ object to JSON text | `write(t)`, or `write(t, out)` to reuse the string |
-| Read JSON of unknown or varying shape | `read(json)` and the DOM |
-| Keep a member of unknown shape in a C++ type | a field of type `yyjson::value` |
-| Build or modify JSON that has no C++ type | `value`, `array` and `object` |
-| Convert part of a document | `cast<T>(value)` on that part |
-
-Both APIs give the same results for the same type, for JSON whose objects have no key twice. To convert a whole object, `read<T>(json)` and `write(t)` are faster than `read(json).cast<T>()` and `value(t).write()` because they skip the document; the DOM is the choice when you inspect, modify or convert only a part of the JSON.
 
 ## Conversions and customization
 
@@ -323,45 +396,6 @@ What gets faster, measured in the [benchmark](#dom-api-vs-other-libraries) with 
 Documents that are none of these are read and written at about the upstream speed. The SSE2/AVX2 paths are for x86-64, with AVX2 on request (see [CMake options](#cmake-options)), and the huge pages need Linux with glibc and apply only to blocks of 32 MiB or more.
 
 To use the upstream yyjson instead, configure with `-DCPPYYJSON_USE_BUNDLED_YYJSON=OFF`.
-
-## Requirements
-
-*   C++20 compiler with range support
-    *   GCC 13-16
-    *   LLVM 17-22
-    *   AppleClang 16 (Xcode 16.2), 17 (Xcode 26.3), and 21 (Xcode 26.6)
-    *   MSVC `cl` and `clang-cl` on `windows-2022` and `windows-2025`
-*   C++26 with GCC 16 and `-std=c++26 -freflection` is also supported; its static reflection converts structs with base classes or more than 100 fields, and takes annotations such as `[[=yyjson::rename("@context")]]` ([details](docs/conversions.md#automatic-casting-with-compile-time-reflection))
-*   [yyjson](https://github.com/ibireme/yyjson) 0.6.0 or later, only when it is used instead of the [bundled backend](#bundled-backend); before 0.12.0, the data binding API goes through a document
-
-## Installation
-
-The C++ interface is header-only, and the [bundled backend](#bundled-backend) is compiled from `src/yyjson.c` into a static library. With CMake, add the repository as a subdirectory:
-
-```cmake
-add_subdirectory(<PATH_TO_CLONE_DIR>/cpp-yyjson ${CMAKE_CURRENT_BINARY_DIR}/cpp-yyjson)
-target_link_libraries(my_app PRIVATE cpp_yyjson::cpp_yyjson)
-cpp_yyjson_enable_lto(my_app)  # optional: optimize the backend together with my_app
-```
-
-or, if cpp-yyjson is installed, find the package:
-
-```cmake
-find_package(cpp_yyjson CONFIG REQUIRED)
-target_link_libraries(my_app PRIVATE cpp_yyjson::cpp_yyjson)
-```
-
-### CMake options
-
-| Option | Effect |
-| --- | --- |
-| `CPPYYJSON_ENABLE_AVX2=ON` | Compiles the backend with AVX2 in addition to SSE2; the binary then requires an AVX2-capable CPU. |
-| `CPPYYJSON_USE_BUNDLED_YYJSON=OFF` | Uses an external yyjson package instead of the bundled backend. |
-| `CPPYYJSON_READER_DEPTH_LIMIT`, `CPPYYJSON_WRITER_DEPTH_LIMIT`, `CPPYYJSON_DISABLE_FILE` | The yyjson [compile-time options](https://ibireme.github.io/yyjson/doc/doxygen/html/building-and-testing.html#compile-time-options) of the same name with `YYJSON_`. |
-| `CPPYYJSON_DISABLE_HUGE_PAGES=ON` | Turns off the huge pages of the bundled backend. |
-| `CPPYYJSON_RECURSION_DEPTH_LIMIT` | Limits how deeply values of [recursive types](docs/conversions.md#recursive-types) are read. |
-
-[Build configuration](docs/reference.md#build-configuration) covers link-time optimization, the options with an external yyjson and building this repository.
 
 ## Documentation
 
