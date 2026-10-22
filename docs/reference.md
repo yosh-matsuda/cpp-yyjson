@@ -1963,6 +1963,8 @@ std::cout << obj.write() << std::endl;
 // {"a":1} {"b":2}
 ```
 
+Before C++23 ([P2644R1](https://wg21.link/p2644r1)), a range-based `for` destroys the temporaries of its range expression before the loop body runs. `for (const auto& v : *doc.as_array())` therefore iterates through the `std::optional` that `as_array()` returned after it is destroyed, which is undefined behavior. Bind the value in the init-statement instead: `for (const auto arr = *doc.as_array(); const auto& v : arr)`.
+
 The mutable classes `yyjson::value`, `array` and `object` also own their document, and a copy also shares it: a change through the copy shows in the original. To get an independent copy, construct the class from a `const` reference, such as `yyjson::object(yyjson::writer::const_object_ref(obj))`.
 
 ### Strings that a document returns

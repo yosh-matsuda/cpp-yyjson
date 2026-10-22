@@ -243,7 +243,7 @@ struct User
 
 auto doc = yyjson::read(R"({"name":"Ann","theme":"dark"})");
 auto user = doc.cast<User>();
-for (const auto& [key, value] : *doc.as_object())
+for (const auto obj = *doc.as_object(); const auto& [key, value] : obj)
 {
     if (key != "name") std::cout << key << " = " << value.write() << '\n';
 }
@@ -549,7 +549,7 @@ auto obj = *doc.as_object();
 
 if (obj.contains("name")) std::cout << *obj["name"].as_string() << '\n';
 if (auto age = obj["age"].as_int()) std::cout << *age << '\n';
-for (const auto& tag : *obj["tags"].as_array()) std::cout << *tag.as_string() << '\n';
+for (const auto tags = *obj["tags"].as_array(); const auto& tag : tags) std::cout << *tag.as_string() << '\n';
 ```
 
 `operator[]` of an object throws `std::out_of_range` for a missing key, and `find` returns `end()` instead. Both take time linear in the number of members. The DOM classes are listed in the [Reference](reference.md#dom-classes).

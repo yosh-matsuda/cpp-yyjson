@@ -58,11 +58,13 @@ JSON of any shape is read into a document whose arrays and objects are C++20 ran
 
 ```cpp
 auto rates = yyjson::read(R"({"USD":129.66,"EUR":140.35})");
-for (const auto& [currency, rate] : *rates.as_object())
+for (const auto obj = *rates.as_object(); const auto& [currency, rate] : obj)
 {
     std::cout << currency << ": " << *rate.as_real() << '\n';
 }
 ```
+
+`as_object()` returns a `std::optional`. Bind its value in the init-statement as above: before C++23, `for (... : *rates.as_object())` destroys the `std::optional` before the loop body runs, which is undefined behavior; see [Lifetimes](docs/reference.md#owning-and-reference-classes).
 
 ## Highlights
 
