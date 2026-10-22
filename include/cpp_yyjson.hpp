@@ -2527,6 +2527,31 @@ namespace yyjson
             static constexpr auto keys = members;
         };
 
+        // The table of `field_keys`, with the error that `field_keys` asserts to be none.  A function rather than a
+        // lambda: clang before 19 and MSVC take a call to a consteval function in a lambda of a class template as a
+        // call outside a constant expression.
+        template <typename T, typename Source>
+        consteval auto make_field_key_table()
+        {
+            constexpr auto n = Source::members.size();
+            constexpr auto reflected = std::same_as<Source, reflected_field_names<T>>;
+            auto builder = field_key_builder<n, n + value_node_count<T>>{Source::members, {Source::keys}, !reflected};
+            for (std::size_t i = 0; i < n; ++i) builder.renamed[i] = Source::keys[i] != Source::members[i];
+            std::apply([&](const auto&... a) { (builder.apply_annotation(a), ...); }, annotations<T>.values);
+#if FIELD_RFL_ANNOTATIONS
+            if constexpr (reflected)
+                annotate_reflected_fields<T>(builder);
+            else if constexpr (annotated_members<T>)
+                builder.fail(field_key_error::annotated_visitable);
+            if constexpr (annotated_type<T>)
+            {
+                for (const additional_properties<>& a : field_reflection::type_annotations<T, additional_properties<>>)
+                    builder.set_additional(a);
+            }
+#endif
+            return builder.result();
+        }
+
         // The JSON keys of the fields of T.  `Source::members` are the member names and `Source::keys` the
         // keys that `VISITABLE_STRUCT` gives them, which differ from the member names only for a pair
         // `(member, "key")`.  `annotations<T>` and, for a reflected struct, the annotations of the members rename
@@ -2534,31 +2559,7 @@ namespace yyjson
         template <typename T, typename Source>
         struct field_keys
         {
-            // A function rather than a lambda: clang before 19 and MSVC take a call to a consteval function in a
-            // lambda of a class template as a call outside a constant expression.
-            static consteval auto make_table()
-            {
-                constexpr auto n = Source::members.size();
-                constexpr auto reflected = std::same_as<Source, reflected_field_names<T>>;
-                auto builder =
-                    field_key_builder<n, n + value_node_count<T>>{Source::members, {Source::keys}, !reflected};
-                for (std::size_t i = 0; i < n; ++i) builder.renamed[i] = Source::keys[i] != Source::members[i];
-                std::apply([&](const auto&... a) { (builder.apply_annotation(a), ...); }, annotations<T>.values);
-#if FIELD_RFL_ANNOTATIONS
-                if constexpr (reflected)
-                    annotate_reflected_fields<T>(builder);
-                else if constexpr (annotated_members<T>)
-                    builder.fail(field_key_error::annotated_visitable);
-                if constexpr (annotated_type<T>)
-                {
-                    for (const additional_properties<>& a :
-                         field_reflection::type_annotations<T, additional_properties<>>)
-                        builder.set_additional(a);
-                }
-#endif
-                return builder.result();
-            }
-            static constexpr auto table = make_table();
+            static constexpr auto table = make_field_key_table<T, Source>();
             static_assert(table.error != field_key_error::unknown_member,
                           "yyjson::field names a member that does not exist");
             static_assert(table.error != field_key_error::renamed_twice,
@@ -3092,7 +3093,7 @@ namespace yyjson
         struct enum_conversion
         {
             static constexpr std::size_t count = field_reflection::enum_count<E>;
-            // A function rather than a lambda, for the reason that `field_keys::make_table` gives.
+            // A function rather than a lambda, for the reason that `make_field_key_table` gives.
             static consteval auto make_table()
             {
                 constexpr auto& declared = field_reflection::enum_names<E>;
