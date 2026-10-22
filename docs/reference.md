@@ -171,7 +171,9 @@ With an external yyjson older than 0.12.0, `read_into` assigns the result of `re
 `yyjson::write` serializes a C++ object to a JSON string without building a `yyjson::value` first. It accepts every type that `yyjson::value` can be constructed from and follows the same conversion rules, so the result is the same as `value(t).write(flag)`, byte for byte:
 
 ```cpp
+template <typename T>
 json_string write(const T& t, WriteFlag flag = WriteFlag::NoFlag);
+template <typename T>
 void write(const T& t, std::string& out, WriteFlag flag = WriteFlag::NoFlag);
 ```
 
@@ -244,11 +246,22 @@ enum class yyjson::ReadFlag : yyjson_read_flag
 
 The `read` function takes a JSON string and returns an immutable JSON value. The function argument may optionally specify a string length and an allocator to be described [later](#allocator-classes). Otherwise, the length of the JSON string is determined and the yyjson default allocator is used.
 
-If the read option has the [`ReadInsitu`](https://ibireme.github.io/yyjson/doc/doxygen/html/api.html#yyjson_read_insitu) flag, You must specify the JSON string as writable (`std::string&` or `char*`) and its length. This writable string must be padded at least [`YYJSON_PADDING_SIZE`](https://ibireme.github.io/yyjson/doc/doxygen/html/yyjson_8h.html#abbe8e69f634b1a5a78c1dae08b88e0ef) bytes to the end. The length of the JSON string should be unpadded.
+If the read option has the [`ReadInsitu`](https://ibireme.github.io/yyjson/doc/doxygen/html/api.html#yyjson_read_insitu) flag, you must specify the JSON string as writable (`std::string&` or `char*`) and its length. This writable string must be padded at least [`YYJSON_PADDING_SIZE`](https://ibireme.github.io/yyjson/doc/doxygen/html/yyjson_8h.html#abbe8e69f634b1a5a78c1dae08b88e0ef) bytes to the end. The length of the JSON string should be unpadded.
 
 To read a JSON string into a C++ object without the immutable JSON value, see [`yyjson::read<T>`](#reading-a-json-string-into-a-c-object-directly).
 
-If the read fails, the `read` function throws `yyjson::read_error`. Its `code()` member function returns the [`yyjson_read_code`](https://ibireme.github.io/yyjson/doc/doxygen/html/yyjson_8h.html) of the failure, so that the caller can tell a failed allocation (`YYJSON_READ_ERROR_MEMORY_ALLOCATION`) from a malformed input. A `read_error` that is constructed from a message alone returns `YYJSON_READ_SUCCESS`.
+If the read fails, the `read` function throws `yyjson::read_error`. Its `what()` tells the position of the error, as `at line 1, column 7, pos 6` with yyjson 0.10.0 or later and as `at pos 6` before, and its `code()` member function returns the [`yyjson_read_code`](https://ibireme.github.io/yyjson/doc/doxygen/html/yyjson_8h.html) of the failure, so that the caller can tell a failed allocation (`YYJSON_READ_ERROR_MEMORY_ALLOCATION`) from a malformed input. A `read_error` that is constructed from a message alone returns `YYJSON_READ_SUCCESS`.
+
+#### `yyjson::cast`
+
+```cpp
+template <typename T, typename Json>
+T cast(const Json& json);
+template <typename T, typename Json>
+T cast(const Json& json, yyjson::strict_t);
+```
+
+`yyjson::cast<T>(json)` is the same as `json.cast<T>()` and converts a JSON value of either API, or a [`json_view`](#reading-a-json-value-in-a-caster), to `T` by the [conversion rules](#conversion-rules). It throws `yyjson::bad_cast` when the value cannot be converted, and the second form reads by the rules of [strict reading](#strict-reading).
 
 #### `yyjson::reader::value`
 
@@ -306,6 +319,8 @@ decltype(auto) inspect(Visitor&& visitor) const;
 // Cast
 template<typename T>
 T cast<T>() const;
+template<typename T>
+T cast<T>(yyjson::strict_t) const;
 template<typename T>
 explicit operator T() const;
 
@@ -514,13 +529,15 @@ yyjson::reader::const_array_iter cend() const;
 yyjson::reader::const_array_iter end() const;
 yyjson::reader::const_value_ref front() const;
 yyjson::reader::const_value_ref back() const;
-yyjson::reader::const_value_ref operator[](std::size_t) const;
+yyjson::reader::const_value_ref operator[](std::size_t) const;  // Note: the index is not checked
 std::size_t size() const;
 bool empty() const;
 
 // Cast
 template<typename T>
 T cast<T>() const;
+template<typename T>
+T cast<T>(yyjson::strict_t) const;
 template<typename T>
 explicit operator T() const;
 
@@ -549,7 +566,7 @@ std::string_view json_str = R"([0, "1", 2.0])";
 auto val = read(json_str);
 assert(val.is_array());
 
-// NOTE: Prior to C++23 (P2644R1), range-based for loop for temporal std::optional
+// NOTE: Prior to C++23 (P2644R1), range-based for loop for temporary std::optional
 // instance requires initializer because std::optional<T>::value() returns T&&.
 // for (const auto& v : *val.as_array()) { ... }             // 💀 UB
 for (const auto arr = *val.as_array(); const auto& v : arr)  // ✅ OK
@@ -588,7 +605,7 @@ yyjson::reader::const_object_iter begin() const;
 yyjson::reader::const_object_iter cend() const;
 yyjson::reader::const_object_iter end() const;
 yyjson::reader::const_object_iter find(std::string_view key) const;     // Note: O(N)
-yyjson::reader::const_value_ref operator[](std::string_view key) const; // Note: O(N)
+yyjson::reader::const_value_ref operator[](std::string_view key) const; // Note: O(N), throw std::out_of_range if a key is not found
 std::size_t size() const;
 bool empty() const;
 bool contains(std::string_view key) const;  // Note: O(N)
@@ -596,6 +613,8 @@ bool contains(std::string_view key) const;  // Note: O(N)
 // Cast
 template<typename T>
 T cast<T>() const;
+template<typename T>
+T cast<T>(yyjson::strict_t) const;
 template<typename T>
 explicit operator T() const;
 
@@ -679,8 +698,8 @@ template <object_constructible T>
 yyjson::value(T&&, [yyjson::copy_string_t]);
 
 // std::initializer_list
-yyjson::value(std::initialize_list<yyjson::value>);
-yyjson::value(std::initialize_list<yyjson::writer::key_value_pair>, [yyjson::copy_string_t]);
+yyjson::value(std::initializer_list<yyjson::value>);
+yyjson::value(std::initializer_list<yyjson::writer::key_value_pair>, [yyjson::copy_string_t]);
 
 // Copy from other JSON classes
 using reference_types = yyjson::{reader,writer}::[const_]{value,array,object}[_ref];
@@ -743,6 +762,8 @@ yyjson::value& yyjson::value::operator=(pair_like<T, yyjson::copy_string_t>);
 // Cast
 template<typename T>
 T cast<T>() const;
+template<typename T>
+T cast<T>(yyjson::strict_t) const;
 template<typename T>
 explicit operator T() const;
 
@@ -815,7 +836,7 @@ template <array_constructible T>
 yyjson::array(array_constructible, [yyjson::copy_string]);
 
 // std::initializer_list
-yyjson::array(std::initialize_list<value>);
+yyjson::array(std::initializer_list<value>);
 
 // Copy from other JSON classes
 // throw yyjson::bad_cast if the JSON value is not convertible to a JSON array
@@ -846,8 +867,8 @@ yyjson::writer::const_value_ref front() const;
 yyjson::writer::value_ref front();
 yyjson::writer::const_value_ref back() const;
 yyjson::writer::value_ref back();
-yyjson::writer::const_value_ref operator[](std::size_t) const;  // Note: O(N)
-yyjson::writer::value_ref operator[](std::size_t);              // Note: O(N)
+yyjson::writer::const_value_ref operator[](std::size_t) const;  // Note: O(N), the index is not checked
+yyjson::writer::value_ref operator[](std::size_t);              // Note: O(N), the index is not checked
 std::size_t size() const;
 bool empty() const;
 void erase(std::size_t);
@@ -880,6 +901,8 @@ yyjson::array& operator=(pair_like<T, yyjson::copy_string_t>);
 // Cast
 template<typename T>
 T cast<T>() const;
+template<typename T>
+T cast<T>(yyjson::strict_t) const;
 template<typename T>
 explicit operator T() const;
 
@@ -945,7 +968,7 @@ template <object_constructible T>
 yyjson::object(object_constructible, [yyjson::copy_string]);
 
 // std::initializer_list
-yyjson::object(std::initialize_list<yyjson::writer::key_value_pair>);
+yyjson::object(std::initializer_list<yyjson::writer::key_value_pair>);
 
 // Copy from other JSON classes
 // throw yyjson::bad_cast if the JSON value is not convertible to a JSON object
@@ -1008,6 +1031,8 @@ yyjson::object& operator=(pair_like<T, yyjson::copy_string_t>);
 template<typename T>
 T cast<T>() const;
 template<typename T>
+T cast<T>(yyjson::strict_t) const;
+template<typename T>
 explicit operator T() const;
 
 // Output JSON string
@@ -1028,7 +1053,7 @@ std::ranges::range_value_t<const yyjson::object&> -> yyjson::writer::const_key_v
 
 The `yyjson::object` is also designed to be implemented like STL map containers and to allow easy insertion of an empty array and object with `yyjson::empty_array` and `yyjson::empty_object` tag type values, respectively. These special modifiers also have a different return type, which is not an object iterator but a reference to a newly inserted empty array/object of type `yyjson::writer::array_ref` or `yyjson::writer::object_ref`. These are introduced to optimize the performance by not creating a new JSON array/object; see also the [performance best practices](#performance-best-practices) section.
 
-Iterator classes are not exposed. They are tentatively described as `obejct_iter` and `const_object_iter` in the above.
+Iterator classes are not exposed. They are tentatively described as `object_iter` and `const_object_iter` in the above.
 
 > [!NOTE]
 > The `emplace` member functions do **NOT** check for key duplication.
@@ -1097,7 +1122,7 @@ using namespace yyjson;
 auto alc = dynamic_allocator();
 
 // Read JSON string using dynamic allocator
-auto read_json(const string& json)
+auto read_json(std::string_view json)
 {
     return read(json, alc);
 }
@@ -1447,7 +1472,7 @@ Each row below is a `yyjson::bad_cast` that the same read without `yyjson::stric
 | `null` as the value of a `std::optional<U>` field whose `U` does not read `null` | the field keeps its value in `T()`, which is `std::nullopt` unless a default member initializer gives it another | `std::optional<U> is not constructible from null under yyjson::strict` |
 
 *   A `std::optional` field may be left out of the object, but its value must not be `null`: a field whose value may be `null` has a type that reads `null` as a value, such as `std::variant<std::monostate, U>`, `std::shared_ptr` or `std::nullptr_t`, which still take it. A `std::optional<U>` whose `U` is such a type takes `null` as without `yyjson::strict`: a `std::optional<std::shared_ptr<int>>` field gets a value that holds an empty pointer. So does a `std::optional<U>` whose `U` has a [user-defined caster](#user-defined-casters) or a translator, since the library cannot tell whether that caster reads `null`.
-*   A field with a default member initializer, such as `int retries = 3;`, still needs its key. Annotate it with `yyjson::optional_key`, [below](#strict-reading), to let the object leave the key out.
+*   A field with a default member initializer, such as `int retries = 3;`, still needs its key. Annotate it with `yyjson::optional_key`, below, to let the object leave the key out.
 *   `merge_into` lets the object leave out any key and gives `null` its meaning of a merge patch, which resets the field, in the objects that it merges into. It still rejects an unknown key and a repeated key or element. A value that replaces a field, such as the array of a `std::vector`, is read as `read_into` reads it with `yyjson::strict`.
 *   The tag key of an [internally tagged variant](#tagged-variants) is a key of the alternative's object, and the key of an adjacent tag is a key of the struct that has it. The struct of the alternative checks the tag key as a key of its own, so an alternative that a user-defined caster reads does not have it checked twice. An untagged `std::variant` takes the first alternative that the strict read accepts, so `std::variant<Circle, Rect>` reads `{"w":1,"h":2}` as `Rect` with `yyjson::strict` and as `Circle` without it.
 *   A key that `yyjson::additional_properties(true)` lets the object have is ignored as a whole, also when it appears twice.
