@@ -1515,9 +1515,9 @@ struct items
 | Setting | The field | Constrains |
 | --- | --- | --- |
 | `yyjson::items(settings...)` | a range read from a JSON array, such as `std::vector`, `std::array`, `std::set` and a map from an array of pairs | each element |
-| `yyjson::additional_properties(settings...)` | a map | each value |
+| `yyjson::additional_properties(settings...)` | a map, or another [range of key-value pairs](conversions.md#conversion-rules) such as `std::vector<std::pair<std::string, int>>` | each value |
 
-`settings` are one or more of the [constraints](#constraints), and [`yyjson::items`](#yyjsonitems), [`yyjson::prefix_items`](#yyjsonprefix_items), [`yyjson::contains`](#yyjsoncontains-yyjsonmin_contains-yyjsonmax_contains), [`yyjson::property_names`](#yyjsonproperty_names) or `yyjson::additional_properties(settings...)` for the elements of the elements. Key settings such as `yyjson::rename`, a setting given twice at one level, `yyjson::items` on a string or on a map read from a JSON object, and `yyjson::additional_properties(settings...)` on a range that is not a map are compile errors. An element that is a `std::optional` is checked through the value that it holds, and a `std::optional` field through the range that it holds. `yyjson::validate<f>` takes the type of the element, or the type that a `std::optional` element holds; the element of a map from an array of pairs is `std::pair<const Key, Value>`.
+`settings` are one or more of the [constraints](#constraints), and [`yyjson::items`](#yyjsonitems), [`yyjson::prefix_items`](#yyjsonprefix_items), [`yyjson::contains`](#yyjsoncontains-yyjsonmin_contains-yyjsonmax_contains), [`yyjson::property_names`](#yyjsonproperty_names) or `yyjson::additional_properties(settings...)` for the elements of the elements. Key settings such as `yyjson::rename`, a setting given twice at one level, `yyjson::items` on a string or on a range of key-value pairs, which is read from a JSON object, `yyjson::additional_properties(settings...)` on a range that is neither a map nor a range of key-value pairs, and either of them without a setting are compile errors. An element that is a `std::optional` is checked through the value that it holds, and a `std::optional` field through the range that it holds. `yyjson::validate<f>` takes the type of the element, or the type that a `std::optional` element holds; the element of a map from an array of pairs is `std::pair<const Key, Value>`.
 
 ```cpp
 struct Scores
@@ -1594,7 +1594,7 @@ struct max_contains
 };
 ```
 
-`yyjson::contains(settings...)` takes the same settings as [`yyjson::items`](#yyjsonitems), and constrains a range read from a JSON array. The range must have at least `min_contains` elements that satisfy `settings`, and at most `max_contains`. Without `yyjson::min_contains`, the minimum is 1, so an empty range is rejected; `yyjson::min_contains(0)` accepts it. `yyjson::min_contains` and `yyjson::max_contains` without `yyjson::contains` are compile errors.
+`yyjson::contains(settings...)` takes the same settings as [`yyjson::items`](#yyjsonitems), and constrains a range read from a JSON array. The range must have at least `min_contains` elements that satisfy `settings`, and at most `max_contains`. Without `yyjson::min_contains`, the minimum is 1, so an empty range is rejected; `yyjson::min_contains(0)` accepts it. `yyjson::min_contains` and `yyjson::max_contains` without `yyjson::contains`, and `yyjson::contains()` without a setting, are compile errors. JSON Schema's `contains: {}`, which every element satisfies, bounds the number of the elements: use [`yyjson::min_items` and `yyjson::max_items`](#constraints) for it.
 
 ```cpp
 struct Team
@@ -1624,7 +1624,7 @@ struct property_names
 };
 ```
 
-`settings` are one or more of the [constraints](#constraints) that apply to the key type of the map, such as `yyjson::max_length`, `yyjson::pattern` and `yyjson::validate<f>`, whose `f` takes the key type. The map must be read from a JSON object; a range that is not a map, and a map read from an array of pairs, are compile errors.
+`settings` are one or more of the [constraints](#constraints) that apply to the key type of the map, such as `yyjson::max_length`, `yyjson::pattern` and `yyjson::validate<f>`, whose `f` takes the key type. The field must be a map or another [range of key-value pairs](conversions.md#conversion-rules), such as `std::vector<std::pair<std::string, int>>`, which are read from JSON objects; a map whose keys are neither strings nor enumerations, which is read from an array of pairs, is a compile error. A sequence of pairs that is read from an array of `[key, value]` pairs is checked too, and its error is reported at the field.
 
 ```cpp
 struct Labels
