@@ -1,22 +1,27 @@
+[Documentation](README.md) › Guide
+
 # Guide
 
-This guide shows how to do common tasks with cpp-yyjson, one task at a time, with the shortest code that does it. Each example assumes `#include "cpp_yyjson.hpp"` and the standard headers that it uses. The details are in [Converting C++ types](conversions.md), [Validation and errors](validation.md) and the [Reference](reference.md). Questions about behavior that are not tasks, such as whether a document can be shared between threads, are answered in the [FAQ](faq.md).
+This guide shows how to do common tasks with cpp-yyjson, one task per section, with the shortest code that does it. It uses both APIs of the library: the *data binding API* (`yyjson::read<T>` and `yyjson::write`) converts JSON to and from C++ types, and the *DOM API* (`yyjson::read(json)`) reads JSON of any shape into a document. If you have not used the library yet, start with the [Quick start](quick-start.md).
+
+Each example assumes `#include "cpp_yyjson.hpp"` and the standard headers that it uses. The rules behind the examples are in [Converting C++ types](conversions.md), [Validation and errors](validation.md) and the [API reference](reference.md). Questions about behavior that are not tasks, such as whether a document can be shared between threads, are answered in the [FAQ](faq.md).
 
 ## Contents
 
-*   [Getting started](#getting-started)
-    *   [Add cpp-yyjson to a CMake project](#add-cpp-yyjson-to-a-cmake-project)
-    *   [Read JSON into a struct and write it back](#read-json-into-a-struct-and-write-it-back)
+*   [Files, output and errors](#files-output-and-errors)
     *   [Read a JSON file](#read-a-json-file)
     *   [Write JSON to a file](#write-json-to-a-file)
-    *   [Handle errors](#handle-errors)
     *   [Print a JSON value](#print-a-json-value)
-*   [Shaping the JSON](#shaping-the-json)
+    *   [Handle errors](#handle-errors)
+*   [Keys and fields](#keys-and-fields)
     *   [Use a JSON key other than the member name](#use-a-json-key-other-than-the-member-name)
     *   [Leave a member out of the JSON](#leave-a-member-out-of-the-json)
     *   [Give a field a default value](#give-a-field-a-default-value)
     *   [Write a field only when it has a value](#write-a-field-only-when-it-has-a-value)
     *   [Keep null as a value](#keep-null-as-a-value)
+    *   [Map every key to another naming convention](#map-every-key-to-another-naming-convention)
+    *   [Keep the keys that the struct does not have](#keep-the-keys-that-the-struct-does-not-have)
+*   [Types](#types)
     *   [Read and write an enumeration](#read-and-write-an-enumeration)
     *   [Read an object whose keys are not known in advance](#read-an-object-whose-keys-are-not-known-in-advance)
     *   [Choose a variant alternative by a `"type"` member](#choose-a-variant-alternative-by-a-type-member)
@@ -24,8 +29,6 @@ This guide shows how to do common tasks with cpp-yyjson, one task at a time, wit
     *   [Convert a class with private members](#convert-a-class-with-private-members)
     *   [Convert dates and times](#convert-dates-and-times)
     *   [Keep a member of unknown shape](#keep-a-member-of-unknown-shape)
-    *   [Map every key to another naming convention](#map-every-key-to-another-naming-convention)
-    *   [Keep the keys that the struct does not have](#keep-the-keys-that-the-struct-does-not-have)
 *   [Validating](#validating)
     *   [Reject unknown, missing or repeated keys](#reject-unknown-missing-or-repeated-keys)
     *   [Require a key](#require-a-key)
@@ -50,32 +53,7 @@ This guide shows how to do common tasks with cpp-yyjson, one task at a time, wit
     *   [Reuse the output string when writing many objects](#reuse-the-output-string-when-writing-many-objects)
 *   [What cpp-yyjson does not do](#what-cpp-yyjson-does-not-do)
 
-## Getting started
-
-### Add cpp-yyjson to a CMake project
-
-Fetch the repository with CMake's `FetchContent` and link the target `cpp_yyjson::cpp_yyjson`. [Installation](../README.md#installation) gives the snippet, the requirements and the CMake options.
-
-### Read JSON into a struct and write it back
-
-`yyjson::read<T>` reads a JSON string into any type that the library converts, and `yyjson::write` writes one back. An aggregate struct is converted by its field names, with no macro:
-
-```cpp
-struct User
-{
-    std::string name;
-    int age = 0;
-    std::vector<std::string> roles;
-};
-
-auto user = yyjson::read<User>(R"({"name":"Ann","age":30,"roles":["admin"]})");
-// -> User{"Ann", 30, {"admin"}}
-auto json = yyjson::write(user);
-// -> {"name":"Ann","age":30,"roles":["admin"]}
-auto pretty = yyjson::write(user, yyjson::WriteFlag::Pretty);
-```
-
-`write` returns a `yyjson::json_string`, which is a `std::string_view` that owns its buffer. Construct a `std::string` from it to keep the text in one. [Converting C++ types](conversions.md) lists the types that convert.
+## Files, output and errors
 
 ### Read a JSON file
 
@@ -115,6 +93,18 @@ void save_config(const std::filesystem::path& path, const Config& config)
 }
 ```
 
+### Print a JSON value
+
+The values of the DOM API have no `operator<<`. Write them with `write()`, or format them, since they are formattable with `std::format`:
+
+```cpp
+auto doc = yyjson::read(R"({"a":[1,2]})");
+std::cout << doc.write() << '\n';
+// -> {"a":[1,2]}
+std::cout << std::format("{}", doc) << '\n';
+// -> {"a":[1,2]}
+```
+
 ### Handle errors
 
 Text that is not JSON throws `yyjson::read_error`, and JSON that does not fit the type throws `yyjson::bad_cast`. Both derive from `std::runtime_error`, and `bad_cast` tells where the value is:
@@ -143,19 +133,7 @@ catch (const yyjson::bad_cast& e)
 
 The library reports every failure with an exception; [Errors](validation.md#errors) lists them. To return the error instead, wrap the call in a function that catches it, for example one that returns `std::expected`.
 
-### Print a JSON value
-
-The values of the DOM API have no `operator<<`. Write them with `write()`, or format them, since they are formattable with `std::format`:
-
-```cpp
-auto doc = yyjson::read(R"({"a":[1,2]})");
-std::cout << doc.write() << '\n';
-// -> {"a":[1,2]}
-std::cout << std::format("{}", doc) << '\n';
-// -> {"a":[1,2]}
-```
-
-## Shaping the JSON
+## Keys and fields
 
 ### Use a JSON key other than the member name
 
@@ -177,7 +155,7 @@ auto item = yyjson::read<Item>(R"({"@id":"x1","displayName":"First"})");
 // -> Item{"x1", "First"}
 ```
 
-Details: [Annotations: JSON keys and skipped fields](conversions.md#annotations-json-keys-and-skipped-fields).
+Details: [JSON keys](conversions.md#json-keys).
 
 ### Leave a member out of the JSON
 
@@ -248,6 +226,31 @@ auto patch = yyjson::read<Patch>(R"({"nickname":null})");
 auto json = yyjson::write(patch);
 // -> {"nickname":null}
 ```
+
+### Map every key to another naming convention
+
+There is no setting that renames all the keys of a struct, such as from `snake_case` to `camelCase`. Rename each field that differs, in `yyjson::annotations<T>` or with C++26 annotations on the members, as in [Use a JSON key other than the member name](#use-a-json-key-other-than-the-member-name).
+
+### Keep the keys that the struct does not have
+
+A struct ignores the keys that it has no field for, and there is no field that collects them. When the program needs them, read a document, cast it, and look at the keys of the document:
+
+```cpp
+struct User
+{
+    std::string name;
+};
+
+auto doc = yyjson::read(R"({"name":"Ann","theme":"dark"})");
+auto user = doc.cast<User>();
+for (const auto& [key, value] : *doc.as_object())
+{
+    if (key != "name") std::cout << key << " = " << value.write() << '\n';
+}
+// -> theme = "dark"
+```
+
+## Types
 
 ### Read and write an enumeration
 
@@ -364,7 +367,7 @@ auto json = yyjson::write(account);
 // -> {"owner":"Ann","balance":100}
 ```
 
-A class with public members and a constructor of its own can be registered with [`VISITABLE_STRUCT`](conversions.md#structs-registered-with-visitable_struct) instead.
+A class with public members and a constructor of its own can be registered with [`VISITABLE_STRUCT`](conversions.md#visitable_struct) instead.
 
 ### Convert dates and times
 
@@ -408,29 +411,6 @@ auto json = yyjson::write(request);
 ```
 
 Details: [JSON values as fields](conversions.md#json-values-as-fields).
-
-### Map every key to another naming convention
-
-There is no setting that renames all the keys of a struct, such as from `snake_case` to `camelCase`. Rename each field that differs, in `yyjson::annotations<T>` or with C++26 annotations on the members, as in [Use a JSON key other than the member name](#use-a-json-key-other-than-the-member-name).
-
-### Keep the keys that the struct does not have
-
-A struct ignores the keys that it has no field for, and there is no field that collects them. When the program needs them, read a document, cast it, and look at the keys of the document:
-
-```cpp
-struct User
-{
-    std::string name;
-};
-
-auto doc = yyjson::read(R"({"name":"Ann","theme":"dark"})");
-auto user = doc.cast<User>();
-for (const auto& [key, value] : *doc.as_object())
-{
-    if (key != "name") std::cout << key << " = " << value.write() << '\n';
-}
-// -> theme = "dark"
-```
 
 ## Validating
 
@@ -533,7 +513,7 @@ catch (const yyjson::bad_cast& e)
 }
 ```
 
-Details: [Errors of conversion](validation.md#errors-of-conversion).
+Details: [Errors of conversion](validation.md#conversion-errors).
 
 ### Check at compile time that a type converts
 
@@ -555,7 +535,7 @@ static_assert(yyjson::readable<Point> && yyjson::writable<Point>);
 static_assert(!yyjson::readable<Event> && !yyjson::writable<Event>);  // sys_seconds needs a caster
 ```
 
-A call with a type that does not convert fails to compile with a message that names the first field that does not; see [Compile errors](validation.md#compile-errors-of-types-that-cannot-be-converted).
+A call with a type that does not convert fails to compile with a message that names the first field that does not; see [Compile errors](validation.md#compile-errors).
 
 ## JSON of any shape
 
@@ -572,7 +552,7 @@ if (auto age = obj["age"].as_int()) std::cout << *age << '\n';
 for (const auto& tag : *obj["tags"].as_array()) std::cout << *tag.as_string() << '\n';
 ```
 
-`operator[]` of an object throws `std::out_of_range` for a missing key, and `find` returns `end()` instead. Both take time linear in the number of members. The DOM classes are listed in the [Reference](reference.md#dom-api).
+`operator[]` of an object throws `std::out_of_range` for a missing key, and `find` returns `end()` instead. Both take time linear in the number of members. The DOM classes are listed in the [Reference](reference.md#dom-classes).
 
 ### Read only a few members of a large document
 
@@ -629,7 +609,7 @@ auto json = doc.write();
 // -> {"age":31,"city":"Kyoto"}
 ```
 
-Details: [Mutable JSON classes](reference.md#mutable-json-classes).
+Details: [`yyjson::value`](reference.md#yyjsonvalue).
 
 ### Build JSON without a C++ type
 

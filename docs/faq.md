@@ -1,3 +1,5 @@
+[Documentation](README.md) › FAQ
+
 # FAQ
 
 Short answers to questions about behavior that is not a single task, with links to the details. For tasks, see the [Guide](guide.md).
@@ -30,7 +32,7 @@ A type reads only the JSON kinds that the [Conversion rules](conversions.md#conv
 
 ### Why can a struct not hold a `std::string_view`?
 
-The strings that `read<T>` reads point into buffers that it frees before it returns, such as the unescaped copy of the text or a temporary document. A `std::string_view` or `const char*` in `T` would therefore point to freed memory. The read fails to compile with a `static_assert` that says so. Use `std::string`, or keep a document and read its strings through the [DOM API](reference.md#dom-api).
+The strings that `read<T>` reads point into buffers that it frees before it returns, such as the unescaped copy of the text or a temporary document. A `std::string_view` or `const char*` in `T` would therefore point to freed memory. The read fails to compile with a `static_assert` that says so. Use `std::string`, or keep a document and read its strings through the [DOM classes](reference.md#dom-classes).
 
 ## Writing
 
@@ -65,7 +67,7 @@ The usual causes:
 *   The struct is not an aggregate, for example because it has private members: see [Convert a class with private members](guide.md#convert-a-class-with-private-members).
 *   An annotation is wrong, such as a field renamed twice or a constraint on a type it does not apply to; these fail with a `static_assert` that names the problem.
 
-`yyjson::readable<T>` and `yyjson::writable<T>` [check a type](guide.md#check-at-compile-time-that-a-type-converts) without a call. The full list is in [Compile errors](validation.md#compile-errors-of-types-that-cannot-be-converted).
+`yyjson::readable<T>` and `yyjson::writable<T>` [check a type](guide.md#check-at-compile-time-that-a-type-converts) without a call. The full list is in [Compile errors](validation.md#compile-errors).
 
 ### Can I use cpp-yyjson without exceptions?
 
@@ -91,7 +93,7 @@ Yes, as long as the threads do not share what they modify:
 
 ### Is cpp-yyjson header-only?
 
-The C++ interface is a single header, `cpp_yyjson.hpp`, but it needs the yyjson backend, which CMake compiles from `src/yyjson.c` into a static library. Link `cpp_yyjson::cpp_yyjson` and CMake takes care of both; see [Add cpp-yyjson to a CMake project](guide.md#add-cpp-yyjson-to-a-cmake-project).
+The C++ interface is a single header, `cpp_yyjson.hpp`, but it needs the yyjson backend, which CMake compiles from `src/yyjson.c` into a static library. Link `cpp_yyjson::cpp_yyjson` and CMake takes care of both; see [Installation](../README.md#installation).
 
 ### Can I use the yyjson that my project already has?
 
