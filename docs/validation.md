@@ -230,10 +230,50 @@ yyjson::read<Survey>(R"({"groups":[["a"],["b",""],[]]})");
 ```
 
 *   The message starts with `an element of the value of the key "k" of T` for an element at any level, and for a value of a map. The path points at the element: `/limits/b` for the value of the key `b`, and `/by_id/1/1` for a map whose keys are not strings, which is read from an array of `[key, value]` pairs.
-*   The element of a set, an unordered set or an unordered map is found in the JSON in its order, so the path is exact for them too. An element that did not come from the JSON, such as a value of a map that `merge_into` keeps, is reported at the field with `has a value that does not satisfy the constraints of yyjson::additional_properties` (or `has an element that does not satisfy the constraints of yyjson::items`).
+*   The element of a set, an unordered set or an unordered map is found in the JSON in its order, so the path is exact for them too. An element that did not come from the JSON, such as a value of a map that `merge_into` keeps, is reported at the field with `has a value that does not satisfy the constraints of yyjson::additional_properties` (or `has an element that does not satisfy the constraints of yyjson::items`, `has a key that does not satisfy the constraints of yyjson::property_names`).
 *   An element that is a `std::optional` is checked through the value that it holds, and a `std::optional` field of a range through the range. `yyjson::validate<f>` takes the type of the element, or the type that a `std::optional` element holds. The element of a map from an array of pairs is `std::pair<const Key, Value>`.
 *   `yyjson::items` constrains a range that is read from a JSON array, and not a string or a map read from a JSON object. A map whose keys are neither strings nor enumerations is read from an array of `[key, value]` pairs, and takes both: `yyjson::items` for its pairs, and `yyjson::additional_properties(settings...)` for its values. `yyjson::additional_properties(settings...)` constrains a map only, and not a range of pairs such as `std::vector<std::pair<int, int>>`. `yyjson::additional_properties(false)` of a struct, described in [Annotations of keys](#annotations-of-keys), is the same keyword as in JSON Schema, where `false` is the schema that rejects every value.
 *   With [C++26 annotations](conversions.md#c26-annotations), write `[[=yyjson::items(yyjson::minimum(0))]]` on the member.
+
+Four more settings constrain the elements as a whole, the positions of an array, and the keys of a map, as the JSON Schema keywords `uniqueItems`, `prefixItems`, `contains`, `minContains`, `maxContains` and `propertyNames` do. Each of them can also be given in `yyjson::items`, `yyjson::additional_properties(settings...)` and the others, for the elements of the elements:
+
+| Setting | The field | Rejects a value | Message | Path |
+| --- | --- | --- | --- | --- |
+| `yyjson::unique_items` | a range whose elements may be equal, such as `std::vector` | with an element that is equal to an earlier one by `operator==` | `an element of the value of the key "k" of T is equal to an earlier element` | the later element |
+| `yyjson::prefix_items(p...)` | a tuple, or a range read from a JSON array in its order | whose element `i` does not satisfy the settings `p` at position `i` | `an element of the value of the key "k" of T`, followed by the text of the constraint | the element |
+| `yyjson::contains(s...)` with `yyjson::min_contains(n)` and `yyjson::max_contains(m)` | a range read from a JSON array | with fewer than `n`, or more than `m`, elements that satisfy `s`; `n` is 1 without `yyjson::min_contains` | `the value of the key "k" of T has no item that satisfies the constraints of yyjson::contains`, or `has fewer than n items ...`, `has more than m items ...` | the field |
+| `yyjson::property_names(s...)` | a map read from a JSON object | with a key that does not satisfy `s` | `a key of the value of the key "k" of T`, followed by the text of the constraint | the value of the member of the key |
+
+```cpp
+struct Job
+{
+    std::vector<std::string> tags;
+    std::tuple<int, int> range;
+    std::vector<int> steps;
+    std::map<std::string, std::string> env;
+};
+template <>
+inline constexpr auto yyjson::annotations<Job> = yyjson::annotate(
+    yyjson::field("tags", yyjson::unique_items),
+    yyjson::field("range", yyjson::prefix_items(yyjson::minimum(0), {yyjson::minimum(0), yyjson::maximum(100)})),
+    yyjson::field("steps", yyjson::contains(yyjson::minimum(10)), yyjson::max_contains(2)),
+    yyjson::field("env", yyjson::property_names(yyjson::pattern("^[A-Z_]+$"))));
+
+yyjson::read<Job>(R"({"tags":["a","b","a"]})");
+// an element of the value of the key "tags" of Job is equal to an earlier element at /tags/2 (line 1, column 18, pos 17)
+yyjson::read<Job>(R"({"range":[0,101]})");
+// an element of the value of the key "range" of Job is greater than the maximum 100 at /range/1 (line 1, column 13, pos 12)
+yyjson::read<Job>(R"({"steps":[10,20,30]})");
+// the value of the key "steps" of Job has more than 2 items that satisfy the constraints of yyjson::contains at /steps (line 1, column 10, pos 9)
+yyjson::read<Job>(R"({"env":{"PATH":"/bin","home":"/root"}})");
+// a key of the value of the key "env" of Job does not match the pattern "^[A-Z_]+$" at /env/home (line 1, column 30, pos 29)
+```
+
+*   `yyjson::unique_items` compares the elements after they are converted, by their `operator==`: `0.0` and `-0.0` are equal, NaN is equal to nothing, and two `float` elements that the conversion rounds to the same value are equal. A range of more than 16 elements is sorted to find the equal ones when its elements are floating-point numbers or have a `<=>` that gives `std::weak_ordering` or `std::strong_ordering`, as integers, strings and enumerations do. Otherwise every pair is compared, which takes time quadratic in the number of the elements. That includes elements whose `<=>` gives `std::partial_ordering`, such as `std::optional<double>`, `std::pair<int, double>` and a struct with a `double` member and a defaulted `<=>`, and elements with only `operator<`; bound the size of such a range with `yyjson::max_items` when it is read from untrusted JSON. A set or a map, whose elements are unique by construction, does not take it; [`yyjson::strict`](#strict-reading) rejects the JSON that repeats an element or a key of them.
+*   `yyjson::prefix_items` takes one braced list of settings for each position, `{}` for a position without settings, or a single setting without braces, as in `yyjson::prefix_items({yyjson::minimum(0)}, {}, yyjson::max_length(8))`. An array may have fewer elements than positions. With `yyjson::items` on the same field, `yyjson::items` constrains only the elements after the prefix, as in JSON Schema 2020-12. A tuple takes a position for each of its elements at most, each checked as its own type.
+*   `yyjson::contains` is reported at the field, because no single element breaks it. `yyjson::min_contains(0)` accepts a range in which no element satisfies the settings, the empty range included.
+*   `yyjson::property_names` checks the key after it is converted to the key type of the map, which `yyjson::validate<f>` takes. When the key type is not constructible from `std::string_view`, such as an enumeration, the error is reported at the field.
+*   With [C++26 annotations](conversions.md#c26-annotations), write `[[=yyjson::unique_items]]`, `[[=yyjson::prefix_items({yyjson::minimum(0)}, {})]]`, `[[=yyjson::contains(yyjson::minimum(10)), =yyjson::max_contains(2)]]` and `[[=yyjson::property_names(yyjson::max_length(8))]]` on the member.
 
 ### How constraints are checked
 
@@ -254,8 +294,9 @@ yyjson::read<Survey>(R"({"groups":[["a"],["b",""],[]]})");
 *   `f` of `yyjson::validate<f>` may be called more than once for the same value. When `yyjson::read<T>` rejects the text, it reads the text again through the DOM to tell the error. An exception that `f` throws propagates out of the read.
 *   An untagged `std::variant` tries its alternatives in turn. A value that one alternative rejects by a constraint may therefore be read by a later one: without `yyjson::strict`, a struct that ignores unknown keys accepts almost any object. When no alternative accepts the value, the `yyjson::bad_cast` names the variant, such as `std::variant<Circle, Rect> is not constructible from JSON at /shape`, rather than the constraint that each alternative failed. Tag the variant with [`yyjson::internal_tag` or `yyjson::adjacent_tag`](conversions.md#tagged-variants) to read only the alternative that the tag names, and to have its error.
 *   The following fail to compile with a `static_assert`:
-    *   a constraint on a field of a type that it does not apply to, such as `minimum` on a string, `yyjson::items` on a string or on a map read from a JSON object, or `yyjson::additional_properties(settings...)` on a range that is not a map;
+    *   a constraint on a field of a type that it does not apply to, such as `minimum` on a string, `yyjson::items` on a string or on a map read from a JSON object, `yyjson::additional_properties(settings...)` on a range that is not a map, `yyjson::unique_items` on a set or a map, `yyjson::prefix_items` on a set or a map, `yyjson::contains` on a map read from a JSON object, or `yyjson::property_names` on a range that is not a map read from a JSON object;
     *   a setting of a key, such as `yyjson::rename`, in `yyjson::items`, or a setting given twice at one level of it;
+    *   `yyjson::min_contains` or `yyjson::max_contains` without `yyjson::contains`, a setting other than a constraint in `yyjson::property_names`, more positions of `yyjson::prefix_items` than a tuple has elements or than 16, and more than 8 groups of settings in a position of it;
     *   a `validate<f>` whose `f` takes another type;
     *   a bound of NaN, or a `long double` bound that a `double` would round;
     *   a `multiple_of` of `0` or less;
