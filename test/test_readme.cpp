@@ -1,4 +1,3 @@
-#include <charconv>
 #include "test_common.hpp"
 
 // the snippets of README.md, in the order of the README, with their outputs checked
@@ -41,10 +40,11 @@ namespace readme
         std::string name;
     };
 
-    struct Color
+    struct Point
     {
-        std::uint8_t r, g, b;
-        bool operator==(const Color&) const = default;
+        double x;
+        double y;
+        bool operator==(const Point&) const = default;
     };
 
     template <typename F>
@@ -77,26 +77,10 @@ inline constexpr auto yyjson::annotations<readme::Thing> =
     yyjson::annotate(yyjson::field("context", yyjson::rename("@context")));
 
 template <>
-struct yyjson::caster<readme::Color>
+struct yyjson::caster<readme::Point>
 {
-    // "#rrggbb"
-    static readme::Color from_json(std::string_view hex)
-    {
-        if (hex.size() != 7 || hex[0] != '#') throw yyjson::bad_cast("Color is not constructible from JSON");
-        const auto byte = [&](std::size_t i) {
-            const auto* first = hex.data() + i;
-            auto v = std::uint8_t();
-            const auto [end, ec] = std::from_chars(first, first + 2, v, 16);
-            if (ec != std::errc() || end != first + 2) throw yyjson::bad_cast("Color is not constructible from JSON");
-            return v;
-        };
-        return {byte(1), byte(3), byte(5)};
-    }
-    template <typename... Ts>
-    static std::string to_json(const readme::Color& c, Ts...)
-    {
-        return std::format("#{:02x}{:02x}{:02x}", c.r, c.g, c.b);
-    }
+    static readme::Point from_json(const std::array<double, 2>& a) { return {a[0], a[1]}; }
+    static std::array<double, 2> to_json(const readme::Point& p) { return {p.x, p.y}; }
 };
 
 TEST(Readme, QuickLook)
@@ -255,10 +239,10 @@ TEST(Readme, KeysAndCasters)
     EXPECT_EQ(thing.context, "https://schema.org");
     EXPECT_EQ(thing.name, "x");
 
-    auto colors = yyjson::read<std::vector<readme::Color>>(R"(["#ff8000","#000000"])");
-    EXPECT_EQ(colors, (std::vector{readme::Color{0xff, 0x80, 0x00}, readme::Color{0, 0, 0}}));
-    auto json = yyjson::write(colors);
-    EXPECT_EQ(json, R"(["#ff8000","#000000"])");
+    auto line = yyjson::read<std::vector<Point>>("[[0,0],[1.5,2]]");
+    EXPECT_EQ(line, (std::vector{Point{0, 0}, Point{1.5, 2}}));
+    auto json = yyjson::write(line);
+    EXPECT_EQ(json, "[[0.0,0.0],[1.5,2.0]]");
 }
 
 // NOLINTEND
