@@ -1512,8 +1512,9 @@ namespace yyjson
         auto* ptr() & noexcept { return &alc_; }
         const auto* ptr() const& noexcept { return &alc_; }
         stack_pool_allocator() = default;
-        stack_pool_allocator(const stack_pool_allocator&) = default;
-        stack_pool_allocator(stack_pool_allocator&&) noexcept = default;
+        // A copy starts empty on its own buffer: the pool state lives in the buffer it was initialized with.
+        stack_pool_allocator(const stack_pool_allocator&) noexcept : alc_(init()) {}
+        stack_pool_allocator(stack_pool_allocator&&) noexcept : alc_(init()) {}
         stack_pool_allocator& operator=(const stack_pool_allocator&)
         {
             alc_ = init();
