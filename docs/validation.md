@@ -6,7 +6,7 @@ This document describes:
 
 *   what a read checks, and what it does with unknown, missing and repeated keys;
 *   how to reject those keys, and `null` in a `std::optional` field, with [strict reading](#strict-reading);
-*   how to restrict the values of fields with [constraints](#constraints);
+*   how to restrict the values of fields, and of their elements, with [constraints](#constraints);
 *   the [errors](#errors) that the library reports at run time, and the [compile errors](#compile-errors) of types that cannot be converted.
 
 The settings of a field and of a struct go into `yyjson::annotations<T>` or on the members as C++26 annotations, as described in [Annotations](conversions.md#annotations).
@@ -206,6 +206,35 @@ Each constraint applies to a field of the type in the second column. A value tha
 | `yyjson::max_items(n)` | a range or a map | with more than `n` elements | `has more items than the maximum n` |
 | `yyjson::validate<f>` | any | for which `f(value)` returns `false` | `is rejected by yyjson::validate` |
 
+### Constraints of elements
+
+`yyjson::items(settings...)` gives the constraints of each element of a range field, and `yyjson::additional_properties(settings...)` those of each value of a map field, as the keywords `items` and `additionalProperties` of JSON Schema do. They take the constraints above, and `yyjson::items` or `yyjson::additional_properties(settings...)` again for the elements of the elements:
+
+```cpp
+struct Survey
+{
+    std::vector<int> scores;
+    std::map<std::string, int> limits;
+    std::vector<std::vector<std::string>> groups;
+};
+template <>
+inline constexpr auto yyjson::annotations<Survey> = yyjson::annotate(
+    yyjson::field("scores", yyjson::max_items(10), yyjson::items(yyjson::minimum(0), yyjson::maximum(100))),
+    yyjson::field("limits", yyjson::additional_properties(yyjson::maximum(1000))),
+    yyjson::field("groups", yyjson::items(yyjson::min_items(1), yyjson::items(yyjson::max_length(32)))));
+
+yyjson::read<Survey>(R"({"scores":[90,101]})");
+// an element of the value of the key "scores" of Survey is greater than the maximum 100 at /scores/1 (line 1, column 15, pos 14)
+yyjson::read<Survey>(R"({"groups":[["a"],["b",""],[]]})");
+// an element of the value of the key "groups" of Survey has fewer items than the minimum 1 at /groups/2 (line 1, column 27, pos 26)
+```
+
+*   The message starts with `an element of the value of the key "k" of T` for an element at any level, and for a value of a map. The path points at the element: `/limits/b` for the value of the key `b`, and `/by_id/1/1` for a map whose keys are not strings, which is read from an array of `[key, value]` pairs.
+*   The element of a set, an unordered set or an unordered map is found in the JSON in its order, so the path is exact for them too. An element that did not come from the JSON, such as a value of a map that `merge_into` keeps, is reported at the field with `has a value that does not satisfy the constraints of yyjson::additional_properties` (or `has an element that does not satisfy the constraints of yyjson::items`).
+*   An element that is a `std::optional` is checked through the value that it holds, and a `std::optional` field of a range through the range. `yyjson::validate<f>` takes the type of the element, or the type that a `std::optional` element holds. The element of a map from an array of pairs is `std::pair<const Key, Value>`.
+*   `yyjson::items` constrains a range that is read from a JSON array, and not a string or a map read from a JSON object. A map whose keys are neither strings nor enumerations is read from an array of `[key, value]` pairs, and takes both: `yyjson::items` for its pairs, and `yyjson::additional_properties(settings...)` for its values. `yyjson::additional_properties(settings...)` constrains a map only, and not a range of pairs such as `std::vector<std::pair<int, int>>`. `yyjson::additional_properties(false)` of a struct, described in [Annotations of keys](#annotations-of-keys), is the same keyword as in JSON Schema, where `false` is the schema that rejects every value.
+*   With [C++26 annotations](conversions.md#c26-annotations), write `[[=yyjson::items(yyjson::minimum(0))]]` on the member.
+
 ### How constraints are checked
 
 *   The names are those of the keywords of [JSON Schema](https://json-schema.org/understanding-json-schema/reference/numeric), and so is what they accept, except that `pattern` uses the engine that the program gives, as below. A field may have several constraints, but each one once.
@@ -225,11 +254,12 @@ Each constraint applies to a field of the type in the second column. A value tha
 *   `f` of `yyjson::validate<f>` may be called more than once for the same value. When `yyjson::read<T>` rejects the text, it reads the text again through the DOM to tell the error. An exception that `f` throws propagates out of the read.
 *   An untagged `std::variant` tries its alternatives in turn. A value that one alternative rejects by a constraint may therefore be read by a later one: without `yyjson::strict`, a struct that ignores unknown keys accepts almost any object. When no alternative accepts the value, the `yyjson::bad_cast` names the variant, such as `std::variant<Circle, Rect> is not constructible from JSON at /shape`, rather than the constraint that each alternative failed. Tag the variant with [`yyjson::internal_tag` or `yyjson::adjacent_tag`](conversions.md#tagged-variants) to read only the alternative that the tag names, and to have its error.
 *   The following fail to compile with a `static_assert`:
-    *   a constraint on a field of a type that it does not apply to, such as `minimum` on a string;
+    *   a constraint on a field of a type that it does not apply to, such as `minimum` on a string, `yyjson::items` on a string or on a map read from a JSON object, or `yyjson::additional_properties(settings...)` on a range that is not a map;
+    *   a setting of a key, such as `yyjson::rename`, in `yyjson::items`, or a setting given twice at one level of it;
     *   a `validate<f>` whose `f` takes another type;
     *   a bound of NaN, or a `long double` bound that a `double` would round;
     *   a `multiple_of` of `0` or less;
-    *   a constraint on a [skipped field](conversions.md#skipped-fields), or on the field of an [adjacent tag](conversions.md#tagged-variants);
+    *   a constraint, `yyjson::items` or `yyjson::additional_properties(settings...)` on a [skipped field](conversions.md#skipped-fields), or on the field of an [adjacent tag](conversions.md#tagged-variants);
     *   a `pattern` without a specialization of `yyjson::pattern_matcher<>`, described below.
 
 ### Pattern matcher
