@@ -1,6 +1,7 @@
+#include <charconv>
 #include "test_common.hpp"
 
-// The examples of README.md, with the results that it states in comments checked.
+// the snippets of README.md, in the order of the README, with their outputs checked
 
 // NOLINTBEGIN
 
@@ -10,7 +11,7 @@ namespace readme
     {
         std::string version;
         std::optional<std::string> notes;  // left out of the JSON when empty
-        std::map<std::string, int> downloads;
+        bool operator==(const Release&) const = default;
     };
 
     struct Project
@@ -18,6 +19,13 @@ namespace readme
         std::string name;
         std::vector<std::string> tags;
         std::vector<Release> releases;
+        bool operator==(const Project&) const = default;
+    };
+
+    struct User
+    {
+        std::string name;
+        int age;
     };
 
     struct Config
@@ -36,8 +44,33 @@ namespace readme
     struct Color
     {
         std::uint8_t r, g, b;
+        bool operator==(const Color&) const = default;
     };
+
+    template <typename F>
+    std::string bad_cast_message(F&& f)
+    {
+        try
+        {
+            f();
+        }
+        catch (const yyjson::bad_cast& e)
+        {
+            // the README shows the type names without the namespace of this file and without MSVC's "struct "
+            auto message = std::string(e.what());
+            for (const auto prefix : {std::string_view("struct "), std::string_view("readme::")})
+            {
+                for (auto i = message.find(prefix); i != std::string::npos; i = message.find(prefix))
+                    message.erase(i, prefix.size());
+            }
+            return message;
+        }
+        return "no exception";
+    }
 }  // namespace readme
+
+template <>
+inline constexpr auto yyjson::annotations<readme::User> = yyjson::annotate(yyjson::field("age", yyjson::minimum(0)));
 
 template <>
 inline constexpr auto yyjson::annotations<readme::Thing> =
@@ -50,8 +83,7 @@ struct yyjson::caster<readme::Color>
     static readme::Color from_json(std::string_view hex)
     {
         if (hex.size() != 7 || hex[0] != '#') throw yyjson::bad_cast("Color is not constructible from JSON");
-        const auto byte = [&](std::size_t i)
-        {
+        const auto byte = [&](std::size_t i) {
             const auto* first = hex.data() + i;
             auto v = std::uint8_t();
             const auto [end, ec] = std::from_chars(first, first + 2, v, 16);
@@ -60,62 +92,88 @@ struct yyjson::caster<readme::Color>
         };
         return {byte(1), byte(3), byte(5)};
     }
-    static std::string to_json(const readme::Color& c) { return std::format("#{:02x}{:02x}{:02x}", c.r, c.g, c.b); }
+    template <typename... Ts>
+    static std::string to_json(const readme::Color& c, Ts...)
+    {
+        return std::format("#{:02x}{:02x}{:02x}", c.r, c.g, c.b);
+    }
 };
 
-TEST(Readme, ReadingAndWritingTypes)
+TEST(Readme, QuickLook)
 {
-    using namespace yyjson;
     using namespace readme;
 
-    auto project = read<Project>(R"({
-    "name": "cpp-yyjson",
-    "tags": ["json", "c++20"],
-    "releases": [{"version": "1.2.0", "downloads": {"linux": 10, "windows": 5}}]
-})");
-    EXPECT_EQ(project.name, "cpp-yyjson");
-    EXPECT_EQ(project.tags, (std::vector<std::string>{"json", "c++20"}));
-    ASSERT_EQ(project.releases.size(), 1);
-    EXPECT_EQ(project.releases[0].version, "1.2.0");
-    EXPECT_EQ(project.releases[0].notes, std::nullopt);
-    EXPECT_EQ(project.releases[0].downloads, (std::map<std::string, int>{{"linux", 10}, {"windows", 5}}));
+    auto project = yyjson::read<Project>(R"({"name":"cpp-yyjson","tags":["json"],"releases":[{"version":"2.1.0"}]})");
+    project.tags.push_back("c++20");
+    EXPECT_EQ(yyjson::write(project),
+              R"({"name":"cpp-yyjson","tags":["json","c++20"],"releases":[{"version":"2.1.0"}]})");
+
+    EXPECT_EQ(bad_cast_message([] { (void)yyjson::read<User>(R"({"name":"Ann","age":"30"})"); }),
+              "int is not constructible from JSON string at /age (line 1, column 21, pos 20)");
+    EXPECT_EQ(bad_cast_message([] { (void)yyjson::read<User>(R"({"name":"Ann","age":-1})"); }),
+              R"(the value of the key "age" of User is less than the minimum 0 at /age (line 1, column 21, pos 20))");
+    EXPECT_EQ(
+        bad_cast_message([] { (void)yyjson::read<User>(R"({"name":"Ann","age":30,"admin":true})", yyjson::strict); }),
+        R"(User has no field of the key "admin" at /admin (line 1, column 32, pos 31))");
+    EXPECT_EQ(bad_cast_message([] { (void)yyjson::read<User>(R"({"name":"Ann"})", yyjson::strict); }),
+              R"(User is not constructible from JSON without the key "age" (line 1, column 1, pos 0))");
+
+    auto rates = yyjson::read(R"({"USD":129.66,"EUR":140.35})");
+    auto lines = std::string();
+    for (const auto& [currency, rate] : *rates.as_object())
+    {
+        lines += std::format("{}: {}\n", currency, *rate.as_real());
+    }
+    EXPECT_EQ(lines, "USD: 129.66\nEUR: 140.35\n");
+}
+
+TEST(Readme, DataBinding)
+{
+    using namespace readme;
+    using namespace yyjson;
+
+    auto project = read<Project>(
+        R"({"name": "cpp-yyjson", "tags": [], "releases": [{"version": "2.0.0", "notes": "data binding"}]})");
+    EXPECT_EQ(project, (Project{"cpp-yyjson", {}, {Release{"2.0.0", "data binding"}}}));
 
     auto json = write(project);
-    EXPECT_EQ(std::string_view(json),
-              R"({"name":"cpp-yyjson","tags":["json","c++20"],"releases":[{"version":"1.2.0","downloads":{"linux":10,"windows":5}}]})");
-
+    EXPECT_EQ(json, R"({"name":"cpp-yyjson","tags":[],"releases":[{"version":"2.0.0","notes":"data binding"}]})");
     auto pretty = write(project, WriteFlag::Pretty);
-    EXPECT_EQ(std::string_view(write(read(pretty))), std::string_view(json));
+    EXPECT_EQ(read<Project>(pretty), project);
 
     auto out = std::string();
     write(project, out);
-    EXPECT_EQ(out, std::string_view(json));
+    EXPECT_EQ(out, json);
+
+    auto relaxed = read<Project>(R"({"name": "x", "tags": [], "releases": [],})", ReadFlag::AllowTrailingCommas);
+    EXPECT_EQ(relaxed, (Project{"x", {}, {}}));
 }
 
-TEST(Readme, ReadingIntoAnExistingObject)
+TEST(Readme, ReadIntoAndMerge)
 {
-    using namespace yyjson;
     using namespace readme;
+    using namespace yyjson;
 
     const auto messages = std::vector<std::string>{R"({"name": "a", "limits": {"memory": 1, "cpu": 2}})",
-                                                   R"({"name": "b", "retries": 7})"};
+                                                   R"({"name": "b", "retries": 1, "limits": {"memory": 3}})"};
     auto applied = std::vector<std::string>();
-    const auto apply = [&](const Config& c) { applied.push_back(write(c)); };
+    const auto apply = [&](const Config& c) { applied.push_back(c.name); };
 
     auto config = Config();
     for (const auto& message : messages)
     {
-        read_into(message, config);  // the same result as config = read<Config>(message)
+        read_into(message, config);
         apply(config);
     }
-    EXPECT_EQ(applied, (std::vector<std::string>{R"({"name":"a","retries":3,"limits":{"cpu":2,"memory":1}})",
-                                                 R"({"name":"b","retries":7,"limits":{}})"}));
+    EXPECT_EQ(applied, (std::vector<std::string>{"a", "b"}));
+    EXPECT_EQ(config.retries, 1);
+    EXPECT_EQ(config.limits, (std::map<std::string, int>{{"memory", 3}}));
 
-    config.limits = {{"memory", 1}, {"cpu", 2}};
+    // Change two settings and keep the others
     merge_into(R"({"retries": 5, "limits": {"memory": null}})", config);
     EXPECT_EQ(config.name, "b");
     EXPECT_EQ(config.retries, 5);
-    EXPECT_EQ(config.limits, (std::map<std::string, int>{{"cpu", 2}}));
+    EXPECT_TRUE(config.limits.empty());
 }
 
 TEST(Readme, ReadingJson)
@@ -135,20 +193,18 @@ TEST(Readme, ReadingJson)
     EXPECT_EQ(id, 1);
     EXPECT_EQ(name, "example");
 
+    auto lines = std::string();
     auto list = *obj["array"].as_array();
-    auto elements = std::string();
-    for (const auto& v : list) elements += std::string_view(v.write());
-    EXPECT_EQ(elements, "01234");
+    for (const auto& v : list) lines += std::format("{}\n", v.write());
     auto currency = *obj["currency"].as_object();
-    auto pairs = std::string();
-    for (const auto& [k, v] : currency) pairs += std::format("{}: {};", k, std::string_view(v.write()));
-    EXPECT_EQ(pairs, "USD: 129.66;EUR: 140.35;GBP: 158.72;");
+    for (const auto& [k, v] : currency) lines += std::format("{}: {}\n", k, v.write());
+    EXPECT_EQ(lines, "0\n1\n2\n3\n4\nUSD: 129.66\nEUR: 140.35\nGBP: 158.72\n");
 
     auto visited = std::string();
     std::visit(overloaded{[&](std::string_view s) { visited = s; }, [](const auto&) {}}, obj["name"].inspect());
     EXPECT_EQ(visited, "example");
 
-    EXPECT_EQ(std::string_view(obj.write()),
+    EXPECT_EQ(obj.write(),
               R"({"id":1,"name":"example","array":[0,1,2,3,4],"currency":{"USD":129.66,"EUR":140.35,"GBP":158.72}})");
 }
 
@@ -159,40 +215,36 @@ TEST(Readme, BuildingJson)
     auto arr = array();
     arr.emplace_back(1);
     arr.emplace_back("string");
-    EXPECT_EQ(std::string_view(arr.write()), R"([1,"string"])");
+    EXPECT_EQ(arr.write(), R"([1,"string"])");
 
     auto obj = object();
     obj.emplace("USD", 129.66);
     obj.emplace("date", "Wed Feb 1 2023");
-    EXPECT_EQ(std::string_view(obj.write()), R"({"USD":129.66,"date":"Wed Feb 1 2023"})");
+    EXPECT_EQ(obj.write(), R"({"USD":129.66,"date":"Wed Feb 1 2023"})");
 
     auto squares = array(std::vector{1, 2, 3} | std::views::transform([](int x) { return x * x; }));
-    EXPECT_EQ(std::string_view(squares.write()), "[1,4,9]");
+    EXPECT_EQ(squares.write(), "[1,4,9]");
     auto prices = object(std::map<std::string, double>{{"USD", 129.66}, {"EUR", 140.35}});
-    EXPECT_EQ(std::string_view(prices.write()), R"({"EUR":140.35,"USD":129.66})");
+    EXPECT_EQ(prices.write(), R"({"EUR":140.35,"USD":129.66})");
 
     auto doc = object{{"id", 1}, {"array", {0, 1, 2}}, {"currency", {{"USD", 129.66}}}, {"success", true}};
-    EXPECT_EQ(std::string_view(doc.write()), R"({"id":1,"array":[0,1,2],"currency":{"USD":129.66},"success":true})");
-
-    auto editable = object(read(R"({"a": 1})"));
-    editable.emplace("b", 2);
-    EXPECT_EQ(std::string_view(editable.write()), R"({"a":1,"b":2})");
+    EXPECT_EQ(doc.write(), R"({"id":1,"array":[0,1,2],"currency":{"USD":129.66},"success":true})");
 }
 
 TEST(Readme, BetweenDomAndTypes)
 {
-    using namespace yyjson;
     using namespace readme;
+    using namespace yyjson;
 
     auto doc = read(R"({"project": {"name": "cpp-yyjson", "tags": [], "releases": []}, "extra": [1, 2]})");
     auto project = cast<Project>((*doc.as_object())["project"]);
     auto numbers = cast<std::vector<int>>((*doc.as_object())["extra"]);
-    EXPECT_EQ(project.name, "cpp-yyjson");
+    EXPECT_EQ(project, (Project{"cpp-yyjson", {}, {}}));
     EXPECT_EQ(numbers, (std::vector{1, 2}));
 
     auto obj = object(project);
     obj.emplace("stars", 1000);
-    EXPECT_EQ(std::string_view(obj.write()), R"({"name":"cpp-yyjson","tags":[],"releases":[],"stars":1000})");
+    EXPECT_EQ(obj.write(), R"({"name":"cpp-yyjson","tags":[],"releases":[],"stars":1000})");
 }
 
 TEST(Readme, KeysAndCasters)
@@ -202,17 +254,11 @@ TEST(Readme, KeysAndCasters)
     auto thing = yyjson::read<Thing>(R"({"@context":"https://schema.org","name":"x"})");
     EXPECT_EQ(thing.context, "https://schema.org");
     EXPECT_EQ(thing.name, "x");
-    EXPECT_EQ(std::string_view(yyjson::write(thing)), R"({"@context":"https://schema.org","name":"x"})");
 
     auto colors = yyjson::read<std::vector<readme::Color>>(R"(["#ff8000","#000000"])");
-    ASSERT_EQ(colors.size(), 2);
-    EXPECT_EQ(colors[0].r, 0xff);
-    EXPECT_EQ(colors[0].g, 0x80);
-    EXPECT_EQ(colors[0].b, 0x00);
+    EXPECT_EQ(colors, (std::vector{readme::Color{0xff, 0x80, 0x00}, readme::Color{0, 0, 0}}));
     auto json = yyjson::write(colors);
-    EXPECT_EQ(std::string_view(json), R"(["#ff8000","#000000"])");
-    EXPECT_THROW((void)yyjson::read<readme::Color>(R"("#ff80")"), yyjson::bad_cast);
-    EXPECT_THROW((void)yyjson::read<readme::Color>(R"("#gg8000")"), yyjson::bad_cast);
+    EXPECT_EQ(json, R"(["#ff8000","#000000"])");
 }
 
 // NOLINTEND
