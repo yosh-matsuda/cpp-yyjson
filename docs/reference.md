@@ -2310,7 +2310,7 @@ To change the limit, define `CPPYYJSON_RECURSION_DEPTH_LIMIT` before including `
 
 ### Read and write C++ types with the data binding API
 
-When the JSON has a C++ type, `yyjson::read<T>` and `yyjson::write` are the fastest way to convert it. They skip the document that `read(json).cast<T>()` and `value(t).write()` build, and in the [benchmark](benchmark/README.md#data-binding-api) they take 71% to 94% and 28% to 85% of the time of those, respectively.
+When the JSON has a C++ type, `yyjson::read<T>` and `yyjson::write` are the fastest way to convert it. They skip the document that `read(json).cast<T>()` and `value(t).write()` build, and in the [benchmark](benchmark/README.md#data-binding-api) they take 70% to 94% and 29% to 85% of the time of those, respectively.
 
 `read<T>` reads the string directly with every read flag except `ReadInsitu`, `NumberAsRaw` and `BignumAsRaw`, which make it read a document and cast it. A flag that allows more than strict JSON, such as `ReadFlag::AllowComments` or `ReadFlag::Json5`, costs nothing while the string is strict JSON. A string that uses the extended syntax is read directly up to it and then again into a document, so when most strings use it, `read(json, flag).cast<T>()` is faster ([details](#reading-a-json-string-into-a-c-object-directly)).
 

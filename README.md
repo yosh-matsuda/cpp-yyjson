@@ -279,10 +279,10 @@ cpp-yyjson, [Glaze](https://github.com/stephenberry/glaze) and [reflect-cpp](htt
 
 | cpp-yyjson | vs. Glaze | vs. reflect-cpp |
 | --- | --- | --- |
-| Read into a new object: `read<T>` | 1.07 - 1.63x | 1.61 - 6.63x |
-| Read into a reused object: `merge_into` | 1.05 - 1.69x | - |
-| Write into a new string: `write(t)` | 1.15 - 2.50x | 1.72 - 5.56x |
-| Write into a reused string: `write(t, out)` | 1.05 - 1.52x | - |
+| Read into a new object: `read<T>` | 1.07 - 1.61x | 1.61 - 6.67x |
+| Read into a reused object: `merge_into` | 1.04 - 1.70x | - |
+| Write into a new string: `write(t)` | 1.15 - 2.51x | 1.72 - 5.76x |
+| Write into a reused string: `write(t, out)` | 1.06 - 1.52x | - |
 
 ![Read throughput into C++ types](docs/benchmark/images/typed_read_throughput.svg)
 
@@ -296,7 +296,7 @@ cpp-yyjson is compared with [yyjson](https://github.com/ibireme/yyjson), [simdjs
 
 |       | vs. yyjson 0.12.0 | vs. simdjson | vs. rapidjson | vs. nlohmann-json |
 | ----- | ----------------- | ------------ | ------------- | ----------------- |
-| Read  | 1.0 - 1.8x | 1.0 - 1.6x   | 1.4 - 4.6x    | 8.8 - 24x         |
+| Read  | 1.0 - 1.8x | 1.0 - 1.6x   | 1.4 - 4.6x    | 8.7 - 24x         |
 | Write | 1.2 - 2.5x | 2.5 - 6.0x   | 3.2 - 10x     | 3.8 - 34x         |
 
 ![Read throughput per document](docs/benchmark/images/read_throughput.svg)
