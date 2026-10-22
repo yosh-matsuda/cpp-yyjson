@@ -402,11 +402,15 @@ CONSTRAINT_RULE(MinimumTwiceInItems, yyjson::items(yyjson::minimum(0), yyjson::m
 CONSTRAINT_RULE(ContainsTwice, yyjson::contains(yyjson::minimum(0)), yyjson::contains(yyjson::maximum(1)))
 CONSTRAINT_RULE(ItemsTwice, yyjson::items(yyjson::unique_items), yyjson::items(yyjson::minimum(0)))
 CONSTRAINT_RULE(UniqueAtTwoLevels, yyjson::unique_items, yyjson::items(yyjson::unique_items))
-// a position holds up to 8 nodes: one for itself and one for each items in it
-CONSTRAINT_RULE(PositionOf8, yyjson::prefix_items(yyjson::items(yyjson::items(yyjson::items(
-                                 yyjson::items(yyjson::items(yyjson::items(yyjson::items(yyjson::minimum(0))))))))))
-CONSTRAINT_RULE(PositionOf9, yyjson::prefix_items(yyjson::items(yyjson::items(yyjson::items(yyjson::items(
-                                 yyjson::items(yyjson::items(yyjson::items(yyjson::items(yyjson::minimum(0)))))))))))
+// a position holds up to 8 nodes: one for itself and one for each items, contains, property_names and
+// additional_properties in it, counted here in breadth because MSVC 19.44 limits the depth of the initializers
+#define POSITION_OF_8                                                                      \
+    yyjson::items(yyjson::items(yyjson::minimum(0)), yyjson::contains(yyjson::minimum(0)), \
+                  yyjson::property_names(yyjson::min_length(1))),                          \
+        yyjson::contains(yyjson::items(yyjson::minimum(0))), yyjson::property_names(yyjson::min_length(1))
+CONSTRAINT_RULE(PositionOf8, yyjson::prefix_items({POSITION_OF_8}))
+CONSTRAINT_RULE(PositionOf9, yyjson::prefix_items({POSITION_OF_8, yyjson::additional_properties(yyjson::minimum(0))}))
+#undef POSITION_OF_8
 CONSTRAINT_RULE(MultipleOfZeroInItems, yyjson::items(yyjson::multiple_of(0)))
 #undef CONSTRAINT_RULE
 namespace compile_rules
