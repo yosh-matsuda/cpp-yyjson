@@ -45,6 +45,7 @@ This page lists the functions, classes and other entities of cpp-yyjson, grouped
     *   [`yyjson::optional_key`](#yyjsonoptional_key)
     *   [`yyjson::additional_properties`](#yyjsonadditional_properties)
     *   [Constraints](#constraints)
+    *   [`yyjson::items`](#yyjsonitems)
     *   [`yyjson::pattern_matcher<>`](#yyjsonpattern_matcher)
     *   [`yyjson::internal_tag`, `yyjson::adjacent_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag)
     *   [`yyjson::enum_format`, `yyjson::enumerator`](#yyjsonenum_format-yyjsonenumerator)
@@ -1388,7 +1389,7 @@ template <typename... As>
 consteval field_annotation<As...> field(std::string_view member, As... values);
 ```
 
-`values` are one or more of [`yyjson::rename`](#yyjsonrename), [`yyjson::skip`](#yyjsonskip), [`yyjson::required`](#yyjsonrequired), [`yyjson::optional_key`](#yyjsonoptional_key), [`yyjson::adjacent_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag) and the [constraints](#constraints). Any other setting is a compile error.
+`values` are one or more of [`yyjson::rename`](#yyjsonrename), [`yyjson::skip`](#yyjsonskip), [`yyjson::required`](#yyjsonrequired), [`yyjson::optional_key`](#yyjsonoptional_key), [`yyjson::adjacent_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag), the [constraints](#constraints), [`yyjson::items`](#yyjsonitems) and [`yyjson::additional_properties(settings...)`](#yyjsonadditional_properties). Any other setting is a compile error.
 
 ### `yyjson::rename`
 
@@ -1436,16 +1437,22 @@ The field then keeps its value in `T()`. It is a compile error together with `yy
 
 ### `yyjson::additional_properties`
 
-Whether the object of a struct may have keys that name no field.
+Whether the object of a struct may have keys that name no field, or the constraints of the values of a map field.
 
 ```cpp
+template <typename... As>
 struct additional_properties
+{
+    consteval explicit additional_properties(As... settings);
+};
+template <>
+struct additional_properties<>
 {
     consteval explicit additional_properties(bool allowed);
 };
 ```
 
-It is a setting of the struct, given to [`yyjson::annotate`](#yyjsonannotationst-yyjsonannotate):
+As in JSON Schema, where `"additionalProperties": false` is the schema that rejects every value, the two forms are the same keyword. `additional_properties(settings...)` is a setting of a map field and takes the same settings as [`yyjson::items`](#yyjsonitems). `additional_properties(bool)` is a setting of the struct, given to [`yyjson::annotate`](#yyjsonannotationst-yyjsonannotate):
 
 *   With `false`, reading an object with such a key throws `yyjson::bad_cast`.
 *   With `true`, the struct accepts such keys under `yyjson::strict` too, and ignores them.
@@ -1486,7 +1493,44 @@ inline constexpr validator validate;
 | `yyjson::max_items(n)` | a range or a map | with more than `n` elements |
 | `yyjson::validate<f>` | any | for which `f(value)` returns `false` |
 
-The constraints are settings of [`yyjson::field`](#yyjsonfield). Reading a value that a constraint rejects throws `yyjson::bad_cast`; writing does not check them. `yyjson::pattern` needs a [`yyjson::pattern_matcher<>`](#yyjsonpattern_matcher). See [Constraints](validation.md#constraints).
+The constraints are settings of [`yyjson::field`](#yyjsonfield), and of [`yyjson::items`](#yyjsonitems) and [`yyjson::additional_properties(settings...)`](#yyjsonadditional_properties) for the elements. They apply to the value that a `std::optional` holds, and not to an empty one. Reading a value that a constraint rejects throws `yyjson::bad_cast`; writing does not check them. `yyjson::pattern` needs a [`yyjson::pattern_matcher<>`](#yyjsonpattern_matcher). See [Constraints](validation.md#constraints).
+
+### `yyjson::items`
+
+The constraints of the elements of a range field, as the keyword `items` of JSON Schema.
+
+```cpp
+template <typename... As>
+struct items
+{
+    consteval explicit items(As... settings);
+};
+```
+
+| Setting | The field | Constrains |
+| --- | --- | --- |
+| `yyjson::items(settings...)` | a range read from a JSON array, such as `std::vector`, `std::array`, `std::set` and a map from an array of pairs | each element |
+| `yyjson::additional_properties(settings...)` | a map | each value |
+
+`settings` are one or more of the [constraints](#constraints), and `yyjson::items` or `yyjson::additional_properties(settings...)` for the elements of the elements. Key settings such as `yyjson::rename`, a setting given twice at one level, `yyjson::items` on a string or on a map read from a JSON object, and `yyjson::additional_properties(settings...)` on a range that is not a map are compile errors. An element that is a `std::optional` is checked through the value that it holds, and a `std::optional` field through the range that it holds. `yyjson::validate<f>` takes the type of the element, or the type that a `std::optional` element holds; the element of a map from an array of pairs is `std::pair<const Key, Value>`.
+
+```cpp
+struct Scores
+{
+    std::vector<int> scores;
+    std::map<std::string, std::vector<std::string>> tags;
+};
+
+template <>
+inline constexpr auto yyjson::annotations<Scores> = yyjson::annotate(
+    yyjson::field("scores", yyjson::items(yyjson::minimum(0))),
+    yyjson::field("tags", yyjson::additional_properties(yyjson::min_items(1), yyjson::items(yyjson::max_length(8)))));
+
+yyjson::read<Scores>(R"({"scores":[1,-2]})");
+// throws yyjson::bad_cast: an element of the value of the key "scores" of Scores is less than the minimum 0 at /scores/1 ...
+```
+
+The path of the exception points at the element, also in a set or an unordered map. See [Constraints of elements](validation.md#constraints-of-elements).
 
 ### `yyjson::pattern_matcher<>`
 
