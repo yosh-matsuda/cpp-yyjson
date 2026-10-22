@@ -1,26 +1,28 @@
+[Documentation](../README.md) › Benchmarks
+
 # Benchmark results
 
 This document gives the full results of the benchmarks that the [README](../../README.md#performance) summarizes, and how they were obtained. The two APIs of cpp-yyjson are measured separately:
 
+*   The [data binding API](#data-binding-api), which reads JSON into C++ types and writes them, against [Glaze](https://github.com/stephenberry/glaze) and [reflect-cpp](https://github.com/getml/reflect-cpp), on seven of the ten documents of the DOM API benchmark and on two small messages cut out of them.
 *   The [DOM API](#dom-api), which reads JSON into a document and writes documents, against other JSON libraries on ten documents.
-*   The [data binding API](#data-binding-api), which reads JSON into C++ types and writes them, against [Glaze](https://github.com/stephenberry/glaze) and [reflect-cpp](https://github.com/getml/reflect-cpp), on seven of the documents and on two small messages cut out of them.
 
 1.  [Method](#method)
     1.  [What is compared](#what-is-compared)
-2.  [DOM API](#dom-api)
-    1.  [Read performance](#read-performance)
-        1.  [Read-only fixed-length input](#read-only-fixed-length-input)
-        2.  [Caller-prepared writable/padded buffer](#caller-prepared-writablepadded-buffer)
-        3.  [Findings](#findings)
-    2.  [Write performance](#write-performance)
-        1.  [Document serialization](#document-serialization)
-        2.  [Document building](#document-building)
-        3.  [Findings](#findings-1)
-3.  [Data binding API](#data-binding-api)
+2.  [Data binding API](#data-binding-api)
     1.  [Reading into C++ types](#reading-into-c-types)
     2.  [Writing from C++ types](#writing-from-c-types)
     3.  [Other number types](#other-number-types)
-    4.  [Findings](#findings-2)
+    4.  [Findings](#findings)
+3.  [DOM API](#dom-api)
+    1.  [Read performance](#read-performance)
+        1.  [Read-only fixed-length input](#read-only-fixed-length-input)
+        2.  [Caller-prepared writable/padded buffer](#caller-prepared-writablepadded-buffer)
+        3.  [Findings](#findings-1)
+    2.  [Write performance](#write-performance)
+        1.  [Document serialization](#document-serialization)
+        2.  [Document building](#document-building)
+        3.  [Findings](#findings-2)
 
 ## Method
 
@@ -51,11 +53,84 @@ The benchmark programs are in [`test`](../../test), and [`run_benchmarks.sh`](ru
 
 Each library is compared through the interface it offers for the task, and only where that interface does the same work as cpp-yyjson:
 
+*   **Data binding API.** Libraries that read JSON into C++ structs and write them back without a hand-written mapping per member: [Glaze](https://github.com/stephenberry/glaze) and [reflect-cpp](https://github.com/getml/reflect-cpp), on the same structs.
 *   **DOM API, on the ten documents.** A library takes part when it reads a whole document into a value tree that the caller can walk in any order, or writes such a tree back to JSON text: [yyjson](https://github.com/ibireme/yyjson), [simdjson](https://github.com/simdjson/simdjson) (its DOM, and On Demand as its fastest way of reading), [rapidjson](https://github.com/Tencent/rapidjson/) and [nlohmann-json](https://github.com/nlohmann/json). Every reading row visits every element and checks the counts and sums it collects; every writing row checks once that its output is valid JSON with as many elements at the top level as the document. A library appears in the reused sections only when it has a public way to reuse its parser, allocator or output buffer.
 *   **DOM API, building documents.** Only the [yyjson](https://github.com/ibireme/yyjson) C API, one row per code path of the C++ layer, to show what that layer costs.
-*   **Data binding API.** Libraries that read JSON into C++ structs and write them back without a hand-written mapping per member: [Glaze](https://github.com/stephenberry/glaze) and [reflect-cpp](https://github.com/getml/reflect-cpp), on the same structs.
 
 Glaze also has a generic JSON value, `glz::generic`, which would qualify for the DOM API comparison. It is left out because it is not the interface Glaze is designed around, and Glaze is compared on the data binding API instead. Why `simdjson::to_json` is not on the data binding API is explained under [Write performance](#write-performance).
+
+## Data binding API
+
+cpp-yyjson, [Glaze](https://github.com/stephenberry/glaze) and [reflect-cpp](https://github.com/getml/reflect-cpp) read seven of the documents into C++ structs and write the structs back to JSON. The structs are in [`test/bench_typed.hpp`](../../test/bench_typed.hpp) and are the same for all three libraries: they have a member for every key of the document, so no library gains by skipping values, and a key that is not a valid member name, such as `@context` or `public`, is mapped by `yyjson::annotations`, by `glz::meta<T>::rename_key` and by a reflect-cpp processor. `twitter` and `twitterescaped` share one struct. `canada` is read a second time into each of three other coordinate types: `float`, `std::variant<std::int64_t, double>`, and, with its coordinates rounded and written as reals such as `-65.0`, `std::int64_t`. Glaze and reflect-cpp do not read a real into an integer, so only cpp-yyjson measures the last. Two messages of 1.1 KB and 2.5 KB, the first event of `github_events` (`github_event`) and the first status of `twitter` (`twitter_status`), written without whitespace, show the fixed cost of a call that the larger documents hide; their reads are timed in batches of 100, because one read takes well under a microsecond and timing each of them would add several percent. Every row checks once that it read the same object as cpp-yyjson's `read<T>`, or wrote JSON that reads back into it.
+
+Two options of Glaze are changed from their defaults to make the work equal. Reading sets `error_on_unknown_keys = false`, because cpp-yyjson ignores a key that the struct does not have, and writing sets `escape_control_characters = true`, because cpp-yyjson escapes control characters in strings, which JSON requires.
+
+The rows are labeled by the API used:
+
+*cpp-yyjson read&lt;T&gt;* / *cpp-yyjson write(t)*
+: The data binding API, which reads into a new object and writes into a new string.
+
+*cpp-yyjson DOM: read + cast&lt;T&gt;* / *cpp-yyjson DOM: value(t).write()*
+: The DOM API, which reads a document and casts it, or builds a document from the object and writes it.
+
+*cpp-yyjson read_into* / *cpp-yyjson merge_into*
+: Reading into the object of the previous iteration, which reuses the capacity of its strings and vectors. `read_into` resets what the document does not have, and `merge_into` keeps it.
+
+*cpp-yyjson write(t, out)* / *cpp-yyjson DOM: value(t).write(alc)*
+: Writing into the string of the previous iteration, or building the document with a reused allocator.
+
+*Glaze glz::read* / *Glaze glz::write*
+: `glz::read` into a new object or the object of the previous iteration, and `glz::write` into a new or a reused `std::string`. A reused Glaze object keeps the members that the document does not have, as `merge_into` does, so `merge_into` is its counterpart.
+
+*reflect-cpp rfl::json::read* / *reflect-cpp rfl::json::write*
+: `rfl::json::read<T>`, which reads the text into a yyjson document and fills a new object from it, and `rfl::json::write`, which builds a yyjson document from the object and writes it into a new `std::string`. They follow the path of the DOM API rows of cpp-yyjson. reflect-cpp has no read into an existing object, and writes either into a new string or into a `std::ostream`, so it has no reused rows. It reads and writes with its default options, which ignore unknown keys and leave out an empty `std::optional`, as cpp-yyjson does.
+
+### Reading into C++ types
+
+<img src="images/typed_read_canada.svg" width="48%"></img>
+<img src="images/typed_read_citm_catalog.svg" width="48%"></img>
+<img src="images/typed_read_twitter.svg" width="48%"></img>
+<img src="images/typed_read_twitterescaped.svg" width="48%"></img>
+<img src="images/typed_read_poet.svg" width="48%"></img>
+<img src="images/typed_read_github_events.svg" width="48%"></img>
+<img src="images/typed_read_gsoc-2018.svg" width="48%"></img>
+<img src="images/typed_read_github_event.svg" width="48%"></img>
+<img src="images/typed_read_twitter_status.svg" width="48%"></img>
+
+### Writing from C++ types
+
+<img src="images/typed_write_canada.svg" width="48%"></img>
+<img src="images/typed_write_citm_catalog.svg" width="48%"></img>
+<img src="images/typed_write_twitter.svg" width="48%"></img>
+<img src="images/typed_write_twitterescaped.svg" width="48%"></img>
+<img src="images/typed_write_poet.svg" width="48%"></img>
+<img src="images/typed_write_github_events.svg" width="48%"></img>
+<img src="images/typed_write_gsoc-2018.svg" width="48%"></img>
+<img src="images/typed_write_github_event.svg" width="48%"></img>
+<img src="images/typed_write_twitter_status.svg" width="48%"></img>
+
+### Other number types
+
+<img src="images/typed_read_canada_float.svg" width="48%"></img>
+<img src="images/typed_write_canada_float.svg" width="48%"></img>
+<img src="images/typed_read_canada_variant.svg" width="48%"></img>
+<img src="images/typed_write_canada_variant.svg" width="48%"></img>
+<img src="images/typed_read_canada_integral_reals.svg" width="48%"></img>
+<img src="images/typed_write_canada_integral_reals.svg" width="48%"></img>
+
+### Findings
+
+**Reading.** `read<T>` reads every document faster than `glz::read`, from 1.07x on the number-only `canada` to 1.61x on `citm_catalog`, and the two messages 1.37x and 1.51x faster. Both libraries spend most of the time on `canada` converting decimal numbers, which leaves the least to gain. Into a reused object, `merge_into` is 1.04x to 1.70x faster than Glaze, and `read_into` is within 2% of `merge_into` except on `gsoc-2018` and `github_event`, where it takes 5% longer, and on `twitter_status`, where it takes 7% less. Even the DOM API, reading a document and casting it, is faster than `glz::read` on six of the seven documents and on both messages. Reusing the object saves 8% to 44% on the six documents with strings and 3% on `canada`, whose vectors of numbers cost little to allocate.
+
+**Writing.** `write(t)` writes every document faster than `glz::write`, from 1.15x on `canada` to 2.51x on `gsoc-2018`, and the two messages 1.40x and 1.23x faster. Reusing the output string saves `write(t, out)` 15% and 19% on `github_events` and `twitterescaped`, 32% on each message, and at most 3% on the others, but saves Glaze 9% to 40%; against a reused Glaze buffer, `write(t, out)` is still 1.06x to 1.52x faster.
+
+**Messages.** A call on a message takes about a microsecond: `read<T>` reads `github_event` in 0.69 µs and `twitter_status` in 1.20 µs, against 0.95 µs and 1.81 µs for `glz::read`, and `write(t)` writes them in 0.23 µs and 0.53 µs, against 0.32 µs and 0.65 µs for `glz::write`.
+
+**Against the DOM API.** The data binding API takes 70% to 94% of the time of reading a document and casting it, and 29% to 85% of the time of building a document and writing it. Reading the document alone, without the cast, is faster than `read<T>` on every document and message except `canada`, because `read<T>` also allocates the strings and vectors of the result; `read_into`, which reuses them, is as fast as reading the document alone or faster on `canada`, `citm_catalog`, `poet` and `gsoc-2018`. The DOM rows depend on how the compiler lays out the code more than the other rows do. A change elsewhere in the executable can move them by several percent, and the DOM write rows by up to 14%, even when the function that they measure compiles to the same instructions at another address. Read differences of a few percent in the DOM rows as noise.
+
+**Other number types.** These are the only documents on which Glaze reads faster than the data binding API. Into `float`, `glz::read` is 3% faster than `read<T>` and a reused Glaze object 9% faster than `merge_into`. Into `std::variant<std::int64_t, double>`, `read<T>` is still 1.06x faster than `glz::read`, but a reused Glaze object is 4% faster than `merge_into`. Writing stays faster: `write(t)` writes the floats 1.47x and the variants 1.12x faster than `glz::write`. Reading the rounded reals into `std::int64_t` takes `read<T>` 90% of the time of `read(json).cast<T>()`, and writing the integers takes `write(t)` 52% of the time of `value(t).write()`.
+
+**Against reflect-cpp.** reflect-cpp reads the text into a yyjson document and fills the object from it, as the DOM API of cpp-yyjson does, and takes 1.4x to 4.7x the time of `read(json).cast<T>()` and 1.6x to 6.7x the time of `read<T>`; it is slowest against cpp-yyjson on `twitter` and `twitter_status`. Writing takes it 1.3x to 2.9x the time of `value(t).write()` and 1.7x to 5.8x the time of `write(t)`. It is also slower than Glaze on every row, by 1.4x to 4.4x in reading and 1.5x to 3.7x in writing.
 
 ## DOM API
 
@@ -205,76 +280,3 @@ Reusing the output buffer saves 12% and 9% on `fgo` and `otfcc` (22.4 to 19.8 ms
 **Building.** cpp-yyjson is level with the C API wherever both do the same work, such as `array_double_append`, which is within 1%. Converting a whole range in one call is 15% faster on `array_string` and 2% on `array_int64`, because the elements are counted first and written into one block instead of appended one at a time. `array_double` is 15% faster, most of it from the double writer of the bundled backend. The long-string rows are 75% and 53% faster because the bundled backend copies strings in SIMD chunks. `array_tuple`, `array_object`, `object_range`, `object_append` and `object_append_string_copy` build documents with blocks of 32 MiB or more and are 9% to 48% faster, mostly from the huge pages. These rows therefore do not isolate the cost of the interface.
 
 **Choice of API.** Copying strings is a visible cost: `array_string_copy` takes 2.5 times as long as `array_string`, so referencing the strings is worthwhile when their lifetime allows it. Reflection costs no more than `VISITABLE_STRUCT` registration. Reusing the allocator makes no difference here, because these documents are built once per iteration and the allocator is not the bottleneck.
-
-## Data binding API
-
-cpp-yyjson, [Glaze](https://github.com/stephenberry/glaze) and [reflect-cpp](https://github.com/getml/reflect-cpp) read seven of the documents into C++ structs and write the structs back to JSON. The structs are in [`test/bench_typed.hpp`](../../test/bench_typed.hpp) and are the same for all three libraries: they have a member for every key of the document, so no library gains by skipping values, and a key that is not a valid member name, such as `@context` or `public`, is mapped by `yyjson::annotations`, by `glz::meta<T>::rename_key` and by a reflect-cpp processor. `twitter` and `twitterescaped` share one struct. `canada` is read a second time into each of three other coordinate types: `float`, `std::variant<std::int64_t, double>`, and, with its coordinates rounded and written as reals such as `-65.0`, `std::int64_t`. Glaze and reflect-cpp do not read a real into an integer, so only cpp-yyjson measures the last. Two messages of 1.1 KB and 2.5 KB, the first event of `github_events` (`github_event`) and the first status of `twitter` (`twitter_status`), written without whitespace, show the fixed cost of a call that the larger documents hide; their reads are timed in batches of 100, because one read takes well under a microsecond and timing each of them would add several percent. Every row checks once that it read the same object as cpp-yyjson's `read<T>`, or wrote JSON that reads back into it.
-
-Two options of Glaze are changed from their defaults to make the work equal. Reading sets `error_on_unknown_keys = false`, because cpp-yyjson ignores a key that the struct does not have, and writing sets `escape_control_characters = true`, because cpp-yyjson escapes control characters in strings, which JSON requires.
-
-The rows are labeled by the API used:
-
-*cpp-yyjson read&lt;T&gt;* / *cpp-yyjson write(t)*
-: The data binding API, which reads into a new object and writes into a new string.
-
-*cpp-yyjson DOM: read + cast&lt;T&gt;* / *cpp-yyjson DOM: value(t).write()*
-: The DOM API, which reads a document and casts it, or builds a document from the object and writes it.
-
-*cpp-yyjson read_into* / *cpp-yyjson merge_into*
-: Reading into the object of the previous iteration, which reuses the capacity of its strings and vectors. `read_into` resets what the document does not have, and `merge_into` keeps it.
-
-*cpp-yyjson write(t, out)* / *cpp-yyjson DOM: value(t).write(alc)*
-: Writing into the string of the previous iteration, or building the document with a reused allocator.
-
-*Glaze glz::read* / *Glaze glz::write*
-: `glz::read` into a new object or the object of the previous iteration, and `glz::write` into a new or a reused `std::string`. A reused Glaze object keeps the members that the document does not have, as `merge_into` does, so `merge_into` is its counterpart.
-
-*reflect-cpp rfl::json::read* / *reflect-cpp rfl::json::write*
-: `rfl::json::read<T>`, which reads the text into a yyjson document and fills a new object from it, and `rfl::json::write`, which builds a yyjson document from the object and writes it into a new `std::string`. They follow the path of the DOM API rows of cpp-yyjson. reflect-cpp has no read into an existing object, and writes either into a new string or into a `std::ostream`, so it has no reused rows. It reads and writes with its default options, which ignore unknown keys and leave out an empty `std::optional`, as cpp-yyjson does.
-
-### Reading into C++ types
-
-<img src="images/typed_read_canada.svg" width="48%"></img>
-<img src="images/typed_read_citm_catalog.svg" width="48%"></img>
-<img src="images/typed_read_twitter.svg" width="48%"></img>
-<img src="images/typed_read_twitterescaped.svg" width="48%"></img>
-<img src="images/typed_read_poet.svg" width="48%"></img>
-<img src="images/typed_read_github_events.svg" width="48%"></img>
-<img src="images/typed_read_gsoc-2018.svg" width="48%"></img>
-<img src="images/typed_read_github_event.svg" width="48%"></img>
-<img src="images/typed_read_twitter_status.svg" width="48%"></img>
-
-### Writing from C++ types
-
-<img src="images/typed_write_canada.svg" width="48%"></img>
-<img src="images/typed_write_citm_catalog.svg" width="48%"></img>
-<img src="images/typed_write_twitter.svg" width="48%"></img>
-<img src="images/typed_write_twitterescaped.svg" width="48%"></img>
-<img src="images/typed_write_poet.svg" width="48%"></img>
-<img src="images/typed_write_github_events.svg" width="48%"></img>
-<img src="images/typed_write_gsoc-2018.svg" width="48%"></img>
-<img src="images/typed_write_github_event.svg" width="48%"></img>
-<img src="images/typed_write_twitter_status.svg" width="48%"></img>
-
-### Other number types
-
-<img src="images/typed_read_canada_float.svg" width="48%"></img>
-<img src="images/typed_write_canada_float.svg" width="48%"></img>
-<img src="images/typed_read_canada_variant.svg" width="48%"></img>
-<img src="images/typed_write_canada_variant.svg" width="48%"></img>
-<img src="images/typed_read_canada_integral_reals.svg" width="48%"></img>
-<img src="images/typed_write_canada_integral_reals.svg" width="48%"></img>
-
-### Findings
-
-**Reading.** `read<T>` reads every document faster than `glz::read`, from 1.07x on the number-only `canada` to 1.61x on `citm_catalog`, and the two messages 1.37x and 1.51x faster. Both libraries spend most of the time on `canada` converting decimal numbers, which leaves the least to gain. Into a reused object, `merge_into` is 1.04x to 1.70x faster than Glaze, and `read_into` is within 2% of `merge_into` except on `gsoc-2018` and `github_event`, where it takes 5% longer, and on `twitter_status`, where it takes 7% less. Even the DOM API, reading a document and casting it, is faster than `glz::read` on six of the seven documents and on both messages. Reusing the object saves 8% to 44% on the six documents with strings and 3% on `canada`, whose vectors of numbers cost little to allocate.
-
-**Writing.** `write(t)` writes every document faster than `glz::write`, from 1.15x on `canada` to 2.51x on `gsoc-2018`, and the two messages 1.40x and 1.23x faster. Reusing the output string saves `write(t, out)` 15% and 19% on `github_events` and `twitterescaped`, 32% on each message, and at most 3% on the others, but saves Glaze 9% to 40%; against a reused Glaze buffer, `write(t, out)` is still 1.06x to 1.52x faster.
-
-**Messages.** A call on a message takes about a microsecond: `read<T>` reads `github_event` in 0.69 µs and `twitter_status` in 1.20 µs, against 0.95 µs and 1.81 µs for `glz::read`, and `write(t)` writes them in 0.23 µs and 0.53 µs, against 0.32 µs and 0.65 µs for `glz::write`.
-
-**Against the DOM API.** The data binding API takes 70% to 94% of the time of reading a document and casting it, and 29% to 85% of the time of building a document and writing it. Reading the document alone, without the cast, is faster than `read<T>` on every document and message except `canada`, because `read<T>` also allocates the strings and vectors of the result; `read_into`, which reuses them, is as fast as reading the document alone or faster on `canada`, `citm_catalog`, `poet` and `gsoc-2018`. The DOM rows depend on how the compiler lays out the code more than the other rows do. A change elsewhere in the executable can move them by several percent, and the DOM write rows by up to 14%, even when the function that they measure compiles to the same instructions at another address. Read differences of a few percent in the DOM rows as noise.
-
-**Other number types.** These are the only documents on which Glaze reads faster than the data binding API. Into `float`, `glz::read` is 3% faster than `read<T>` and a reused Glaze object 9% faster than `merge_into`. Into `std::variant<std::int64_t, double>`, `read<T>` is still 1.06x faster than `glz::read`, but a reused Glaze object is 4% faster than `merge_into`. Writing stays faster: `write(t)` writes the floats 1.47x and the variants 1.12x faster than `glz::write`. Reading the rounded reals into `std::int64_t` takes `read<T>` 90% of the time of `read(json).cast<T>()`, and writing the integers takes `write(t)` 52% of the time of `value(t).write()`.
-
-**Against reflect-cpp.** reflect-cpp reads the text into a yyjson document and fills the object from it, as the DOM API of cpp-yyjson does, and takes 1.4x to 4.7x the time of `read(json).cast<T>()` and 1.6x to 6.7x the time of `read<T>`; it is slowest against cpp-yyjson on `twitter` and `twitter_status`. Writing takes it 1.3x to 2.9x the time of `value(t).write()` and 1.7x to 5.8x the time of `write(t)`. It is also slower than Glaze on every row, by 1.4x to 4.4x in reading and 1.5x to 3.7x in writing.

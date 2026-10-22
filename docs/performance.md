@@ -1,3 +1,5 @@
+[Documentation](README.md) › Performance best practices
+
 # Performance best practices
 
 This document describes how to choose between the APIs and how to set up a build, to get the speed that the [benchmark](benchmark/README.md) shows. The sections are in order of their effect. The functions are described in the [Reference](reference.md), and the conversions of C++ types in [Converting C++ types](conversions.md).
@@ -9,7 +11,7 @@ When the JSON has a C++ type, `yyjson::read<T>` and `yyjson::write` are the fast
 *   `read<T>` takes 70% to 94% of the time of `read(json).cast<T>()`;
 *   `write` takes 29% to 85% of the time of `value(t).write()`.
 
-`read<T>` reads the string directly with most read flags; the [flag table](reference.md#flags-of-readt) tells which flags make it read a document instead. A flag that allows more than strict JSON, such as `ReadFlag::AllowComments` or `ReadFlag::Json5`, costs nothing while the string is strict JSON. A string that uses the extended syntax is read directly up to that syntax and then again into a document. When most of the strings use it, `read(json, flag).cast<T>()` is faster.
+`read<T>` reads the string directly with most read flags; the [flag table](reference.md#flags-of-yyjsonreadt) tells which flags make it read a document instead. A flag that allows more than strict JSON, such as `ReadFlag::AllowComments` or `ReadFlag::Json5`, costs nothing while the string is strict JSON. A string that uses the extended syntax is read directly up to that syntax and then again into a document. When most of the strings use it, `read(json, flag).cast<T>()` is faster.
 
 ## Build with the fast paths of the bundled backend
 
@@ -54,11 +56,11 @@ Some cases need no caster at all:
 
 *   A caster that keeps the JSON value can be replaced by a field of type [`yyjson::value`](conversions.md#json-values-as-fields).
 *   A `std::variant` whose alternative a member names needs only a [tag](conversions.md#tagged-variants) in `yyjson::annotations`.
-*   A struct whose keys differ from its field names needs only [`yyjson::annotations`](conversions.md#annotations-json-keys-and-skipped-fields).
+*   A struct whose keys differ from its field names needs only [`yyjson::annotations`](conversions.md#json-keys).
 
 ## Reuse an allocator with the DOM API
 
-To read many documents with the DOM API, give `yyjson::read` a [`pool_allocator`](reference.md#yyjsonpool_allocator) reserved for the input, or a [`dynamic_allocator`](reference.md#yyjsondynamic_allocator), and keep it across documents. The memory of a large document is then mapped once instead of on every read. In the [benchmark](benchmark/README.md#findings), a reused allocator reads the 48.8 MB and 66.4 MB documents a fifth faster, but makes no difference to documents of a few megabytes.
+To read many documents with the DOM API, give `yyjson::read` a [`pool_allocator`](reference.md#yyjsonpool_allocator) reserved for the input, or a [`dynamic_allocator`](reference.md#yyjsondynamic_allocator), and keep it across documents. The memory of a large document is then mapped once instead of on every read. In the [benchmark](benchmark/README.md#findings-1), a reused allocator reads the 48.8 MB and 66.4 MB documents a fifth faster, but makes no difference to documents of a few megabytes.
 
 ## Build documents with fewer insertions
 

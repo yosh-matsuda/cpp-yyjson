@@ -1,102 +1,111 @@
+[Documentation](README.md) › Reference
+
 # Reference
 
-## Contents
+This page lists the functions, classes and other entities of cpp-yyjson, grouped by kind. Each entry gives the signature, a short description, the exceptions and an example. The explanations are on these pages:
 
-*   [Namespaces](#namespaces)
-*   [Data binding API](#data-binding-api): [`read<T>`](#yyjsonreadt), [`read_into`, `merge_into`](#yyjsonread_into-yyjsonmerge_into), [`write`](#yyjsonwrite)
-*   [DOM API](#dom-api)
-    *   [Reading and casting](#reading-and-casting): [`read`](#yyjsonread), [`cast`](#yyjsoncast), [flags](#yyjsonreadflag-yyjsonwriteflag)
-    *   [Immutable JSON classes](#immutable-json-classes)
-    *   [Mutable JSON classes](#mutable-json-classes)
-    *   [Reference classes](#reference-classes)
-    *   [Strings](#yyjsonjson_string-yyjsonkey_string)
-    *   [Allocator classes](#allocator-classes)
-    *   [`std::format` support](#stdformat-support)
-    *   [Inserting the same value more than once](#inserting-the-same-value-more-than-once)
-    *   [Conversion from immutable to mutable](#conversion-from-immutable-to-mutable)
-*   [Lifetimes](#lifetimes)
-*   [Exceptions](#exceptions)
-*   [Utilities](#utilities)
-*   [Build configuration](#build-configuration)
-
-Other documents cover the rest of the library:
-
-*   [Converting C++ types](conversions.md): the C++ types that both APIs convert, and casters.
+*   [Converting C++ types](conversions.md): the C++ types that both APIs convert, annotations and casters.
 *   [Validation and errors](validation.md): what a read checks, strict reading, constraints and error messages.
 *   [Performance best practices](performance.md): how to get the most speed.
 *   [Guide](guide.md): how to do common tasks.
 
+## Contents
+
+*   [Namespaces](#namespaces)
+*   [Functions](#functions)
+    *   [`yyjson::read<T>`](#yyjsonreadt)
+    *   [`yyjson::read_into`, `yyjson::merge_into`](#yyjsonread_into-yyjsonmerge_into)
+    *   [`yyjson::write`](#yyjsonwrite)
+    *   [`yyjson::read`](#yyjsonread)
+    *   [`yyjson::cast`](#yyjsoncast)
+*   [DOM classes](#dom-classes)
+    *   [`yyjson::reader::value`](#yyjsonreadervalue)
+    *   [`yyjson::reader::array`, `yyjson::reader::const_array_ref`](#yyjsonreaderarray-yyjsonreaderconst_array_ref)
+    *   [`yyjson::reader::object`, `yyjson::reader::const_object_ref`](#yyjsonreaderobject-yyjsonreaderconst_object_ref)
+    *   [`yyjson::value`](#yyjsonvalue)
+    *   [`yyjson::array`](#yyjsonarray)
+    *   [`yyjson::object`](#yyjsonobject)
+    *   [Reference classes](#reference-classes)
+    *   [`yyjson::json_string`, `yyjson::key_string`](#yyjsonjson_string-yyjsonkey_string)
+    *   [`yyjson::copy_string`, `yyjson::empty_array`, `yyjson::empty_object`](#yyjsoncopy_string-yyjsonempty_array-yyjsonempty_object)
+    *   [`std::format` support](#stdformat-support)
+    *   [Conversion from immutable to mutable](#conversion-from-immutable-to-mutable)
+    *   [Inserting the same value more than once](#inserting-the-same-value-more-than-once)
+*   [Options](#options)
+    *   [`yyjson::ReadFlag`](#yyjsonreadflag)
+    *   [`yyjson::WriteFlag`](#yyjsonwriteflag)
+    *   [Flags of `yyjson::read<T>`](#flags-of-yyjsonreadt)
+    *   [`yyjson::strict`](#yyjsonstrict)
+*   [Annotations](#annotations)
+    *   [`yyjson::annotations<T>`, `yyjson::annotate`](#yyjsonannotationst-yyjsonannotate)
+    *   [`yyjson::field`](#yyjsonfield)
+    *   [`yyjson::rename`](#yyjsonrename)
+    *   [`yyjson::skip`](#yyjsonskip)
+    *   [`yyjson::required`](#yyjsonrequired)
+    *   [`yyjson::optional_key`](#yyjsonoptional_key)
+    *   [`yyjson::additional_properties`](#yyjsonadditional_properties)
+    *   [Constraints](#constraints)
+    *   [`yyjson::pattern_matcher<>`](#yyjsonpattern_matcher)
+    *   [`yyjson::internal_tag`, `yyjson::adjacent_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag)
+    *   [`yyjson::enum_format`, `yyjson::enumerator`](#yyjsonenum_format-yyjsonenumerator)
+    *   [`VISITABLE_STRUCT`](#visitable_struct)
+*   [Casters](#casters)
+    *   [`yyjson::caster<T>`](#yyjsoncastert)
+    *   [`yyjson::object_emitter`, `yyjson::array_emitter`](#yyjsonobject_emitter-yyjsonarray_emitter)
+    *   [`yyjson::json_view`](#yyjsonjson_view)
+*   [Concepts](#concepts)
+    *   [`yyjson::readable<T>`, `yyjson::writable<T>`](#yyjsonreadablet-yyjsonwritablet)
+    *   [`yyjson::castable<Json, T>`](#yyjsoncastablejson-t)
+    *   [`yyjson::yyjson_allocator`](#yyjsonyyjson_allocator)
+*   [Exceptions](#exceptions)
+    *   [`yyjson::read_error`](#yyjsonread_error)
+    *   [`yyjson::write_error`](#yyjsonwrite_error)
+    *   [`yyjson::bad_cast`](#yyjsonbad_cast)
+*   [Allocators](#allocators)
+    *   [`yyjson::dynamic_allocator`](#yyjsondynamic_allocator)
+    *   [`yyjson::pool_allocator`](#yyjsonpool_allocator)
+    *   [`yyjson::stack_pool_allocator<std::size_t Byte>`](#yyjsonstack_pool_allocatorstdsize_t-byte)
+*   [Lifetimes](#lifetimes)
+    *   [Owning and reference classes](#owning-and-reference-classes)
+    *   [Strings that a document returns](#strings-that-a-document-returns)
+    *   [Strings that a mutable document is built from](#strings-that-a-mutable-document-is-built-from)
+    *   [Written strings and allocators](#written-strings-and-allocators)
+*   [Utilities](#utilities)
+    *   [`yyjson::overloaded`](#yyjsonoverloaded)
+*   [Build configuration](#build-configuration)
+    *   [Link-time optimization](#link-time-optimization)
+    *   [Options with an external yyjson](#options-with-an-external-yyjson)
+    *   [Backend versions](#backend-versions)
+    *   [Building this repository](#building-this-repository)
+
 ## Namespaces
 
-The `yyjson` namespace contains the following functions and classes.
+*   `yyjson` holds the functions, the options, the annotations, the casters, the concepts, the exceptions and the allocators. It also holds `yyjson::value`, `yyjson::array` and `yyjson::object`, the aliases of the mutable DOM classes.
+*   `yyjson::reader` holds the immutable DOM classes, which `yyjson::read` returns.
+*   `yyjson::writer` holds the mutable DOM classes.
 
-| Data binding API          |                                                                                       |
-| ------------------------- | ------------------------------------------------------------------------------------- |
-| [`yyjson::read<T>`](#yyjsonreadt) | Read a JSON string into a new C++ object of type `T`                          |
-| [`yyjson::read_into`](#yyjsonread_into-yyjsonmerge_into) | Read a JSON string into an existing C++ object, reusing its memory |
-| [`yyjson::merge_into`](#yyjsonread_into-yyjsonmerge_into) | Apply a JSON string to an existing C++ object as a JSON Merge Patch |
-| [`yyjson::write`](#yyjsonwrite) | Write a C++ object to a JSON string                                             |
+The member functions of the DOM classes often return *reference classes*, such as `yyjson::writer::value_ref` or `yyjson::reader::const_object_ref`. A reference class does not own the document, so it must not outlive the object that it came from; see [Reference classes](#reference-classes) and [Lifetimes](#lifetimes).
 
-| DOM API          |                                                                                                            |
-| ---------------- | ---------------------------------------------------------------------------------------------------------- |
-| [`yyjson::read`](#yyjsonread) | Read a JSON string into an *immutable* document; returns a `yyjson::reader::value` |
-| [`yyjson::cast<T>`](#yyjsoncast) | Convert a JSON value to a C++ object of type `T`                                  |
-| [`yyjson::value`](#yyjsonvalue) | *Mutable* JSON value; alias of `yyjson::writer::value`                             |
-| [`yyjson::array`](#yyjsonarray) | *Mutable* JSON array; alias of `yyjson::writer::array`                             |
-| [`yyjson::object`](#yyjsonobject) | *Mutable* JSON object; alias of `yyjson::writer::object`                         |
-| [`yyjson::ReadFlag`, `yyjson::WriteFlag`](#yyjsonreadflag-yyjsonwriteflag) | Options of reading and writing          |
-| [`yyjson::json_string`, `yyjson::key_string`](#yyjsonjson_string-yyjsonkey_string) | Written JSON text, and the key of an object member |
-| `yyjson::copy_string`                | Tag value that makes a mutable document [copy its strings](#lifetimes)                 |
-| `yyjson::empty_array`, `yyjson::empty_object` | Tag values that [insert an empty array or object](#yyjsonarray)                |
+## Functions
 
-| Allocator class (DOM API)      |                                                                    |
-| ------------------------------ | ------------------------------------------------------------------ |
-| [`yyjson::dynamic_allocator`](#yyjsondynamic_allocator) | Wrapper of the dynamic allocator of yyjson, which grows as needed |
-| [`yyjson::pool_allocator`](#yyjsonpool_allocator) | Wrapper of a fixed-size pool allocator with a buffer on the heap |
-| [`yyjson::stack_pool_allocator<Byte>`](#yyjsonstack_pool_allocatorstdsize_t-byte) | Fixed-size pool allocator with a buffer inside the object |
-| `yyjson::yyjson_allocator`     | Concept of the types that the `Allocator` parameters take: the classes above or a `yyjson_alc` |
+| Function | API | Description |
+| --- | --- | --- |
+| [`yyjson::read<T>`](#yyjsonreadt) | data binding | Reads a JSON string into a new C++ object of type `T` |
+| [`yyjson::read_into`](#yyjsonread_into-yyjsonmerge_into) | data binding | Reads a JSON string into an existing C++ object, reusing its memory |
+| [`yyjson::merge_into`](#yyjsonread_into-yyjsonmerge_into) | data binding | Applies a JSON string to an existing C++ object as a JSON Merge Patch |
+| [`yyjson::write`](#yyjsonwrite) | data binding | Writes a C++ object to a JSON string |
+| [`yyjson::read`](#yyjsonread) | DOM | Reads a JSON string into an immutable document |
+| [`yyjson::cast<T>`](#yyjsoncast) | DOM | Converts a JSON value to a C++ object of type `T` |
 
-| Conversion of C++ types (both APIs)                |                                                                                  |
-| -------------------------------------------------- | -------------------------------------------------------------------------------- |
-| `yyjson::caster<T>`                                | Class template to specialize for a [user-defined caster](conversions.md#user-defined-casters)  |
-| `yyjson::object_emitter`, `yyjson::array_emitter`  | Write the members of an object or an array [from a caster's `to_json`](conversions.md#writing-members-with-an-emitter) |
-| `yyjson::annotations<T>`, `yyjson::annotate`, `yyjson::field` | Settings of the conversion of a type, and of each field of a struct |
-| `yyjson::rename`                                   | Give a field a [JSON key other than its name](conversions.md#annotations-json-keys-and-skipped-fields), or an enumerator [another name](conversions.md#formats-and-renamed-enumerators) |
-| `yyjson::skip`                                     | Leave a field out of [reading and writing](conversions.md#skipped-fields) |
-| `yyjson::enum_format`, `yyjson::enumerator`        | Read and write an enumeration [by names or integers](conversions.md#formats-and-renamed-enumerators), and the settings of an enumerator |
-| `yyjson::internal_tag`, `yyjson::adjacent_tag`     | Name the alternatives of a `std::variant` by a [member of the object](conversions.md#tagged-variants) |
-| `yyjson::strict`                                   | Make a read reject JSON with [more or less than the type takes](validation.md#strict-reading), such as unknown or missing keys |
-| `yyjson::required`, `yyjson::optional_key`, `yyjson::additional_properties` | [Require a key, let it be left out under `yyjson::strict`](validation.md#strict-reading), or reject or allow unknown keys |
-| `yyjson::minimum`, `yyjson::max_length`, `yyjson::pattern`, `yyjson::validate` and the other constraints | Restrict the values that a field reads, as the [constraints](validation.md#constraints) of JSON Schema do |
-| `yyjson::pattern_matcher<>`                        | Class template to specialize with the regular expression engine of [`yyjson::pattern`](validation.md#constraints) |
-| `yyjson::json_view`                                | Read-only view of a JSON value for a caster's [`from_json`](conversions.md#reading-a-json-value-in-a-caster) |
-| `VISITABLE_STRUCT`                                 | Macro to [register the fields](conversions.md#structs-registered-with-visitable_struct) of a struct |
-| `yyjson::readable<T>`, `yyjson::writable<T>`, `yyjson::castable<Json, T>` | Concepts that tell whether a type [can be read or written](conversions.md#conversion-rules) |
+The *data binding API* converts between JSON text and C++ types without building a JSON document in between. The *DOM API* reads JSON into a document of immutable values, and builds documents of mutable values with the [DOM classes](#dom-classes). Use the DOM API in these cases:
 
-| Exception             |                                                          |
-| --------------------- | -------------------------------------------------------- |
-| [`yyjson::read_error`](#yyjsonread_error) | The JSON string is not valid JSON                  |
-| [`yyjson::write_error`](#yyjsonwrite_error) | The value cannot be written as JSON, such as NaN without `WriteFlag::AllowInfAndNan` |
-| [`yyjson::bad_cast`](#yyjsonbad_cast) | A JSON value cannot be converted to the C++ type        |
+*   The shape of the JSON is not known in advance.
+*   The JSON that you build has no C++ type.
+*   You convert only parts of a document.
 
-| Utility              |                                                 |
-| -------------------- | ----------------------------------------------- |
-| [`yyjson::overloaded`](#yyjsonoverloaded) | Combines lambdas into one visitor for `std::visit` |
+Both APIs convert the types of [Converting C++ types](conversions.md) with the same casters, and give the same results: `write(t)` gives the same text as `value(t).write()`, and `read<T>(json)` gives the same value as `read(json).cast<T>()`, unless an object has a [key twice](validation.md#repeated-keys). `test/test_conformance.cpp` checks the reading functions against the DOM API on the files of [JSONTestSuite](https://github.com/nst/JSONTestSuite), on real documents and on random texts.
 
-The JSON classes themselves are defined in two nested namespaces: `yyjson::reader` holds the *immutable* classes, which `yyjson::read` returns, and `yyjson::writer` holds the *mutable* ones. Their member functions often return *reference classes*, such as `yyjson::writer::value_ref` or `yyjson::reader::const_object_ref`. A reference class does not own the document, so it must not outlive the object that it came from; see [Reference classes](#reference-classes) and [Lifetimes](#lifetimes).
-
-## Data binding API
-
-The data binding API converts between JSON text and C++ types without building a JSON document in between:
-
-*   `yyjson::read<T>` reads a new object.
-*   `yyjson::read_into` and `yyjson::merge_into` read into an existing object.
-*   `yyjson::write` writes an object.
-
-It converts the types of [Converting C++ types](conversions.md), with the same casters as the DOM API. Its results are the same as those of the DOM API: `write(t)` gives the same text as `value(t).write()`, and `read<T>(json)` gives the same value as `read(json).cast<T>()`, unless an object has a [key twice](validation.md#what-a-read-checks). `test/test_conformance.cpp` checks the reading functions against the DOM API on the files of [JSONTestSuite](https://github.com/nst/JSONTestSuite), on real documents and on random texts.
-
-> [!NOTE]
-> The data binding API reads and writes directly only with the bundled backend or an external yyjson 0.12.0 or later. With an older external yyjson, `read<T>` reads a document and casts it, `read_into` assigns the result of `read<T>`, `merge_into` merges a document, and `write` builds a document and writes it. The results are the same, but slower, and `read_into` reuses no memory.
+The data binding API reads and writes directly only with the bundled backend or an external yyjson 0.12.0 or later; see [Backend versions](#backend-versions).
 
 ### `yyjson::read<T>`
 
@@ -117,7 +126,7 @@ T read(std::string_view json_string, strict_t);
 Throws:
 
 *   `yyjson::read_error` if the string is not valid JSON.
-*   `yyjson::bad_cast` if the JSON cannot be converted to `T`. The message tells the [position](validation.md#errors-of-conversion) of the value that failed.
+*   `yyjson::bad_cast` if the JSON cannot be converted to `T`. The message tells the [position](validation.md#conversion-errors) of the value that failed.
 
 ```cpp
 using namespace yyjson;
@@ -138,7 +147,7 @@ A `T` that would refer into the JSON string, such as `std::string_view`, `const 
 
 `read<T>` reads most types directly from the string:
 
-*   numbers, strings, `bool`, `nullptr`, ranges, maps and the [pre-defined STL casters](conversions.md#pre-defined-stl-casters);
+*   numbers, strings, `bool`, `nullptr`, ranges, maps and the other [standard library types](conversions.md#standard-library-types);
 *   structs that the compile-time reflection or the `VISITABLE_STRUCT` macro converts;
 *   a `std::variant`, which tries its alternatives in the same order as the cast does, and a [tagged variant](conversions.md#tagged-variants), which reads the alternative that its tag names;
 *   a tuple-like type, such as `std::tuple` or `std::pair`, from an array or an object as its caster reads it from a value;
@@ -147,15 +156,7 @@ A `T` that would refer into the JSON string, such as `std::string_view`, `const 
 
 A user-defined `from_json` that takes a DOM value, and a tuple of key-value pairs whose keys are not `std::string`, need a document. The value that such a caster converts is read into a temporary document, and the values around it are still read directly. When such values are the elements of a range or a map, or an alternative of a `std::variant`, `read<T>` reads the whole string into one document and casts it instead.
 
-<a id="flags-of-readt"></a>Whether `read<T>` reads directly also depends on `flag`:
-
-| `flag` | How `read<T>` reads the string |
-| --- | --- |
-| `NoFlag`, `AllowInvalidUnicode` | Directly. |
-| `AllowComments`, `AllowTrailingCommas`, `AllowInfAndNan`, `AllowBom`, `AllowExtNumber`, `AllowExtEscape`, `AllowExtWhitespace`, `AllowSingleQuotedStr`, `AllowUnquotedKey`, `Json5`, alone or combined with each other and with `AllowInvalidUnicode` | Directly, as strict JSON. A string that uses the syntax that the flags allow is read again into a document. |
-| `ReadInsitu`, `NumberAsRaw` or `BignumAsRaw`, alone or combined with any other flag | Into a document, which is then cast. |
-
-The flags of the second row allow more text but do not change how strict JSON is read. A string that does not use the extra syntax is read as fast as with `NoFlag`. A string that does, for example one with a comment, is read directly up to the comment and then again from the start into a document, so it takes longer than `read(json_string, flag).cast<T>()`. `AllowBom` skips a byte order mark at the start of the string and reads the rest directly.
+Whether `read<T>` reads directly also depends on `flag`; see [Flags of `yyjson::read<T>`](#flags-of-yyjsonreadt).
 
 Whenever a direct read fails, `read<T>` reads the string into a document and casts it. This gives the result and the exception of `cast<T>`. A user-defined `from_json` may therefore be called twice for the same JSON value; do not rely on the number of calls.
 
@@ -202,7 +203,7 @@ Each member of the JSON object is merged into the field or the map value that it
 *   A JSON object is merged in the same way. A key that a map does not have yet is first added with a default value.
 *   Any other value replaces the field or the map value, as `read_into` reads it. A JSON array therefore replaces a range as a whole.
 
-Fields and keys that the object does not name keep their values. If a key appears twice in an object, which of its members are applied, and in which order, is [unspecified](validation.md#what-a-read-checks).
+Fields and keys that the object does not name keep their values. If a key appears twice in an object, which of its members are applied, and in which order, is [unspecified](validation.md#repeated-keys).
 
 Throws the same exceptions as `read<T>`. If either function throws, `t` is left valid but with unspecified contents.
 
@@ -228,7 +229,7 @@ Some fields are not merged but first reset to their default and then replaced:
 *   A field converted by a user-defined caster, a [translator](conversions.md#translator) or an [in-place translator](conversions.md#reading-into-an-existing-field), since the caster reads the whole value.
 *   A struct with a field that cannot be move-assigned, such as `std::atomic`. It is read as `read<T>` reads it.
 
-Merging the same JSON string twice gives the same result as merging it once; `merge_into` relies on this when it falls back to a document after a direct read that failed halfway. The exception is a string with a [key twice](validation.md#what-a-read-checks) in an object. Its result is unspecified, and the second pass may also make a [`yyjson::validate<f>`](validation.md#constraints) reject an intermediate value.
+Merging the same JSON string twice gives the same result as merging it once; `merge_into` relies on this when it falls back to a document after a direct read that failed halfway. The exception is a string with a [key twice](validation.md#repeated-keys) in an object. Its result is unspecified, and the second pass may also make a [`yyjson::validate<f>`](validation.md#constraints) reject an intermediate value.
 
 > [!NOTE]
 > With Clang and libstdc++, `std::is_default_constructible_v` is `false` for a struct that has a default member initializer, a defaulted `operator==` and a `std::map` of its own type. `merge_into` then replaces such a struct instead of merging into it. Removing the default member initializer or the defaulted `operator==` avoids this.
@@ -276,28 +277,14 @@ for (const auto& points : batches)
 
 `write` writes most types directly to the string:
 
-*   numbers, strings, `bool`, `nullptr`, ranges, maps and the pre-defined STL casters;
+*   numbers, strings, `bool`, `nullptr`, ranges, maps and the other [standard library types](conversions.md#standard-library-types);
 *   structs that the compile-time reflection or the `VISITABLE_STRUCT` macro converts;
 *   the values of `yyjson::reader` and `yyjson::value`;
 *   the value that a user-defined `to_json` returns, and the output of a `to_json` that takes an [emitter](conversions.md#writing-members-with-an-emitter).
 
 A user-defined `to_json` that [fills](conversions.md#writing-into-a-json-value-in-a-caster) a `writer::value_ref`, `writer::array_ref` or `writer::object_ref` needs a document. The objects that such casters convert are built in one temporary document, and the objects around them are still written directly. The writer frees that document and starts a new one once it holds a megabyte, so the memory of a large write does not grow with the number of such objects. See [Write casters that convert C++ values](performance.md#write-casters-that-convert-c-values) for the cost.
 
-## DOM API
-
-The DOM API reads JSON into a document of *immutable* JSON values. It also builds documents of *mutable* JSON values and writes them as JSON. Use it in these cases:
-
-*   The shape of the JSON is not known in advance.
-*   The JSON that you build has no C++ type.
-*   You convert only parts of a document.
-
-`yyjson::cast<T>` and the constructors of the mutable classes convert between JSON values and C++ types. They use the same [casters](conversions.md) as the data binding API.
-
-The bundled backend is based on upstream yyjson 0.13.0 and supports every function and flag in this reference. Notes such as `for yyjson >= v0.13.0` apply only when cpp-yyjson is built with an external yyjson.
-
-### Reading and casting
-
-#### `yyjson::read`
+### `yyjson::read`
 
 Reads a JSON string into an immutable document and returns its root value.
 
@@ -310,8 +297,8 @@ yyjson::reader::value read(char* json_string, [std::size_t len,] [Allocator alc,
 ```
 
 *   `len` is the length of the JSON string. Without it, `read` uses the length of the string.
-*   `alc` is one of the [allocators](#allocator-classes). Without it, `read` uses the default allocator of yyjson.
-*   `flag` is a combination of [`ReadFlag`](#yyjsonreadflag-yyjsonwriteflag) values.
+*   `alc` is one of the [allocators](#allocators). Without it, `read` uses the default allocator of yyjson.
+*   `flag` is a combination of [`ReadFlag`](#yyjsonreadflag) values.
 
 With [`ReadFlag::ReadInsitu`](https://ibireme.github.io/yyjson/doc/doxygen/html/api.html#yyjson_read_insitu), yyjson parses the string in place. Pass the string as writable (`std::string&` or `char*`) together with its length. The buffer must have at least [`YYJSON_PADDING_SIZE`](https://ibireme.github.io/yyjson/doc/doxygen/html/yyjson_8h.html#abbe8e69f634b1a5a78c1dae08b88e0ef) bytes of padding after the string, and `len` must not include the padding.
 
@@ -326,7 +313,7 @@ std::cout << *obj["id"].as_int() << ", " << *obj["name"].as_string() << std::end
 
 To read a JSON string into a C++ object without a document, use [`yyjson::read<T>`](#yyjsonreadt).
 
-#### `yyjson::cast`
+### `yyjson::cast`
 
 Converts a JSON value to a C++ type.
 
@@ -345,62 +332,31 @@ auto point = yyjson::cast<std::map<std::string, int>>(doc);
 // -> {{"x", 1}, {"y", 2}}
 ```
 
-#### `yyjson::ReadFlag`, `yyjson::WriteFlag`
+## DOM classes
 
-Flags of reading and writing. Combine them with `|`.
+The DOM classes hold the JSON values of a document:
 
-```cpp
-enum class yyjson::ReadFlag : yyjson_read_flag
-{
-    NoFlag = YYJSON_READ_NOFLAG,
-    ReadInsitu = YYJSON_READ_INSITU,
-    AllowTrailingCommas = YYJSON_READ_ALLOW_TRAILING_COMMAS,
-    AllowComments = YYJSON_READ_ALLOW_COMMENTS,
-    AllowInfAndNan = YYJSON_READ_ALLOW_INF_AND_NAN,
-    NumberAsRaw = YYJSON_READ_NUMBER_AS_RAW,
-    AllowInvalidUnicode = YYJSON_READ_ALLOW_INVALID_UNICODE,
-    BignumAsRaw = YYJSON_READ_BIGNUM_AS_RAW,                         // for yyjson >= v0.7.0
-    AllowBom = YYJSON_READ_ALLOW_BOM,                                // for yyjson >= v0.11.0
-    AllowExtNumber = YYJSON_READ_ALLOW_EXT_NUMBER,                   // for yyjson >= v0.12.0
-    AllowExtEscape = YYJSON_READ_ALLOW_EXT_ESCAPE,                   // for yyjson >= v0.12.0
-    AllowExtWhitespace = YYJSON_READ_ALLOW_EXT_WHITESPACE,           // for yyjson >= v0.12.0
-    AllowSingleQuotedStr = YYJSON_READ_ALLOW_SINGLE_QUOTED_STR,      // for yyjson >= v0.12.0
-    AllowUnquotedKey = YYJSON_READ_ALLOW_UNQUOTED_KEY,               // for yyjson >= v0.12.0
-    Json5 = YYJSON_READ_JSON5                                        // for yyjson >= v0.12.0
-};
+*   The *immutable* classes of `yyjson::reader` hold a document that [`yyjson::read`](#yyjsonread) reads. Their values cannot be modified; to modify a document, [convert it to a mutable class](#conversion-from-immutable-to-mutable).
+*   The *mutable* classes of `yyjson::writer` build a document and write it as JSON. The classes that a program constructs are also available in the `yyjson` namespace:
 
-enum class yyjson::WriteFlag : yyjson_write_flag
-{
-    NoFlag = YYJSON_WRITE_NOFLAG,
-    Pretty = YYJSON_WRITE_PRETTY,
-    EscapeUnicode = YYJSON_WRITE_ESCAPE_UNICODE,
-    EscapeSlashes = YYJSON_WRITE_ESCAPE_SLASHES,
-    AllowInfAndNan = YYJSON_WRITE_ALLOW_INF_AND_NAN,
-    InfAndNanAsNull = YYJSON_WRITE_INF_AND_NAN_AS_NULL,
-    AllowInvalidUnicode = YYJSON_WRITE_ALLOW_INVALID_UNICODE,
-    PrettyTwoSpaces = YYJSON_WRITE_PRETTY_TWO_SPACES,    // for yyjson >= v0.7.0
-    NewlineAtEnd = YYJSON_WRITE_NEWLINE_AT_END,          // for yyjson >= v0.9.0
-    LowercaseHex = YYJSON_WRITE_LOWERCASE_HEX            // for yyjson >= v0.13.0
-};
-```
+    ```cpp
+    using yyjson::value = yyjson::writer::value;
+    using yyjson::array = yyjson::writer::array;
+    using yyjson::object = yyjson::writer::object;
+    ```
 
-Each flag is the yyjson flag of the same name; see the yyjson documentation of [reader flags](https://ibireme.github.io/yyjson/doc/doxygen/html/api.html#reader-flag) and [writer flags](https://ibireme.github.io/yyjson/doc/doxygen/html/api.html#writer-flag). The flags apply to both APIs. Which read flags let `read<T>` read without a document is listed in the [flag table](#flags-of-readt) of `read<T>`.
+[`yyjson::cast<T>`](#yyjsoncast) and the constructors of the mutable classes convert between JSON values and C++ types. They use the same [casters](conversions.md) as the data binding API.
 
-```cpp
-auto doc = yyjson::read("[1, 2, /* three */ 3,]", yyjson::ReadFlag::AllowComments | yyjson::ReadFlag::AllowTrailingCommas);
-std::cout << doc.write(yyjson::WriteFlag::Pretty | yyjson::WriteFlag::NewlineAtEnd);
-// [
-//     1,
-//     2,
-//     3
-// ]
-```
+The signatures of the mutable classes use this notation:
 
-### Immutable JSON classes
+*   An argument in brackets, such as `[yyjson::copy_string_t]`, is optional. The tag value [`yyjson::copy_string`](#yyjsoncopy_string-yyjsonempty_array-yyjsonempty_object) makes the document copy the strings that it is built from; see [Lifetimes](#lifetimes).
+*   `value_constructible`, `array_constructible` and `object_constructible` are exposition-only concepts, which the library does not define. They are shown at the top of the `yyjson::value` constructors.
+*   `KeyType` is any type that converts to `const char*`, `std::string` or `std::string_view`, such as a string literal.
+*   `O(N)` in a comment marks a function that scans the elements or members one by one.
+*   `pair_like<T, yyjson::copy_string_t>` is a pair of a value and `yyjson::copy_string`, such as `std::pair{str, yyjson::copy_string}`. Assigning it copies the strings.
+*   `array_iter`, `const_array_iter`, `object_iter` and `const_object_iter` stand for iterator types that the library does not name.
 
-`yyjson::read` returns the immutable classes of the `yyjson::reader` namespace. Their values cannot be modified; to modify a document, [convert it to a mutable class](#conversion-from-immutable-to-mutable).
-
-#### `yyjson::reader::value`
+### `yyjson::reader::value`
 
 An immutable JSON value that owns its document. `yyjson::read` returns it. A copy shares the document with the original ([Lifetimes](#lifetimes)).
 
@@ -475,7 +431,7 @@ The `as_*` functions return `std::nullopt` when the value has another type. On a
 
 **Writing**
 
-`write` returns the JSON text as a [`yyjson::json_string`](#yyjsonjson_string-yyjsonkey_string), which owns its buffer. `Allocator` is one of the [allocator classes](#allocator-classes) or a `yyjson_alc`; the [Lifetimes](#lifetimes) section tells how long the string keeps the allocator. `write` throws [`yyjson::write_error`](#exceptions) when the value cannot be written, such as NaN without `WriteFlag::AllowInfAndNan`.
+`write` returns the JSON text as a [`yyjson::json_string`](#yyjsonjson_string-yyjsonkey_string), which owns its buffer. `Allocator` is one of the [allocator classes](#allocators) or a `yyjson_alc`; the [Lifetimes](#lifetimes) section tells how long the string keeps the allocator. `write` throws [`yyjson::write_error`](#exceptions) when the value cannot be written, such as NaN without `WriteFlag::AllowInfAndNan`.
 
 **Writing into a buffer**
 
@@ -526,7 +482,7 @@ arr[1].as_raw();   // -> "123456789012345678901234567890"
 
 **Example**
 
-See also [Reading JSON](../README.md#reading-json) in the README.
+See also [Read JSON of unknown shape](quick-start.md#read-json-of-unknown-shape) in the quick start.
 
 ```cpp
 using namespace yyjson;
@@ -567,7 +523,7 @@ std::cout << val.write(WriteFlag::Pretty) << std::endl;
 // }
 ```
 
-#### `yyjson::reader::array`, `yyjson::reader::const_array_ref`
+### `yyjson::reader::array`, `yyjson::reader::const_array_ref`
 
 An immutable JSON array. `value::as_array()` returns a `const_array_ref`, which refers to the document, on an lvalue, and an `array`, which owns it, on an rvalue. Both model `std::ranges::input_range`.
 
@@ -624,7 +580,7 @@ std::ranges::range_value_t<yyjson::reader::const_array_ref> -> yyjson::reader::c
 
 **Example**
 
-See also [Reading JSON](../README.md#reading-json) in the README.
+See also [Read JSON of unknown shape](quick-start.md#read-json-of-unknown-shape) in the quick start.
 
 ```cpp
 using namespace yyjson;
@@ -645,7 +601,7 @@ for (const auto arr = *val.as_array(); const auto& v : arr)  // OK
 // 2.0
 ```
 
-#### `yyjson::reader::object`, `yyjson::reader::const_object_ref`
+### `yyjson::reader::object`, `yyjson::reader::const_object_ref`
 
 An immutable JSON object. `value::as_object()` returns a `const_object_ref`, which refers to the document, on an lvalue, and an `object`, which owns it, on an rvalue. Both model `std::ranges::input_range`, and the members are in the order of the JSON text.
 
@@ -703,7 +659,7 @@ std::ranges::range_value_t<yyjson::reader::const_object_ref> -> yyjson::reader::
 
 **Example**
 
-See also [Reading JSON](../README.md#reading-json) in the README.
+See also [Read JSON of unknown shape](quick-start.md#read-json-of-unknown-shape) in the quick start.
 
 ```cpp
 using namespace yyjson;
@@ -721,26 +677,7 @@ std::cout << *obj["GBP"].as_real() << std::endl;
 // 158.72
 ```
 
-### Mutable JSON classes
-
-The mutable classes are defined in the `yyjson::writer` namespace. The classes that a program constructs are also available in the `yyjson` namespace:
-
-```cpp
-using yyjson::value = yyjson::writer::value;
-using yyjson::array = yyjson::writer::array;
-using yyjson::object = yyjson::writer::object;
-```
-
-The signatures of the mutable classes use this notation:
-
-*   An argument in brackets, such as `[yyjson::copy_string_t]`, is optional. The tag value `yyjson::copy_string` makes the document copy the strings that it is built from; see [Lifetimes](#lifetimes).
-*   `value_constructible`, `array_constructible` and `object_constructible` are exposition-only concepts, which the library does not define. They are shown at the top of the `yyjson::value` constructors.
-*   `KeyType` is any type that converts to `const char*`, `std::string` or `std::string_view`, such as a string literal.
-*   `O(N)` in a comment marks a function that scans the elements or members one by one.
-*   `pair_like<T, yyjson::copy_string_t>` is a pair of a value and `yyjson::copy_string`, such as `std::pair{str, yyjson::copy_string}`. Assigning it copies the strings.
-*   `array_iter`, `const_array_iter`, `object_iter` and `const_object_iter` stand for iterator types that the library does not name.
-
-#### `yyjson::value`
+### `yyjson::value`
 
 A mutable JSON value: `null`, a boolean, a number, a string, an array or an object. It owns its document. A copy shares the document with the original, so a change through one is seen through the other ([Lifetimes](#lifetimes)).
 
@@ -864,7 +801,7 @@ A document refers to the strings that it is built from, except an rvalue `std::s
 
 **Example**
 
-See also [Building JSON](../README.md#building-json) in the README.
+See also [Build JSON](quick-start.md#build-json) in the quick start.
 
 ```cpp
 using namespace yyjson;
@@ -890,7 +827,7 @@ std::cout << v_array.write() << " " << v_object.write() << std::endl;
 // [1,2,3] {"pi":3.14}
 ```
 
-#### `yyjson::array`
+### `yyjson::array`
 
 A mutable JSON array. Construct it from a range of values, or get it from `yyjson::value::as_array()`. It models `std::ranges::input_range`.
 
@@ -1000,7 +937,7 @@ Inserting a `yyjson::value`, `array` or `object` links it into the array without
 
 **Example**
 
-See also [Building JSON](../README.md#building-json) in the README.
+See also [Build JSON](quick-start.md#build-json) in the quick start.
 
 ```cpp
 using namespace yyjson;
@@ -1030,7 +967,7 @@ std::cout << arr.write() << std::endl;
 // [2,4,6,"4",[5.0,"6",7]]
 ```
 
-#### `yyjson::object`
+### `yyjson::object`
 
 A mutable JSON object. Construct it from a range of key-value pairs, or get it from `yyjson::value::as_object()`. It models `std::ranges::input_range`, and keeps its members in the order of insertion.
 
@@ -1138,7 +1075,7 @@ std::ranges::range_value_t<const yyjson::object&> -> yyjson::writer::const_key_v
 
 **Example**
 
-See also [Building JSON](../README.md#building-json) in the README.
+See also [Build JSON](quick-start.md#build-json) in the quick start.
 
 ```cpp
 using namespace yyjson;
@@ -1204,17 +1141,627 @@ std::cout << text << std::endl;
 // {"a":1}
 ```
 
-### Allocator classes
+### `yyjson::copy_string`, `yyjson::empty_array`, `yyjson::empty_object`
 
-The allocator classes supply the memory of the DOM API: `yyjson::read` and the `write` member functions take one as the `Allocator` argument. A program that reads or writes many documents can keep one allocator and reuse its memory, instead of allocating and freeing memory for each document; see [Reuse an allocator with the DOM API](performance.md#reuse-an-allocator-with-the-dom-api). The data binding API manages its memory itself and takes no allocator.
+Tag values that the constructors and the insertion functions of the mutable classes take.
 
-An `Allocator` parameter accepts a type of the `yyjson::yyjson_allocator` concept:
+```cpp
+struct copy_string_t {} inline constexpr copy_string;
+struct empty_array_t {} inline constexpr empty_array;
+struct empty_object_t {} inline constexpr empty_object;
+```
 
-*   one of the classes below;
+*   `yyjson::copy_string` makes the document copy the strings that it is built from, instead of referring to them; see [Lifetimes](#lifetimes).
+*   `yyjson::empty_array` and `yyjson::empty_object` insert an empty array or object and return a reference to it, as the `emplace` functions of [`yyjson::array`](#yyjsonarray) and [`yyjson::object`](#yyjsonobject) show.
+
+```cpp
+auto str = std::string("temporary");
+auto obj = yyjson::object();
+obj.emplace("name", str, yyjson::copy_string);
+auto items = obj.emplace("items", yyjson::empty_array);
+items.emplace_back(1);
+str.clear();
+std::cout << obj.write() << std::endl;
+// {"name":"temporary","items":[1]}
+```
+
+### `std::format` support
+
+cpp-yyjson specializes `std::formatter` for the JSON classes and the reference classes. They format as compact JSON text, as `write()` gives:
+
+```cpp
+using namespace yyjson;
+
+auto obj = object{{"a", 1}, {"b", "text"}};
+std::cout << std::format("{}", obj) << std::endl;
+// {"a":1,"b":"text"}
+```
+
+`yyjson::key_string`, the key of an object member, is formattable with the same options as `std::string_view`:
+
+```cpp
+using namespace yyjson;
+
+auto doc = read(R"({"a":1,"bc":[2]})");
+for (const auto obj = *doc.as_object(); const auto& [key, value] : obj)
+{
+    std::cout << std::format("{:>3}: {}", key, value) << std::endl;
+}
+//   a: 1
+//  bc: [2]
+```
+
+### Conversion from immutable to mutable
+
+To change a document that `yyjson::read` returned, construct a mutable class from it. This copies the document.
+
+```cpp
+using namespace yyjson;
+
+auto doc = read(R"({"id":1,"name":"café","tags":["a","b"]})");
+auto obj = object(doc);
+obj["name"] = "tea";
+obj["tags"].as_array()->emplace_back("c");
+std::cout << obj.write() << std::endl;
+// {"id":1,"name":"tea","tags":["a","b","c"]}
+```
+
+### Inserting the same value more than once
+
+A `yyjson::value`, `array` or `object` can be inserted into containers any number of times. The first insertion of a value that is not in a container yet links its node into the container without copying it, so later changes to the value show in the container. Each later insertion copies the value.
+
+```cpp
+using namespace yyjson;
+
+auto v = value(1);
+auto arr = array();
+arr.emplace_back(v);  // links v into arr
+arr.emplace_back(v);  // copies v
+v = 2;
+std::cout << arr.write() << std::endl;
+// [2,1]
+```
+
+## Options
+
+The flags of reading and writing are the flags of yyjson, and apply to both APIs. The tag value `yyjson::strict` applies to the functions that convert JSON values to C++ types.
+
+### `yyjson::ReadFlag`
+
+Flags of reading, which `yyjson::read`, `yyjson::read<T>`, `yyjson::read_into` and `yyjson::merge_into` take. Combine them with `|`.
+
+```cpp
+enum class yyjson::ReadFlag : yyjson_read_flag
+{
+    NoFlag = YYJSON_READ_NOFLAG,
+    ReadInsitu = YYJSON_READ_INSITU,
+    AllowTrailingCommas = YYJSON_READ_ALLOW_TRAILING_COMMAS,
+    AllowComments = YYJSON_READ_ALLOW_COMMENTS,
+    AllowInfAndNan = YYJSON_READ_ALLOW_INF_AND_NAN,
+    NumberAsRaw = YYJSON_READ_NUMBER_AS_RAW,
+    AllowInvalidUnicode = YYJSON_READ_ALLOW_INVALID_UNICODE,
+    BignumAsRaw = YYJSON_READ_BIGNUM_AS_RAW,                         // for yyjson >= v0.7.0
+    AllowBom = YYJSON_READ_ALLOW_BOM,                                // for yyjson >= v0.11.0
+    AllowExtNumber = YYJSON_READ_ALLOW_EXT_NUMBER,                   // for yyjson >= v0.12.0
+    AllowExtEscape = YYJSON_READ_ALLOW_EXT_ESCAPE,                   // for yyjson >= v0.12.0
+    AllowExtWhitespace = YYJSON_READ_ALLOW_EXT_WHITESPACE,           // for yyjson >= v0.12.0
+    AllowSingleQuotedStr = YYJSON_READ_ALLOW_SINGLE_QUOTED_STR,      // for yyjson >= v0.12.0
+    AllowUnquotedKey = YYJSON_READ_ALLOW_UNQUOTED_KEY,               // for yyjson >= v0.12.0
+    Json5 = YYJSON_READ_JSON5                                        // for yyjson >= v0.12.0
+};
+```
+
+Each flag is the yyjson flag of the same name; see the yyjson documentation of [reader flags](https://ibireme.github.io/yyjson/doc/doxygen/html/api.html#reader-flag). A comment such as `for yyjson >= v0.12.0` gives the oldest external yyjson that has the flag; the bundled backend has every flag ([Backend versions](#backend-versions)). Which flags let `read<T>` read without a document is listed in [Flags of `yyjson::read<T>`](#flags-of-yyjsonreadt).
+
+```cpp
+auto doc = yyjson::read("[1, 2, /* three */ 3,]", yyjson::ReadFlag::AllowComments | yyjson::ReadFlag::AllowTrailingCommas);
+std::cout << doc.write() << std::endl;
+// [1,2,3]
+```
+
+### `yyjson::WriteFlag`
+
+Flags of writing, which `yyjson::write` and the `write` member functions of the DOM classes take. Combine them with `|`.
+
+```cpp
+enum class yyjson::WriteFlag : yyjson_write_flag
+{
+    NoFlag = YYJSON_WRITE_NOFLAG,
+    Pretty = YYJSON_WRITE_PRETTY,
+    EscapeUnicode = YYJSON_WRITE_ESCAPE_UNICODE,
+    EscapeSlashes = YYJSON_WRITE_ESCAPE_SLASHES,
+    AllowInfAndNan = YYJSON_WRITE_ALLOW_INF_AND_NAN,
+    InfAndNanAsNull = YYJSON_WRITE_INF_AND_NAN_AS_NULL,
+    AllowInvalidUnicode = YYJSON_WRITE_ALLOW_INVALID_UNICODE,
+    PrettyTwoSpaces = YYJSON_WRITE_PRETTY_TWO_SPACES,    // for yyjson >= v0.7.0
+    NewlineAtEnd = YYJSON_WRITE_NEWLINE_AT_END,          // for yyjson >= v0.9.0
+    LowercaseHex = YYJSON_WRITE_LOWERCASE_HEX            // for yyjson >= v0.13.0
+};
+```
+
+Each flag is the yyjson flag of the same name; see the yyjson documentation of [writer flags](https://ibireme.github.io/yyjson/doc/doxygen/html/api.html#writer-flag).
+
+```cpp
+std::cout << yyjson::write(std::vector{1, 2, 3}, yyjson::WriteFlag::Pretty | yyjson::WriteFlag::NewlineAtEnd);
+// [
+//     1,
+//     2,
+//     3
+// ]
+```
+
+### Flags of `yyjson::read<T>`
+
+`yyjson::read<T>`, `yyjson::read_into` and `yyjson::merge_into` read directly or through a document depending on the `flag` that they are given. The types that they read directly are listed in [Direct reads and the fallback to a document](#direct-reads-and-the-fallback-to-a-document).
+
+| `flag` | How `read<T>` reads the string |
+| --- | --- |
+| `NoFlag`, `AllowInvalidUnicode` | Directly. |
+| `AllowComments`, `AllowTrailingCommas`, `AllowInfAndNan`, `AllowBom`, `AllowExtNumber`, `AllowExtEscape`, `AllowExtWhitespace`, `AllowSingleQuotedStr`, `AllowUnquotedKey`, `Json5`, alone or combined with each other and with `AllowInvalidUnicode` | Directly, as strict JSON. A string that uses the syntax that the flags allow is read again into a document. |
+| `ReadInsitu`, `NumberAsRaw` or `BignumAsRaw`, alone or combined with any other flag | Into a document, which is then cast. |
+
+The flags of the second row allow more text but do not change how strict JSON is read. A string that does not use the extra syntax is read as fast as with `NoFlag`. A string that does, for example one with a comment, is read directly up to the comment and then again from the start into a document, so it takes longer than `read(json_string, flag).cast<T>()`. `AllowBom` skips a byte order mark at the start of the string and reads the rest directly.
+
+### `yyjson::strict`
+
+A tag value that makes a read reject JSON with more or less than the C++ type takes.
+
+```cpp
+struct strict_t
+{
+    explicit strict_t() = default;
+};
+inline constexpr strict_t strict{};
+```
+
+`yyjson::read<T>`, `yyjson::read_into`, `yyjson::merge_into`, `yyjson::cast<T>` and the `cast<T>` member functions take it as their last argument. It rejects unknown keys, missing keys, `null` in a `std::optional` field and repeated keys, and applies to every value that the call reads, including the values that a caster reads. The rules are described in [Strict reading](validation.md#strict-reading).
+
+Throws `yyjson::bad_cast` when the JSON does not follow these rules.
+
+```cpp
+struct Point
+{
+    int x;
+    int y;
+};
+
+auto p = yyjson::read<Point>(R"({"x":1,"y":2,"z":3})");  // -> Point{1, 2}
+try
+{
+    p = yyjson::read<Point>(R"({"x":1,"y":2,"z":3})", yyjson::strict);
+}
+catch (const yyjson::bad_cast& e)
+{
+    std::cout << e.what() << std::endl;
+    // Point has no field of the key "z" at /z (line 1, column 18, pos 17)
+}
+```
+
+## Annotations
+
+Annotations set how a type converts: the JSON keys and the constraints of the fields of a struct, the tag of a variant, and the names of an enumeration. Give them in a specialization of [`yyjson::annotations<T>`](#yyjsonannotationst-yyjsonannotate). With the reflection of C++26, the same settings can also be written on the declarations, as `[[=yyjson::rename("key")]]`; see [C++26 annotations](conversions.md#c26-annotations).
+
+### `yyjson::annotations<T>`, `yyjson::annotate`
+
+The settings of the conversion of `T`, and the function that collects them.
+
+```cpp
+template <typename T>
+inline constexpr auto annotations = annotate();
+
+template <typename... As>
+consteval annotation_list<As...> annotate(As... values);
+```
+
+Specialize `annotations<T>` before the first use of `T`. `annotate` takes these settings, and rejects any other with a compile error:
+
+| `T` | Settings |
+| --- | --- |
+| a struct | [`yyjson::field`](#yyjsonfield) and [`yyjson::additional_properties`](#yyjsonadditional_properties) |
+| a `std::variant` | [`yyjson::internal_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag) |
+| an enumeration | [`yyjson::enumerator` and `yyjson::enum_format`](#yyjsonenum_format-yyjsonenumerator) |
+
+See [Annotations](conversions.md#annotations).
+
+```cpp
+struct User
+{
+    std::string name;
+    int age;
+    std::string password;
+};
+
+template <>
+inline constexpr auto yyjson::annotations<User> =
+    yyjson::annotate(yyjson::field("name", yyjson::rename("user_name")), yyjson::field("password", yyjson::skip));
+
+std::cout << yyjson::write(User{"Ann", 30, "secret"}) << std::endl;
+// {"user_name":"Ann","age":30}
+```
+
+### `yyjson::field`
+
+The settings of the field `member` of a struct, for `yyjson::annotate`.
+
+```cpp
+template <typename... As>
+consteval field_annotation<As...> field(std::string_view member, As... values);
+```
+
+`values` are one or more of [`yyjson::rename`](#yyjsonrename), [`yyjson::skip`](#yyjsonskip), [`yyjson::required`](#yyjsonrequired), [`yyjson::optional_key`](#yyjsonoptional_key), [`yyjson::adjacent_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag) and the [constraints](#constraints). Any other setting is a compile error.
+
+### `yyjson::rename`
+
+The JSON key of a field, or the JSON name of an enumerator.
+
+```cpp
+struct rename
+{
+    consteval explicit rename(std::string_view key);
+    constexpr std::string_view key() const noexcept;
+};
+```
+
+It is a setting of [`yyjson::field`](#yyjsonfield) or of [`yyjson::enumerator`](#yyjsonenum_format-yyjsonenumerator). See [JSON keys](conversions.md#json-keys) and [Formats and renamed enumerators](conversions.md#formats-and-renamed-enumerators).
+
+### `yyjson::skip`
+
+A field that is neither read nor written.
+
+```cpp
+inline constexpr skip_t skip{};
+```
+
+Reading `T` gives the field its value in `T()`. See [Skipped fields](conversions.md#skipped-fields).
+
+### `yyjson::required`
+
+A field whose key the JSON object must have, with or without [`yyjson::strict`](#yyjsonstrict).
+
+```cpp
+inline constexpr required_t required{};
+```
+
+Reading an object without the key throws `yyjson::bad_cast`, except in `yyjson::merge_into`. It is a compile error on a `std::optional` field. See [Annotations of keys](validation.md#annotations-of-keys).
+
+### `yyjson::optional_key`
+
+A field whose key the JSON object may leave out under [`yyjson::strict`](#yyjsonstrict).
+
+```cpp
+inline constexpr optional_key_t optional_key{};
+```
+
+The field then keeps its value in `T()`. It is a compile error together with `yyjson::required` and on a skipped field. See [Annotations of keys](validation.md#annotations-of-keys).
+
+### `yyjson::additional_properties`
+
+Whether the object of a struct may have keys that name no field.
+
+```cpp
+struct additional_properties
+{
+    consteval explicit additional_properties(bool allowed);
+};
+```
+
+It is a setting of the struct, given to [`yyjson::annotate`](#yyjsonannotationst-yyjsonannotate):
+
+*   With `false`, reading an object with such a key throws `yyjson::bad_cast`.
+*   With `true`, the struct accepts such keys under `yyjson::strict` too, and ignores them.
+*   Without it, such keys are ignored, and `yyjson::strict` rejects them.
+
+See [Annotations of keys](validation.md#annotations-of-keys).
+
+### Constraints
+
+Settings of a field that restrict the values that it reads, as the keywords of JSON Schema of the same names do.
+
+```cpp
+consteval explicit minimum(auto m);
+consteval explicit maximum(auto m);
+consteval explicit exclusive_minimum(auto m);
+consteval explicit exclusive_maximum(auto m);
+consteval explicit multiple_of(auto m);
+consteval explicit min_length(std::size_t n);
+consteval explicit max_length(std::size_t n);
+consteval explicit pattern(std::string_view regex);
+consteval explicit min_items(std::size_t n);
+consteval explicit max_items(std::size_t n);
+template <auto F>
+inline constexpr validator validate;
+```
+
+| Constraint | The field | Rejects a value |
+| --- | --- | --- |
+| `yyjson::minimum(m)` | a number | less than `m` |
+| `yyjson::maximum(m)` | a number | greater than `m` |
+| `yyjson::exclusive_minimum(m)` | a number | `m` or less |
+| `yyjson::exclusive_maximum(m)` | a number | `m` or greater |
+| `yyjson::multiple_of(m)` | a number | not an integer multiple of `m` |
+| `yyjson::min_length(n)` | a string | of fewer than `n` code points |
+| `yyjson::max_length(n)` | a string | of more than `n` code points |
+| `yyjson::pattern("regex")` | a string | in which the regular expression matches nowhere |
+| `yyjson::min_items(n)` | a range or a map | with fewer than `n` elements |
+| `yyjson::max_items(n)` | a range or a map | with more than `n` elements |
+| `yyjson::validate<f>` | any | for which `f(value)` returns `false` |
+
+The constraints are settings of [`yyjson::field`](#yyjsonfield). Reading a value that a constraint rejects throws `yyjson::bad_cast`; writing does not check them. `yyjson::pattern` needs a [`yyjson::pattern_matcher<>`](#yyjsonpattern_matcher). See [Constraints](validation.md#constraints).
+
+### `yyjson::pattern_matcher<>`
+
+The regular expression engine of [`yyjson::pattern`](#constraints), which the program gives.
+
+```cpp
+template <typename = void>
+struct pattern_matcher;
+```
+
+The library declares the template and defines no engine. Specialize `yyjson::pattern_matcher<>` before the first read of a struct that has a pattern. The specialization needs a constructor from the `std::string_view` of the pattern, and a `const` call operator that takes the `std::string_view` of a string and returns whether the pattern matches anywhere in it. See [Pattern matcher](validation.md#pattern-matcher).
+
+### `yyjson::internal_tag`, `yyjson::adjacent_tag`
+
+Tell the alternatives of a `std::variant` by the member `key` of a JSON object.
+
+```cpp
+template <std::size_t N>
+consteval auto internal_tag(std::string_view key, const std::string_view (&ids)[N]);
+template <std::size_t N>
+consteval auto adjacent_tag(std::string_view key, const std::string_view (&ids)[N]);
+```
+
+`ids` names the alternatives other than `std::monostate`, in the order of the template arguments.
+
+*   `internal_tag` puts the tag in the object of the alternative, as in `{"type":"circle","radius":1}`. It is a setting of the variant type, given to [`yyjson::annotate`](#yyjsonannotationst-yyjsonannotate).
+*   `adjacent_tag` puts the tag in the object of the struct that holds the variant, next to its field, as in `{"type":"circle","shape":{"radius":1}}`. It is a setting of that field, given to [`yyjson::field`](#yyjsonfield).
+
+See [Tagged variants](conversions.md#tagged-variants).
+
+### `yyjson::enum_format`, `yyjson::enumerator`
+
+How an enumeration is written and read, and the JSON name of one of its enumerators.
+
+```cpp
+enum class enum_format : std::uint8_t
+{
+    name,
+    integer,
+    name_or_integer
+};
+
+template <typename... As>
+consteval enumerator_annotation<As...> enumerator(std::string_view name, As... values);
+```
+
+*   `enum_format::name`, the default, converts an enumeration by the names of its enumerators. `integer` converts it as the integer of its underlying type. `name_or_integer` writes the name, or the integer for a value without a name, and reads both.
+*   `enumerator(name, yyjson::rename("json-name"))` gives the enumerator `name` another JSON name. It takes only [`yyjson::rename`](#yyjsonrename).
+
+Both are settings of the enumeration, given to [`yyjson::annotate`](#yyjsonannotationst-yyjsonannotate). See [Formats and renamed enumerators](conversions.md#formats-and-renamed-enumerators).
+
+### `VISITABLE_STRUCT`
+
+A macro that registers the fields of a struct or a class by name.
+
+```cpp
+VISITABLE_STRUCT(Class, entry...);  // each entry: member or (member, "key")
+```
+
+A registered type converts only the fields that the macro lists, and the registration takes precedence over the reflection. An entry `(member, "key")` gives the field the JSON key `key`. Write the macro at global namespace scope, for a default-initializable type. See [`VISITABLE_STRUCT`](conversions.md#visitable_struct).
+
+## Casters
+
+A caster converts a C++ type in a way that the [conversion rules](conversions.md#conversion-rules) do not give. Both APIs use the same casters.
+
+### `yyjson::caster<T>`
+
+The class template to specialize for a user-defined caster of `T`.
+
+```cpp
+template <typename T>
+struct caster
+{
+};
+```
+
+A specialization has static member functions of one or more of these forms, and needs only those that are used: `from_json` to read `T`, `to_json` to write it. The caster of a type takes precedence over every other conversion of that type.
+
+| Form | Static member functions | Direction |
+| --- | --- | --- |
+| [Translator](conversions.md#translator) | `T from_json(U)` and `U to_json(const T&)` | read and write |
+| [In-place translator](conversions.md#reading-into-an-existing-field) | `void from_json(T&, U)` | read |
+| [Emitter](conversions.md#writing-members-with-an-emitter) | `void to_json(yyjson::object_emitter&, const T&, Ts...)` or `void to_json(yyjson::array_emitter&, const T&, Ts...)` | write |
+| [`should_omit`](conversions.md#omitting-a-field-with-no-value) | `bool should_omit(const T&)` | write |
+| [JSON view](conversions.md#reading-a-json-value-in-a-caster) | `T from_json(yyjson::json_view)` or `void from_json(T&, yyjson::json_view)` | read |
+| [DOM value](conversions.md#reading-a-json-value-in-a-caster) | `T from_json(const Json&)` or `void from_json(T&, const Json&)`, a template of `Json` | read |
+| [DOM value](conversions.md#writing-into-a-json-value-in-a-caster) | `void to_json(writer::object_ref&, const T&)`, or the same with `writer::array_ref&` or `writer::value_ref&` | write |
+
+`U` is any type that the library converts. A `from_json` that cannot convert the value throws `yyjson::bad_cast`. The forms that take a DOM value make the data binding API build a temporary document; see [Write casters that convert C++ values](performance.md#write-casters-that-convert-c-values). See [User-defined casters](conversions.md#user-defined-casters) for the rules and examples.
+
+### `yyjson::object_emitter`, `yyjson::array_emitter`
+
+Write the members of a JSON object, or the elements of a JSON array, from the `to_json` of a caster.
+
+```cpp
+class object_emitter
+{
+public:
+    object_emitter(const object_emitter&) = delete;
+
+    template <typename Key, typename T, typename... Ts>
+    void emplace(Key&& key, T&& t, Ts... ts);
+    template <typename Key, std::invocable<object_emitter&> Func, typename... Ts>
+    void emplace_object(Key&& key, Func&& func, Ts... ts);
+    template <typename Key, std::invocable<array_emitter&> Func, typename... Ts>
+    void emplace_array(Key&& key, Func&& func, Ts... ts);
+};
+
+class array_emitter
+{
+public:
+    array_emitter(const array_emitter&) = delete;
+
+    template <typename T, typename... Ts>
+    void emplace_back(T&& t, Ts... ts);
+    template <std::invocable<object_emitter&> Func>
+    void emplace_back_object(Func&& func);
+    template <std::invocable<array_emitter&> Func>
+    void emplace_back_array(Func&& func);
+};
+```
+
+The library constructs the emitter and passes it to `to_json`.
+
+*   `emplace` and `emplace_back` write one member or element, converted by its own caster. `Key` is a type that converts to `const char*`, `std::string` or `std::string_view`.
+*   `emplace_object`, `emplace_array`, `emplace_back_object` and `emplace_back_array` write a nested object or array, which `func` fills through the emitter that it is given.
+*   `ts` is the parameter pack that `to_json` receives; pass it on, so that [`yyjson::copy_string`](#yyjsoncopy_string-yyjsonempty_array-yyjsonempty_object) reaches the values.
+
+See [Writing members with an emitter](conversions.md#writing-members-with-an-emitter).
+
+### `yyjson::json_view`
+
+A read-only view of a JSON value, which the `from_json` of a caster can take.
+
+```cpp
+class json_view
+{
+public:
+    bool is_null() const noexcept;    // also is_true, is_false, is_bool, is_uint, is_sint, is_int,
+                                      // is_real, is_num, is_string, is_array, is_object, is_container
+    std::optional<std::nullptr_t> as_null() const noexcept;
+    std::optional<bool> as_bool() const noexcept;
+    std::optional<std::uint64_t> as_uint() const;
+    std::optional<std::int64_t> as_sint() const;
+    std::optional<std::int64_t> as_int() const;
+    std::optional<double> as_real() const;
+    std::optional<double> as_num() const;
+    std::optional<std::string_view> as_string() const;
+    std::optional<json_array_view> as_array() const;
+    std::optional<json_object_view> as_object() const;
+    template <typename U>
+    U cast() const;
+    template <typename U>
+    U cast(yyjson::strict_t) const;
+};
+```
+
+`json_view` has the reading functions of [`yyjson::reader::value`](#yyjsonreadervalue): `is_*`, `as_*` and `cast<U>()`. The views of an array and an object, `json_array_view` and `json_object_view`, iterate and have `size()`, `empty()`, `operator[]` and `cast<U>()`; the view of an object also has `find(key)` and `contains(key)`. `operator[]` throws `std::out_of_range` for an index or a key that is not there. The view, and the strings that it gives, are valid until the caster returns. See [Reading a JSON value in a caster](conversions.md#reading-a-json-value-in-a-caster).
+
+## Concepts
+
+### `yyjson::readable<T>`, `yyjson::writable<T>`
+
+Whether `yyjson::read<T>` can read a `T`, and whether `yyjson::write` can write one.
+
+```cpp
+template <typename T>
+concept readable = /* see below */;
+template <typename T>
+concept writable = /* see below */;
+```
+
+*   `readable<T>` holds when `castable<yyjson::reader::const_value_ref, T>` holds for `T` and the types that it holds, and `T` owns its strings, unlike `std::string_view`. `yyjson::read_into` and `yyjson::merge_into` also need `T` to be move-assignable and not `const`.
+*   `writable<T>` holds when a `yyjson::value` can be constructed from a `T`, and so `yyjson::write(t)` compiles.
+
+See [Conversion rules](conversions.md#conversion-rules) and [Compile errors](validation.md#compile-errors).
+
+### `yyjson::castable<Json, T>`
+
+Whether `yyjson::cast<T>` converts a JSON value of type `Json`.
+
+```cpp
+template <typename Json, typename T>
+concept castable = requires(Json json) {
+    { yyjson::cast<T>(json) };
+};
+```
+
+```cpp
+static_assert(yyjson::readable<std::vector<int>>);
+static_assert(!yyjson::readable<std::string_view>);
+static_assert(yyjson::castable<yyjson::reader::value, std::string_view>);
+static_assert(yyjson::writable<std::map<std::string, int>>);
+```
+
+### `yyjson::yyjson_allocator`
+
+The types that the `Allocator` parameters of the DOM API accept:
+
+*   one of the [allocator classes](#allocators);
 *   a class whose `ptr()` returns a `std::shared_ptr<yyjson_alc>` or a `yyjson_alc*`;
 *   a `yyjson_alc` of yyjson itself.
 
-#### `yyjson::dynamic_allocator`
+## Exceptions
+
+All exceptions of cpp-yyjson derive from `std::runtime_error`.
+
+### `yyjson::read_error`
+
+Thrown when the JSON string is not valid JSON, or when the allocator cannot supply the memory.
+
+```cpp
+yyjson_read_code code() const noexcept;
+```
+
+`what()` tells the reason and the position of the error. `code()` returns the [`yyjson_read_code`](https://ibireme.github.io/yyjson/doc/doxygen/html/yyjson_8h.html) of the failure, so that the caller can tell a failed allocation, `YYJSON_READ_ERROR_MEMORY_ALLOCATION`, from a malformed input without parsing the message. A `read_error` that is constructed from a message alone returns `YYJSON_READ_SUCCESS`.
+
+```cpp
+try
+{
+    auto doc = yyjson::read("[1,");
+}
+catch (const yyjson::read_error& e)
+{
+    std::cout << e.what() << std::endl;
+    // Read JSON error: unexpected end of data at line 1, column 4, pos 3
+}
+```
+
+With an external yyjson older than 0.10.0, the position is given as `at pos 3` only.
+
+### `yyjson::write_error`
+
+Thrown when a value cannot be written as JSON, such as NaN without `WriteFlag::AllowInfAndNan`, when the allocator cannot supply the memory, or when the buffer given to `write(std::span<char>)` is too small.
+
+```cpp
+yyjson_write_code code() const noexcept;
+```
+
+`code()` returns the [`yyjson_write_code`](https://ibireme.github.io/yyjson/doc/doxygen/html/yyjson_8h.html) of the failure. A `write_error` that is constructed from a message alone returns `YYJSON_WRITE_SUCCESS`.
+
+### `yyjson::bad_cast`
+
+Thrown when a JSON value cannot be converted to the C++ type, by `cast`, by the conversion operators and by the data binding API.
+
+```cpp
+class bad_cast : public std::runtime_error
+{
+public:
+    const char* what() const noexcept override;
+    std::string_view path() const noexcept;
+    std::optional<text_position> position() const noexcept;
+};
+
+struct text_position
+{
+    std::size_t line = 0;
+    std::size_t column = 0;
+    std::size_t pos = 0;
+};
+```
+
+*   `what()` names the C++ type and the kind of the JSON value.
+*   `path()` returns the JSON Pointer (RFC 6901) to the value, from the value that the cast started at, such as `/users/3/name`.
+*   `position()` returns the position of the value in the text that `read<T>`, `read_into` or `merge_into` read: `line` and `column` count characters from 1, and `pos` counts bytes from 0. A cast of a document gives no position.
+
+See [Conversion errors](validation.md#conversion-errors) for examples.
+
+## Allocators
+
+The allocator classes supply the memory of the DOM API: `yyjson::read` and the `write` member functions take one as the `Allocator` argument. A program that reads or writes many documents can keep one allocator and reuse its memory, instead of allocating and freeing memory for each document; see [Reuse an allocator with the DOM API](performance.md#reuse-an-allocator-with-the-dom-api). The data binding API manages its memory itself and takes no allocator.
+
+An `Allocator` parameter accepts one of the classes below, or another type of the [`yyjson::yyjson_allocator`](#yyjsonyyjson_allocator) concept.
+
+### `yyjson::dynamic_allocator`
 
 Wraps the dynamic allocator of yyjson, which grows as needed. Use it when the size of the documents is not known. Its copies share the allocator, and every document and `json_string` made with it keeps the allocator alive.
 
@@ -1251,7 +1798,7 @@ for (auto json : {R"([1,2])", R"({"a":3})"})
 // {"a":3}
 ```
 
-#### `yyjson::pool_allocator`
+### `yyjson::pool_allocator`
 
 Wraps the pool allocator of yyjson, with a fixed-size buffer on the heap. Use it when the size of the input is known: a read from a single buffer is faster than one through the dynamic allocator. Its copies share the buffer, and every document and `json_string` made with it keeps the buffer alive.
 
@@ -1306,7 +1853,7 @@ for (std::string_view json : {R"([1,2])", R"({"a":[3,4,5]})"})
 // {"a":[3,4,5]}
 ```
 
-#### `yyjson::stack_pool_allocator<std::size_t Byte>`
+### `yyjson::stack_pool_allocator<std::size_t Byte>`
 
 A pool allocator whose buffer of `Byte` bytes is a member of the object, so that it can live on the stack. The size is fixed at compile time.
 
@@ -1349,63 +1896,6 @@ if (alc.check_capacity(json))
     std::cout << doc.write() << std::endl;
 }
 // {"a":[1,2,3]}
-```
-
-### `std::format` support
-
-cpp-yyjson specializes `std::formatter` for the JSON classes and the reference classes. They format as compact JSON text, as `write()` gives:
-
-```cpp
-using namespace yyjson;
-
-auto obj = object{{"a", 1}, {"b", "text"}};
-std::cout << std::format("{}", obj) << std::endl;
-// {"a":1,"b":"text"}
-```
-
-`yyjson::key_string`, the key of an object member, is formattable with the same options as `std::string_view`:
-
-```cpp
-using namespace yyjson;
-
-auto doc = read(R"({"a":1,"bc":[2]})");
-for (const auto obj = *doc.as_object(); const auto& [key, value] : obj)
-{
-    std::cout << std::format("{:>3}: {}", key, value) << std::endl;
-}
-//   a: 1
-//  bc: [2]
-```
-
-### Inserting the same value more than once
-
-A `yyjson::value`, `array` or `object` can be inserted into containers any number of times. The first insertion of a value that is not in a container yet links its node into the container without copying it, so later changes to the value show in the container. Each later insertion copies the value.
-
-```cpp
-using namespace yyjson;
-
-auto v = value(1);
-auto arr = array();
-arr.emplace_back(v);  // links v into arr
-arr.emplace_back(v);  // copies v
-v = 2;
-std::cout << arr.write() << std::endl;
-// [2,1]
-```
-
-### Conversion from immutable to mutable
-
-To change a document that `yyjson::read` returned, construct a mutable class from it. This copies the document.
-
-```cpp
-using namespace yyjson;
-
-auto doc = read(R"({"id":1,"name":"café","tags":["a","b"]})");
-auto obj = object(doc);
-obj["name"] = "tea";
-obj["tags"].as_array()->emplace_back("c");
-std::cout << obj.write() << std::endl;
-// {"id":1,"name":"tea","tags":["a","b","c"]}
 ```
 
 ## Lifetimes
@@ -1468,48 +1958,6 @@ A [`yyjson::json_string`](#yyjsonjson_string-yyjsonkey_string) owns its buffer a
 | --- | --- |
 | `dynamic_allocator`, `pool_allocator` | Yes |
 | `stack_pool_allocator`, a `yyjson_alc` | No: the program must keep the allocator alive and unchanged while they are in use |
-
-## Exceptions
-
-All exceptions of cpp-yyjson derive from `std::runtime_error`.
-
-### `yyjson::read_error`
-
-Thrown when the JSON string is not valid JSON, or when the allocator cannot supply the memory.
-
-```cpp
-yyjson_read_code code() const noexcept;
-```
-
-`what()` tells the reason and the position of the error. `code()` returns the [`yyjson_read_code`](https://ibireme.github.io/yyjson/doc/doxygen/html/yyjson_8h.html) of the failure, so that the caller can tell a failed allocation, `YYJSON_READ_ERROR_MEMORY_ALLOCATION`, from a malformed input without parsing the message. A `read_error` that is constructed from a message alone returns `YYJSON_READ_SUCCESS`.
-
-```cpp
-try
-{
-    auto doc = yyjson::read("[1,");
-}
-catch (const yyjson::read_error& e)
-{
-    std::cout << e.what() << std::endl;
-    // Read JSON error: unexpected end of data at line 1, column 4, pos 3
-}
-```
-
-With an external yyjson older than 0.10.0, the position is given as `at pos 3` only.
-
-### `yyjson::write_error`
-
-Thrown when a value cannot be written as JSON, such as NaN without `WriteFlag::AllowInfAndNan`, when the allocator cannot supply the memory, or when the buffer given to `write(std::span<char>)` is too small.
-
-```cpp
-yyjson_write_code code() const noexcept;
-```
-
-`code()` returns the [`yyjson_write_code`](https://ibireme.github.io/yyjson/doc/doxygen/html/yyjson_8h.html) of the failure. A `write_error` that is constructed from a message alone returns `YYJSON_WRITE_SUCCESS`.
-
-### `yyjson::bad_cast`
-
-Thrown when a JSON value cannot be converted to the C++ type, by `cast`, by the conversion operators and by the data binding API. `what()` names the C++ type and the kind of the JSON value; `path()` and `position()` tell where the value is. See [Errors of conversion](validation.md#errors-of-conversion) for the members and examples.
 
 ## Utilities
 
@@ -1600,6 +2048,19 @@ With an external yyjson:
 *   also define `YYJSON_READER_DEPTH_LIMIT` for your code, because `read<T>`, `read_into` and `merge_into` apply the limit that the header sees.
 
 `CPPYYJSON_RECURSION_DEPTH_LIMIT` works with either backend.
+
+### Backend versions
+
+The bundled backend is based on upstream yyjson 0.13.0 and supports every function and flag in this reference. A note such as `for yyjson >= v0.13.0` applies only when cpp-yyjson is built with an external yyjson.
+
+The data binding API reads and writes directly only with the bundled backend or an external yyjson 0.12.0 or later. With an older external yyjson:
+
+*   `read<T>` reads a document and casts it;
+*   `read_into` assigns the result of `read<T>`, and reuses no memory;
+*   `merge_into` merges a document;
+*   `write` builds a document and writes it.
+
+The results are the same, but slower.
 
 ### Building this repository
 
