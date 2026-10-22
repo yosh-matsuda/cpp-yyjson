@@ -1013,6 +1013,27 @@ namespace yyjson
         consteval explicit max_items(std::size_t v) : value(v) {}
     };
 
+    // The elements of a range field that must differ from each other by `operator==`, after they are read, as
+    // `yyjson::field("tags", yyjson::unique_items)` or `[[=yyjson::unique_items]]` gives it, as JSON Schema's
+    // `uniqueItems`.
+    struct unique_items_t
+    {
+    };
+    inline constexpr unique_items_t unique_items{};
+
+    // The bounds of the number of the elements of a range field that satisfy `yyjson::contains`, as JSON Schema's
+    // `minContains` and `maxContains`.  Without `yyjson::min_contains`, at least one element has to.
+    struct min_contains
+    {
+        std::size_t value;
+        consteval explicit min_contains(std::size_t v) : value(v) {}
+    };
+    struct max_contains
+    {
+        std::size_t value;
+        consteval explicit max_contains(std::size_t v) : value(v) {}
+    };
+
     // A regular expression that a string field must match somewhere in it, as `yyjson::field("member",
     // yyjson::pattern("^[a-z]+$"))` or `[[=yyjson::pattern("^[a-z]+$")]]` gives it.  The program provides the
     // regular expressions by specializing `yyjson::pattern_matcher<>`, so that this library includes no engine.
@@ -1223,8 +1244,9 @@ namespace yyjson
         struct type_list
         {
         };
-        using constraint_types = type_list<minimum, maximum, exclusive_minimum, exclusive_maximum, multiple_of,
-                                           min_length, max_length, min_items, max_items, pattern, validator>;
+        using constraint_types =
+            type_list<minimum, maximum, exclusive_minimum, exclusive_maximum, multiple_of, min_length, max_length,
+                      min_items, max_items, pattern, validator, unique_items_t, min_contains, max_contains>;
         template <typename A, typename List = constraint_types>
         inline constexpr std::uint16_t constraint_bit = 0;
         template <typename A, typename First, typename... Rest>
@@ -1255,6 +1277,12 @@ namespace yyjson
 
     template <typename... As>
     struct items;
+    template <typename... As>
+    struct contains;
+    template <typename... As>
+    struct property_names;
+    template <std::size_t N>
+    struct prefix_items_t;
 
     namespace detail
     {
@@ -1277,8 +1305,35 @@ namespace yyjson
         {
         };
         template <typename A>
-        concept element_settings = is_items<A>::value || is_value_settings<A>::value;
-        // The settings that `yyjson::items` and `yyjson::additional_properties` take for the elements of a field.
+        struct is_contains : std::false_type
+        {
+        };
+        template <typename... As>
+        struct is_contains<contains<As...>> : std::true_type
+        {
+        };
+        template <typename A>
+        struct is_property_names : std::false_type
+        {
+        };
+        template <typename... As>
+        struct is_property_names<property_names<As...>> : std::true_type
+        {
+        };
+        template <typename A>
+        struct is_prefix_items : std::false_type
+        {
+        };
+        template <std::size_t N>
+        struct is_prefix_items<prefix_items_t<N>> : std::true_type
+        {
+        };
+        // The settings of the values in a field: its elements, the values and the keys of a map, and the elements
+        // that `yyjson::contains` counts.
+        template <typename A>
+        concept element_settings = is_items<A>::value || is_value_settings<A>::value || is_contains<A>::value ||
+                                   is_property_names<A>::value || is_prefix_items<A>::value;
+        // The settings that `yyjson::items` and the other settings of the values in a field take.
         template <typename A>
         concept element_setting = constraint_setting<A> || element_settings<A>;
 
@@ -1288,22 +1343,31 @@ namespace yyjson
                                 std::same_as<A, optional_key_t> || adjacent_tag_annotation<A> ||
                                 constraint_setting<A> || element_settings<A>;
 
-        // The number of the levels of elements that the setting A constrains.
+        // The number of the nodes that a position of `yyjson::prefix_items` has at most: its own and those of the
+        // settings of the values in it.
+        inline constexpr std::size_t prefix_position_nodes = 8;
+
+        // The number of the nodes of `schema_tree` that the setting A adds at most.
         template <typename A>
-        inline constexpr std::size_t element_nesting = 0;
+        inline constexpr std::size_t node_count = 0;
         template <typename... As>
-        inline constexpr std::size_t element_nesting<items<As...>> =
-            1 + std::max({std::size_t{0}, element_nesting<As>...});
+        inline constexpr std::size_t node_count<items<As...>> = (std::size_t{1} + ... + node_count<As>);
         template <typename... As>
-        inline constexpr std::size_t element_nesting<additional_properties<As...>> =
-            sizeof...(As) == 0 ? 0 : 1 + std::max({std::size_t{0}, element_nesting<As>...});
+        inline constexpr std::size_t node_count<additional_properties<As...>> =
+            sizeof...(As) == 0 ? 0 : (std::size_t{1} + ... + node_count<As>);
+        template <typename... As>
+        inline constexpr std::size_t node_count<contains<As...>> = (std::size_t{1} + ... + node_count<As>);
+        template <typename... As>
+        inline constexpr std::size_t node_count<property_names<As...>> = (std::size_t{1} + ... + node_count<As>);
+        template <std::size_t N>
+        inline constexpr std::size_t node_count<prefix_items_t<N>> = N * prefix_position_nodes;
     }  // namespace detail
 
     // The settings of the elements of a range field that is read from a JSON array, as JSON Schema's `items`:
     // `yyjson::field("scores", yyjson::items(yyjson::minimum(0)))` or `[[=yyjson::items(yyjson::minimum(0))]]`.
     // It takes the constraints, such as `yyjson::minimum` and `yyjson::validate<f>`, which apply to each element
-    // or to the value of an element that is a `std::optional`, and `yyjson::items` and
-    // `yyjson::additional_properties` for the elements of the elements.
+    // or to the value of an element that is a `std::optional`, and the settings of the values in the elements, such
+    // as `yyjson::items`.  With `yyjson::prefix_items`, it applies to the elements after those of the positions.
     template <typename... As>
     struct items
     {
@@ -1314,7 +1378,8 @@ namespace yyjson
             static_assert(sizeof...(As) != 0, "yyjson::items needs a setting of the elements");
             static_assert((detail::element_setting<As> && ...),
                           "yyjson::items takes the constraints such as yyjson::minimum and yyjson::validate<f>, "
-                          "yyjson::items and yyjson::additional_properties(settings...)");
+                          "yyjson::items, yyjson::prefix_items, yyjson::contains, yyjson::property_names and "
+                          "yyjson::additional_properties(settings...)");
         }
     };
     // `items(items(...))` constrains the elements of the elements, rather than copying the inner `items`.
@@ -1333,7 +1398,8 @@ namespace yyjson
         {
             static_assert((detail::element_setting<As> && ...),
                           "yyjson::additional_properties of a field takes the constraints such as yyjson::minimum "
-                          "and yyjson::validate<f>, yyjson::items and yyjson::additional_properties(settings...); "
+                          "and yyjson::validate<f>, yyjson::items, yyjson::prefix_items, yyjson::contains, "
+                          "yyjson::property_names and yyjson::additional_properties(settings...); "
                           "yyjson::additional_properties(bool) annotates a struct");
         }
     };
@@ -1345,6 +1411,304 @@ namespace yyjson
     template <typename... Bs>
     requires (sizeof...(Bs) != 0)
     additional_properties(additional_properties<Bs...>) -> additional_properties<additional_properties<Bs...>>;
+
+    // The settings of the elements of a range field that is read from a JSON array, of which at least one has to
+    // satisfy them, as JSON Schema's `contains`: `yyjson::field("roles",
+    // yyjson::contains(yyjson::pattern("^admin$")))`. `yyjson::min_contains` and `yyjson::max_contains` bound the
+    // number of such elements.  It takes the same settings as `yyjson::items`.
+    template <typename... As>
+    struct contains
+    {
+        detail::setting_list<As...> settings;
+
+        consteval explicit contains(As... values) : settings(detail::make_setting_list(values...))
+        {
+            static_assert(sizeof...(As) != 0, "yyjson::contains needs a setting of the elements");
+            static_assert((detail::element_setting<As> && ...),
+                          "yyjson::contains takes the constraints such as yyjson::minimum and yyjson::validate<f>, "
+                          "yyjson::items, yyjson::prefix_items, yyjson::contains, yyjson::property_names and "
+                          "yyjson::additional_properties(settings...)");
+        }
+    };
+    template <typename... Bs>
+    contains(contains<Bs...>) -> contains<contains<Bs...>>;
+
+    // The settings of the keys of a map field that is read from a JSON object, as JSON Schema's `propertyNames`:
+    // `yyjson::field("labels", yyjson::property_names(yyjson::pattern("^[a-z]+$")))`.  It takes the constraints of
+    // a string and `yyjson::validate<f>`, which takes the key type of the map.
+    template <typename... As>
+    struct property_names
+    {
+        detail::setting_list<As...> settings;
+
+        consteval explicit property_names(As... values) : settings(detail::make_setting_list(values...))
+        {
+            static_assert(sizeof...(As) != 0, "yyjson::property_names needs a setting of the keys");
+            static_assert((detail::constraint_setting<As> && ...),
+                          "yyjson::property_names takes the constraints such as yyjson::max_length and "
+                          "yyjson::validate<f>");
+        }
+    };
+
+    namespace detail
+    {
+        enum class field_key_error
+        {
+            none,
+            unknown_member,
+            renamed_twice,
+            same_setting_twice,
+            skipped_with_setting,
+            skip_visitable,
+            annotated_visitable,
+            not_a_struct_setting,
+            duplicate_key,
+            additional_twice,
+            required_optional_key,
+            constrained_tagged,
+            multiple_of_not_positive,
+            contains_missing,
+            prefix_position_too_large,
+        };
+
+        // The constraints of a value, those in `set` by `constraint_bit`.  It is a structural type, as the values of
+        // C++26 annotations that hold it have to be.
+        struct field_constraints
+        {
+            std::uint16_t set = 0;
+            bound_number minimum;
+            bound_number maximum;
+            bound_number exclusive_minimum;
+            bound_number exclusive_maximum;
+            bound_number multiple_of;
+            std::size_t min_length = 0;
+            std::size_t max_length = 0;
+            std::size_t min_items = 0;
+            std::size_t max_items = 0;
+            std::size_t min_contains = 0;
+            std::size_t max_contains = 0;
+            const char* pattern_data = nullptr;
+            std::size_t pattern_size = 0;
+            validator validate;
+
+            template <typename A>
+            [[nodiscard]] constexpr bool has() const noexcept
+            {
+                return (set & constraint_bit<A>) != 0;
+            }
+            [[nodiscard]] constexpr std::string_view pattern() const noexcept { return {pattern_data, pattern_size}; }
+            template <typename A>
+            constexpr void add(const A& a) noexcept
+            {
+                set |= constraint_bit<A>;
+                if constexpr (std::same_as<A, yyjson::minimum>)
+                    minimum = a.value;
+                else if constexpr (std::same_as<A, yyjson::maximum>)
+                    maximum = a.value;
+                else if constexpr (std::same_as<A, yyjson::exclusive_minimum>)
+                    exclusive_minimum = a.value;
+                else if constexpr (std::same_as<A, yyjson::exclusive_maximum>)
+                    exclusive_maximum = a.value;
+                else if constexpr (std::same_as<A, yyjson::multiple_of>)
+                    multiple_of = a.value;
+                else if constexpr (std::same_as<A, yyjson::min_length>)
+                    min_length = a.value;
+                else if constexpr (std::same_as<A, yyjson::max_length>)
+                    max_length = a.value;
+                else if constexpr (std::same_as<A, yyjson::min_items>)
+                    min_items = a.value;
+                else if constexpr (std::same_as<A, yyjson::max_items>)
+                    max_items = a.value;
+                else if constexpr (std::same_as<A, yyjson::min_contains>)
+                    min_contains = a.value;
+                else if constexpr (std::same_as<A, yyjson::max_contains>)
+                    max_contains = a.value;
+                else if constexpr (std::same_as<A, yyjson::pattern>)
+                {
+                    pattern_data = a.regex_data;
+                    pattern_size = a.regex_size;
+                }
+                else if constexpr (std::same_as<A, validator>)
+                    validate = a;
+            }
+        };
+
+        // The constraints of a value, and the nodes that hold the settings of the values in it: its elements, the
+        // values and the keys of a map, and the elements that `yyjson::contains` counts, by their indices in
+        // `schema_tree::nodes`, 0 for none.  The nodes of the positions of `yyjson::prefix_items` are the
+        // `prefix_count` nodes from `prefix`.
+        struct schema_node
+        {
+            field_constraints constraints;
+            std::size_t items = 0;
+            std::size_t values = 0;
+            std::size_t contains = 0;
+            std::size_t keys = 0;
+            std::size_t prefix = 0;
+            std::size_t prefix_count = 0;
+
+            // Whether it has a setting of the values in the value, or one that compares its elements.
+            [[nodiscard]] constexpr bool structured() const noexcept
+            {
+                return items != 0 || values != 0 || contains != 0 || keys != 0 || prefix_count != 0 ||
+                       constraints.has<unique_items_t>();
+            }
+            [[nodiscard]] constexpr bool empty() const noexcept { return constraints.set == 0 && !structured(); }
+        };
+
+        // The settings of values, as a tree in up to M nodes: the first `size` nodes at first are the roots, and
+        // the settings of the values in a value add nodes after them.  A node is never the child of another one at
+        // index 0.  It keeps the first error.
+        template <std::size_t M>
+        struct schema_tree
+        {
+            std::array<schema_node, M> nodes = {};
+            std::size_t size = 0;
+            field_key_error error = field_key_error::none;
+
+            constexpr void fail(field_key_error e) noexcept
+            {
+                if (error == field_key_error::none) error = e;
+            }
+            // The index of the first of `n` new nodes, or 0 if there is no room.
+            constexpr std::size_t allocate(std::size_t n) noexcept
+            {
+                if (n > M - size)
+                {
+                    fail(field_key_error::prefix_position_too_large);
+                    return 0;
+                }
+                const auto first = size;
+                size += n;
+                return first;
+            }
+            template <typename A>
+            constexpr void add(std::size_t node, const A& a)
+            {
+                if constexpr (constraint_setting<A>)
+                {
+                    auto& c = nodes[node].constraints;
+                    if (c.template has<A>()) return fail(field_key_error::same_setting_twice);
+                    if constexpr (std::same_as<A, multiple_of>)
+                    {
+                        if (!a.value.positive()) return fail(field_key_error::multiple_of_not_positive);
+                    }
+                    c.add(a);
+                }
+                else if constexpr (is_prefix_items<A>::value)
+                {
+                    if (nodes[node].prefix_count != 0) return fail(field_key_error::same_setting_twice);
+                    const auto first = allocate(A::size);
+                    if (first == 0) return;
+                    nodes[node].prefix = first;
+                    nodes[node].prefix_count = A::size;
+                    for (std::size_t j = 0; j < A::size; ++j) graft(first + j, a.positions[j].tree);
+                }
+                else
+                {
+                    constexpr auto child = is_items<A>::value            ? &schema_node::items
+                                           : is_value_settings<A>::value ? &schema_node::values
+                                           : is_contains<A>::value       ? &schema_node::contains
+                                                                         : &schema_node::keys;
+                    if (nodes[node].*child != 0) return fail(field_key_error::same_setting_twice);
+                    const auto c = allocate(1);
+                    if (c == 0) return;
+                    nodes[node].*child = c;
+                    add_list(c, a.settings);
+                }
+            }
+            constexpr void add_list(std::size_t, const setting_list<>&) {}
+            template <typename A, typename... Rest>
+            constexpr void add_list(std::size_t node, const setting_list<A, Rest...>& list)
+            {
+                add(node, list.first);
+                add_list(node, list.rest);
+            }
+            // Copies the tree `sub` of one root into the node `at`, and the other nodes of `sub` into new nodes.
+            template <std::size_t P>
+            constexpr void graft(std::size_t at, const schema_tree<P>& sub)
+            {
+                if (sub.error != field_key_error::none) fail(sub.error);
+                const auto base = sub.size > 1 ? allocate(sub.size - 1) : std::size_t{0};
+                if (sub.size > 1 && base == 0) return;
+                const auto moved = [base](schema_node n) {
+                    for (auto* i : {&n.items, &n.values, &n.contains, &n.keys, &n.prefix})
+                        if (*i != 0) *i += base - 1;
+                    return n;
+                };
+                nodes[at] = moved(sub.nodes[0]);
+                for (std::size_t k = 1; k < sub.size; ++k) nodes[base + k - 1] = moved(sub.nodes[k]);
+            }
+            // Fails unless `yyjson::min_contains` and `yyjson::max_contains` come with `yyjson::contains`.
+            constexpr void check() noexcept
+            {
+                for (std::size_t k = 0; k < size; ++k)
+                {
+                    const auto& n = nodes[k];
+                    if ((n.constraints.template has<yyjson::min_contains>() ||
+                         n.constraints.template has<yyjson::max_contains>()) &&
+                        n.contains == 0)
+                        fail(field_key_error::contains_missing);
+                }
+            }
+        };
+
+        // The settings of a position of `yyjson::prefix_items`: `{}` for none, `{settings...}`, or a setting alone.
+        struct prefix_schema
+        {
+            schema_tree<prefix_position_nodes> tree = {{}, 1};
+
+            constexpr prefix_schema() = default;
+            template <typename... As>
+            requires (sizeof...(As) != 0 && !(std::same_as<As, prefix_schema> || ...))
+            consteval prefix_schema(As... settings)  // NOLINT(google-explicit-constructor)
+            {
+                static_assert((element_setting<As> && ...),
+                              "a position of yyjson::prefix_items takes the constraints such as yyjson::minimum and "
+                              "yyjson::validate<f>, yyjson::items, yyjson::prefix_items, yyjson::contains, "
+                              "yyjson::property_names and yyjson::additional_properties(settings...)");
+                (tree.add(0, settings), ...);
+                tree.check();
+            }
+        };
+
+        template <typename T, std::size_t>
+        using always_t = T;
+        template <typename Seq>
+        struct prefix_items_n;
+        template <std::size_t... I>
+        struct prefix_items_n<std::index_sequence<I...>>
+        {
+            consteval prefix_items_t<sizeof...(I)> operator()(always_t<prefix_schema, I>... positions) const
+            {
+                return {{positions...}};
+            }
+        };
+        // A call operator for each number of the positions, so that each position can be a braced list.
+        template <typename Seq>
+        struct prefix_items_fn;
+        template <std::size_t... N>
+        struct prefix_items_fn<std::index_sequence<N...>> : prefix_items_n<std::make_index_sequence<N + 1>>...
+        {
+            using prefix_items_n<std::make_index_sequence<N + 1>>::operator()...;
+        };
+    }  // namespace detail
+
+    // The settings of the elements of an array field by their positions, as JSON Schema's `prefixItems`, which
+    // `yyjson::prefix_items` makes.
+    template <std::size_t N>
+    struct prefix_items_t
+    {
+        static constexpr std::size_t size = N;
+        std::array<detail::prefix_schema, N> positions;
+    };
+
+    // The settings of the first elements of a range or a tuple field, one braced list for each position, as JSON
+    // Schema's `prefixItems`: `yyjson::field("point", yyjson::prefix_items({yyjson::minimum(0)}, {},
+    // yyjson::max_length(8)))`.  `{}` leaves a position unconstrained, and a single setting needs no braces.  An
+    // array may have fewer elements than positions.  It takes up to 16 positions, each with the same settings as
+    // `yyjson::items`.
+    inline constexpr detail::prefix_items_fn<std::make_index_sequence<16>> prefix_items{};
 
     // The settings of the field `member` of a struct, which `yyjson::annotate` takes.
     template <typename... As>
@@ -1853,73 +2217,6 @@ namespace yyjson
         template <typename T>
         using annotation_values_of = std::remove_cvref_t<decltype(annotations<T>.values)>;
 
-        enum class field_key_error
-        {
-            none,
-            unknown_member,
-            renamed_twice,
-            same_setting_twice,
-            skipped_with_setting,
-            skip_visitable,
-            annotated_visitable,
-            not_a_struct_setting,
-            duplicate_key,
-            additional_twice,
-            required_optional_key,
-            constrained_tagged,
-            multiple_of_not_positive,
-        };
-
-        // The constraints of a field, those in `set` by `constraint_bit`.
-        struct field_constraints
-        {
-            std::uint16_t set = 0;
-            bound_number minimum;
-            bound_number maximum;
-            bound_number exclusive_minimum;
-            bound_number exclusive_maximum;
-            bound_number multiple_of;
-            std::size_t min_length = 0;
-            std::size_t max_length = 0;
-            std::size_t min_items = 0;
-            std::size_t max_items = 0;
-            std::string_view pattern;
-            validator validate;
-
-            template <typename A>
-            [[nodiscard]] constexpr bool has() const noexcept
-            {
-                return (set & constraint_bit<A>) != 0;
-            }
-            template <typename A>
-            constexpr void add(const A& a) noexcept
-            {
-                set |= constraint_bit<A>;
-                if constexpr (std::same_as<A, yyjson::minimum>)
-                    minimum = a.value;
-                else if constexpr (std::same_as<A, yyjson::maximum>)
-                    maximum = a.value;
-                else if constexpr (std::same_as<A, yyjson::exclusive_minimum>)
-                    exclusive_minimum = a.value;
-                else if constexpr (std::same_as<A, yyjson::exclusive_maximum>)
-                    exclusive_maximum = a.value;
-                else if constexpr (std::same_as<A, yyjson::multiple_of>)
-                    multiple_of = a.value;
-                else if constexpr (std::same_as<A, yyjson::min_length>)
-                    min_length = a.value;
-                else if constexpr (std::same_as<A, yyjson::max_length>)
-                    max_length = a.value;
-                else if constexpr (std::same_as<A, yyjson::min_items>)
-                    min_items = a.value;
-                else if constexpr (std::same_as<A, yyjson::max_items>)
-                    max_items = a.value;
-                else if constexpr (std::same_as<A, yyjson::pattern>)
-                    pattern = a.regex();
-                else
-                    validate = a;
-            }
-        };
-
         // `yyjson::additional_properties` of a struct, if it has one.
         enum class additional_keys : std::uint8_t
         {
@@ -1928,21 +2225,9 @@ namespace yyjson
             allowed
         };
 
-        // A level of the elements of a field that `yyjson::items` or `yyjson::additional_properties(settings...)`
-        // constrains: the elements of a range or the values of a map, and their constraints.
-        enum class element_kind : std::uint8_t
-        {
-            items,
-            values
-        };
-        struct element_level
-        {
-            element_kind kind = element_kind::items;
-            field_constraints constraints;
-        };
-
-        // `D` is the number of the levels of elements that a field of the struct constrains at most.
-        template <std::size_t N, std::size_t D = 0>
+        // `M` is the number of the nodes of the settings of the fields and of the values in them, those of field i
+        // at index i.
+        template <std::size_t N, std::size_t M = N>
         struct field_key_table
         {
             std::array<std::string_view, N> keys;
@@ -1951,20 +2236,18 @@ namespace yyjson
             std::array<bool, N> required = {};  // whether a field is annotated with `yyjson::required`
             std::array<bool, N> optional_key = {};  // whether a field is annotated with `yyjson::optional_key`
             additional_keys additional = additional_keys::unset;
-            std::array<field_constraints, N> constraints = {};
-            std::array<std::array<element_level, D>, N> elements = {};
-            std::array<std::size_t, N> element_depth = {};  // the number of the levels in `elements`
-            bool constrained = false;                       // whether a field has a constraint
+            schema_tree<M> schemas = {{}, N};
+            bool constrained = false;  // whether a field has a constraint
         };
 
         // Applies the settings of `yyjson::field` and of the annotations of the members to the keys of the fields,
         // and keeps the first error.  The functions are constexpr rather than consteval, so that the lambdas that
         // call them need not be immediate functions, which clang before 19 and MSVC do not make them.
-        template <std::size_t N, std::size_t D = 0>
+        template <std::size_t N, std::size_t M = N>
         struct field_key_builder
         {
             std::array<std::string_view, N> members;
-            field_key_table<N, D> table;
+            field_key_table<N, M> table;
             bool visitable = false;
             std::array<bool, N> renamed = {};
             std::array<bool, N> tagged = {};
@@ -1985,7 +2268,7 @@ namespace yyjson
                 if (visitable) return fail(field_key_error::skip_visitable);
                 if (table.skipped[i]) return fail(field_key_error::same_setting_twice);
                 if (renamed[i] || tagged[i] || table.required[i] || table.optional_key[i] ||
-                    table.constraints[i].set != 0 || table.element_depth[i] != 0)
+                    !table.schemas.nodes[i].empty())
                     return fail(field_key_error::skipped_with_setting);
                 table.skipped[i] = true;
             }
@@ -2009,56 +2292,13 @@ namespace yyjson
                 if (table.required[i]) return fail(field_key_error::required_optional_key);
                 table.optional_key[i] = true;
             }
-            template <typename A>
-            constexpr void add_constraint(field_constraints& c, const A& a)
-            {
-                if (c.template has<A>()) return fail(field_key_error::same_setting_twice);
-                if constexpr (std::same_as<A, multiple_of>)
-                {
-                    if (!a.value.positive()) return fail(field_key_error::multiple_of_not_positive);
-                }
-                c.add(a);
-            }
+            // A constraint of the field i, or a setting of the values in it.
             template <typename A>
             constexpr void constrain_field(std::size_t i, const A& a)
             {
                 if (table.skipped[i]) return fail(field_key_error::skipped_with_setting);
-                add_constraint(table.constraints[i], a);
+                table.schemas.add(i, a);
                 table.constrained = true;
-            }
-            // `yyjson::items` or `yyjson::additional_properties(settings...)` of the field i, whose levels are
-            // kept one after another.  A level takes one setting of the next level.
-            template <typename A>
-            constexpr void constrain_elements(std::size_t i, const A& a)
-            {
-                if (table.element_depth[i] != 0) return fail(field_key_error::same_setting_twice);
-                if (table.skipped[i]) return fail(field_key_error::skipped_with_setting);
-                add_element_level(i, 0, a);
-                table.constrained = true;
-            }
-            template <typename A>
-            constexpr void add_element_level(std::size_t i, std::size_t level, const A& a)
-            {
-                if constexpr (D != 0)
-                {
-                    table.element_depth[i] = level + 1;
-                    table.elements[i][level].kind = is_items<A>::value ? element_kind::items : element_kind::values;
-                    apply_element_settings(i, level, a.settings);
-                }
-            }
-            constexpr void apply_element_settings(std::size_t, std::size_t, const setting_list<>&) {}
-            template <typename A, typename... Rest>
-            constexpr void apply_element_settings(std::size_t i, std::size_t level,
-                                                  const setting_list<A, Rest...>& list)
-            {
-                if constexpr (constraint_setting<A>)
-                    add_constraint(table.elements[i][level].constraints, list.first);
-                else if constexpr (element_settings<A>)
-                {
-                    if (table.element_depth[i] > level + 1) return fail(field_key_error::same_setting_twice);
-                    add_element_level(i, level + 1, list.first);
-                }
-                apply_element_settings(i, level, list.rest);
             }
             constexpr void set_additional(additional_properties<> a)
             {
@@ -2076,10 +2316,8 @@ namespace yyjson
                     require_field(i);
                 else if constexpr (std::same_as<A, optional_key_t>)
                     make_key_optional(i);
-                else if constexpr (constraint_setting<A>)
+                else if constexpr (constraint_setting<A> || element_settings<A>)
                     constrain_field(i, a);
-                else if constexpr (element_settings<A>)
-                    constrain_elements(i, a);
                 else
                     tag_field(i);
             }
@@ -2102,13 +2340,14 @@ namespace yyjson
 
             // Duplicate keys are reported only when a key was given, so that a `VISITABLE_STRUCT` listing a
             // member twice still compiles as it did.  A skipped field has no key in JSON.
-            [[nodiscard]] constexpr field_key_table<N, D> result() const
+            [[nodiscard]] constexpr field_key_table<N, M> result() const
             {
                 auto result = table;
+                result.schemas.check();
+                if (result.error == field_key_error::none) result.error = result.schemas.error;
                 for (std::size_t i = 0; i < N; ++i)
                 {
-                    if (tagged[i] && (result.constraints[i].set != 0 || result.element_depth[i] != 0) &&
-                        result.error == field_key_error::none)
+                    if (tagged[i] && !result.schemas.nodes[i].empty() && result.error == field_key_error::none)
                         result.error = field_key_error::constrained_tagged;
                 }
                 if (result.error != field_key_error::none || std::ranges::find(renamed, true) == renamed.end())
@@ -2145,19 +2384,19 @@ namespace yyjson
         template <typename T, std::size_t I, typename... Cs>
         inline constexpr bool constraint_annotated<T, I, type_list<Cs...>> =
             (!field_reflection::field_annotations<T, I, Cs>.empty() || ...);
-        template <typename T, std::size_t I, typename C, std::size_t N, std::size_t D>
-        constexpr void constrain_annotated_field(field_key_builder<N, D>& builder)
+        template <typename T, std::size_t I, typename C, std::size_t N, std::size_t M>
+        constexpr void constrain_annotated_field(field_key_builder<N, M>& builder)
         {
             for (const C& c : field_reflection::field_annotations<T, I, C>) builder.constrain_field(I, c);
         }
-        template <typename T, std::size_t I, std::size_t N, std::size_t D, typename... Cs>
-        constexpr void constrain_annotated_field(field_key_builder<N, D>& builder, type_list<Cs...>)
+        template <typename T, std::size_t I, std::size_t N, std::size_t M, typename... Cs>
+        constexpr void constrain_annotated_field(field_key_builder<N, M>& builder, type_list<Cs...>)
         {
             (constrain_annotated_field<T, I, Cs>(builder), ...);
         }
 
-        // The annotations of the field I of T that are `yyjson::items` or `yyjson::additional_properties(settings...)`,
-        // whose types are specializations of templates rather than types that could be looked up one by one.
+        // The annotations of the field I of T that are settings of the values in it, such as `yyjson::items`, whose
+        // types are specializations of templates rather than types that could be looked up one by one.
         template <typename T, std::size_t I>
         consteval std::vector<std::meta::info> element_annotations_of()
         {
@@ -2167,7 +2406,10 @@ namespace yyjson
                 const auto type = std::meta::remove_cvref(std::meta::type_of(a));
                 if (std::meta::has_template_arguments(type) && !std::meta::template_arguments_of(type).empty() &&
                     (std::meta::template_of(type) == ^^yyjson::items ||
-                     std::meta::template_of(type) == ^^yyjson::additional_properties))
+                     std::meta::template_of(type) == ^^yyjson::additional_properties ||
+                     std::meta::template_of(type) == ^^yyjson::contains ||
+                     std::meta::template_of(type) == ^^yyjson::property_names ||
+                     std::meta::template_of(type) == ^^yyjson::prefix_items_t))
                     result.push_back(a);
             }
             return result;
@@ -2179,14 +2421,14 @@ namespace yyjson
         using element_annotation_type =
             typename[:std::meta::remove_cvref(std::meta::type_of(element_annotations<T, I>[K])):];
         template <typename T, std::size_t I>
-        inline constexpr std::size_t annotated_element_nesting = []<std::size_t... Ks>(std::index_sequence<Ks...>) {
-            return std::max({std::size_t{0}, element_nesting<element_annotation_type<T, I, Ks>>...});
+        inline constexpr std::size_t annotated_node_count = []<std::size_t... Ks>(std::index_sequence<Ks...>) {
+            return (std::size_t{0} + ... + node_count<element_annotation_type<T, I, Ks>>);
         }(std::make_index_sequence<element_annotations<T, I>.size()>{});
-        template <typename T, std::size_t I, std::size_t N, std::size_t D>
-        constexpr void constrain_annotated_elements(field_key_builder<N, D>& builder)
+        template <typename T, std::size_t I, std::size_t N, std::size_t M>
+        constexpr void constrain_annotated_elements(field_key_builder<N, M>& builder)
         {
             [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
-                (builder.constrain_elements(
+                (builder.constrain_field(
                      I, std::meta::extract<element_annotation_type<T, I, Ks>>(element_annotations<T, I>[Ks])),
                  ...);
             }(std::make_index_sequence<element_annotations<T, I>.size()>{});
@@ -2219,8 +2461,8 @@ namespace yyjson
         }();
 
         // Applies the annotations of the fields of a reflected struct.
-        template <typename T, std::size_t N, std::size_t D>
-        constexpr void annotate_reflected_fields(field_key_builder<N, D>& builder)
+        template <typename T, std::size_t N, std::size_t M>
+        constexpr void annotate_reflected_fields(field_key_builder<N, M>& builder)
         {
             [&]<std::size_t... Is>(std::index_sequence<Is...>) {
                 (
@@ -2259,22 +2501,21 @@ namespace yyjson
                 return false;
         }();
 
-        // The number of the levels of elements that a field of T constrains at most.
+        // The number of the nodes that the settings of the values in the fields of T add at most.
         template <typename... As>
-        inline constexpr std::size_t element_nesting<field_annotation<As...>> =
-            std::max({std::size_t{0}, element_nesting<As>...});
+        inline constexpr std::size_t node_count<field_annotation<As...>> = (std::size_t{0} + ... + node_count<As>);
         template <typename T>
-        inline constexpr std::size_t max_element_depth = [] {
-            auto depth = []<typename... As>(std::type_identity<std::tuple<As...>>) {
-                return std::max({std::size_t{0}, element_nesting<As>...});
+        inline constexpr std::size_t value_node_count = [] {
+            auto count = []<typename... As>(std::type_identity<std::tuple<As...>>) {
+                return (std::size_t{0} + ... + node_count<As>);
             }(std::type_identity<annotation_values_of<T>>{});
 #if FIELD_RFL_ANNOTATIONS
             if constexpr (!visitable<T> && field_reflection::field_countable<T>)
-                depth = std::max(depth, []<std::size_t... Is>(std::index_sequence<Is...>) {
-                    return std::max({std::size_t{0}, annotated_element_nesting<T, Is>...});
-                }(std::make_index_sequence<field_reflection::field_count<T>>{}));
+                count += []<std::size_t... Is>(std::index_sequence<Is...>) {
+                    return (std::size_t{0} + ... + annotated_node_count<T, Is>);
+                }(std::make_index_sequence<field_reflection::field_count<T>>{});
 #endif
-            return depth;
+            return count;
         }();
 
         template <typename T>
@@ -2299,7 +2540,8 @@ namespace yyjson
             {
                 constexpr auto n = Source::members.size();
                 constexpr auto reflected = std::same_as<Source, reflected_field_names<T>>;
-                auto builder = field_key_builder<n, max_element_depth<T>>{Source::members, {Source::keys}, !reflected};
+                auto builder =
+                    field_key_builder<n, n + value_node_count<T>>{Source::members, {Source::keys}, !reflected};
                 for (std::size_t i = 0; i < n; ++i) builder.renamed[i] = Source::keys[i] != Source::members[i];
                 std::apply([&](const auto&... a) { (builder.apply_annotation(a), ...); }, annotations<T>.values);
 #if FIELD_RFL_ANNOTATIONS
@@ -2324,9 +2566,8 @@ namespace yyjson
                           "(member, \"key\") pair of VISITABLE_STRUCT");
             static_assert(table.error != field_key_error::same_setting_twice,
                           "a field is given yyjson::skip, yyjson::required, yyjson::optional_key, "
-                          "yyjson::adjacent_tag, a constraint such as yyjson::minimum, yyjson::items or "
-                          "yyjson::additional_properties(settings...) twice, or yyjson::items or "
-                          "yyjson::additional_properties(settings...) has a setting twice");
+                          "yyjson::adjacent_tag, a constraint such as yyjson::minimum or a setting of the values in "
+                          "it such as yyjson::items twice, or a setting of the values in it has a setting twice");
             static_assert(table.error != field_key_error::required_optional_key,
                           "a field annotated with yyjson::required may not be left out of the object, which "
                           "yyjson::optional_key lets it: give the field only one of them");
@@ -2345,10 +2586,18 @@ namespace yyjson
                           "an enumeration, not a struct");
             static_assert(table.error != field_key_error::duplicate_key, "two fields have the same JSON key");
             static_assert(table.error != field_key_error::constrained_tagged,
-                          "a field tagged by yyjson::adjacent_tag takes no constraint such as yyjson::minimum, "
-                          "yyjson::items or yyjson::additional_properties(settings...)");
+                          "a field tagged by yyjson::adjacent_tag takes no constraint such as yyjson::minimum, and no "
+                          "setting of the values in it such as yyjson::items");
             static_assert(table.error != field_key_error::multiple_of_not_positive,
                           "yyjson::multiple_of takes a number greater than 0");
+            static_assert(table.error != field_key_error::contains_missing,
+                          "yyjson::min_contains and yyjson::max_contains bound the number of the elements that "
+                          "satisfy yyjson::contains, which has to come with them");
+            static_assert(table.error != field_key_error::prefix_position_too_large,
+                          "a position of yyjson::prefix_items holds the settings of the values in it in up to 8 "
+                          "nodes: one for itself and one for each yyjson::items, yyjson::contains, "
+                          "yyjson::property_names, yyjson::additional_properties(settings...) and position of "
+                          "yyjson::prefix_items in it");
             static constexpr auto value = table.keys;
         };
 
@@ -3527,45 +3776,29 @@ namespace yyjson
             static constexpr bool exists = true;
         };
 
-        // The constraints of the field K of S, by its index among the fields that are read, the number of the
-        // levels of its elements that are constrained, and whether it has any constraint.
+        // The settings of the field K of S, by its index among the fields that are read, and whether it has any.
         template <typename S, std::size_t K>
-        inline constexpr field_constraints constraints_of = [] {
+        inline constexpr schema_node schema_of = [] {
             if constexpr (field_table_of<S>::exists)
-                return field_table_of<S>::table.constraints[struct_declared_index<S, K>];
+                return field_table_of<S>::table.schemas.nodes[struct_declared_index<S, K>];
             else
-                return field_constraints{};
+                return schema_node{};
         }();
         template <typename S, std::size_t K>
-        inline constexpr std::size_t element_depth_of = [] {
-            if constexpr (field_table_of<S>::exists)
-                return field_table_of<S>::table.element_depth[struct_declared_index<S, K>];
-            else
-                return std::size_t{0};
-        }();
-        template <typename S, std::size_t K>
-        inline constexpr bool constrained_field = constraints_of<S, K>.set != 0 || element_depth_of<S, K> != 0;
+        inline constexpr bool constrained_field = !schema_of<S, K>.empty();
 
-        // The constraints of the level L of the field K of S: the field itself at 0, and at L the elements of the
-        // level L - 1, which `elements` tells are the elements of a range or the values of a map.
-        template <typename S, std::size_t K, std::size_t L = 0>
-        struct constraint_level
+        // The settings at the node `Node` of the tree of the settings of the struct S, which is the node of the field
+        // K or one of the values in it.  `at<C>` is the node C, which a member of `node` names.
+        template <typename S, std::size_t K, std::size_t Node>
+        struct constraint_node
         {
-            static constexpr field_constraints constraints = [] {
-                if constexpr (L == 0 || L > element_depth_of<S, K>)
-                    return constraints_of<S, K>;
-                else
-                    return field_table_of<S>::table.elements[struct_declared_index<S, K>][L - 1].constraints;
-            }();
-            static constexpr bool has_elements = L < element_depth_of<S, K>;
-            static constexpr element_kind elements = [] {
-                if constexpr (L < element_depth_of<S, K>)
-                    return field_table_of<S>::table.elements[struct_declared_index<S, K>][L].kind;
-                else
-                    return element_kind::items;
-            }();
-            using next = constraint_level<S, K, L + 1>;
+            static constexpr schema_node node = field_table_of<S>::table.schemas.nodes[Node];
+            static constexpr field_constraints constraints = node.constraints;
+            template <std::size_t C>
+            using at = constraint_node<S, K, C>;
         };
+        template <typename S, std::size_t K>
+        using constraint_level = constraint_node<S, K, struct_declared_index<S, K>>;
 
         // The constraint that a field does not satisfy.
         enum class constraint_kind : std::uint8_t
@@ -3582,8 +3815,23 @@ namespace yyjson
             max_items,
             pattern,
             validate,
-            items,   // an element of a range
-            values,  // a value of a map
+            items,           // an element of a range
+            values,          // a value of a map
+            unique_items,    // two elements that are equal
+            duplicate_item,  // an element that is equal to an earlier one
+            prefix_items,    // an element at a position of `yyjson::prefix_items`
+            property_names,  // a key of a map
+            contains,
+            min_contains,
+            max_contains,
+        };
+
+        // What does not satisfy a constraint: the value of a field, an element in it, or a key of a map in it.
+        enum class constraint_subject : std::uint8_t
+        {
+            value,
+            element,
+            key,
         };
 
         inline std::string bound_text(const bound_number& b)
@@ -3599,12 +3847,9 @@ namespace yyjson
             }
         }
 
-        // `element` tells that the value that does not satisfy the constraint is an element of the field, at any
-        // level.
-        [[noreturn]] CPPYYJSON_COLD inline void throw_constraint_violation(cast_target at, std::string_view key,
-                                                                           std::string_view type, constraint_kind kind,
-                                                                           const field_constraints& c,
-                                                                           bool element = false)
+        [[noreturn]] CPPYYJSON_COLD inline void throw_constraint_violation(
+            cast_target at, std::string_view key, std::string_view type, constraint_kind kind,
+            const field_constraints& c, constraint_subject subject = constraint_subject::value)
         {
             const auto what = [&]() -> std::string {
                 switch (kind)
@@ -3628,17 +3873,35 @@ namespace yyjson
                     case constraint_kind::max_items:
                         return std::format("has more items than the maximum {}", c.max_items);
                     case constraint_kind::pattern:
-                        return std::format("does not match the pattern \"{}\"", c.pattern);
+                        return std::format("does not match the pattern \"{}\"", c.pattern());
                     case constraint_kind::items:
                         return "has an element that does not satisfy the constraints of yyjson::items";
                     case constraint_kind::values:
                         return "has a value that does not satisfy the constraints of yyjson::additional_properties";
+                    case constraint_kind::unique_items:
+                        return "has duplicate items";
+                    case constraint_kind::duplicate_item:
+                        return "is equal to an earlier element";
+                    case constraint_kind::prefix_items:
+                        return "has an element that does not satisfy the constraints of yyjson::prefix_items";
+                    case constraint_kind::property_names:
+                        return "has a key that does not satisfy the constraints of yyjson::property_names";
+                    case constraint_kind::contains:
+                        return "has no item that satisfies the constraints of yyjson::contains";
+                    case constraint_kind::min_contains:
+                        return std::format("has fewer than {} items that satisfy the constraints of yyjson::contains",
+                                           c.min_contains);
+                    case constraint_kind::max_contains:
+                        return std::format("has more than {} items that satisfy the constraints of yyjson::contains",
+                                           c.max_contains);
                     default:
                         return "is rejected by yyjson::validate";
                 }
             }();
-            throw_bad_cast_at(at, "{} of the key \"{}\" of {} {}", element ? "an element of the value" : "the value",
-                              key, type, what);
+            const auto subject_text = subject == constraint_subject::element ? "an element of the value"
+                                      : subject == constraint_subject::key   ? "a key of the value"
+                                                                             : "the value";
+            throw_bad_cast_at(at, "{} of the key \"{}\" of {} {}", subject_text, key, type, what);
         }
 
         // Compares the integer `v` with the number `b` exactly.
@@ -3733,7 +3996,7 @@ namespace yyjson
                 "std::string_view of a string and tells whether the pattern matches it");
             if constexpr (requires { sizeof(matcher_type); })
             {
-                static const matcher_type matcher(Level::constraints.pattern);
+                static const matcher_type matcher(Level::constraints.pattern());
                 return static_cast<bool>(matcher(s));
             }
             else
@@ -3757,6 +4020,91 @@ namespace yyjson
                 typename T::key_type;
                 typename T::mapped_type;
             });
+
+        // A range that keeps one element of each key, as a set or a map does and a multiset or a multimap does not.
+        template <typename T>
+        concept unique_keys = requires(T& t, std::ranges::range_value_t<T> v) {
+            { t.insert(std::move(v)) } -> std::same_as<std::pair<typename T::iterator, bool>>;
+        };
+
+        // A tuple, whose elements `yyjson::prefix_items` constrains by their types, and the ranges whose first
+        // elements it constrains, which keep the order of the JSON array.
+        template <typename T>
+        concept constraint_tuple = tuple_like<T> && !std::ranges::range<T>;
+        template <typename T>
+        concept constraint_prefix_target =
+            constraint_tuple<T> || (constraint_item_range<T> && !requires { typename T::key_type; });
+        // The maps whose keys `yyjson::property_names` constrains, which are read from JSON objects.
+        template <typename T>
+        concept constraint_key_range =
+            constraint_items<T> && key_value_like<std::remove_cv_t<std::ranges::range_value_t<const T>>>;
+
+        inline constexpr std::size_t no_duplicate = static_cast<std::size_t>(-1);
+
+        // The index of the first element of the range `r` that is equal to an earlier element by `operator==`, or
+        // `no_duplicate`.  Many elements that `<=>` orders are sorted, and compared with `==` within each group of
+        // equivalent elements, leaving out NaN, which is equal to nothing; others are compared pairwise.
+        template <typename R>
+        std::size_t first_duplicate(const R& r)
+        {
+            using reference = std::ranges::range_reference_t<const R>;
+            using E = std::remove_cvref_t<reference>;
+            constexpr bool floating = std::floating_point<E>;
+            const auto pairwise = [&r] {
+                std::size_t j = 0;
+                for (auto it = std::ranges::begin(r); it != std::ranges::end(r); ++it, ++j)
+                {
+                    for (auto jt = std::ranges::begin(r); jt != it; ++jt)
+                        if (*jt == *it) return j;
+                }
+                return no_duplicate;
+            };
+            if constexpr (!std::is_lvalue_reference_v<reference> ||
+                          !(floating || std::three_way_comparable<E, std::weak_ordering>))
+                return pairwise();
+            else
+            {
+                if (std::ranges::distance(r) <= 16) return pairwise();
+                const auto less = [](const E& a, const E& b) {
+                    if constexpr (floating)
+                        return a < b;
+                    else
+                        return std::is_lt(a <=> b);
+                };
+                auto sorted = std::vector<std::pair<const E*, std::size_t>>{};
+                std::size_t j = 0;
+                for (const E& e : r)
+                {
+                    if (!floating || e == e) sorted.emplace_back(std::addressof(e), j);
+                    ++j;
+                }
+                std::ranges::sort(sorted, [&less](const auto& a, const auto& b) {
+                    if (less(*a.first, *b.first)) return true;
+                    if (less(*b.first, *a.first)) return false;
+                    return a.second < b.second;
+                });
+                auto result = no_duplicate;
+                for (std::size_t g = 0; g < sorted.size();)
+                {
+                    auto end = g + 1;
+                    while (end < sorted.size() && !less(*sorted[g].first, *sorted[end].first)) ++end;
+                    // the elements of the group are in their order in `r`
+                    for (auto k = g + 1; k < end && sorted[k].second < result; ++k)
+                    {
+                        for (auto i = g; i < k; ++i)
+                        {
+                            if (*sorted[i].first == *sorted[k].first)
+                            {
+                                result = sorted[k].second;
+                                break;
+                            }
+                        }
+                    }
+                    g = end;
+                }
+                return result;
+            }
+        }
 
         // The constraint of the level `Level` that the value `v`, or the value that it holds when it is a
         // `std::optional`, does not satisfy.
@@ -3813,26 +4161,25 @@ namespace yyjson
             return constraint_kind::none;
         }
 
-        template <typename Level, typename R>
-        bool elements_satisfy(const R& r);
+        template <typename Level, typename V>
+        constraint_kind structure_violation(const V& v);
 
-        // The constraint of the level `Level` that `field` does not satisfy, or `none`.  `items` and `values` tell
-        // that an element or a value of the range does not satisfy those of the next level.
+        // The constraint of the node `Level` that `field` does not satisfy, or `none`.  `items`, `values`,
+        // `prefix_items` and `property_names` tell that an element, a value or a key in it does not satisfy those
+        // of a node below.
         template <typename Level, typename F>
         constraint_kind level_violation(const F& field)
         {
             constexpr const field_constraints& c = Level::constraints;
             constexpr bool validates_field = c.has<validator>() && c.validate.parameter() == type_name<F>();
-            constexpr auto elements_kind =
-                Level::elements == element_kind::items ? constraint_kind::items : constraint_kind::values;
             if constexpr (is_std_optional<F>::value)
             {
                 using U = typename F::value_type;
                 constexpr bool validates_value =
                     c.has<validator>() && !validates_field && c.validate.parameter() == type_name<U>();
                 static_assert(!c.has<validator>() || validates_field || validates_value,
-                              "the function of yyjson::validate takes the type of the field or of the element, or "
-                              "the type that the std::optional holds");
+                              "the function of yyjson::validate takes the type of the field, of the element or of the "
+                              "key, or the type that the std::optional holds");
                 if (field.has_value())
                 {
                     if (const auto k = value_constraint_violation<Level>(*field); k != constraint_kind::none) return k;
@@ -3843,51 +4190,157 @@ namespace yyjson
             else
             {
                 static_assert(!c.has<validator>() || validates_field,
-                              "the function of yyjson::validate takes the type of the field or of the element");
+                              "the function of yyjson::validate takes the type of the field, of the element or of the "
+                              "key");
                 if (const auto k = value_constraint_violation<Level>(field); k != constraint_kind::none) return k;
             }
             if constexpr (validates_field)
                 if (!c.validate.check(std::addressof(field))) return constraint_kind::validate;
-            if constexpr (Level::has_elements)
+            if constexpr (Level::node.structured())
             {
                 if constexpr (is_std_optional<F>::value)
                 {
-                    if (field.has_value() && !elements_satisfy<Level>(*field)) return elements_kind;
+                    if (field.has_value()) return structure_violation<Level>(*field);
                 }
-                else if (!elements_satisfy<Level>(field))
-                    return elements_kind;
+                else
+                    return structure_violation<Level>(field);
             }
             return constraint_kind::none;
         }
 
-        // Whether the elements of the range `r`, or the values of the map `r`, satisfy the next level of `Level`.
-        template <typename Level, typename R>
-        bool elements_satisfy(const R& r)
+        // Whether the first elements of the tuple or the range `v` satisfy the nodes of the positions of
+        // `yyjson::prefix_items` of `Level`.
+        template <typename Level, typename V>
+        bool prefix_satisfied(const V& v)
         {
-            using next = typename Level::next;
-            if constexpr (Level::elements == element_kind::items)
+            constexpr auto first = Level::node.prefix;
+            constexpr auto count = Level::node.prefix_count;
+            if constexpr (constraint_tuple<V>)
             {
-                static_assert(constraint_item_range<R>,
-                              "yyjson::items constrains the elements of a range that is read from a JSON array: not "
-                              "a string, nor a map read from a JSON object, whose values "
-                              "yyjson::additional_properties(settings...) constrains");
-                if constexpr (constraint_item_range<R>)
-                {
-                    for (const auto& e : r)
-                        if (level_violation<next>(e) != constraint_kind::none) return false;
-                }
+                static_assert(count <= std::tuple_size_v<V>,
+                              "yyjson::prefix_items has more positions than the tuple has elements");
+                if constexpr (count <= std::tuple_size_v<V>)
+                    return [&]<std::size_t... J>(std::index_sequence<J...>) {
+                        return ((level_violation<typename Level::template at<first + J>>(std::get<J>(v)) ==
+                                 constraint_kind::none) &&
+                                ...);
+                    }(std::make_index_sequence<count>{});
+                else
+                    return true;
             }
             else
             {
-                static_assert(constraint_value_range<R>,
-                              "yyjson::additional_properties(settings...) constrains the values of a map");
-                if constexpr (constraint_value_range<R>)
+                auto it = std::ranges::begin(v);
+                const auto end = std::ranges::end(v);
+                return [&]<std::size_t... J>(std::index_sequence<J...>) {
+                    return ((it == end ||
+                             level_violation<typename Level::template at<first + J>>(*it++) == constraint_kind::none) &&
+                            ...);
+                }(std::make_index_sequence<count>{});
+            }
+        }
+
+        // The constraint of the node `Level` on the elements, the values or the keys in the range or the tuple `v`,
+        // or on their number, that `v` does not satisfy.
+        template <typename Level, typename V>
+        constraint_kind structure_violation(const V& v)
+        {
+            constexpr const schema_node& n = Level::node;
+            constexpr const field_constraints& c = n.constraints;
+            if constexpr (c.has<unique_items_t>())
+            {
+                static_assert(constraint_items<V>,
+                              "yyjson::unique_items constrains the elements of a range that is not a string");
+                static_assert(!unique_keys<V>,
+                              "yyjson::unique_items constrains a range whose elements may be equal; the JSON array or "
+                              "object that a set or a map is read from repeats nothing under yyjson::strict");
+                if constexpr (constraint_items<V> && !unique_keys<V>)
                 {
-                    for (const auto& e : r)
-                        if (level_violation<next>(std::get<1>(e)) != constraint_kind::none) return false;
+                    static_assert(
+                        std::equality_comparable<std::remove_cvref_t<std::ranges::range_reference_t<const V>>>,
+                        "yyjson::unique_items compares the elements with operator==");
+                    if (first_duplicate(v) != no_duplicate) return constraint_kind::unique_items;
                 }
             }
-            return true;
+            if constexpr (n.prefix_count != 0)
+            {
+                static_assert(
+                    constraint_prefix_target<V>,
+                    "yyjson::prefix_items constrains the elements of a tuple, or of a range that is read from "
+                    "a JSON array in its order: not a string, a set nor a map");
+                if constexpr (constraint_prefix_target<V>)
+                    if (!prefix_satisfied<Level>(v)) return constraint_kind::prefix_items;
+            }
+            if constexpr (n.items != 0)
+            {
+                static_assert(constraint_item_range<V>,
+                              "yyjson::items constrains the elements of a range that is read from a JSON array: not "
+                              "a string, nor a map read from a JSON object, whose values "
+                              "yyjson::additional_properties(settings...) constrains");
+                if constexpr (constraint_item_range<V>)
+                {
+                    auto it = std::ranges::begin(v);
+                    const auto end = std::ranges::end(v);
+                    if constexpr (n.prefix_count != 0)
+                        for (std::size_t j = 0; j < n.prefix_count && it != end; ++j) ++it;
+                    for (; it != end; ++it)
+                        if (level_violation<typename Level::template at<n.items>>(*it) != constraint_kind::none)
+                            return constraint_kind::items;
+                }
+            }
+            if constexpr (n.values != 0)
+            {
+                static_assert(constraint_value_range<V>,
+                              "yyjson::additional_properties(settings...) constrains the values of a map");
+                if constexpr (constraint_value_range<V>)
+                {
+                    for (const auto& e : v)
+                        if (level_violation<typename Level::template at<n.values>>(std::get<1>(e)) !=
+                            constraint_kind::none)
+                            return constraint_kind::values;
+                }
+            }
+            if constexpr (n.keys != 0)
+            {
+                static_assert(constraint_key_range<V>,
+                              "yyjson::property_names constrains the keys of a map that is read from a JSON object");
+                if constexpr (constraint_key_range<V>)
+                {
+                    for (const auto& e : v)
+                        if (level_violation<typename Level::template at<n.keys>>(std::get<0>(e)) !=
+                            constraint_kind::none)
+                            return constraint_kind::property_names;
+                }
+            }
+            if constexpr (n.contains != 0)
+            {
+                static_assert(constraint_item_range<V>,
+                              "yyjson::contains constrains the elements of a range that is read from a JSON array");
+                if constexpr (constraint_item_range<V>)
+                {
+                    constexpr bool has_min = c.has<yyjson::min_contains>();
+                    constexpr bool has_max = c.has<yyjson::max_contains>();
+                    constexpr std::size_t min = has_min ? c.min_contains : 1;
+                    std::size_t count = 0;
+                    if constexpr (has_max || min != 0)
+                    {
+                        for (const auto& e : v)
+                        {
+                            if (level_violation<typename Level::template at<n.contains>>(e) != constraint_kind::none)
+                                continue;
+                            ++count;
+                            if constexpr (has_max)
+                            {
+                                if (count > c.max_contains) return constraint_kind::max_contains;
+                            }
+                            else if (count >= min)
+                                break;
+                        }
+                    }
+                    if (count < min) return has_min ? constraint_kind::min_contains : constraint_kind::contains;
+                }
+            }
+            return constraint_kind::none;
         }
 
         // The constraint of the field K of S that `field` does not satisfy, or `none`.
@@ -3897,8 +4350,7 @@ namespace yyjson
             return level_violation<constraint_level<S, K>>(field);
         }
 
-        // The range that a value of the type F constrained by `yyjson::items` or
-        // `yyjson::additional_properties(settings...)` is, which a `std::optional` holds.
+        // The value that a value of the type F is checked as, which a `std::optional` holds.
         template <typename F>
         struct constrained_range
         {
@@ -3912,6 +4364,11 @@ namespace yyjson
 
         // The type of an element of the range R, and the type that it is read as, which is a pair of a mutable key
         // and a value for a map from an array of pairs; or the type of a value of the map R.
+        enum class element_kind : std::uint8_t
+        {
+            items,
+            values
+        };
         template <typename R, element_kind Kind>
         struct constrained_element
         {
@@ -3935,74 +4392,152 @@ namespace yyjson
             using read_type = type;
         };
 
-        // Finds the element of the JSON array or object `json`, read into the range R, that does not satisfy the
-        // next level of `Level`, by reading the elements again, and throws `bad_cast` at it.  It returns if it finds
-        // none, which is the case when the elements did not come from `json`, as those that
-        // `yyjson::merge_into` keeps.
-        template <typename S, std::size_t K, typename Level, typename R, typename Json>
-        requires (Level::has_elements &&
-                  (Level::elements == element_kind::items ? constraint_item_range<R> : constraint_value_range<R>))
-        void throw_element_violation(const Json& json)
+        template <typename S, std::size_t K, typename Level, typename V, typename Json>
+        void throw_located_violation(const Json& json, constraint_kind k);
+
+        // Reads the JSON value `e` again, as E through Read, and throws `bad_cast` at it, or at a value in it, if it
+        // does not satisfy the node `Level`.  It returns if `e` is not read as E.
+        template <typename S, std::size_t K, typename Level, typename E, typename Read, typename Json>
+        void throw_if_violated(const Json& e)
         {
-            using next = typename Level::next;
-            using E = typename constrained_element<R, Level::elements>::type;
-            using Read = typename constrained_element<R, Level::elements>::read_type;
-            const auto check = [](const auto& e) {
-                if constexpr (requires { E(cast_nested<Read>(e)); })
+            if constexpr (requires { E(cast_nested<Read>(e)); })
+            {
+                auto k = constraint_kind::none;
+                auto value = std::optional<E>();
+                try
                 {
-                    auto k = constraint_kind::none;
-                    auto value = std::optional<E>();
-                    try
-                    {
-                        value.emplace(cast_nested<Read>(e));
-                        k = level_violation<next>(*value);
-                    }
-                    catch (const bad_cast&)
-                    {
-                        return;
-                    }
-                    if (k == constraint_kind::none) return;
-                    if constexpr (requires {
-                                      throw_element_violation<S, K, next, typename constrained_range<E>::type>(e);
-                                  })
-                    {
-                        if (k == constraint_kind::items || k == constraint_kind::values)
-                            throw_element_violation<S, K, next, typename constrained_range<E>::type>(e);
-                    }
-                    throw_constraint_violation(target_of(e), struct_field_key<S, K>, type_name<S>(), k,
-                                               next::constraints, true);
+                    value.emplace(cast_nested<Read>(e));
+                    k = level_violation<Level>(*value);
                 }
-            };
-            if constexpr (Level::elements == element_kind::items)
-            {
-                if (const auto a = json.as_array(); a.has_value())
-                    for (const auto& e : *a) check(e);
+                catch (const bad_cast&)
+                {
+                    return;
+                }
+                if (k == constraint_kind::none) return;
+                throw_located_violation<S, K, Level, typename constrained_range<E>::type>(e, k);
+                throw_constraint_violation(target_of(e), struct_field_key<S, K>, type_name<S>(), k, Level::constraints,
+                                           constraint_subject::element);
             }
-            else if (const auto o = json.as_object(); o.has_value())
+        }
+
+        // Finds the element, the value or the key in the JSON array or object `json`, read into V, that makes it
+        // violate the constraint `k` of the node `Level`, by reading them again, and throws `bad_cast` at it.  It
+        // returns if it finds none, which is the case when the elements did not come from `json`, as those that
+        // `yyjson::merge_into` keeps.
+        template <typename S, std::size_t K, typename Level, typename V, typename Json>
+        void throw_located_violation(const Json& json, constraint_kind k)
+        {
+            if constexpr (Level::node.items != 0 && constraint_item_range<V>)
             {
-                for (const auto& kv : *o) check(std::get<1>(kv));
+                using E = typename constrained_element<V, element_kind::items>::type;
+                using Read = typename constrained_element<V, element_kind::items>::read_type;
+                if (k == constraint_kind::items)
+                    if (const auto a = json.as_array(); a.has_value())
+                    {
+                        std::size_t j = 0;
+                        for (const auto& e : *a)
+                            if (j++ >= Level::node.prefix_count)
+                                throw_if_violated<S, K, typename Level::template at<Level::node.items>, E, Read>(e);
+                    }
             }
-            else if (const auto a = json.as_array(); a.has_value())
+            if constexpr (Level::node.values != 0 && constraint_value_range<V>)
             {
-                // a map whose keys are not strings, from an array of [key, value] pairs
-                for (const auto& e : *a)
-                    if (const auto pair = e.as_array(); pair.has_value() && pair->size() == 2) check((*pair)[1]);
+                using E = typename constrained_element<V, element_kind::values>::type;
+                using next = typename Level::template at<Level::node.values>;
+                if (k == constraint_kind::values)
+                {
+                    if (const auto o = json.as_object(); o.has_value())
+                    {
+                        for (const auto& kv : *o) throw_if_violated<S, K, next, E, E>(std::get<1>(kv));
+                    }
+                    else if (const auto a = json.as_array(); a.has_value())
+                    {
+                        // a map whose keys are not strings, from an array of [key, value] pairs
+                        for (const auto& e : *a)
+                            if (const auto pair = e.as_array(); pair.has_value() && pair->size() == 2)
+                                throw_if_violated<S, K, next, E, E>((*pair)[1]);
+                    }
+                }
+            }
+            if constexpr (Level::node.prefix_count != 0 && constraint_prefix_target<V>)
+            {
+                if (k == constraint_kind::prefix_items)
+                    if (const auto a = json.as_array(); a.has_value())
+                        [&]<std::size_t... J>(std::index_sequence<J...>) {
+                            (
+                                [&] {
+                                    if constexpr (constraint_tuple<V>)
+                                    {
+                                        if constexpr (J < std::tuple_size_v<V>)
+                                        {
+                                            using E = std::remove_cv_t<std::tuple_element_t<J, V>>;
+                                            if (J < a->size())
+                                                throw_if_violated<
+                                                    S, K, typename Level::template at<Level::node.prefix + J>, E, E>(
+                                                    (*a)[J]);
+                                        }
+                                    }
+                                    else
+                                    {
+                                        using E = typename constrained_element<V, element_kind::items>::type;
+                                        using Read = typename constrained_element<V, element_kind::items>::read_type;
+                                        if (J < a->size())
+                                            throw_if_violated<S, K, typename Level::template at<Level::node.prefix + J>,
+                                                              E, Read>((*a)[J]);
+                                    }
+                                }(),
+                                ...);
+                        }(std::make_index_sequence<Level::node.prefix_count>{});
+            }
+            if constexpr (Level::node.keys != 0 && constraint_key_range<V>)
+            {
+                using Key = std::remove_cv_t<std::tuple_element_t<0, std::ranges::range_value_t<V>>>;
+                using next = typename Level::template at<Level::node.keys>;
+                if constexpr (std::constructible_from<Key, std::string_view>)
+                    if (k == constraint_kind::property_names)
+                        if (const auto o = json.as_object(); o.has_value())
+                            for (const auto& kv : *o)
+                            {
+                                const auto key = Key(std::string_view(std::get<0>(kv)));
+                                if (const auto violated = level_violation<next>(key); violated != constraint_kind::none)
+                                    throw_constraint_violation(target_of(std::get<1>(kv)), struct_field_key<S, K>,
+                                                               type_name<S>(), violated, next::constraints,
+                                                               constraint_subject::key);
+                            }
+            }
+            if constexpr (Level::node.constraints.template has<unique_items_t>() && constraint_items<V> &&
+                          !unique_keys<V>)
+            {
+                using E = typename constrained_element<V, element_kind::items>::type;
+                using Read = typename constrained_element<V, element_kind::items>::read_type;
+                if constexpr (requires(const Json& e) { E(cast_nested<Read>(e)); })
+                    if (k == constraint_kind::unique_items)
+                        if (const auto a = json.as_array(); a.has_value())
+                        {
+                            auto elements = std::vector<E>{};
+                            elements.reserve(a->size());
+                            try
+                            {
+                                for (const auto& e : *a) elements.emplace_back(cast_nested<Read>(e));
+                            }
+                            catch (const bad_cast&)
+                            {
+                                return;
+                            }
+                            if (const auto j = first_duplicate(elements); j != no_duplicate)
+                                throw_constraint_violation(target_of((*a)[j]), struct_field_key<S, K>, type_name<S>(),
+                                                           constraint_kind::duplicate_item, Level::node.constraints,
+                                                           constraint_subject::element);
+                        }
             }
         }
 
         template <typename S, std::size_t K, typename F, typename Json>
         [[noreturn]] CPPYYJSON_COLD void throw_field_violation(const Json& json, constraint_kind k)
         {
-            if constexpr (requires {
-                              throw_element_violation<S, K, constraint_level<S, K>,
-                                                      typename constrained_range<F>::type>(json);
-                          })
-            {
-                if (k == constraint_kind::items || k == constraint_kind::values)
-                    throw_element_violation<S, K, constraint_level<S, K>, typename constrained_range<F>::type>(json);
-            }
-            throw_constraint_violation(target_of(json), struct_field_key<S, K>, type_name<S>(), k,
-                                       constraints_of<S, K>);
+            using level = constraint_level<S, K>;
+            throw_located_violation<S, K, level, typename constrained_range<F>::type>(json, k);
+            throw_constraint_violation(target_of(json), struct_field_key<S, K>, type_name<S>(), k, level::constraints);
         }
 
         // Throws `bad_cast` unless the field K of S, read from the JSON value `json`, satisfies its constraints.
@@ -4016,12 +4551,6 @@ namespace yyjson
                     throw_field_violation<S, K, F>(json, k);
             }
         }
-
-        // A range that keeps one element of each key, as a set or a map does and a multiset or a multimap does not.
-        template <typename T>
-        concept unique_keys = requires(T& t, std::ranges::range_value_t<T> v) {
-            { t.insert(std::move(v)) } -> std::same_as<std::pair<typename T::iterator, bool>>;
-        };
 
         // Calls `insert()`, which adds an element to `result`, and returns false if it did not add one because
         // `result` has its key, which is checked only when `strict` is true.
