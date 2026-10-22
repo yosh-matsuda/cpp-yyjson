@@ -279,6 +279,7 @@ bool is_string() const;     // string
 bool is_array() const;      // array
 bool is_object() const;     // object
 bool is_container() const;  // array/object
+bool is_raw() const;        // number text read with NumberAsRaw/BignumAsRaw
 
 // Get the content of the JSON value
 std::optional<std::nullptr_t> as_null() const;
@@ -290,6 +291,8 @@ std::optional<double> as_real() const;
 std::optional<double> as_num() const;
 std::optional<std::string_view> as_string() const&;
 std::optional<std::string> as_string() &&;
+std::optional<std::string_view> as_raw() const&;
+std::optional<std::string> as_raw() &&;
 std::optional<yyjson::reader::const_array_ref> as_array() const&;
 std::optional<yyjson::reader::array> as_array() &&;
 std::optional<yyjson::reader::const_object_ref> as_object() const&;
@@ -372,6 +375,15 @@ namespace yyjson::reader
 Arrays and objects are returned as reference classes, so they still refer to the owner JSON document. The `std::string_view` alternative also refers to the string stored in the owner JSON document.
 
 Non-negative integers are returned as `std::uint64_t`, and negative integers are returned as `std::int64_t`. A non-negative integer that does not fit in `std::int64_t` can still be inspected without losing precision. If you want to treat all integers uniformly, handle both alternatives in the visitor.
+
+A number read with `ReadFlag::NumberAsRaw` or `ReadFlag::BignumAsRaw` is kept as its text. `is_raw()` tells it apart, and `as_raw()` returns the text; `write()` outputs it unchanged. `value_variant` has no alternative for it, so `inspect` returns it as `bool` `false`, and the predefined casters throw `yyjson::bad_cast` for it.
+
+```cpp
+auto doc = yyjson::read(R"([1.5, 123456789012345678901234567890])", yyjson::ReadFlag::BignumAsRaw);
+auto arr = *doc.as_array();
+arr[0].as_real();  // -> 1.5
+arr[1].as_raw();   // -> "123456789012345678901234567890"
+```
 
 The `yyjson::overloaded` helper can be used to combine lambdas for `std::visit` or `inspect(visitor)`.
 For ordinary overload resolution, it behaves like the common overloaded-lambda helper.
@@ -701,6 +713,7 @@ bool is_string() const;     // string
 bool is_array() const;      // array
 bool is_object() const;     // object
 bool is_container() const;  // array/object
+bool is_raw() const;        // number text read with NumberAsRaw/BignumAsRaw
 
 // Get the content of the JSON value
 std::optional<std::nullptr_t> as_null() const;
@@ -711,6 +724,7 @@ std::optional<std::int64_t> as_int() const;
 std::optional<double> as_real() const;
 std::optional<double> as_num() const;
 std::optional<std::string_view> as_string() const;
+std::optional<std::string_view> as_raw() const;
 std::optional<yyjson::writer::const_array_ref> as_array() const&;
 std::optional<yyjson::writer::array_ref> as_array() &;
 std::optional<yyjson::writer::array> as_array() &&;

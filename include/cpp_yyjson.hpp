@@ -6312,6 +6312,7 @@ namespace yyjson
                 [[nodiscard]] auto is_real() const noexcept { return yyjson_mut_is_real(base::val_); }
                 [[nodiscard]] auto is_num() const noexcept { return yyjson_mut_is_num(base::val_); }
                 [[nodiscard]] auto is_string() const noexcept { return yyjson_mut_is_str(base::val_); }
+                [[nodiscard]] auto is_raw() const noexcept { return yyjson_mut_is_raw(base::val_); }
                 [[nodiscard]] auto is_array() const noexcept { return yyjson_mut_is_arr(base::val_); }
                 [[nodiscard]] auto is_object() const noexcept { return yyjson_mut_is_obj(base::val_); }
                 [[nodiscard]] auto is_container() const noexcept { return yyjson_mut_is_ctn(base::val_); }
@@ -6379,6 +6380,13 @@ namespace yyjson
                 {
                     if (is_string()) [[likely]]
                         return std::string_view(yyjson_mut_get_str(base::val_), yyjson_mut_get_len(base::val_));
+                    return std::nullopt;
+                }
+                // the text of a number read with `NumberAsRaw` or `BignumAsRaw`
+                [[nodiscard]] std::optional<std::string_view> as_raw() const noexcept
+                {
+                    if (is_raw()) [[likely]]
+                        return std::string_view(yyjson_mut_get_raw(base::val_), yyjson_mut_get_len(base::val_));
                     return std::nullopt;
                 }
                 [[nodiscard]] std::optional<const_array_ref> as_array() const noexcept;
@@ -8082,6 +8090,7 @@ namespace yyjson
             [[nodiscard]] auto is_real() const noexcept { return yyjson_is_real(val_); }
             [[nodiscard]] auto is_num() const noexcept { return yyjson_is_num(val_); }
             [[nodiscard]] auto is_string() const noexcept { return yyjson_is_str(val_); }
+            [[nodiscard]] auto is_raw() const noexcept { return yyjson_is_raw(val_); }
             [[nodiscard]] auto is_array() const noexcept { return yyjson_is_arr(val_); }
             [[nodiscard]] auto is_object() const noexcept { return yyjson_is_obj(val_); }
             [[nodiscard]] auto is_container() const noexcept { return yyjson_is_ctn(val_); }
@@ -8149,6 +8158,13 @@ namespace yyjson
             {
                 if (is_string()) [[likely]]
                     return std::string_view(yyjson_get_str(val_), yyjson_get_len(val_));
+                return std::nullopt;
+            }
+            // the text of a number read with `NumberAsRaw` or `BignumAsRaw`
+            [[nodiscard]] std::optional<std::string_view> as_raw() const noexcept
+            {
+                if (is_raw()) [[likely]]
+                    return std::string_view(yyjson_get_raw(val_), yyjson_get_len(val_));
                 return std::nullopt;
             }
             [[nodiscard]] value_variant inspect() const noexcept;
@@ -8620,6 +8636,13 @@ namespace yyjson
                 return std::nullopt;
             };
             [[nodiscard]] auto as_string() const& noexcept { return base::as_string(); }
+            std::optional<std::string> as_raw() &&
+            {
+                if (is_raw()) [[likely]]
+                    return std::string(yyjson_get_raw(val_), yyjson_get_len(val_));
+                return std::nullopt;
+            }
+            [[nodiscard]] auto as_raw() const& noexcept { return base::as_raw(); }
             std::optional<array> as_array() &&;
             [[nodiscard]] auto as_array() const& noexcept { return base::as_array(); }
             std::optional<object> as_object() &&;
