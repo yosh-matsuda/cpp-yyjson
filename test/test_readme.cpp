@@ -73,7 +73,7 @@ TEST(Readme, QuickLook)
 
     auto rates = yyjson::read(R"({"USD":129.66,"EUR":140.35})");
     auto lines = std::string();
-    for (const auto& [currency, rate] : *rates.as_object())
+    for (const auto obj = *rates.as_object(); const auto& [currency, rate] : obj)
     {
         lines += std::format("{}: {}\n", currency, *rate.as_real());
     }
