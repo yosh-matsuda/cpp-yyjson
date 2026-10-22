@@ -11,7 +11,7 @@ cpp-yyjson is a header-only C++ interface to [yyjson](https://github.com/ibireme
 *   **Fast with both APIs.** In the [benchmarks](#performance), the data binding API reads and writes C++ types faster than every library it is compared with, and the DOM API reads and writes documents at least as fast as every one of them.
 *   **One call each way.** `read<T>(json)` and `write(t)` convert aggregate structs through compile-time reflection, with no macro or registration. Containers, `std::optional`, `std::variant`, smart pointers, enumerations and recursive types work out of the box.
 *   **Two APIs in one library.** Read JSON of a known shape into C++ types, and JSON of any shape into a DOM, and convert between the two.
-*   **Tolerant of changing JSON, or strict when asked.** Unknown keys are ignored, missing keys keep their defaults, and `merge_into` applies a [JSON Merge Patch](https://www.rfc-editor.org/rfc/rfc7396) to an existing object. [`yyjson::strict`](docs/reference.md#strict-reading) rejects unknown, missing and repeated keys instead. Fields can also take [constraints](docs/reference.md#constraints) such as `yyjson::minimum(0)` or `yyjson::pattern("^[a-z]+$")`.
+*   **Tolerant of changing JSON, or strict when asked.** Unknown keys are ignored, missing keys keep their defaults, and `merge_into` applies a [JSON Merge Patch](https://www.rfc-editor.org/rfc/rfc7396) to an existing object. [`yyjson::strict`](docs/validation.md#strict-reading) rejects unknown, missing and repeated keys instead. Fields can also take [constraints](docs/validation.md#constraints) such as `yyjson::minimum(0)` or `yyjson::pattern("^[a-z]+$")`.
 *   **A DOM that feels like the standard library.** Arrays and objects are C++20 ranges, objects yield key-value pairs for structured bindings, values work with `std::format`, and documents are built from containers and initializer lists.
 *   **A faster yyjson inside.** The [bundled backend](#bundled-backend) adds SIMD string paths and other optimizations to yyjson, with the same API, input and output.
 
@@ -74,7 +74,7 @@ int main()
 }
 ```
 
-Invalid JSON throws `yyjson::read_error`, and JSON that does not fit the type throws `yyjson::bad_cast`, which names the value that failed by its path and its position, as above ([details](docs/reference.md#errors-of-conversion)).
+Invalid JSON throws `yyjson::read_error`, and JSON that does not fit the type throws `yyjson::bad_cast`, which names the value that failed by its path and its position, as above ([details](docs/validation.md#errors-of-conversion)).
 
 ### Reading into an existing object
 
@@ -193,7 +193,7 @@ See the reference for the [immutable](docs/reference.md#immutable-json-classes) 
 | Read many documents of the same shape | `read_into(json, t)` |
 | Apply a partial update | `merge_into(json, t)` |
 | Reject JSON that has more or less than the type | `read<T>(json, yyjson::strict)` |
-| Restrict the values of a field, as a schema would | [constraints](docs/reference.md#constraints) in `yyjson::annotations<T>` |
+| Restrict the values of a field, as a schema would | [constraints](docs/validation.md#constraints) in `yyjson::annotations<T>` |
 | Convert a C++ object to JSON text | `write(t)`, or `write(t, out)` to reuse the string |
 | Read JSON of unknown or varying shape | `read(json)` and the DOM |
 | Keep a member of unknown shape in a C++ type | a field of type `yyjson::value` |
@@ -208,11 +208,11 @@ Both APIs share the same conversions, so the types and the customizations below 
 
 ### Supported types
 
-The conversions cover numbers, strings, [enumerations](docs/reference.md#enumerations) by name (or [by integer](docs/reference.md#formats-and-renamed-enumerators)), standard containers and maps, `std::optional`, smart pointers, `std::variant` (also [tagged](docs/reference.md#tagged-variants) by a member), tuples, aggregate structs by [compile-time reflection](docs/reference.md#automatic-casting-with-compile-time-reflection) or [`VISITABLE_STRUCT`](docs/reference.md#registration-of-field-names-of-structclass), [DOM values as fields](docs/reference.md#json-values-as-fields) and any type with a caster, nested in any combination. The concepts `yyjson::readable<T>` and `yyjson::writable<T>` check a type at compile time, and [Conversion rules](docs/reference.md#conversion-rules) lists the restrictions, such as `read<T>` needing types that own their strings.
+The conversions cover numbers, strings, [enumerations](docs/conversions.md#enumerations) by name (or [by integer](docs/conversions.md#formats-and-renamed-enumerators)), standard containers and maps, `std::optional`, smart pointers, `std::variant` (also [tagged](docs/conversions.md#tagged-variants) by a member), tuples, aggregate structs by [compile-time reflection](docs/conversions.md#automatic-casting-with-compile-time-reflection) or [`VISITABLE_STRUCT`](docs/conversions.md#registration-of-field-names-of-structclass), [DOM values as fields](docs/conversions.md#json-values-as-fields) and any type with a caster, nested in any combination. The concepts `yyjson::readable<T>` and `yyjson::writable<T>` check a type at compile time, and [Conversion rules](docs/conversions.md#conversion-rules) lists the restrictions, such as `read<T>` needing types that own their strings.
 
 ### JSON keys and casters
 
-A JSON key that is not a valid C++ identifier is mapped to a field with `yyjson::annotations`, which also [skips fields](docs/reference.md#skipped-fields), [renames enumerators](docs/reference.md#formats-and-renamed-enumerators) and [tags variants](docs/reference.md#tagged-variants):
+A JSON key that is not a valid C++ identifier is mapped to a field with `yyjson::annotations`, which also [skips fields](docs/conversions.md#skipped-fields), [renames enumerators](docs/conversions.md#formats-and-renamed-enumerators) and [tags variants](docs/conversions.md#tagged-variants):
 
 ```cpp
 struct Thing
@@ -228,7 +228,7 @@ inline constexpr auto yyjson::annotations<Thing> =
 auto thing = yyjson::read<Thing>(R"({"@context":"https://schema.org","name":"x"})");
 ```
 
-With C++26, the same can be written in the struct as `[[=yyjson::rename("@context")]] std::string context;` ([details](docs/reference.md#c26-annotations)).
+With C++26, the same can be written in the struct as `[[=yyjson::rename("@context")]] std::string context;` ([details](docs/conversions.md#c26-annotations)).
 
 A user-defined caster converts a type of your own. The simplest form is a *translator*, which converts the type to and from another type that cpp-yyjson already handles:
 
@@ -267,7 +267,7 @@ auto json = yyjson::write(colors);
 // -> ["#ff8000","#000000"]
 ```
 
-Casters can also read into a field in place, write members that depend on the value, or leave a field out; see [User-defined casters](docs/reference.md#user-defined-casters).
+Casters can also read into a field in place, write members that depend on the value, or leave a field out; see [User-defined casters](docs/conversions.md#user-defined-casters).
 
 ## Performance
 
@@ -331,7 +331,7 @@ To use the upstream yyjson instead, configure with `-DCPPYYJSON_USE_BUNDLED_YYJS
     *   LLVM 17-22
     *   AppleClang 16 (Xcode 16.2), 17 (Xcode 26.3), and 21 (Xcode 26.6)
     *   MSVC `cl` and `clang-cl` on `windows-2022` and `windows-2025`
-*   C++26 with GCC 16 and `-std=c++26 -freflection` is also supported; its static reflection converts structs with base classes or more than 100 fields, and takes annotations such as `[[=yyjson::rename("@context")]]` ([details](docs/reference.md#automatic-casting-with-compile-time-reflection))
+*   C++26 with GCC 16 and `-std=c++26 -freflection` is also supported; its static reflection converts structs with base classes or more than 100 fields, and takes annotations such as `[[=yyjson::rename("@context")]]` ([details](docs/conversions.md#automatic-casting-with-compile-time-reflection))
 *   [yyjson](https://github.com/ibireme/yyjson) 0.6.0 or later, only when it is used instead of the [bundled backend](#bundled-backend); before 0.12.0, the data binding API goes through a document
 
 ## Installation
@@ -359,14 +359,16 @@ target_link_libraries(my_app PRIVATE cpp_yyjson::cpp_yyjson)
 | `CPPYYJSON_USE_BUNDLED_YYJSON=OFF` | Uses an external yyjson package instead of the bundled backend. |
 | `CPPYYJSON_READER_DEPTH_LIMIT`, `CPPYYJSON_WRITER_DEPTH_LIMIT`, `CPPYYJSON_DISABLE_FILE` | The yyjson [compile-time options](https://ibireme.github.io/yyjson/doc/doxygen/html/building-and-testing.html#compile-time-options) of the same name with `YYJSON_`. |
 | `CPPYYJSON_DISABLE_HUGE_PAGES=ON` | Turns off the huge pages of the bundled backend. |
-| `CPPYYJSON_RECURSION_DEPTH_LIMIT` | Limits how deeply values of [recursive types](docs/reference.md#recursive-types) are read. |
+| `CPPYYJSON_RECURSION_DEPTH_LIMIT` | Limits how deeply values of [recursive types](docs/conversions.md#recursive-types) are read. |
 
 [Build configuration](docs/reference.md#build-configuration) covers link-time optimization, the options with an external yyjson and building this repository.
 
 ## Documentation
 
-*   [Reference](docs/reference.md): every class and function, the conversion rules and the casters.
-*   [Performance best practices](docs/reference.md#performance-best-practices): how to get the most out of each API.
+*   [Converting C++ types](docs/conversions.md): which types convert and how, JSON keys, enumerations, variants and casters.
+*   [Validation and errors](docs/validation.md): strict reading, constraints, and the errors that the library reports.
+*   [Reference](docs/reference.md): every class and function of both APIs.
+*   [Performance best practices](docs/performance.md): how to get the most out of each API.
 *   [Benchmarks](docs/benchmark/README.md): the full results and how to reproduce them.
 
 ## License
