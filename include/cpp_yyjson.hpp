@@ -3645,7 +3645,7 @@ namespace yyjson
 
         // `replaceable` tells whether a new object may be constructed in the place of the field.
         template <typename Field, typename Json>
-        void assign_reflected_field(Field& field, const Json& value, bool replaceable)
+        void assign_reflected_field_impl(Field& field, const Json& value, bool replaceable)
         {
             using field_type = std::remove_cvref_t<Field>;
             if constexpr (is_std_optional<field_type>::value)
@@ -3686,6 +3686,37 @@ namespace yyjson
             {
                 field = cast_nested<field_type>(value);
             }
+        }
+
+        // Takes the value by value, so that the caller need not keep the member of the object it reads in memory.
+        template <typename Field, typename Json>
+        CPPYYJSON_NOINLINE void assign_reflected_field_out_of_line(Field& field, const Json value, bool replaceable)
+        {
+            assign_reflected_field_impl(field, value, replaceable);
+        }
+
+        // A field of an arithmetic type is assigned here when the JSON value has the type that the field is usually
+        // read from, and is left to `assign_reflected_field_impl` otherwise.  The rest of a cast is too large for
+        // the compiler to inline into the loop over the members of an object, and calling it there costs the
+        // struct a few percent.  A string is not assigned here: inlining its copy makes a struct of strings slower.
+        template <typename Field, typename Json>
+        concept usual_type_assignable_field =
+            std::is_arithmetic_v<Field> && std::same_as<Field, std::remove_cv_t<Field>> &&
+            !requires(Field& f, const Json& v) { caster<Field>::from_json(f, v); } &&
+            !from_json_translator<Field>::in_place &&
+            requires(Field& f, const Json& v) { default_caster<Field>::assign_usual_type(f, v); };
+
+        template <typename Field, typename Json>
+        CPPYYJSON_ALWAYS_INLINE inline void assign_reflected_field(Field& field, const Json& value, bool replaceable)
+        {
+            if constexpr (usual_type_assignable_field<Field, Json>)
+            {
+                if (default_caster<Field>::assign_usual_type(field, value)) [[likely]]
+                    return;
+                assign_reflected_field_out_of_line(field, value, replaceable);
+            }
+            else
+                assign_reflected_field_impl(field, value, replaceable);
         }
 
         // Casts `json` to the alternative `index` of the variant V, or gives `std::monostate` without reading it.
@@ -10150,6 +10181,39 @@ namespace yyjson
                 throw_enum_not_integer(at);
             else
                 detail::throw_bad_cast_at(at, "{} is not constructible from JSON integer", detail::type_name<U>());
+        }
+
+        // Assigns a value of a read document to a field as `field = cast<T>(json)` does if the value has the
+        // JSON type that T is usually read from, and returns false otherwise.
+        template <typename Json>
+        requires std::same_as<Json, reader::const_value_ref> && (!reader::detail::from_json_val_usr_defined<T>) &&
+                 (std::floating_point<T> || std::integral<T>)
+        CPPYYJSON_ALWAYS_INLINE static bool assign_usual_type(T& field, const Json& json)
+        {
+            auto* val = const_cast<yyjson_val*>(json.val_);
+            if constexpr (std::same_as<T, bool>)
+            {
+                if (!unsafe_yyjson_is_bool(val)) [[unlikely]]
+                    return false;
+                field = unsafe_yyjson_get_bool(val);
+            }
+            else if constexpr (std::floating_point<T>)
+            {
+                if (!unsafe_yyjson_is_real(val)) [[unlikely]]
+                    return false;
+                field = from_json_real(unsafe_yyjson_get_real(val), detail::target_of(json));
+            }
+            else
+            {
+                // yyjson tags a non-negative integer as unsigned
+                if (unsafe_yyjson_is_uint(val)) [[likely]]
+                    field = from_json_uint(unsafe_yyjson_get_uint(val), detail::target_of(json));
+                else if (unsafe_yyjson_is_sint(val))
+                    field = from_json_sint(unsafe_yyjson_get_sint(val), detail::target_of(json));
+                else
+                    return false;
+            }
+            return true;
         }
 
         // Assigns a value of a read document to a field of a struct as `field = cast<T>(json)` does, but
