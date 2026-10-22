@@ -737,13 +737,13 @@ TEST(Constraints, Write)
 TEST(Constraints, Elements)
 {
     expect_accepted<Elements>(
-        R"({"scores":[0,1],"pair":[9,0],"names":["ab"],"set":[5,1],"uset":[2,4],"limits":{"a":100},)"
+        R"({"scores":[0,1],"pair":[9,0],"names":["ab"],"set":[5,1],"uset":[4],"limits":{"a":100},)"
         R"("groups":{"g":[1]},"by_id":[[1,5]],"ordered":[[1,2]],"holes":[null,5],"tags":["abc"],"nested":[["abc"]]})",
         {{0, 1},
          {9, 0},
          {"ab"},
          {1, 5},
-         {2, 4},
+         {4},  // one element, since the order of an unordered_set depends on the standard library
          {{"a", 100}},
          {{"g", {1}}},
          {{1, 5}},
