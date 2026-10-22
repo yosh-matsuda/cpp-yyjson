@@ -1465,7 +1465,7 @@ See [Annotations of keys](validation.md#annotations-of-keys).
 
 ### Constraints
 
-Settings of a field that restrict the values that it reads, as the keywords of JSON Schema of the same names do.
+Settings of a field that restrict the values that it reads, as the keywords of JSON Schema of the same names do. [JSON Schema keywords](validation.md#json-schema-keywords) lists every keyword with what corresponds to it.
 
 ```cpp
 consteval explicit minimum(auto m);

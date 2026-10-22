@@ -7,6 +7,7 @@ This document describes:
 *   what a read checks, and what it does with unknown, missing and repeated keys;
 *   how to reject those keys, and `null` in a `std::optional` field, with [strict reading](#strict-reading);
 *   how to restrict the values of fields, and of their elements, with [constraints](#constraints);
+*   what in cpp-yyjson corresponds to each [keyword of JSON Schema](#json-schema-keywords);
 *   the [errors](#errors) that the library reports at run time, and the [compile errors](#compile-errors) of types that cannot be converted.
 
 The settings of a field and of a struct go into `yyjson::annotations<T>` or on the members as C++26 annotations, as described in [Annotations](conversions.md#annotations).
@@ -277,7 +278,7 @@ yyjson::read<Job>(R"({"env":{"PATH":"/bin","home":"/root"}})");
 
 ### How constraints are checked
 
-*   The names are those of the keywords of [JSON Schema](https://json-schema.org/understanding-json-schema/reference/numeric), and so is what they accept, except that `pattern` uses the engine that the program gives, as below. A field may have several constraints, but each one once.
+*   The names are those of the keywords of [JSON Schema](https://json-schema.org/understanding-json-schema/reference/numeric), and so is what they accept, except that `pattern` uses the engine that the program gives, as below. [JSON Schema keywords](#json-schema-keywords) lists the keywords that have no constraint of the same name. A field may have several constraints, but each one once.
 *   A constraint applies to the value of a `std::optional` field when it has one. `yyjson::validate<f>` takes a function or a lambda without captures, whose parameter is the type of the field or, for a `std::optional<U>` field, `U`.
 *   A constraint checks the value of the field, after the JSON value is converted to its type. A `float` field reads `16777217` as `16777216`, which `yyjson::maximum(16777216)` accepts. A `std::set<int>` reads `[1,1]` as one element, which `yyjson::max_items(1)` accepts. To check the JSON value as it is, use a type that holds it exactly, such as `std::int64_t` or `std::vector<int>`.
 *   The bounds of a number are integers or reals, of any type:
@@ -339,6 +340,75 @@ inline constexpr auto yyjson::annotations<Product> =
 
 yyjson::read<Product>(R"({"code":"abc"})");  // throws: the value of the key "code" of Product does not match the pattern "^[A-Z]{3}-[0-9]{4}$" at /code (line 1, column 9, pos 8)
 ```
+
+## JSON Schema keywords
+
+The tables below list the keywords of [JSON Schema 2020-12](https://json-schema.org/draft/2020-12) that check a value, and `default`, with what reads the same JSON in cpp-yyjson. A keyword is a constraint of the same name, a C++ type, a rule of the keys of a struct, or none. The library neither reads nor writes a schema: the tables are for translating a schema into C++ types and annotations by hand.
+
+`yyjson::validate<f>` checks any condition on the value of a field, including one between the fields of a struct field. It does not apply to the root, which the program checks after the read.
+
+### Types and values
+
+| Keyword | cpp-yyjson | Difference |
+| --- | --- | --- |
+| `type: "integer"` | an integer type | the same: `2.0` is read as `2`, and `1.5` is rejected. A number out of the range of the type is rejected. |
+| `type: "number"` | `double` or `float` | |
+| `type: "string"`, `"boolean"` | `std::string`, `bool` | |
+| `type: "null"` | `std::nullptr_t`, `std::monostate` | |
+| `type: "array"` | a range, a set, `std::array` or a tuple | |
+| `type: "object"` | a struct, a map or another [range of key-value pairs](conversions.md#conversion-rules) | |
+| `type: [T, "null"]` | `std::optional<T>`, or `std::variant<std::monostate, T>` | a field of `std::optional` may also leave out its key, and under `yyjson::strict` rejects `null` unless `T` reads it, as described in [`null` in a `std::optional`](#null-in-a-stdoptional). |
+| `enum` | an [enumeration](conversions.md#enumerations), of names or of integers, or `yyjson::validate<f>` | |
+| `const` | `yyjson::validate<f>` | |
+| `format` | none | check the string with `yyjson::validate<f>`, or read it into a type of its own with a [translator](conversions.md#translator). |
+| `contentEncoding`, `contentMediaType`, `contentSchema` | none | decode the string with a [translator](conversions.md#translator). |
+
+### Numbers and strings
+
+| Keyword | cpp-yyjson | Difference |
+| --- | --- | --- |
+| `minimum`, `maximum` | `yyjson::minimum(m)`, `yyjson::maximum(m)` | the value is checked after the conversion to the type of the field, as described in [How constraints are checked](#how-constraints-are-checked). |
+| `exclusiveMinimum`, `exclusiveMaximum` | `yyjson::exclusive_minimum(m)`, `yyjson::exclusive_maximum(m)` | the numbers of 2020-12, not the booleans of draft 4. |
+| `multipleOf` | `yyjson::multiple_of(m)` | an integer value is checked against an integer `m` exactly. |
+| `minLength`, `maxLength` | `yyjson::min_length(n)`, `yyjson::max_length(n)` | the same: the length is counted in code points. |
+| `pattern` | `yyjson::pattern("regex")` | the dialect is that of the engine of the [pattern matcher](#pattern-matcher), and not always ECMA-262. |
+
+### Arrays
+
+| Keyword | cpp-yyjson | Difference |
+| --- | --- | --- |
+| `items` | `yyjson::items(settings...)` | `items: false` is a tuple or a `std::array`, which have a fixed number of elements, or `yyjson::max_items`. |
+| `prefixItems` | `yyjson::prefix_items(...)` | |
+| `contains`, `minContains`, `maxContains` | `yyjson::contains(settings...)`, `yyjson::min_contains(n)`, `yyjson::max_contains(n)` | `contains: {}` is `yyjson::min_items` and `yyjson::max_items`. |
+| `minItems`, `maxItems` | `yyjson::min_items(n)`, `yyjson::max_items(n)` | |
+| `uniqueItems` | `yyjson::unique_items`, or a set | the elements are compared by `operator==` of their type. A set keeps the first of equal elements, and [`yyjson::strict`](#strict-reading) rejects the repetition. |
+| `unevaluatedItems` | none | `yyjson::max_items`, or a tuple. |
+
+### Objects
+
+| Keyword | cpp-yyjson | Difference |
+| --- | --- | --- |
+| `properties` | the fields of a struct | a key is the name of the member, or its [`yyjson::rename`](conversions.md#json-keys). |
+| `required` | `yyjson::required`, or [`yyjson::strict`](#strict-reading) for every field | without them, a field whose key is missing keeps its value in `T()`. `merge_into` requires no key. |
+| `additionalProperties: false` | `yyjson::additional_properties(false)` on a struct, or [`yyjson::strict`](#strict-reading) | without them, a struct ignores a key that names no field. |
+| `additionalProperties` with a schema | `yyjson::additional_properties(settings...)` on a map | a struct checks no key that names no field of it. |
+| `propertyNames` | `yyjson::property_names(settings...)` on a map | |
+| `minProperties`, `maxProperties` | `yyjson::min_items(n)`, `yyjson::max_items(n)` on a map | |
+| `patternProperties` | none | `yyjson::property_names` and `yyjson::additional_properties(settings...)` constrain all the keys and all the values of a map alike. |
+| `dependentRequired`, `dependentSchemas` | none | `yyjson::validate<f>` on a struct field. |
+| `unevaluatedProperties` | none | `yyjson::additional_properties(false)` or [`yyjson::strict`](#strict-reading). |
+
+### Combining schemas
+
+| Keyword | cpp-yyjson | Difference |
+| --- | --- | --- |
+| `allOf` | the constraints of one field, which all apply | a field takes each constraint once. |
+| `anyOf` | `std::variant` | the first alternative that accepts the value by its conversion and its constraints is read, as described in [How constraints are checked](#how-constraints-are-checked). |
+| `oneOf` | a [tagged variant](conversions.md#tagged-variants) | the tag names the alternative, as a `const` of a member in each alternative of `oneOf` does. An untagged variant does not check that only one alternative accepts the value. |
+| `not` | `yyjson::validate<f>` | |
+| `if`, `then`, `else` | a [tagged variant](conversions.md#tagged-variants), or `yyjson::validate<f>` | |
+| `$ref`, `$defs` | a C++ type, used in more than one place or in itself as a [recursive type](conversions.md#recursive-types) | |
+| `default` | the value in `T()`, including a default member initializer | used for a missing key. Writing writes it like any other value. |
 
 ## Errors
 
