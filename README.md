@@ -365,6 +365,7 @@ target_link_libraries(my_app PRIVATE cpp_yyjson::cpp_yyjson)
 
 ## Documentation
 
+*   [Guide](docs/guide.md): how to do common tasks, from reading a file to validating input, and what the library does not do.
 *   [Converting C++ types](docs/conversions.md): which types convert and how, JSON keys, enumerations, variants and casters.
 *   [Validation and errors](docs/validation.md): strict reading, constraints, and the errors that the library reports.
 *   [Reference](docs/reference.md): every class and function of both APIs.
