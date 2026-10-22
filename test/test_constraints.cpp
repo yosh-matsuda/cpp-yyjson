@@ -250,9 +250,222 @@ inline constexpr auto yyjson::annotations<Containing> = yyjson::annotate(
     yyjson::field("none", yyjson::contains(yyjson::minimum(10)), yyjson::min_contains(0), yyjson::max_contains(1)),
     yyjson::field("rows", yyjson::contains(yyjson::contains(yyjson::minimum(5)))));
 
-// the nodes of the settings are counted from the types, and an element that is not checked is not read again
+// the corner cases of the settings of the values: counts of yyjson::contains that are 0, null elements, a
+// std::optional range, a user caster, keys that are not strings, ranges of pairs, and sequences that are not vectors
+struct Counted
+{
+    std::vector<int> min0;
+    std::vector<int> max0;
+    std::vector<int> both0;
+    std::vector<std::optional<int>> opts;
+    std::optional<std::vector<int>> unique;
+    std::optional<std::vector<int>> head;
+    std::optional<std::vector<int>> some;
+    bool operator==(const Counted&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<Counted> = yyjson::annotate(
+    yyjson::field("min0", yyjson::contains(yyjson::minimum(10)), yyjson::min_contains(0)),
+    yyjson::field("max0", yyjson::contains(yyjson::minimum(10)), yyjson::max_contains(0)),
+    yyjson::field("both0", yyjson::contains(yyjson::minimum(10)), yyjson::min_contains(0), yyjson::max_contains(0)),
+    yyjson::field("opts", yyjson::contains(yyjson::minimum(10)), yyjson::max_contains(1)),
+    yyjson::field("unique", yyjson::unique_items), yyjson::field("head", yyjson::prefix_items(yyjson::minimum(0))),
+    yyjson::field("some", yyjson::contains(yyjson::minimum(10))));
+
+struct Point
+{
+    int x = 0;
+    int y = 0;
+    bool operator==(const Point&) const = default;
+};
+template <>
+struct yyjson::caster<Point>
+{
+    static Point from_json(std::array<int, 2> a) { return {a[0], a[1]}; }
+    template <typename... Ts>
+    static std::array<int, 2> to_json(const Point& p, Ts...)
+    {
+        return {p.x, p.y};
+    }
+};
+enum class Side
+{
+    left,
+    right
+};
+bool is_left(const Side& s) { return s == Side::left; }
+// a range that its caster reads from a string such as "1,2"
+struct Csv
+{
+    std::vector<int> v;
+    auto begin() const { return v.begin(); }
+    auto end() const { return v.end(); }
+    bool operator==(const Csv&) const = default;
+};
+template <>
+struct yyjson::caster<Csv>
+{
+    static Csv from_json(std::string_view s)
+    {
+        auto result = Csv();
+        for (std::size_t i = 0; i <= s.size();)
+        {
+            const auto j = std::min(s.find(',', i), s.size());
+            result.v.push_back(std::stoi(std::string(s.substr(i, j - i))));
+            i = j + 1;
+        }
+        return result;
+    }
+    template <typename... Ts>
+    static std::string to_json(const Csv& c, Ts...)
+    {
+        auto result = std::string();
+        for (const auto i : c.v) result += std::format("{}{}", result.empty() ? "" : ",", i);
+        return result;
+    }
+};
+struct Unusual
+{
+    std::vector<Point> pts;
+    std::map<Side, int> sides;
+    std::multimap<std::string, int> mm;
+    std::vector<std::pair<std::string, int>> kv;
+    std::deque<int> dq;
+    std::list<int> ls;
+    std::vector<double> reals;
+    std::optional<Csv> csv;
+    bool operator==(const Unusual&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<Unusual> = yyjson::annotate(
+    yyjson::field("pts", yyjson::unique_items),
+    yyjson::field("sides", yyjson::property_names(yyjson::validate<is_left>)),
+    yyjson::field("mm", yyjson::unique_items), yyjson::field("kv", yyjson::property_names(yyjson::max_length(1))),
+    yyjson::field("dq", yyjson::prefix_items(yyjson::minimum(0)), yyjson::items(yyjson::maximum(9))),
+    yyjson::field("ls", yyjson::prefix_items({}, yyjson::minimum(1)), yyjson::items(yyjson::maximum(9))),
+    yyjson::field("reals", yyjson::unique_items), yyjson::field("csv", yyjson::items(yyjson::minimum(0))));
+
+// the settings of the values in the values in the values
+struct Deep
+{
+    std::vector<std::vector<std::vector<int>>> v;
+    std::map<std::string, std::vector<int>> m;
+    std::vector<std::map<std::string, int>> k;
+    bool operator==(const Deep&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<Deep> =
+    yyjson::annotate(yyjson::field("v", yyjson::items(yyjson::prefix_items(yyjson::items(yyjson::minimum(0)),
+                                                                           {yyjson::contains(yyjson::minimum(1))}))),
+                     yyjson::field("m", yyjson::additional_properties(yyjson::contains(yyjson::minimum(1)))),
+                     yyjson::field("k", yyjson::items(yyjson::property_names(yyjson::max_length(1)))));
+
+struct Visited
+{
+    std::vector<int> u;
+    std::tuple<int, int> p;
+    std::vector<int> c;
+    std::map<std::string, int> k;
+    bool operator==(const Visited&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<Visited> = yyjson::annotate(
+    yyjson::field("u", yyjson::unique_items), yyjson::field("p", yyjson::prefix_items(yyjson::minimum(0))),
+    yyjson::field("c", yyjson::contains(yyjson::minimum(5))),
+    yyjson::field("k", yyjson::property_names(yyjson::max_length(1))));
+VISITABLE_STRUCT(Visited, u, p, c, k);
+
+// the nodes of the settings are counted from the types, and a struct without settings of the values in its fields
+// takes none
 static_assert(yyjson::detail::node_count<decltype(yyjson::items(yyjson::items(yyjson::minimum(0))))> == 2);
 static_assert(yyjson::detail::value_node_count<Bounded> == 0);
+
+// The rules that the static assertions enforce, tested on the conditions that they assert: the error of the table of
+// the keys of a struct that is never read, and the concepts of the types that a setting constrains.
+template <typename T>
+constexpr auto table_error = yyjson::detail::make_field_key_table<T, yyjson::detail::reflected_field_names<T>>().error;
+#define CONSTRAINT_RULE(NAME, ...)       \
+    struct NAME                          \
+    {                                    \
+        std::vector<std::vector<int>> v; \
+    };                                   \
+    template <>                          \
+    inline constexpr auto yyjson::annotations<NAME> = yyjson::annotate(yyjson::field("v", __VA_ARGS__));
+// min_contains and max_contains need contains at their level, also inside items and in a position
+CONSTRAINT_RULE(MinContainsAlone, yyjson::min_contains(1))
+CONSTRAINT_RULE(MaxContainsInItems, yyjson::items(yyjson::max_contains(1)))
+CONSTRAINT_RULE(MaxContainsInPosition, yyjson::prefix_items({yyjson::max_contains(1)}))
+CONSTRAINT_RULE(ContainsBounded, yyjson::contains(yyjson::minimum(0)), yyjson::min_contains(0), yyjson::max_contains(0))
+// a setting twice at one level, also inside items, and the same setting at two levels
+CONSTRAINT_RULE(UniqueTwice, yyjson::unique_items, yyjson::unique_items)
+CONSTRAINT_RULE(MinimumTwiceInItems, yyjson::items(yyjson::minimum(0), yyjson::minimum(1)))
+CONSTRAINT_RULE(ContainsTwice, yyjson::contains(yyjson::minimum(0)), yyjson::contains(yyjson::maximum(1)))
+CONSTRAINT_RULE(ItemsTwice, yyjson::items(yyjson::unique_items), yyjson::items(yyjson::minimum(0)))
+CONSTRAINT_RULE(UniqueAtTwoLevels, yyjson::unique_items, yyjson::items(yyjson::unique_items))
+// a position holds up to 8 nodes: one for itself and one for each items in it
+CONSTRAINT_RULE(PositionOf8, yyjson::prefix_items(yyjson::items(yyjson::items(yyjson::items(
+                                 yyjson::items(yyjson::items(yyjson::items(yyjson::items(yyjson::minimum(0))))))))))
+CONSTRAINT_RULE(PositionOf9, yyjson::prefix_items(yyjson::items(yyjson::items(yyjson::items(yyjson::items(
+                                 yyjson::items(yyjson::items(yyjson::items(yyjson::items(yyjson::minimum(0)))))))))))
+CONSTRAINT_RULE(MultipleOfZeroInItems, yyjson::items(yyjson::multiple_of(0)))
+#undef CONSTRAINT_RULE
+namespace compile_rules
+{
+    using enum yyjson::detail::field_key_error;
+    static_assert(table_error<MinContainsAlone> == contains_missing);
+    static_assert(table_error<MaxContainsInItems> == contains_missing);
+    static_assert(table_error<MaxContainsInPosition> == contains_missing);
+    static_assert(table_error<ContainsBounded> == none);
+    static_assert(table_error<UniqueTwice> == same_setting_twice);
+    static_assert(table_error<MinimumTwiceInItems> == same_setting_twice);
+    static_assert(table_error<ContainsTwice> == same_setting_twice);
+    static_assert(table_error<ItemsTwice> == same_setting_twice);
+    static_assert(table_error<UniqueAtTwoLevels> == none);
+    static_assert(table_error<PositionOf8> == none);
+    static_assert(table_error<PositionOf9> == prefix_position_too_large);
+    static_assert(table_error<MultipleOfZeroInItems> == multiple_of_not_positive);
+
+    using namespace yyjson::detail;
+    using string_map = std::map<std::string, int>;
+    using pairs = std::vector<std::pair<std::string, int>>;
+
+    // unique_items: the ranges whose elements may be equal
+    static_assert(unique_keys<std::set<int>> && unique_keys<string_map> && unique_keys<std::unordered_set<int>> &&
+                  unique_keys<std::unordered_map<std::string, int>>);
+    static_assert(!unique_keys<std::multiset<int>> && !unique_keys<std::multimap<std::string, int>> &&
+                  !unique_keys<std::vector<int>>);
+    static_assert(!constraint_items<std::string> && constraint_items<std::vector<int>>);
+
+    // items and contains: the ranges read from JSON arrays, including the maps whose keys are not strings
+    static_assert(constraint_item_range<std::vector<int>> && constraint_item_range<std::set<int>> &&
+                  constraint_item_range<std::map<int, int>>);
+    static_assert(!constraint_item_range<string_map> && !constraint_item_range<pairs> &&
+                  !constraint_item_range<std::string> && !constraint_item_range<std::tuple<int, int>>);
+
+    // prefix_items: the tuples, and the ranges read from JSON arrays in their order
+    static_assert(constraint_prefix_target<std::tuple<int, std::string>> &&
+                  constraint_prefix_target<std::pair<int, int>> && constraint_prefix_target<std::vector<int>> &&
+                  constraint_prefix_target<std::array<int, 2>> && constraint_prefix_target<std::list<int>>);
+    static_assert(!constraint_prefix_target<std::set<int>> && !constraint_prefix_target<std::map<int, int>> &&
+                  !constraint_prefix_target<string_map> && !constraint_prefix_target<std::string>);
+
+    // additional_properties(settings...): the maps, and the ranges of pairs read from JSON objects
+    static_assert(constraint_value_range<string_map> && constraint_value_range<std::map<int, int>> &&
+                  constraint_value_range<pairs>);
+    static_assert(!constraint_value_range<std::vector<std::pair<int, int>>> &&
+                  !constraint_value_range<std::vector<int>>);
+
+    // property_names: the maps and the ranges of pairs read from JSON objects
+    static_assert(constraint_key_range<string_map> && constraint_key_range<std::unordered_map<std::string, int>> &&
+                  constraint_key_range<pairs>);
+    static_assert(!constraint_key_range<std::map<int, int>> && !constraint_key_range<std::vector<int>>);
+
+    // the settings inside items and the others: those of a value, not those of a key
+    static_assert(element_setting<yyjson::minimum> && element_setting<yyjson::unique_items_t> &&
+                  element_setting<decltype(yyjson::items(yyjson::minimum(0)))>);
+    static_assert(!element_setting<yyjson::rename> && !element_setting<yyjson::required_t> &&
+                  !element_setting<yyjson::skip_t>);
+}  // namespace compile_rules
 
 #if FIELD_RFL_ANNOTATIONS
 struct ElementsAnnotated
@@ -695,6 +908,197 @@ TEST(Constraints, Contains)
     expect_rejected<Containing>(R"({"rows":[[1],[2]]})",
                                 prefix("rows") + "has no item that satisfies the constraints of yyjson::contains",
                                 "/rows");
+}
+
+TEST(Constraints, ContainsCounts)
+{
+    // min_contains(0) alone accepts any array, max_contains(0) alone still needs one item, and both reject one
+    expect_accepted<Counted>(R"({"min0":[],"both0":[1]})", {.both0 = {1}});
+    expect_accepted<Counted>(R"({"min0":[1],"both0":[]})", {.min0 = {1}});
+    const auto prefix = [](std::string_view key) {
+        return std::format(R"(the value of the key "{}" of Counted )", key);
+    };
+    expect_rejected<Counted>(
+        R"({"max0":[1]})", prefix("max0") + "has no item that satisfies the constraints of yyjson::contains", "/max0");
+    expect_rejected<Counted>(R"({"max0":[10]})",
+                             prefix("max0") + "has more than 0 items that satisfy the constraints of yyjson::contains",
+                             "/max0");
+    expect_rejected<Counted>(R"({"both0":[1,10]})",
+                             prefix("both0") + "has more than 0 items that satisfy the constraints of yyjson::contains",
+                             "/both0");
+    // a null element satisfies the settings of its value, as a null field does
+    expect_accepted<Counted>(R"({"opts":[null,1]})", {.opts = {std::nullopt, 1}});
+    expect_rejected<Counted>(R"({"opts":[null,null]})",
+                             prefix("opts") + "has more than 1 items that satisfy the constraints of yyjson::contains",
+                             "/opts");
+}
+
+TEST(Constraints, OptionalRange)
+{
+    expect_accepted<Counted>(R"({"unique":null,"head":null,"some":null})", {});
+    expect_accepted<Counted>(R"({"unique":[1,2],"head":[0,-1],"some":[10]})",
+                             {.unique = std::vector{1, 2}, .head = std::vector{0, -1}, .some = std::vector{10}});
+    expect_rejected<Counted>(R"({"unique":[1,1]})",
+                             R"(an element of the value of the key "unique" of Counted is equal to an earlier element)",
+                             "/unique/1");
+    expect_rejected<Counted>(R"({"head":[-1]})",
+                             R"(an element of the value of the key "head" of Counted is less than the minimum 0)",
+                             "/head/0");
+    expect_rejected<Counted>(
+        R"({"some":[1]})",
+        R"(the value of the key "some" of Counted has no item that satisfies the constraints of yyjson::contains)",
+        "/some");
+}
+
+TEST(Constraints, Strict)
+{
+    // yyjson::strict checks the settings of the values as a read without it does
+    const auto rejected = [](auto read, std::string_view message, std::string_view path) {
+        const auto e = bad_cast_of(read);
+        EXPECT_TRUE(message_of(e).starts_with(message)) << e.what();
+        EXPECT_EQ(e.path(), path);
+    };
+    rejected([] { (void)yyjson::read<Unique>(R"({"ints":[1,1]})", yyjson::strict); },
+             R"(an element of the value of the key "ints" of Unique is equal to an earlier element)", "/ints/1");
+    rejected([] { (void)yyjson::read<Prefixed>(R"({"range":[6,5]})", yyjson::strict); },
+             R"(an element of the value of the key "range" of Prefixed is greater than the maximum 5)", "/range/0");
+    rejected(
+        [] {
+            auto t = Keyed();
+            yyjson::read_into(R"({"m":{"A":1}})", t, yyjson::strict);
+        },
+        R"(a key of the value of the key "m" of Keyed does not match the pattern "^[a-z]+$")", "/m/A");
+    rejected(
+        [] {
+            auto t = Containing();
+            yyjson::merge_into(R"({"v":[1]})", t, yyjson::strict);
+        },
+        R"(the value of the key "v" of Containing has fewer than 2 items)", "/v");
+    rejected([] { (void)yyjson::read(R"({"nested":[["a",""],[]]})").cast<Elements>(yyjson::strict); },
+             R"(an element of the value of the key "nested" of Elements has fewer items than the minimum 1)",
+             "/nested/1");
+}
+
+TEST(Constraints, VisitableElements)
+{
+    expect_accepted<Visited>(R"({"u":[1,2],"p":[0,-1],"c":[5],"k":{"a":1}})", {{1, 2}, {0, -1}, {5}, {{"a", 1}}});
+    const auto prefix = [](std::string_view key) {
+        return std::format(R"(the value of the key "{}" of Visited )", key);
+    };
+    expect_rejected<Visited>(R"({"u":[1,1],"c":[5]})",
+                             R"(an element of the value of the key "u" of Visited is equal to an earlier element)",
+                             "/u/1");
+    expect_rejected<Visited>(R"({"p":[-1,0],"c":[5]})",
+                             R"(an element of the value of the key "p" of Visited is less than the minimum 0)", "/p/0");
+    expect_rejected<Visited>(R"({"c":[4]})",
+                             prefix("c") + "has no item that satisfies the constraints of yyjson::contains", "/c");
+    expect_rejected<Visited>(R"({"c":[5],"k":{"ab":1}})",
+                             R"(a key of the value of the key "k" of Visited is longer than the maximum length 1)",
+                             "/k/ab");
+}
+
+TEST(Constraints, DeepElements)
+{
+    expect_accepted<Deep>(R"({"v":[[[0],[1]]],"m":{"y":[1]},"k":[{"a":1}]})",
+                          {{{{0}, {1}}}, {{"y", {1}}}, {{{"a", 1}}}});
+    const auto prefix = [](std::string_view key) {
+        return std::format(R"(an element of the value of the key "{}" of Deep )", key);
+    };
+    expect_rejected<Deep>(R"({"v":[[[0,-1]]]})", prefix("v") + "is less than the minimum 0", "/v/0/0/1");
+    expect_rejected<Deep>(R"({"v":[[[0],[0]]]})",
+                          prefix("v") + "has no item that satisfies the constraints of yyjson::contains", "/v/0/1");
+    expect_rejected<Deep>(R"({"m":{"x":[1],"y":[0]}})",
+                          prefix("m") + "has no item that satisfies the constraints of yyjson::contains", "/m/y");
+    expect_rejected<Deep>(R"({"k":[{"a":1},{"bb":1}]})",
+                          R"(a key of the value of the key "k" of Deep is longer than the maximum length 1)",
+                          "/k/1/bb");
+}
+
+TEST(Constraints, UnusualElements)
+{
+    expect_accepted<Unusual>(R"({"pts":[[0,0],[0,1]],"sides":{"left":1},"mm":{"a":1,"a":2},"kv":{"a":1},)"
+                             R"("dq":[0,-1,9],"ls":[0,1,9]})",
+                             {.pts = {{0, 0}, {0, 1}},
+                              .sides = {{Side::left, 1}},
+                              .mm = {{"a", 1}, {"a", 2}},
+                              .kv = {{"a", 1}},
+                              .dq = {0, -1, 9},
+                              .ls = {0, 1, 9}});
+    const auto element = [](std::string_view key) {
+        return std::format(R"(an element of the value of the key "{}" of Unusual )", key);
+    };
+    const auto value = [](std::string_view key) {
+        return std::format(R"(the value of the key "{}" of Unusual )", key);
+    };
+    // the elements that a user caster reads are converted again to find the equal one
+    expect_rejected<Unusual>(R"({"pts":[[0,1],[0,1]]})", element("pts") + "is equal to an earlier element", "/pts/1");
+    // a key that is not a string, and an element that is a pair, leave the error at the field
+    expect_rejected<Unusual>(
+        R"({"sides":{"left":1,"right":2}})",
+        value("sides") + "has a key that does not satisfy the constraints of yyjson::property_names", "/sides");
+    expect_rejected<Unusual>(R"({"mm":{"a":1,"a":1}})", value("mm") + "has duplicate items", "/mm");
+    // a range of pairs is read from an object, whose members have the keys, or from an array of pairs
+    expect_rejected<Unusual>(R"({"kv":{"a":1,"bb":2}})",
+                             R"(a key of the value of the key "kv" of Unusual is longer than the maximum length 1)",
+                             "/kv/bb");
+    expect_rejected<Unusual>(R"({"kv":[["a",1],["bb",2]]})",
+                             value("kv") + "has a key that does not satisfy the constraints of yyjson::property_names",
+                             "/kv");
+    // the prefix and the elements after it, in sequences that are not vectors
+    expect_rejected<Unusual>(R"({"dq":[-1]})", element("dq") + "is less than the minimum 0", "/dq/0");
+    expect_rejected<Unusual>(R"({"dq":[0,10]})", element("dq") + "is greater than the maximum 9", "/dq/1");
+    expect_rejected<Unusual>(R"({"ls":[0,0]})", element("ls") + "is less than the minimum 1", "/ls/1");
+    expect_rejected<Unusual>(R"({"ls":[0,1,9,10]})", element("ls") + "is greater than the maximum 9", "/ls/3");
+    // a range that is not read from a JSON array leaves the error at the field
+    expect_accepted<Unusual>(R"({"csv":"1,0"})", {.csv = Csv{{1, 0}}});
+    expect_rejected<Unusual>(R"({"csv":"1,-1"})",
+                             value("csv") + "has an element that does not satisfy the constraints of yyjson::items",
+                             "/csv");
+}
+
+TEST(Constraints, UniqueReals)
+{
+    // the reals that JSON writes differently but a double holds as the same value are equal
+    expect_rejected<Unusual>(R"({"reals":[9007199254740993,9007199254740992]})",
+                             R"(an element of the value of the key "reals" of Unusual is equal to an earlier element)",
+                             "/reals/1");
+    // NaN is equal to nothing, also among more than 16 elements, which are sorted
+    auto nans = std::string(R"({"reals":[)");
+    for (auto i = 0; i < 20; ++i) nans += i % 4 == 0 ? "NaN," : std::format("{},", i);
+    const auto flag = yyjson::ReadFlag::AllowInfAndNan;
+    const auto read = yyjson::read<Unusual>(nans.substr(0, nans.size() - 1) + "]}", flag);
+    EXPECT_EQ(read.reals.size(), 20);
+    const auto e = bad_cast_of([&] { (void)yyjson::read<Unusual>(nans + "Infinity,-Infinity,Infinity]}", flag); });
+    EXPECT_TRUE(message_of(e).starts_with(
+        R"(an element of the value of the key "reals" of Unusual is equal to an earlier element)"))
+        << e.what();
+    EXPECT_EQ(e.path(), "/reals/22");
+}
+
+TEST(Constraints, EscapedKeys)
+{
+    // a key is escaped in the path, and its length is counted in code points
+    expect_rejected<Keyed>(R"({"m":{"a/b":1}})", R"(a key of the value of the key "m" of Keyed does not match)",
+                           "/m/a~1b");
+    expect_rejected<Keyed>(R"({"m":{"~x":1}})", R"(a key of the value of the key "m" of Keyed does not match)",
+                           "/m/~0x");
+    expect_accepted<Keyed>(R"({"deep":{"x":{"\u00e9\u00e9":1,"\ud83d\ude00\ud83d\ude00":2}}})",
+                           {.deep = {{"x", {{"\xc3\xa9\xc3\xa9", 1}, {"\xf0\x9f\x98\x80\xf0\x9f\x98\x80", 2}}}}});
+    expect_rejected<Keyed>(R"({"deep":{"x":{"\ud83d\ude00":1}}})",
+                           R"(a key of the value of the key "deep" of Keyed is shorter than the minimum length 2)",
+                           "/deep/x/\xf0\x9f\x98\x80");
+}
+
+TEST(Constraints, MergeKept)
+{
+    // a key that merge_into keeps is not in the JSON, which leaves the error at the map
+    auto keyed = Keyed();
+    keyed.m = {{"ABC", 1}};
+    const auto e = bad_cast_of([&] { yyjson::merge_into(R"({"m":{"ab":1}})", keyed); });
+    EXPECT_TRUE(message_of(e).starts_with(R"(the value of the key "m" of Keyed has a key that does not satisfy )"
+                                          R"(the constraints of yyjson::property_names)"))
+        << e.what();
+    EXPECT_EQ(e.path(), "/m");
 }
 
 #if FIELD_RFL_ANNOTATIONS
