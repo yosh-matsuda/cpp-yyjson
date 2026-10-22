@@ -217,6 +217,30 @@ TEST(Reader, ReadLength)
     EXPECT_THROW(std::ignore = read(insitu, alloc, ReadFlag::ReadInsitu), std::invalid_argument);
 }
 
+TEST(Reader, StackPoolAllocatorCopy)
+{
+    using namespace yyjson;  // NOLINT
+    using namespace std::string_view_literals;
+
+    auto json_str = "[1,2,3,4,5]"sv;
+    auto source = reader::stack_pool_allocator<512>();
+    auto json = read(json_str, source);
+
+    const auto uses_own_buffer = [](const auto& alloc) {
+        const auto* ctx = static_cast<const char*>(alloc.ptr()->ctx);
+        const auto* self = reinterpret_cast<const char*>(&alloc);
+        return self <= ctx && ctx < self + sizeof(alloc);
+    };
+    auto copied = source;
+    EXPECT_TRUE(uses_own_buffer(copied));
+    auto moved = reader::stack_pool_allocator<512>(std::move(copied));
+    EXPECT_TRUE(uses_own_buffer(moved));
+
+    auto from_moved = read(json_str, moved);
+    EXPECT_EQ(json_str, from_moved.write());
+    EXPECT_EQ(json_str, json.write());
+}
+
 TEST(Reader, Constructor)
 {
     using namespace yyjson::reader;  // NOLINT
