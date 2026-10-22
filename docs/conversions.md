@@ -1,11 +1,13 @@
+[Documentation](README.md) › Converting C++ types
+
 # Converting C++ types
 
 This document describes which C++ types convert to and from JSON, and how to customize the conversion. [Validation and errors](validation.md) describes what a read checks and the errors that it reports, and the [Reference](reference.md) describes the functions.
 
 Both APIs use the same conversions:
 
-*   The [data binding API](reference.md#data-binding-api) converts between JSON text and C++ types: `yyjson::read<T>`, `yyjson::read_into` and `yyjson::merge_into` read, and `yyjson::write` writes.
-*   The [DOM API](reference.md#dom-api) converts between JSON values and C++ types: the constructors of `yyjson::value`, `yyjson::array` and `yyjson::object` convert a C++ object to JSON, and `yyjson::cast<T>` converts a JSON value to `T`.
+*   The [data binding API](../README.md#data-binding-api) converts between JSON text and C++ types: `yyjson::read<T>`, `yyjson::read_into` and `yyjson::merge_into` read, and `yyjson::write` writes.
+*   The [DOM API](../README.md#dom-api) converts between JSON values and C++ types: the constructors of `yyjson::value`, `yyjson::array` and `yyjson::object` convert a C++ object to JSON, and `yyjson::cast<T>` converts a JSON value to `T`.
 
 ```cpp
 using namespace yyjson;
@@ -29,15 +31,14 @@ auto map = cast<std::map<std::string, double>>(obj);
 The sections of this document:
 
 1.  [Conversion rules](#conversion-rules): numbers, strings, containers, maps and sets, and the types that do not convert.
-2.  [Pre-defined STL casters](#pre-defined-stl-casters): `std::optional`, smart pointers, `std::variant` and tuples.
-3.  [Structs converted by reflection](#structs-converted-by-reflection), with no registration.
-4.  [Structs registered with `VISITABLE_STRUCT`](#structs-registered-with-visitable_struct).
-5.  [Annotations](#annotations-json-keys-and-skipped-fields): JSON keys other than the field names, and skipped fields.
-6.  [Enumerations](#enumerations), by the names of their enumerators or by their integers.
-7.  [Tagged variants](#tagged-variants): a `std::variant` whose alternative a member of the object names.
-8.  [JSON values as fields](#json-values-as-fields): a part of the JSON kept as it is.
-9.  [User-defined casters](#user-defined-casters) for any other type or any other format.
-10. [Recursive types](#recursive-types) and the limit of their depth.
+2.  [Standard library types](#standard-library-types): `std::optional`, smart pointers, `std::variant` and tuples.
+3.  [Structs](#structs): converted by [reflection](#reflection) with no registration, or registered with [`VISITABLE_STRUCT`](#visitable_struct).
+4.  [Annotations](#annotations): JSON keys other than the field names, and skipped fields.
+5.  [Enumerations](#enumerations), by the names of their enumerators or by their integers.
+6.  [Tagged variants](#tagged-variants): a `std::variant` whose alternative a member of the object names.
+7.  [JSON values as fields](#json-values-as-fields): a part of the JSON kept as it is.
+8.  [User-defined casters](#user-defined-casters) for any other type or any other format.
+9.  [Recursive types](#recursive-types) and the limit of their depth.
 
 When more than one of these could convert a type, the first of the following wins:
 
@@ -53,7 +54,7 @@ A set such as `std::set<int>` or `std::unordered_set<std::string>` converts to a
 
 A `float` is written with the shortest digits that read back as the same `float`: `0.1f` becomes `0.1`, while the `double` of the same value becomes `0.10000000149011612`. With an external yyjson older than 0.11.0, a `float` is written as that `double`.
 
-A conversion that fails throws `yyjson::bad_cast`, which [names the value](validation.md#errors-of-conversion) that failed. A type that cannot be converted at all is a [compile error](validation.md#compile-errors-of-types-that-cannot-be-converted).
+A conversion that fails throws `yyjson::bad_cast`, which [names the value](validation.md#conversion-errors) that failed. A type that cannot be converted at all is a [compile error](validation.md#compile-errors).
 
 ### Values that do not convert
 
@@ -65,7 +66,7 @@ Each of the following throws `yyjson::bad_cast`:
 *   A JSON number or boolean into a container such as `std::vector<int>`, although C++ constructs the container from an integer as its size.
 *   A JSON array into a string type such as `std::string`. Another range of characters, such as `std::vector<char>`, converts from an array.
 *   A JSON array or object into a type of a fixed number of elements, such as `std::array`, a C array, `std::pair` or `std::tuple`, unless it has exactly that many elements. Both `[1]` and `[1, 2, 3]` fail to convert to `std::array<int, 2>`.
-*   A JSON value other than an object into a struct that the [reflection](#structs-converted-by-reflection) or `VISITABLE_STRUCT` converts, although C++20 can initialize the first field of an aggregate from a single value. To read a struct from another JSON value, define a [translator](#translator).
+*   A JSON value other than an object into a struct that the [reflection](#reflection) or `VISITABLE_STRUCT` converts, although C++20 can initialize the first field of an aggregate from a single value. To read a struct from another JSON value, define a [translator](#translator).
 
 Booleans and numbers do not mix, although C++ converts between them:
 
@@ -107,13 +108,13 @@ The following types have no conversion of their own. Some of them can still be r
 | `std::forward_list` | yes | no | `std::vector` or `std::list` |
 | `std::unique_ptr` of an array | no | null only | `std::vector` |
 
-A struct, a container or another type that holds one of them converts only in the direction that each of its fields and elements does. The concepts `yyjson::readable<T>` and `yyjson::writable<T>` tell which directions a type converts in; see [Compile errors](validation.md#compile-errors-of-types-that-cannot-be-converted).
+A struct, a container or another type that holds one of them converts only in the direction that each of its fields and elements does. The concepts `yyjson::readable<T>` and `yyjson::writable<T>` tell which directions a type converts in; see [Compile errors](validation.md#compile-errors).
 
 ### Headers
 
 `cpp_yyjson.hpp` includes the standard headers of the types it is built on, such as `<string>`, `<vector>`, `<optional>`, `<variant>` and `<memory>`, but not those of the other containers. Include `<map>`, `<set>`, `<unordered_map>`, `<unordered_set>`, `<list>` or `<deque>` yourself when you use them.
 
-## Pre-defined STL casters
+## Standard library types
 
 Besides the strings, ranges, maps and sets described above, the library has casters for the following types of the standard library:
 
@@ -195,7 +196,14 @@ auto tpl_obj2 = cast<decltype(tpl_obj)>(json_obj);          // deserialize
 
 A JSON array or object with more or fewer elements than the tuple throws `yyjson::bad_cast`, as it does for a `std::array`.
 
-## Structs converted by reflection
+## Structs
+
+A struct converts to a JSON object whose keys are the names of its fields. The library finds the fields in one of two ways:
+
+*   [Reflection](#reflection) finds them at compile time, with no registration. It applies to an aggregate.
+*   [`VISITABLE_STRUCT`](#visitable_struct) registers them by a macro. It applies to a struct or class whose fields are public, such as one with a constructor of its own, and takes precedence over reflection.
+
+### Reflection
 
 The compile-time reflection converts a C++ struct to and from a JSON object by its field names, with no caster and no registration. [field-reflection](https://github.com/yosh-matsuda/field-reflection), which is included in this library, provides it:
 
@@ -222,7 +230,7 @@ A struct is converted when it satisfies the `field_reflection::field_namable` co
 *   an [aggregate type](https://en.cppreference.com/w/cpp/types/is_aggregate): all its fields are public, and it declares no constructor and no virtual function;
 *   default initializable.
 
-A struct with a constructor of its own and public fields can be registered with [`VISITABLE_STRUCT`](#structs-registered-with-visitable_struct) instead, and one with private fields needs a [user-defined caster](#user-defined-casters).
+A struct with a constructor of its own and public fields can be registered with [`VISITABLE_STRUCT`](#visitable_struct) instead, and one with private fields needs a [user-defined caster](#user-defined-casters).
 
 The other conditions depend on the C++ standard. C++26 static reflection is used with GCC 16 and `-std=c++26 -freflection`, unless the macro `FIELD_RFL_DISABLE_STD_REFLECTION` is defined to keep the C++20 rules:
 
@@ -233,7 +241,7 @@ The other conditions depend on the C++ standard. C++26 static reflection is used
 | `const` member | written, not read | written, not read |
 | Reference member | not converted | written, not read |
 | Enumerators converted by [name](#enumerations) | values in [-128, 128] unless widened | all |
-| Settings of a field written on the member | no, use [`yyjson::annotations`](#annotations-json-keys-and-skipped-fields) | [C++26 annotations](#c26-annotations) |
+| Settings of a field written on the member | no, use [`yyjson::annotations`](#annotations) | [C++26 annotations](#c26-annotations) |
 
 *   A struct that is written but not read, such as one with a `const` member, fails to compile where it is read, by `cast<T>`, `yyjson::read<T>` or any other function.
 *   With C++26, `yyjson::annotations` of a derived class can rename the fields of its base classes as well.
@@ -254,7 +262,7 @@ auto json = write(Matrix{{'a', 'b'}, {{1.0, 2.0}, {3.0, 4.0}}});
 
 An empty struct, such as `struct Tag {};`, converts to and from `{}`, and the members of a JSON object read into it are ignored. The empty classes of the standard library and of cpp-yyjson keep their own meanings: `std::monostate` is JSON null, for example.
 
-## Structs registered with `VISITABLE_STRUCT`
+### `VISITABLE_STRUCT`
 
 The `VISITABLE_STRUCT` macro registers the fields of a struct or a class by name. Use it when the compile-time reflection does not apply to the type, such as a class with a constructor of its own, or to convert only some of the fields. A registered type converts only the fields that the macro lists, and the registration takes precedence over the reflection:
 
@@ -270,14 +278,14 @@ auto deserialized = cast<X>(serialized);
 // -> X{.a = 1, .b = std::nullopt, .c = "default"}
 ```
 
-## Annotations: JSON keys and skipped fields
+## Annotations
 
 The annotations of a type change how the type converts, with no caster. Specialize the variable template `yyjson::annotations<T>` with `yyjson::annotate(...)`, whose arguments are the settings:
 
 | Setting | Applies to | Effect | Described in |
 | --- | --- | --- | --- |
-| `yyjson::field("member", s...)` | a struct | gives the field `member` the settings `s...` below | this section |
-| `yyjson::rename("key")` | a field | reads and writes the field by the JSON key `key` | this section |
+| `yyjson::field("member", s...)` | a struct | gives the field `member` the settings `s...` below | [JSON keys](#json-keys) |
+| `yyjson::rename("key")` | a field | reads and writes the field by the JSON key `key` | [JSON keys](#json-keys) |
 | `yyjson::skip` | a field | leaves the field out of reading and writing | [Skipped fields](#skipped-fields) |
 | `yyjson::required`, `yyjson::optional_key` | a field | requires the key, or lets the object leave it out | [Strict reading](validation.md#strict-reading) |
 | `yyjson::minimum(m)`, `yyjson::validate<f>` and the other constraints | a field | restricts the values that the field reads | [Constraints](validation.md#constraints) |
@@ -287,6 +295,8 @@ The annotations of a type change how the type converts, with no caster. Speciali
 | `yyjson::enum_format::...`, `yyjson::enumerator("name", s...)` | an enumeration | chooses names or integers, and renames enumerators | [Enumerations](#formats-and-renamed-enumerators) |
 
 With C++26 static reflection, the settings of a field can also be written on the member itself; see [C++26 annotations](#c26-annotations).
+
+### JSON keys
 
 A JSON key that is not a valid C++ identifier, such as `@context`, is read into and written from a field by `yyjson::field("member", yyjson::rename("key"))`:
 
@@ -375,6 +385,10 @@ auto json = yyjson::write(project);
 
 ## Enumerations
 
+An enumeration converts to the JSON string of the name of its enumerator by default. Its [format](#formats-and-renamed-enumerators) can choose integers instead, and rename enumerators.
+
+### Enumerator names
+
 An enumeration converts to the JSON string of the name of its enumerator, and from it. The names are found by [field-reflection](https://github.com/yosh-matsuda/field-reflection), with no macro or registration:
 
 ```cpp
@@ -414,7 +428,7 @@ auto json = write(logger);
 
 ### Formats and renamed enumerators
 
-The [annotations](#annotations-json-keys-and-skipped-fields) of an enumeration take two settings:
+The [annotations](#annotations) of an enumeration take two settings:
 
 *   A `yyjson::enum_format`, which chooses between the names and the integers of the underlying type.
 *   `yyjson::enumerator("name", yyjson::rename("json-name"))`, which gives an enumerator another JSON name.
@@ -499,17 +513,17 @@ auto json2 = yyjson::write(Event{2, Rect{1, 2}});
 // -> {"id":2,"kind":"rect","data":{"w":1,"h":2}}
 ```
 
-These are the internally and the adjacently tagged representations of [serde](https://serde.rs/enum-representations.html). A variant without a tag tries its alternatives in turn, as described in [Pre-defined STL casters](#pre-defined-stl-casters).
+These are the internally and the adjacently tagged representations of [serde](https://serde.rs/enum-representations.html). A variant without a tag tries its alternatives in turn, as described in [Standard library types](#standard-library-types).
 
 Both kinds of tag follow these rules:
 
 *   The tag may be anywhere in its object, before or after the other members.
-*   A tag that is not a string or that names no alternative throws `yyjson::bad_cast`. So does a missing tag, also in a variant that has `std::monostate`, except in the cases of [missing members](#missing-members-of-an-adjacent-tag) of `adjacent_tag`.
+*   A tag that is not a string or that names no alternative throws `yyjson::bad_cast`. So does a missing tag, also in a variant that has `std::monostate`, except in the cases of [missing members](#adjacent-tag) of `adjacent_tag`.
 *   When the object has the key of the tag more than once, the rules of [repeated keys](validation.md#repeated-keys) apply.
 *   `std::monostate` is written as JSON null without a tag, and only JSON null reads as `std::monostate`.
 *   Any other alternative is written with its tag first: as the first member of its object for `internal_tag`, and as the member right before the field of the variant for `adjacent_tag`. A tag that is a [field of a struct](#a-field-that-holds-the-tag) is written where the field is declared instead.
 *   `cast`, `value` and `object` of the DOM API read and write a tagged variant the same way as `yyjson::read<T>` and `yyjson::write`.
-*   Write the specialization `inline`, as for [the other annotations](#annotations-json-keys-and-skipped-fields).
+*   Write the specialization `inline`, as for [the other annotations](#annotations).
 *   The following fail to compile with a `static_assert`:
     *   a variant that has `std::monostate` more than once;
     *   `ids` that do not name each of the other alternatives, or empty or repeated names;
@@ -533,8 +547,6 @@ The alternative reads the whole object, its tag included:
 With `adjacent_tag`, the tag belongs to the field rather than to the variant type. The struct that holds the field may be one that the compile-time reflection converts or one that `VISITABLE_STRUCT` registers. The same variant type is untagged elsewhere, such as at the root, as an element of a range or as another field, where it tries its alternatives in turn. Another field may tag it with another key.
 
 Two variants with the same key of the tag in one struct need a [field that holds the tag](#a-field-that-holds-the-tag), and fail to compile without one.
-
-#### Missing members of an adjacent tag
 
 The tag and the member of the variant are two members of one object, and either may be missing:
 
@@ -618,7 +630,7 @@ Some needs are met without a caster:
 
 | Purpose | Without a caster |
 | --- | --- |
-| Give a struct JSON keys other than its field names, or skip fields | [`yyjson::annotations`, C++26 annotations or `VISITABLE_STRUCT`](#annotations-json-keys-and-skipped-fields) |
+| Give a struct JSON keys other than its field names, or skip fields | [`yyjson::annotations`, C++26 annotations or `VISITABLE_STRUCT`](#annotations) |
 | Tell the alternatives of a `std::variant` by a member that names them | [`internal_tag` or `adjacent_tag`](#tagged-variants) |
 | Keep a part of the JSON as it is | a field of [`yyjson::value`](#json-values-as-fields) |
 
@@ -810,7 +822,7 @@ An emitter only writes. A caster with an emitter reads the type with a translato
 
 ### Omitting a field with no value
 
-A field of type `std::optional` that holds no value is left out of the JSON object, as the field `b` of the struct `X` in [Structs converted by reflection](#structs-converted-by-reflection) shows.
+A field of type `std::optional` that holds no value is left out of the JSON object, as the field `b` of the struct `X` in [Reflection](#reflection) shows.
 
 Another type gets the same treatment from its caster. The static member function `should_omit` returns `true` for a value that the JSON object must not hold. For a type `maybe<T>` of a program:
 

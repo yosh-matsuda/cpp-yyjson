@@ -1,3 +1,5 @@
+[Documentation](README.md) › Validation and errors
+
 # Validation and errors
 
 This document describes:
@@ -5,9 +7,9 @@ This document describes:
 *   what a read checks, and what it does with unknown, missing and repeated keys;
 *   how to reject those keys, and `null` in a `std::optional` field, with [strict reading](#strict-reading);
 *   how to restrict the values of fields with [constraints](#constraints);
-*   the [errors](#errors) that the library reports at run time, and the [compile errors](#compile-errors-of-types-that-cannot-be-converted) of types that cannot be converted.
+*   the [errors](#errors) that the library reports at run time, and the [compile errors](#compile-errors) of types that cannot be converted.
 
-The settings of a field and of a struct go into `yyjson::annotations<T>` or on the members as C++26 annotations, as described in [Annotations](conversions.md#annotations-json-keys-and-skipped-fields).
+The settings of a field and of a struct go into `yyjson::annotations<T>` or on the members as C++26 annotations, as described in [Annotations](conversions.md#annotations).
 
 ## What a read checks
 
@@ -156,7 +158,7 @@ yyjson::read<Request>(R"({"method":"GET"})", yyjson::strict);  // -> Request{"GE
 
 ## Constraints
 
-A field can restrict the values that it reads, as a schema would: give `yyjson::field` the constraints of the field, or write them on the member as [C++26 annotations](conversions.md#c26-annotations). Reading a value that does not satisfy them throws `yyjson::bad_cast`, with the [path and the position](#errors-of-conversion) of the value:
+A field can restrict the values that it reads, as a schema would: give `yyjson::field` the constraints of the field, or write them on the member as [C++26 annotations](conversions.md#c26-annotations). Reading a value that does not satisfy them throws `yyjson::bad_cast`, with the [path and the position](#conversion-errors) of the value:
 
 ```cpp
 #include "cpp_yyjson.hpp"
@@ -203,6 +205,8 @@ Each constraint applies to a field of the type in the second column. A value tha
 | `yyjson::min_items(n)` | a range or a map | with fewer than `n` elements | `has fewer items than the minimum n` |
 | `yyjson::max_items(n)` | a range or a map | with more than `n` elements | `has more items than the maximum n` |
 | `yyjson::validate<f>` | any | for which `f(value)` returns `false` | `is rejected by yyjson::validate` |
+
+### How constraints are checked
 
 *   The names are those of the keywords of [JSON Schema](https://json-schema.org/understanding-json-schema/reference/numeric), and so is what they accept, except that `pattern` uses the engine that the program gives, as below. A field may have several constraints, but each one once.
 *   A constraint applies to the value of a `std::optional` field when it has one. `yyjson::validate<f>` takes a function or a lambda without captures, whose parameter is the type of the field or, for a `std::optional<U>` field, `U`.
@@ -272,14 +276,38 @@ The functions of the library report a failure with one of these exceptions:
 | Exception | Thrown by | When |
 | --- | --- | --- |
 | `yyjson::read_error` | `yyjson::read`, `read<T>`, `read_into`, `merge_into` | The text is not JSON, or not as the `ReadFlag`s relax it, or memory cannot be allocated. `what()` tells the position, such as `at line 1, column 7, pos 6`, and `code()` returns the `yyjson_read_code`. |
-| `yyjson::bad_cast` | `cast<T>`, `read<T>`, `read_into`, `merge_into`, the constructors of `yyjson::array` and `yyjson::object` from a value | A JSON value does not convert to the C++ type, breaks [strict reading](#strict-reading) or a [constraint](#constraints), or exceeds the [recursion limit](conversions.md#recursive-types). It tells the [path and the position](#errors-of-conversion) of the value. |
+| `yyjson::bad_cast` | `cast<T>`, `read<T>`, `read_into`, `merge_into`, the constructors of `yyjson::array` and `yyjson::object` from a value | A JSON value does not convert to the C++ type, breaks [strict reading](#strict-reading) or a [constraint](#constraints), or exceeds the [recursion limit](conversions.md#recursive-types). It tells the [path and the position](#conversion-errors) of the value. |
 | `yyjson::write_error` | `write`, the `write` member functions | The value cannot be written, such as NaN without `WriteFlag::AllowInfAndNan`, a buffer is too small, or memory cannot be allocated. `code()` returns the `yyjson_write_code`. |
 | `std::invalid_argument` | `yyjson::read` | The length given is longer than the string, or `ReadFlag::ReadInsitu` is given with a string that is const or has no room for the padding. |
 | `std::invalid_argument` | `write`, the constructors of mutable values | A [tagged variant](conversions.md#tagged-variants) cannot be written with its tag: an alternative of an internal tag is not a JSON object, or a [field that holds the tag](conversions.md#a-field-that-holds-the-tag) names another alternative. |
 | `std::logic_error` | `write` | A caster appends to an outer [emitter](conversions.md#writing-members-with-an-emitter) while the function given to `emplace_object` or `emplace_array` runs. |
 | `std::out_of_range` | `operator[]` of an object; `operator[]` of a `json_view` | The key is not there, or, for a `json_view`, the key or the index. |
 
-### Errors of conversion
+The next sections describe the errors of reading and converting:
+
+*   [Read errors](#read-errors): the text is not valid JSON.
+*   [Conversion errors](#conversion-errors): a JSON value does not convert to the C++ type.
+*   [Compile errors](#compile-errors): a C++ type does not convert at all.
+
+### Read errors
+
+`yyjson::read`, `read<T>`, `read_into` and `merge_into` throw `yyjson::read_error` when the text is not valid JSON. `what()` tells the reason and the position of the error. `code()` returns the [`yyjson_read_code`](https://ibireme.github.io/yyjson/doc/doxygen/html/yyjson_8h.html), so a program can tell a failed allocation, `YYJSON_READ_ERROR_MEMORY_ALLOCATION`, from malformed text without parsing the message:
+
+```cpp
+try
+{
+    auto val = yyjson::read(R"({"a":1,})");
+}
+catch (const yyjson::read_error& e)
+{
+    e.what();  // "Read JSON error: trailing comma is not allowed at line 1, column 7, pos 6"
+    e.code();  // YYJSON_READ_ERROR_JSON_STRUCTURE
+}
+```
+
+[`ReadFlag`](reference.md#yyjsonreadflag) relaxes what valid JSON means, such as `ReadFlag::AllowTrailingCommas`.
+
+### Conversion errors
 
 A `yyjson::bad_cast` thrown while reading names the C++ type and the kind of the JSON value, such as `int is not constructible from JSON string`, followed by the path of the value from the value being cast, and by its position in the text when the text was read by `read<T>`, `read_into` or `merge_into`. The C++ type is spelled as the compiler spells it, such as `std::__cxx11::basic_string<char>`.
 
@@ -327,7 +355,7 @@ namespace yyjson
 *   A `bad_cast` that a [user-defined caster](conversions.md#user-defined-casters) throws gets the path of the value given to the caster, and that of the values its `from_json` casts in turn.
 *   The `bad_cast` of the [recursion limit](conversions.md#recursive-types) has no path, which would be as long as the values are deep, and no position. Neither has a `bad_cast` thrown while writing.
 
-## Compile errors of types that cannot be converted
+### Compile errors
 
 A type converts in a direction only if each of its fields and elements does; the [types that do not convert](conversions.md#types-that-do-not-convert) list the common exceptions. Three concepts tell whether a type converts, for a `static_assert` or to constrain a template of your own:
 
