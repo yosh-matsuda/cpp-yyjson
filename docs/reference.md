@@ -8,7 +8,7 @@
 *   [Build configuration](#build-configuration)
 *   [Moved sections](#moved-sections)
 
-The conversions of C++ types are described in [Converting C++ types](conversions.md), strict reading, constraints and errors in [Validation and errors](validation.md), and how to make the most of the speed in [Performance best practices](performance.md).
+The conversions of C++ types are described in [Converting C++ types](conversions.md), strict reading, constraints and errors in [Validation and errors](validation.md), and how to make the most of the speed in [Performance best practices](performance.md). The [Guide](guide.md) shows how to do common tasks.
 
 ## Namespaces
 
