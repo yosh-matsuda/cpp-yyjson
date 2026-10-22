@@ -133,7 +133,63 @@ inline constexpr auto yyjson::annotations<ConstrainedReordered> =
                      yyjson::field("o", yyjson::maximum(3)));
 VISITABLE_STRUCT(ConstrainedReordered, b, o, a);
 
+// the elements of ranges and the values of maps
+bool is_small_pair(const std::pair<const int, int>& p) { return p.first < p.second; }
+struct Elements
+{
+    std::vector<int> scores;
+    std::array<int, 2> pair = {};
+    std::list<std::string> names;
+    std::set<int> set;
+    std::unordered_set<int> uset;
+    std::map<std::string, int> limits;
+    std::unordered_map<std::string, std::vector<int>> groups;
+    std::map<int, int> by_id;  // read from an array of [key, value] pairs
+    std::map<int, int> ordered;
+    std::vector<std::optional<int>> holes;
+    std::optional<std::vector<std::string>> tags;
+    std::vector<std::vector<std::string>> nested;
+    bool operator==(const Elements&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<Elements> = yyjson::annotate(
+    yyjson::field("scores", yyjson::items(yyjson::minimum(0))),
+    yyjson::field("pair", yyjson::items(yyjson::maximum(9))),
+    yyjson::field("names", yyjson::items(yyjson::pattern("^[a-z]+$"))),
+    yyjson::field("set", yyjson::items(yyjson::maximum(5))),
+    yyjson::field("uset", yyjson::items(yyjson::validate<is_even>)),
+    yyjson::field("limits", yyjson::max_items(3), yyjson::additional_properties(yyjson::maximum(100))),
+    yyjson::field("groups", yyjson::additional_properties(yyjson::min_items(1), yyjson::items(yyjson::minimum(1)))),
+    yyjson::field("by_id", yyjson::additional_properties(yyjson::maximum(5))),
+    yyjson::field("ordered", yyjson::items(yyjson::validate<is_small_pair>)),
+    yyjson::field("holes", yyjson::items(yyjson::maximum(5))),
+    yyjson::field("tags", yyjson::items(yyjson::max_length(3))),
+    yyjson::field("nested", yyjson::items(yyjson::min_items(1), yyjson::items(yyjson::max_length(3)))));
+
+struct ElementsVisitable
+{
+    std::vector<int> v;
+    bool operator==(const ElementsVisitable&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<ElementsVisitable> =
+    yyjson::annotate(yyjson::field("v", yyjson::items(yyjson::exclusive_minimum(0))));
+VISITABLE_STRUCT(ElementsVisitable, v);
+
+// the levels of the settings are counted from the types, and an element that is not checked is not read again
+static_assert(yyjson::detail::max_element_depth<Elements> == 2);
+static_assert(yyjson::detail::max_element_depth<Bounded> == 0);
+
 #if FIELD_RFL_ANNOTATIONS
+struct ElementsAnnotated
+{
+    [[= yyjson::items(yyjson::minimum(0))]] std::vector<int> v;
+    [[= yyjson::additional_properties(
+        yyjson::items(yyjson::max_length(2)))]] std::map<std::string, std::vector<std::string>>
+        m;
+    bool operator==(const ElementsAnnotated&) const = default;
+};
+
 struct ConstrainedAnnotated
 {
     [[ = yyjson::minimum(1), = yyjson::maximum(3) ]] int n = 1;
@@ -382,9 +438,90 @@ TEST(Constraints, Write)
     EXPECT_EQ(written(Bounded{-1, 0, 1, {}}), R"({"i":-1,"d":0.0,"u":1})");
 }
 
+TEST(Constraints, Elements)
+{
+    expect_accepted<Elements>(
+        R"({"scores":[0,1],"pair":[9,0],"names":["ab"],"set":[5,1],"uset":[2,4],"limits":{"a":100},)"
+        R"("groups":{"g":[1]},"by_id":[[1,5]],"ordered":[[1,2]],"holes":[null,5],"tags":["abc"],"nested":[["abc"]]})",
+        {{0, 1},
+         {9, 0},
+         {"ab"},
+         {1, 5},
+         {2, 4},
+         {{"a", 100}},
+         {{"g", {1}}},
+         {{1, 5}},
+         {{1, 2}},
+         {std::nullopt, 5},
+         std::vector<std::string>{"abc"},
+         {{"abc"}}});
+    expect_accepted<Elements>(R"({"tags":null})", {});
+
+    const auto prefix = [](std::string_view key) {
+        return std::format(R"(an element of the value of the key "{}" of Elements )", key);
+    };
+    expect_rejected<Elements>(R"({"scores":[0,-1]})", prefix("scores") + "is less than the minimum 0", "/scores/1");
+    expect_rejected<Elements>(R"({"pair":[10,0]})", prefix("pair") + "is greater than the maximum 9", "/pair/0");
+    expect_rejected<Elements>(R"({"names":["a","B"]})", prefix("names") + R"(does not match the pattern "^[a-z]+$")",
+                              "/names/1");
+    // the element of a set or of an unordered set is found in the array
+    expect_rejected<Elements>(R"({"set":[1,9,3]})", prefix("set") + "is greater than the maximum 5", "/set/1");
+    expect_rejected<Elements>(R"({"uset":[2,4,6,3,8]})", prefix("uset") + "is rejected by yyjson::validate", "/uset/3");
+    // the values of a map, and the constraints of the map itself
+    expect_rejected<Elements>(R"({"limits":{"a":1,"b":101}})", prefix("limits") + "is greater than the maximum 100",
+                              "/limits/b");
+    expect_rejected<Elements>(R"({"limits":{"a":1,"b":2,"c":3,"d":4}})",
+                              R"(the value of the key "limits" of Elements has more items than the maximum 3)",
+                              "/limits");
+    expect_rejected<Elements>(R"({"groups":{"g":[1],"h":[]}})", prefix("groups") + "has fewer items than the minimum 1",
+                              "/groups/h");
+    expect_rejected<Elements>(R"({"groups":{"g":[1,0]}})", prefix("groups") + "is less than the minimum 1",
+                              "/groups/g/1");
+    // a map whose keys are not strings is an array of pairs, whose values are the second elements
+    expect_rejected<Elements>(R"({"by_id":[[1,5],[2,6]]})", prefix("by_id") + "is greater than the maximum 5",
+                              "/by_id/1/1");
+    expect_rejected<Elements>(R"({"ordered":[[1,2],[4,3]]})", prefix("ordered") + "is rejected by yyjson::validate",
+                              "/ordered/1");
+    // the value of a std::optional element, and the elements of a std::optional field
+    expect_rejected<Elements>(R"({"holes":[null,6]})", prefix("holes") + "is greater than the maximum 5", "/holes/1");
+    expect_rejected<Elements>(R"({"tags":["abcd"]})", prefix("tags") + "is longer than the maximum length 3",
+                              "/tags/0");
+    // the elements of the elements
+    expect_rejected<Elements>(R"({"nested":[["a"],[]]})", prefix("nested") + "has fewer items than the minimum 1",
+                              "/nested/1");
+    expect_rejected<Elements>(R"({"nested":[["a"],["b","abcd"]]})",
+                              prefix("nested") + "is longer than the maximum length 3", "/nested/1/1");
+
+    expect_accepted<ElementsVisitable>(R"({"v":[1]})", {{1}});
+    expect_rejected<ElementsVisitable>(
+        R"({"v":[1,0]})",
+        R"(an element of the value of the key "v" of ElementsVisitable is not greater than the exclusive minimum 0)",
+        "/v/1");
+}
+
+TEST(Constraints, ElementsMerge)
+{
+    // a value that the map keeps is not in the JSON, which leaves the error at the map
+    auto t = Elements();
+    t.limits = {{"old", 200}};
+    const auto e = bad_cast_of([&] { yyjson::merge_into(R"({"limits":{"a":1}})", t); });
+    EXPECT_TRUE(message_of(e).starts_with(R"(the value of the key "limits" of Elements has a value that does not )"
+                                          R"(satisfy the constraints of yyjson::additional_properties)"))
+        << e.what();
+    EXPECT_EQ(e.path(), "/limits");
+}
+
 #if FIELD_RFL_ANNOTATIONS
 TEST(Constraints, Annotations)
 {
+    expect_accepted<ElementsAnnotated>(R"({"v":[0],"m":{"a":["xy"]}})", {{0}, {{"a", {"xy"}}}});
+    expect_rejected<ElementsAnnotated>(
+        R"({"v":[0,-1]})", R"(an element of the value of the key "v" of ElementsAnnotated is less than the minimum 0)",
+        "/v/1");
+    expect_rejected<ElementsAnnotated>(
+        R"({"m":{"a":["xy","xyz"]}})",
+        R"(an element of the value of the key "m" of ElementsAnnotated is longer than the maximum length 2)", "/m/a/1");
+
     expect_accepted<ConstrainedAnnotated>(R"({"n":3,"s":"xy","even":4})", {3, "xy", 4});
     expect_rejected<ConstrainedAnnotated>(
         R"({"n":4})", R"(the value of the key "n" of ConstrainedAnnotated is greater than the maximum 3)", "/n");
