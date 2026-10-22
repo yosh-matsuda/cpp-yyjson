@@ -855,6 +855,19 @@ TEST(Writer, WriteMaxMemoryUsage)
         check_buffer_write(raw_doc, write_flag, "raw");
         check_buffer_write(raw_mut, write_flag, "raw_mut");
     }
+    {
+        const auto raw_arr = *raw_doc.as_array();
+        EXPECT_TRUE(raw_arr[2].is_raw());
+        EXPECT_FALSE(raw_arr[2].is_num());
+        EXPECT_EQ(raw_arr[2].as_raw(), "123456789012345678901234567890");
+        EXPECT_EQ(raw_arr[1].as_raw(), "2.5");
+        EXPECT_EQ(read("1").as_raw(), std::nullopt);
+        EXPECT_EQ(read("1", ReadFlag::NumberAsRaw).as_raw(), std::optional<std::string>("1"));
+        const auto mut_arr = *raw_mut.as_array();
+        EXPECT_TRUE(mut_arr[2].is_raw());
+        EXPECT_EQ(mut_arr[2].as_raw(), "123456789012345678901234567890");
+        EXPECT_EQ(value("1").as_raw(), std::nullopt);
+    }
 
     // A deeply nested document keeps room for the writer context stack, whose entry is larger for
     // the mutable writer.
