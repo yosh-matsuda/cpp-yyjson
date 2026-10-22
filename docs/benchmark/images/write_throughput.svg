@@ -30,28 +30,28 @@
 <rect x="80.9" y="367.2" width="11.1" height="24.8" fill="#2563eb"/>
 <rect x="92.0" y="373.5" width="11.1" height="18.5" fill="#16a34a"/>
 <rect x="103.1" y="385.7" width="11.1" height="6.3" fill="#9333ea"/>
-<rect x="114.1" y="384.8" width="11.1" height="7.2" fill="#dc2626"/>
+<rect x="114.1" y="384.9" width="11.1" height="7.1" fill="#dc2626"/>
 <rect x="125.2" y="385.4" width="11.1" height="6.6" fill="#f97316"/>
 <text x="108.6" y="412" class="value" text-anchor="middle">canada</text>
-<rect x="170.1" y="330.4" width="11.1" height="61.6" fill="#2563eb"/>
+<rect x="170.1" y="330.6" width="11.1" height="61.4" fill="#2563eb"/>
 <rect x="181.2" y="339.7" width="11.1" height="52.3" fill="#16a34a"/>
 <rect x="192.3" y="371.4" width="11.1" height="20.6" fill="#9333ea"/>
 <rect x="203.3" y="378.4" width="11.1" height="13.6" fill="#dc2626"/>
 <rect x="214.4" y="383.2" width="11.1" height="8.8" fill="#f97316"/>
 <text x="197.8" y="412" class="value" text-anchor="middle">citm_catalog</text>
-<rect x="259.3" y="343.3" width="11.1" height="48.7" fill="#2563eb"/>
+<rect x="259.3" y="343.2" width="11.1" height="48.8" fill="#2563eb"/>
 <rect x="270.4" y="364.3" width="11.1" height="27.7" fill="#16a34a"/>
 <rect x="281.5" y="383.3" width="11.1" height="8.7" fill="#9333ea"/>
 <rect x="292.5" y="382.8" width="11.1" height="9.2" fill="#dc2626"/>
 <rect x="303.6" y="386.4" width="11.1" height="5.6" fill="#f97316"/>
 <text x="287.0" y="412" class="value" text-anchor="middle">fgo</text>
-<rect x="348.5" y="220.7" width="11.1" height="171.3" fill="#2563eb"/>
+<rect x="348.5" y="220.9" width="11.1" height="171.1" fill="#2563eb"/>
 <rect x="359.6" y="285.1" width="11.1" height="106.9" fill="#16a34a"/>
 <rect x="370.7" y="355.4" width="11.1" height="36.6" fill="#9333ea"/>
 <rect x="381.7" y="374.9" width="11.1" height="17.1" fill="#dc2626"/>
 <rect x="392.8" y="384.7" width="11.1" height="7.3" fill="#f97316"/>
 <text x="376.2" y="412" class="value" text-anchor="middle">github_events</text>
-<rect x="437.7" y="225.9" width="11.1" height="166.1" fill="#2563eb"/>
+<rect x="437.7" y="225.6" width="11.1" height="166.4" fill="#2563eb"/>
 <rect x="448.8" y="325.9" width="11.1" height="66.1" fill="#16a34a"/>
 <rect x="459.9" y="364.2" width="11.1" height="27.8" fill="#9333ea"/>
 <rect x="470.9" y="366.1" width="11.1" height="25.9" fill="#dc2626"/>
@@ -69,7 +69,7 @@
 <rect x="649.3" y="383.1" width="11.1" height="8.9" fill="#dc2626"/>
 <rect x="660.4" y="386.8" width="11.1" height="5.2" fill="#f97316"/>
 <text x="643.8" y="412" class="value" text-anchor="middle">otfcc</text>
-<rect x="705.3" y="142.7" width="11.1" height="249.3" fill="#2563eb"/>
+<rect x="705.3" y="141.4" width="11.1" height="250.6" fill="#2563eb"/>
 <rect x="716.4" y="207.0" width="11.1" height="185.0" fill="#16a34a"/>
 <rect x="727.5" y="346.0" width="11.1" height="46.0" fill="#9333ea"/>
 <rect x="738.5" y="365.4" width="11.1" height="26.6" fill="#dc2626"/>
@@ -81,7 +81,7 @@
 <rect x="827.7" y="378.9" width="11.1" height="13.1" fill="#dc2626"/>
 <rect x="838.8" y="384.6" width="11.1" height="7.4" fill="#f97316"/>
 <text x="822.2" y="412" class="value" text-anchor="middle">twitter</text>
-<rect x="883.7" y="314.7" width="11.1" height="77.3" fill="#2563eb"/>
+<rect x="883.7" y="314.8" width="11.1" height="77.2" fill="#2563eb"/>
 <rect x="894.8" y="327.7" width="11.1" height="64.3" fill="#16a34a"/>
 <rect x="905.9" y="361.0" width="11.1" height="31.0" fill="#9333ea"/>
 <rect x="916.9" y="378.9" width="11.1" height="13.1" fill="#dc2626"/>
