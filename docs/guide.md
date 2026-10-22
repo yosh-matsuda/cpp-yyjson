@@ -1,37 +1,60 @@
 # Guide
 
-This guide answers the questions that come up when a program starts to use cpp-yyjson, one task at a time, with the shortest code that does it and a link to the details. The examples include `cpp_yyjson.hpp` and the standard headers that they use. What the library does in each case is described in [Converting C++ types](conversions.md), [Validation and errors](validation.md) and the [Reference](reference.md). Questions that are not tasks, such as what happens to an unknown key or whether a document can be shared between threads, are answered in the [FAQ](faq.md).
+This guide shows how to do common tasks with cpp-yyjson, one task at a time, with the shortest code that does it. Each example assumes `#include "cpp_yyjson.hpp"` and the standard headers that it uses. The details are in [Converting C++ types](conversions.md), [Validation and errors](validation.md) and the [Reference](reference.md). Questions about behavior that are not tasks, such as whether a document can be shared between threads, are answered in the [FAQ](faq.md).
 
 ## Contents
 
-*   Getting started: [add the library](#add-cpp-yyjson-to-a-cmake-project), [read and write a struct](#read-json-into-a-struct-and-write-it-back), [read a file](#read-a-json-file), [write a file](#write-json-to-a-file), [handle errors](#handle-errors), [print a value](#print-a-json-value)
-*   Shaping the JSON: [another key](#use-a-json-key-other-than-the-member-name), [leave a member out](#leave-a-member-out-of-the-json), [defaults](#give-a-field-a-default-value), [optional fields](#write-a-field-only-when-it-has-a-value), [keep `null`](#keep-null-as-a-value), [enumerations](#read-and-write-an-enumeration), [keys known at run time](#read-an-object-whose-keys-are-not-known-in-advance), [an object chosen by a member](#read-objects-whose-kind-a-member-names), [a struct from another kind of value](#read-a-struct-from-an-array-or-a-string), [private members](#convert-a-class-with-private-members), [dates and times](#convert-dates-and-times), [a member of any shape](#keep-a-member-of-unknown-shape), [one naming convention for all keys](#map-every-key-to-another-naming-convention), [unknown keys](#keep-the-keys-that-the-struct-does-not-have)
-*   Validating: [reject unknown keys](#reject-unknown-keys), [require keys](#require-a-key), [restrict values](#restrict-the-values-of-a-field), [find the value that failed](#find-the-value-that-failed), [check a type at compile time](#check-at-compile-time-that-a-type-converts)
-*   JSON of any shape: [look up values](#look-up-values-in-json-of-unknown-shape), [only a few members](#read-only-a-few-members-of-a-large-document), [walk every value](#walk-every-value-of-a-document), [modify a document](#modify-a-document), [build JSON](#build-json-without-a-c-type), [compare values](#compare-two-json-values)
-*   Input formats: [comments and JSON5](#read-json-with-comments-trailing-commas-or-json5), [big numbers](#read-numbers-that-do-not-fit-in-64-bits), [NaN and infinity](#read-and-write-nan-and-infinity), [JSON Lines](#read-json-lines)
-*   Repeated work: [many documents](#read-many-documents-of-the-same-shape), [partial updates](#apply-a-partial-update), [reuse the output string](#write-many-objects-without-allocating)
+*   [Getting started](#getting-started)
+    *   [Add cpp-yyjson to a CMake project](#add-cpp-yyjson-to-a-cmake-project)
+    *   [Read JSON into a struct and write it back](#read-json-into-a-struct-and-write-it-back)
+    *   [Read a JSON file](#read-a-json-file)
+    *   [Write JSON to a file](#write-json-to-a-file)
+    *   [Handle errors](#handle-errors)
+    *   [Print a JSON value](#print-a-json-value)
+*   [Shaping the JSON](#shaping-the-json)
+    *   [Use a JSON key other than the member name](#use-a-json-key-other-than-the-member-name)
+    *   [Leave a member out of the JSON](#leave-a-member-out-of-the-json)
+    *   [Give a field a default value](#give-a-field-a-default-value)
+    *   [Write a field only when it has a value](#write-a-field-only-when-it-has-a-value)
+    *   [Keep null as a value](#keep-null-as-a-value)
+    *   [Read and write an enumeration](#read-and-write-an-enumeration)
+    *   [Read an object whose keys are not known in advance](#read-an-object-whose-keys-are-not-known-in-advance)
+    *   [Choose a variant alternative by a `"type"` member](#choose-a-variant-alternative-by-a-type-member)
+    *   [Read a struct from an array or a string](#read-a-struct-from-an-array-or-a-string)
+    *   [Convert a class with private members](#convert-a-class-with-private-members)
+    *   [Convert dates and times](#convert-dates-and-times)
+    *   [Keep a member of unknown shape](#keep-a-member-of-unknown-shape)
+    *   [Map every key to another naming convention](#map-every-key-to-another-naming-convention)
+    *   [Keep the keys that the struct does not have](#keep-the-keys-that-the-struct-does-not-have)
+*   [Validating](#validating)
+    *   [Reject unknown, missing or repeated keys](#reject-unknown-missing-or-repeated-keys)
+    *   [Require a key](#require-a-key)
+    *   [Restrict the values of a field](#restrict-the-values-of-a-field)
+    *   [Find the value that failed](#find-the-value-that-failed)
+    *   [Check at compile time that a type converts](#check-at-compile-time-that-a-type-converts)
+*   [JSON of any shape](#json-of-any-shape)
+    *   [Look up values in JSON of unknown shape](#look-up-values-in-json-of-unknown-shape)
+    *   [Read only a few members of a large document](#read-only-a-few-members-of-a-large-document)
+    *   [Walk every value of a document](#walk-every-value-of-a-document)
+    *   [Modify a document](#modify-a-document)
+    *   [Build JSON without a C++ type](#build-json-without-a-c-type)
+    *   [Compare two JSON values](#compare-two-json-values)
+*   [Input formats](#input-formats)
+    *   [Read JSON with comments, trailing commas or JSON5](#read-json-with-comments-trailing-commas-or-json5)
+    *   [Read numbers that do not fit in 64 bits](#read-numbers-that-do-not-fit-in-64-bits)
+    *   [Read and write NaN and infinity](#read-and-write-nan-and-infinity)
+    *   [Read JSON Lines](#read-json-lines)
+*   [Repeated work](#repeated-work)
+    *   [Read many documents of the same shape](#read-many-documents-of-the-same-shape)
+    *   [Apply a partial update](#apply-a-partial-update)
+    *   [Reuse the output string when writing many objects](#reuse-the-output-string-when-writing-many-objects)
 *   [What cpp-yyjson does not do](#what-cpp-yyjson-does-not-do)
 
 ## Getting started
 
 ### Add cpp-yyjson to a CMake project
 
-Fetch the repository and link the target `cpp_yyjson::cpp_yyjson`, which compiles the [bundled backend](../README.md#bundled-backend) and adds the include directory:
-
-```cmake
-include(FetchContent)
-FetchContent_Declare(cpp_yyjson
-    GIT_REPOSITORY https://github.com/yosh-matsuda/cpp-yyjson.git
-    GIT_TAG v2.1.0
-    GIT_SHALLOW TRUE
-    GIT_SUBMODULES "")
-FetchContent_MakeAvailable(cpp_yyjson)
-
-target_link_libraries(my_app PRIVATE cpp_yyjson::cpp_yyjson)
-cpp_yyjson_enable_lto(my_app)  # optional: a few percent faster
-```
-
-The project builds no tests when it is not the top-level project. Its only submodule holds the benchmark data, which `GIT_SUBMODULES ""` leaves out, and `GIT_SHALLOW` leaves out the history, so that the fetch takes about 5 MB instead of 400 MB. A clone added by `add_subdirectory` works the same way and needs no submodule either. The compilers and the options are listed in [Requirements](../README.md#requirements) and [Installation](../README.md#installation).
+Fetch the repository with CMake's `FetchContent` and link the target `cpp_yyjson::cpp_yyjson`. [Installation](../README.md#installation) gives the snippet, the requirements and the CMake options.
 
 ### Read JSON into a struct and write it back
 
@@ -154,7 +177,7 @@ auto item = yyjson::read<Item>(R"({"@id":"x1","displayName":"First"})");
 // -> Item{"x1", "First"}
 ```
 
-Details: [JSON keys other than field names](conversions.md#json-keys-other-than-field-names).
+Details: [Annotations: JSON keys and skipped fields](conversions.md#annotations-json-keys-and-skipped-fields).
 
 ### Leave a member out of the JSON
 
@@ -178,7 +201,7 @@ Details: [Skipped fields](conversions.md#skipped-fields).
 
 ### Give a field a default value
 
-A field whose key is missing gets its value in `T()`, so a default member initializer is its default:
+A field whose key is missing keeps the value it has in a default-constructed `T`, so its default member initializer is its default:
 
 ```cpp
 struct Options
@@ -191,11 +214,11 @@ auto options = yyjson::read<Options>(R"({"verbose":true})");
 // -> Options{3, true}
 ```
 
-[`yyjson::strict`](validation.md#strict-reading) requires the key of every field that is not a `std::optional`. Annotate a field with `yyjson::optional_key` to keep its default under `strict` as well.
+[`yyjson::strict`](validation.md#strict-reading) requires the keys of the fields that are not `std::optional`. To keep the default of a field under `strict` as well, annotate it with `yyjson::optional_key`.
 
 ### Write a field only when it has a value
 
-A `std::optional` field without a value is left out of the object, and a missing key or `null` reads as `std::nullopt`:
+A `std::optional` field without a value is left out of the object. A missing key reads as `std::nullopt`, and so does `null` without [`yyjson::strict`](validation.md#strict-reading):
 
 ```cpp
 struct Profile
@@ -208,7 +231,7 @@ auto json = yyjson::write(Profile{"Ann", std::nullopt});
 // -> {"name":"Ann"}
 ```
 
-A type of your own is left out by a caster with [`should_omit`](conversions.md#omitting-a-field-with-no-value).
+To leave out a value of your own type, give its caster a [`should_omit`](conversions.md#omitting-a-field-with-no-value) function.
 
 ### Keep null as a value
 
@@ -255,9 +278,9 @@ auto scores = yyjson::read<std::map<std::string, int>>(R"({"alice":3,"bob":5})")
 
 `std::unordered_map` works as well. A map whose keys are enumerations reads the names of the enumerators as keys, and one whose keys are integers is an array of `[key, value]` pairs ([details](conversions.md#conversion-rules)).
 
-### Read objects whose kind a member names
+### Choose a variant alternative by a `"type"` member
 
-A `std::variant` whose alternatives an object names by a member, such as `"type": "circle"`, is tagged with `yyjson::internal_tag`:
+When each object says what it is in a member such as `"type": "circle"`, read it into a `std::variant` annotated with `yyjson::internal_tag`:
 
 ```cpp
 struct Circle
@@ -278,7 +301,7 @@ auto shapes = yyjson::read<std::vector<Shape>>(R"([{"type":"circle","r":1.5},{"t
 // -> {Circle{1.5}, Rect{2, 3}}
 ```
 
-`yyjson::adjacent_tag` reads a tag that is next to the field of the variant. Without a tag, a variant takes the first alternative that accepts the value. Details: [Tagged variants](conversions.md#tagged-variants).
+When the tag is a sibling of the variant field, as in `{"kind":"circle","data":{"r":1.5}}`, annotate the field with `yyjson::adjacent_tag`. Without a tag, a variant takes the first alternative that accepts the value. Details: [Tagged variants](conversions.md#tagged-variants).
 
 ### Read a struct from an array or a string
 
@@ -304,7 +327,7 @@ auto json = yyjson::write(line);
 // -> [[0.0,0.0],[1.5,2.0]]
 ```
 
-Details: [Translator](conversions.md#translator).
+A `from_json` that takes a `std::string_view` reads the type from a JSON string in the same way. Details: [Translator](conversions.md#translator).
 
 ### Convert a class with private members
 
@@ -341,7 +364,7 @@ auto json = yyjson::write(account);
 // -> {"owner":"Ann","balance":100}
 ```
 
-A class with public members and a constructor of its own can be registered with [`VISITABLE_STRUCT`](conversions.md#registration-of-field-names-of-structclass) instead.
+A class with public members and a constructor of its own can be registered with [`VISITABLE_STRUCT`](conversions.md#structs-registered-with-visitable_struct) instead.
 
 ### Convert dates and times
 
@@ -411,9 +434,9 @@ for (const auto& [key, value] : *doc.as_object())
 
 ## Validating
 
-### Reject unknown keys
+### Reject unknown, missing or repeated keys
 
-`yyjson::strict` rejects the keys that name no field, the missing keys of fields that are not optional, and repeated keys, for the whole call. `yyjson::additional_properties(false)` rejects unknown keys for one struct, with or without `strict`:
+`yyjson::strict` rejects unknown, missing and repeated keys for the whole call; [Strict reading](validation.md#strict-reading) lists what it rejects. `yyjson::additional_properties(false)` rejects unknown keys for one struct, with or without `strict`:
 
 ```cpp
 struct Point
@@ -517,14 +540,19 @@ Details: [Errors of conversion](validation.md#errors-of-conversion).
 `yyjson::readable<T>` and `yyjson::writable<T>` tell whether `read<T>` and `write` accept a type:
 
 ```cpp
+struct Point
+{
+    int x;
+    int y;
+};
 struct Event
 {
     std::string name;
-    std::chrono::seconds duration;
+    std::chrono::sys_seconds at;
 };
 
-static_assert(yyjson::readable<Event>);
-static_assert(!yyjson::writable<Event>);  // a duration has no conversion to JSON
+static_assert(yyjson::readable<Point> && yyjson::writable<Point>);
+static_assert(!yyjson::readable<Event> && !yyjson::writable<Event>);  // sys_seconds needs a caster
 ```
 
 A call with a type that does not convert fails to compile with a message that names the first field that does not; see [Compile errors](validation.md#compile-errors-of-types-that-cannot-be-converted).
@@ -544,7 +572,7 @@ if (auto age = obj["age"].as_int()) std::cout << *age << '\n';
 for (const auto& tag : *obj["tags"].as_array()) std::cout << *tag.as_string() << '\n';
 ```
 
-`operator[]` of an object throws `std::out_of_range` for a missing key, and `find` returns `end()` instead. Both search the members in order. The DOM classes are listed in the [Reference](reference.md#dom-api).
+`operator[]` of an object throws `std::out_of_range` for a missing key, and `find` returns `end()` instead. Both take time linear in the number of members. The DOM classes are listed in the [Reference](reference.md#dom-api).
 
 ### Read only a few members of a large document
 
@@ -579,7 +607,7 @@ void walk(const yyjson::reader::const_value_ref& v, int depth = 0)
                    [&](const yyjson::reader::const_object_ref& o) {
                        for (const auto& [k, e] : o) walk(e, depth + 1);
                    },
-                   [&](const auto& scalar) { std::cout << std::string(depth * 2, ' ') << v.write() << '\n'; },
+                   [&](const auto&) { std::cout << std::string(depth * 2, ' ') << v.write() << '\n'; },
                },
                v.inspect());
 }
@@ -614,11 +642,11 @@ auto json = doc.write();
 // -> {"ok":true,"ids":[1,2,3],"meta":{"page":1}}
 ```
 
-A mutable value refers to the strings that it is built from, other than rvalue strings, instead of copying them. Keep those strings alive while the value is used, or pass `yyjson::copy_string` ([details](reference.md#yyjsonvalue)).
+A mutable value refers to the strings that it is built from instead of copying them; see [Lifetimes](reference.md#lifetimes).
 
 ### Compare two JSON values
 
-The JSON values have no `operator==`. Cast both to a C++ type and compare those, which ignores the order of the keys:
+The DOM values have no `operator==`. Cast both to a C++ type that fits both values, here a map of numbers and arrays, and compare those. This ignores the order of the keys:
 
 ```cpp
 auto a = yyjson::read(R"({"x":1,"y":[1,2]})");
@@ -736,9 +764,9 @@ yyjson::merge_into(R"({"retries":null,"limits":{"cpu":8,"memory":null}})", confi
 // -> Config{"app", 3, {{"cpu", 8}}}
 ```
 
-Details: [Reading a JSON string into an existing C++ object](reference.md#reading-a-json-string-into-an-existing-c-object).
+Details: [`yyjson::read_into`, `yyjson::merge_into`](reference.md#yyjsonread_into-yyjsonmerge_into).
 
-### Write many objects without allocating
+### Reuse the output string when writing many objects
 
 `yyjson::write(t, out)` overwrites a `std::string` and keeps its capacity:
 
