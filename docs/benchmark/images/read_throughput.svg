@@ -31,7 +31,7 @@
 <rect x="114.1" y="345.5" width="11.1" height="46.5" fill="#dc2626"/>
 <rect x="125.2" y="386.7" width="11.1" height="5.3" fill="#f97316"/>
 <text x="108.6" y="412" class="value" text-anchor="middle">canada</text>
-<rect x="170.1" y="192.1" width="11.1" height="199.9" fill="#2563eb"/>
+<rect x="170.1" y="191.0" width="11.1" height="201.0" fill="#2563eb"/>
 <rect x="181.2" y="244.7" width="11.1" height="147.3" fill="#16a34a"/>
 <rect x="192.3" y="199.9" width="11.1" height="192.1" fill="#9333ea"/>
 <rect x="203.3" y="300.6" width="11.1" height="91.4" fill="#dc2626"/>
@@ -43,43 +43,43 @@
 <rect x="292.5" y="366.2" width="11.1" height="25.8" fill="#dc2626"/>
 <rect x="303.6" y="386.4" width="11.1" height="5.6" fill="#f97316"/>
 <text x="287.0" y="412" class="value" text-anchor="middle">fgo</text>
-<rect x="348.5" y="151.9" width="11.1" height="240.1" fill="#2563eb"/>
+<rect x="348.5" y="153.8" width="11.1" height="238.2" fill="#2563eb"/>
 <rect x="359.6" y="233.9" width="11.1" height="158.1" fill="#16a34a"/>
 <rect x="370.7" y="185.7" width="11.1" height="206.3" fill="#9333ea"/>
 <rect x="381.7" y="340.1" width="11.1" height="51.9" fill="#dc2626"/>
 <rect x="392.8" y="381.9" width="11.1" height="10.1" fill="#f97316"/>
 <text x="376.2" y="412" class="value" text-anchor="middle">github_events</text>
-<rect x="437.7" y="144.6" width="11.1" height="247.4" fill="#2563eb"/>
+<rect x="437.7" y="143.9" width="11.1" height="248.1" fill="#2563eb"/>
 <rect x="448.8" y="253.5" width="11.1" height="138.5" fill="#16a34a"/>
 <rect x="459.9" y="164.1" width="11.1" height="227.9" fill="#9333ea"/>
 <rect x="470.9" y="328.4" width="11.1" height="63.6" fill="#dc2626"/>
 <rect x="482.0" y="376.4" width="11.1" height="15.6" fill="#f97316"/>
 <text x="465.4" y="412" class="value" text-anchor="middle">gsoc-2018</text>
-<rect x="526.9" y="352.7" width="11.1" height="39.3" fill="#2563eb"/>
+<rect x="526.9" y="352.5" width="11.1" height="39.5" fill="#2563eb"/>
 <rect x="538.0" y="354.4" width="11.1" height="37.6" fill="#16a34a"/>
 <rect x="549.1" y="354.9" width="11.1" height="37.1" fill="#9333ea"/>
 <rect x="560.1" y="370.6" width="11.1" height="21.4" fill="#dc2626"/>
 <rect x="571.2" y="388.8" width="11.1" height="3.2" fill="#f97316"/>
 <text x="554.6" y="412" class="value" text-anchor="middle">lottie</text>
-<rect x="616.1" y="353.8" width="11.1" height="38.2" fill="#2563eb"/>
+<rect x="616.1" y="353.9" width="11.1" height="38.1" fill="#2563eb"/>
 <rect x="627.2" y="369.3" width="11.1" height="22.7" fill="#16a34a"/>
 <rect x="638.3" y="365.1" width="11.1" height="26.9" fill="#9333ea"/>
 <rect x="649.3" y="375.1" width="11.1" height="16.9" fill="#dc2626"/>
 <rect x="660.4" y="387.6" width="11.1" height="4.4" fill="#f97316"/>
 <text x="643.8" y="412" class="value" text-anchor="middle">otfcc</text>
-<rect x="705.3" y="190.6" width="11.1" height="201.4" fill="#2563eb"/>
+<rect x="705.3" y="190.9" width="11.1" height="201.1" fill="#2563eb"/>
 <rect x="716.4" y="201.3" width="11.1" height="190.7" fill="#16a34a"/>
 <rect x="727.5" y="202.0" width="11.1" height="190.0" fill="#9333ea"/>
 <rect x="738.5" y="332.2" width="11.1" height="59.8" fill="#dc2626"/>
 <rect x="749.6" y="376.5" width="11.1" height="15.5" fill="#f97316"/>
 <text x="733.0" y="412" class="value" text-anchor="middle">poet</text>
-<rect x="794.5" y="206.1" width="11.1" height="185.9" fill="#2563eb"/>
+<rect x="794.5" y="208.2" width="11.1" height="183.8" fill="#2563eb"/>
 <rect x="805.6" y="249.4" width="11.1" height="142.6" fill="#16a34a"/>
 <rect x="816.7" y="216.5" width="11.1" height="175.5" fill="#9333ea"/>
 <rect x="827.7" y="337.8" width="11.1" height="54.2" fill="#dc2626"/>
 <rect x="838.8" y="382.6" width="11.1" height="9.4" fill="#f97316"/>
 <text x="822.2" y="412" class="value" text-anchor="middle">twitter</text>
-<rect x="883.7" y="265.1" width="11.1" height="126.9" fill="#2563eb"/>
+<rect x="883.7" y="264.2" width="11.1" height="127.8" fill="#2563eb"/>
 <rect x="894.8" y="286.1" width="11.1" height="105.9" fill="#16a34a"/>
 <rect x="905.9" y="305.5" width="11.1" height="86.5" fill="#9333ea"/>
 <rect x="916.9" y="352.0" width="11.1" height="40.0" fill="#dc2626"/>

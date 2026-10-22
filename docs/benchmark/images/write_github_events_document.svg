@@ -31,8 +31,8 @@
 <text x="864" y="196" class="value">164 µs</text>
 <text x="24" y="222" class="heading">Reused output buffer</text>
 <text x="24" y="246" class="label">cpp-yyjson</text>
-<rect x="300" y="235" width="21.7" height="14" rx="2" fill="#2563eb"/>
-<text x="864" y="246" class="value">6.96 µs</text>
+<rect x="300" y="235" width="21.8" height="14" rx="2" fill="#2563eb"/>
+<text x="864" y="246" class="value">6.98 µs</text>
 <text x="24" y="270" class="label">yyjson</text>
 <rect x="300" y="259" width="34.2" height="14" rx="2" fill="#16a34a"/>
 <text x="864" y="270" class="value">11.0 µs</text>

@@ -1,86 +1,86 @@
 ------------------------------------------------------------------------------------------------------------
 Benchmark                                                  Time             CPU   Iterations UserCounters...
 ------------------------------------------------------------------------------------------------------------
-write_cpp_yyjson_dataset/0_mean                         1.89 ms         1.89 ms           11 bytes_per_second=1.03148Gi/s ./external/yyjson_benchmark/data/json/canada.json
-write_cpp_yyjson_dataset/0_median                       1.89 ms         1.89 ms           11 bytes_per_second=1.03165Gi/s ./external/yyjson_benchmark/data/json/canada.json
-write_cpp_yyjson_dataset/0_stddev                      0.001 ms        0.001 ms           11 bytes_per_second=707.951Ki/s ./external/yyjson_benchmark/data/json/canada.json
-write_cpp_yyjson_dataset/0_cv                           0.07 %          0.07 %            11 bytes_per_second=0.07% ./external/yyjson_benchmark/data/json/canada.json
-write_cpp_yyjson_dataset/1_mean                        0.182 ms        0.182 ms           11 bytes_per_second=2.56134Gi/s ./external/yyjson_benchmark/data/json/citm_catalog.json
-write_cpp_yyjson_dataset/1_median                      0.182 ms        0.182 ms           11 bytes_per_second=2.562Gi/s ./external/yyjson_benchmark/data/json/citm_catalog.json
-write_cpp_yyjson_dataset/1_stddev                      0.000 ms        0.000 ms           11 bytes_per_second=3.282Mi/s ./external/yyjson_benchmark/data/json/citm_catalog.json
-write_cpp_yyjson_dataset/1_cv                           0.13 %          0.13 %            11 bytes_per_second=0.13% ./external/yyjson_benchmark/data/json/citm_catalog.json
-write_cpp_yyjson_dataset/2_mean                         22.4 ms         22.4 ms           11 bytes_per_second=2.0252Gi/s ./external/yyjson_benchmark/data/json/fgo.json
-write_cpp_yyjson_dataset/2_median                       22.4 ms         22.4 ms           11 bytes_per_second=2.02532Gi/s ./external/yyjson_benchmark/data/json/fgo.json
-write_cpp_yyjson_dataset/2_stddev                      0.015 ms        0.015 ms           11 bytes_per_second=1.43075Mi/s ./external/yyjson_benchmark/data/json/fgo.json
-write_cpp_yyjson_dataset/2_cv                           0.07 %          0.07 %            11 bytes_per_second=0.07% ./external/yyjson_benchmark/data/json/fgo.json
-write_cpp_yyjson_dataset/3_mean                        0.007 ms        0.007 ms           11 bytes_per_second=7.1164Gi/s ./external/yyjson_benchmark/data/json/github_events.json
-write_cpp_yyjson_dataset/3_median                      0.007 ms        0.007 ms           11 bytes_per_second=7.12045Gi/s ./external/yyjson_benchmark/data/json/github_events.json
-write_cpp_yyjson_dataset/3_stddev                      0.000 ms        0.000 ms           11 bytes_per_second=20.4218Mi/s ./external/yyjson_benchmark/data/json/github_events.json
-write_cpp_yyjson_dataset/3_cv                           0.28 %          0.28 %            11 bytes_per_second=0.28% ./external/yyjson_benchmark/data/json/github_events.json
-write_cpp_yyjson_dataset/4_mean                        0.414 ms        0.414 ms           11 bytes_per_second=6.90672Gi/s ./external/yyjson_benchmark/data/json/gsoc-2018.json
-write_cpp_yyjson_dataset/4_median                      0.414 ms        0.414 ms           11 bytes_per_second=6.90773Gi/s ./external/yyjson_benchmark/data/json/gsoc-2018.json
-write_cpp_yyjson_dataset/4_stddev                      0.000 ms        0.000 ms           11 bytes_per_second=5.82017Mi/s ./external/yyjson_benchmark/data/json/gsoc-2018.json
-write_cpp_yyjson_dataset/4_cv                           0.08 %          0.08 %            11 bytes_per_second=0.08% ./external/yyjson_benchmark/data/json/gsoc-2018.json
-write_cpp_yyjson_dataset/5_mean                        0.287 ms        0.287 ms           11 bytes_per_second=958.911Mi/s ./external/yyjson_benchmark/data/json/lottie.json
-write_cpp_yyjson_dataset/5_median                      0.287 ms        0.287 ms           11 bytes_per_second=958.975Mi/s ./external/yyjson_benchmark/data/json/lottie.json
-write_cpp_yyjson_dataset/5_stddev                      0.000 ms        0.000 ms           11 bytes_per_second=704.423Ki/s ./external/yyjson_benchmark/data/json/lottie.json
-write_cpp_yyjson_dataset/5_cv                           0.07 %          0.07 %            11 bytes_per_second=0.07% ./external/yyjson_benchmark/data/json/lottie.json
-write_cpp_yyjson_dataset/6_mean                         45.1 ms         45.1 ms           11 bytes_per_second=1.3709Gi/s ./external/yyjson_benchmark/data/json/otfcc.json
-write_cpp_yyjson_dataset/6_median                       45.1 ms         45.1 ms           11 bytes_per_second=1.37085Gi/s ./external/yyjson_benchmark/data/json/otfcc.json
-write_cpp_yyjson_dataset/6_stddev                      0.099 ms        0.100 ms           11 bytes_per_second=3.10318Mi/s ./external/yyjson_benchmark/data/json/otfcc.json
-write_cpp_yyjson_dataset/6_cv                           0.22 %          0.22 %            11 bytes_per_second=0.22% ./external/yyjson_benchmark/data/json/otfcc.json
-write_cpp_yyjson_dataset/7_mean                        0.296 ms        0.296 ms           11 bytes_per_second=10.3759Gi/s ./external/yyjson_benchmark/data/json/poet.json
-write_cpp_yyjson_dataset/7_median                      0.296 ms        0.296 ms           11 bytes_per_second=10.3669Gi/s ./external/yyjson_benchmark/data/json/poet.json
-write_cpp_yyjson_dataset/7_stddev                      0.000 ms        0.000 ms           11 bytes_per_second=17.6831Mi/s ./external/yyjson_benchmark/data/json/poet.json
-write_cpp_yyjson_dataset/7_cv                           0.17 %          0.17 %            11 bytes_per_second=0.17% ./external/yyjson_benchmark/data/json/poet.json
-write_cpp_yyjson_dataset/8_mean                        0.095 ms        0.095 ms           11 bytes_per_second=4.56134Gi/s ./external/yyjson_benchmark/data/json/twitter.json
-write_cpp_yyjson_dataset/8_median                      0.095 ms        0.095 ms           11 bytes_per_second=4.56101Gi/s ./external/yyjson_benchmark/data/json/twitter.json
-write_cpp_yyjson_dataset/8_stddev                      0.000 ms        0.000 ms           11 bytes_per_second=12.7109Mi/s ./external/yyjson_benchmark/data/json/twitter.json
-write_cpp_yyjson_dataset/8_cv                           0.27 %          0.27 %            11 bytes_per_second=0.27% ./external/yyjson_benchmark/data/json/twitter.json
-write_cpp_yyjson_dataset/9_mean                        0.135 ms        0.135 ms           11 bytes_per_second=3.21569Gi/s ./external/yyjson_benchmark/data/json/twitterescaped.json
-write_cpp_yyjson_dataset/9_median                      0.135 ms        0.135 ms           11 bytes_per_second=3.21262Gi/s ./external/yyjson_benchmark/data/json/twitterescaped.json
-write_cpp_yyjson_dataset/9_stddev                      0.000 ms        0.000 ms           11 bytes_per_second=10.3223Mi/s ./external/yyjson_benchmark/data/json/twitterescaped.json
-write_cpp_yyjson_dataset/9_cv                           0.31 %          0.31 %            11 bytes_per_second=0.31% ./external/yyjson_benchmark/data/json/twitterescaped.json
-write_cpp_yyjson_single_dataset/0_mean                  1.89 ms         1.89 ms           11 bytes_per_second=1.03169Gi/s ./external/yyjson_benchmark/data/json/canada.json
-write_cpp_yyjson_single_dataset/0_median                1.89 ms         1.89 ms           11 bytes_per_second=1.03176Gi/s ./external/yyjson_benchmark/data/json/canada.json
-write_cpp_yyjson_single_dataset/0_stddev               0.002 ms        0.002 ms           11 bytes_per_second=1.27113Mi/s ./external/yyjson_benchmark/data/json/canada.json
-write_cpp_yyjson_single_dataset/0_cv                    0.12 %          0.12 %            11 bytes_per_second=0.12% ./external/yyjson_benchmark/data/json/canada.json
-write_cpp_yyjson_single_dataset/1_mean                 0.182 ms        0.182 ms           11 bytes_per_second=2.55914Gi/s ./external/yyjson_benchmark/data/json/citm_catalog.json
-write_cpp_yyjson_single_dataset/1_median               0.182 ms        0.182 ms           11 bytes_per_second=2.55853Gi/s ./external/yyjson_benchmark/data/json/citm_catalog.json
-write_cpp_yyjson_single_dataset/1_stddev               0.000 ms        0.000 ms           11 bytes_per_second=5.72572Mi/s ./external/yyjson_benchmark/data/json/citm_catalog.json
-write_cpp_yyjson_single_dataset/1_cv                    0.22 %          0.22 %            11 bytes_per_second=0.22% ./external/yyjson_benchmark/data/json/citm_catalog.json
-write_cpp_yyjson_single_dataset/2_mean                  19.8 ms         19.8 ms           11 bytes_per_second=2.29456Gi/s ./external/yyjson_benchmark/data/json/fgo.json
-write_cpp_yyjson_single_dataset/2_median                19.8 ms         19.8 ms           11 bytes_per_second=2.29478Gi/s ./external/yyjson_benchmark/data/json/fgo.json
-write_cpp_yyjson_single_dataset/2_stddev               0.016 ms        0.017 ms           11 bytes_per_second=1.96704Mi/s ./external/yyjson_benchmark/data/json/fgo.json
-write_cpp_yyjson_single_dataset/2_cv                    0.08 %          0.08 %            11 bytes_per_second=0.08% ./external/yyjson_benchmark/data/json/fgo.json
-write_cpp_yyjson_single_dataset/3_mean                 0.007 ms        0.007 ms           11 bytes_per_second=7.13639Gi/s ./external/yyjson_benchmark/data/json/github_events.json
-write_cpp_yyjson_single_dataset/3_median               0.007 ms        0.007 ms           11 bytes_per_second=7.13541Gi/s ./external/yyjson_benchmark/data/json/github_events.json
-write_cpp_yyjson_single_dataset/3_stddev               0.000 ms        0.000 ms           11 bytes_per_second=7.68292Mi/s ./external/yyjson_benchmark/data/json/github_events.json
-write_cpp_yyjson_single_dataset/3_cv                    0.10 %          0.11 %            11 bytes_per_second=0.11% ./external/yyjson_benchmark/data/json/github_events.json
-write_cpp_yyjson_single_dataset/4_mean                 0.414 ms        0.414 ms           11 bytes_per_second=6.90984Gi/s ./external/yyjson_benchmark/data/json/gsoc-2018.json
-write_cpp_yyjson_single_dataset/4_median               0.414 ms        0.414 ms           11 bytes_per_second=6.90763Gi/s ./external/yyjson_benchmark/data/json/gsoc-2018.json
-write_cpp_yyjson_single_dataset/4_stddev               0.000 ms        0.000 ms           11 bytes_per_second=7.30326Mi/s ./external/yyjson_benchmark/data/json/gsoc-2018.json
-write_cpp_yyjson_single_dataset/4_cv                    0.10 %          0.10 %            11 bytes_per_second=0.10% ./external/yyjson_benchmark/data/json/gsoc-2018.json
-write_cpp_yyjson_single_dataset/5_mean                 0.287 ms        0.287 ms           11 bytes_per_second=958.557Mi/s ./external/yyjson_benchmark/data/json/lottie.json
-write_cpp_yyjson_single_dataset/5_median               0.288 ms        0.288 ms           11 bytes_per_second=958.358Mi/s ./external/yyjson_benchmark/data/json/lottie.json
-write_cpp_yyjson_single_dataset/5_stddev               0.001 ms        0.001 ms           11 bytes_per_second=3.00146Mi/s ./external/yyjson_benchmark/data/json/lottie.json
-write_cpp_yyjson_single_dataset/5_cv                    0.31 %          0.31 %            11 bytes_per_second=0.31% ./external/yyjson_benchmark/data/json/lottie.json
-write_cpp_yyjson_single_dataset/6_mean                  40.9 ms         40.9 ms           11 bytes_per_second=1.51146Gi/s ./external/yyjson_benchmark/data/json/otfcc.json
-write_cpp_yyjson_single_dataset/6_median                40.9 ms         40.9 ms           11 bytes_per_second=1.5119Gi/s ./external/yyjson_benchmark/data/json/otfcc.json
-write_cpp_yyjson_single_dataset/6_stddev               0.068 ms        0.065 ms           11 bytes_per_second=2.4539Mi/s ./external/yyjson_benchmark/data/json/otfcc.json
-write_cpp_yyjson_single_dataset/6_cv                    0.17 %          0.16 %            11 bytes_per_second=0.16% ./external/yyjson_benchmark/data/json/otfcc.json
-write_cpp_yyjson_single_dataset/7_mean                 0.295 ms        0.295 ms           11 bytes_per_second=10.405Gi/s ./external/yyjson_benchmark/data/json/poet.json
-write_cpp_yyjson_single_dataset/7_median               0.295 ms        0.295 ms           11 bytes_per_second=10.404Gi/s ./external/yyjson_benchmark/data/json/poet.json
-write_cpp_yyjson_single_dataset/7_stddev               0.000 ms        0.000 ms           11 bytes_per_second=8.65886Mi/s ./external/yyjson_benchmark/data/json/poet.json
-write_cpp_yyjson_single_dataset/7_cv                    0.08 %          0.08 %            11 bytes_per_second=0.08% ./external/yyjson_benchmark/data/json/poet.json
-write_cpp_yyjson_single_dataset/8_mean                 0.096 ms        0.096 ms           11 bytes_per_second=4.54111Gi/s ./external/yyjson_benchmark/data/json/twitter.json
-write_cpp_yyjson_single_dataset/8_median               0.096 ms        0.096 ms           11 bytes_per_second=4.54805Gi/s ./external/yyjson_benchmark/data/json/twitter.json
-write_cpp_yyjson_single_dataset/8_stddev               0.000 ms        0.000 ms           11 bytes_per_second=20.3581Mi/s ./external/yyjson_benchmark/data/json/twitter.json
-write_cpp_yyjson_single_dataset/8_cv                    0.44 %          0.44 %            11 bytes_per_second=0.44% ./external/yyjson_benchmark/data/json/twitter.json
-write_cpp_yyjson_single_dataset/9_mean                 0.135 ms        0.135 ms           11 bytes_per_second=3.22168Gi/s ./external/yyjson_benchmark/data/json/twitterescaped.json
-write_cpp_yyjson_single_dataset/9_median               0.135 ms        0.135 ms           11 bytes_per_second=3.22126Gi/s ./external/yyjson_benchmark/data/json/twitterescaped.json
-write_cpp_yyjson_single_dataset/9_stddev               0.000 ms        0.000 ms           11 bytes_per_second=5.00376Mi/s ./external/yyjson_benchmark/data/json/twitterescaped.json
-write_cpp_yyjson_single_dataset/9_cv                    0.15 %          0.15 %            11 bytes_per_second=0.15% ./external/yyjson_benchmark/data/json/twitterescaped.json
+write_cpp_yyjson_dataset/0_mean                         1.89 ms         1.89 ms           11 bytes_per_second=1.03008Gi/s ./external/yyjson_benchmark/data/json/canada.json
+write_cpp_yyjson_dataset/0_median                       1.89 ms         1.89 ms           11 bytes_per_second=1.02977Gi/s ./external/yyjson_benchmark/data/json/canada.json
+write_cpp_yyjson_dataset/0_stddev                      0.002 ms        0.002 ms           11 bytes_per_second=1.28722Mi/s ./external/yyjson_benchmark/data/json/canada.json
+write_cpp_yyjson_dataset/0_cv                           0.12 %          0.12 %            11 bytes_per_second=0.12% ./external/yyjson_benchmark/data/json/canada.json
+write_cpp_yyjson_dataset/1_mean                        0.183 ms        0.183 ms           11 bytes_per_second=2.55156Gi/s ./external/yyjson_benchmark/data/json/citm_catalog.json
+write_cpp_yyjson_dataset/1_median                      0.183 ms        0.183 ms           11 bytes_per_second=2.55118Gi/s ./external/yyjson_benchmark/data/json/citm_catalog.json
+write_cpp_yyjson_dataset/1_stddev                      0.000 ms        0.000 ms           11 bytes_per_second=2.97711Mi/s ./external/yyjson_benchmark/data/json/citm_catalog.json
+write_cpp_yyjson_dataset/1_cv                           0.11 %          0.11 %            11 bytes_per_second=0.11% ./external/yyjson_benchmark/data/json/citm_catalog.json
+write_cpp_yyjson_dataset/2_mean                         22.4 ms         22.4 ms           11 bytes_per_second=2.02758Gi/s ./external/yyjson_benchmark/data/json/fgo.json
+write_cpp_yyjson_dataset/2_median                       22.4 ms         22.4 ms           11 bytes_per_second=2.02785Gi/s ./external/yyjson_benchmark/data/json/fgo.json
+write_cpp_yyjson_dataset/2_stddev                      0.013 ms        0.013 ms           11 bytes_per_second=1.23746Mi/s ./external/yyjson_benchmark/data/json/fgo.json
+write_cpp_yyjson_dataset/2_cv                           0.06 %          0.06 %            11 bytes_per_second=0.06% ./external/yyjson_benchmark/data/json/fgo.json
+write_cpp_yyjson_dataset/3_mean                        0.007 ms        0.007 ms           11 bytes_per_second=7.11876Gi/s ./external/yyjson_benchmark/data/json/github_events.json
+write_cpp_yyjson_dataset/3_median                      0.007 ms        0.007 ms           11 bytes_per_second=7.11576Gi/s ./external/yyjson_benchmark/data/json/github_events.json
+write_cpp_yyjson_dataset/3_stddev                      0.000 ms        0.000 ms           11 bytes_per_second=16.9382Mi/s ./external/yyjson_benchmark/data/json/github_events.json
+write_cpp_yyjson_dataset/3_cv                           0.23 %          0.23 %            11 bytes_per_second=0.23% ./external/yyjson_benchmark/data/json/github_events.json
+write_cpp_yyjson_dataset/4_mean                        0.413 ms        0.413 ms           11 bytes_per_second=6.91715Gi/s ./external/yyjson_benchmark/data/json/gsoc-2018.json
+write_cpp_yyjson_dataset/4_median                      0.413 ms        0.413 ms           11 bytes_per_second=6.91799Gi/s ./external/yyjson_benchmark/data/json/gsoc-2018.json
+write_cpp_yyjson_dataset/4_stddev                      0.000 ms        0.000 ms           11 bytes_per_second=8.44122Mi/s ./external/yyjson_benchmark/data/json/gsoc-2018.json
+write_cpp_yyjson_dataset/4_cv                           0.12 %          0.12 %            11 bytes_per_second=0.12% ./external/yyjson_benchmark/data/json/gsoc-2018.json
+write_cpp_yyjson_dataset/5_mean                        0.287 ms        0.287 ms           11 bytes_per_second=958.677Mi/s ./external/yyjson_benchmark/data/json/lottie.json
+write_cpp_yyjson_dataset/5_median                      0.287 ms        0.287 ms           11 bytes_per_second=958.909Mi/s ./external/yyjson_benchmark/data/json/lottie.json
+write_cpp_yyjson_dataset/5_stddev                      0.001 ms        0.001 ms           11 bytes_per_second=2.1161Mi/s ./external/yyjson_benchmark/data/json/lottie.json
+write_cpp_yyjson_dataset/5_cv                           0.22 %          0.22 %            11 bytes_per_second=0.22% ./external/yyjson_benchmark/data/json/lottie.json
+write_cpp_yyjson_dataset/6_mean                         45.0 ms         45.0 ms           11 bytes_per_second=1.37399Gi/s ./external/yyjson_benchmark/data/json/otfcc.json
+write_cpp_yyjson_dataset/6_median                       45.0 ms         45.0 ms           11 bytes_per_second=1.37407Gi/s ./external/yyjson_benchmark/data/json/otfcc.json
+write_cpp_yyjson_dataset/6_stddev                      0.095 ms        0.094 ms           11 bytes_per_second=2.95008Mi/s ./external/yyjson_benchmark/data/json/otfcc.json
+write_cpp_yyjson_dataset/6_cv                           0.21 %          0.21 %            11 bytes_per_second=0.21% ./external/yyjson_benchmark/data/json/otfcc.json
+write_cpp_yyjson_dataset/7_mean                        0.295 ms        0.295 ms           11 bytes_per_second=10.4172Gi/s ./external/yyjson_benchmark/data/json/poet.json
+write_cpp_yyjson_dataset/7_median                      0.295 ms        0.295 ms           11 bytes_per_second=10.4177Gi/s ./external/yyjson_benchmark/data/json/poet.json
+write_cpp_yyjson_dataset/7_stddev                      0.001 ms        0.001 ms           11 bytes_per_second=22.2148Mi/s ./external/yyjson_benchmark/data/json/poet.json
+write_cpp_yyjson_dataset/7_cv                           0.21 %          0.21 %            11 bytes_per_second=0.21% ./external/yyjson_benchmark/data/json/poet.json
+write_cpp_yyjson_dataset/8_mean                        0.095 ms        0.095 ms           11 bytes_per_second=4.55709Gi/s ./external/yyjson_benchmark/data/json/twitter.json
+write_cpp_yyjson_dataset/8_median                      0.095 ms        0.095 ms           11 bytes_per_second=4.56062Gi/s ./external/yyjson_benchmark/data/json/twitter.json
+write_cpp_yyjson_dataset/8_stddev                      0.000 ms        0.000 ms           11 bytes_per_second=19.8044Mi/s ./external/yyjson_benchmark/data/json/twitter.json
+write_cpp_yyjson_dataset/8_cv                           0.42 %          0.42 %            11 bytes_per_second=0.42% ./external/yyjson_benchmark/data/json/twitter.json
+write_cpp_yyjson_dataset/9_mean                        0.135 ms        0.135 ms           11 bytes_per_second=3.21103Gi/s ./external/yyjson_benchmark/data/json/twitterescaped.json
+write_cpp_yyjson_dataset/9_median                      0.135 ms        0.135 ms           11 bytes_per_second=3.21019Gi/s ./external/yyjson_benchmark/data/json/twitterescaped.json
+write_cpp_yyjson_dataset/9_stddev                      0.000 ms        0.000 ms           11 bytes_per_second=11.102Mi/s ./external/yyjson_benchmark/data/json/twitterescaped.json
+write_cpp_yyjson_dataset/9_cv                           0.34 %          0.34 %            11 bytes_per_second=0.34% ./external/yyjson_benchmark/data/json/twitterescaped.json
+write_cpp_yyjson_single_dataset/0_mean                  1.89 ms         1.89 ms           11 bytes_per_second=1.028Gi/s ./external/yyjson_benchmark/data/json/canada.json
+write_cpp_yyjson_single_dataset/0_median                1.89 ms         1.89 ms           11 bytes_per_second=1.02819Gi/s ./external/yyjson_benchmark/data/json/canada.json
+write_cpp_yyjson_single_dataset/0_stddev               0.002 ms        0.002 ms           11 bytes_per_second=1.09988Mi/s ./external/yyjson_benchmark/data/json/canada.json
+write_cpp_yyjson_single_dataset/0_cv                    0.10 %          0.10 %            11 bytes_per_second=0.10% ./external/yyjson_benchmark/data/json/canada.json
+write_cpp_yyjson_single_dataset/1_mean                 0.182 ms        0.182 ms           11 bytes_per_second=2.55584Gi/s ./external/yyjson_benchmark/data/json/citm_catalog.json
+write_cpp_yyjson_single_dataset/1_median               0.182 ms        0.182 ms           11 bytes_per_second=2.55602Gi/s ./external/yyjson_benchmark/data/json/citm_catalog.json
+write_cpp_yyjson_single_dataset/1_stddev               0.000 ms        0.000 ms           11 bytes_per_second=3.40094Mi/s ./external/yyjson_benchmark/data/json/citm_catalog.json
+write_cpp_yyjson_single_dataset/1_cv                    0.13 %          0.13 %            11 bytes_per_second=0.13% ./external/yyjson_benchmark/data/json/citm_catalog.json
+write_cpp_yyjson_single_dataset/2_mean                  19.8 ms         19.8 ms           11 bytes_per_second=2.29736Gi/s ./external/yyjson_benchmark/data/json/fgo.json
+write_cpp_yyjson_single_dataset/2_median                19.8 ms         19.8 ms           11 bytes_per_second=2.2974Gi/s ./external/yyjson_benchmark/data/json/fgo.json
+write_cpp_yyjson_single_dataset/2_stddev               0.014 ms        0.014 ms           11 bytes_per_second=1.6333Mi/s ./external/yyjson_benchmark/data/json/fgo.json
+write_cpp_yyjson_single_dataset/2_cv                    0.07 %          0.07 %            11 bytes_per_second=0.07% ./external/yyjson_benchmark/data/json/fgo.json
+write_cpp_yyjson_single_dataset/3_mean                 0.007 ms        0.007 ms           11 bytes_per_second=7.11737Gi/s ./external/yyjson_benchmark/data/json/github_events.json
+write_cpp_yyjson_single_dataset/3_median               0.007 ms        0.007 ms           11 bytes_per_second=7.11668Gi/s ./external/yyjson_benchmark/data/json/github_events.json
+write_cpp_yyjson_single_dataset/3_stddev               0.000 ms        0.000 ms           11 bytes_per_second=6.33567Mi/s ./external/yyjson_benchmark/data/json/github_events.json
+write_cpp_yyjson_single_dataset/3_cv                    0.08 %          0.09 %            11 bytes_per_second=0.09% ./external/yyjson_benchmark/data/json/github_events.json
+write_cpp_yyjson_single_dataset/4_mean                 0.413 ms        0.413 ms           11 bytes_per_second=6.91609Gi/s ./external/yyjson_benchmark/data/json/gsoc-2018.json
+write_cpp_yyjson_single_dataset/4_median               0.413 ms        0.413 ms           11 bytes_per_second=6.91632Gi/s ./external/yyjson_benchmark/data/json/gsoc-2018.json
+write_cpp_yyjson_single_dataset/4_stddev               0.001 ms        0.001 ms           11 bytes_per_second=9.23291Mi/s ./external/yyjson_benchmark/data/json/gsoc-2018.json
+write_cpp_yyjson_single_dataset/4_cv                    0.13 %          0.13 %            11 bytes_per_second=0.13% ./external/yyjson_benchmark/data/json/gsoc-2018.json
+write_cpp_yyjson_single_dataset/5_mean                 0.287 ms        0.287 ms           11 bytes_per_second=960.814Mi/s ./external/yyjson_benchmark/data/json/lottie.json
+write_cpp_yyjson_single_dataset/5_median               0.287 ms        0.287 ms           11 bytes_per_second=961.353Mi/s ./external/yyjson_benchmark/data/json/lottie.json
+write_cpp_yyjson_single_dataset/5_stddev               0.000 ms        0.000 ms           11 bytes_per_second=1.30314Mi/s ./external/yyjson_benchmark/data/json/lottie.json
+write_cpp_yyjson_single_dataset/5_cv                    0.14 %          0.14 %            11 bytes_per_second=0.14% ./external/yyjson_benchmark/data/json/lottie.json
+write_cpp_yyjson_single_dataset/6_mean                  40.8 ms         40.8 ms           11 bytes_per_second=1.51587Gi/s ./external/yyjson_benchmark/data/json/otfcc.json
+write_cpp_yyjson_single_dataset/6_median                40.8 ms         40.8 ms           11 bytes_per_second=1.51624Gi/s ./external/yyjson_benchmark/data/json/otfcc.json
+write_cpp_yyjson_single_dataset/6_stddev               0.063 ms        0.060 ms           11 bytes_per_second=2.28847Mi/s ./external/yyjson_benchmark/data/json/otfcc.json
+write_cpp_yyjson_single_dataset/6_cv                    0.15 %          0.15 %            11 bytes_per_second=0.15% ./external/yyjson_benchmark/data/json/otfcc.json
+write_cpp_yyjson_single_dataset/7_mean                 0.296 ms        0.296 ms           11 bytes_per_second=10.3727Gi/s ./external/yyjson_benchmark/data/json/poet.json
+write_cpp_yyjson_single_dataset/7_median               0.296 ms        0.296 ms           11 bytes_per_second=10.382Gi/s ./external/yyjson_benchmark/data/json/poet.json
+write_cpp_yyjson_single_dataset/7_stddev               0.001 ms        0.001 ms           11 bytes_per_second=26.853Mi/s ./external/yyjson_benchmark/data/json/poet.json
+write_cpp_yyjson_single_dataset/7_cv                    0.25 %          0.25 %            11 bytes_per_second=0.25% ./external/yyjson_benchmark/data/json/poet.json
+write_cpp_yyjson_single_dataset/8_mean                 0.095 ms        0.095 ms           11 bytes_per_second=4.56101Gi/s ./external/yyjson_benchmark/data/json/twitter.json
+write_cpp_yyjson_single_dataset/8_median               0.095 ms        0.095 ms           11 bytes_per_second=4.55808Gi/s ./external/yyjson_benchmark/data/json/twitter.json
+write_cpp_yyjson_single_dataset/8_stddev               0.001 ms        0.001 ms           11 bytes_per_second=25.5068Mi/s ./external/yyjson_benchmark/data/json/twitter.json
+write_cpp_yyjson_single_dataset/8_cv                    0.55 %          0.55 %            11 bytes_per_second=0.55% ./external/yyjson_benchmark/data/json/twitter.json
+write_cpp_yyjson_single_dataset/9_mean                 0.135 ms        0.135 ms           11 bytes_per_second=3.22498Gi/s ./external/yyjson_benchmark/data/json/twitterescaped.json
+write_cpp_yyjson_single_dataset/9_median               0.135 ms        0.135 ms           11 bytes_per_second=3.22449Gi/s ./external/yyjson_benchmark/data/json/twitterescaped.json
+write_cpp_yyjson_single_dataset/9_stddev               0.000 ms        0.000 ms           11 bytes_per_second=6.70152Mi/s ./external/yyjson_benchmark/data/json/twitterescaped.json
+write_cpp_yyjson_single_dataset/9_cv                    0.20 %          0.20 %            11 bytes_per_second=0.20% ./external/yyjson_benchmark/data/json/twitterescaped.json
 write_rapidjson_dataset/0_mean                          6.55 ms         6.55 ms           11 bytes_per_second=299.704Mi/s ./external/yyjson_benchmark/data/json/canada.json
 write_rapidjson_dataset/0_median                        6.55 ms         6.55 ms           11 bytes_per_second=299.75Mi/s ./external/yyjson_benchmark/data/json/canada.json
 write_rapidjson_dataset/0_stddev                       0.003 ms        0.003 ms           11 bytes_per_second=146.522Ki/s ./external/yyjson_benchmark/data/json/canada.json
@@ -241,71 +241,71 @@ write_simdjson_dataset/9_mean                          0.337 ms        0.337 ms 
 write_simdjson_dataset/9_median                        0.337 ms        0.337 ms           11 bytes_per_second=1.29033Gi/s ./external/yyjson_benchmark/data/json/twitterescaped.json
 write_simdjson_dataset/9_stddev                        0.000 ms        0.000 ms           11 bytes_per_second=1.65734Mi/s ./external/yyjson_benchmark/data/json/twitterescaped.json
 write_simdjson_dataset/9_cv                             0.13 %          0.13 %            11 bytes_per_second=0.13% ./external/yyjson_benchmark/data/json/twitterescaped.json
-write_cpp_yyjson_array_int64_mean                       4.66 ms         4.66 ms           11
+write_cpp_yyjson_array_int64_mean                       4.67 ms         4.67 ms           11
 write_cpp_yyjson_array_int64_median                     4.66 ms         4.66 ms           11
-write_cpp_yyjson_array_int64_stddev                    0.019 ms        0.019 ms           11
-write_cpp_yyjson_array_int64_cv                         0.41 %          0.41 %            11
-write_cpp_yyjson_single_array_int64_mean                4.65 ms         4.65 ms           11
-write_cpp_yyjson_single_array_int64_median              4.65 ms         4.65 ms           11
-write_cpp_yyjson_single_array_int64_stddev             0.005 ms        0.005 ms           11
-write_cpp_yyjson_single_array_int64_cv                  0.11 %          0.11 %            11
-write_cpp_yyjson_array_double_mean                      6.37 ms         6.37 ms           11
-write_cpp_yyjson_array_double_median                    6.37 ms         6.37 ms           11
-write_cpp_yyjson_array_double_stddev                   0.015 ms        0.015 ms           11
-write_cpp_yyjson_array_double_cv                        0.23 %          0.23 %            11
+write_cpp_yyjson_array_int64_stddev                    0.026 ms        0.026 ms           11
+write_cpp_yyjson_array_int64_cv                         0.57 %          0.56 %            11
+write_cpp_yyjson_single_array_int64_mean                4.66 ms         4.66 ms           11
+write_cpp_yyjson_single_array_int64_median              4.66 ms         4.66 ms           11
+write_cpp_yyjson_single_array_int64_stddev             0.006 ms        0.006 ms           11
+write_cpp_yyjson_single_array_int64_cv                  0.13 %          0.13 %            11
+write_cpp_yyjson_array_double_mean                      6.38 ms         6.38 ms           11
+write_cpp_yyjson_array_double_median                    6.38 ms         6.38 ms           11
+write_cpp_yyjson_array_double_stddev                   0.004 ms        0.004 ms           11
+write_cpp_yyjson_array_double_cv                        0.06 %          0.06 %            11
 write_cpp_yyjson_single_array_double_mean               6.42 ms         6.42 ms           11
-write_cpp_yyjson_single_array_double_median             6.41 ms         6.41 ms           11
-write_cpp_yyjson_single_array_double_stddev            0.022 ms        0.022 ms           11
-write_cpp_yyjson_single_array_double_cv                 0.34 %          0.34 %            11
+write_cpp_yyjson_single_array_double_median             6.42 ms         6.42 ms           11
+write_cpp_yyjson_single_array_double_stddev            0.003 ms        0.003 ms           11
+write_cpp_yyjson_single_array_double_cv                 0.05 %          0.05 %            11
 write_cpp_yyjson_array_double_append_range_mean         12.7 ms         12.7 ms           11
 write_cpp_yyjson_array_double_append_range_median       12.7 ms         12.7 ms           11
-write_cpp_yyjson_array_double_append_range_stddev      0.019 ms        0.019 ms           11
-write_cpp_yyjson_array_double_append_range_cv           0.15 %          0.15 %            11
+write_cpp_yyjson_array_double_append_range_stddev      0.023 ms        0.023 ms           11
+write_cpp_yyjson_array_double_append_range_cv           0.18 %          0.18 %            11
 write_cpp_yyjson_array_double_append_mean               14.5 ms         14.5 ms           11
 write_cpp_yyjson_array_double_append_median             14.5 ms         14.5 ms           11
-write_cpp_yyjson_array_double_append_stddev            0.022 ms        0.022 ms           11
-write_cpp_yyjson_array_double_append_cv                 0.15 %          0.15 %            11
-write_cpp_yyjson_array_string_mean                      7.63 ms         7.63 ms           11
-write_cpp_yyjson_array_string_median                    7.63 ms         7.63 ms           11
-write_cpp_yyjson_array_string_stddev                   0.005 ms        0.005 ms           11
-write_cpp_yyjson_array_string_cv                        0.07 %          0.07 %            11
+write_cpp_yyjson_array_double_append_stddev            0.023 ms        0.023 ms           11
+write_cpp_yyjson_array_double_append_cv                 0.16 %          0.16 %            11
+write_cpp_yyjson_array_string_mean                      7.67 ms         7.67 ms           11
+write_cpp_yyjson_array_string_median                    7.67 ms         7.67 ms           11
+write_cpp_yyjson_array_string_stddev                   0.034 ms        0.034 ms           11
+write_cpp_yyjson_array_string_cv                        0.45 %          0.45 %            11
 write_cpp_yyjson_single_array_string_mean               7.72 ms         7.72 ms           11
 write_cpp_yyjson_single_array_string_median             7.71 ms         7.71 ms           11
-write_cpp_yyjson_single_array_string_stddev            0.020 ms        0.020 ms           11
-write_cpp_yyjson_single_array_string_cv                 0.26 %          0.26 %            11
+write_cpp_yyjson_single_array_string_stddev            0.036 ms        0.036 ms           11
+write_cpp_yyjson_single_array_string_cv                 0.47 %          0.47 %            11
 write_cpp_yyjson_array_string_copy_mean                 19.3 ms         19.3 ms           11
 write_cpp_yyjson_array_string_copy_median               19.3 ms         19.3 ms           11
 write_cpp_yyjson_array_string_copy_stddev              0.010 ms        0.010 ms           11
 write_cpp_yyjson_array_string_copy_cv                   0.05 %          0.05 %            11
-write_cpp_yyjson_array_long_string_mean                0.640 ms        0.640 ms           11
+write_cpp_yyjson_array_long_string_mean                0.639 ms        0.639 ms           11
 write_cpp_yyjson_array_long_string_median              0.639 ms        0.639 ms           11
-write_cpp_yyjson_array_long_string_stddev              0.002 ms        0.002 ms           11
-write_cpp_yyjson_array_long_string_cv                   0.36 %          0.36 %            11
-write_cpp_yyjson_array_long_string_copy_mean            1.35 ms         1.35 ms           11
-write_cpp_yyjson_array_long_string_copy_median          1.35 ms         1.35 ms           11
-write_cpp_yyjson_array_long_string_copy_stddev         0.003 ms        0.003 ms           11
-write_cpp_yyjson_array_long_string_copy_cv              0.25 %          0.25 %            11
-write_cpp_yyjson_array_tuple_mean                       45.5 ms         45.5 ms           11
-write_cpp_yyjson_array_tuple_median                     45.5 ms         45.5 ms           11
-write_cpp_yyjson_array_tuple_stddev                    0.138 ms        0.138 ms           11
-write_cpp_yyjson_array_tuple_cv                         0.30 %          0.30 %            11
-write_cpp_yyjson_array_object_reflection_mean           63.3 ms         63.3 ms           11
-write_cpp_yyjson_array_object_reflection_median         63.3 ms         63.3 ms           11
-write_cpp_yyjson_array_object_reflection_stddev        0.089 ms        0.089 ms           11
-write_cpp_yyjson_array_object_reflection_cv             0.14 %          0.14 %            11
+write_cpp_yyjson_array_long_string_stddev              0.000 ms        0.000 ms           11
+write_cpp_yyjson_array_long_string_cv                   0.06 %          0.06 %            11
+write_cpp_yyjson_array_long_string_copy_mean            1.36 ms         1.36 ms           11
+write_cpp_yyjson_array_long_string_copy_median          1.36 ms         1.36 ms           11
+write_cpp_yyjson_array_long_string_copy_stddev         0.004 ms        0.004 ms           11
+write_cpp_yyjson_array_long_string_copy_cv              0.26 %          0.26 %            11
+write_cpp_yyjson_array_tuple_mean                       45.6 ms         45.6 ms           11
+write_cpp_yyjson_array_tuple_median                     45.6 ms         45.6 ms           11
+write_cpp_yyjson_array_tuple_stddev                    0.156 ms        0.156 ms           11
+write_cpp_yyjson_array_tuple_cv                         0.34 %          0.34 %            11
+write_cpp_yyjson_array_object_reflection_mean           63.5 ms         63.5 ms           11
+write_cpp_yyjson_array_object_reflection_median         63.5 ms         63.5 ms           11
+write_cpp_yyjson_array_object_reflection_stddev        0.029 ms        0.029 ms           11
+write_cpp_yyjson_array_object_reflection_cv             0.04 %          0.05 %            11
 write_cpp_yyjson_array_object_macro_mean                63.4 ms         63.4 ms           11
 write_cpp_yyjson_array_object_macro_median              63.4 ms         63.4 ms           11
-write_cpp_yyjson_array_object_macro_stddev             0.028 ms        0.029 ms           11
-write_cpp_yyjson_array_object_macro_cv                  0.04 %          0.05 %            11
+write_cpp_yyjson_array_object_macro_stddev             0.037 ms        0.037 ms           11
+write_cpp_yyjson_array_object_macro_cv                  0.06 %          0.06 %            11
 write_cpp_yyjson_object_range_mean                      15.8 ms         15.8 ms           11
 write_cpp_yyjson_object_range_median                    15.8 ms         15.8 ms           11
-write_cpp_yyjson_object_range_stddev                   0.006 ms        0.006 ms           11
-write_cpp_yyjson_object_range_cv                        0.04 %          0.04 %            11
-write_cpp_yyjson_object_append_mean                     27.6 ms         27.5 ms           11
+write_cpp_yyjson_object_range_stddev                   0.036 ms        0.036 ms           11
+write_cpp_yyjson_object_range_cv                        0.23 %          0.23 %            11
+write_cpp_yyjson_object_append_mean                     27.6 ms         27.6 ms           11
 write_cpp_yyjson_object_append_median                   27.6 ms         27.6 ms           11
-write_cpp_yyjson_object_append_stddev                  0.056 ms        0.057 ms           11
-write_cpp_yyjson_object_append_cv                       0.20 %          0.21 %            11
-write_cpp_yyjson_object_append_string_copy_mean         32.3 ms         32.3 ms           11
-write_cpp_yyjson_object_append_string_copy_median       32.3 ms         32.3 ms           11
-write_cpp_yyjson_object_append_string_copy_stddev      0.064 ms        0.064 ms           11
-write_cpp_yyjson_object_append_string_copy_cv           0.20 %          0.20 %            11
+write_cpp_yyjson_object_append_stddev                  0.129 ms        0.129 ms           11
+write_cpp_yyjson_object_append_cv                       0.47 %          0.47 %            11
+write_cpp_yyjson_object_append_string_copy_mean         32.7 ms         32.7 ms           11
+write_cpp_yyjson_object_append_string_copy_median       32.8 ms         32.8 ms           11
+write_cpp_yyjson_object_append_string_copy_stddev      0.022 ms        0.022 ms           11
+write_cpp_yyjson_object_append_string_copy_cv           0.07 %          0.07 %            11
