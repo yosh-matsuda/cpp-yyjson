@@ -1606,16 +1606,26 @@ namespace yyjson
                 }
                 else
                 {
-                    constexpr auto child = is_items<A>::value            ? &schema_node::items
-                                           : is_value_settings<A>::value ? &schema_node::values
-                                           : is_contains<A>::value       ? &schema_node::contains
-                                                                         : &schema_node::keys;
-                    if (nodes[node].*child != 0) return fail(field_key_error::same_setting_twice);
+                    if (child_of<A>(nodes[node]) != 0) return fail(field_key_error::same_setting_twice);
                     const auto c = allocate(1);
                     if (c == 0) return;
-                    nodes[node].*child = c;
+                    child_of<A>(nodes[node]) = c;
                     add_list(c, a.settings);
                 }
+            }
+            // The index of the node of the settings `A` in `n`.  Not a pointer to a member, which MSVC does not
+            // write through in a constant expression.
+            template <typename A>
+            static constexpr std::size_t& child_of(schema_node& n) noexcept
+            {
+                if constexpr (is_items<A>::value)
+                    return n.items;
+                else if constexpr (is_value_settings<A>::value)
+                    return n.values;
+                else if constexpr (is_contains<A>::value)
+                    return n.contains;
+                else
+                    return n.keys;
             }
             constexpr void add_list(std::size_t, const setting_list<>&) {}
             template <typename A, typename... Rest>
