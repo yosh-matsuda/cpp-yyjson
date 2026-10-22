@@ -781,4 +781,4 @@ for (const auto& p : points)
 | A field that collects unknown keys | [read a document and look at its keys](#keep-the-keys-that-the-struct-does-not-have) |
 | JSON Lines and streams of values | [read line by line](#read-json-lines) |
 | `std::chrono` types, raw pointers, classes with private members | [a translator](#convert-dates-and-times), as listed in [Conversion rules](conversions.md#conversion-rules) |
-| JSON Schema output | the [constraints](validation.md#constraints) check values but produce no schema |
+| JSON Schema output | the [constraints](validation.md#constraints) check values but produce no schema; [JSON Schema keywords](validation.md#json-schema-keywords) maps a schema to types and annotations |
