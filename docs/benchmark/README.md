@@ -1,13 +1,26 @@
 # Benchmark results
 
-Full results for the benchmarks summarised in the [README](../../README.md#performance). They cover the two APIs of cpp-yyjson separately: the [DOM API](#dom-api), which reads JSON into a document and writes documents, against other JSON libraries on ten documents, and the [data binding API](#data-binding-api), which reads JSON into C++ types and writes them, against [Glaze](https://github.com/stephenberry/glaze) and [reflect-cpp](https://github.com/getml/reflect-cpp) on seven of them and on two small messages cut out of them.
+This document gives the full results of the benchmarks that the [README](../../README.md#performance) summarizes, and how they were obtained. The two APIs of cpp-yyjson are measured separately:
+
+*   The [DOM API](#dom-api), which reads JSON into a document and writes documents, against other JSON libraries on ten documents.
+*   The [data binding API](#data-binding-api), which reads JSON into C++ types and writes them, against [Glaze](https://github.com/stephenberry/glaze) and [reflect-cpp](https://github.com/getml/reflect-cpp), on seven of the documents and on two small messages cut out of them.
 
 1.  [Method](#method)
     1.  [What is compared](#what-is-compared)
 2.  [DOM API](#dom-api)
     1.  [Read performance](#read-performance)
+        1.  [Read-only fixed-length input](#read-only-fixed-length-input)
+        2.  [Caller-prepared writable/padded buffer](#caller-prepared-writablepadded-buffer)
+        3.  [Findings](#findings)
     2.  [Write performance](#write-performance)
+        1.  [Document serialization](#document-serialization)
+        2.  [Document building](#document-building)
+        3.  [Findings](#findings-1)
 3.  [Data binding API](#data-binding-api)
+    1.  [Reading into C++ types](#reading-into-c-types)
+    2.  [Writing from C++ types](#writing-from-c-types)
+    3.  [Other number types](#other-number-types)
+    4.  [Findings](#findings-2)
 
 ## Method
 
@@ -15,11 +28,24 @@ Full results for the benchmarks summarised in the [README](../../README.md#perfo
 
 **Libraries.** The vcpkg manifest (baseline `cd61e1e`) provides [yyjson](https://github.com/ibireme/yyjson) 0.12.0, [simdjson](https://github.com/simdjson/simdjson) 4.6.4, [rapidjson](https://github.com/Tencent/rapidjson/) 2025-02-26, [nlohmann-json](https://github.com/nlohmann/json) 3.12.0#2, [Glaze](https://github.com/stephenberry/glaze) 7.8.3 and [reflect-cpp](https://github.com/getml/reflect-cpp) 0.25.0. The datasets are those of [yyjson_benchmark](https://github.com/ibireme/yyjson_benchmark#json-datasets).
 
-**Build.** All benchmark executables are built with `-O3`, `-march=x86-64-v3` and link-time optimization; they share the measured code, so a flag given to one of them would show up as a difference between the libraries. cpp-yyjson uses the bundled backend with AVX2 enabled, optimized together with the benchmark. [rapidjson](https://github.com/Tencent/rapidjson/) and [nlohmann-json](https://github.com/nlohmann/json) are header-only and compiled with the same options. [simdjson](https://github.com/simdjson/simdjson) and [yyjson](https://github.com/ibireme/yyjson) are the prebuilt vcpkg libraries, built without `-march=x86-64-v3` or link-time optimization; only the inline part of `yyjson.h` is compiled into the benchmark. Glaze is header-only and needs C++23, so its rows come from an executable of its own, built with the same options. reflect-cpp reads and writes JSON through yyjson, the prebuilt vcpkg library above, so its rows also come from an executable of their own, without the bundled backend; its templates are compiled into the benchmark with the same options, and the cpp-yyjson it checks its results against is compiled on that yyjson as well. simdjson 4.6.4 exports its API-misuse checks (`SIMDJSON_DEVELOPMENT_CHECKS`) to release builds; the benchmarks remove them from the inlined code, which includes all of On Demand and the DOM serializer, except its formatting of reals.
+The bundled backend of cpp-yyjson is a fork of upstream yyjson 0.13.0, while the yyjson it is compared with is 0.12.0 from vcpkg. The differences between cpp-yyjson and yyjson therefore include the upstream changes between 0.12.0 and 0.13.0, as well as those of the fork and of the build.
 
-<a id="allocator"></a>**Allocator.** glibc's allocator is left at its defaults, except that each process frees one 16 MiB block before measuring. That raises glibc's dynamic `mmap` and trim thresholds as in any long-running program; without it, whether a fresh allocator returned its memory to the kernel after every parse depended on what the process had freed before, and some rows doubled. Blocks above 32 MiB are still mapped afresh on every allocation. For those blocks the bundled backend, and only it, calls `madvise(MADV_HUGEPAGE)` (Linux with glibc; disabled by `YYJSON_DISABLE_HUGE_PAGES`), which in Ubuntu's default `madvise` mode cuts their page faults by up to 512 times. The rows of `fgo` and `otfcc` with a fresh allocator therefore reflect this platform; elsewhere, and for the other libraries, reusing the allocator is what avoids the faults.
+**Build.** All benchmark executables are built with `-O3`, `-march=x86-64-v3` and link-time optimization. The executables share the measured code, so every library gets the same flags.
+
+*   cpp-yyjson uses the bundled backend with AVX2 enabled, optimized together with the benchmark.
+*   [rapidjson](https://github.com/Tencent/rapidjson/) and [nlohmann-json](https://github.com/nlohmann/json) are header-only and compiled with the same options.
+*   [simdjson](https://github.com/simdjson/simdjson) and [yyjson](https://github.com/ibireme/yyjson) are the prebuilt vcpkg libraries, built without `-march=x86-64-v3` or link-time optimization. Only the inline part of `yyjson.h` is compiled into the benchmark.
+*   Glaze is header-only and needs C++23, so its rows come from an executable of its own, built with the same options.
+*   reflect-cpp reads and writes JSON through the prebuilt vcpkg yyjson, so its rows also come from an executable of their own, without the bundled backend. Its templates are compiled with the same options. The cpp-yyjson that it checks its results against is built on that yyjson as well.
+*   simdjson 4.6.4 enables its API-misuse checks (`SIMDJSON_DEVELOPMENT_CHECKS`) in the code that it inlines into release builds. The benchmarks turn them off in that code, which is all of On Demand and the DOM serializer except its formatting of reals.
+
+<a id="allocator"></a>**Allocator.** glibc's allocator is left at its defaults, except that each process frees one 16 MiB block before measuring. This raises glibc's dynamic `mmap` and trim thresholds, as in any long-running program. Without it, whether a fresh allocator returns its memory to the kernel after every parse would depend on what the process had freed before, and some rows could take twice as long.
+
+Blocks of 32 MiB or more are still mapped afresh on every allocation. For those blocks, the bundled backend, and only it, calls `madvise(MADV_HUGEPAGE)`. This applies on Linux with glibc, unless the CMake option `CPPYYJSON_DISABLE_HUGE_PAGES=ON` turns it off. In Ubuntu's default `madvise` mode, it reduces the page faults of those blocks by up to 512 times. The rows of `fgo` and `otfcc` with a fresh allocator therefore reflect this platform. Elsewhere, and for the other libraries, reusing the allocator is what avoids the faults.
 
 The benchmark programs are in [`test`](../../test), and [`run_benchmarks.sh`](run_benchmarks.sh) reproduces the results and the charts. The raw logs are [cpp_yyjson_bench_read.log](../../test/cpp_yyjson_bench_read.log), [yyjson_bench_read.log](../../test/yyjson_bench_read.log), [cpp_yyjson_bench_write.log](../../test/cpp_yyjson_bench_write.log), [yyjson_bench_write.log](../../test/yyjson_bench_write.log), [cpp_yyjson_bench_typed.log](../../test/cpp_yyjson_bench_typed.log), [glaze_bench_typed.log](../../test/glaze_bench_typed.log) and [reflectcpp_bench_typed.log](../../test/reflectcpp_bench_typed.log). All times are in `ms`, except those of the data binding API, which are in `µs`.
+
+**Ratios.** A comparison with another library is given as how many times faster cpp-yyjson is: 1.25x faster means 80% of the time. A comparison between two ways of using cpp-yyjson, such as reusing an object or not, is given as the percentage of the time or the percentage saved.
 
 ### What is compared
 
@@ -33,7 +59,16 @@ Glaze also has a generic JSON value, `glz::generic`, which would qualify for the
 
 ## DOM API
 
-The [README](../../README.md#dom-api-vs-other-libraries) gives the slowest and the fastest of the ten documents. Weighted by the time each document takes, which lets the 48.8 MB `fgo` and the 66.4 MB `otfcc` decide the total, cpp-yyjson reads 1.70x faster than [yyjson](https://github.com/ibireme/yyjson), 2.16x faster than [simdjson](https://github.com/simdjson/simdjson) DOM, 2.30x faster than [rapidjson](https://github.com/Tencent/rapidjson/) and 9.59x faster than [nlohmann-json](https://github.com/nlohmann/json), and writes 1.60x faster than [yyjson](https://github.com/ibireme/yyjson), 4.26x faster than [rapidjson](https://github.com/Tencent/rapidjson/), 4.58x faster than [simdjson](https://github.com/simdjson/simdjson) and 7.25x faster than [nlohmann-json](https://github.com/nlohmann/json). Much of that weight is the [huge-page advice](#allocator) of the bundled backend, which only the two large documents receive; with the parser and allocator reused on both sides, cpp-yyjson is 1.16x ahead of [simdjson](https://github.com/simdjson/simdjson) On Demand on a prepared padded buffer, against 1.31x with them fresh.
+The [README](../../README.md#dom-api-vs-other-libraries) table gives the smallest and the largest speed-up over the ten documents. Its read row uses the [read-only input](#read-only-fixed-length-input) with a new parser and allocator for each parse, and compares with simdjson On Demand; its write row uses a new output buffer for each write.
+
+Weighted by the time that each document takes, the 48.8 MB `fgo` and the 66.4 MB `otfcc` decide the total. Weighted so, cpp-yyjson is faster than the other libraries by these factors:
+
+| | yyjson | simdjson | rapidjson | nlohmann-json |
+| --- | --- | --- | --- | --- |
+| Read | 1.70x | 2.16x (DOM) | 2.30x | 9.59x |
+| Write | 1.60x | 4.58x | 4.26x | 7.25x |
+
+Much of this weight comes from the [huge-page advice](#allocator) of the bundled backend, which only the two large documents receive. Weighted in the same way, on a prepared padded buffer, cpp-yyjson is 1.31x faster than [simdjson](https://github.com/simdjson/simdjson) On Demand with a new parser and allocator, and 1.16x faster with both reused.
 
 ### Read performance
 
@@ -77,11 +112,21 @@ Each chart is further split into a new parser/allocator per parse and a reused o
 
 #### Findings
 
-**Against [yyjson](https://github.com/ibireme/yyjson).** cpp-yyjson is faster on every document, by an amount that depends on the content: it takes 56% and 66% of the time on the string-heavy `gsoc-2018` and `github_events`, 73% and 78% on the indented `citm_catalog` and `twitter`, and 89% on the number-heavy `canada`. On `fgo` and `otfcc` it takes 56% and 60%, mostly because of the huge pages; with the allocator reused on both sides it takes 91% and 96%. Both run the same parser, built differently: measured separately, the SIMD string paths account for the gains on the string-heavy documents, skipping predicted indentation for those on the indented ones, and link-time optimization for a few percent everywhere. The C++ interface itself costs nothing measurable.
+**Against [yyjson](https://github.com/ibireme/yyjson).** cpp-yyjson is faster on every document, by an amount that depends on the content (read-only input, new parser and allocator):
 
-**Against [simdjson](https://github.com/simdjson/simdjson).** On a prepared buffer cpp-yyjson is ahead of On Demand on all ten documents, by 6% on `citm_catalog` to 51% on `twitterescaped`, and by 6% to 50% with the parser and allocator reused. The margin on `fgo` and `otfcc` is 40% and 27% fresh against 12% and 18% reused, the difference being the huge pages. simdjson is a prebuilt library too, but selects its SIMD kernels at run time and so uses the full instruction set of this machine.
+| Documents | Content | Faster by |
+| --- | --- | --- |
+| `gsoc-2018`, `github_events` | many strings | 1.79x, 1.51x |
+| `citm_catalog`, `twitter`, `twitterescaped` | indented | 1.36x, 1.29x, 1.21x |
+| `canada` | numbers | 1.13x |
+| `lottie`, `poet` | | 1.05x, 1.05x |
+| `fgo`, `otfcc` | 48.8 MB and 66.4 MB | 1.80x, 1.68x; 1.10x, 1.04x with the allocator reused on both sides |
 
-**Against [nlohmann-json](https://github.com/nlohmann/json).** cpp-yyjson takes 4% to 11% of the time, the least on the string-heavy `github_events` and the most on `otfcc`. nlohmann-json allocates every value, string and container separately.
+The large margins on `fgo` and `otfcc` with a fresh allocator come mostly from the huge pages. Both libraries run the same parser, built differently. Measured separately, the SIMD string paths account for the gains on the string-heavy documents, skipping predicted indentation for those on the indented ones, and link-time optimization for a few percent everywhere. The C++ interface itself costs nothing measurable.
+
+**Against [simdjson](https://github.com/simdjson/simdjson).** On a prepared buffer, cpp-yyjson is faster than On Demand on all ten documents: from 1.06x on `citm_catalog` to 1.51x on `twitterescaped`, and 1.06x to 1.50x with the parser and allocator reused. On `fgo` and `otfcc` it is 1.40x and 1.27x faster with a new parser and allocator, against 1.12x and 1.18x reused; the difference is the huge pages. simdjson is a prebuilt library too, but selects its SIMD kernels at run time and so uses the full instruction set of this machine.
+
+**Against [nlohmann-json](https://github.com/nlohmann/json).** cpp-yyjson is 8.74x to 23.6x faster: the most on the string-heavy `github_events` and the least on `otfcc`. nlohmann-json allocates every value, string and container separately.
 
 **Reusing the allocator** saves a fifth on `fgo` and `otfcc` (55.3 to 45.3 ms and 122.0 to 99.8 ms) and nothing on the eight smaller documents, because only the large documents need blocks that glibc maps afresh on every parse.
 
@@ -116,7 +161,7 @@ Each chart is split into a new output buffer per write, which is what `dump()`-s
 
 #### Document building
 
-The cpp-yyjson rows are labelled by the API used:
+The cpp-yyjson rows are labeled by the API used:
 
 *cpp-yyjson*
 : A new document for each iteration.
@@ -147,9 +192,17 @@ The `*_string` and `*_string_copy` charts differ in whether the strings are refe
 
 #### Findings
 
-**Serialization.** cpp-yyjson writes every document in 17% to 40% of the time of [simdjson](https://github.com/simdjson/simdjson), 10% to 31% of that of [rapidjson](https://github.com/Tencent/rapidjson/) and 3% to 27% of that of [nlohmann-json](https://github.com/nlohmann/json), the widest margins on the documents with the most text. Against [yyjson](https://github.com/ibireme/yyjson) it takes 40% on `gsoc-2018`, which is dominated by long strings and gains from the SIMD string writer, 62% and 74% on the string-heavy `github_events` and `poet`, 75% on the number-only `canada`, which gains from the [xjb64](https://github.com/xjb714/xjb) double writer of the bundled backend, and 75% to 86% on the four others. `fgo` and `otfcc`, at 57% and 65%, gain mostly from the huge pages of their output buffers, and reusing the output buffer saves 12% and 9% on them (22.4 to 19.8 ms and 45.0 to 40.8 ms) and nothing elsewhere.
+**Serialization.** cpp-yyjson writes every document 2.49x to 5.98x faster than [simdjson](https://github.com/simdjson/simdjson), 3.20x to 10.0x faster than [rapidjson](https://github.com/Tencent/rapidjson/) and 3.76x to 33.9x faster than [nlohmann-json](https://github.com/nlohmann/json), with the widest margins on the documents with the most text. Against [yyjson](https://github.com/ibireme/yyjson):
 
-**Building.** cpp-yyjson is level with the C API wherever both do the same work, such as `array_double_append`, which is within 1%. Converting a whole range in one call is 15% faster on `array_string` and 2% on `array_int64`, because the elements are counted first and written into one block instead of appended one at a time. `array_double` is 15% faster, most of it from the double writer of the bundled backend. The long-string rows are 75% and 53% faster because the bundled backend copies strings in SIMD chunks. `array_tuple`, `array_object`, `object_range`, `object_append` and `object_append_string_copy` build documents with blocks over 32 MiB and are 9% to 48% faster, mostly from the huge pages, so they no longer isolate the cost of the interface.
+*   `gsoc-2018`, dominated by long strings, is 2.52x faster, from the SIMD string writer.
+*   The string-heavy `github_events` and `poet` are 1.60x and 1.35x faster.
+*   The number-only `canada` is 1.34x faster, from the [xjb64](https://github.com/xjb714/xjb) double writer of the bundled backend.
+*   The four others are 1.16x to 1.33x faster.
+*   `fgo` and `otfcc` are 1.76x and 1.54x faster, mostly from the huge pages of their output buffers.
+
+Reusing the output buffer saves 12% and 9% on `fgo` and `otfcc` (22.4 to 19.8 ms and 45.0 to 40.8 ms), and nothing on the other documents.
+
+**Building.** cpp-yyjson is level with the C API wherever both do the same work, such as `array_double_append`, which is within 1%. Converting a whole range in one call is 15% faster on `array_string` and 2% on `array_int64`, because the elements are counted first and written into one block instead of appended one at a time. `array_double` is 15% faster, most of it from the double writer of the bundled backend. The long-string rows are 75% and 53% faster because the bundled backend copies strings in SIMD chunks. `array_tuple`, `array_object`, `object_range`, `object_append` and `object_append_string_copy` build documents with blocks of 32 MiB or more and are 9% to 48% faster, mostly from the huge pages. These rows therefore do not isolate the cost of the interface.
 
 **Choice of API.** Copying strings is a visible cost: `array_string_copy` takes 2.5 times as long as `array_string`, so referencing the strings is worthwhile when their lifetime allows it. Reflection costs no more than `VISITABLE_STRUCT` registration. Reusing the allocator makes no difference here, because these documents are built once per iteration and the allocator is not the bottleneck.
 
@@ -159,13 +212,13 @@ cpp-yyjson, [Glaze](https://github.com/stephenberry/glaze) and [reflect-cpp](htt
 
 Two options of Glaze are changed from their defaults to make the work equal. Reading sets `error_on_unknown_keys = false`, because cpp-yyjson ignores a key that the struct does not have, and writing sets `escape_control_characters = true`, because cpp-yyjson escapes control characters in strings, which JSON requires.
 
-The rows are labelled by the API used:
+The rows are labeled by the API used:
 
 *cpp-yyjson read&lt;T&gt;* / *cpp-yyjson write(t)*
 : The data binding API, which reads into a new object and writes into a new string.
 
 *cpp-yyjson DOM: read + cast&lt;T&gt;* / *cpp-yyjson DOM: value(t).write()*
-: The DOM API, which reads a document and casts it, or builds a document from the object and writes it. This is how cpp-yyjson converted C++ types before the data binding API.
+: The DOM API, which reads a document and casts it, or builds a document from the object and writes it.
 
 *cpp-yyjson read_into* / *cpp-yyjson merge_into*
 : Reading into the object of the previous iteration, which reuses the capacity of its strings and vectors. `read_into` resets what the document does not have, and `merge_into` keeps it.
@@ -220,7 +273,7 @@ The rows are labelled by the API used:
 
 **Messages.** A call on a message takes about a microsecond: `read<T>` reads `github_event` in 0.69 µs and `twitter_status` in 1.20 µs, against 0.95 µs and 1.81 µs for `glz::read`, and `write(t)` writes them in 0.23 µs and 0.53 µs, against 0.32 µs and 0.65 µs for `glz::write`.
 
-**Against the DOM API.** The data binding API takes 70% to 94% of the time of reading a document and casting it, and 29% to 85% of the time of building a document and writing it. Reading the document alone, without the cast, is faster than `read<T>` on every document and message except `canada`, because `read<T>` also allocates the strings and vectors of the result; `read_into`, which reuses them, is as fast as reading the document alone or faster on `canada`, `citm_catalog`, `poet` and `gsoc-2018`. The DOM rows depend on how the compiler lays out its code more than the other rows do. Adding the `twitter_status` message to the executable, with no change to cpp-yyjson, made the DOM read rows of `twitter` and `twitterescaped` 3.5% slower. Changes elsewhere in cpp-yyjson and its bundled backend made the DOM write rows up to 14% slower between two measurements, although the function that writes the document compiled to the same instructions and only its address had moved.
+**Against the DOM API.** The data binding API takes 70% to 94% of the time of reading a document and casting it, and 29% to 85% of the time of building a document and writing it. Reading the document alone, without the cast, is faster than `read<T>` on every document and message except `canada`, because `read<T>` also allocates the strings and vectors of the result; `read_into`, which reuses them, is as fast as reading the document alone or faster on `canada`, `citm_catalog`, `poet` and `gsoc-2018`. The DOM rows depend on how the compiler lays out the code more than the other rows do. A change elsewhere in the executable can move them by several percent, and the DOM write rows by up to 14%, even when the function that they measure compiles to the same instructions at another address. Read differences of a few percent in the DOM rows as noise.
 
 **Other number types.** These are the only documents on which Glaze reads faster than the data binding API. Into `float`, `glz::read` is 3% faster than `read<T>` and a reused Glaze object 9% faster than `merge_into`. Into `std::variant<std::int64_t, double>`, `read<T>` is still 1.06x faster than `glz::read`, but a reused Glaze object is 4% faster than `merge_into`. Writing stays faster: `write(t)` writes the floats 1.47x and the variants 1.12x faster than `glz::write`. Reading the rounded reals into `std::int64_t` takes `read<T>` 90% of the time of `read(json).cast<T>()`, and writing the integers takes `write(t)` 52% of the time of `value(t).write()`.
 
