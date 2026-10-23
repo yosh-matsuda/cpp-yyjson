@@ -17,7 +17,7 @@ The settings of a field and of a struct go into `yyjson::annotations<T>` or on t
 A read checks the JSON at three levels:
 
 *   The text, which has to be JSON as [RFC 8259](https://www.rfc-editor.org/rfc/rfc8259) defines it, or as the `ReadFlag`s relax it. Text that is not throws `yyjson::read_error`. An object may have a key more than once: a document keeps every member in order, and `operator[]`, `find` and `contains` of an object find the first.
-*   The shape, which has to convert to the C++ type by the [conversion rules](conversions.md#conversion-rules). [`yyjson::strict`](#strict-reading), `yyjson::required`, `yyjson::additional_properties(false)` and the [tags](conversions.md#tagged-variants) of variants add rules for the keys of objects. A value that breaks them throws `yyjson::bad_cast`.
+*   The shape, which has to convert to the C++ type by the [conversion rules](conversions.md#conversion-rules). [`yyjson::strict`](#strict-reading), `yyjson::required`, `yyjson::additional_properties(false)`, `yyjson::dependent_required` and the [tags](conversions.md#tagged-variants) of variants add rules for the keys of objects. A value that breaks them throws `yyjson::bad_cast`.
 *   The value of a field, which has to satisfy the [constraints](#constraints) of the field. They are checked on the C++ value that the field gets, and a value that breaks them throws `yyjson::bad_cast`.
 
 `yyjson::read<T>`, `read_into` and `merge_into` check all three as they read. `cast<T>` checks the last two on a document.
@@ -157,6 +157,28 @@ yyjson::read<Request>(R"({"method":"GET"})", yyjson::strict);  // -> Request{"GE
 *   `yyjson::additional_properties(false)` makes the object of a struct reject a key that names no field of it. With `true`, the object may have such keys under `yyjson::strict` as well, which ignores them; use it for a struct that reads only some of the keys of a larger object.
 *   `yyjson::required` and `yyjson::additional_properties` are named after the keywords of [JSON Schema](https://json-schema.org/understanding-json-schema/reference/object) that say the same, and `yyjson::optional_key` is specific to cpp-yyjson. With [C++26 annotations](conversions.md#c26-annotations), write `[[=yyjson::required]]` and `[[=yyjson::optional_key]]` on the member and `struct [[=yyjson::additional_properties(false)]] Request` on the struct.
 
+`yyjson::dependent_required("member", {"other", ...})` of a struct requires the keys of the fields `other...` in an object that has the key of the field `member`, as the keyword `dependentRequired` of JSON Schema does:
+
+```cpp
+struct Payment
+{
+    std::optional<std::string> card;
+    std::string address;
+    std::string zip;
+};
+template <>
+inline constexpr auto yyjson::annotations<Payment> =
+    yyjson::annotate(yyjson::dependent_required("card", {"address", "zip"}));
+
+yyjson::read<Payment>(R"({"address":"x"})");              // -> Payment{std::nullopt, "x", ""}
+yyjson::read<Payment>(R"({"card":"1234","address":"x"})");  // throws: Payment is not constructible from JSON with the key "card" without the key "zip" (line 1, column 1, pos 0)
+```
+
+*   The fields are named by their members, as in `yyjson::field`, and the object is checked for their keys, which `yyjson::rename` may change. A key whose value is `null` is a key that the object has.
+*   It is checked with or without `yyjson::strict`, except in the objects that `merge_into` merges into. A struct may have it for several members.
+*   A member that the struct does not have, and a [skipped field](conversions.md#skipped-fields), are compile errors. With [C++26 annotations](conversions.md#c26-annotations), write `struct [[=yyjson::dependent_required("card", {"address", "zip"})]] Payment`.
+*   The check adds no cost to an object that has the keys of all the fields in their order, as an object that `yyjson::write` wrote does.
+
 ## Constraints
 
 A field can restrict the values that it reads, as a schema would: give `yyjson::field` the constraints of the field, or write them on the member as [C++26 annotations](conversions.md#c26-annotations). Reading a value that does not satisfy them throws `yyjson::bad_cast`, with the [path and the position](#conversion-errors) of the value:
@@ -195,6 +217,8 @@ Each constraint applies to a field of the type in the second column. A value tha
 
 | Constraint | The field | Rejects a value | Message |
 | --- | --- | --- | --- |
+| `yyjson::const_value(v)` | a string, a number or a `bool` | not equal to `v` | `is not equal to the constant v` |
+| `yyjson::enum_values(v...)` | a string, a number or a `bool` | equal to none of `v...` | `is not one of v...` |
 | `yyjson::minimum(m)` | a number | less than `m` | `is less than the minimum m` |
 | `yyjson::maximum(m)` | a number | greater than `m` | `is greater than the maximum m` |
 | `yyjson::exclusive_minimum(m)` | a number | `m` or less | `is not greater than the exclusive minimum m` |
@@ -203,9 +227,31 @@ Each constraint applies to a field of the type in the second column. A value tha
 | `yyjson::min_length(n)` | a string | of fewer than `n` code points | `is shorter than the minimum length n` |
 | `yyjson::max_length(n)` | a string | of more than `n` code points | `is longer than the maximum length n` |
 | `yyjson::pattern("regex")` | a string | in which the regular expression matches nowhere | `does not match the pattern "regex"` |
+| `yyjson::format("name")` | a string | that does not have the [format](#formats) `name` | `does not have the format "name"` |
 | `yyjson::min_items(n)` | a range or a map | with fewer than `n` elements | `has fewer items than the minimum n` |
 | `yyjson::max_items(n)` | a range or a map | with more than `n` elements | `has more items than the maximum n` |
 | `yyjson::validate<f>` | any | for which `f(value)` returns `false` | `is rejected by yyjson::validate` |
+
+```cpp
+struct Order
+{
+    int version = 2;
+    std::string unit;
+    std::string created;
+};
+template <>
+inline constexpr auto yyjson::annotations<Order> =
+    yyjson::annotate(yyjson::field("version", yyjson::const_value(2)),
+                     yyjson::field("unit", yyjson::enum_values("mm", "cm", "m")),
+                     yyjson::field("created", yyjson::format("date-time")));
+
+yyjson::read<Order>(R"({"version":3})");
+// the value of the key "version" of Order is not equal to the constant 2 at /version (line 1, column 12, pos 11)
+yyjson::read<Order>(R"({"unit":"km"})");
+// the value of the key "unit" of Order is not one of "mm", "cm", "m" at /unit (line 1, column 9, pos 8)
+yyjson::read<Order>(R"({"created":"2024-05-01"})");
+// the value of the key "created" of Order does not have the format "date-time" at /created (line 1, column 12, pos 11)
+```
 
 ### Constraints of elements
 
@@ -285,6 +331,7 @@ yyjson::read<Job>(R"({"env":{"PATH":"/bin","home":"/root"}})");
     *   The value of the field is compared with a bound exactly. `yyjson::maximum(9007199254740992.0)` rejects the `std::int64_t` `9007199254740993`, although the conversion to `double` would round it to the bound.
     *   A real bound is kept as a `double`.
     *   NaN is in no bounds.
+*   `const_value` and `enum_values` compare the value of the field after the conversion, as a value of the type of the field, and take values of its kind: strings for a string field, numbers for a number field, and `true` or `false` for a `bool` field. An integer field is compared with a number exactly, as with a bound, so `yyjson::enum_values(1, 2.0)` accepts `1` and `2`. A floating-point field is compared with the number converted to its type, so a `float` field accepts `0.1` under `yyjson::const_value(0.1)`. A field may have both, and the value must then satisfy both. An [enumeration](conversions.md#enumerations) is checked by the names or the values of its enumerators already, and takes neither.
 *   `multiple_of` takes a number greater than `0`. An integer value is checked against an integer `m` exactly. Otherwise the quotient must be an integer in floating point, as JSON Schema validators check it: `0.75` is a multiple of `0.25`, but `0.3` is not one of `0.1`, whose quotient is `2.9999999999999996`.
 *   The length of a string is counted in Unicode code points, as JSON Schema counts it, so `"日本語"` has the length 3. It assumes valid UTF-8, which `yyjson::read` checks unless `ReadFlag::AllowInvalidUnicode` is given.
 *   A constraint is checked when its key is read into the field: by `yyjson::read<T>`, `read_into`, `merge_into` and `cast<T>`, with or without [`yyjson::strict`](#strict-reading). `merge_into` checks a struct field that it merges into by its own constraints. A field that gets no value from the JSON is not checked, and keeps a value that the constraints would reject:
@@ -295,14 +342,14 @@ yyjson::read<Job>(R"({"env":{"PATH":"/bin","home":"/root"}})");
 *   `f` of `yyjson::validate<f>` may be called more than once for the same value. When `yyjson::read<T>` rejects the text, it reads the text again through the DOM to tell the error. An exception that `f` throws propagates out of the read.
 *   An untagged `std::variant` tries its alternatives in turn. A value that one alternative rejects by a constraint may therefore be read by a later one: without `yyjson::strict`, a struct that ignores unknown keys accepts almost any object. When no alternative accepts the value, the `yyjson::bad_cast` names the variant, such as `std::variant<Circle, Rect> is not constructible from JSON at /shape`, rather than the constraint that each alternative failed. Tag the variant with [`yyjson::internal_tag` or `yyjson::adjacent_tag`](conversions.md#tagged-variants) to read only the alternative that the tag names, and to have its error.
 *   The following fail to compile with a `static_assert`:
-    *   a constraint on a field of a type that it does not apply to, such as `minimum` on a string, `yyjson::items` on a string or on a range of key-value pairs, `yyjson::additional_properties(settings...)` on a range that is neither a map nor a range of key-value pairs, `yyjson::unique_items` on a set or a map, `yyjson::prefix_items` on a set or a map, `yyjson::contains` on a map read from a JSON object, or `yyjson::property_names` on a range that is neither a map nor a range of key-value pairs read from a JSON object;
+    *   a constraint on a field of a type that it does not apply to, such as `minimum` on a string, `yyjson::format` on a number, `yyjson::const_value` or `yyjson::enum_values` on a type other than a string, a number and a `bool`, or with a value of another kind, `yyjson::items` on a string or on a range of key-value pairs, `yyjson::additional_properties(settings...)` on a range that is neither a map nor a range of key-value pairs, `yyjson::unique_items` on a set or a map, `yyjson::prefix_items` on a set or a map, `yyjson::contains` on a map read from a JSON object, or `yyjson::property_names` on a range that is neither a map nor a range of key-value pairs read from a JSON object;
     *   a setting of a key, such as `yyjson::rename`, in `yyjson::items`, a setting given twice at one level of it, and `yyjson::items`, `yyjson::additional_properties`, `yyjson::contains` or `yyjson::property_names` without a setting;
     *   `yyjson::min_contains` or `yyjson::max_contains` without `yyjson::contains`, a setting other than a constraint in `yyjson::property_names`, more positions of `yyjson::prefix_items` than a tuple has elements or than 16, and more than 8 groups of settings in a position of it;
     *   a `validate<f>` whose `f` takes another type;
     *   a bound of NaN, or a `long double` bound that a `double` would round;
     *   a `multiple_of` of `0` or less;
     *   a constraint, `yyjson::items` or `yyjson::additional_properties(settings...)` on a [skipped field](conversions.md#skipped-fields), or on the field of an [adjacent tag](conversions.md#tagged-variants);
-    *   a `pattern` without a specialization of `yyjson::pattern_matcher<>`, described below.
+    *   a `pattern` without a specialization of `yyjson::pattern_matcher<>`, described below, and a `format` of a name that the library does not check without a specialization of `yyjson::format_checker<>`, described in [Formats](#formats).
 
 ### Pattern matcher
 
@@ -341,6 +388,56 @@ inline constexpr auto yyjson::annotations<Product> =
 yyjson::read<Product>(R"({"code":"abc"})");  // throws: the value of the key "code" of Product does not match the pattern "^[A-Z]{3}-[0-9]{4}$" at /code (line 1, column 9, pos 8)
 ```
 
+### Formats
+
+`yyjson::format("name")` checks a string field by the grammar of the format `name`. The library checks these formats, by the RFCs that JSON Schema names for them:
+
+| Format | Grammar | Accepts |
+| --- | --- | --- |
+| `date-time` | RFC 3339 `date-time` | `2024-05-01T12:00:00Z`, `2024-05-01t12:00:00.5+09:00` |
+| `date` | RFC 3339 `full-date` | `2024-02-29`, a day that the month has |
+| `time` | RFC 3339 `full-time` | `12:00:00Z`, `23:59:60Z`; an offset or `Z` is required, and a leap second is 23:59:60 in UTC |
+| `duration` | RFC 3339 Appendix A | `P1Y2M`, `PT1H30M`, `P2W` |
+| `email` | RFC 5321 `Mailbox` | `ann@example.com`, `"a b"@example.com`, `ann@[192.0.2.1]` |
+| `hostname` | RFC 1123, with the A-labels of RFC 5891 | `example.com`, `xn--bcher-kva.example` |
+| `ipv4` | RFC 791 dotted decimal | `192.0.2.1`, without leading zeros |
+| `ipv6` | RFC 4291 | `2001:db8::1`, `::ffff:192.0.2.1`, without a zone |
+| `uri` | RFC 3986 `URI` | `https://example.com/a?b#c`, with a scheme |
+| `uri-reference` | RFC 3986 `URI-reference` | `../a`, `#frag`, a URI |
+| `uri-template` | RFC 6570 | `https://example.com/{id}{?q*}` |
+| `uuid` | RFC 9562 | `123e4567-e89b-12d3-a456-426614174000`, of any version |
+| `json-pointer` | RFC 6901 | `/a/b~1c`, the empty string |
+| `relative-json-pointer` | draft-handrews-relative-json-pointer-01 | `0`, `1/a`, `2#` |
+
+*   The checks take ASCII text and reject any other character, as the formats that are not `idn-email`, `idn-hostname` and `iri` do. `uri-template` is the exception: RFC 6570 lets the literals outside the expressions have characters other than ASCII.
+*   `hostname` checks that a label of the form `xn--...` is valid Punycode that decodes to a label with a character other than ASCII. It does not check the tables of the characters of IDNA2008, such as the characters that are not allowed and the contextual rules, which a few validators check.
+*   JSON Schema 2020-12 treats `format` as an annotation by default, which a validator does not check unless it is told to. `yyjson::format` always checks it, as the "format-assertion" vocabulary does.
+
+Another format, such as `idn-email`, `iri` or one of the program's own, is checked by the program. Specialize `yyjson::format_checker<>` before the first read of a struct that has one, as [`yyjson::pattern_matcher<>`](#pattern-matcher) is specialized: with a constructor from the `std::string_view` of the name of the format, and a `const` call operator that takes the `std::string_view` of a string and returns whether it has the format. Each field constructs its checker once, on its first read, and shares it with every read on every thread. The names in the table above are checked by the library, also when the program specializes `yyjson::format_checker<>`.
+
+```cpp
+template <>
+struct yyjson::format_checker<>
+{
+    std::string_view name;
+    explicit format_checker(std::string_view name) : name(name) {}
+    bool operator()(std::string_view s) const
+    {
+        if (name == "sku") return s.size() == 8 && std::ranges::all_of(s, [](char c) { return c >= '0' && c <= '9'; });
+        return false;
+    }
+};
+
+struct Item
+{
+    std::string sku;
+};
+template <>
+inline constexpr auto yyjson::annotations<Item> = yyjson::annotate(yyjson::field("sku", yyjson::format("sku")));
+
+yyjson::read<Item>(R"({"sku":"abc"})");  // throws: the value of the key "sku" of Item does not have the format "sku" at /sku (line 1, column 8, pos 7)
+```
+
 ## JSON Schema keywords
 
 The tables below list the keywords of [JSON Schema 2020-12](https://json-schema.org/draft/2020-12) that check a value, and `default`, with what reads the same JSON in cpp-yyjson. A keyword is a constraint of the same name, a C++ type, a rule of the keys of a struct, or none. The library neither reads nor writes a schema: the tables are for translating a schema into C++ types and annotations by hand.
@@ -358,9 +455,9 @@ The tables below list the keywords of [JSON Schema 2020-12](https://json-schema.
 | `type: "array"` | a range, a set, `std::array` or a tuple | |
 | `type: "object"` | a struct, a map or another [range of key-value pairs](conversions.md#conversion-rules) | |
 | `type: [T, "null"]` | `std::optional<T>`, or `std::variant<std::monostate, T>` | a field of `std::optional` may also leave out its key, and under `yyjson::strict` rejects `null` unless `T` reads it, as described in [`null` in a `std::optional`](#null-in-a-stdoptional). |
-| `enum` | an [enumeration](conversions.md#enumerations), of names or of integers, or `yyjson::validate<f>` | |
-| `const` | `yyjson::validate<f>` | |
-| `format` | none | check the string with `yyjson::validate<f>`, or read it into a type of its own with a [translator](conversions.md#translator). |
+| `enum` | `yyjson::enum_values(v...)`, or an [enumeration](conversions.md#enumerations), of names or of integers | `yyjson::enum_values` takes strings, numbers and booleans, and compares them with the value after the conversion to the type of the field, as described in [How constraints are checked](#how-constraints-are-checked). |
+| `const` | `yyjson::const_value(v)` | as `enum`. |
+| `format` | `yyjson::format("name")` | always checked, as the vocabulary "format-assertion" does. The library checks the [formats](#formats) other than `idn-email`, `idn-hostname`, `iri`, `iri-reference` and `regex`, which the program checks with `yyjson::format_checker<>`. `hostname` does not check the tables of the characters of IDNA2008. |
 | `contentEncoding`, `contentMediaType`, `contentSchema` | none | decode the string with a [translator](conversions.md#translator). |
 
 ### Numbers and strings
@@ -395,7 +492,8 @@ The tables below list the keywords of [JSON Schema 2020-12](https://json-schema.
 | `propertyNames` | `yyjson::property_names(settings...)` on a map | |
 | `minProperties`, `maxProperties` | `yyjson::min_items(n)`, `yyjson::max_items(n)` on a map | |
 | `patternProperties` | none | `yyjson::property_names` and `yyjson::additional_properties(settings...)` constrain all the keys and all the values of a map alike. |
-| `dependentRequired`, `dependentSchemas` | none | `yyjson::validate<f>` on a struct field. |
+| `dependentRequired` | `yyjson::dependent_required("member", {"other", ...})` on a struct, described in [Annotations of keys](#annotations-of-keys) | the fields are named by their members. `merge_into` does not check it. |
+| `dependentSchemas` | none | `yyjson::validate<f>` on a struct field. |
 | `unevaluatedProperties` | none | `yyjson::additional_properties(false)` or [`yyjson::strict`](#strict-reading). |
 
 ### Combining schemas

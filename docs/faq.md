@@ -83,7 +83,7 @@ Yes, as long as the threads do not share what they modify:
 *   Several threads may read one document at once. Give each thread its own copy of the `yyjson::reader::value`; a copy is cheap and shares the document.
 *   A mutable document and an allocator must not be used by one thread while another modifies or allocates through it. yyjson's allocators are not thread-safe; give each thread its own.
 *   `yyjson::strict` holds for the thread that makes the call: a read in another thread that a caster starts is not strict.
-*   The [`yyjson::pattern_matcher`](validation.md#constraints) of a field is constructed once and shared by every thread, so its call operator has to be safe to call concurrently.
+*   The [`yyjson::pattern_matcher`](validation.md#pattern-matcher) and the [`yyjson::format_checker`](validation.md#formats) of a field are constructed once and shared by every thread, so their call operators have to be safe to call concurrently.
 
 ### Which values own the document, and which only refer to it?
 
