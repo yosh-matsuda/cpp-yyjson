@@ -2651,6 +2651,16 @@ namespace yyjson
             bool escaped;
         };
 
+        // What `scan_string` returns in two registers under the System V ABI: a struct of three members is
+        // returned through the stack, which gives every caller a stack frame.  The end is before `cur_`.
+        // `escaped` is a whole word: GCC assembles a `bool` with padding in memory and loads it back wider
+        // than it stored it, which stalls the load.
+        struct scanned_string_start
+        {
+            const char* begin;
+            std::uintptr_t escaped;
+        };
+
         // The characters of a block of W bytes that follow an odd run of the backslashes in `bs`, and in
         // `next` whether the character after the block is one.  A run that starts at an even position has odd
         // length exactly when the character after it is at an odd position, and adding the starts of the
@@ -2670,7 +2680,13 @@ namespace yyjson
 
         // Finds the end of the string that starts at `cur_`, checks its characters other than the escapes,
         // which `unescape` checks for every reader of an escaped string, and moves past it.
-        CPPYYJSON_NOINLINE scanned_string scan_string()
+        CPPYYJSON_ALWAYS_INLINE scanned_string scan_string()
+        {
+            const auto s = scan_string_start();
+            return {s.begin, cur_ - 1, s.escaped != 0};
+        }
+
+        CPPYYJSON_NOINLINE scanned_string_start scan_string_start()
         {
             const char* const begin = cur_ + 1;
             const char* p = begin;
@@ -2778,7 +2794,7 @@ namespace yyjson
             cur_ = p + 1;
             if (high != 0 && !inv_ && !is_valid_utf8(begin, p)) [[unlikely]]
                 fail();
-            return {begin, p, backslashes != 0};
+            return {begin, backslashes};
         }
 
         static bool is_valid_utf8(const char* first, const char* last) noexcept
