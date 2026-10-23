@@ -121,7 +121,7 @@ find_package(cpp_yyjson CONFIG REQUIRED)
 | `CPPYYJSON_DISABLE_HUGE_PAGES=ON` | Turns off the huge pages of the bundled backend. |
 | `CPPYYJSON_RECURSION_DEPTH_LIMIT` | Limits how deeply values of [recursive types](docs/conversions.md#recursive-types) are read. |
 
-[Build configuration](docs/reference.md#build-configuration) covers link-time optimization, the options with an external yyjson and building this repository.
+[Build configuration](docs/reference.md#build-configuration) covers the headers, link-time optimization, the options with an external yyjson and building this repository.
 
 ## How do I...
 

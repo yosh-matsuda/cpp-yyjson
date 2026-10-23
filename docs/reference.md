@@ -79,6 +79,7 @@ This page lists the functions, classes and other entities of cpp-yyjson, grouped
 *   [Utilities](#utilities)
     *   [`yyjson::overloaded`](#yyjsonoverloaded)
 *   [Build configuration](#build-configuration)
+    *   [Headers](#headers)
     *   [Link-time optimization](#link-time-optimization)
     *   [Options with an external yyjson](#options-with-an-external-yyjson)
     *   [Backend versions](#backend-versions)
@@ -89,6 +90,8 @@ This page lists the functions, classes and other entities of cpp-yyjson, grouped
 *   `yyjson` holds the functions, the options, the annotations, the casters, the concepts, the exceptions and the allocators. It also holds `yyjson::value`, `yyjson::array` and `yyjson::object`, the aliases of the mutable DOM classes.
 *   `yyjson::reader` holds the immutable DOM classes, which `yyjson::read` returns.
 *   `yyjson::writer` holds the mutable DOM classes.
+
+`yyjson::detail`, `yyjson::text_writer` and `yyjson::text_reader` are internal: they may change in any release; see [Headers](#headers).
 
 The member functions of the DOM classes often return *reference classes*, such as `yyjson::writer::value_ref` or `yyjson::reader::const_object_ref`. A reference class does not own the document, so it must not outlive the object that it came from; see [Reference classes](#reference-classes) and [Lifetimes](#lifetimes).
 
@@ -2232,7 +2235,19 @@ std::cout << count << std::endl;
 
 ## Build configuration
 
-The CMake options are listed in [Installation](../README.md#cmake-options) of the README. This section describes the options that need more than one line.
+The CMake options are listed in [Installation](../README.md#cmake-options) of the README. This section describes the headers and the options that need more than one line.
+
+### Headers
+
+Include `cpp_yyjson.hpp` only; it includes the other headers. cpp-yyjson is built in three layers:
+
+| Layer | Files | Role |
+| --- | --- | --- |
+| backend | `yyjson.h`, `src/yyjson.c` | yyjson: documents, parsing and serialization. By default the [bundled backend](../README.md#bundled-backend), which CMake compiles from `src/yyjson.c` into a static library; an external yyjson otherwise. |
+| JSON text | `yyjson_ext.hpp` | reads and writes JSON text directly, without a document, one value at a time: whitespace, numbers, strings and their escapes, UTF-8 checks, and the read and write flags of yyjson. It knows nothing of C++ types. |
+| C++ types | `cpp_yyjson.hpp`, `field_reflection.hpp` | everything in this reference: the DOM classes, the conversions of C++ types, `read<T>` and `write`, which map C++ types onto the JSON text layer. |
+
+`yyjson_ext.hpp` is an implementation detail, header-only like `cpp_yyjson.hpp`. Its classes, `yyjson::text_writer` and `yyjson::text_reader`, may change in any release, so do not use them directly. It uses only the public API of `yyjson.h`. With an external yyjson older than 0.12.0, `read<T>` and `write` do not use it; see [Backend versions](#backend-versions).
 
 ### Link-time optimization
 

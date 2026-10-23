@@ -93,7 +93,7 @@ Yes, as long as the threads do not share what they modify:
 
 ### Is cpp-yyjson header-only?
 
-The C++ interface is header-only: include `cpp_yyjson.hpp`, which includes `yyjson_ext.hpp`, the reading and writing of JSON text that `read<T>` and `write` use without a document, and `field_reflection.hpp`. It needs the yyjson backend, which CMake compiles from `src/yyjson.c` into a static library. Link `cpp_yyjson::cpp_yyjson` and CMake takes care of both; see [Installation](../README.md#installation).
+The C++ interface is header-only: include `cpp_yyjson.hpp`, which includes `yyjson_ext.hpp`, the reading and writing of JSON text that `read<T>` and `write` use without a document, and `field_reflection.hpp`. It needs the yyjson backend, which CMake compiles from `src/yyjson.c` into a static library. Link `cpp_yyjson::cpp_yyjson` and CMake takes care of both; see [Installation](../README.md#installation). [Headers](reference.md#headers) describes the role of each file.
 
 ### Can I use the yyjson that my project already has?
 
