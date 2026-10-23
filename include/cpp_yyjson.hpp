@@ -4018,8 +4018,12 @@ namespace yyjson
                     constexpr auto declared = []<std::size_t... Ks>(std::index_sequence<Ks...>) {
                         return std::array<std::size_t, n>{struct_declared_index<S, Ks>...};
                     }(std::make_index_sequence<n>{});
+                    // an index loop, since MSVC does not subtract the iterators of `declared` in a constant
+                    // expression
                     const auto read_index = [&](std::size_t i) {
-                        return static_cast<std::size_t>(std::ranges::find(declared, i) - declared.begin());
+                        std::size_t k = 0;
+                        while (k < n && declared[k] != i) ++k;
+                        return k;
                     };
                     auto result = table().dependencies;
                     for (auto& d : result)
