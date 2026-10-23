@@ -16366,6 +16366,8 @@ namespace yyjson
                                 c_string_.assign(read_string(scratch_));
                                 return c_string_.c_str();
                             }
+                            else if constexpr (std::is_arithmetic_v<T>)
+                                return read_string_as<T>();
                             else
                                 return dc::from_json_string(read_string(scratch_));
                         case 't': read_literal("true"); return dc::from_json_bool(true);
@@ -16383,6 +16385,14 @@ namespace yyjson
                             return read_number<InArray, yyjson::detail::integer_like<T>>(number);
                     }
                 }
+            }
+
+            // A string where a number or a boolean is read, out of line: the result of the string scan,
+            // which is kept on the stack, would give every number read a stack frame.
+            template <typename T>
+            CPPYYJSON_NOINLINE CPPYYJSON_COLD T read_string_as()
+            {
+                return yyjson::detail::default_caster<T>::from_json_string(read_string(scratch_));
             }
 
             // Reads the members of the object at `cur_`, calling `member(key)` with `cur_` at each value.
