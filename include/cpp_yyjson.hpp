@@ -4875,37 +4875,48 @@ namespace yyjson
             }
         }  // namespace formats
 
-        // The check of the format `name` of `yyjson::format` that the library has, or null.
+        // The formats of `yyjson::format` that the library checks, with their checks.
+        inline constexpr std::pair<std::string_view, bool (*)(std::string_view) noexcept> builtin_formats[] = {
+            {"date-time", formats::date_time},
+            {"date", formats::date},
+            {"time", formats::time},
+            {"duration", formats::duration},
+            {"email", formats::email},
+            {"hostname", formats::hostname},
+            {"ipv4", formats::ipv4},
+            {"ipv6", formats::ipv6},
+            {"uri", formats::uri},
+            {"uri-reference", formats::uri_reference},
+            {"uuid", formats::uuid},
+            {"uri-template", formats::uri_template},
+            {"json-pointer", formats::json_pointer},
+            {"relative-json-pointer", formats::relative_json_pointer},
+        };
+
+        // The index of the format `name` in `builtin_formats`, or its size if the library does not check it.  An
+        // index rather than the function pointer, which GCC under `-fsanitize=undefined` cannot compare with null in
+        // a constant expression.
+        constexpr std::size_t builtin_format_index(std::string_view name) noexcept
+        {
+            std::size_t i = 0;
+            while (i < std::size(builtin_formats) && builtin_formats[i].first != name) ++i;
+            return i;
+        }
+
+        // The check of the format `name` that the library has, or null.
         constexpr auto builtin_format(std::string_view name) noexcept -> bool (*)(std::string_view) noexcept
         {
-            constexpr std::pair<std::string_view, bool (*)(std::string_view) noexcept> checks[] = {
-                {"date-time", formats::date_time},
-                {"date", formats::date},
-                {"time", formats::time},
-                {"duration", formats::duration},
-                {"email", formats::email},
-                {"hostname", formats::hostname},
-                {"ipv4", formats::ipv4},
-                {"ipv6", formats::ipv6},
-                {"uri", formats::uri},
-                {"uri-reference", formats::uri_reference},
-                {"uuid", formats::uuid},
-                {"uri-template", formats::uri_template},
-                {"json-pointer", formats::json_pointer},
-                {"relative-json-pointer", formats::relative_json_pointer},
-            };
-            for (const auto& [n, check] : checks)
-                if (n == name) return check;
-            return nullptr;
+            const auto i = builtin_format_index(name);
+            return i < std::size(builtin_formats) ? builtin_formats[i].second : nullptr;
         }
 
         template <typename Level>
         bool matches_format(std::string_view s)
         {
             constexpr auto name = Level::constraints.format();
-            constexpr auto check = builtin_format(name);
-            if constexpr (check != nullptr)
-                return check(s);
+            constexpr auto index = builtin_format_index(name);
+            if constexpr (index < std::size(builtin_formats))
+                return builtin_formats[index].second(s);
             else
             {
                 using checker_type = format_checker<dependent_t<void, Level>>;
