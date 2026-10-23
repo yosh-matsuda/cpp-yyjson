@@ -293,6 +293,7 @@ The annotations of a type change how the type converts, with no caster. Speciali
 | `yyjson::unique_items`, `yyjson::prefix_items(p...)`, `yyjson::contains(s...)`, `yyjson::property_names(s...)` | a range or tuple field, a map field | rejects equal elements, restricts the elements by position or by their number, or restricts the keys | [Constraints of elements](validation.md#constraints-of-elements) |
 | `yyjson::adjacent_tag(key, ids)` | a field of a `std::variant` | tells the alternative by a sibling member | [Tagged variants](#tagged-variants) |
 | `yyjson::additional_properties(b)` | a struct | rejects or allows the keys that name no field | [Strict reading](validation.md#strict-reading) |
+| `yyjson::dependent_required("member", {...})` | a struct | requires keys when the object has the key of `member` | [Annotations of keys](validation.md#annotations-of-keys) |
 | `yyjson::internal_tag(key, ids)` | a `std::variant` | tells the alternative by a member of its object | [Tagged variants](#tagged-variants) |
 | `yyjson::enum_format::...`, `yyjson::enumerator("name", s...)` | an enumeration | chooses names or integers, and renames enumerators | [Enumerations](#formats-and-renamed-enumerators) |
 
@@ -380,7 +381,7 @@ auto json = yyjson::write(project);
 ```
 
 *   The annotations of the members and a `yyjson::annotations` specialization can be combined, as long as no field gets the same setting twice; that fails to compile.
-*   Of the annotations on the struct itself, only [`yyjson::additional_properties`](validation.md#strict-reading) is read.
+*   Of the annotations on the struct itself, only [`yyjson::additional_properties`](validation.md#strict-reading) and [`yyjson::dependent_required`](validation.md#annotations-of-keys) are read.
 *   An enumeration takes a [format](#formats-and-renamed-enumerators) on its declaration, as in `enum class [[=yyjson::enum_format::integer]] Permission : unsigned { ... };`. An enumerator takes a new name, as in `in_progress [[=yyjson::rename("in-progress")]],`. These combine with `yyjson::annotations<E>` as the settings of fields do. An annotation on an alias, that is, an enumerator with the value of one declared before it, is not read.
 *   The annotations apply to the structs that the compile-time reflection converts. An annotation of this library on a member of a struct that `VISITABLE_STRUCT` registers fails to compile; use the pairs of the macro or `yyjson::annotations` there.
 *   The annotations are read when the macro `FIELD_RFL_ANNOTATIONS` is `1`. `yyjson::rename`, `yyjson::skip` and the tags are always available for `yyjson::annotations`.

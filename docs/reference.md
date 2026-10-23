@@ -44,12 +44,14 @@ This page lists the functions, classes and other entities of cpp-yyjson, grouped
     *   [`yyjson::required`](#yyjsonrequired)
     *   [`yyjson::optional_key`](#yyjsonoptional_key)
     *   [`yyjson::additional_properties`](#yyjsonadditional_properties)
+    *   [`yyjson::dependent_required`](#yyjsondependent_required)
     *   [Constraints](#constraints)
     *   [`yyjson::items`](#yyjsonitems)
     *   [`yyjson::prefix_items`](#yyjsonprefix_items)
     *   [`yyjson::contains`, `yyjson::min_contains`, `yyjson::max_contains`](#yyjsoncontains-yyjsonmin_contains-yyjsonmax_contains)
     *   [`yyjson::property_names`](#yyjsonproperty_names)
     *   [`yyjson::pattern_matcher<>`](#yyjsonpattern_matcher)
+    *   [`yyjson::format_checker<>`](#yyjsonformat_checker)
     *   [`yyjson::internal_tag`, `yyjson::adjacent_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag)
     *   [`yyjson::enum_format`, `yyjson::enumerator`](#yyjsonenum_format-yyjsonenumerator)
     *   [`VISITABLE_STRUCT`](#visitable_struct)
@@ -1361,7 +1363,7 @@ Specialize `annotations<T>` before the first use of `T`. `annotate` takes these 
 
 | `T` | Settings |
 | --- | --- |
-| a struct | [`yyjson::field`](#yyjsonfield) and [`yyjson::additional_properties`](#yyjsonadditional_properties) |
+| a struct | [`yyjson::field`](#yyjsonfield), [`yyjson::additional_properties`](#yyjsonadditional_properties) and [`yyjson::dependent_required`](#yyjsondependent_required) |
 | a `std::variant` | [`yyjson::internal_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag) |
 | an enumeration | [`yyjson::enumerator` and `yyjson::enum_format`](#yyjsonenum_format-yyjsonenumerator) |
 
@@ -1463,11 +1465,38 @@ As in JSON Schema, where `"additionalProperties": false` is the schema that reje
 
 See [Annotations of keys](validation.md#annotations-of-keys).
 
+### `yyjson::dependent_required`
+
+The fields whose keys an object read into a struct must have when it has the key of the field `member`, as the keyword `dependentRequired` of JSON Schema.
+
+```cpp
+template <std::size_t N>
+consteval dependent_required_t<N> dependent_required(std::string_view member, const std::string_view (&required)[N]);
+```
+
+It is a setting of the struct, given to [`yyjson::annotate`](#yyjsonannotationst-yyjsonannotate). `member` and `required` name members of the struct, whose keys `yyjson::rename` may change. Reading an object that has the key of `member` and not the key of one of `required` throws `yyjson::bad_cast`, with or without [`yyjson::strict`](#yyjsonstrict), except in `yyjson::merge_into`. A name that is not a member of the struct, and a skipped field, are compile errors. See [Annotations of keys](validation.md#annotations-of-keys).
+
+```cpp
+struct Payment
+{
+    std::optional<std::string> card;
+    std::string address;
+};
+
+template <>
+inline constexpr auto yyjson::annotations<Payment> = yyjson::annotate(yyjson::dependent_required("card", {"address"}));
+
+yyjson::read<Payment>(R"({"card":"1234"})");
+// throws yyjson::bad_cast: Payment is not constructible from JSON with the key "card" without the key "address" ...
+```
+
 ### Constraints
 
 Settings of a field that restrict the values that it reads, as the keywords of JSON Schema of the same names do. [JSON Schema keywords](validation.md#json-schema-keywords) lists every keyword with what corresponds to it.
 
 ```cpp
+consteval explicit const_value(auto v);
+consteval explicit enum_values(auto... v);
 consteval explicit minimum(auto m);
 consteval explicit maximum(auto m);
 consteval explicit exclusive_minimum(auto m);
@@ -1476,6 +1505,7 @@ consteval explicit multiple_of(auto m);
 consteval explicit min_length(std::size_t n);
 consteval explicit max_length(std::size_t n);
 consteval explicit pattern(std::string_view regex);
+consteval explicit format(std::string_view name);
 consteval explicit min_items(std::size_t n);
 consteval explicit max_items(std::size_t n);
 inline constexpr unique_items_t unique_items{};
@@ -1485,6 +1515,8 @@ inline constexpr validator validate;
 
 | Constraint | The field | Rejects a value |
 | --- | --- | --- |
+| `yyjson::const_value(v)` | a string, a number or a `bool` | not equal to `v` |
+| `yyjson::enum_values(v...)` | a string, a number or a `bool` | equal to none of `v...` |
 | `yyjson::minimum(m)` | a number | less than `m` |
 | `yyjson::maximum(m)` | a number | greater than `m` |
 | `yyjson::exclusive_minimum(m)` | a number | `m` or less |
@@ -1493,12 +1525,13 @@ inline constexpr validator validate;
 | `yyjson::min_length(n)` | a string | of fewer than `n` code points |
 | `yyjson::max_length(n)` | a string | of more than `n` code points |
 | `yyjson::pattern("regex")` | a string | in which the regular expression matches nowhere |
+| `yyjson::format("name")` | a string | that does not have the format `name` |
 | `yyjson::min_items(n)` | a range or a map | with fewer than `n` elements |
 | `yyjson::max_items(n)` | a range or a map | with more than `n` elements |
 | `yyjson::unique_items` | a range whose elements may be equal | with an element equal to an earlier one by `operator==` |
 | `yyjson::validate<f>` | any | for which `f(value)` returns `false` |
 
-The constraints are settings of [`yyjson::field`](#yyjsonfield), and of [`yyjson::items`](#yyjsonitems) and the other settings of the elements. `yyjson::unique_items` on a set or a map, whose elements are unique by construction, is a compile error; [`yyjson::strict`](#yyjsonstrict) rejects the JSON that repeats an element or a key of them. They apply to the value that a `std::optional` holds, and not to an empty one. Reading a value that a constraint rejects throws `yyjson::bad_cast`; writing does not check them. `yyjson::pattern` needs a [`yyjson::pattern_matcher<>`](#yyjsonpattern_matcher). See [Constraints](validation.md#constraints).
+The constraints are settings of [`yyjson::field`](#yyjsonfield), and of [`yyjson::items`](#yyjsonitems) and the other settings of the elements. `yyjson::unique_items` on a set or a map, whose elements are unique by construction, is a compile error; [`yyjson::strict`](#yyjsonstrict) rejects the JSON that repeats an element or a key of them. They apply to the value that a `std::optional` holds, and not to an empty one. Reading a value that a constraint rejects throws `yyjson::bad_cast`; writing does not check them. `yyjson::const_value` and `yyjson::enum_values` take strings, numbers or booleans of the kind of the field, and compare them with the value of the field in its type. `yyjson::pattern` needs a [`yyjson::pattern_matcher<>`](#yyjsonpattern_matcher). `yyjson::format` checks the [formats of JSON Schema](validation.md#formats) other than `idn-email`, `idn-hostname`, `iri`, `iri-reference` and `regex`, and the others with a [`yyjson::format_checker<>`](#yyjsonformat_checker). See [Constraints](validation.md#constraints).
 
 ### `yyjson::items`
 
@@ -1652,6 +1685,17 @@ struct pattern_matcher;
 ```
 
 The library declares the template and defines no engine. Specialize `yyjson::pattern_matcher<>` before the first read of a struct that has a pattern. The specialization needs a constructor from the `std::string_view` of the pattern, and a `const` call operator that takes the `std::string_view` of a string and returns whether the pattern matches anywhere in it. See [Pattern matcher](validation.md#pattern-matcher).
+
+### `yyjson::format_checker<>`
+
+The check of the formats of [`yyjson::format`](#constraints) that the library does not check, which the program gives.
+
+```cpp
+template <typename = void>
+struct format_checker;
+```
+
+The library declares the template and defines no checker. Specialize `yyjson::format_checker<>` before the first read of a struct that has a format whose name the library does not check; such a format without the specialization is a compile error. The specialization needs a constructor from the `std::string_view` of the name of the format, and a `const` call operator that takes the `std::string_view` of a string and returns whether it has the format. The formats that the library checks are not passed to it. See [Formats](validation.md#formats).
 
 ### `yyjson::internal_tag`, `yyjson::adjacent_tag`
 
