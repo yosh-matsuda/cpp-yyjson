@@ -16603,20 +16603,27 @@ namespace yyjson
 
             // Reserves room in `result` for the rest of the elements of the array that opens at `open`.  The elements
             // of the root array, which ends at `last_`, are estimated from the bytes that those read so far took when
-            // they cannot be counted, as long as the room stays within four times the bytes left to read.
+            // they cannot be counted, or without counting them when `count` is false, with a quarter more room, since
+            // the elements that follow are often shorter, and as long as the room stays within four times the bytes
+            // left to read.  An unused room of a large range is mostly never touched.  Returns whether it estimated.
             template <typename T>
-            void reserve_rest(T& result, const char* open)
+            bool reserve_rest(T& result, const char* open, bool count = true)
             {
                 auto n = std::size_t{0};
-                if constexpr (counts_elements<T>) n = count_elements();
-                if (n == 0 && open == first_)
+                if constexpr (counts_elements<T>)
+                {
+                    if (count) n = count_elements();
+                }
+                const auto estimated = n == 0 && open == first_;
+                if (estimated)
                 {
                     const auto done = static_cast<std::size_t>(cur_ - open);
                     const auto rest = static_cast<std::size_t>(last_ - cur_);
                     n = result.size() * rest / done;
-                    n = std::min(n + n / 16, rest * 4 / sizeof(std::ranges::range_value_t<T>));
+                    n = std::min(n + n / 4, rest * 4 / sizeof(std::ranges::range_value_t<T>));
                 }
                 if (n != 0) result.reserve(result.size() + n);
+                return estimated;
             }
 
             // The value at `cur_`, which a range constructs in place from what `read_element` returns, rather than
@@ -16670,6 +16677,8 @@ namespace yyjson
                 [[maybe_unused]] auto out = std::ranges::begin(result);
                 [[maybe_unused]] auto count = std::size_t{0};
                 [[maybe_unused]] auto estimated = false;
+                // the count at which `counts_elements` reserves room next, one compare per element
+                [[maybe_unused]] auto next = std::size_t{open == first_ ? 1u : 512u};
                 // a nested array of trivially copyable elements, which is mostly short, is given the room of glibc's
                 // smallest block at once, as growing it from one element took three allocations for `[1,2,3]` and
                 // counting its elements first was slower still
@@ -16692,10 +16701,25 @@ namespace yyjson
                         }
                         else if constexpr (counts_elements<T>)
                         {
-                            // the root array, whose elements are mostly many, is given room for them after the first
-                            if ((count == 1 && open == first_) ||
-                                (count == 512 && result.size() == result.capacity())) [[unlikely]]
-                                reserve_rest(result, open);
+                            // the root array, whose elements are mostly many, is given room for them after the first,
+                            // and again after sixteen when it estimated them, as the first alone tells little: that of
+                            // poet.json takes 2.5 times the mean of its elements, and the room grew twice; any array
+                            // that is full at 512 elements is given room for the rest, and none is given room later
+                            if (count == next) [[unlikely]]
+                            {
+                                next = 512;
+                                if (count == 1)
+                                {
+                                    if (reserve_rest(result, open)) next = 16;
+                                }
+                                else if (count == 16)
+                                    reserve_rest(result, open, false);
+                                else
+                                {
+                                    if (result.size() == result.capacity()) reserve_rest(result, open);
+                                    next = 0;
+                                }
+                            }
                             ++count;
                         }
                         if constexpr (yyjson::detail::reflected_assignable_in_place<value_type, const_value_ref> &&
