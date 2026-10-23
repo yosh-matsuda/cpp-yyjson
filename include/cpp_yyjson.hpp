@@ -943,7 +943,11 @@ namespace yyjson
     consteval dependent_required_t<N> dependent_required(std::string_view member,
                                                          const std::string_view (&required)[N])
     {
-        auto result = dependent_required_t<N>{detail::static_string(member), member.size()};
+        // assigned rather than in the aggregate initializer, which GCC 13 rejects as taking the address of the
+        // immediate function `static_string`
+        auto result = dependent_required_t<N>{};
+        result.member_data = detail::static_string(member);
+        result.member_size = member.size();
         for (std::size_t i = 0; i < N; ++i)
         {
             result.required_data[i] = detail::static_string(required[i]);
