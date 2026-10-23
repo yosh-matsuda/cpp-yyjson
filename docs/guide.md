@@ -490,7 +490,7 @@ catch (const yyjson::bad_cast& e)
 }
 ```
 
-`yyjson::pattern` matches a regular expression with an engine that the program chooses, and `yyjson::validate<f>` calls a function of your own. Details: [Constraints](validation.md#constraints).
+`yyjson::enum_values` and `yyjson::const_value` allow only the listed values, and `yyjson::format("date-time")` checks a string by the grammar of a format. `yyjson::items`, `yyjson::unique_items` and the other [constraints of elements](validation.md#constraints-of-elements) restrict the elements of a container, and `yyjson::dependent_required` of a struct requires keys together. `yyjson::pattern` matches a regular expression with an engine that the program chooses, and `yyjson::validate<f>` calls a function of your own. Details: [Constraints](validation.md#constraints). To write the types of an existing JSON Schema, look up its keywords in [JSON Schema keywords](validation.md#json-schema-keywords).
 
 ### Find the value that failed
 

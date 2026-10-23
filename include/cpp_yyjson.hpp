@@ -4399,8 +4399,8 @@ namespace yyjson
                 return true;
         }
 
-        // The checks of the formats of `yyjson::format` that the library has, on ASCII text, by the grammars of the
-        // RFCs that JSON Schema names for them.
+        // The checks of the formats of `yyjson::format` that the library has, by the grammars of the RFCs that JSON
+        // Schema names for them.
         namespace formats
         {
             constexpr bool is_digit(char c) noexcept { return c >= '0' && c <= '9'; }

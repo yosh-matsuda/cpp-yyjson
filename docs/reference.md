@@ -1394,7 +1394,7 @@ template <typename... As>
 consteval field_annotation<As...> field(std::string_view member, As... values);
 ```
 
-`values` are one or more of [`yyjson::rename`](#yyjsonrename), [`yyjson::skip`](#yyjsonskip), [`yyjson::required`](#yyjsonrequired), [`yyjson::optional_key`](#yyjsonoptional_key), [`yyjson::adjacent_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag), the [constraints](#constraints), [`yyjson::items`](#yyjsonitems), [`yyjson::prefix_items`](#yyjsonprefix_items), [`yyjson::contains`](#yyjsoncontains-yyjsonmin_contains-yyjsonmax_contains), [`yyjson::property_names`](#yyjsonproperty_names) and [`yyjson::additional_properties(settings...)`](#yyjsonadditional_properties). Any other setting is a compile error.
+`values` are one or more of [`yyjson::rename`](#yyjsonrename), [`yyjson::skip`](#yyjsonskip), [`yyjson::required`](#yyjsonrequired), [`yyjson::optional_key`](#yyjsonoptional_key), [`yyjson::adjacent_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag), the [constraints](#constraints), [`yyjson::items`](#yyjsonitems), [`yyjson::prefix_items`](#yyjsonprefix_items), [`yyjson::contains`, `yyjson::min_contains`, `yyjson::max_contains`](#yyjsoncontains-yyjsonmin_contains-yyjsonmax_contains), [`yyjson::property_names`](#yyjsonproperty_names) and [`yyjson::additional_properties(settings...)`](#yyjsonadditional_properties). Any other setting is a compile error.
 
 ### `yyjson::rename`
 
@@ -1531,7 +1531,7 @@ inline constexpr validator validate;
 | `yyjson::unique_items` | a range whose elements may be equal | with an element equal to an earlier one by `operator==` |
 | `yyjson::validate<f>` | any | for which `f(value)` returns `false` |
 
-The constraints are settings of [`yyjson::field`](#yyjsonfield), and of [`yyjson::items`](#yyjsonitems) and the other settings of the elements. `yyjson::unique_items` on a set or a map, whose elements are unique by construction, is a compile error; [`yyjson::strict`](#yyjsonstrict) rejects the JSON that repeats an element or a key of them. They apply to the value that a `std::optional` holds, and not to an empty one. Reading a value that a constraint rejects throws `yyjson::bad_cast`; writing does not check them. `yyjson::const_value` and `yyjson::enum_values` take strings, numbers or booleans of the kind of the field, and compare them with the value of the field in its type. `yyjson::pattern` needs a [`yyjson::pattern_matcher<>`](#yyjsonpattern_matcher). `yyjson::format` checks the [formats of JSON Schema](validation.md#formats) other than `idn-email`, `idn-hostname`, `iri`, `iri-reference` and `regex`, and the others with a [`yyjson::format_checker<>`](#yyjsonformat_checker). See [Constraints](validation.md#constraints).
+The constraints are settings of [`yyjson::field`](#yyjsonfield), and of [`yyjson::items`](#yyjsonitems) and the other settings of the elements. `yyjson::unique_items` on a string, on a range whose elements have no `operator==`, and on a set or a map, whose elements are unique by construction, is a compile error; [`yyjson::strict`](#yyjsonstrict) rejects the JSON that repeats an element or a key of them. They apply to the value that a `std::optional` holds, and not to an empty one. Reading a value that a constraint rejects throws `yyjson::bad_cast`; writing does not check them. `yyjson::const_value` and `yyjson::enum_values` take strings, numbers or booleans of the kind of the field, and not `null`, arrays or objects; `yyjson::enum_values` takes at least one. They compare them with the value of the field in its type. `yyjson::pattern` needs a [`yyjson::pattern_matcher<>`](#yyjsonpattern_matcher). `yyjson::format` checks the [formats of JSON Schema](validation.md#formats) other than `idn-email`, `idn-hostname`, `iri`, `iri-reference` and `regex`, and the others with a [`yyjson::format_checker<>`](#yyjsonformat_checker). See [Constraints](validation.md#constraints).
 
 ### `yyjson::items`
 
@@ -1550,7 +1550,7 @@ struct items
 | `yyjson::items(settings...)` | a range read from a JSON array, such as `std::vector`, `std::array`, `std::set` and a map from an array of pairs | each element |
 | `yyjson::additional_properties(settings...)` | a map, or another [range of key-value pairs](conversions.md#conversion-rules) such as `std::vector<std::pair<std::string, int>>` | each value |
 
-`settings` are one or more of the [constraints](#constraints), and [`yyjson::items`](#yyjsonitems), [`yyjson::prefix_items`](#yyjsonprefix_items), [`yyjson::contains`](#yyjsoncontains-yyjsonmin_contains-yyjsonmax_contains), [`yyjson::property_names`](#yyjsonproperty_names) or `yyjson::additional_properties(settings...)` for the elements of the elements. Key settings such as `yyjson::rename`, a setting given twice at one level, `yyjson::items` on a string or on a range of key-value pairs, which is read from a JSON object, `yyjson::additional_properties(settings...)` on a range that is neither a map nor a range of key-value pairs, and either of them without a setting are compile errors. An element that is a `std::optional` is checked through the value that it holds, and a `std::optional` field through the range that it holds. `yyjson::validate<f>` takes the type of the element, or the type that a `std::optional` element holds; the element of a map from an array of pairs is `std::pair<const Key, Value>`.
+`settings` are one or more of the [constraints](#constraints), and [`yyjson::items`](#yyjsonitems), [`yyjson::prefix_items`](#yyjsonprefix_items), [`yyjson::contains`, `yyjson::min_contains`, `yyjson::max_contains`](#yyjsoncontains-yyjsonmin_contains-yyjsonmax_contains), [`yyjson::property_names`](#yyjsonproperty_names) or `yyjson::additional_properties(settings...)` for the elements of the elements. Key settings such as `yyjson::rename`, a setting given twice at one level, `yyjson::items` on a string or on a range of key-value pairs, which is read from a JSON object, `yyjson::additional_properties(settings...)` on a range that is neither a map nor a range of key-value pairs, and either of them without a setting are compile errors. An element that is a `std::optional` is checked through the value that it holds, and a `std::optional` field through the range that it holds. `yyjson::validate<f>` takes the type of the element, or the type that a `std::optional` element holds; the element of a map from an array of pairs is `std::pair<const Key, Value>`.
 
 ```cpp
 struct Scores
@@ -1589,7 +1589,7 @@ Each position is a braced list of settings, `{}` for a position without them, or
 | a `std::tuple`, a `std::pair` or another tuple-like type | `std::get<i>` of the value, of its own type |
 | a range read from a JSON array in its order, such as `std::vector`, `std::array` and `std::list` | the element `i`, when the array has one |
 
-An array may have fewer elements than positions. With `yyjson::items` on the same field, `yyjson::items` constrains the elements after the prefix. A field takes up to 16 positions. A position holds up to 8 groups of settings: its own, and one for each `yyjson::items`, `yyjson::contains`, `yyjson::property_names`, `yyjson::additional_properties(settings...)` and position of a `yyjson::prefix_items` in it. More positions than a tuple has elements, more groups, and `yyjson::prefix_items` on a set, a map or a string are compile errors.
+A range may be read from an array with fewer elements than positions. A tuple-like type, `std::array` included, is read only from an array of exactly as many elements as it has. With `yyjson::items` on the same field, `yyjson::items` constrains the elements after the prefix. A field takes up to 16 positions. A position holds up to 8 groups of settings: its own, and one for each `yyjson::items`, `yyjson::contains`, `yyjson::property_names`, `yyjson::additional_properties(settings...)` and position of a `yyjson::prefix_items` in it. More positions than a tuple has elements, more groups, and `yyjson::prefix_items` on a set, a map or a string are compile errors.
 
 ```cpp
 struct Row
@@ -1684,7 +1684,7 @@ template <typename = void>
 struct pattern_matcher;
 ```
 
-The library declares the template and defines no engine. Specialize `yyjson::pattern_matcher<>` before the first read of a struct that has a pattern. The specialization needs a constructor from the `std::string_view` of the pattern, and a `const` call operator that takes the `std::string_view` of a string and returns whether the pattern matches anywhere in it. See [Pattern matcher](validation.md#pattern-matcher).
+The library declares the template and defines no engine. Specialize `yyjson::pattern_matcher<>` before the first read of a struct that has a pattern. The specialization needs a constructor from the `std::string_view` of the pattern, which refers to storage of static duration and may be kept, and a `const` call operator that takes the `std::string_view` of a string and returns whether the pattern matches anywhere in it. See [Pattern matcher](validation.md#pattern-matcher).
 
 ### `yyjson::format_checker<>`
 
@@ -1695,7 +1695,7 @@ template <typename = void>
 struct format_checker;
 ```
 
-The library declares the template and defines no checker. Specialize `yyjson::format_checker<>` before the first read of a struct that has a format whose name the library does not check; such a format without the specialization is a compile error. The specialization needs a constructor from the `std::string_view` of the name of the format, and a `const` call operator that takes the `std::string_view` of a string and returns whether it has the format. The formats that the library checks are not passed to it. See [Formats](validation.md#formats).
+The library declares the template and defines no checker. Specialize `yyjson::format_checker<>` before the first read of a struct that has a format whose name the library does not check; such a format without the specialization is a compile error. The specialization needs a constructor from the `std::string_view` of the name of the format, which refers to storage of static duration and may be kept, and a `const` call operator that takes the `std::string_view` of a string and returns whether it has the format. The formats that the library checks are not passed to it. See [Formats](validation.md#formats).
 
 ### `yyjson::internal_tag`, `yyjson::adjacent_tag`
 
