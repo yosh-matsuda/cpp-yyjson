@@ -375,10 +375,75 @@ inline constexpr auto yyjson::annotations<Visited> = yyjson::annotate(
     yyjson::field("k", yyjson::property_names(yyjson::max_length(1))));
 VISITABLE_STRUCT(Visited, u, p, c, k);
 
+// const_value and enum_values compare the value read as a value of the type of the field
+struct Listed
+{
+    std::string unit = "m";
+    int version = 2;
+    float ratio = 0.1F;
+    bool flag = true;
+    std::uint64_t big = 0;
+    std::optional<int> level;
+    int odd = 1;
+    std::vector<std::string> tags;
+    std::map<std::string, int> named;
+    std::tuple<int, std::string> pair = {1, "x"};
+    bool operator==(const Listed&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<Listed> = yyjson::annotate(
+    yyjson::field("unit", yyjson::enum_values("mm", "cm", "m")), yyjson::field("version", yyjson::const_value(2)),
+    yyjson::field("ratio", yyjson::enum_values(0.1, 0.5)), yyjson::field("flag", yyjson::const_value(true)),
+    yyjson::field("big", yyjson::enum_values(-1, 0, 18446744073709551615ULL)),
+    yyjson::field("level", yyjson::enum_values(1, 2, 3)),
+    yyjson::field("odd", yyjson::const_value(1), yyjson::enum_values(2, 3)),
+    yyjson::field("tags", yyjson::items(yyjson::enum_values("a", "b"))),
+    yyjson::field("named", yyjson::property_names(yyjson::enum_values("x", "y"))),
+    yyjson::field("pair", yyjson::prefix_items({yyjson::const_value(1)}, {yyjson::enum_values("x", "y")})));
+
+// the formats that the library checks, and one that the program checks
+template <>
+struct yyjson::format_checker<>
+{
+    std::string_view name;
+    explicit format_checker(std::string_view name) : name(name) {}
+    bool operator()(std::string_view s) const
+    {
+        return name == "upper" && std::ranges::all_of(s, [](char c) { return c >= 'A' && c <= 'Z'; });
+    }
+};
+struct Formatted
+{
+    std::string when = "2024-02-29T23:59:60Z";
+    std::optional<std::string> mail;
+    std::vector<std::string> hosts;
+    std::string code = "X";
+    bool operator==(const Formatted&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<Formatted> =
+    yyjson::annotate(yyjson::field("when", yyjson::format("date-time")),
+                     yyjson::field("mail", yyjson::format("email")),
+                     yyjson::field("hosts", yyjson::items(yyjson::format("hostname"))),
+                     yyjson::field("code", yyjson::format("upper")));
+
+// dependent_required names members, whose keys are renamed
+struct Billing
+{
+    std::string name;
+    std::optional<std::string> card;
+    std::optional<std::string> address;
+    int zip = 0;
+    bool operator==(const Billing&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<Billing> =
+    yyjson::annotate(yyjson::dependent_required("card", {"address", "zip"}), yyjson::field("zip", yyjson::rename("postal")));
+
 // the nodes of the settings are counted from the types, and a struct without settings of the values in its fields
 // takes none
-static_assert(yyjson::detail::node_count<decltype(yyjson::items(yyjson::items(yyjson::minimum(0))))> == 2);
-static_assert(yyjson::detail::value_node_count<Bounded> == 0);
+static_assert(yyjson::detail::node_count<decltype(yyjson::items(yyjson::items(yyjson::minimum(0))))>.nodes == 2);
+static_assert(yyjson::detail::value_node_count<Bounded> == yyjson::detail::tree_size{});
 
 // The rules that the static assertions enforce, tested on the conditions that they assert: the error of the table of
 // the keys of a struct that is never read, and the concepts of the types that a setting constrains.
@@ -412,7 +477,51 @@ CONSTRAINT_RULE(PositionOf8, yyjson::prefix_items({POSITION_OF_8}))
 CONSTRAINT_RULE(PositionOf9, yyjson::prefix_items({POSITION_OF_8, yyjson::additional_properties(yyjson::minimum(0))}))
 #undef POSITION_OF_8
 CONSTRAINT_RULE(MultipleOfZeroInItems, yyjson::items(yyjson::multiple_of(0)))
+// const_value and enum_values once at a level, and up to 16 values in a position
+CONSTRAINT_RULE(ConstTwice, yyjson::items(yyjson::items(yyjson::const_value(1), yyjson::const_value(2))))
+CONSTRAINT_RULE(EnumTwice, yyjson::items(yyjson::items(yyjson::enum_values(1), yyjson::enum_values(2))))
+CONSTRAINT_RULE(FormatTwice, yyjson::items(yyjson::format("date"), yyjson::format("time")))
+CONSTRAINT_RULE(PositionOf16Values,
+                yyjson::prefix_items({yyjson::items(yyjson::const_value(0),
+                                                    yyjson::enum_values(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
+                                                                        14, 15))}))
+CONSTRAINT_RULE(PositionOf17Values,
+                yyjson::prefix_items({yyjson::items(yyjson::const_value(0),
+                                                    yyjson::enum_values(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
+                                                                        14, 15, 16))}))
 #undef CONSTRAINT_RULE
+// dependent_required names a member that is read, and once
+struct DependsOnUnknown
+{
+    int a = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<DependsOnUnknown> =
+    yyjson::annotate(yyjson::dependent_required("a", {"b"}));
+struct DependentUnknown
+{
+    int a = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<DependentUnknown> =
+    yyjson::annotate(yyjson::dependent_required("b", {"a"}));
+struct DependsOnSkipped
+{
+    int a = 0;
+    int b = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<DependsOnSkipped> =
+    yyjson::annotate(yyjson::dependent_required("a", {"b"}), yyjson::field("b", yyjson::skip));
+struct DependsTwice
+{
+    int a = 0;
+    int b = 0;
+    int c = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<DependsTwice> =
+    yyjson::annotate(yyjson::dependent_required("a", {"b"}), yyjson::dependent_required("b", {"a", "c"}));
 namespace compile_rules
 {
     using enum yyjson::detail::field_key_error;
@@ -428,6 +537,15 @@ namespace compile_rules
     static_assert(table_error<PositionOf8> == none);
     static_assert(table_error<PositionOf9> == prefix_position_too_large);
     static_assert(table_error<MultipleOfZeroInItems> == multiple_of_not_positive);
+    static_assert(table_error<ConstTwice> == same_setting_twice);
+    static_assert(table_error<EnumTwice> == same_setting_twice);
+    static_assert(table_error<FormatTwice> == same_setting_twice);
+    static_assert(table_error<PositionOf16Values> == none);
+    static_assert(table_error<PositionOf17Values> == prefix_position_too_large);
+    static_assert(table_error<DependsOnUnknown> == unknown_member);
+    static_assert(table_error<DependentUnknown> == unknown_member);
+    static_assert(table_error<DependsOnSkipped> == dependency_skipped);
+    static_assert(table_error<DependsTwice> == none);
 
     using namespace yyjson::detail;
     using string_map = std::map<std::string, int>;
@@ -488,6 +606,17 @@ struct ElementsAnnotated2
     [[= yyjson::property_names(yyjson::max_length(2))]] std::map<std::string, int> k;
     [[ = yyjson::contains(yyjson::minimum(5)), = yyjson::min_contains(2) ]] std::vector<int> c;
     bool operator==(const ElementsAnnotated2&) const = default;
+};
+
+struct [[= yyjson::dependent_required("card", {"address"})]] KeywordsAnnotated
+{
+    [[= yyjson::const_value(2)]] int version = 2;
+    [[= yyjson::enum_values("a", "b")]] std::string unit = "a";
+    [[= yyjson::format("date")]] std::string day = "2024-01-01";
+    [[= yyjson::items(yyjson::enum_values(1.5, 2))]] std::vector<double> steps;
+    std::optional<std::string> card;
+    std::optional<std::string> address;
+    bool operator==(const KeywordsAnnotated&) const = default;
 };
 
 struct ConstrainedAnnotated
@@ -1105,6 +1234,149 @@ TEST(Constraints, MergeKept)
     EXPECT_EQ(e.path(), "/m");
 }
 
+TEST(Constraints, ConstAndEnum)
+{
+    expect_accepted<Listed>(R"({"unit":"mm","version":2,"ratio":0.5,"flag":true,"big":18446744073709551615,"level":2,)"
+                            R"("tags":["a","b"],"named":{"x":1},"pair":[1,"y"]})",
+                            {.unit = "mm",
+                             .ratio = 0.5F,
+                             .big = 18446744073709551615ULL,
+                             .level = 2,
+                             .tags = {"a", "b"},
+                             .named = {{"x", 1}},
+                             .pair = {1, "y"}});
+    // a float equals 0.1 when it holds 0.1F, whatever the JSON writes
+    expect_accepted<Listed>(R"({"ratio":0.100000001,"level":null})", {});
+    const auto value = [](std::string_view key) {
+        return std::format(R"(the value of the key "{}" of Listed )", key);
+    };
+    const auto element = [](std::string_view key) {
+        return std::format(R"(an element of the value of the key "{}" of Listed )", key);
+    };
+    expect_rejected<Listed>(R"({"unit":"km"})", value("unit") + R"(is not one of "mm", "cm", "m")", "/unit");
+    expect_rejected<Listed>(R"({"version":3})", value("version") + "is not equal to the constant 2", "/version");
+    expect_rejected<Listed>(R"({"ratio":0.3})", value("ratio") + "is not one of 0.1, 0.5", "/ratio");
+    expect_rejected<Listed>(R"({"flag":false})", value("flag") + "is not equal to the constant true", "/flag");
+    expect_rejected<Listed>(R"({"big":18446744073709551614})",
+                            value("big") + "is not one of -1, 0, 18446744073709551615", "/big");
+    expect_rejected<Listed>(R"({"level":4})", value("level") + "is not one of 1, 2, 3", "/level");
+    // the constant is checked first, and the values of enum_values are listed without it
+    expect_rejected<Listed>(R"({"odd":2})", value("odd") + "is not equal to the constant 1", "/odd");
+    expect_rejected<Listed>(R"({"odd":1})", value("odd") + "is not one of 2, 3", "/odd");
+    expect_rejected<Listed>(R"({"tags":["a","c"]})", element("tags") + R"(is not one of "a", "b")", "/tags/1");
+    expect_rejected<Listed>(R"({"named":{"x":1,"z":2}})",
+                            R"(a key of the value of the key "named" of Listed is not one of "x", "y")", "/named/z");
+    expect_rejected<Listed>(R"({"pair":[2,"x"]})", element("pair") + "is not equal to the constant 1", "/pair/0");
+    expect_rejected<Listed>(R"({"pair":[1,"z"]})", element("pair") + R"(is not one of "x", "y")", "/pair/1");
+}
+
+TEST(Constraints, Format)
+{
+    expect_accepted<Formatted>(R"({"when":"1985-04-12T23:20:50.52+01:00","mail":"a.b@[IPv6:::1]",)"
+                               R"("hosts":["example.com","xn--4gbwdl.xn--wgbh1c"],"code":"AB"})",
+                               {"1985-04-12T23:20:50.52+01:00", "a.b@[IPv6:::1]",
+                                {"example.com", "xn--4gbwdl.xn--wgbh1c"}, "AB"});
+    expect_accepted<Formatted>(R"({"mail":null})", {});
+    const auto value = [](std::string_view key) {
+        return std::format(R"(the value of the key "{}" of Formatted )", key);
+    };
+    expect_rejected<Formatted>(R"({"when":"2023-02-29T00:00:00Z"})",
+                               value("when") + R"(does not have the format "date-time")", "/when");
+    expect_rejected<Formatted>(R"({"when":"2024-01-01T23:59:60+01:00"})",
+                               value("when") + R"(does not have the format "date-time")", "/when");
+    expect_rejected<Formatted>(R"({"mail":"a..b@example.com"})", value("mail") + R"(does not have the format "email")",
+                               "/mail");
+    expect_rejected<Formatted>(
+        R"({"hosts":["example.com","-a.com"]})",
+        R"(an element of the value of the key "hosts" of Formatted does not have the format "hostname")", "/hosts/1");
+    expect_rejected<Formatted>(R"({"code":"Ab"})", value("code") + R"(does not have the format "upper")", "/code");
+}
+
+TEST(Constraints, Formats)
+{
+    using namespace yyjson::detail;
+    const auto check = [](std::string_view format, std::string_view s) { return builtin_format(format)(s); };
+    // the cases of the JSON-Schema-Test-Suite that the grammars of the formats decide on boundaries
+    EXPECT_TRUE(check("date", "2020-02-29") && !check("date", "2021-02-29") && !check("date", "2000-13-01"));
+    EXPECT_TRUE(check("time", "23:59:60Z") && check("time", "15:59:60-08:00") && !check("time", "22:59:60Z"));
+    EXPECT_TRUE(!check("time", "08:30:06") && !check("time", "08:30:06.Z") && check("time", "08:30:06.123z"));
+    EXPECT_TRUE(check("duration", "P4DT12H30M5S") && check("duration", "P2W") && check("duration", "PT1M"));
+    EXPECT_TRUE(!check("duration", "P") && !check("duration", "PT") && !check("duration", "P1YT") &&
+                !check("duration", "P2D1Y") && !check("duration", "P1Y2W") && !check("duration", "P1Y2D"));
+    EXPECT_TRUE(check("ipv4", "192.168.0.1") && !check("ipv4", "087.10.0.1") && !check("ipv4", "256.0.0.0"));
+    EXPECT_TRUE(check("ipv6", "::") && check("ipv6", "::ffff:192.168.0.1") && check("ipv6", "1:2:3:4:5:6:7:8"));
+    EXPECT_TRUE(!check("ipv6", "1:2:3:4:5:6:7:8:9") && !check("ipv6", "1::2::3") && !check("ipv6", "12345::") &&
+                !check("ipv6", "fe80::a%eth1"));
+    EXPECT_TRUE(check("hostname", "a--b.com") && !check("hostname", "ab--c.com") && !check("hostname", "xn--X") &&
+                !check("hostname", "example.com."));
+    EXPECT_TRUE(check("email", "\"joe bloggs\"@example.com") && check("email", "joe@[127.0.0.1]") &&
+                !check("email", "joe@[300.0.0.1]") && !check("email", ".joe@example.com"));
+    EXPECT_TRUE(check("uri", "urn:oasis:names:specification:docbook:dtd:xml:4.1.2") &&
+                check("uri", "http://[2001:db8::7]/c=GB?objectClass?one") && !check("uri", "//foo.bar/?baz=qux") &&
+                !check("uri", "http:// shouldfail.com") && !check("uri", "http://a/%zz"));
+    EXPECT_TRUE(check("uri-reference", "#fragment") && check("uri-reference", "../a") &&
+                !check("uri-reference", "a:b:\\c") && !check("uri-reference", "#frag\\ment"));
+    EXPECT_TRUE(check("uri-template", "http://example.com/dictionary/{term:1}/{term}") &&
+                check("uri-template", "") && !check("uri-template", "http://example.com/dictionary/{term:1}/{term"));
+    EXPECT_TRUE(check("uuid", "2EB8AA08-AA98-11EA-B4AA-73B441D16380") &&
+                !check("uuid", "2eb8aa08-aa98-11ea-b4aa73b441d16380"));
+    EXPECT_TRUE(check("json-pointer", "") && check("json-pointer", "/~0~1") && !check("json-pointer", "/~2") &&
+                !check("json-pointer", "a"));
+    EXPECT_TRUE(check("relative-json-pointer", "0#") && check("relative-json-pointer", "1/a") &&
+                !check("relative-json-pointer", "01") && !check("relative-json-pointer", "/a"));
+}
+
+TEST(Constraints, DependentRequired)
+{
+    const auto missing = [](std::string_view dependent, std::string_view key) {
+        return std::format(R"(Billing is not constructible from JSON with the key "{}" without the key "{}")",
+                           dependent, key);
+    };
+    const auto rejected = [](auto read, std::string_view message) {
+        const auto e = bad_cast_of(read);
+        EXPECT_TRUE(message_of(e).starts_with(message)) << e.what();
+        EXPECT_EQ(e.path(), "");
+    };
+    // an object without the key of the member, or with every key that it needs, in any order
+    for (const auto json : {R"({"name":"a"})", R"({"name":"a","address":"b"})", R"({"name":"a","card":"c","address":"b","postal":1})",
+                            R"({"postal":1,"card":"c","address":null})"})
+    {
+        EXPECT_NO_THROW((void)yyjson::read<Billing>(json)) << json;
+        EXPECT_NO_THROW((void)yyjson::read(json).cast<Billing>()) << json;
+#if YYJSON_VERSION_HEX >= 0x000C00
+        EXPECT_TRUE(read_directly<Billing>(json, yyjson::ReadFlag::NoFlag).has_value()) << json;
+#endif
+    }
+    for (const auto& [json, key] : {std::pair{R"({"name":"a","card":"c"})", "address"},
+                                    std::pair{R"({"card":"c","address":"b"})", "postal"},
+                                    std::pair{R"({"postal":1,"name":"a","card":"c"})", "address"}})
+    {
+        rejected([&] { (void)yyjson::read<Billing>(json); }, missing("card", key));
+        rejected([&] { (void)yyjson::read(json).cast<Billing>(); }, missing("card", key));
+        rejected(
+            [&] {
+                auto t = Billing();
+                yyjson::read_into(json, t);
+            },
+            missing("card", key));
+#if YYJSON_VERSION_HEX >= 0x000C00
+        EXPECT_FALSE(read_directly<Billing>(json, yyjson::ReadFlag::NoFlag).has_value()) << json;
+#endif
+    }
+    // yyjson::strict reports a missing key of a field that is not optional first
+    rejected([] { (void)yyjson::read<Billing>(R"({"postal":1,"name":"a","card":"c"})", yyjson::strict); },
+             missing("card", "address"));
+    rejected([] { (void)yyjson::read<Billing>(R"({"card":"c","address":"b"})", yyjson::strict); },
+             R"(Billing is not constructible from JSON without the key "name")");
+    // merge_into keeps the fields that the object leaves out
+    auto t = Billing();
+    yyjson::merge_into(R"({"card":"c"})", t);
+    EXPECT_EQ(t.card, "c");
+    // in a field
+    const auto e = bad_cast_of([] { (void)yyjson::read<std::vector<Billing>>(R"([{},{"card":"c"}])"); });
+    EXPECT_EQ(e.path(), "/1");
+}
+
 #if FIELD_RFL_ANNOTATIONS
 TEST(Constraints, Annotations)
 {
@@ -1131,6 +1403,22 @@ TEST(Constraints, Annotations)
         R"({"c":[5]})",
         R"(the value of the key "c" of ElementsAnnotated2 has fewer than 2 items that satisfy the constraints of yyjson::contains)",
         "/c");
+
+    expect_accepted<KeywordsAnnotated>(R"({"version":2,"unit":"b","day":"2024-02-29","steps":[2,1.5]})",
+                                       {2, "b", "2024-02-29", {2, 1.5}, {}, {}});
+    const auto keywords = [](std::string_view key) {
+        return std::format(R"(the value of the key "{}" of KeywordsAnnotated )", key);
+    };
+    expect_rejected<KeywordsAnnotated>(R"({"version":1})", keywords("version") + "is not equal to the constant 2",
+                                       "/version");
+    expect_rejected<KeywordsAnnotated>(R"({"unit":"c"})", keywords("unit") + R"(is not one of "a", "b")", "/unit");
+    expect_rejected<KeywordsAnnotated>(R"({"day":"2024-02-30"})", keywords("day") + R"(does not have the format "date")",
+                                       "/day");
+    expect_rejected<KeywordsAnnotated>(
+        R"({"steps":[1]})", R"(an element of the value of the key "steps" of KeywordsAnnotated is not one of 1.5, 2)",
+        "/steps/0");
+    EXPECT_NO_THROW((void)yyjson::read<KeywordsAnnotated>(R"({"card":"c","address":"a"})"));
+    EXPECT_THROW((void)yyjson::read<KeywordsAnnotated>(R"({"card":"c"})"), yyjson::bad_cast);
 
     expect_accepted<ConstrainedAnnotated>(R"({"n":3,"s":"xy","even":4})", {3, "xy", 4});
     expect_rejected<ConstrainedAnnotated>(

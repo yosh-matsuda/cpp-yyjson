@@ -916,6 +916,59 @@ namespace yyjson
     };
     additional_properties(bool) -> additional_properties<>;
 
+    // The fields whose keys an object must have when it has the key of the field `member`, as JSON Schema's
+    // `dependentRequired`, which `yyjson::dependent_required` makes.
+    template <std::size_t N>
+    struct dependent_required_t
+    {
+        const char* member_data = nullptr;
+        std::size_t member_size = 0;
+        std::array<const char*, N> required_data = {};
+        std::array<std::size_t, N> required_size = {};
+
+        [[nodiscard]] constexpr std::string_view member() const noexcept { return {member_data, member_size}; }
+        [[nodiscard]] static constexpr std::size_t size() noexcept { return N; }
+        [[nodiscard]] constexpr std::string_view required(std::size_t i) const noexcept
+        {
+            return {required_data[i], required_size[i]};
+        }
+    };
+
+    // `yyjson::annotations<T> = yyjson::annotate(yyjson::dependent_required("card", {"billing_address"}))` or
+    // `struct [[=yyjson::dependent_required("card", {"billing_address"})]] T`: an object read into the struct T that
+    // has the key of the member `card` must have the key of `billing_address` too.  Members are named as in the
+    // struct, not by their keys.  Reading such an object without it throws `yyjson::bad_cast`, except in
+    // `yyjson::merge_into`.
+    template <std::size_t N>
+    consteval dependent_required_t<N> dependent_required(std::string_view member,
+                                                         const std::string_view (&required)[N])
+    {
+        auto result = dependent_required_t<N>{detail::static_string(member), member.size()};
+        for (std::size_t i = 0; i < N; ++i)
+        {
+            result.required_data[i] = detail::static_string(required[i]);
+            result.required_size[i] = required[i].size();
+        }
+        return result;
+    }
+
+    namespace detail
+    {
+        template <typename A>
+        struct is_dependent_required : std::false_type
+        {
+        };
+        template <std::size_t N>
+        struct is_dependent_required<dependent_required_t<N>> : std::true_type
+        {
+        };
+        // The number of the fields that the annotation A of a struct requires by `yyjson::dependent_required`.
+        template <typename A>
+        inline constexpr std::size_t dependency_count = 0;
+        template <std::size_t N>
+        inline constexpr std::size_t dependency_count<dependent_required_t<N>> = N;
+    }  // namespace detail
+
     namespace detail
     {
         // A number that bounds a field, kept as it was written: a signed or an unsigned integer, or a real.
@@ -1055,6 +1108,105 @@ namespace yyjson
     // to tell whether the pattern matches it.  An object of it is constructed for each field on its first read.
     template <typename = void>
     struct pattern_matcher;
+
+    // A format that a string field must have, as JSON Schema's `format`: `yyjson::field("member",
+    // yyjson::format("date-time"))` or `[[=yyjson::format("date-time")]]`.  The library checks "date-time", "date",
+    // "time", "duration", "email", "hostname", "ipv4", "ipv6", "uri", "uri-reference", "uuid", "uri-template",
+    // "json-pointer" and "relative-json-pointer"; the program checks the other names by specializing
+    // `yyjson::format_checker<>`.
+    struct format
+    {
+        const char* name_data = nullptr;
+        std::size_t name_size = 0;
+
+        consteval explicit format(std::string_view name)
+            : name_data(detail::static_string(name)), name_size(name.size())
+        {
+        }
+
+        [[nodiscard]] constexpr std::string_view name() const noexcept { return {name_data, name_size}; }
+    };
+
+    // The checker of the formats of `yyjson::format` that the library does not check, which the program
+    // specializes before reading a struct that has one: constructible from the `std::string_view` of the name of the
+    // format, and callable with the `std::string_view` of a string to tell whether the string has the format.  An
+    // object of it is constructed for each field on its first read.
+    template <typename = void>
+    struct format_checker;
+
+    namespace detail
+    {
+        // A JSON string, number or boolean, which `yyjson::const_value` and `yyjson::enum_values` take.  It is a
+        // structural type, as the values of C++26 annotations that hold it have to be.
+        struct json_scalar
+        {
+            enum class kind_t : std::uint8_t
+            {
+                string,
+                number,
+                boolean
+            };
+            kind_t kind = kind_t::number;
+            bound_number number;
+            const char* string_data = nullptr;
+            std::size_t string_size = 0;
+            bool boolean = false;
+
+            constexpr json_scalar() = default;
+            template <typename V>
+            requires std::same_as<V, bool> || std::is_arithmetic_v<V> || std::convertible_to<V, std::string_view>
+            consteval json_scalar(const V& v)  // NOLINT(google-explicit-constructor)
+            {
+                if constexpr (std::same_as<V, bool>)
+                {
+                    kind = kind_t::boolean;
+                    boolean = v;
+                }
+                else if constexpr (std::is_arithmetic_v<V>)
+                    number = bound_number(v);
+                else
+                {
+                    const auto s = std::string_view(v);
+                    kind = kind_t::string;
+                    string_data = static_string(s);
+                    string_size = s.size();
+                }
+            }
+
+            [[nodiscard]] constexpr std::string_view string() const noexcept { return {string_data, string_size}; }
+        };
+    }  // namespace detail
+
+    // The value that a string, number or boolean field must equal, as JSON Schema's `const`:
+    // `yyjson::field("version", yyjson::const_value(2))` or `[[=yyjson::const_value(2)]]`.  The value of the field
+    // is compared after it is read, as a value of the type of the field: a `float` field equals `const_value(0.1)`
+    // when it holds `0.1f`.
+    struct const_value
+    {
+        detail::json_scalar value;
+
+        template <typename V>
+        consteval explicit const_value(const V& v) : value(v)
+        {
+        }
+    };
+
+    // The values one of which a string, number or boolean field must equal, as JSON Schema's `enum`:
+    // `yyjson::field("unit", yyjson::enum_values("mm", "cm", "m"))`.  They are compared as `yyjson::const_value`.
+    template <std::size_t N>
+    struct enum_values
+    {
+        std::array<detail::json_scalar, N> values;
+
+        template <typename... Vs>
+        requires (sizeof...(Vs) == N)
+        consteval explicit enum_values(const Vs&... vs) : values{detail::json_scalar(vs)...}
+        {
+            static_assert(N != 0, "yyjson::enum_values needs a value");
+        }
+    };
+    template <typename... Vs>
+    enum_values(const Vs&...) -> enum_values<sizeof...(Vs)>;
 
     // A check of a field that `yyjson::validate<f>` gives, which `f` makes with the value of the field.
     struct validator
@@ -1246,12 +1398,25 @@ namespace yyjson
         };
         using constraint_types =
             type_list<minimum, maximum, exclusive_minimum, exclusive_maximum, multiple_of, min_length, max_length,
-                      min_items, max_items, pattern, validator, unique_items_t, min_contains, max_contains>;
+                      min_items, max_items, pattern, validator, unique_items_t, min_contains, max_contains,
+                      const_value, enum_values<0>, format>;
+        // The type of the constraint A in `constraint_types`, where every `yyjson::enum_values` is `enum_values<0>`.
+        template <typename A>
+        struct constraint_type
+        {
+            using type = A;
+        };
+        template <std::size_t N>
+        struct constraint_type<enum_values<N>>
+        {
+            using type = enum_values<0>;
+        };
         template <typename A, typename List = constraint_types>
-        inline constexpr std::uint16_t constraint_bit = 0;
+        inline constexpr std::uint32_t constraint_bit = 0;
         template <typename A, typename First, typename... Rest>
-        inline constexpr std::uint16_t constraint_bit<A, type_list<First, Rest...>> =
-            std::same_as<A, First> ? std::uint16_t{1} << sizeof...(Rest) : constraint_bit<A, type_list<Rest...>>;
+        inline constexpr std::uint32_t constraint_bit<A, type_list<First, Rest...>> =
+            std::same_as<typename constraint_type<A>::type, First> ? std::uint32_t{1} << sizeof...(Rest)
+                                                                   : constraint_bit<A, type_list<Rest...>>;
         template <typename A>
         concept constraint_setting = constraint_bit<A> != 0;
 
@@ -1344,23 +1509,43 @@ namespace yyjson
                                 constraint_setting<A> || element_settings<A>;
 
         // The number of the nodes that a position of `yyjson::prefix_items` has at most: its own and those of the
-        // settings of the values in it.
+        // settings of the values in it, and the number of the values of `yyjson::const_value` and
+        // `yyjson::enum_values` in them.
         inline constexpr std::size_t prefix_position_nodes = 8;
+        inline constexpr std::size_t prefix_position_values = 16;
 
-        // The number of the nodes of `schema_tree` that the setting A adds at most.
+        // The numbers of the nodes and of the values of `schema_tree`.
+        struct tree_size
+        {
+            std::size_t nodes = 0;
+            std::size_t values = 0;
+
+            friend constexpr tree_size operator+(tree_size a, tree_size b) noexcept
+            {
+                return {a.nodes + b.nodes, a.values + b.values};
+            }
+            friend constexpr bool operator==(tree_size, tree_size) = default;
+        };
+
+        // The number of the nodes and of the values of `schema_tree` that the setting A adds at most.
         template <typename A>
-        inline constexpr std::size_t node_count = 0;
-        template <typename... As>
-        inline constexpr std::size_t node_count<items<As...>> = (std::size_t{1} + ... + node_count<As>);
-        template <typename... As>
-        inline constexpr std::size_t node_count<additional_properties<As...>> =
-            sizeof...(As) == 0 ? 0 : (std::size_t{1} + ... + node_count<As>);
-        template <typename... As>
-        inline constexpr std::size_t node_count<contains<As...>> = (std::size_t{1} + ... + node_count<As>);
-        template <typename... As>
-        inline constexpr std::size_t node_count<property_names<As...>> = (std::size_t{1} + ... + node_count<As>);
+        inline constexpr tree_size node_count = {};
+        template <>
+        inline constexpr tree_size node_count<const_value> = {0, 1};
         template <std::size_t N>
-        inline constexpr std::size_t node_count<prefix_items_t<N>> = N * prefix_position_nodes;
+        inline constexpr tree_size node_count<enum_values<N>> = {0, N};
+        template <typename... As>
+        inline constexpr tree_size node_count<items<As...>> = (tree_size{1, 0} + ... + node_count<As>);
+        template <typename... As>
+        inline constexpr tree_size node_count<additional_properties<As...>> =
+            sizeof...(As) == 0 ? tree_size{} : (tree_size{1, 0} + ... + node_count<As>);
+        template <typename... As>
+        inline constexpr tree_size node_count<contains<As...>> = (tree_size{1, 0} + ... + node_count<As>);
+        template <typename... As>
+        inline constexpr tree_size node_count<property_names<As...>> = (tree_size{1, 0} + ... + node_count<As>);
+        template <std::size_t N>
+        inline constexpr tree_size node_count<prefix_items_t<N>> = {N * prefix_position_nodes,
+                                                                    N * prefix_position_values};
     }  // namespace detail
 
     // The settings of the elements of a range field that is read from a JSON array, as JSON Schema's `items`:
@@ -1469,13 +1654,15 @@ namespace yyjson
             multiple_of_not_positive,
             contains_missing,
             prefix_position_too_large,
+            dependency_skipped,
         };
 
-        // The constraints of a value, those in `set` by `constraint_bit`.  It is a structural type, as the values of
-        // C++26 annotations that hold it have to be.
+        // The constraints of a value, those in `set` by `constraint_bit`.  The values of `yyjson::const_value` and
+        // `yyjson::enum_values` are in `schema_tree::values`, at `constant` and from `enum_first`.  It is a
+        // structural type, as the values of C++26 annotations that hold it have to be.
         struct field_constraints
         {
-            std::uint16_t set = 0;
+            std::uint32_t set = 0;
             bound_number minimum;
             bound_number maximum;
             bound_number exclusive_minimum;
@@ -1489,6 +1676,11 @@ namespace yyjson
             std::size_t max_contains = 0;
             const char* pattern_data = nullptr;
             std::size_t pattern_size = 0;
+            const char* format_data = nullptr;
+            std::size_t format_size = 0;
+            std::size_t constant = 0;
+            std::size_t enum_first = 0;
+            std::size_t enum_count = 0;
             validator validate;
 
             template <typename A>
@@ -1497,6 +1689,9 @@ namespace yyjson
                 return (set & constraint_bit<A>) != 0;
             }
             [[nodiscard]] constexpr std::string_view pattern() const noexcept { return {pattern_data, pattern_size}; }
+            [[nodiscard]] constexpr std::string_view format() const noexcept { return {format_data, format_size}; }
+            // Adds the constraint `a`, but not the values of `yyjson::const_value` and `yyjson::enum_values`, which
+            // `schema_tree::add` adds.
             template <typename A>
             constexpr void add(const A& a) noexcept
             {
@@ -1528,6 +1723,11 @@ namespace yyjson
                     pattern_data = a.regex_data;
                     pattern_size = a.regex_size;
                 }
+                else if constexpr (std::same_as<A, yyjson::format>)
+                {
+                    format_data = a.name_data;
+                    format_size = a.name_size;
+                }
                 else if constexpr (std::same_as<A, validator>)
                     validate = a;
             }
@@ -1558,13 +1758,16 @@ namespace yyjson
 
         // The settings of values, as a tree in up to M nodes: the first `size` nodes at first are the roots, and
         // the settings of the values in a value add nodes after them.  A node is never the child of another one at
-        // index 0.  It keeps the first error.
-        template <std::size_t M>
+        // index 0.  The values of `yyjson::const_value` and `yyjson::enum_values` are the first `value_size` of
+        // the V `values`.  It keeps the first error.
+        template <std::size_t M, std::size_t V = 0>
         struct schema_tree
         {
             std::array<schema_node, M> nodes = {};
             std::size_t size = 0;
             field_key_error error = field_key_error::none;
+            std::array<json_scalar, V> values = {};
+            std::size_t value_size = 0;
 
             constexpr void fail(field_key_error e) noexcept
             {
@@ -1582,6 +1785,13 @@ namespace yyjson
                 size += n;
                 return first;
             }
+            // Whether there is room for `n` new values, which are added from `value_size`.
+            constexpr bool has_room_for_values(std::size_t n) noexcept
+            {
+                if (n <= V - value_size) return true;
+                fail(field_key_error::prefix_position_too_large);
+                return false;
+            }
             template <typename A>
             constexpr void add(std::size_t node, const A& a)
             {
@@ -1592,6 +1802,19 @@ namespace yyjson
                     if constexpr (std::same_as<A, multiple_of>)
                     {
                         if (!a.value.positive()) return fail(field_key_error::multiple_of_not_positive);
+                    }
+                    else if constexpr (std::same_as<A, const_value>)
+                    {
+                        if (!has_room_for_values(1)) return;
+                        c.constant = value_size;
+                        values[value_size++] = a.value;
+                    }
+                    else if constexpr (!std::same_as<typename constraint_type<A>::type, A>)
+                    {
+                        if (!has_room_for_values(a.values.size())) return;
+                        c.enum_first = value_size;
+                        c.enum_count = a.values.size();
+                        for (const auto& v : a.values) values[value_size++] = v;
                     }
                     c.add(a);
                 }
@@ -1635,15 +1858,20 @@ namespace yyjson
                 add_list(node, list.rest);
             }
             // Copies the tree `sub` of one root into the node `at`, and the other nodes of `sub` into new nodes.
-            template <std::size_t P>
-            constexpr void graft(std::size_t at, const schema_tree<P>& sub)
+            template <std::size_t P, std::size_t Q>
+            constexpr void graft(std::size_t at, const schema_tree<P, Q>& sub)
             {
                 if (sub.error != field_key_error::none) fail(sub.error);
                 const auto base = sub.size > 1 ? allocate(sub.size - 1) : std::size_t{0};
                 if (sub.size > 1 && base == 0) return;
-                const auto moved = [base](schema_node n) {
+                if (!has_room_for_values(sub.value_size)) return;
+                const auto value_base = value_size;
+                for (std::size_t k = 0; k < sub.value_size; ++k) values[value_size++] = sub.values[k];
+                const auto moved = [base, value_base](schema_node n) {
                     for (auto* i : {&n.items, &n.values, &n.contains, &n.keys, &n.prefix})
                         if (*i != 0) *i += base - 1;
+                    n.constraints.constant += value_base;
+                    n.constraints.enum_first += value_base;
                     return n;
                 };
                 nodes[at] = moved(sub.nodes[0]);
@@ -1666,7 +1894,7 @@ namespace yyjson
         // The settings of a position of `yyjson::prefix_items`: `{}` for none, `{settings...}`, or a setting alone.
         struct prefix_schema
         {
-            schema_tree<prefix_position_nodes> tree = {{}, 1};
+            schema_tree<prefix_position_nodes, prefix_position_values> tree = {{}, 1};
 
             constexpr prefix_schema() = default;
             template <typename... As>
@@ -1800,9 +2028,11 @@ namespace yyjson
     consteval annotation_list<As...> annotate(As... values)
     {
         static_assert(((detail::is_field_annotation<As>::value || std::same_as<As, additional_properties<>> ||
-                        detail::internal_tag_annotation<As> || detail::enum_annotation<As>) &&
+                        detail::is_dependent_required<As>::value || detail::internal_tag_annotation<As> ||
+                        detail::enum_annotation<As>) &&
                        ...),
-                      "yyjson::annotate takes yyjson::field(...) and yyjson::additional_properties for a struct, "
+                      "yyjson::annotate takes yyjson::field(...), yyjson::additional_properties and "
+                      "yyjson::dependent_required for a struct, "
                       "yyjson::internal_tag for a variant, and yyjson::enumerator(...) and yyjson::enum_format for an "
                       "enumeration");
         return {{values...}};
@@ -2236,8 +2466,9 @@ namespace yyjson
         };
 
         // `M` is the number of the nodes of the settings of the fields and of the values in them, those of field i
-        // at index i.
-        template <std::size_t N, std::size_t M = N>
+        // at index i, `V` the number of the values of `yyjson::const_value` and `yyjson::enum_values` in them, and
+        // `D` the number of the fields that `yyjson::dependent_required` requires.
+        template <std::size_t N, std::size_t M = N, std::size_t V = 0, std::size_t D = 0>
         struct field_key_table
         {
             std::array<std::string_view, N> keys;
@@ -2246,21 +2477,24 @@ namespace yyjson
             std::array<bool, N> required = {};  // whether a field is annotated with `yyjson::required`
             std::array<bool, N> optional_key = {};  // whether a field is annotated with `yyjson::optional_key`
             additional_keys additional = additional_keys::unset;
-            schema_tree<M> schemas = {{}, N};
+            schema_tree<M, V> schemas = {{}, N};
             bool constrained = false;  // whether a field has a constraint
+            // the fields {i, j} where the key of field i requires the key of field j by `yyjson::dependent_required`
+            std::array<std::array<std::size_t, 2>, D> dependencies = {};
         };
 
         // Applies the settings of `yyjson::field` and of the annotations of the members to the keys of the fields,
         // and keeps the first error.  The functions are constexpr rather than consteval, so that the lambdas that
         // call them need not be immediate functions, which clang before 19 and MSVC do not make them.
-        template <std::size_t N, std::size_t M = N>
+        template <std::size_t N, std::size_t M = N, std::size_t V = 0, std::size_t D = 0>
         struct field_key_builder
         {
             std::array<std::string_view, N> members;
-            field_key_table<N, M> table;
+            field_key_table<N, M, V, D> table;
             bool visitable = false;
             std::array<bool, N> renamed = {};
             std::array<bool, N> tagged = {};
+            std::size_t dependencies_added = 0;
 
             constexpr void fail(field_key_error error)
             {
@@ -2315,6 +2549,26 @@ namespace yyjson
                 if (table.additional != additional_keys::unset) return fail(field_key_error::additional_twice);
                 table.additional = a.allowed ? additional_keys::allowed : additional_keys::denied;
             }
+            // The index of the member `member`, or N.
+            [[nodiscard]] constexpr std::size_t member_index(std::string_view member) const noexcept
+            {
+                std::size_t i = 0;
+                while (i < N && members[i] != member) ++i;
+                return i;
+            }
+            template <std::size_t K>
+            constexpr void add_dependency(const dependent_required_t<K>& d)
+            {
+                const auto i = member_index(d.member());
+                if (i == N) return fail(field_key_error::unknown_member);
+                for (std::size_t k = 0; k < K; ++k)
+                {
+                    const auto j = member_index(d.required(k));
+                    if (j == N) return fail(field_key_error::unknown_member);
+                    if (dependencies_added == D) return;
+                    table.dependencies[dependencies_added++] = {i, j};
+                }
+            }
             template <typename A>
             constexpr void apply_setting(std::size_t i, const A& a)
             {
@@ -2337,20 +2591,21 @@ namespace yyjson
             {
                 if constexpr (is_field_annotation<A>::value)
                 {
-                    std::size_t i = 0;
-                    while (i < N && members[i] != a.member) ++i;
+                    const auto i = member_index(a.member);
                     if (i == N) return fail(field_key_error::unknown_member);
                     std::apply([&](const auto&... values) { (apply_setting(i, values), ...); }, a.values);
                 }
                 else if constexpr (std::same_as<A, additional_properties<>>)
                     set_additional(a);
+                else if constexpr (is_dependent_required<A>::value)
+                    add_dependency(a);
                 else
                     fail(field_key_error::not_a_struct_setting);
             }
 
             // Duplicate keys are reported only when a key was given, so that a `VISITABLE_STRUCT` listing a
             // member twice still compiles as it did.  A skipped field has no key in JSON.
-            [[nodiscard]] constexpr field_key_table<N, M> result() const
+            [[nodiscard]] constexpr field_key_table<N, M, V, D> result() const
             {
                 auto result = table;
                 result.schemas.check();
@@ -2359,6 +2614,11 @@ namespace yyjson
                 {
                     if (tagged[i] && !result.schemas.nodes[i].empty() && result.error == field_key_error::none)
                         result.error = field_key_error::constrained_tagged;
+                }
+                for (const auto& [i, j] : result.dependencies)
+                {
+                    if ((result.skipped[i] || result.skipped[j]) && result.error == field_key_error::none)
+                        result.error = field_key_error::dependency_skipped;
                 }
                 if (result.error != field_key_error::none || std::ranges::find(renamed, true) == renamed.end())
                     return result;
@@ -2394,35 +2654,40 @@ namespace yyjson
         template <typename T, std::size_t I, typename... Cs>
         inline constexpr bool constraint_annotated<T, I, type_list<Cs...>> =
             (!field_reflection::field_annotations<T, I, Cs>.empty() || ...);
-        template <typename T, std::size_t I, typename C, std::size_t N, std::size_t M>
-        constexpr void constrain_annotated_field(field_key_builder<N, M>& builder)
+        template <typename T, std::size_t I, typename C, typename Builder>
+        constexpr void constrain_annotated_field(Builder& builder)
         {
             for (const C& c : field_reflection::field_annotations<T, I, C>) builder.constrain_field(I, c);
         }
-        template <typename T, std::size_t I, std::size_t N, std::size_t M, typename... Cs>
-        constexpr void constrain_annotated_field(field_key_builder<N, M>& builder, type_list<Cs...>)
+        template <typename T, std::size_t I, typename Builder, typename... Cs>
+        constexpr void constrain_annotated_field(Builder& builder, type_list<Cs...>)
         {
             (constrain_annotated_field<T, I, Cs>(builder), ...);
         }
 
-        // The annotations of the field I of T that are settings of the values in it, such as `yyjson::items`, whose
-        // types are specializations of templates rather than types that could be looked up one by one.
-        template <typename T, std::size_t I>
-        consteval std::vector<std::meta::info> element_annotations_of()
+        // The annotations of the entity `R` whose types are specializations of one of the templates `Templates`,
+        // which could not be looked up one type by one: `yyjson::items` and the other settings of the values in a
+        // field, `yyjson::enum_values`, and `yyjson::dependent_required` of a struct.
+        template <std::meta::info R, std::meta::info... Templates>
+        consteval std::vector<std::meta::info> template_annotations_of()
         {
             auto result = std::vector<std::meta::info>{};
-            for (const auto a : std::meta::annotations_of(field_reflection::detail::member_at<T, I>))
+            for (const auto a : std::meta::annotations_of(R))
             {
                 const auto type = std::meta::remove_cvref(std::meta::type_of(a));
                 if (std::meta::has_template_arguments(type) && !std::meta::template_arguments_of(type).empty() &&
-                    (std::meta::template_of(type) == ^^yyjson::items ||
-                     std::meta::template_of(type) == ^^yyjson::additional_properties ||
-                     std::meta::template_of(type) == ^^yyjson::contains ||
-                     std::meta::template_of(type) == ^^yyjson::property_names ||
-                     std::meta::template_of(type) == ^^yyjson::prefix_items_t))
+                    ((std::meta::template_of(type) == Templates) || ...))
                     result.push_back(a);
             }
             return result;
+        }
+        template <typename T, std::size_t I>
+        consteval std::vector<std::meta::info> element_annotations_of()
+        {
+            return template_annotations_of<field_reflection::detail::member_at<T, I>, ^^yyjson::items,
+                                           ^^yyjson::additional_properties, ^^yyjson::contains,
+                                           ^^yyjson::property_names, ^^yyjson::prefix_items_t,
+                                           ^^yyjson::enum_values>();
         }
         template <typename T, std::size_t I>
         inline constexpr std::span<const std::meta::info> element_annotations =
@@ -2430,12 +2695,15 @@ namespace yyjson
         template <typename T, std::size_t I, std::size_t K>
         using element_annotation_type =
             typename[:std::meta::remove_cvref(std::meta::type_of(element_annotations<T, I>[K])):];
+        // The nodes and the values that the annotations of the field I of T add: those in `element_annotations`,
+        // and the value of `yyjson::const_value`.
         template <typename T, std::size_t I>
-        inline constexpr std::size_t annotated_node_count = []<std::size_t... Ks>(std::index_sequence<Ks...>) {
-            return (std::size_t{0} + ... + node_count<element_annotation_type<T, I, Ks>>);
+        inline constexpr tree_size annotated_node_count = []<std::size_t... Ks>(std::index_sequence<Ks...>) {
+            return (tree_size{0, field_reflection::field_annotations<T, I, const_value>.size()} + ... +
+                    node_count<element_annotation_type<T, I, Ks>>);
         }(std::make_index_sequence<element_annotations<T, I>.size()>{});
-        template <typename T, std::size_t I, std::size_t N, std::size_t M>
-        constexpr void constrain_annotated_elements(field_key_builder<N, M>& builder)
+        template <typename T, std::size_t I, typename Builder>
+        constexpr void constrain_annotated_elements(Builder& builder)
         {
             [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
                 (builder.constrain_field(
@@ -2461,18 +2729,44 @@ namespace yyjson
                 return false;
         }();
 
-        // Whether the struct T is annotated with `yyjson::additional_properties`.
+        // The annotations `yyjson::dependent_required` of the struct T.
+        template <typename T>
+        inline constexpr std::span<const std::meta::info> dependency_annotations =
+            std::define_static_array(template_annotations_of<std::meta::dealias(^^T), ^^yyjson::dependent_required_t>());
+        template <typename T, std::size_t K>
+        using dependency_annotation_type =
+            typename[:std::meta::remove_cvref(std::meta::type_of(dependency_annotations<T>[K])):];
+        template <typename T>
+        inline constexpr std::size_t annotated_dependency_count = []<std::size_t... Ks>(std::index_sequence<Ks...>) {
+            return (std::size_t{0} + ... + dependency_count<dependency_annotation_type<T, Ks>>);
+        }(std::make_index_sequence<dependency_annotations<T>.size()>{});
+
+        // Whether the struct T is annotated with `yyjson::additional_properties` or `yyjson::dependent_required`.
         template <typename T>
         inline constexpr bool annotated_type = [] {
             if constexpr (std::is_class_v<T>)
-                return !field_reflection::type_annotations<T, additional_properties<>>.empty();
+                return !field_reflection::type_annotations<T, additional_properties<>>.empty() ||
+                       !dependency_annotations<T>.empty();
             else
                 return false;
         }();
 
+        // Applies the annotations of the struct T.
+        template <typename T, typename Builder>
+        constexpr void annotate_reflected_type(Builder& builder)
+        {
+            for (const additional_properties<>& a : field_reflection::type_annotations<T, additional_properties<>>)
+                builder.set_additional(a);
+            [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                (builder.add_dependency(
+                     std::meta::extract<dependency_annotation_type<T, Ks>>(dependency_annotations<T>[Ks])),
+                 ...);
+            }(std::make_index_sequence<dependency_annotations<T>.size()>{});
+        }
+
         // Applies the annotations of the fields of a reflected struct.
-        template <typename T, std::size_t N, std::size_t M>
-        constexpr void annotate_reflected_fields(field_key_builder<N, M>& builder)
+        template <typename T, std::size_t N, std::size_t M, std::size_t V, std::size_t D>
+        constexpr void annotate_reflected_fields(field_key_builder<N, M, V, D>& builder)
         {
             [&]<std::size_t... Is>(std::index_sequence<Is...>) {
                 (
@@ -2511,19 +2805,31 @@ namespace yyjson
                 return false;
         }();
 
-        // The number of the nodes that the settings of the values in the fields of T add at most.
+        // The number of the nodes and of the values that the settings of the values in the fields of T add at
+        // most.
         template <typename... As>
-        inline constexpr std::size_t node_count<field_annotation<As...>> = (std::size_t{0} + ... + node_count<As>);
+        inline constexpr tree_size node_count<field_annotation<As...>> = (tree_size{} + ... + node_count<As>);
         template <typename T>
-        inline constexpr std::size_t value_node_count = [] {
+        inline constexpr tree_size value_node_count = [] {
             auto count = []<typename... As>(std::type_identity<std::tuple<As...>>) {
-                return (std::size_t{0} + ... + node_count<As>);
+                return (tree_size{} + ... + node_count<As>);
             }(std::type_identity<annotation_values_of<T>>{});
 #if FIELD_RFL_ANNOTATIONS
             if constexpr (!visitable<T> && field_reflection::field_countable<T>)
-                count += []<std::size_t... Is>(std::index_sequence<Is...>) {
-                    return (std::size_t{0} + ... + annotated_node_count<T, Is>);
+                count = count + []<std::size_t... Is>(std::index_sequence<Is...>) {
+                    return (tree_size{} + ... + annotated_node_count<T, Is>);
                 }(std::make_index_sequence<field_reflection::field_count<T>>{});
+#endif
+            return count;
+        }();
+        // The number of the fields that `yyjson::dependent_required` of T requires.
+        template <typename T>
+        inline constexpr std::size_t type_dependency_count = [] {
+            auto count = []<typename... As>(std::type_identity<std::tuple<As...>>) {
+                return (std::size_t{0} + ... + dependency_count<As>);
+            }(std::type_identity<annotation_values_of<T>>{});
+#if FIELD_RFL_ANNOTATIONS
+            if constexpr (std::is_class_v<T>) count += annotated_dependency_count<T>;
 #endif
             return count;
         }();
@@ -2545,7 +2851,9 @@ namespace yyjson
         {
             constexpr auto n = Source::members.size();
             constexpr auto reflected = std::same_as<Source, reflected_field_names<T>>;
-            auto builder = field_key_builder<n, n + value_node_count<T>>{Source::members, {Source::keys}, !reflected};
+            constexpr auto size = value_node_count<T>;
+            auto builder = field_key_builder<n, n + size.nodes, size.values, type_dependency_count<T>>{
+                Source::members, {Source::keys}, !reflected};
             for (std::size_t i = 0; i < n; ++i) builder.renamed[i] = Source::keys[i] != Source::members[i];
             std::apply([&](const auto&... a) { (builder.apply_annotation(a), ...); }, annotations<T>.values);
 #if FIELD_RFL_ANNOTATIONS
@@ -2553,11 +2861,7 @@ namespace yyjson
                 annotate_reflected_fields<T>(builder);
             else if constexpr (annotated_members<T>)
                 builder.fail(field_key_error::annotated_visitable);
-            if constexpr (annotated_type<T>)
-            {
-                for (const additional_properties<>& a : field_reflection::type_annotations<T, additional_properties<>>)
-                    builder.set_additional(a);
-            }
+            if constexpr (annotated_type<T>) annotate_reflected_type<T>(builder);
 #endif
             return builder.result();
         }
@@ -2571,7 +2875,7 @@ namespace yyjson
         {
             static constexpr auto table = make_field_key_table<T, Source>();
             static_assert(table.error != field_key_error::unknown_member,
-                          "yyjson::field names a member that does not exist");
+                          "yyjson::field or yyjson::dependent_required names a member that does not exist");
             static_assert(table.error != field_key_error::renamed_twice,
                           "a field is renamed twice, by yyjson::annotations, by an annotation of the member or by a "
                           "(member, \"key\") pair of VISITABLE_STRUCT");
@@ -2608,7 +2912,10 @@ namespace yyjson
                           "a position of yyjson::prefix_items holds the settings of the values in it in up to 8 "
                           "nodes: one for itself and one for each yyjson::items, yyjson::contains, "
                           "yyjson::property_names, yyjson::additional_properties(settings...) and position of "
-                          "yyjson::prefix_items in it");
+                          "yyjson::prefix_items in it, and up to 16 values of yyjson::const_value and "
+                          "yyjson::enum_values");
+            static_assert(table.error != field_key_error::dependency_skipped,
+                          "yyjson::dependent_required names a member annotated with yyjson::skip, which has no key");
             static constexpr auto value = table.keys;
         };
 
@@ -3703,8 +4010,31 @@ namespace yyjson
                 else
                     return additional_keys::unset;
             }();
-            static constexpr bool always =
-                additional == additional_keys::denied || std::ranges::find(required, true) != required.end();
+            // The fields {k, j}, by their indices among the fields that are read, where the key of field k requires
+            // the key of field j by `yyjson::dependent_required`.
+            static constexpr auto dependencies = [] {
+                if constexpr (has_table)
+                {
+                    constexpr auto declared = []<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                        return std::array<std::size_t, n>{struct_declared_index<S, Ks>...};
+                    }(std::make_index_sequence<n>{});
+                    const auto read_index = [&](std::size_t i) {
+                        return static_cast<std::size_t>(std::ranges::find(declared, i) - declared.begin());
+                    };
+                    auto result = table().dependencies;
+                    for (auto& d : result)
+                    {
+                        d[0] = read_index(d[0]);
+                        d[1] = read_index(d[1]);
+                    }
+                    return result;
+                }
+                else
+                    return std::array<std::array<std::size_t, 2>, 0>{};
+            }();
+            static constexpr bool always = additional == additional_keys::denied ||
+                                           std::ranges::find(required, true) != required.end() ||
+                                           !dependencies.empty();
             static_assert(
                 []<std::size_t... Ks>(std::index_sequence<Ks...>) {
                     return !((required[Ks] && is_std_optional<struct_field_type<S, Ks>>::value) || ...);
@@ -3759,6 +4089,13 @@ namespace yyjson
         {
             throw_bad_cast_at(at, "{} is not constructible from JSON without the key \"{}\"", type, key);
         }
+        [[noreturn]] CPPYYJSON_COLD inline void throw_missing_dependency(cast_target at, std::string_view key,
+                                                                         std::string_view dependent,
+                                                                         std::string_view type)
+        {
+            throw_bad_cast_at(at, "{} is not constructible from JSON with the key \"{}\" without the key \"{}\"",
+                              type, dependent, key);
+        }
         [[noreturn]] CPPYYJSON_COLD inline void throw_strict_null(cast_target at, std::string_view type)
         {
             throw_bad_cast_at(at, "{} is not constructible from null under yyjson::strict", type);
@@ -3799,12 +4136,22 @@ namespace yyjson
         inline constexpr bool constrained_field = !schema_of<S, K>.empty();
 
         // The settings at the node `Node` of the tree of the settings of the struct S, which is the node of the field
-        // K or one of the values in it.  `at<C>` is the node C, which a member of `node` names.
+        // K or one of the values in it.  `at<C>` is the node C, which a member of `node` names.  `values` are the
+        // value of `yyjson::const_value`, if it has one, and then those of `yyjson::enum_values`.
         template <typename S, std::size_t K, std::size_t Node>
         struct constraint_node
         {
             static constexpr schema_node node = field_table_of<S>::table.schemas.nodes[Node];
             static constexpr field_constraints constraints = node.constraints;
+            static constexpr auto values = [] {
+                constexpr std::size_t constants = constraints.has<const_value>() ? 1 : 0;
+                auto result = std::array<json_scalar, constants + constraints.enum_count>{};
+                if constexpr (constants != 0)
+                    result[0] = field_table_of<S>::table.schemas.values[constraints.constant];
+                for (std::size_t i = 0; i < constraints.enum_count; ++i)
+                    result[constants + i] = field_table_of<S>::table.schemas.values[constraints.enum_first + i];
+                return result;
+            }();
             template <std::size_t C>
             using at = constraint_node<S, K, C>;
         };
@@ -3835,6 +4182,9 @@ namespace yyjson
             contains,
             min_contains,
             max_contains,
+            const_value,
+            enum_values,
+            format,
         };
 
         // What does not satisfy a constraint: the value of a field, an element in it, or a key of a map in it.
@@ -3858,13 +4208,40 @@ namespace yyjson
             }
         }
 
+        inline std::string scalar_text(const json_scalar& v)
+        {
+            switch (v.kind)
+            {
+                case json_scalar::kind_t::string:
+                    return std::format("\"{}\"", v.string());
+                case json_scalar::kind_t::boolean:
+                    return v.boolean ? "true" : "false";
+                default:
+                    return bound_text(v.number);
+            }
+        }
+
+        // `values` are the `values` of the `constraint_node` of `c`.
         [[noreturn]] CPPYYJSON_COLD inline void throw_constraint_violation(
             cast_target at, std::string_view key, std::string_view type, constraint_kind kind,
-            const field_constraints& c, constraint_subject subject = constraint_subject::value)
+            const field_constraints& c, std::span<const json_scalar> values,
+            constraint_subject subject = constraint_subject::value)
         {
             const auto what = [&]() -> std::string {
                 switch (kind)
                 {
+                    case constraint_kind::const_value:
+                        return "is not equal to the constant " + scalar_text(values[0]);
+                    case constraint_kind::enum_values:
+                    {
+                        auto text = std::string("is not one of ");
+                        const auto listed = values.subspan(c.has<const_value>() ? 1 : 0);
+                        for (std::size_t i = 0; i < listed.size(); ++i)
+                            text += (i == 0 ? "" : ", ") + scalar_text(listed[i]);
+                        return text;
+                    }
+                    case constraint_kind::format:
+                        return std::format("does not have the format \"{}\"", c.format());
                     case constraint_kind::minimum:
                         return "is less than the minimum " + bound_text(c.minimum);
                     case constraint_kind::maximum:
@@ -4014,6 +4391,533 @@ namespace yyjson
                 return true;
         }
 
+        // The checks of the formats of `yyjson::format` that the library has, on ASCII text, by the grammars of the
+        // RFCs that JSON Schema names for them.
+        namespace formats
+        {
+            constexpr bool is_digit(char c) noexcept { return c >= '0' && c <= '9'; }
+            constexpr bool is_alpha(char c) noexcept { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); }
+            constexpr bool is_hex(char c) noexcept
+            {
+                return is_digit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+            }
+            constexpr bool is_digits(std::string_view s) noexcept
+            {
+                return std::ranges::all_of(s, [](char c) { return is_digit(c); });
+            }
+            // The number of the `n` digits from `s[i]`, or -1 if they are not all digits.
+            constexpr int number_at(std::string_view s, std::size_t i, std::size_t n) noexcept
+            {
+                if (s.size() < i + n || !is_digits(s.substr(i, n))) return -1;
+                auto v = 0;
+                for (std::size_t k = i; k < i + n; ++k) v = v * 10 + (s[k] - '0');
+                return v;
+            }
+            // `s.find(c, pos)`, which GCC folds wrongly on a constant `s` in C++26 before GCC 17 (PR c++/127218).
+            constexpr std::size_t find_char(std::string_view s, char c, std::size_t pos) noexcept
+            {
+                for (; pos < s.size(); ++pos)
+                    if (s[pos] == c) return pos;
+                return std::string_view::npos;
+            }
+            // Whether `s[i]` begins a percent-encoded octet.
+            constexpr bool percent_encoded_at(std::string_view s, std::size_t i) noexcept
+            {
+                return s[i] == '%' && s.size() - i >= 3 && is_hex(s[i + 1]) && is_hex(s[i + 2]);
+            }
+
+            // RFC 3339 full-date: "YYYY-MM-DD".
+            constexpr bool date(std::string_view s) noexcept
+            {
+                if (s.size() != 10 || s[4] != '-' || s[7] != '-') return false;
+                const auto y = number_at(s, 0, 4);
+                const auto m = number_at(s, 5, 2);
+                const auto d = number_at(s, 8, 2);
+                if (y < 0 || m < 1 || m > 12 || d < 1) return false;
+                constexpr int days[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+                const auto leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+                return d <= days[m - 1] + (m == 2 && leap ? 1 : 0);
+            }
+            // RFC 3339 full-time: "HH:MM:SS[.fraction]" and "Z" or an offset.  A leap second is 23:59:60 in UTC.
+            constexpr bool time(std::string_view s) noexcept
+            {
+                if (s.size() < 9 || s[2] != ':' || s[5] != ':') return false;
+                const auto h = number_at(s, 0, 2);
+                const auto m = number_at(s, 3, 2);
+                const auto sec = number_at(s, 6, 2);
+                if (h < 0 || h > 23 || m < 0 || m > 59 || sec < 0 || sec > 60) return false;
+                std::size_t i = 8;
+                if (s[i] == '.')
+                {
+                    const auto start = ++i;
+                    while (i < s.size() && is_digit(s[i])) ++i;
+                    if (i == start) return false;
+                }
+                if (i == s.size()) return false;
+                auto offset = 0;
+                if (s[i] == 'Z' || s[i] == 'z')
+                {
+                    if (i + 1 != s.size()) return false;
+                }
+                else
+                {
+                    if ((s[i] != '+' && s[i] != '-') || s.size() - i != 6 || s[i + 3] != ':') return false;
+                    const auto oh = number_at(s, i + 1, 2);
+                    const auto om = number_at(s, i + 4, 2);
+                    if (oh < 0 || oh > 23 || om < 0 || om > 59) return false;
+                    offset = (s[i] == '+' ? 1 : -1) * (oh * 60 + om);
+                }
+                return sec != 60 || ((h * 60 + m - offset) % 1440 + 1440) % 1440 == 23 * 60 + 59;
+            }
+            // RFC 3339 date-time: full-date "T" full-time.
+            constexpr bool date_time(std::string_view s) noexcept
+            {
+                return s.size() > 11 && (s[10] == 'T' || s[10] == 't') && date(s.substr(0, 10)) &&
+                       time(s.substr(11));
+            }
+            // Reads the components of a duration from `s[i]`, each digits and a unit, whose units follow each other
+            // in `units` from any of them, and tells whether it read one.
+            constexpr bool duration_components(std::string_view s, std::size_t& i, std::string_view units) noexcept
+            {
+                auto next = std::size_t{0};
+                auto any = false;
+                while (i < s.size() && is_digit(s[i]))
+                {
+                    while (i < s.size() && is_digit(s[i])) ++i;
+                    if (i == s.size()) return false;
+                    const auto u = find_char(units, s[i], next);
+                    if (u == std::string_view::npos || (any && u != next)) return false;
+                    next = u + 1;
+                    any = true;
+                    ++i;
+                }
+                return any;
+            }
+            // RFC 3339 Appendix A duration: "P" and the components of the date, "T" and those of the time, or weeks.
+            constexpr bool duration(std::string_view s) noexcept
+            {
+                if (s.size() < 3 || s[0] != 'P') return false;
+                if (s.back() == 'W') return is_digits(s.substr(1, s.size() - 2));
+                std::size_t i = 1;
+                if (s[i] != 'T' && !duration_components(s, i, "YMD")) return false;
+                if (i == s.size()) return true;
+                if (s[i] != 'T') return false;
+                ++i;
+                return duration_components(s, i, "HMS") && i == s.size();
+            }
+            // RFC 791 IPv4 address in dotted-decimal form, without leading zeros.
+            constexpr bool ipv4(std::string_view s) noexcept
+            {
+                std::size_t i = 0;
+                for (auto part = 0; part < 4; ++part)
+                {
+                    if (part != 0)
+                    {
+                        if (i == s.size() || s[i] != '.') return false;
+                        ++i;
+                    }
+                    const auto start = i;
+                    auto v = 0;
+                    while (i < s.size() && is_digit(s[i]) && i - start < 3) v = v * 10 + (s[i++] - '0');
+                    if (i == start || v > 255 || (s[start] == '0' && i - start > 1)) return false;
+                }
+                return i == s.size();
+            }
+            // RFC 4291 IPv6 address in text form, without a zone.
+            constexpr bool ipv6(std::string_view s) noexcept
+            {
+                std::size_t i = 0;
+                std::size_t groups = 0;
+                auto compressed = false;
+                if (s.starts_with("::"))
+                {
+                    compressed = true;
+                    i = 2;
+                }
+                while (i < s.size())
+                {
+                    auto j = i;
+                    while (j < s.size() && is_hex(s[j])) ++j;
+                    if (j < s.size() && s[j] == '.')
+                    {
+                        if (!ipv4(s.substr(i))) return false;
+                        groups += 2;
+                        break;
+                    }
+                    if (j == i || j - i > 4) return false;
+                    ++groups;
+                    i = j;
+                    if (i == s.size()) break;
+                    if (s[i] != ':' || ++i == s.size()) return false;
+                    if (s[i] == ':')
+                    {
+                        if (compressed) return false;
+                        compressed = true;
+                        ++i;
+                    }
+                }
+                return compressed ? groups <= 7 : groups == 8;
+            }
+            // Whether the RFC 3492 Punycode `s` decodes to a label that has a character other than ASCII, and no
+            // "--" in its 3rd and 4th positions, as RFC 5891 requires of the U-label of an A-label.  The tables of
+            // the characters of IDNA2008 are not checked.
+            constexpr bool punycode_label(std::string_view s) noexcept
+            {
+                constexpr std::uint32_t base = 36, tmin = 1, tmax = 26;
+                auto output = std::array<std::uint32_t, 64>{};
+                std::size_t size = 0;
+                const auto delimiter = s.rfind('-');
+                std::size_t in = 0;
+                if (delimiter != std::string_view::npos)
+                {
+                    for (; size < delimiter; ++size) output[size] = static_cast<unsigned char>(s[size]);
+                    in = delimiter + 1;
+                }
+                std::uint32_t n = 128, bias = 72;
+                std::uint64_t i = 0;
+                auto first = true;
+                while (in < s.size())
+                {
+                    const auto old = i;
+                    std::uint64_t w = 1;
+                    for (auto k = base;; k += base)
+                    {
+                        if (in == s.size()) return false;
+                        const auto c = s[in++];
+                        const auto digit = c >= 'a' && c <= 'z'   ? std::uint32_t(c - 'a')
+                                           : c >= 'A' && c <= 'Z' ? std::uint32_t(c - 'A')
+                                           : is_digit(c)          ? std::uint32_t(c - '0' + 26)
+                                                                  : base;
+                        if (digit == base) return false;
+                        i += digit * w;
+                        const auto t = k <= bias ? tmin : k >= bias + tmax ? tmax : k - bias;
+                        if (digit < t) break;
+                        w *= base - t;
+                        if (i > 0x10FFFF * std::uint64_t{64} || w > 0x10FFFF * std::uint64_t{64}) return false;
+                    }
+                    // the bias adaptation of RFC 3492 6.1
+                    auto delta = (i - old) / (first ? 700 : 2);
+                    first = false;
+                    delta += delta / (size + 1);
+                    std::uint32_t k = 0;
+                    for (; delta > ((base - tmin) * tmax) / 2; k += base) delta /= base - tmin;
+                    bias = static_cast<std::uint32_t>(k + (base - tmin + 1) * delta / (delta + 38));
+                    const auto code = n + i / (size + 1);
+                    if (code > 0x10FFFF || (code >= 0xD800 && code <= 0xDFFF) || size == output.size()) return false;
+                    n = static_cast<std::uint32_t>(code);
+                    i %= size + 1;
+                    for (auto j = size; j > i; --j) output[j] = output[j - 1];
+                    output[i++] = n;
+                    ++size;
+                }
+                const auto label = std::span(output).first(size);
+                return std::ranges::any_of(label, [](std::uint32_t c) { return c >= 128; }) &&
+                       !(size >= 4 && label[2] == '-' && label[3] == '-') && label.front() != '-' &&
+                       label.back() != '-';
+            }
+            // RFC 1123 host name: labels of letters, digits and hyphens of up to 63 characters, which neither begin
+            // nor end with a hyphen, up to 253 characters.  A label with "--" in its 3rd and 4th positions is an
+            // A-label, "xn--" and Punycode.
+            constexpr bool hostname(std::string_view s) noexcept
+            {
+                if (s.empty() || s.size() > 253) return false;
+                for (std::size_t start = 0;;)
+                {
+                    const auto dot = find_char(s, '.', start);
+                    const auto label = s.substr(start, dot == std::string_view::npos ? s.size() - start : dot - start);
+                    if (label.empty() || label.size() > 63 || label.front() == '-' || label.back() == '-') return false;
+                    if (!std::ranges::all_of(label, [](char c) { return is_alpha(c) || is_digit(c) || c == '-'; }))
+                        return false;
+                    if (label.size() >= 4 && label.substr(2, 2) == "--")
+                    {
+                        if ((label[0] != 'x' && label[0] != 'X') || (label[1] != 'n' && label[1] != 'N') ||
+                            !punycode_label(label.substr(4)))
+                            return false;
+                    }
+                    if (dot == std::string_view::npos) return true;
+                    start = dot + 1;
+                }
+            }
+            // RFC 5321 Mailbox: a dot-string or a quoted string of up to 64 characters, "@", and a domain or an
+            // IPv4 or IPv6 address literal.
+            constexpr bool email(std::string_view s) noexcept
+            {
+                std::size_t at = 0;
+                if (s.starts_with('"'))
+                {
+                    std::size_t i = 1;
+                    for (;; ++i)
+                    {
+                        if (i >= s.size()) return false;
+                        if (s[i] == '"') break;
+                        if (s[i] == '\\' && ++i == s.size()) return false;
+                        if (s[i] < 32 || s[i] > 126) return false;
+                    }
+                    at = i + 1;
+                    if (at == s.size() || s[at] != '@') return false;
+                }
+                else
+                {
+                    at = find_char(s, '@', 0);
+                    if (at == std::string_view::npos) return false;
+                    const auto local = s.substr(0, at);
+                    constexpr auto specials = std::string_view("!#$%&'*+-/=?^_`{|}~");
+                    if (local.empty() || local.front() == '.' || local.back() == '.' ||
+                        std::ranges::adjacent_find(local, [](char a, char b) { return a == '.' && b == '.'; }) !=
+                            local.end() ||
+                        !std::ranges::all_of(local, [&](char c) {
+                            return is_alpha(c) || is_digit(c) || c == '.' || find_char(specials, c, 0) != std::string_view::npos;
+                        }))
+                        return false;
+                }
+                if (at > 64) return false;
+                const auto domain = s.substr(at + 1);
+                if (!domain.starts_with('[')) return hostname(domain);
+                if (!domain.ends_with(']')) return false;
+                const auto literal = domain.substr(1, domain.size() - 2);
+                if (literal.size() >= 5 && (literal[0] == 'I' || literal[0] == 'i') &&
+                    (literal[1] == 'P' || literal[1] == 'p') && (literal[2] == 'v' || literal[2] == 'V') &&
+                    literal.substr(3, 2) == "6:")
+                    return ipv6(literal.substr(5));
+                return ipv4(literal);
+            }
+            // Whether the characters of `s` are RFC 3986 unreserved characters, sub-delims, percent-encoded octets
+            // or in `extra`.
+            constexpr bool uri_characters(std::string_view s, std::string_view extra) noexcept
+            {
+                constexpr auto marks = std::string_view("-._~!$&'()*+,;=");
+                for (std::size_t i = 0; i < s.size(); ++i)
+                {
+                    if (s[i] == '%')
+                    {
+                        if (!percent_encoded_at(s, i)) return false;
+                        i += 2;
+                    }
+                    else if (!is_alpha(s[i]) && !is_digit(s[i]) && find_char(marks, s[i], 0) == std::string_view::npos &&
+                             find_char(extra, s[i], 0) == std::string_view::npos)
+                        return false;
+                }
+                return true;
+            }
+            // RFC 3986 authority: [userinfo "@"] host [":" port].
+            constexpr bool uri_authority(std::string_view s) noexcept
+            {
+                if (const auto at = find_char(s, '@', 0); at != std::string_view::npos)
+                {
+                    if (!uri_characters(s.substr(0, at), ":")) return false;
+                    s.remove_prefix(at + 1);
+                }
+                if (s.starts_with('['))
+                {
+                    const auto close = find_char(s, ']', 0);
+                    if (close == std::string_view::npos) return false;
+                    const auto literal = s.substr(1, close - 1);
+                    if (literal.starts_with('v') || literal.starts_with('V'))
+                    {
+                        // IPvFuture: "v" 1*HEXDIG "." 1*( unreserved / sub-delims / ":" )
+                        const auto dot = find_char(literal, '.', 0);
+                        if (dot == std::string_view::npos || dot < 2 || dot + 1 == literal.size() ||
+                            !std::ranges::all_of(literal.substr(1, dot - 1), [](char c) { return is_hex(c); }) ||
+                            !uri_characters(literal.substr(dot + 1), ":") ||
+                            find_char(literal, '%', 0) != std::string_view::npos)
+                            return false;
+                    }
+                    else if (!ipv6(literal))
+                        return false;
+                    s.remove_prefix(close + 1);
+                }
+                else
+                {
+                    const auto colon = find_char(s, ':', 0);
+                    if (!uri_characters(s.substr(0, colon), "")) return false;
+                    s.remove_prefix(colon == std::string_view::npos ? s.size() : colon);
+                }
+                return s.empty() || (s[0] == ':' && is_digits(s.substr(1)));
+            }
+            // An RFC 3986 URI after its scheme and ":", or a relative reference.
+            constexpr bool uri_rest(std::string_view s, bool relative) noexcept
+            {
+                if (const auto hash = find_char(s, '#', 0); hash != std::string_view::npos)
+                {
+                    if (!uri_characters(s.substr(hash + 1), ":@/?")) return false;
+                    s = s.substr(0, hash);
+                }
+                if (const auto query = find_char(s, '?', 0); query != std::string_view::npos)
+                {
+                    if (!uri_characters(s.substr(query + 1), ":@/?")) return false;
+                    s = s.substr(0, query);
+                }
+                if (s.starts_with("//"))
+                {
+                    s.remove_prefix(2);
+                    const auto slash = find_char(s, '/', 0);
+                    if (!uri_authority(s.substr(0, slash))) return false;
+                    s.remove_prefix(slash == std::string_view::npos ? s.size() : slash);
+                }
+                else if (relative && find_char(s.substr(0, find_char(s, '/', 0)), ':', 0) != std::string_view::npos)
+                    return false;  // the first segment of a relative path has no colon
+                return uri_characters(s, ":@/");
+            }
+            // The index of the ":" after the scheme of `s`, or npos if `s` does not begin with a scheme.
+            constexpr std::size_t uri_scheme_end(std::string_view s) noexcept
+            {
+                if (s.empty() || !is_alpha(s[0])) return std::string_view::npos;
+                std::size_t i = 1;
+                while (i < s.size() && (is_alpha(s[i]) || is_digit(s[i]) || s[i] == '+' || s[i] == '-' || s[i] == '.'))
+                    ++i;
+                return i < s.size() && s[i] == ':' ? i : std::string_view::npos;
+            }
+            // RFC 3986 URI.
+            constexpr bool uri(std::string_view s) noexcept
+            {
+                const auto end = uri_scheme_end(s);
+                return end != std::string_view::npos && uri_rest(s.substr(end + 1), false);
+            }
+            // RFC 3986 URI-reference: a URI or a relative reference.
+            constexpr bool uri_reference(std::string_view s) noexcept
+            {
+                const auto end = uri_scheme_end(s);
+                return end != std::string_view::npos ? uri_rest(s.substr(end + 1), false) : uri_rest(s, true);
+            }
+            // An RFC 6570 expression between "{" and "}": an operator and a list of variables with their modifiers.
+            constexpr bool uri_template_expression(std::string_view s) noexcept
+            {
+                if (!s.empty() && find_char("+#./;?&", s[0], 0) != std::string_view::npos) s.remove_prefix(1);
+                for (;;)
+                {
+                    const auto comma = find_char(s, ',', 0);
+                    auto name = s.substr(0, comma);
+                    if (name.ends_with('*'))
+                        name.remove_suffix(1);
+                    else if (const auto colon = find_char(name, ':', 0); colon != std::string_view::npos)
+                    {
+                        const auto length = name.substr(colon + 1);
+                        if (length.empty() || length.size() > 4 || length[0] == '0' || !is_digits(length))
+                            return false;
+                        name = name.substr(0, colon);
+                    }
+                    if (name.empty() || name.front() == '.' || name.back() == '.') return false;
+                    for (std::size_t i = 0; i < name.size(); ++i)
+                    {
+                        if (name[i] == '%')
+                        {
+                            if (!percent_encoded_at(name, i)) return false;
+                            i += 2;
+                        }
+                        else if (name[i] == '.' ? name[i - 1] == '.'
+                                                : !is_alpha(name[i]) && !is_digit(name[i]) && name[i] != '_')
+                            return false;
+                    }
+                    if (comma == std::string_view::npos) return true;
+                    s.remove_prefix(comma + 1);
+                }
+            }
+            // RFC 6570 URI Template, with the literals of its errata, which take "'".
+            constexpr bool uri_template(std::string_view s) noexcept
+            {
+                for (std::size_t i = 0; i < s.size(); ++i)
+                {
+                    const auto c = static_cast<unsigned char>(s[i]);
+                    if (c == '{')
+                    {
+                        const auto close = find_char(s, '}', i);
+                        if (close == std::string_view::npos || !uri_template_expression(s.substr(i + 1, close - i - 1)))
+                            return false;
+                        i = close;
+                    }
+                    else if (c == '%')
+                    {
+                        if (!percent_encoded_at(s, i)) return false;
+                        i += 2;
+                    }
+                    else if (c <= 0x20 || c == 0x7F || find_char("\"<>\\^`|}", s[i], 0) != std::string_view::npos)
+                        return false;
+                }
+                return true;
+            }
+            // RFC 9562 UUID: 32 hexadecimal digits in groups of 8, 4, 4, 4 and 12.
+            constexpr bool uuid(std::string_view s) noexcept
+            {
+                if (s.size() != 36) return false;
+                for (std::size_t i = 0; i < s.size(); ++i)
+                {
+                    if (i == 8 || i == 13 || i == 18 || i == 23 ? s[i] != '-' : !is_hex(s[i])) return false;
+                }
+                return true;
+            }
+            // RFC 6901 JSON Pointer.
+            constexpr bool json_pointer(std::string_view s) noexcept
+            {
+                if (!s.empty() && s[0] != '/') return false;
+                for (std::size_t i = 0; i < s.size(); ++i)
+                {
+                    if (s[i] == '~' && (i + 1 == s.size() || (s[i + 1] != '0' && s[i + 1] != '1'))) return false;
+                }
+                return true;
+            }
+            // Relative JSON Pointer (draft-handrews-relative-json-pointer-01): a non-negative integer, and "#" or a
+            // JSON Pointer.
+            constexpr bool relative_json_pointer(std::string_view s) noexcept
+            {
+                std::size_t i = 0;
+                while (i < s.size() && is_digit(s[i])) ++i;
+                if (i == 0 || (s[0] == '0' && i > 1)) return false;
+                const auto rest = s.substr(i);
+                return rest == "#" || json_pointer(rest);
+            }
+        }  // namespace formats
+
+        // The check of the format `name` of `yyjson::format` that the library has, or null.
+        constexpr auto builtin_format(std::string_view name) noexcept -> bool (*)(std::string_view) noexcept
+        {
+            constexpr std::pair<std::string_view, bool (*)(std::string_view) noexcept> checks[] = {
+                {"date-time", formats::date_time},
+                {"date", formats::date},
+                {"time", formats::time},
+                {"duration", formats::duration},
+                {"email", formats::email},
+                {"hostname", formats::hostname},
+                {"ipv4", formats::ipv4},
+                {"ipv6", formats::ipv6},
+                {"uri", formats::uri},
+                {"uri-reference", formats::uri_reference},
+                {"uuid", formats::uuid},
+                {"uri-template", formats::uri_template},
+                {"json-pointer", formats::json_pointer},
+                {"relative-json-pointer", formats::relative_json_pointer},
+            };
+            for (const auto& [n, check] : checks)
+                if (n == name) return check;
+            return nullptr;
+        }
+
+        template <typename Level>
+        bool matches_format(std::string_view s)
+        {
+            constexpr auto name = Level::constraints.format();
+            constexpr auto check = builtin_format(name);
+            if constexpr (check != nullptr)
+                return check(s);
+            else
+            {
+                using checker_type = format_checker<dependent_t<void, Level>>;
+                static_assert(
+                    requires { sizeof(checker_type); },
+                    "yyjson::format checks the formats \"date-time\", \"date\", \"time\", \"duration\", \"email\", "
+                    "\"hostname\", \"ipv4\", \"ipv6\", \"uri\", \"uri-reference\", \"uuid\", \"uri-template\", "
+                    "\"json-pointer\" and \"relative-json-pointer\": specialize yyjson::format_checker<> for the "
+                    "others, with a constructor from the std::string_view of the name of the format and a const "
+                    "operator() that takes the std::string_view of a string and tells whether it has the format");
+                if constexpr (requires { sizeof(checker_type); })
+                {
+                    static const checker_type checker(name);
+                    return static_cast<bool>(checker(s));
+                }
+                else
+                    return true;
+            }
+        }
+
         template <typename T>
         concept constraint_string = std::convertible_to<const T&, std::string_view>;
         template <typename T>
@@ -4117,6 +5021,31 @@ namespace yyjson
             }
         }
 
+        // The kind of the values of `yyjson::const_value` and `yyjson::enum_values` that a value of V can equal.
+        template <typename V>
+        inline constexpr auto scalar_kind_of = std::same_as<V, bool>    ? json_scalar::kind_t::boolean
+                                               : std::is_arithmetic_v<V> ? json_scalar::kind_t::number
+                                                                         : json_scalar::kind_t::string;
+        // Whether the value `v` equals the value `s` of `yyjson::const_value` or `yyjson::enum_values`, of its kind,
+        // as a value of V.
+        template <typename V>
+        bool equals_scalar(const V& v, const json_scalar& s) noexcept
+        {
+            if constexpr (std::same_as<V, bool>)
+                return v == s.boolean;
+            else if constexpr (std::floating_point<V>)
+            {
+                const auto& b = s.number;
+                return v == (b.kind == bound_number::kind_t::sint   ? static_cast<V>(b.sint)
+                             : b.kind == bound_number::kind_t::uint ? static_cast<V>(b.uint)
+                                                                    : static_cast<V>(b.real));
+            }
+            else if constexpr (std::is_arithmetic_v<V>)
+                return std::is_eq(compare_bound(v, s.number));
+            else
+                return static_cast<std::string_view>(v) == s.string();
+        }
+
         // The constraint of the level `Level` that the value `v`, or the value that it holds when it is a
         // `std::optional`, does not satisfy.
         template <typename Level, typename V>
@@ -4125,15 +5054,35 @@ namespace yyjson
             constexpr const field_constraints& c = Level::constraints;
             constexpr bool numeric = c.has<minimum>() || c.has<maximum>() || c.has<exclusive_minimum>() ||
                                      c.has<exclusive_maximum>() || c.has<multiple_of>();
-            constexpr bool text = c.has<min_length>() || c.has<max_length>() || c.has<pattern>();
+            constexpr bool text = c.has<min_length>() || c.has<max_length>() || c.has<pattern>() || c.has<format>();
             constexpr bool items = c.has<min_items>() || c.has<max_items>();
             static_assert(!numeric || (std::is_arithmetic_v<V> && !std::same_as<V, bool>),
                           "yyjson::minimum, maximum, exclusive_minimum, exclusive_maximum and multiple_of constrain "
                           "a field or an element of a number");
             static_assert(!text || constraint_string<V>,
-                          "yyjson::min_length, max_length and pattern constrain a field or an element of a string");
+                          "yyjson::min_length, max_length, pattern and format constrain a field or an element of a "
+                          "string");
             static_assert(!items || constraint_items<V>,
                           "yyjson::min_items and max_items constrain a field or an element of a range");
+            constexpr bool listed = c.has<const_value>() || c.has<enum_values<0>>();
+            constexpr bool scalar = std::is_arithmetic_v<V> || constraint_string<V>;
+            static_assert(!listed || (scalar && std::ranges::all_of(Level::values, [](const json_scalar& s) {
+                                          return s.kind == scalar_kind_of<V>;
+                                      })),
+                          "yyjson::const_value and yyjson::enum_values constrain a field or an element of a string, "
+                          "a number or a bool, with values of its kind");
+            if constexpr (listed && scalar)
+            {
+                constexpr std::size_t constants = c.has<const_value>() ? 1 : 0;
+                if constexpr (constants != 0)
+                    if (!equals_scalar(v, Level::values[0])) return constraint_kind::const_value;
+                if constexpr (c.has<enum_values<0>>())
+                {
+                    if (!std::ranges::any_of(std::span(Level::values).subspan(constants),
+                                             [&v](const json_scalar& s) { return equals_scalar(v, s); }))
+                        return constraint_kind::enum_values;
+                }
+            }
             if constexpr (numeric && std::is_arithmetic_v<V> && !std::same_as<V, bool>)
             {
                 if constexpr (c.has<minimum>())
@@ -4160,6 +5109,8 @@ namespace yyjson
                 }
                 if constexpr (c.has<pattern>())
                     if (!matches_pattern<Level>(s)) return constraint_kind::pattern;
+                if constexpr (c.has<format>())
+                    if (!matches_format<Level>(s)) return constraint_kind::format;
             }
             if constexpr (items && constraint_items<V>)
             {
@@ -4427,7 +5378,7 @@ namespace yyjson
                 if (k == constraint_kind::none) return;
                 throw_located_violation<S, K, Level, typename constrained_range<E>::type>(e, k);
                 throw_constraint_violation(target_of(e), struct_field_key<S, K>, type_name<S>(), k, Level::constraints,
-                                           constraint_subject::element);
+                                           Level::values, constraint_subject::element);
             }
         }
 
@@ -4513,7 +5464,7 @@ namespace yyjson
                                 if (const auto violated = level_violation<next>(key); violated != constraint_kind::none)
                                     throw_constraint_violation(target_of(std::get<1>(kv)), struct_field_key<S, K>,
                                                                type_name<S>(), violated, next::constraints,
-                                                               constraint_subject::key);
+                                                               next::values, constraint_subject::key);
                             }
             }
             if constexpr (Level::node.constraints.template has<unique_items_t>() && constraint_items<V> &&
@@ -4537,8 +5488,8 @@ namespace yyjson
                             }
                             if (const auto j = first_duplicate(elements); j != no_duplicate)
                                 throw_constraint_violation(target_of((*a)[j]), struct_field_key<S, K>, type_name<S>(),
-                                                           constraint_kind::duplicate_item, Level::node.constraints,
-                                                           constraint_subject::element);
+                                                           constraint_kind::duplicate_item, Level::constraints,
+                                                           Level::values, constraint_subject::element);
                         }
             }
         }
@@ -4548,7 +5499,8 @@ namespace yyjson
         {
             using level = constraint_level<S, K>;
             throw_located_violation<S, K, level, typename constrained_range<F>::type>(json, k);
-            throw_constraint_violation(target_of(json), struct_field_key<S, K>, type_name<S>(), k, level::constraints);
+            throw_constraint_violation(target_of(json), struct_field_key<S, K>, type_name<S>(), k, level::constraints,
+                                       level::values);
         }
 
         // Throws `bad_cast` unless the field K of S, read from the JSON value `json`, satisfies its constraints.
@@ -5074,6 +6026,11 @@ namespace yyjson
                 {
                     if (!seen[i] && (rules::required[i] || (strict && !rules::optional[i])))
                         throw_missing_key(target_of(obj), rules::keys[i], type_name<T>());
+                }
+                for (const auto& [k, j] : rules::dependencies)
+                {
+                    if (seen[k] && !seen[j])
+                        throw_missing_dependency(target_of(obj), rules::keys[j], rules::keys[k], type_name<T>());
                 }
             }
         }
@@ -19844,6 +20801,10 @@ namespace yyjson
                 {
                     if (rules::required[i] || (strict_ && !rules::optional[i])) fail();
                 }
+                for (const auto& [k, j] : rules::dependencies)
+                {
+                    if (k < count && j >= count) fail();
+                }
             }
 
             // Checks the fields of the struct T after an object that has the keys of its fields from 0 to `count`
@@ -19956,6 +20917,10 @@ namespace yyjson
                     for (std::size_t i = 0; i < N; ++i)
                     {
                         if (!seen.test(i) && (rules::required[i] || (strict_ && !rules::optional[i]))) fail();
+                    }
+                    for (const auto& [k, j] : rules::dependencies)
+                    {
+                        if (seen.test(k) && !seen.test(j)) fail();
                     }
                 }
             }
