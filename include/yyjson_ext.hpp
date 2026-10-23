@@ -111,8 +111,11 @@ namespace yyjson
             }
             return true;
         }
+    }  // namespace detail
 
 #if YYJSON_VERSION_HEX >= 0x000C00
+    namespace detail
+    {
         // The encode types of the yyjson writer, for each byte of a string.  A type above 3 is the first byte
         // of a sequence of type / 2 bytes.
         enum : std::uint8_t
