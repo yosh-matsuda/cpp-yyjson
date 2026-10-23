@@ -4285,11 +4285,11 @@ namespace yyjson
                     case constraint_kind::contains:
                         return "has no item that satisfies the constraints of yyjson::contains";
                     case constraint_kind::min_contains:
-                        return std::format("has fewer than {} items that satisfy the constraints of yyjson::contains",
-                                           c.min_contains);
+                        return std::format("has fewer than {} {} the constraints of yyjson::contains", c.min_contains,
+                                           c.min_contains == 1 ? "item that satisfies" : "items that satisfy");
                     case constraint_kind::max_contains:
-                        return std::format("has more than {} items that satisfy the constraints of yyjson::contains",
-                                           c.max_contains);
+                        return std::format("has more than {} {} the constraints of yyjson::contains", c.max_contains,
+                                           c.max_contains == 1 ? "item that satisfies" : "items that satisfy");
                     default:
                         return "is rejected by yyjson::validate";
                 }
