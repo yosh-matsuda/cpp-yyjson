@@ -1037,7 +1037,7 @@ TEST(Constraints, Contains)
                                 "/v");
     expect_rejected<Containing>(
         R"({"none":[10,11]})",
-        prefix("none") + "has more than 1 items that satisfy the constraints of yyjson::contains", "/none");
+        prefix("none") + "has more than 1 item that satisfies the constraints of yyjson::contains", "/none");
     expect_rejected<Containing>(R"({"rows":[[1],[2]]})",
                                 prefix("rows") + "has no item that satisfies the constraints of yyjson::contains",
                                 "/rows");
@@ -1062,7 +1062,7 @@ TEST(Constraints, ContainsCounts)
     // a null element satisfies the settings of its value, as a null field does
     expect_accepted<Counted>(R"({"opts":[null,1]})", {.opts = {std::nullopt, 1}});
     expect_rejected<Counted>(R"({"opts":[null,null]})",
-                             prefix("opts") + "has more than 1 items that satisfy the constraints of yyjson::contains",
+                             prefix("opts") + "has more than 1 item that satisfies the constraints of yyjson::contains",
                              "/opts");
 }
 
