@@ -325,6 +325,7 @@ The annotations of a type change how the type converts, with no caster. Speciali
 | `yyjson::rename("key")` | a field | reads and writes the field by the JSON key `key` | [JSON keys](#json-keys) |
 | `yyjson::skip` | a field | leaves the field out of reading and writing | [Skipped fields](#skipped-fields) |
 | `yyjson::required`, `yyjson::optional_key` | a field | requires the key, or lets the object leave it out | [Strict reading](validation.md#strict-reading) |
+| `yyjson::omit_default` | a field | lets the object leave the key out, and leaves it out when writing the value in `T()` | [Fields with a default value](validation.md#fields-with-a-default-value) |
 | `yyjson::minimum(m)`, `yyjson::satisfies<f>` and the other constraints | a field | restricts the values that the field reads | [Constraints](validation.md#constraints) |
 | `yyjson::items(s...)`, `yyjson::additional_properties(s...)` | a range field, a map field | restricts the elements, or the values of the map | [Constraints of elements](validation.md#constraints-of-elements) |
 | `yyjson::unique_items`, `yyjson::prefix_items(p...)`, `yyjson::contains(s...)` with `yyjson::min_contains(n)` and `yyjson::max_contains(m)`, `yyjson::property_names(s...)` | a range or tuple field, a map field | rejects equal elements, restricts the elements by position or by their number, or restricts the keys | [Constraints of elements](validation.md#constraints-of-elements) |
@@ -401,7 +402,7 @@ auto json = yyjson::write(Task{"x", [] {}});
 
 ### C++26 annotations
 
-With C++26 static reflection, such as GCC 16 with `-std=c++26 -freflection`, the settings of a field can be written on the member itself as an [annotation](https://wg21.link/p3394). Every setting that `yyjson::field` takes is also an annotation: `[[=yyjson::rename("key")]]`, `[[=yyjson::skip]]`, `[[=yyjson::required]]`, `[[=yyjson::optional_key]]`, `[[=yyjson::adjacent_tag(key, ids)]]`, the [constraints](validation.md#constraints), such as `[[=yyjson::minimum(0)]]`, and the [constraints of elements](validation.md#constraints-of-elements), such as `[[=yyjson::items(yyjson::minimum(0))]]` and `[[=yyjson::prefix_items({yyjson::minimum(0)}, {})]]`.
+With C++26 static reflection, such as GCC 16 with `-std=c++26 -freflection`, the settings of a field can be written on the member itself as an [annotation](https://wg21.link/p3394). Every setting that `yyjson::field` takes is also an annotation: `[[=yyjson::rename("key")]]`, `[[=yyjson::skip]]`, `[[=yyjson::required]]`, `[[=yyjson::optional_key]]`, `[[=yyjson::omit_default]]`, `[[=yyjson::adjacent_tag(key, ids)]]`, the [constraints](validation.md#constraints), such as `[[=yyjson::minimum(0)]]`, and the [constraints of elements](validation.md#constraints-of-elements), such as `[[=yyjson::items(yyjson::minimum(0))]]` and `[[=yyjson::prefix_items({yyjson::minimum(0)}, {})]]`.
 
 ```cpp
 struct Project

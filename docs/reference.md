@@ -48,6 +48,7 @@ This page lists the functions, classes and other entities of cpp-yyjson, grouped
     *   [`yyjson::skip`](#yyjsonskip)
     *   [`yyjson::required`](#yyjsonrequired)
     *   [`yyjson::optional_key`](#yyjsonoptional_key)
+    *   [`yyjson::omit_default`](#yyjsonomit_default)
     *   [`yyjson::additional_properties`](#yyjsonadditional_properties)
     *   [`yyjson::dependent_required`](#yyjsondependent_required)
     *   [Constraints](#constraints)
@@ -333,7 +334,7 @@ void validate(const T& t);
 *   a field that [`yyjson::dependent_required`](#yyjsondependent_required) requires, left out while the field that requires it is written;
 *   a field of an [adjacent tag](#yyjsoninternal_tag-yyjsonadjacent_tag) that does not name the alternative that its variant holds, which `yyjson::write` rejects with `std::invalid_argument`.
 
-A field that `write` writes as `null`, such as an empty `std::shared_ptr` or a `std::variant` that holds `std::monostate`, is not checked by its constraints, as the read does not check them for `null`. A caster of the program that writes `null` is not detected, and the constraints of its field are checked.
+A field that `write` writes as `null`, such as an empty `std::shared_ptr` or a `std::variant` that holds `std::monostate`, is not checked by its constraints, as the read does not check them for `null`. Nor is a field that [`yyjson::omit_default`](#yyjsonomit_default) leaves out, whose key the read does not see. A caster of the program that writes `null` is not detected, and the constraints of its field are checked.
 
 The message is the one that the read gives, and `path()` is the JSON Pointer to the value in the JSON that `write` writes, such as `/users/3/age`. There is no `position()`. `validate` looks into the fields, the elements and the alternatives that `write` writes, and not into a value that a caster of the program converts.
 
@@ -1606,7 +1607,7 @@ template <typename... As>
 consteval field_annotation<As...> field(std::string_view member, As... values);
 ```
 
-`values` are one or more of [`yyjson::rename`](#yyjsonrename), [`yyjson::skip`](#yyjsonskip), [`yyjson::required`](#yyjsonrequired), [`yyjson::optional_key`](#yyjsonoptional_key), [`yyjson::adjacent_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag), the [constraints](#constraints), [`yyjson::items`](#yyjsonitems), [`yyjson::prefix_items`](#yyjsonprefix_items), [`yyjson::contains`, `yyjson::min_contains`, `yyjson::max_contains`](#yyjsoncontains-yyjsonmin_contains-yyjsonmax_contains), [`yyjson::property_names`](#yyjsonproperty_names), [`yyjson::additional_properties(settings...)`](#yyjsonadditional_properties), [`yyjson::title`, `yyjson::description`, `yyjson::deprecated`, `yyjson::examples`](#yyjsontitle-yyjsondescription-yyjsondeprecated-yyjsonexamples) and [`yyjson::schema`](#yyjsonschema). Any other setting is a compile error.
+`values` are one or more of [`yyjson::rename`](#yyjsonrename), [`yyjson::skip`](#yyjsonskip), [`yyjson::required`](#yyjsonrequired), [`yyjson::optional_key`](#yyjsonoptional_key), [`yyjson::omit_default`](#yyjsonomit_default), [`yyjson::adjacent_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag), the [constraints](#constraints), [`yyjson::items`](#yyjsonitems), [`yyjson::prefix_items`](#yyjsonprefix_items), [`yyjson::contains`, `yyjson::min_contains`, `yyjson::max_contains`](#yyjsoncontains-yyjsonmin_contains-yyjsonmax_contains), [`yyjson::property_names`](#yyjsonproperty_names), [`yyjson::additional_properties(settings...)`](#yyjsonadditional_properties), [`yyjson::title`, `yyjson::description`, `yyjson::deprecated`, `yyjson::examples`](#yyjsontitle-yyjsondescription-yyjsondeprecated-yyjsonexamples) and [`yyjson::schema`](#yyjsonschema). Any other setting is a compile error.
 
 ### `yyjson::rename`
 
@@ -1651,6 +1652,16 @@ inline constexpr optional_key_t optional_key{};
 ```
 
 The field then keeps its value in `T()`. It is a compile error together with `yyjson::required` and on a skipped field. See [Annotations of keys](validation.md#annotations-of-keys).
+
+### `yyjson::omit_default`
+
+A field whose key is left out of the object while the field holds its value in `T()`, and which the JSON object may leave out under [`yyjson::strict`](#yyjsonstrict).
+
+```cpp
+inline constexpr omit_default_t omit_default{};
+```
+
+Writing compares the field with the same field of one `T()`, made once per type, by `operator==`, and leaves out its key when they are equal. Reading treats the key as [`yyjson::optional_key`](#yyjsonoptional_key) does, so a missing key gives the field its value in `T()` and the object reads back as it was written. [`yyjson::validate`](#yyjsonvalidate) and [`write(t, yyjson::strict)`](#yyjsonwrite) do not check the constraints of a field that is left out. The type of the field needs `operator==`, and `T` a default constructor; a C array field is a compile error. It is also a compile error together with `yyjson::required` or `yyjson::optional_key`, on a skipped field and on a field tagged by `yyjson::adjacent_tag`. See [Annotations of keys](validation.md#annotations-of-keys).
 
 ### `yyjson::additional_properties`
 

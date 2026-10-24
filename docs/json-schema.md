@@ -123,7 +123,7 @@ JSON Schema treats `1.0` as an integer, as `read<int>` does.
 
 | | read | read with `yyjson::strict` | write |
 | --- | --- | --- | --- |
-| `required` | the fields with [`yyjson::required`](reference.md#yyjsonrequired) | also every field that may not be absent by its type or by [`yyjson::optional_key`](reference.md#yyjsonoptional_key) | the fields that `write` always writes: all but `std::optional` and the other [omittable](conversions.md#omitting-a-field-with-no-value) fields |
+| `required` | the fields with [`yyjson::required`](reference.md#yyjsonrequired) | also every field that may not be absent by its type, by [`yyjson::optional_key`](reference.md#yyjsonoptional_key) or by [`yyjson::omit_default`](reference.md#yyjsonomit_default) | the fields that `write` always writes: all but `std::optional`, the other [omittable](conversions.md#omitting-a-field-with-no-value) fields and the fields with `yyjson::omit_default` |
 | `additionalProperties: false` | with [`yyjson::additional_properties(false)`](reference.md#yyjsonadditional_properties) | unless `yyjson::additional_properties(true)` | always |
 | `default` | for each field that is not required | for each field that is not required | none |
 

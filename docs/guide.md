@@ -194,7 +194,7 @@ auto options = yyjson::read<Options>(R"({"verbose":true})");
 // -> Options{3, true}
 ```
 
-[`yyjson::strict`](validation.md#strict-reading) requires the keys of the fields that are not `std::optional`. To keep the default of a field under `strict` as well, annotate it with `yyjson::optional_key`.
+[`yyjson::strict`](validation.md#strict-reading) requires the keys of the fields that are not `std::optional`. To keep the default of a field under `strict` as well, annotate it with `yyjson::optional_key`. With [`yyjson::omit_default`](validation.md#fields-with-a-default-value) instead, writing also leaves the key out while the field holds its default, so the default can be a value that the JSON never holds, such as `-1` for "no limit".
 
 ### Write a field only when it has a value
 

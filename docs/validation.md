@@ -91,12 +91,12 @@ Each row below is a `yyjson::bad_cast` that the same read without `yyjson::stric
 | JSON | Without `yyjson::strict` | With `yyjson::strict` |
 | --- | --- | --- |
 | an object with a key that names no field of the struct, or names a [skipped field](conversions.md#skipped-fields) | the key is ignored | `T has no field of the key "k"` |
-| an object without the key of a field that is not a `std::optional` nor annotated with `yyjson::optional_key`, also when the field has a default member initializer | the field gets its value in `T()` | `T is not constructible from JSON without the key "k"` |
+| an object without the key of a field that is not a `std::optional` nor annotated with `yyjson::optional_key` or `yyjson::omit_default`, also when the field has a default member initializer | the field gets its value in `T()` | `T is not constructible from JSON without the key "k"` |
 | an object with a key twice, read into a struct or a map with unique keys, or with the key of a [tag](conversions.md#tagged-variants) twice | one of the members, [unspecified](#repeated-keys) which, gives the value or names the alternative | `the object read into T has the key "k" twice` |
 | an array with an element twice, read into a `std::set` or another set with unique elements; a `std::map` read from an array of pairs with a key twice | the first one is kept | `the array read into T has an element twice` |
 | `null` as the value of a `std::optional<U>` field whose `U` does not read `null`; see [`null` in a `std::optional`](#null-in-a-stdoptional) | the field keeps its value in `T()`, which is `std::nullopt` unless a default member initializer gives it another | `std::optional<U> is not constructible from null under yyjson::strict` |
 
-*   A field with a default member initializer, such as `int retries = 3;`, still needs its key. Annotate it with `yyjson::optional_key`, below, to let the object leave the key out.
+*   A field with a default member initializer, such as `int retries = 3;`, still needs its key. Annotate it with `yyjson::optional_key` or `yyjson::omit_default`, below, to let the object leave the key out.
 *   `merge_into` lets the object leave out any key and gives `null` its meaning of a merge patch, which resets the field, in the objects that it merges into. It still rejects an unknown key and a repeated key or element. A value that replaces a field, such as the array of a `std::vector`, is read as `read_into` reads it with `yyjson::strict`.
 *   An untagged `std::variant` takes the first alternative that the strict read accepts. The choice can therefore differ from the read without `yyjson::strict`: `std::variant<Circle, Rect>` reads `{"w":1,"h":2}` as `Rect` with `yyjson::strict` and as `Circle` without it.
 *   The key of an [internal tag](conversions.md#tagged-variants) is a key of the object of the alternative, and the key of an adjacent tag is a key of the struct that holds the variant. Neither is rejected as an unknown key. When the alternative is a struct, the struct checks the key of the tag as one of its own.
@@ -123,11 +123,12 @@ Any other `std::optional<U>`, such as the root or an element of an array, reads 
 
 ### Annotations of keys
 
-Four annotations change the rules of the keys for one field or one struct:
+Five annotations change the rules of the keys for one field or one struct:
 
 *   `yyjson::required` requires the key of a field, with or without `yyjson::strict`.
 *   `yyjson::additional_properties(false)` rejects the keys that name no field of a struct, with or without `yyjson::strict`.
 *   `yyjson::optional_key` lets the object leave out the key of a field under `yyjson::strict`.
+*   `yyjson::omit_default` does the same, and also leaves the key out of the written object while the field holds its value in `T()`; it is described in [Fields with a default value](#fields-with-a-default-value).
 *   `yyjson::dependent_required` of a struct requires the keys of some fields when the object has the key of another, with or without `yyjson::strict`; it is described after the first three.
 
 ```cpp
@@ -153,11 +154,11 @@ yyjson::read<Request>(R"({"method":"GET"})", yyjson::strict);  // -> Request{"GE
     *   Under `yyjson::strict`, a `null` value is still rejected unless the type of the field reads `null`.
     *   The [constraints](#constraints) of the field are checked when the key is there.
     *   [`yyjson::dependent_required`](#annotations-of-keys) of the struct still requires the key when the object has the key that it depends on.
-    *   The key is always written. For a field that is left out when it is written, use `std::optional` or a [`should_omit`](conversions.md#omitting-a-field-with-no-value) caster.
+    *   The key is always written. For a field that is left out when it is written, use [`yyjson::omit_default`](#fields-with-a-default-value), `std::optional` or a [`should_omit`](conversions.md#omitting-a-field-with-no-value) caster.
 
     It is a compile error together with `yyjson::required` and on a [skipped field](conversions.md#skipped-fields), and has no effect on a `std::optional` field.
 *   `yyjson::additional_properties(false)` makes the object of a struct reject a key that names no field of it. With `true`, the object may have such keys under `yyjson::strict` as well, which ignores them; use it for a struct that reads only some of the keys of a larger object.
-*   `yyjson::required` and `yyjson::additional_properties` are named after the keywords of [JSON Schema](https://json-schema.org/understanding-json-schema/reference/object) that say the same, and `yyjson::optional_key` is specific to cpp-yyjson. With [C++26 annotations](conversions.md#c26-annotations), write `[[=yyjson::required]]` and `[[=yyjson::optional_key]]` on the member and `struct [[=yyjson::additional_properties(false)]] Request` on the struct.
+*   `yyjson::required` and `yyjson::additional_properties` are named after the keywords of [JSON Schema](https://json-schema.org/understanding-json-schema/reference/object) that say the same, and `yyjson::optional_key` is specific to cpp-yyjson. With [C++26 annotations](conversions.md#c26-annotations), write `[[=yyjson::required]]`, `[[=yyjson::optional_key]]` and `[[=yyjson::omit_default]]` on the member and `struct [[=yyjson::additional_properties(false)]] Request` on the struct.
 
 `yyjson::dependent_required("member", {"other", ...})` of a struct requires the keys of the fields `other...` in an object that has the key of the field `member`, as the keyword `dependentRequired` of JSON Schema does:
 
@@ -180,6 +181,42 @@ yyjson::read<Payment>(R"({"card":"1234","address":"x"})");  // throws: Payment i
 *   It is checked with or without `yyjson::strict`, except in the objects that `merge_into` merges into. A struct may have it for several members.
 *   A member that the struct does not have, and a [skipped field](conversions.md#skipped-fields), are compile errors. With [C++26 annotations](conversions.md#c26-annotations), write `struct [[=yyjson::dependent_required("card", {"address", "zip"})]] Payment`.
 *   The check adds no cost to an object that has the keys of all the fields in their order, as an object that `yyjson::write` wrote does.
+
+### Fields with a default value
+
+`yyjson::omit_default` is for a field whose missing key means a known value, the value that the member initializer gives it. Reading gives the field that value when the key is missing, also under `yyjson::strict`, and writing leaves the key out while the field still holds it:
+
+```cpp
+struct Query
+{
+    std::string text;
+    int limit = -1;  // no limit
+};
+template <>
+inline constexpr auto yyjson::annotations<Query> =
+    yyjson::annotate(yyjson::field("limit", yyjson::omit_default, yyjson::minimum(0)));
+
+yyjson::write(Query{"a"});                                  // -> {"text":"a"}
+yyjson::write(Query{"a", 10});                              // -> {"text":"a","limit":10}
+yyjson::read<Query>(R"({"text":"a"})", yyjson::strict);     // -> Query{"a", -1}
+yyjson::read<Query>(R"({"text":"a","limit":-1})");          // throws: the value of the key "limit" of Query is less than the minimum 0 at /limit (line 1, column 21, pos 20)
+```
+
+*   The field is compared by `operator==` with the same field of one `T()`, which is made once per type. The type of the field needs `operator==`, and `T` a default constructor.
+*   The default may break the constraints of the field, as `-1` breaks `minimum(0)` above. Such a value is a sentinel that the program uses for "not given", and the JSON never holds it: writing leaves the key out, and [`yyjson::validate`](#checking-a-c-value) and `write(t, yyjson::strict)` do not check a field that is left out. A JSON object that has the sentinel itself is rejected, as the constraints say.
+*   The JSON Schema of the type, from [`yyjson::json_schema`](json-schema.md), does not require the key in either direction, and the read schema gives the default as `default` unless it breaks the constraints.
+*   It is a compile error together with `yyjson::required` or `yyjson::optional_key`, on a skipped field, on a field tagged by `yyjson::adjacent_tag`, and on a C array field.
+
+Three ways let a key be missing. They differ in what the program sees after reading and in what writing produces:
+
+| Field | Missing key reads as | Written key | Use it when |
+| --- | --- | --- | --- |
+| `T x = d;` with `yyjson::omit_default` | `d` | left out while `x == d` | the program needs a value either way, and `d` stands for "not given" |
+| `T x = d;` with `yyjson::optional_key` | `d` | always written | the reader accepts a missing key, but the writer always says the value |
+| `std::optional<T> x;` | `std::nullopt` | left out while empty | the program must tell "not given" from every value, for example to merge or to forward the object |
+
+*   The two sides of a format often want different fields for the same key. A program that only reads a configuration wants `int limit = -1;` and does not care whether the key was there; a program that writes a patch wants `std::optional<int>`, so that a key it did not set is not written.
+*   A `std::optional` field with a member initializer, such as `std::optional<int> x = 5;`, is written without its key when it is empty, and reading that object gives it `5` again, not `std::nullopt`. Do not give a `std::optional` field a value other than `std::nullopt` when the object has to read back as it was written.
 
 ## Constraints
 
