@@ -125,12 +125,24 @@ Besides the strings, ranges, maps and sets described above, the library has cast
 *   `std::tuple`-like
 *   `std::vector<bool>` (specialized)
 
-A `std::optional` field of a struct marks a key that may be absent:
+`std::optional<U>` has two roles, and its place decides which one it plays:
 
-*   A field that holds no value is left out when the struct is written.
-*   A key that the object does not have leaves the field as it is. JSON null in the field is read as a missing key, unless `T` reads null, such as `std::shared_ptr`, `std::unique_ptr`, a `std::variant` with `std::monostate`, `yyjson::value` or another `std::optional`: the field then holds the value read from null, as `explicit_limit` below does, which tells a null from a missing key. [`null` in a `std::optional`](validation.md#null-in-a-stdoptional) gives the full rule.
+*   As a field of a struct, it marks a key that may be absent. An empty field is left out of the object, and an object without the key reads.
+*   Anywhere else, such as the root, an element of a range, a value of a map or an alternative of a `std::variant`, it is a value that may be null. JSON null reads as `std::nullopt`, and `std::nullopt` is written as null.
 
-Any other `std::optional<T>`, such as the root or an element of an array, reads JSON null as `std::nullopt` and any other value as `T` does. To keep JSON null as a value of a field, use `std::shared_ptr`, `std::unique_ptr` or a `std::variant` with `std::monostate`: an empty pointer and `std::monostate` are written as null, and null is read as them.
+| | A field of a struct | Elsewhere |
+| --- | --- | --- |
+| the key is missing | the field gets its value in `T()`, also under [`yyjson::strict`](validation.md#strict-reading); `merge_into` keeps the value it has | — |
+| JSON null | read as a missing key, and rejected under [`yyjson::strict`](validation.md#strict-reading); a `U` that reads null, such as `std::shared_ptr`, `std::unique_ptr`, a `std::variant` with `std::monostate`, `yyjson::value` or another `std::optional`, gives the value read from null instead, as `explicit_limit` below does. [`null` in a `std::optional`](validation.md#null-in-a-stdoptional) gives the full rule | `std::nullopt` |
+| JSON null in `merge_into` | the field gets its value in `T()` | `std::nullopt`; a key of a map is erased |
+| any other JSON value | read as `U` reads it | the same |
+| writing `std::nullopt` | the key is left out | null |
+| [constraints](validation.md#constraints) | checked for the value it holds; an empty field passes | the same |
+| [JSON Schema](json-schema.md#c-types) | the schema of `U`, and the key is not in `required` | `{"anyOf": [U, {"type": "null"}]}` |
+
+*   A field with a member initializer, such as `std::optional<int> x = 5;`, gets the value of the initializer for a missing key. An empty field is therefore written without its key and read back as `5`; see [Fields with a default value](validation.md#fields-with-a-default-value).
+*   A struct annotated with [`yyjson::transparent`](#a-struct-as-the-value-of-its-field) whose field is a `std::optional` takes the column of the place where the struct is.
+*   To keep JSON null as a value of a field, use `std::shared_ptr`, `std::unique_ptr` or a `std::variant` with `std::monostate`: an empty pointer and `std::monostate` are written as null, and null is read as them.
 
 ```cpp
 using namespace yyjson;
