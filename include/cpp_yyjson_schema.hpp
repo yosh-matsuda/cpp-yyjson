@@ -311,7 +311,8 @@ namespace yyjson
             template <typename S>
             void emit_struct(object_ref out, std::string_view tag_key = {}, std::string_view tag_id = {});
             template <typename F, typename Tags, std::size_t... Is>
-            void emit_adjacent(array_ref one, std::string_view key, std::index_sequence<Is...>);
+            void emit_adjacent(array_ref one, std::string_view key, std::optional<std::size_t> held,
+                               std::index_sequence<Is...>);
 
             template <typename V>
             void emit_variant(object_ref out);
@@ -561,8 +562,12 @@ namespace yyjson
             }(std::make_index_sequence<std::variant_size_v<V>>{});
         }
 
+        // The branches of a variant with an adjacent tag, which are exclusive: one for each alternative, and when
+        // reading, the object without the tag and the member, and the tag of `held`, the alternative in `S()`, without
+        // the member.  The field keeps its value in `S()` in these two.
         template <typename F, typename Tags, std::size_t... Is>
-        void generator::emit_adjacent(array_ref one, std::string_view key, std::index_sequence<Is...>)
+        void generator::emit_adjacent(array_ref one, std::string_view key, std::optional<std::size_t> held,
+                                      std::index_sequence<Is...>)
         {
             (
                 [&] {
@@ -572,6 +577,7 @@ namespace yyjson
                     if constexpr (std::same_as<A, std::monostate>)
                     {
                         bp.emplace(key, empty_object).emplace("type", "null");
+                        branch.emplace("required", empty_array).emplace_back(key);
                         branch.emplace("not", empty_object).emplace("required", empty_array).emplace_back(Tags::key);
                     }
                     else
@@ -584,6 +590,20 @@ namespace yyjson
                     }
                 }(),
                 ...);
+            if (writing() || !held) return;
+            constexpr auto monostate = std::array{std::same_as<std::variant_alternative_t<Is, F>, std::monostate>...};
+            if (!monostate[*held])
+            {
+                auto branch = one.emplace_back(empty_object);
+                branch.emplace("properties", empty_object)
+                    .emplace(Tags::key, empty_object)
+                    .emplace("const", Tags::ids[*held]);
+                branch.emplace("required", empty_array).emplace_back(Tags::key);
+                branch.emplace("not", empty_object).emplace("required", empty_array).emplace_back(key);
+            }
+            auto absent = one.emplace_back(empty_object).emplace("not", empty_object).emplace("anyOf", empty_array);
+            absent.emplace_back(empty_object).emplace("required", empty_array).emplace_back(Tags::key);
+            absent.emplace_back(empty_object).emplace("required", empty_array).emplace_back(key);
         }
 
         template <typename S>
@@ -640,9 +660,14 @@ namespace yyjson
                                     if (!id.empty()) ids.emplace_back(id);
                             }
                             if (!adjacent) adjacent = out.emplace("allOf", empty_array);
+                            const auto held = [&]() -> std::optional<std::size_t> {
+                                if constexpr (std::default_initializable<S>)
+                                    return yyjson::detail::struct_field<Ks>(defaults).index();
+                                else
+                                    return std::nullopt;
+                            }();
                             emit_adjacent<F, tags>(adjacent->emplace_back(empty_object).emplace("oneOf", empty_array),
-                                                   key, std::make_index_sequence<std::variant_size_v<F>>{});
-                            // TODO: an object without the tag and the value, which keeps the value in S()
+                                                   key, held, std::make_index_sequence<std::variant_size_v<F>>{});
                         }
                         else if constexpr (yyjson::detail::is_std_optional<F>::value)
                         {
@@ -661,7 +686,8 @@ namespace yyjson
                         }();
                         if (is_required)
                             required.push_back(key);
-                        else if constexpr (std::default_initializable<S> && writable<F>)
+                        else if constexpr (std::default_initializable<S> && writable<F> &&
+                                           !yyjson::detail::adjacent_field<S, Ks>)
                         {
                             const auto& d = yyjson::detail::struct_field<Ks>(defaults);
                             const bool omitted = [&] {
@@ -695,7 +721,7 @@ namespace yyjson
             values_ = outer_values;
             const bool closed = writing() || rules::additional == additional::denied ||
                                 (strict() && rules::additional != additional::allowed);
-            // TODO: unevaluatedProperties when the struct has an adjacent tag in allOf
+            // The keys of the branches of `allOf` are in `properties` too, so `additionalProperties` knows them.
             if (closed) out.emplace("additionalProperties", false);
         }
     }  // namespace schema_detail
