@@ -1962,6 +1962,7 @@ consteval examples_t<sizeof...(Ss)> examples(const Ss&... json_texts);
 
 *   Give them to [`yyjson::field`](#yyjsonfield) for a field, and to [`yyjson::annotate`](#yyjsonannotationst-yyjsonannotate) for a type. With C++26 reflection, they can be written on a member or on the declaration of a struct or an enumeration.
 *   Each of them may be given once to a field and once to a type; a second one is a compile error.
+*   The settings of elements, such as [`yyjson::items`](#yyjsonitems), do not take them yet; that fails to compile. Annotate the element type instead.
 *   `examples` takes each example as JSON text. `json_schema<T>` reads each one with `read<T>` of the field or the type, with the strictness of the schema, and checks its constraints; one that fails throws `std::invalid_argument`. The write schema has what `write` writes of the value read.
 
 ```cpp
@@ -1992,6 +1993,7 @@ struct schema
 
 *   `schema(text)` declares the schema of both directions, and `schema({.read = ..., .write = ...})` declares them apart; a direction left out is derived. Both empty is a compile error.
 *   It replaces the whole derived schema, including the keywords of the constraints of a field, which are still checked on read. The library does not check it.
+*   The text is written as it is: a `$ref` in it is not rewritten for `ref_prefix` or for the names that a `schema_collection` gives.
 *   The declaration of a field overrides that of its type. A field with `yyjson::adjacent_tag` cannot take it.
 *   Text that is not a JSON object or a boolean throws `std::invalid_argument` from `json_schema<T>`.
 

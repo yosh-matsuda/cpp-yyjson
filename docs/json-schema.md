@@ -195,7 +195,7 @@ These annotations describe a type or a field in the schema, and do not change ho
 | [`yyjson::schema(...)`](#declared-schemas) | replaces the derived schema |
 | [`yyjson::schema_name("...")`](#names-of-types) | the name in `$defs` |
 
-Give the annotations of a type to `yyjson::annotate` of the type, and those of a field to its `yyjson::field`. With C++26 reflection, they can also be written on the declarations, as `struct [[=yyjson::title("Item")]] Item` and `[[=yyjson::description("Price in cents")]] long price;`; see [C++26 annotations](conversions.md#c26-annotations). The annotations of a field go into the schema of the field, beside the `$ref` of a named type, whose own annotations stay in `$defs`. For a type that is written in place, those of the field replace the same keys of the type.
+Give the annotations of a type to `yyjson::annotate` of the type, and those of a field to its `yyjson::field`. With C++26 reflection, they can also be written on the declarations, as `struct [[=yyjson::title("Item")]] Item` and `[[=yyjson::description("Price in cents")]] long price;`; see [C++26 annotations](conversions.md#c26-annotations). The annotations of a field go into the schema of the field, beside the `$ref` of a named type, whose own annotations stay in `$defs`. For a type that is written in place, those of the field replace the same keys of the type. The elements of a range and the values of a map, which [`yyjson::items`](validation.md#constraints-of-elements) and `yyjson::additional_properties(...)` constrain, take no annotations yet; annotate the element type instead.
 
 `yyjson::examples` takes each example as JSON text, such as `yyjson::examples(R"({"name":"pen"})", "{}")`. The library reads each one with `read<T>` of the field or the type, with the strictness of the schema, and checks its constraints; an example that fails throws `std::invalid_argument` when the schema is generated. The read schema has the examples as written, and the write schema has what `write` writes of the value read from them.
 
@@ -239,6 +239,7 @@ Without the declaration, both schemas of `Rgb` would be `{"type": "string"}`. Th
 *   `true` gives `{}`, and `false` gives `{"not": {}}`; a field declared `false` gets no `default`.
 *   The `title`, `description`, `deprecated` and `examples` of the annotations override the same keys in the text.
 *   A field with `yyjson::adjacent_tag` cannot take it; that fails to compile.
+*   The text is written as it is. A `$ref` in it is not rewritten for [`ref_prefix`](#options) or for the names that a [collection](#several-types-and-openapi) gives, such as `Order-Input`, so it refers to what it names in the published document.
 *   Text that is not a JSON object or a boolean throws `std::invalid_argument` when the schema is generated.
 
 ## Names of types
