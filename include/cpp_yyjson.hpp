@@ -4871,6 +4871,15 @@ namespace yyjson
                                                          : std::partial_ordering::equivalent;
                 return compare_integer_real(x, b.real);
             }
+            else if constexpr (sizeof(V) < sizeof(double))
+            {
+                // A float is compared with the bound rounded to a float, as the JSON number is rounded when it is
+                // read: `yyjson::maximum(0.1)` takes the float read from 0.1.
+                const auto bound = b.kind == kind::sint   ? static_cast<V>(b.sint)
+                                   : b.kind == kind::uint ? static_cast<V>(b.uint)
+                                                          : static_cast<V>(b.real);
+                return v <=> bound;
+            }
             else if constexpr (sizeof(V) > sizeof(double))
             {
                 const auto x = static_cast<long double>(v);

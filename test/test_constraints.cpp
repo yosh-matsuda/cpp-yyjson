@@ -44,6 +44,19 @@ inline constexpr auto yyjson::annotations<MixedBounds> =
                      yyjson::field("negative", yyjson::exclusive_maximum(-2.5), yyjson::multiple_of(7)),
                      yyjson::field("quarter", yyjson::multiple_of(0.25)));
 
+// bounds of a float field, which compares with them rounded to a float
+struct FloatBounds
+{
+    float tenth = 0;
+    float under = 0;
+    float big = 16777216.0F;
+    bool operator==(const FloatBounds&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<FloatBounds> =
+    yyjson::annotate(yyjson::field("tenth", yyjson::maximum(0.1)), yyjson::field("under", yyjson::exclusive_maximum(0.1)),
+                     yyjson::field("big", yyjson::minimum(16777217)));
+
 struct Texts
 {
     std::string name;
@@ -832,6 +845,18 @@ TEST(Constraints, Numbers)
         R"({"negative":-6})", R"(the value of the key "negative" of MixedBounds is not a multiple of 7)", "/negative");
     expect_rejected<MixedBounds>(
         R"({"quarter":0.3})", R"(the value of the key "quarter" of MixedBounds is not a multiple of 0.25)", "/quarter");
+}
+
+TEST(Constraints, FloatBounds)
+{
+    expect_accepted<FloatBounds>(R"({"tenth":0.1,"under":0.099999994,"big":16777217})",
+                                 {0.1F, 0.099999994F, 16777216.0F});
+    expect_rejected<FloatBounds>(
+        R"({"tenth":0.10000001})",
+        R"(the value of the key "tenth" of FloatBounds is greater than the maximum 0.1)", "/tenth");
+    expect_rejected<FloatBounds>(
+        R"({"under":0.1})",
+        R"(the value of the key "under" of FloatBounds is not less than the exclusive maximum 0.1)", "/under");
 }
 
 TEST(Constraints, NaN)
