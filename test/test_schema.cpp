@@ -286,6 +286,13 @@ template <> inline constexpr auto yyjson::annotations<Ds> = yyjson::annotate(
     yyjson::field("never", yyjson::schema("false")),
     yyjson::field("any", yyjson::schema("true"), yyjson::description("anything")));
 
+// Counts the objects that the generator constructs for the defaults.
+inline int counted_made = 0;
+struct Counted
+{
+    int x = ++counted_made;
+};
+
 struct Order
 {
     int id;
@@ -969,6 +976,19 @@ TEST(Schema, St)
         R"({"s":[],"m":{},"t":{"kind":"circle","r":1},"kv":{}})",
         R"({"a":1,"s":[],"m":{},"t":{"r":1},"kv":{}})",
     });
+}
+
+// The read schemas of a generation take the defaults from one `S()`, and the write schemas from none.
+TEST(Schema, DefaultsOnce)
+{
+    using enum yyjson::schema_direction;
+    counted_made = 0;
+    EXPECT_EQ(to_jsoncons(yyjson::json_schema<Counted>())["$defs"]["Counted"]["properties"]["x"]["default"], 1);
+    EXPECT_EQ(counted_made, 1);
+    (void)yyjson::json_schema<Counted>({.direction = write});
+    EXPECT_EQ(counted_made, 1);
+    (void)yyjson::schema_collection().add<Counted>().add<std::vector<Counted>>().add<Counted>(write).build();
+    EXPECT_EQ(counted_made, 2);
 }
 
 // A collection names a type once while its read and write schemas are the same, and splits it otherwise; its

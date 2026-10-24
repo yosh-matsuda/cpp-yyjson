@@ -182,7 +182,7 @@ Two kinds of constraints have no keyword:
 
 ## Defaults and descriptions
 
-A field that the read schema does not require gets `default`: the value of the field in `T()`, as `write` writes it. It is left out when `T` is not default-constructible, when `write` leaves the field out, such as an empty `std::optional`, when the value breaks the constraints of the field, or when the read could not read it back. The write schema has no defaults.
+A field that the read schema does not require gets `default`: the value of the field in `T()`, as `write` writes it. It is left out when `T` is not default-constructible, when `write` leaves the field out, such as an empty `std::optional`, when the value breaks the constraints of the field, or when the read could not read it back. One generation, a call of `json_schema<T>` or of `schema_collection::build()`, constructs `T()` once for each struct, and the write schema has no defaults and constructs none.
 
 These annotations describe a type or a field in the schema, and do not change how it is read or written:
 

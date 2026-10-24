@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <limits>
 #include <map>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -143,6 +144,8 @@ namespace yyjson
             std::string ref_prefix;
             // Whether the names are settled; until then a reference names the entry, which compares the schemas.
             bool settled = false;
+            // `S()` of each struct whose read schema has been written, constructed once for all its schemas.
+            std::vector<std::pair<const void*, std::shared_ptr<const void>>> defaults;
 
             template <typename T>
             std::size_t find_or_add(bool writing);
@@ -463,6 +466,23 @@ namespace yyjson
             // `yyjson::strict` applies to reading only: what `write` gives has every key that is not left out.
             [[nodiscard]] bool strict() const noexcept { return strict_ && !writing(); }
             [[nodiscard]] bool writing() const noexcept { return writing_; }
+
+            // `S()`, from which the read schema takes the defaults of the fields, or null for the write schema.
+            template <typename S>
+            [[nodiscard]] const S* defaults_of()
+            {
+                if constexpr (std::default_initializable<S>)
+                {
+                    if (writing()) return nullptr;
+                    const void* const id = &type_identity_tag<S>;
+                    auto& all = names_.defaults;
+                    const auto it = std::ranges::find_if(all, [&](const auto& d) { return d.first == id; });
+                    if (it != all.end()) return static_cast<const S*>(it->second.get());
+                    return static_cast<const S*>(all.emplace_back(id, std::make_shared<const S>()).second.get());
+                }
+                else
+                    return nullptr;
+            }
 
             template <typename F>
             [[nodiscard]] F read_value(std::string_view text) const
@@ -1389,12 +1409,7 @@ namespace yyjson
             auto required = std::vector<std::string_view>();
             emit_tags(properties, required, tags);
             auto adjacent = std::optional<array_ref>();
-            [[maybe_unused]] const auto defaults = [] {
-                if constexpr (std::default_initializable<S>)
-                    return S();
-                else
-                    return 0;
-            }();
+            [[maybe_unused]] const S* const defaults = defaults_of<S>();
 
             [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
                 (
@@ -1426,10 +1441,8 @@ namespace yyjson
                             }
                             if (!adjacent) adjacent = out.emplace("allOf", empty_array);
                             const auto held = [&]() -> std::optional<std::size_t> {
-                                if constexpr (std::default_initializable<S>)
-                                    return yyjson::detail::struct_field<Ks>(defaults).index();
-                                else
-                                    return std::nullopt;
+                                if (defaults == nullptr) return std::nullopt;
+                                return yyjson::detail::struct_field<Ks>(*defaults).index();
                             }();
                             emit_adjacent<F, tags>(adjacent->emplace_back(empty_object).emplace("oneOf", empty_array),
                                                    key, held, std::make_index_sequence<std::variant_size_v<F>>{});
@@ -1461,15 +1474,17 @@ namespace yyjson
                         else if constexpr (std::default_initializable<S> && writable<F> &&
                                            !yyjson::detail::adjacent_field<S, Ks>)
                         {
-                            const auto& d = yyjson::detail::struct_field<Ks>(defaults);
-                            const bool omitted = [&] {
-                                if constexpr (yyjson::detail::omittable<F>)
-                                    return yyjson::detail::should_omit_field(d);
-                                else
-                                    return false;
-                            }();
-                            if (!writing() && !omitted && !rejects && reads_back<S, Ks>(d))
-                                p.emplace("default", d, copy_string);
+                            if (defaults != nullptr)
+                            {
+                                const auto& d = yyjson::detail::struct_field<Ks>(*defaults);
+                                const bool omitted = [&] {
+                                    if constexpr (yyjson::detail::omittable<F>)
+                                        return yyjson::detail::should_omit_field(d);
+                                    else
+                                        return false;
+                                }();
+                                if (!omitted && !rejects && reads_back<S, Ks>(d)) p.emplace("default", d, copy_string);
+                            }
                         }
                         if (!m.empty())
                         {
