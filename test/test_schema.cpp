@@ -316,6 +316,17 @@ template <> inline constexpr auto yyjson::annotations<Sized> =
     yyjson::annotate(yyjson::field("m", yyjson::min_items(1), yyjson::max_items(2)),
                      yyjson::field("kv", yyjson::min_items(1), yyjson::max_items(2)));
 
+// A fixed-size array narrowed by min_items and max_items.
+struct Fixed
+{
+    std::array<int, 3> a{};
+    std::array<int, 2> b{};
+    std::array<int, 0> none{};
+};
+template <> inline constexpr auto yyjson::annotations<Fixed> =
+    yyjson::annotate(yyjson::field("a", yyjson::min_items(2), yyjson::max_items(5)),
+                     yyjson::field("b", yyjson::min_items(3)));
+
 // Written only: a borrowed string is not read.
 struct Borrowed { std::string_view s = "x"; const char* p = "y"; };
 
@@ -895,6 +906,23 @@ TEST(Schema, Sized)
         R"({"m":{"a":1},"kv":{}})",
         R"({"m":{"a":1,"b":2,"c":3},"kv":{"a":1}})",
         R"({"m":{"a":1},"kv":{"a":1,"b":2,"c":3}})",
+    });
+}
+
+TEST(Schema, Fixed)
+{
+    const auto schema = to_jsoncons(yyjson::json_schema<Fixed>());
+    const auto& props = schema["$defs"]["Fixed"]["properties"];
+    EXPECT_EQ(props["a"]["minItems"].as<int>(), 3);
+    EXPECT_EQ(props["a"]["maxItems"].as<int>(), 3);
+    EXPECT_EQ(props["b"]["minItems"].as<int>(), 3);
+    EXPECT_EQ(props["b"]["maxItems"].as<int>(), 2);
+    EXPECT_EQ(props["none"]["maxItems"].as<int>(), 0);
+    check<Fixed>({
+        R"({"a":[1,2,3],"b":[1,2],"none":[]})",
+        R"({"a":[1,2],"b":[1,2],"none":[]})",
+        R"({"a":[1,2,3,4],"b":[1,2],"none":[]})",
+        R"({"a":[1,2,3],"b":[1,2],"none":[1]})",
     });
 }
 

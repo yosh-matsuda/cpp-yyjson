@@ -966,15 +966,35 @@ namespace yyjson
             {
                 using E = yyjson::detail::array_element_t<T>;
                 out.emplace("type", "array");
-                if (n != nullptr) emit_constraints(out, n->constraints);
+                constexpr bool fixed = yyjson::detail::std_array<T> || yyjson::detail::c_array<T>;
+                if (n != nullptr)
+                {
+                    auto rest = n->constraints;
+                    if (fixed)
+                        rest.set &= ~(yyjson::detail::constraint_bit<yyjson::min_items> |
+                                      yyjson::detail::constraint_bit<yyjson::max_items>);
+                    emit_constraints(out, rest);
+                }
                 if constexpr (yyjson::detail::insertable_set<T> || yyjson::detail::unique_keys<T>)
                     if (!(n != nullptr && n->constraints.has<yyjson::unique_items_t>()))
                         out.emplace("uniqueItems", true);
-                if constexpr (yyjson::detail::std_array<T> || yyjson::detail::c_array<T>)
+                if constexpr (fixed)
                 {
-                    constexpr auto size = sizeof(T) / sizeof(E);
-                    if (!(n != nullptr && n->constraints.has<yyjson::min_items>())) out.emplace("minItems", size);
-                    if (!(n != nullptr && n->constraints.has<yyjson::max_items>())) out.emplace("maxItems", size);
+                    // The array holds exactly its size, which `min_items` and `max_items` can only narrow further.
+                    constexpr std::size_t size = [] {
+                        if constexpr (yyjson::detail::c_array<T>)
+                            return std::extent_v<T>;
+                        else
+                            return std::tuple_size_v<T>;
+                    }();
+                    auto min = size;
+                    auto max = size;
+                    if (n != nullptr && n->constraints.has<yyjson::min_items>())
+                        min = std::max(min, n->constraints.min_items);
+                    if (n != nullptr && n->constraints.has<yyjson::max_items>())
+                        max = std::min(max, n->constraints.max_items);
+                    out.emplace("minItems", min);
+                    out.emplace("maxItems", max);
                 }
                 if (n != nullptr && n->prefix_count != 0)
                 {
