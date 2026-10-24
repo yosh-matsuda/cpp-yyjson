@@ -6,10 +6,13 @@
 
 #include <filesystem>
 #include <limits>
+#include <optional>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "cpp_yyjson.hpp"
 
@@ -96,6 +99,182 @@ namespace yyjson
         {
         };
 
+        // The settings of `yyjson::title`, `yyjson::description`, `yyjson::deprecated` and `yyjson::examples` of a
+        // field or a type.
+        struct metadata
+        {
+            std::string_view title;
+            std::string_view description;
+            bool deprecated = false;
+            std::vector<std::string_view> examples;
+
+            template <typename A>
+            void add(const A& a)
+            {
+                if constexpr (std::same_as<A, yyjson::title>)
+                    title = a.text();
+                else if constexpr (std::same_as<A, yyjson::description>)
+                    description = a.text();
+                else if constexpr (std::same_as<A, deprecated_t>)
+                    deprecated = true;
+                else if constexpr (yyjson::detail::is_examples<A>::value)
+                    for (std::size_t i = 0; i < A::size(); ++i) examples.push_back(a.text(i));
+            }
+            [[nodiscard]] bool empty() const noexcept
+            {
+                return title.empty() && description.empty() && !deprecated && examples.empty();
+            }
+        };
+
+#if FIELD_RFL_ANNOTATIONS
+        // The annotations `yyjson::examples` of the entity R, which is a template and not looked up by its type.
+        template <std::meta::info R>
+        inline constexpr std::span<const std::meta::info> examples_annotations =
+            std::define_static_array(yyjson::detail::template_annotations_of<R, ^^yyjson::examples_t>());
+        template <std::meta::info R, std::size_t K>
+        using examples_annotation_type =
+            typename[:std::meta::remove_cvref(std::meta::type_of(examples_annotations<R>[K])):];
+
+        // Adds the metadata in the annotations of the member or the type R.
+        template <std::meta::info R>
+        void add_annotated_metadata(metadata& m)
+        {
+            for (const auto& a : field_reflection::detail::annotations_v<R, yyjson::title>) m.add(a);
+            for (const auto& a : field_reflection::detail::annotations_v<R, yyjson::description>) m.add(a);
+            for (const auto& a : field_reflection::detail::annotations_v<R, deprecated_t>) m.add(a);
+            [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                (m.add(std::meta::extract<examples_annotation_type<R, Ks>>(examples_annotations<R>[Ks])), ...);
+            }(std::make_index_sequence<examples_annotations<R>.size()>{});
+        }
+#endif
+
+        // The metadata of the field R of the struct S, by its index among all the fields.  The settings are checked
+        // with the keys of the fields, where a field has each of them once at most.
+        template <typename S, std::size_t R>
+        metadata field_metadata()
+        {
+            auto m = metadata();
+            std::apply(
+                [&](const auto&... as) {
+                    (
+                        [&]<typename A>(const A& a) {
+                            if constexpr (yyjson::detail::is_field_annotation<A>::value)
+                            {
+                                if (a.member == yyjson::detail::declared_member_name<S, R>)
+                                    std::apply([&](const auto&... vs) { (m.add(vs), ...); }, a.values);
+                            }
+                        }(as),
+                        ...);
+                },
+                annotations<S>.values);
+#if FIELD_RFL_ANNOTATIONS
+            if constexpr (!yyjson::detail::visitable<S>)
+            {
+                // Metadata alone does not build the table of the keys, which checks the settings of a member.
+                constexpr auto member = field_reflection::detail::member_at<S, R>;
+                static_assert(field_reflection::detail::annotations_v<member, yyjson::title>.size() <= 1,
+                              "a field is given yyjson::title twice");
+                static_assert(field_reflection::detail::annotations_v<member, yyjson::description>.size() <= 1,
+                              "a field is given yyjson::description twice");
+                static_assert(field_reflection::detail::annotations_v<member, deprecated_t>.size() <= 1,
+                              "a field is given yyjson::deprecated twice");
+                static_assert(examples_annotations<member>.size() <= 1, "a field is given yyjson::examples twice");
+                add_annotated_metadata<member>(m);
+            }
+#endif
+            return m;
+        }
+
+        // Whether the field R of S has `yyjson::examples`, which instantiates reading them.
+        template <typename S, std::size_t R>
+        consteval bool field_has_examples()
+        {
+            auto result = std::apply(
+                [](const auto&... as) {
+                    return (
+                        [&]<typename A>(const A& a) {
+                            if constexpr (yyjson::detail::is_field_annotation<A>::value)
+                                return a.member == yyjson::detail::declared_member_name<S, R> &&
+                                       std::apply(
+                                           []<typename... Vs>(const Vs&...) {
+                                               return (yyjson::detail::is_examples<Vs>::value || ...);
+                                           },
+                                           a.values);
+                            else
+                                return false;
+                        }(as) ||
+                        ...);
+                },
+                annotations<S>.values);
+#if FIELD_RFL_ANNOTATIONS
+            if constexpr (!yyjson::detail::visitable<S>)
+                result = result || !examples_annotations<field_reflection::detail::member_at<S, R>>.empty();
+#endif
+            return result;
+        }
+
+        // The number of the settings of the type A that `annotations<T>` and the annotations of the type T have.
+        template <typename T, typename A>
+        consteval std::size_t type_setting_count()
+        {
+            auto count = []<typename... As>(std::type_identity<std::tuple<As...>>) {
+                return (std::size_t{0} + ... + std::size_t{std::same_as<As, A>});
+            }(std::type_identity<yyjson::detail::annotation_values_of<T>>{});
+#if FIELD_RFL_ANNOTATIONS
+            if constexpr (std::is_class_v<T> || std::is_enum_v<T>)
+                count += field_reflection::type_annotations<T, A>.size();
+#endif
+            return count;
+        }
+        template <typename T>
+        consteval std::size_t type_examples_count()
+        {
+            auto count = []<typename... As>(std::type_identity<std::tuple<As...>>) {
+                return (std::size_t{0} + ... + std::size_t{yyjson::detail::is_examples<As>::value});
+            }(std::type_identity<yyjson::detail::annotation_values_of<T>>{});
+#if FIELD_RFL_ANNOTATIONS
+            if constexpr (std::is_class_v<T> || std::is_enum_v<T>)
+                count += examples_annotations<std::meta::dealias(^^T)>.size();
+#endif
+            return count;
+        }
+
+        // The metadata of the type T.
+        template <typename T>
+        metadata type_metadata()
+        {
+            static_assert(type_setting_count<T, yyjson::title>() <= 1, "a type is given yyjson::title twice");
+            static_assert(type_setting_count<T, yyjson::description>() <= 1,
+                          "a type is given yyjson::description twice");
+            static_assert(type_setting_count<T, deprecated_t>() <= 1, "a type is given yyjson::deprecated twice");
+            static_assert(type_examples_count<T>() <= 1, "a type is given yyjson::examples twice");
+            auto m = metadata();
+            std::apply(
+                [&](const auto&... as) {
+                    (
+                        [&]<typename A>(const A& a) {
+                            if constexpr (yyjson::detail::metadata_setting<A>) m.add(a);
+                        }(as),
+                        ...);
+                },
+                annotations<T>.values);
+#if FIELD_RFL_ANNOTATIONS
+            if constexpr (std::is_class_v<T> || std::is_enum_v<T>) add_annotated_metadata<std::meta::dealias(^^T)>(m);
+#endif
+            return m;
+        }
+
+        template <typename T>
+        struct optional_value
+        {
+            using type = T;
+        };
+        template <typename T>
+        struct optional_value<std::optional<T>>
+        {
+            using type = T;
+        };
+
         template <typename T>
         concept user_read = !yyjson::detail::reads_by_default<T>;
         // T is written by a `to_json` of the user, which returns a value or writes into one.
@@ -128,27 +307,106 @@ namespace yyjson
             [[nodiscard]] bool strict() const noexcept { return strict_ && !writing(); }
             [[nodiscard]] bool writing() const noexcept { return options_.direction == schema_direction::write; }
 
-            // Whether `read<F>` takes back what `write` gives for the value: a caster may write what it does not
-            // read, and such a value is no default of the schema that is read.
             template <typename F>
-            [[nodiscard]] bool reads_back(const F& value) const
+            [[nodiscard]] F read_value(std::string_view text) const
+            {
+                if (strict()) return yyjson::read<F>(text, yyjson::strict);
+                return yyjson::read<F>(text);
+            }
+
+            // Whether the field K of S takes the value `field` as `read<S>` does: it satisfies the constraints of
+            // the field.
+            template <typename S, std::size_t K, typename F>
+            [[nodiscard]] static bool satisfies(const F& field)
+            {
+                if constexpr (yyjson::detail::constrained_field<S, K>)
+                    return yyjson::detail::constraint_violation<S, K>(field) == yyjson::detail::constraint_kind::none;
+                else
+                    return true;
+            }
+
+            // Whether the field K of S takes back what `write` gives for its value `d`: a caster may write what it
+            // does not read, and a value in `T()` may not satisfy the constraints, and neither is a default of the
+            // schema that is read.
+            template <typename S, std::size_t K, typename F>
+            [[nodiscard]] bool reads_back(const F& d) const
             {
                 if constexpr (requires(std::string_view s) { yyjson::read<F>(s); })
                 {
                     try
                     {
-                        const auto text = yyjson::write(value);
-                        if (strict())
-                            (void)yyjson::read<F>(std::string_view(text), yyjson::strict);
-                        else
-                            (void)yyjson::read<F>(std::string_view(text));
-                        return true;
+                        const auto text = yyjson::write(d);
+                        return satisfies<S, K>(read_value<F>(std::string_view(text)));
                     }
                     catch (const std::exception&)
                     {
                         return false;
                     }
                 }
+                else
+                    return false;
+            }
+
+            // Writes the metadata `m` of a field or a type into `out`, where it replaces that of the type of the
+            // field.  Each example is read into E and checked by `check`; the schema of reading has it as it is
+            // written, and the schema of `write` has what `write` gives for the value read.
+            template <typename E, bool Examples, typename Check>
+            void emit_metadata(object_ref out, const metadata& m, std::string_view of, Check&& check) const
+            {
+                const auto put = [&](std::string_view key, const auto& value) {
+                    out.erase(key);
+                    out.emplace(key, value, copy_string);
+                };
+                if (!m.title.empty()) put("title", m.title);
+                if (!m.description.empty()) put("description", m.description);
+                if (m.deprecated) put("deprecated", true);
+                if constexpr (Examples) emit_examples<E>(out, m, of, check);
+            }
+            template <typename E, typename Check>
+            void emit_examples(object_ref out, const metadata& m, std::string_view of, Check&& check) const
+            {
+                out.erase("examples");
+                auto list = out.emplace("examples", empty_array);
+                for (const auto text : m.examples)
+                {
+                    const auto fail = [&](std::string_view why) {
+                        throw std::invalid_argument(std::string("yyjson::examples of ").append(of).append(" has ")
+                                                        .append(text).append(", which ").append(why));
+                    };
+                    if constexpr (requires { yyjson::read<E>(text); })
+                    {
+                        auto value = std::optional<E>();
+                        try
+                        {
+                            value.emplace(read_value<E>(text));
+                        }
+                        catch (const std::exception& e)
+                        {
+                            fail(std::string("read<T> does not read: ").append(e.what()));
+                        }
+                        if (!check(*value)) fail("does not satisfy the constraints");
+                        if (!writing())
+                            list.emplace_back(yyjson::read(text), copy_string);
+                        else if constexpr (writable<E>)
+                            list.emplace_back(*value, copy_string);
+                    }
+                    else
+                        fail("read<T> cannot read");
+                }
+            }
+            template <typename T>
+            void emit_type_metadata(object_ref out) const
+            {
+                if (const auto m = type_metadata<T>(); !m.empty())
+                    emit_metadata<T, type_examples_count<T>() != 0>(out, m, yyjson::detail::type_name<T>(),
+                                                                    [](const T&) { return true; });
+            }
+            // Whether T is put in `$defs` and has its metadata there.
+            template <typename T>
+            [[nodiscard]] bool named() const noexcept
+            {
+                if constexpr (std::is_enum_v<T> || struct_type<T>)
+                    return writing() ? !user_write<T> : !user_read<T>;
                 else
                     return false;
             }
@@ -311,6 +569,7 @@ namespace yyjson
                 names_.insert(name);
                 auto def = defs_->emplace(name, empty_object, copy_string);
                 body(def);
+                emit_type_metadata<T>(def);
             }
 
             template <typename S>
@@ -373,6 +632,8 @@ namespace yyjson
             }
             else
                 emit_builtin<T>(out, nodes, node);
+            if constexpr (std::same_as<T, std::remove_cvref_t<T>>)
+                if (!named<T>()) emit_type_metadata<T>(out);
         }
 
         // The constraints of a field hold for the C++ value that a user caster makes, and the caster's conversion
@@ -738,7 +999,22 @@ namespace yyjson
                                 else
                                     return false;
                             }();
-                            if (!writing() && !omitted && reads_back(d)) p.emplace("default", d, copy_string);
+                            if (!writing() && !omitted && reads_back<S, Ks>(d)) p.emplace("default", d, copy_string);
+                        }
+                        constexpr auto declared = yyjson::detail::struct_declared_index<S, Ks>;
+                        if (const auto m = field_metadata<S, declared>(); !m.empty())
+                        {
+                            using E = std::conditional_t<yyjson::detail::is_std_optional<F>::value &&
+                                                             !yyjson::detail::adjacent_field<S, Ks>,
+                                                         typename optional_value<F>::type, F>;
+                            const auto of = std::string(yyjson::detail::type_name<S>()).append("::").append(
+                                yyjson::detail::declared_member_name<S, declared>);
+                            emit_metadata<E, field_has_examples<S, declared>()>(p, m, of, [](const E& v) {
+                                if constexpr (std::same_as<E, F>)
+                                    return satisfies<S, Ks>(v);
+                                else
+                                    return satisfies<S, Ks>(F(v));
+                            });
                         }
                     }(),
                     ...);
