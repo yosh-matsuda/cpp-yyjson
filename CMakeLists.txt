@@ -16,6 +16,9 @@ option(CPPYYJSON_BUILD_TEST "Build ${PROJECT_NAME} tests"
        ${CPPYYJSON_IS_TOPLEVEL_PROJECT})
 option(CPPYYJSON_BUILD_BENCH "Build ${PROJECT_NAME} tests and benchmarks" OFF)
 option(CPPYYJSON_USE_BUNDLED_YYJSON "Build with the bundled SIMD yyjson" ON)
+option(CPPYYJSON_BUILD_CODEGEN
+       "Build cpp-yyjson-codegen, which generates C++ types from a JSON Schema"
+       OFF)
 
 # Benchmarks are meant to measure the fastest available backend.
 if(CPPYYJSON_BUILD_BENCH AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64)$")
@@ -325,6 +328,11 @@ if(CPPYYJSON_IS_TOPLEVEL_PROJECT)
                   ${PROJECT_SOURCE_DIR}/include/yyjson_ext.hpp
             DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
   endif()
+endif()
+
+# tools
+if(CPPYYJSON_BUILD_CODEGEN)
+  add_subdirectory(tools/codegen)
 endif()
 
 # test and benchmark

@@ -1,0 +1,4 @@
+add_executable(cpp_yyjson_codegen main.cpp)
+target_link_libraries(cpp_yyjson_codegen PRIVATE cpp_yyjson)
+target_compile_features(cpp_yyjson_codegen PRIVATE cxx_std_20)
+set_target_properties(cpp_yyjson_codegen PROPERTIES OUTPUT_NAME cpp-yyjson-codegen)
