@@ -423,7 +423,7 @@ yyjson::object json_schema(yyjson::strict_t, const schema_options& options = {})
 
 The first form gives the schema of what `yyjson::read<T>` reads, or with [`schema_direction::write`](#yyjsonschema_options-yyjsonschema_collectionoptions) of what `yyjson::write` writes. The second form gives the schema of what `read<T>(json, yyjson::strict)` reads; the write schema is the same in both forms. The result has `$schema`, `$id` when [`schema_options`](#yyjsonschema_options-yyjsonschema_collectionoptions) gives one, the [named types](json-schema.md#names-of-types) in `$defs`, and the schema of `T`, which is a `$ref` for a named type.
 
-JSON that is valid against the schema is read by `read<T>` with the same strictness, with the exceptions listed in [What the schema guarantees](json-schema.md#what-the-schema-guarantees).
+JSON that is valid against the schema is read by `read<T>` with the same strictness, and `write` writes JSON that is valid against the write schema for a value that meets its constraints, with the exceptions listed in [What the schema guarantees](json-schema.md#what-the-schema-guarantees). The library writes JSON Schema 2020-12 only, not draft-07 or the schema objects of OpenAPI 3.0.
 
 Throws `std::invalid_argument` for two types with the same [`yyjson::schema_name`](#yyjsonschema_name), an [example](#yyjsontitle-yyjsondescription-yyjsondeprecated-yyjsonexamples) that `read<T>` does not read, a [declared schema](#yyjsonschema) that is not a JSON object or a boolean, and a variant with `yyjson::internal_tag` and without `yyjson::schema_name` that refers to itself.
 

@@ -4,6 +4,12 @@
 
 `yyjson::json_schema<T>()` generates the [JSON Schema](https://json-schema.org/draft/2020-12) (2020-12) of a C++ type: the JSON that `yyjson::read<T>` reads, or the JSON that `yyjson::write` writes. The schema comes from the type and its [annotations](conversions.md#annotations), so it stays in step with the code. Use it to document an API, to check JSON in another language, or to publish the types of a service in [OpenAPI 3.1](#several-types-and-openapi).
 
+In short:
+
+*   The output is JSON Schema 2020-12, which OpenAPI 3.1 also uses. The library does not write draft-07 or the schema objects of OpenAPI 3.0, which lack keywords such as `prefixItems` and `$defs`.
+*   JSON that is valid against the read schema is read by `read<T>`, and what `write` writes for a value that meets its [constraints](validation.md#constraints) is valid against the write schema, with the exceptions listed in [What the schema guarantees](#what-the-schema-guarantees). The other way does not hold: `read<T>` accepts some JSON that the read schema rejects.
+*   What the schema cannot express, such as [`yyjson::satisfies<f>`](validation.md#constraints) and the checks of a [caster](conversions.md#user-defined-casters), is left out of it. A [declared schema](#declared-schemas) gives the schema of what the library cannot derive.
+
 This document describes:
 
 *   how to [generate a schema](#generating-a-schema), and [what it guarantees](#what-the-schema-guarantees);
@@ -81,9 +87,11 @@ Generating a schema reads the annotations at compile time and builds the documen
 
 The schema describes the declaration of `T`: its types and its annotations. The guarantee goes one way:
 
-> JSON that is valid against the read schema is read by `yyjson::read<T>` with the same strictness, and the JSON that `yyjson::write` writes is valid against the write schema.
+> JSON that is valid against the read schema is read by `yyjson::read<T>` with the same strictness, and the JSON that `yyjson::write` writes for a value that meets its constraints is valid against the write schema.
 
 `test/test_schema.cpp` checks this with the validator of [jsoncons](https://github.com/danielaparker/jsoncons) on the corpora of the tests.
+
+A plain `write` does not check the [constraints](validation.md#constraints), so it writes a value that breaks them as it is, and the output is outside the write schema. A default value can break them too: a field `name` with `yyjson::min_length(1)` is empty in `T()`. [`yyjson::validate`](reference.md#yyjsonvalidate) checks a value, and [`write(t, yyjson::strict)`](reference.md#yyjsonwrite) checks it before writing.
 
 The other way does not hold: `read<T>` accepts some JSON that the schema rejects. Without `yyjson::strict`, the read takes more than the declaration says, and the schema describes the declaration:
 
@@ -98,6 +106,7 @@ The other way does not hold: `read<T>` accepts some JSON that the schema rejects
 The guarantee has exceptions, where valid JSON is not read:
 
 *   A key repeated in an object, which a read with `yyjson::strict` rejects. JSON Schema works on the parsed data, where a key appears once.
+*   A key repeated in a map whose key is not a string, such as `std::map<Point, int>`, which is written as an array of pairs `[[k, v]]`. A read with `yyjson::strict` rejects a second pair with the same key, while `uniqueItems` compares whole pairs and accepts two pairs whose values differ.
 *   A number too large for `double`, such as `1e400`, which reads as infinity and is rejected. The schema of an integer type has the bounds of the type.
 *   A `format` that the validator does not check, or checks less strictly than the library; see [Formats and validators](#formats-and-validators). The same applies to `pattern`, which the validator matches with its own dialect of regular expressions, and the library with [`yyjson::pattern_matcher<>`](reference.md#yyjsonpattern_matcher).
 *   [`yyjson::satisfies<f>`](validation.md#constraints) and the checks of a [caster](conversions.md#user-defined-casters), which the schema cannot express.
@@ -124,7 +133,7 @@ The two directions also differ where the conversion is not symmetric:
 *   A [translator](conversions.md#translator) reads the type that its `from_json` takes and writes the type that its `to_json` returns, so the read schema has the schema of the first and the write schema the schema of the second.
 *   A field with an [adjacent tag](reference.md#yyjsoninternal_tag-yyjsonadjacent_tag) may be absent on read. The read schema also allows neither key, and the tag alone when it names the alternative of the default value; the write schema has only the branches that `write` writes.
 
-The [constraints](validation.md#constraints) are in both schemas. A plain `write` does not check them; [`write(t, yyjson::strict)`](reference.md#yyjsonwrite) and [`yyjson::validate`](reference.md#yyjsonvalidate) do, so their output is valid against the write schema too.
+The [constraints](validation.md#constraints) are in both schemas. A plain `write` does not check them; [`write(t, yyjson::strict)`](reference.md#yyjsonwrite) and [`yyjson::validate`](reference.md#yyjsonvalidate) do, as described in [What the schema guarantees](#what-the-schema-guarantees).
 
 ## C++ types
 
