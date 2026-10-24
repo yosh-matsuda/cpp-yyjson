@@ -321,6 +321,27 @@ namespace yyjson
                 e.state_->mutable_value = true;
             }
 
+            // Puts `prefix`, the escaped tokens of the members and the elements that `yyjson::validate` passed
+            // through, such as `/users/3`, in front of the path of `e`, which has no value to start at.
+            CPPYYJSON_COLD static void prepend_path(bad_cast& e, std::string_view prefix) noexcept
+            {
+                try
+                {
+                    if (e.state_ == nullptr)
+                    {
+                        auto s = std::make_shared<bad_cast::state>();
+                        s->what = e.std::runtime_error::what();
+                        e.state_ = std::move(s);
+                    }
+                    e.state_->path.insert(0, prefix);
+                    update_what(e);
+                }
+                catch (...)  // NOLINT(bugprone-empty-catch)
+                {
+                    // without memory for the path, the exception is thrown as it is
+                }
+            }
+
             // Called by a cast of `v` that `e` leaves.  The path is left as it is if it cannot be extended.
             template <typename Val>
             CPPYYJSON_COLD static void add_path(bad_cast& e, const Val* v) noexcept
@@ -6190,8 +6211,9 @@ namespace yyjson
             }(std::make_index_sequence<struct_field_count<S>>{});
         }
 
-        // Throws unless each field of S that is the tag of a variant names the alternative that the variant holds.
-        template <typename S>
+        // Throws `Error`, `std::invalid_argument` for a write and `bad_cast` for `yyjson::validate`, unless each
+        // field of S that is the tag of a variant names the alternative that the variant holds.
+        template <typename S, typename Error = std::invalid_argument>
         void check_adjacent_tags(const S& s)
         {
             [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
@@ -6219,7 +6241,7 @@ namespace yyjson
                                     id = std::string_view(tag);
                                 }
                                 if (id != tags::ids[index])
-                                    throw std::invalid_argument(std::format(
+                                    throw Error(std::format(
                                         "the field \"{}\" of {} is \"{}\", but the field \"{}\" holds the alternative "
                                         "\"{}\"",
                                         tags::key, type_name<S>(), id, struct_field_key<S, Ks>, tags::ids[index]));
@@ -12217,6 +12239,370 @@ namespace yyjson
         using write_cause = typename std::conditional_t<writable<T>, std::type_identity<void>,
                                                         conversion_cause<write_cause_policy, T>>::type;
     }  // namespace detail
+
+    // `yyjson::validate`: the checks that `yyjson::read<T>(text, yyjson::strict)` makes of the text that
+    // `yyjson::write(t)` writes, made on the C++ value before it is written.
+    namespace detail
+    {
+        // A struct, which is written as a JSON object of its fields, as `cause_children` tells.
+        template <typename T>
+        concept validated_struct =
+            (!is_std_optional<T>::value) && (!owning_pointer<T>) && (!requires { std::variant_size<T>::value; }) &&
+            (visitable<T> || reflected_range_aggregate<T> ||
+             (!std::ranges::range<T> && !tuple_like<T> && reflectable<T>));
+
+        // A range that is written as a JSON object of its elements.
+        template <typename T>
+        concept key_value_range =
+            std::ranges::range<const T> && key_value_like<std::remove_cv_t<std::ranges::range_value_t<const T>>>;
+
+        // A range whose keys `yyjson::property_names` checks, of a type that is read from the text of a key.
+        template <typename T>
+        concept text_key_range =
+            constraint_key_range<T> &&
+            std::constructible_from<std::remove_cv_t<std::tuple_element_t<0, std::ranges::range_value_t<T>>>,
+                                    std::string_view>;
+
+        // Whether the object of the struct S must have the key of its field K under `yyjson::strict`.
+        template <typename S, std::size_t K>
+        inline constexpr bool strictly_required_field =
+            struct_key_rules<S>::required[K] || !struct_key_rules<S>::optional[K];
+
+        // Whether `yyjson::validate` checks something of a value of the type T, beside the values in it.
+        template <typename T>
+        consteval bool validates_itself()
+        {
+            if constexpr (!std::is_class_v<T> || write_conversion::opaque<T>)
+                return false;
+            else if constexpr (validated_struct<T>)
+                return []<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                    return ((constrained_field<T, Ks> ||
+                             (omittable<struct_field_type<T, Ks>> && strictly_required_field<T, Ks>)) ||
+                            ...) ||
+                           !struct_key_rules<T>::dependencies.empty() || has_adjacent_fields<T>;
+                }(std::make_index_sequence<struct_field_count<T>>{});
+            else
+                return false;
+        }
+        template <typename... Ts>
+        consteval bool any_validates_itself(type_list<conversion_node<write_conversion, Ts>...>)
+        {
+            return (validates_itself<Ts>() || ...);
+        }
+        // Whether `yyjson::validate` checks something of a value of the type T or of the values in it, which the
+        // types that T leads to tell, as for `yyjson::writable`.
+        template <typename T>
+        inline constexpr bool needs_validation =
+            any_validates_itself(closure_t<type_list<conversion_node<write_conversion, std::remove_cvref_t<T>>>>{});
+
+        inline std::string index_token(std::size_t i) { return "/" + std::to_string(i); }
+        inline std::string key_token(std::string_view key) { return "/" + bad_cast_access::escape(key); }
+        template <std::size_t I>
+        struct index_prefix
+        {
+            std::string operator()() const { return index_token(I); }
+        };
+
+        // The key that the writer writes for the key `k` of a map or of a pair in a tuple.
+        template <typename K>
+        std::string written_key(const K& k)
+        {
+            if constexpr (enum_key<K>)
+            {
+                auto buf = enum_key_buffer{};
+                return std::string(enum_key_text(k, buf));
+            }
+            else if constexpr (std::convertible_to<const K&, std::string_view>)
+                return std::string(std::string_view(k));
+            else if constexpr (std::convertible_to<const K&, const char*>)
+            {
+                const char* p = k;
+                return p != nullptr ? std::string(p) : std::string();
+            }
+            else
+                return std::string(k);
+        }
+
+        // Calls `check()`, and puts the members and the elements that `prefix()` names in front of the path of a
+        // `bad_cast` that leaves it.
+        template <typename Prefix, typename Check>
+        void validate_within(const Prefix& prefix, Check&& check)
+        {
+            try
+            {
+                std::forward<Check>(check)();
+            }
+            catch (bad_cast& e)
+            {
+                bad_cast_access::prepend_path(e, prefix());
+                throw;
+            }
+        }
+
+        template <typename S, std::size_t K, typename Level, typename V>
+        void throw_value_located_violation(const V& v, constraint_kind k);
+
+        // Throws `bad_cast` at the element `e` in the value of the field K of S, which `prefix()` names, or at a
+        // value in it, if `e` does not satisfy the node `Level`.
+        template <typename S, std::size_t K, typename Level, typename E, typename Prefix>
+        void throw_if_value_violated(const E& e, const Prefix& prefix)
+        {
+            const auto k = level_violation<Level>(e);
+            if (k == constraint_kind::none) return;
+            validate_within(prefix, [&] {
+                if constexpr (is_std_optional<E>::value)
+                {
+                    if (e.has_value()) throw_value_located_violation<S, K, Level>(*e, k);
+                }
+                else
+                    throw_value_located_violation<S, K, Level>(e, k);
+                throw_constraint_violation(cast_target{}, struct_field_key<S, K>, type_name<S>(), k, Level::constraints,
+                                           Level::values, constraint_subject::element);
+            });
+        }
+        template <typename S, std::size_t K, typename Level, std::size_t J, typename It, typename End>
+        void throw_if_prefix_violated(It& it, const End& end)
+        {
+            if (it == end) return;
+            throw_if_value_violated<S, K, typename Level::template at<Level::node.prefix + J>>(*it, index_prefix<J>{});
+            ++it;
+        }
+
+        // Finds the element, the value or the key in the C++ value `v` that makes it violate the constraint `k` of
+        // the node `Level`, as `throw_located_violation` does in JSON, and throws `bad_cast` at it.
+        template <typename S, std::size_t K, typename Level, typename V>
+        void throw_value_located_violation(const V& v, constraint_kind k)
+        {
+            if constexpr (Level::node.items != 0 && constraint_item_range<V>)
+            {
+                if (k == constraint_kind::items)
+                {
+                    std::size_t j = 0;
+                    for (const auto& e : v)
+                    {
+                        if (j >= Level::node.prefix_count)
+                            throw_if_value_violated<S, K, typename Level::template at<Level::node.items>>(
+                                e, [j] { return index_token(j); });
+                        ++j;
+                    }
+                }
+            }
+            if constexpr (Level::node.values != 0 && constraint_value_range<V>)
+            {
+                using next = typename Level::template at<Level::node.values>;
+                if (k == constraint_kind::values)
+                {
+                    std::size_t j = 0;
+                    for (const auto& e : v)
+                    {
+                        if constexpr (key_value_range<V>)
+                            throw_if_value_violated<S, K, next>(
+                                std::get<1>(e), [&e] { return key_token(written_key(std::get<0>(e))); });
+                        else
+                            // a map whose keys are not strings, written as an array of [key, value] pairs
+                            throw_if_value_violated<S, K, next>(std::get<1>(e),
+                                                                [j] { return index_token(j) + "/1"; });
+                        ++j;
+                    }
+                }
+            }
+            if constexpr (Level::node.prefix_count != 0 && constraint_prefix_target<V>)
+            {
+                if (k == constraint_kind::prefix_items)
+                {
+                    if constexpr (constraint_tuple<V>)
+                        [&]<std::size_t... J>(std::index_sequence<J...>) {
+                            (throw_if_value_violated<S, K, typename Level::template at<Level::node.prefix + J>>(
+                                 std::get<J>(v), index_prefix<J>{}),
+                             ...);
+                        }(std::make_index_sequence<std::min(Level::node.prefix_count, std::tuple_size_v<V>)>{});
+                    else
+                    {
+                        auto it = std::ranges::begin(v);
+                        const auto end = std::ranges::end(v);
+                        [&]<std::size_t... J>(std::index_sequence<J...>) {
+                            (throw_if_prefix_violated<S, K, Level, J>(it, end), ...);
+                        }(std::make_index_sequence<Level::node.prefix_count>{});
+                    }
+                }
+            }
+            // as in JSON, a key is located only if its type is read from the text of the key
+            if constexpr (Level::node.keys != 0 && text_key_range<V>)
+            {
+                using next = typename Level::template at<Level::node.keys>;
+                if (k == constraint_kind::property_names)
+                    for (const auto& e : v)
+                        if (const auto violated = level_violation<next>(std::get<0>(e));
+                            violated != constraint_kind::none)
+                            validate_within([&e] { return key_token(written_key(std::get<0>(e))); }, [&] {
+                                throw_constraint_violation(cast_target{}, struct_field_key<S, K>, type_name<S>(),
+                                                           violated, next::constraints, next::values,
+                                                           constraint_subject::key);
+                            });
+            }
+            // as in JSON, a duplicate is located in an array only, since a range of key-value pairs is written as
+            // an object, in which a JSON Pointer does not tell a repeated key from the first
+            if constexpr (Level::node.constraints.template has<unique_items_t>() && constraint_items<V> &&
+                          !unique_keys<V> && !key_value_range<V>)
+            {
+                if (k == constraint_kind::unique_items)
+                    if (const auto j = first_duplicate(v); j != no_duplicate)
+                        validate_within([j] { return index_token(j); }, [&] {
+                            throw_constraint_violation(cast_target{}, struct_field_key<S, K>, type_name<S>(),
+                                                       constraint_kind::duplicate_item, Level::constraints,
+                                                       Level::values, constraint_subject::element);
+                        });
+            }
+        }
+
+        // Throws `bad_cast` at the value of the field K of S, or at a value in it, which violates the constraint
+        // `k`.
+        template <typename S, std::size_t K, typename F>
+        [[noreturn]] CPPYYJSON_COLD void throw_value_violation(const F& field, constraint_kind k)
+        {
+            using level = constraint_level<S, K>;
+            if constexpr (is_std_optional<F>::value)
+            {
+                if (field.has_value()) throw_value_located_violation<S, K, level>(*field, k);
+            }
+            else
+                throw_value_located_violation<S, K, level>(field, k);
+            throw_constraint_violation(cast_target{}, struct_field_key<S, K>, type_name<S>(), k, level::constraints,
+                                       level::values);
+        }
+
+        template <typename T>
+        void validate_value(const T& v);
+
+        // Whether the writer writes `v` as null, whose constraints the read does not check.
+        template <typename T>
+        bool written_as_null(const T& v)
+        {
+            if constexpr (std::same_as<T, std::nullptr_t> || std::same_as<T, std::monostate>)
+                return true;
+            else if constexpr (owning_pointer<T>)
+                return !v;
+            else if constexpr (requires { std::variant_size<T>::value; })
+                return !v.valueless_by_exception() && std::visit([](const auto& a) { return written_as_null(a); }, v);
+            else
+                return false;
+        }
+
+        // Checks the field K of `s`, in the order that the read checks it: the values in it, then its own
+        // constraints.  Returns whether the field is written, which a field that `should_omit` is not.
+        template <typename S, std::size_t K>
+        bool validate_field(const S& s)
+        {
+            using F = struct_field_type<S, K>;
+            const auto& field = struct_field<K>(s);
+            if constexpr (omittable<F>)
+                if (should_omit_field(field)) return false;
+            if constexpr (needs_validation<F>)
+                validate_within([] { return key_token(struct_field_key<S, K>); }, [&] { validate_value(field); });
+            if constexpr (constrained_field<S, K>)
+            {
+                if (const auto k = constraint_violation<S, K>(field); k != constraint_kind::none) [[unlikely]]
+                    if (!written_as_null(field))
+                        validate_within([] { return key_token(struct_field_key<S, K>); },
+                                        [&] { throw_value_violation<S, K>(field, k); });
+            }
+            return true;
+        }
+
+        // Checks the fields of `s`, then its keys as `check_irregular_struct_keys` does: the keys that it
+        // requires, then those of `yyjson::dependent_required`, and last its adjacent tags.
+        template <typename S>
+        void validate_struct(const S& s)
+        {
+            using rules = struct_key_rules<S>;
+            constexpr auto n = struct_field_count<S>;
+            [[maybe_unused]] const auto written = [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                return std::array<bool, n>{validate_field<S, Ks>(s)...};
+            }(std::make_index_sequence<n>{});
+            [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                (
+                    [&] {
+                        if constexpr (omittable<struct_field_type<S, Ks>> && strictly_required_field<S, Ks>)
+                            if (!written[Ks]) throw_missing_key(cast_target{}, struct_field_key<S, Ks>, type_name<S>());
+                    }(),
+                    ...);
+            }(std::make_index_sequence<n>{});
+            for (const auto& d : rules::dependencies)
+                if (written[d[0]] && !written[d[1]])
+                    throw_missing_dependency(cast_target{}, rules::keys[d[1]], rules::keys[d[0]], type_name<S>());
+            if constexpr (has_adjacent_fields<S>) check_adjacent_tags<S, bad_cast>(s);
+        }
+
+        // A member of a tuple that is written as an object, or an element of one that is written as an array.
+        template <bool Members, std::size_t I, typename U>
+        void validate_tuple_element(const U& v)
+        {
+            if constexpr (Members)
+                validate_within([&] { return key_token(written_key(std::get<0>(std::get<I>(v)))); },
+                                [&] { validate_value(std::get<1>(std::get<I>(v))); });
+            else
+                validate_within(index_prefix<I>{}, [&] { validate_value(std::get<I>(v)); });
+        }
+
+        // Checks `v` and the values in it, following the members and the elements that the writer writes.
+        template <typename T>
+        void validate_value(const T& v)
+        {
+            using U = std::remove_cvref_t<T>;
+            if constexpr (!needs_validation<U>)
+                return;
+            else if constexpr (std::is_array_v<U>)
+            {
+                for (std::size_t i = 0; i < std::extent_v<U>; ++i)
+                    validate_within([i] { return index_token(i); }, [&] { validate_value(v[i]); });
+            }
+            else if constexpr (is_std_optional<U>::value || owning_pointer<U>)
+            {
+                if (v) validate_value(*v);
+            }
+            else if constexpr (requires { std::variant_size<U>::value; })
+            {
+                if (!v.valueless_by_exception()) std::visit([](const auto& a) { validate_value(a); }, v);
+            }
+            else if constexpr (validated_struct<U>)
+                validate_struct(v);
+            else if constexpr (key_value_range<U>)
+            {
+                for (const auto& e : v)
+                    validate_within([&e] { return key_token(written_key(std::get<0>(e))); },
+                                    [&] { validate_value(std::get<1>(e)); });
+            }
+            else if constexpr (std::ranges::range<U>)
+            {
+                std::size_t i = 0;
+                for (const auto& e : v)
+                {
+                    validate_within([i] { return index_token(i); }, [&] { validate_value(e); });
+                    ++i;
+                }
+            }
+            else if constexpr (tuple_like<U>)
+            {
+                [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                    // a tuple of key-value pairs is written as an object, as `caster` of a tuple does
+                    constexpr bool members = (key_value_like<std::tuple_element_t<Is, U>> && ...);
+                    (validate_tuple_element<members, Is>(v), ...);
+                }(std::make_index_sequence<std::tuple_size_v<U>>{});
+            }
+        }
+    }  // namespace detail
+
+    // Checks the C++ value `t` as `yyjson::read<T>(text, yyjson::strict)` checks the text that `yyjson::write(t)`
+    // writes, as far as the value decides it: the constraints of the fields and of the elements, keys and values
+    // in them, the fields that `yyjson::required` or `yyjson::strict` requires but whose caster leaves them out,
+    // `yyjson::dependent_required`, and the fields that `yyjson::adjacent_tag` names but that do not name the
+    // alternative of the variant.  It throws `yyjson::bad_cast` with the message that the read gives, and `path()`
+    // is the JSON Pointer to the value in the text; the value that a caster of the user converts is not looked into.
+    template <writable T>
+    void validate(const T& t)
+    {
+        detail::validate_value(t);
+    }
 
     namespace detail
     {

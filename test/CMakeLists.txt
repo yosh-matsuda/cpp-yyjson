@@ -58,6 +58,7 @@ add_executable(
   test_error_path.cpp
   test_strict.cpp
   test_constraints.cpp
+  test_validate.cpp
   test_many_fields.cpp)
 target_link_libraries("${PROJECT_NAME}_test"
                       PRIVATE ${PROJECT_NAME} GTest::gtest GTest::gtest_main)
