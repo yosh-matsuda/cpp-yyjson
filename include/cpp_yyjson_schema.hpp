@@ -1,6 +1,4 @@
-// JSON Schema output of the C++ types that cpp-yyjson reads and writes.
-//
-// PROTOTYPE: the interface and the coverage are not settled.  See docs/design/json-schema.md.
+// JSON Schema output of the C++ types that cpp-yyjson reads and writes.  See docs/json-schema.md.
 
 #pragma once
 
@@ -33,7 +31,8 @@ namespace yyjson
         schema_direction direction = schema_direction::read;
         // The value of `$id`, none if empty.
         std::string_view id = {};
-        // The prefix of the references to named types, which are put in `$defs` unless it is changed.
+        // The prefix of the references to named types.  Their schemas are always in `$defs` of the result; another
+        // prefix is for a program that moves them elsewhere in a larger document.
         std::string_view ref_prefix = "#/$defs/";
     };
 
@@ -1416,7 +1415,7 @@ namespace yyjson
     }  // namespace schema_detail
 
     // The JSON Schema (2020-12) of T: the JSON that `read<T>` takes, or with `schema_direction::write` the JSON that
-    // `write` gives, as the types and the annotations declare it.  PROTOTYPE.
+    // `write` gives, as the types and the annotations declare it.
     template <typename T>
     [[nodiscard]] object json_schema(const schema_options& options = {})
     {
