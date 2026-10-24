@@ -921,6 +921,15 @@ namespace yyjson
     };
     inline constexpr optional_key_t optional_key{};
 
+    // A field whose key is left out of the object when the field holds the value that it has in `T()`, as
+    // `yyjson::field("member", yyjson::omit_default)` or `[[=yyjson::omit_default]]` gives it.  Its key may be
+    // missing as with `yyjson::optional_key`, and the field then keeps that value, so that reading the object back
+    // gives the same struct.  The field type needs `operator==`, and T a default constructor.
+    struct omit_default_t
+    {
+    };
+    inline constexpr omit_default_t omit_default{};
+
     // Whether the object of a struct may have keys that name no field, as
     // `yyjson::annotations<T> = yyjson::annotate(yyjson::additional_properties(false))` or
     // `struct [[=yyjson::additional_properties(false)]] T` gives it.  With `false`, reading an object with such a key
@@ -1708,7 +1717,8 @@ namespace yyjson
         // The settings that `yyjson::field` takes for a field.
         template <typename A>
         concept field_setting = std::same_as<A, rename> || std::same_as<A, skip_t> || std::same_as<A, required_t> ||
-                                std::same_as<A, optional_key_t> || adjacent_tag_annotation<A> ||
+                                std::same_as<A, optional_key_t> || std::same_as<A, omit_default_t> ||
+                                adjacent_tag_annotation<A> ||
                                 constraint_setting<A> || element_settings<A> || metadata_setting<A>;
 
         // The number of the nodes that a position of `yyjson::prefix_items` has at most: its own and those of the
@@ -1861,6 +1871,8 @@ namespace yyjson
             duplicate_key,
             additional_twice,
             required_optional_key,
+            omit_default_with_key_setting,
+            omit_default_tagged,
             constrained_tagged,
             multiple_of_not_positive,
             contains_missing,
@@ -2165,8 +2177,9 @@ namespace yyjson
         static_assert(sizeof...(As) != 0, "yyjson::field needs a setting of the field");
         static_assert((detail::field_setting<As> && ...),
                       "yyjson::field takes yyjson::rename, yyjson::skip, yyjson::required, yyjson::optional_key, "
-                      "yyjson::adjacent_tag, the constraints such as yyjson::minimum and yyjson::satisfies<f>, "
-                      "yyjson::items and yyjson::additional_properties(settings...), and yyjson::title, "
+                      "yyjson::omit_default, yyjson::adjacent_tag, the constraints such as yyjson::minimum and "
+                      "yyjson::satisfies<f>, yyjson::items and yyjson::additional_properties(settings...), and "
+                      "yyjson::title, "
                       "yyjson::description, yyjson::examples, yyjson::deprecated and yyjson::schema");
         return {member, {values...}};
     }
@@ -2814,6 +2827,7 @@ namespace yyjson
             std::array<bool, N> skipped = {};   // whether a field is annotated with `yyjson::skip`
             std::array<bool, N> required = {};  // whether a field is annotated with `yyjson::required`
             std::array<bool, N> optional_key = {};  // whether a field is annotated with `yyjson::optional_key`
+            std::array<bool, N> omit_default = {};  // whether a field is annotated with `yyjson::omit_default`
             additional_keys additional = additional_keys::unset;
             schema_tree<M, V> schemas = {{}, N};
             bool constrained = false;  // whether a field has a constraint
@@ -2853,8 +2867,8 @@ namespace yyjson
             {
                 if (visitable) return fail(field_key_error::skip_visitable);
                 if (table.skipped[i]) return fail(field_key_error::same_setting_twice);
-                if (renamed[i] || tagged[i] || table.required[i] || table.optional_key[i] || described[i] != 0 ||
-                    !table.schemas.nodes[i].empty())
+                if (renamed[i] || tagged[i] || table.required[i] || table.optional_key[i] || table.omit_default[i] ||
+                    described[i] != 0 || !table.schemas.nodes[i].empty())
                     return fail(field_key_error::skipped_with_setting);
                 table.skipped[i] = true;
             }
@@ -2876,6 +2890,7 @@ namespace yyjson
                 if (table.required[i]) return fail(field_key_error::same_setting_twice);
                 if (table.skipped[i]) return fail(field_key_error::skipped_with_setting);
                 if (table.optional_key[i]) return fail(field_key_error::required_optional_key);
+                if (table.omit_default[i]) return fail(field_key_error::omit_default_with_key_setting);
                 table.required[i] = true;
             }
             constexpr void make_key_optional(std::size_t i)
@@ -2883,7 +2898,16 @@ namespace yyjson
                 if (table.optional_key[i]) return fail(field_key_error::same_setting_twice);
                 if (table.skipped[i]) return fail(field_key_error::skipped_with_setting);
                 if (table.required[i]) return fail(field_key_error::required_optional_key);
+                if (table.omit_default[i]) return fail(field_key_error::omit_default_with_key_setting);
                 table.optional_key[i] = true;
+            }
+            constexpr void omit_default_value(std::size_t i)
+            {
+                if (table.omit_default[i]) return fail(field_key_error::same_setting_twice);
+                if (table.skipped[i]) return fail(field_key_error::skipped_with_setting);
+                if (table.required[i] || table.optional_key[i])
+                    return fail(field_key_error::omit_default_with_key_setting);
+                table.omit_default[i] = true;
             }
             // A constraint of the field i, or a setting of the values in it.
             template <typename A>
@@ -2933,6 +2957,8 @@ namespace yyjson
                     require_field(i);
                 else if constexpr (std::same_as<A, optional_key_t>)
                     make_key_optional(i);
+                else if constexpr (std::same_as<A, omit_default_t>)
+                    omit_default_value(i);
                 else if constexpr (constraint_setting<A> || element_settings<A>)
                     constrain_field(i, a);
                 else if constexpr (metadata_setting<A>)
@@ -2970,6 +2996,8 @@ namespace yyjson
                 {
                     if (tagged[i] && !result.schemas.nodes[i].empty() && result.error == field_key_error::none)
                         result.error = field_key_error::constrained_tagged;
+                    if (tagged[i] && result.omit_default[i] && result.error == field_key_error::none)
+                        result.error = field_key_error::omit_default_tagged;
                 }
                 for (const auto& [i, j] : result.dependencies)
                 {
@@ -3087,6 +3115,7 @@ namespace yyjson
                              !field_reflection::field_annotations<T, Is, skip_t>.empty() ||
                              !field_reflection::field_annotations<T, Is, required_t>.empty() ||
                              !field_reflection::field_annotations<T, Is, optional_key_t>.empty() ||
+                             !field_reflection::field_annotations<T, Is, omit_default_t>.empty() ||
                              !field_reflection::field_annotations<T, Is, adjacent_tag_annotation_type>.empty() ||
                              constraint_annotated<T, Is, constraint_types> || !element_annotations<T, Is>.empty()) ||
                             ...);
@@ -3146,6 +3175,9 @@ namespace yyjson
                         for (std::size_t k = 0; k < field_reflection::field_annotations<T, Is, optional_key_t>.size();
                              ++k)
                             builder.make_key_optional(Is);
+                        for (std::size_t k = 0; k < field_reflection::field_annotations<T, Is, omit_default_t>.size();
+                             ++k)
+                            builder.omit_default_value(Is);
                         for (std::size_t k = 0;
                              k < field_reflection::field_annotations<T, Is, adjacent_tag_annotation_type>.size(); ++k)
                             builder.tag_field(Is);
@@ -3250,13 +3282,19 @@ namespace yyjson
                           "(member, \"key\") pair of VISITABLE_STRUCT");
             static_assert(table.error != field_key_error::same_setting_twice,
                           "a field is given yyjson::skip, yyjson::required, yyjson::optional_key, "
-                          "yyjson::adjacent_tag, a constraint such as yyjson::minimum, a setting of the values in "
-                          "it such as yyjson::items, or yyjson::title, yyjson::description, yyjson::examples, "
-                          "yyjson::deprecated or yyjson::schema twice, or a setting of the values in it has a setting "
-                          "twice");
+                          "yyjson::omit_default, yyjson::adjacent_tag, a constraint such as yyjson::minimum, a "
+                          "setting of the values in it such as yyjson::items, or yyjson::title, yyjson::description, "
+                          "yyjson::examples, yyjson::deprecated or yyjson::schema twice, or a setting of the values "
+                          "in it has a setting twice");
             static_assert(table.error != field_key_error::required_optional_key,
                           "a field annotated with yyjson::required may not be left out of the object, which "
                           "yyjson::optional_key lets it: give the field only one of them");
+            static_assert(table.error != field_key_error::omit_default_with_key_setting,
+                          "yyjson::omit_default lets the object leave out the key of a field, which yyjson::required "
+                          "does not let it and yyjson::optional_key already lets it: give the field only one of them");
+            static_assert(table.error != field_key_error::omit_default_tagged,
+                          "yyjson::omit_default does not take a field tagged by yyjson::adjacent_tag, whose tag is "
+                          "written beside it");
             static_assert(table.error != field_key_error::additional_twice,
                           "yyjson::annotations of a struct has yyjson::additional_properties twice");
             static_assert(table.error != field_key_error::skipped_with_setting,
@@ -4353,6 +4391,51 @@ namespace yyjson
         }
         template <typename S, std::size_t I>
         using struct_field_type = std::remove_cvref_t<decltype(struct_field<I>(std::declval<S&>()))>;
+
+        // Whether the field R of S, by its index among all the fields, is annotated with `yyjson::omit_default`.
+        template <typename S, std::size_t R>
+        inline constexpr bool omits_default = [] {
+            if constexpr (visitable<S>)
+            {
+                if constexpr (requires { typename visit_struct<S>::field_names; })
+                    return field_keys<S, typename visit_struct<S>::field_names>::table.omit_default[R];
+                else
+                    return false;
+            }
+            else if constexpr (annotated_fields<S>)
+                return field_keys<S, reflected_field_names<S>>::table.omit_default[R];
+            else
+                return false;
+        }();
+
+        // The value of S whose fields `yyjson::omit_default` compares with, made once.
+        template <typename S>
+        const S& default_struct()
+        {
+            static const S value = S();
+            return value;
+        }
+
+        // Whether `field`, the field R of S by its index among all the fields, holds the value that it has in `S()`,
+        // so that `yyjson::omit_default` leaves its key out of the object.
+        template <typename S, std::size_t R, typename F>
+        bool holds_default(const F& field)
+        {
+            static_assert(std::default_initializable<S>,
+                          "yyjson::omit_default compares a field with the field of T(), which needs a default "
+                          "constructor of T");
+            const auto& d = [&]() -> const auto& {
+                if constexpr (visitable<S>)
+                    return default_struct<S>().*std::get<R>(visit_struct<S>::members);
+                else
+                    return field_reflection::get_field<R>(default_struct<S>());
+            }();
+            using D = std::remove_cvref_t<decltype(d)>;
+            static_assert(!std::is_array_v<D> && std::equality_comparable<D>,
+                          "yyjson::omit_default compares a field with the field of T() by operator==, which the type "
+                          "of the field does not have");
+            return field == d;
+        }
         template <typename S, std::size_t I>
         inline constexpr std::string_view struct_field_key = [] {
             if constexpr (visitable<S>)
@@ -4521,9 +4604,9 @@ namespace yyjson
 
         // The rules of the keys of the object of the struct S beyond reading its fields, by the index of a field
         // among those that are read: the fields annotated with `yyjson::required`, the `std::optional` fields and
-        // those annotated with `yyjson::optional_key`, which `yyjson::strict` lets the object leave out, and
-        // `yyjson::additional_properties`.  The keys are checked
-        // without `yyjson::strict` when `always` is true.
+        // those annotated with `yyjson::optional_key` or `yyjson::omit_default`, which `yyjson::strict` lets the
+        // object leave out, and `yyjson::additional_properties`.  The keys are checked without `yyjson::strict` when
+        // `always` is true.
         template <typename S>
         struct struct_key_rules
         {
@@ -4554,7 +4637,8 @@ namespace yyjson
             static constexpr auto optional = []<std::size_t... Ks>(std::index_sequence<Ks...>) {
                 if constexpr (has_table)
                     return std::array<bool, n>{(is_std_optional<struct_field_type<S, Ks>>::value ||
-                                                table().optional_key[struct_declared_index<S, Ks>])...};
+                                                table().optional_key[struct_declared_index<S, Ks>] ||
+                                                table().omit_default[struct_declared_index<S, Ks>])...};
                 else
                     return std::array<bool, n>{is_std_optional<struct_field_type<S, Ks>>::value...};
             }(std::make_index_sequence<n>{});
@@ -6904,7 +6988,7 @@ namespace yyjson
         template <typename T, std::size_t... Is>
         consteval bool has_optional_reflected_field_impl(std::index_sequence<Is...>)
         {
-            return (omittable<field_reflection::field_type<T, Is>> || ...);
+            return ((omittable<field_reflection::field_type<T, Is>> || omits_default<T, Is>) || ...);
         }
 
         template <typename T>
@@ -6928,14 +7012,18 @@ namespace yyjson
         {
             if constexpr (has_optional_reflected_field<U> && annotated_fields<U>)
             {
-                const auto written = [](const auto& field) -> std::size_t {
+                const auto written = []<std::size_t I>(std::integral_constant<std::size_t, I>,
+                                                       const auto& field) -> std::size_t {
+                    if constexpr (omits_default<U, I>)
+                        if (holds_default<U, I>(field)) return 0;
                     if constexpr (omittable<decltype(field)>)
                         return should_omit_field(field) ? 0 : 1;
                     else
                         return 1;
                 };
                 return [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                    return (std::size_t{0} + ... + written(field_reflection::get_field<Is>(t)));
+                    return (std::size_t{0} + ... +
+                            written(std::integral_constant<std::size_t, Is>{}, field_reflection::get_field<Is>(t)));
                 }(reflected_fields<U>{});
             }
             else if constexpr (has_optional_reflected_field<U>)
@@ -7185,7 +7273,11 @@ namespace yyjson
                     std::forward<Field>(field));
             }
             else
+            {
+                if constexpr (omits_default<S, R>)
+                    if (holds_default<S, R>(field)) return;
                 emitter.template emplace<Plain>(key, std::forward<Field>(field), ts...);
+            }
         }
     }  // namespace detail
 
@@ -12533,12 +12625,15 @@ namespace yyjson
         }
 
         // Checks the field K of `s`, in the order that the read checks it: the values in it, then its own
-        // constraints.  Returns whether the field is written, which a field that `should_omit` is not.
+        // constraints.  Returns whether the field is written, which a field that `should_omit` or that
+        // `yyjson::omit_default` leaves out is not.
         template <typename S, std::size_t K>
         bool validate_field(const S& s)
         {
             using F = struct_field_type<S, K>;
             const auto& field = struct_field<K>(s);
+            if constexpr (omits_default<S, struct_declared_index<S, K>>)
+                if (holds_default<S, struct_declared_index<S, K>>(field)) return false;
             if constexpr (omittable<F>)
                 if (should_omit_field(field)) return false;
             if constexpr (needs_validation<F>)
@@ -15696,6 +15791,8 @@ namespace yyjson
                         std::forward<Field>(field));
                     return;
                 }
+                if constexpr (yyjson::detail::omits_default<S, R>)
+                    if (yyjson::detail::holds_default<S, R>(field)) return;
                 if constexpr (omittable<Field>)
                 {
                     if (should_omit_field(field)) return;

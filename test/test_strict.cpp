@@ -32,6 +32,30 @@ struct StrictDefaulted
 template <>
 inline constexpr auto yyjson::annotations<StrictDefaulted> = yyjson::annotate(
     yyjson::field("b", yyjson::optional_key), yyjson::field("c", yyjson::optional_key, yyjson::max_items(1)));
+// fields whose keys are left out of the object while they hold the value they have in `T()`, which may violate
+// their constraints as a value that means "not set"
+struct StrictOmitted
+{
+    int a = 0;
+    int limit = -1;
+    std::string name = "x";
+    std::optional<int> o = 5;
+    bool operator==(const StrictOmitted&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<StrictOmitted> =
+    yyjson::annotate(yyjson::field("limit", yyjson::omit_default, yyjson::minimum(0)),
+                     yyjson::field("name", yyjson::omit_default), yyjson::field("o", yyjson::omit_default));
+struct StrictOmittedVisitable
+{
+    int a = 0;
+    int b = 3;
+    bool operator==(const StrictOmittedVisitable&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<StrictOmittedVisitable> =
+    yyjson::annotate(yyjson::field("b", yyjson::omit_default));
+VISITABLE_STRUCT(StrictOmittedVisitable, a, b);
 struct StrictClosed
 {
     int a = 0;
@@ -277,6 +301,12 @@ struct StrictAnnotatedDefaulted
     [[= yyjson::optional_key]] int b = 7;
     bool operator==(const StrictAnnotatedDefaulted&) const = default;
 };
+struct StrictAnnotatedOmitted
+{
+    int a = 0;
+    [[= yyjson::omit_default, = yyjson::minimum(0)]] int b = -1;
+    bool operator==(const StrictAnnotatedOmitted&) const = default;
+};
 #endif
 
 namespace
@@ -434,6 +464,52 @@ TEST(Strict, OptionalKey)
     expect_strict<StrictAnnotatedDefaulted>(R"({"a":1})", {1, 7});
     expect_rejected<StrictAnnotatedDefaulted>(
         R"({"b":1})", R"(StrictAnnotatedDefaulted is not constructible from JSON without the key "a")");
+#endif
+}
+
+TEST(Strict, OmitDefault)
+{
+    // the key of a field that holds its value in `T()` is left out, by the document and by `yyjson::write`
+    const auto omitted = StrictOmitted();
+    EXPECT_EQ(yyjson::write(omitted), R"({"a":0})");
+    EXPECT_EQ(yyjson::value(omitted).write(), R"({"a":0})");
+    const auto changed = StrictOmitted{1, 3, "y", std::nullopt};
+    EXPECT_EQ(yyjson::write(changed), R"({"a":1,"limit":3,"name":"y"})");
+    EXPECT_EQ(yyjson::value(StrictOmitted(changed)).write(), R"({"a":1,"limit":3,"name":"y"})");
+    expect_direct_write(omitted);
+    expect_direct_write(changed);
+    const auto list = std::vector{changed, omitted};
+    EXPECT_EQ(yyjson::write(list), R"([{"a":1,"limit":3,"name":"y"},{"a":0}])");
+    EXPECT_EQ(yyjson::array(list).write(), R"([{"a":1,"limit":3,"name":"y"},{"a":0}])");
+    auto object = yyjson::object();
+    object.emplace("k", omitted);
+    EXPECT_EQ(object.write(), R"({"k":{"a":0}})");
+
+    // the key may be missing under `yyjson::strict`, and the field keeps that value, so the object reads back
+    expect_strict<StrictOmitted>(R"({"a":0})", omitted);
+    expect_strict<StrictOmitted>(R"({"a":1,"limit":3,"name":"y"})", {1, 3, "y", 5});
+    expect_rejected<StrictOmitted>(R"({"limit":3})", R"(StrictOmitted is not constructible from JSON without the key "a")");
+    expect_rejected<StrictOmitted>(R"({"a":0,"limit":-1})", "", "/limit");
+    EXPECT_EQ(yyjson::read<StrictOmitted>(yyjson::write(omitted), yyjson::strict), omitted);
+
+    // `yyjson::validate` and a strict write check only the fields that are written
+    EXPECT_NO_THROW(yyjson::validate(omitted));
+    EXPECT_EQ(yyjson::write(omitted, yyjson::strict), R"({"a":0})");
+    auto negative = omitted;
+    negative.limit = -2;
+    EXPECT_EQ(bad_cast_of([&] { yyjson::validate(negative); }).path(), "/limit");
+    EXPECT_THROW((void)yyjson::write(negative, yyjson::strict), yyjson::bad_cast);
+
+    // `VISITABLE_STRUCT`
+    EXPECT_EQ(yyjson::write(StrictOmittedVisitable()), R"({"a":0})");
+    EXPECT_EQ(yyjson::value(StrictOmittedVisitable{1, 4}).write(), R"({"a":1,"b":4})");
+    expect_direct_write(std::vector{StrictOmittedVisitable{0, 9}, StrictOmittedVisitable()});
+    expect_strict<StrictOmittedVisitable>(R"({"a":1})", {1, 3});
+#if FIELD_RFL_ANNOTATIONS
+    EXPECT_EQ(yyjson::write(StrictAnnotatedOmitted()), R"({"a":0})");
+    EXPECT_EQ(yyjson::value(StrictAnnotatedOmitted{0, 2}).write(), R"({"a":0,"b":2})");
+    expect_strict<StrictAnnotatedOmitted>(R"({"a":1})", {1, -1});
+    EXPECT_NO_THROW(yyjson::validate(StrictAnnotatedOmitted()));
 #endif
 }
 
@@ -769,5 +845,35 @@ TEST(Strict, Scope)
     EXPECT_EQ(yyjson::read<StrictPoint>(R"({"x":1,"w":0})"), (StrictPoint{1, 0, {}}));
     EXPECT_EQ(yyjson::read(R"({"x":1,"w":0})").cast<StrictPoint>(), (StrictPoint{1, 0, {}}));
 }
+
+// The rules that the static assertions of `yyjson::omit_default` enforce, on the error of the table of the keys
+#define OMIT_DEFAULT_RULE(NAME, ...)  \
+    struct NAME                       \
+    {                                 \
+        int v = 0;                    \
+        std::variant<int, bool> w;    \
+    };                                \
+    template <>                       \
+    inline constexpr auto yyjson::annotations<NAME> = yyjson::annotate(__VA_ARGS__);
+OMIT_DEFAULT_RULE(OmitRequired, yyjson::field("v", yyjson::required, yyjson::omit_default))
+OMIT_DEFAULT_RULE(OmitOptionalKey, yyjson::field("v", yyjson::omit_default, yyjson::optional_key))
+OMIT_DEFAULT_RULE(OmitTwice, yyjson::field("v", yyjson::omit_default, yyjson::omit_default))
+OMIT_DEFAULT_RULE(OmitSkipped, yyjson::field("v", yyjson::skip, yyjson::omit_default))
+OMIT_DEFAULT_RULE(OmitTagged, yyjson::field("w", yyjson::omit_default, yyjson::adjacent_tag("t", {"i", "b"})))
+OMIT_DEFAULT_RULE(OmitAlone, yyjson::field("v", yyjson::omit_default))
+#undef OMIT_DEFAULT_RULE
+namespace omit_default_rules
+{
+    template <typename T>
+    constexpr auto table_error =
+        yyjson::detail::make_field_key_table<T, yyjson::detail::reflected_field_names<T>>().error;
+    using enum yyjson::detail::field_key_error;
+    static_assert(table_error<OmitRequired> == omit_default_with_key_setting);
+    static_assert(table_error<OmitOptionalKey> == omit_default_with_key_setting);
+    static_assert(table_error<OmitTwice> == same_setting_twice);
+    static_assert(table_error<OmitSkipped> == skipped_with_setting);
+    static_assert(table_error<OmitTagged> == omit_default_tagged);
+    static_assert(table_error<OmitAlone> == none);
+}  // namespace omit_default_rules
 
 // NOLINTEND

@@ -1491,7 +1491,8 @@ namespace yyjson
 
                         const bool is_required = [&] {
                             if (writing())
-                                return !yyjson::detail::omittable<F>;
+                                return !yyjson::detail::omittable<F> &&
+                                       !yyjson::detail::omits_default<S, yyjson::detail::struct_declared_index<S, Ks>>;
                             return rules::required[Ks] || (strict() && !rules::optional[Ks]);
                         }();
                         if (tagged)
@@ -1721,8 +1722,8 @@ namespace yyjson
         return schema_detail::json_schema<T>(options, false);
     }
     // The schema of what `read<T>` takes with `yyjson::strict`: the key of a field is required unless the field may
-    // be absent by its type or by `optional_key`, and a struct has no other keys unless `additional_properties`
-    // says otherwise.  The schema of `write` is the same with or without it.
+    // be absent by its type, by `optional_key` or by `omit_default`, and a struct has no other keys unless
+    // `additional_properties` says otherwise.  The schema of `write` is the same with or without it.
     template <typename T>
     [[nodiscard]] object json_schema(strict_t, const schema_options& options = {})
     {

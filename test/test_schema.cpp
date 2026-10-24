@@ -100,6 +100,18 @@ struct St
     std::optional<Untagged> u;
 };
 
+// fields whose keys are left out while they hold their value in `T()`, one of which violates the constraint
+struct OmitD
+{
+    int a = 0;
+    int limit = -1;
+    std::string name = "x";
+};
+template <>
+inline constexpr auto yyjson::annotations<OmitD> =
+    yyjson::annotate(yyjson::field("limit", yyjson::omit_default, yyjson::minimum(0)),
+                     yyjson::field("name", yyjson::omit_default), yyjson::additional_properties(false));
+
 
 struct TkC
 {
@@ -1001,6 +1013,22 @@ TEST(Schema, Loose)
         R"({"a":1,"b":2})",
         R"({})",
     });
+}
+
+// A field annotated with `yyjson::omit_default` is not required in any schema, and the write output, which leaves
+// out a value that violates the constraint, is valid.
+TEST(Schema, OmitDefault)
+{
+    check<OmitD>({
+        R"({})",
+        R"({"a":1})",
+        R"({"a":1,"limit":3,"name":"y"})",
+        R"({"a":1,"limit":-1})",
+        R"({"a":1,"limit":-2})",
+    });
+    for (const auto& s : {yyjson::json_schema<OmitD>(yyjson::strict),
+                          yyjson::json_schema<OmitD>({.direction = yyjson::schema_direction::write})})
+        EXPECT_EQ(to_jsoncons(s)["$defs"]["OmitD"]["required"], json::parse(R"(["a"])")) << s.write();
 }
 
 TEST(Schema, VecOpt)
