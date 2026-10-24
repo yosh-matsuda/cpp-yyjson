@@ -102,6 +102,7 @@ Each row below is a `yyjson::bad_cast` that the same read without `yyjson::stric
 *   The key of an [internal tag](conversions.md#tagged-variants) is a key of the object of the alternative, and the key of an adjacent tag is a key of the struct that holds the variant. Neither is rejected as an unknown key. When the alternative is a struct, the struct checks the key of the tag as one of its own.
 *   A key that `yyjson::additional_properties(true)` lets the object have is ignored as a whole, also when it appears twice.
 *   A key that names no field is accepted when the struct has a field of [`yyjson::extra_keys`](conversions.md#keys-that-name-no-field), which receives it. A key that appears twice is rejected there as in a map.
+*   A field of a struct annotated with [`yyjson::transparent`](conversions.md#a-struct-as-the-value-of-its-field) is checked as a field of the type of its only field, except that `null` in a `std::optional` there keeps the value in `T()`, as described in [`null` in a `std::optional`](#null-in-a-stdoptional).
 *   Multimaps, multisets, ranges and the other types that hold what they are given are read as without `yyjson::strict`.
 *   The option holds for every value that the call reads, including what a [user-defined caster](conversions.md#user-defined-casters) reads with `cast` or `yyjson::read` while the call runs on the same thread. A `from_json` that casts without `yyjson::strict` therefore reads strictly when a strict read calls it.
 *   The keys that a `from_json` looks up by itself, such as with `find` or `operator[]` of an object, are not checked. Rejecting an unknown or a missing key of the object that it reads is up to the caster.
@@ -321,6 +322,8 @@ yyjson::read<Order>(R"({"unit":"km"})");
 yyjson::read<Order>(R"({"created":"2024-05-01"})");
 // the value of the key "created" of Order does not have the format "date-time" at /created (line 1, column 12, pos 11)
 ```
+
+The constraints above belong to a field of a struct. To give them to a type, so that they hold for every field, element and map value of the type and for the root, put the value in a struct annotated with [`yyjson::transparent`](conversions.md#a-struct-as-the-value-of-its-field) and give the constraints to its only field. The message then names the struct, as in `the value of UserId is less than the minimum 1`.
 
 ### Constraints of elements
 
@@ -546,7 +549,7 @@ yyjson::write(Range{{1, -2}}, yyjson::strict);
 
 The tables below list the keywords of [JSON Schema 2020-12](https://json-schema.org/draft/2020-12) that check a value, and `default`, with what reads the same JSON in cpp-yyjson. A keyword is a constraint of the same name, a C++ type, a rule of the keys of a struct, or none. [`yyjson::json_schema<T>()`](json-schema.md) writes these keywords for the annotations of a type. The library does not read a schema: to write the C++ types of a schema, translate it by hand with the tables.
 
-`yyjson::satisfies<f>` checks any condition on the value of a field, including one between the fields of a struct field. It does not apply to the root, which the program checks after the read.
+`yyjson::satisfies<f>` checks any condition on the value of a field, including one between the fields of a struct field. A constraint, `yyjson::satisfies<f>` among them, applies to the root, an element or a value of a map of a type when it is given to the field of a struct annotated with [`yyjson::transparent`](conversions.md#a-struct-as-the-value-of-its-field), which is read and written as the value of that field.
 
 ### Types and values
 
@@ -610,7 +613,7 @@ The tables below list the keywords of [JSON Schema 2020-12](https://json-schema.
 | `oneOf` | a [tagged variant](conversions.md#tagged-variants) | the tag names the alternative, as a `const` of a member in each alternative of `oneOf` does. An untagged variant does not check that only one alternative accepts the value. For subschemas with only `required`, see `yyjson::one_of_required` in [Objects](#objects). |
 | `not` | `yyjson::satisfies<f>` | |
 | `if`, `then`, `else` | a [tagged variant](conversions.md#tagged-variants), or `yyjson::satisfies<f>` | |
-| `$ref`, `$defs` | a C++ type, used in more than one place or in itself as a [recursive type](conversions.md#recursive-types) | |
+| `$ref`, `$defs` | a C++ type, used in more than one place or in itself as a [recursive type](conversions.md#recursive-types) | a definition that is not an object and has constraints is a struct with [`yyjson::transparent`](conversions.md#a-struct-as-the-value-of-its-field) whose field has them. |
 | `default` | the value in `T()`, including a default member initializer | used for a missing key. Writing writes it like any other value. |
 
 ## Errors

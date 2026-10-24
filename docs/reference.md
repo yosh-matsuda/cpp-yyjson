@@ -53,6 +53,7 @@ This page lists the functions, classes and other entities of cpp-yyjson, grouped
     *   [`yyjson::additional_properties`](#yyjsonadditional_properties)
     *   [`yyjson::dependent_required`](#yyjsondependent_required)
     *   [`yyjson::one_of_required`, `yyjson::any_of_required`](#yyjsonone_of_required-yyjsonany_of_required)
+    *   [`yyjson::transparent`](#yyjsontransparent)
     *   [Constraints](#constraints)
     *   [`yyjson::items`](#yyjsonitems)
     *   [`yyjson::prefix_items`](#yyjsonprefix_items)
@@ -220,7 +221,8 @@ In this section, the *default* of a field or a value is its value in a value-ini
 *   a struct that the compile-time reflection or the `VISITABLE_STRUCT` macro converts;
 *   a map with unique `std::string` keys;
 *   the alternative that a [tagged variant](conversions.md#tagged-variants) holds;
-*   a `std::optional` of one of them. If it is empty, it first gets a default struct or map, or a tagged variant read from the object.
+*   a `std::optional` of one of them. If it is empty, it first gets a default struct or map, or a tagged variant read from the object;
+*   a struct annotated with [`yyjson::transparent`](#yyjsontransparent) whose field is one of them, through the field.
 
 Each member of the JSON object is merged into the field or the map value that its key names, and a key that names no field of a struct into the map of its [`yyjson::extra_keys`](#yyjsonextra_keys) field, if it has one:
 
@@ -1578,7 +1580,7 @@ Specialize `annotations<T>` before the first use of `T`. `annotate` takes these 
 
 | `T` | Settings |
 | --- | --- |
-| a struct | [`yyjson::field`](#yyjsonfield), [`yyjson::additional_properties`](#yyjsonadditional_properties), [`yyjson::dependent_required`](#yyjsondependent_required), [`yyjson::one_of_required`, `yyjson::any_of_required`](#yyjsonone_of_required-yyjsonany_of_required) and [`yyjson::schema_name`](#yyjsonschema_name) |
+| a struct | [`yyjson::field`](#yyjsonfield), [`yyjson::transparent`](#yyjsontransparent), [`yyjson::additional_properties`](#yyjsonadditional_properties), [`yyjson::dependent_required`](#yyjsondependent_required), [`yyjson::one_of_required`, `yyjson::any_of_required`](#yyjsonone_of_required-yyjsonany_of_required) and [`yyjson::schema_name`](#yyjsonschema_name) |
 | a `std::variant` | [`yyjson::internal_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag) and [`yyjson::schema_name`](#yyjsonschema_name) |
 | an enumeration | [`yyjson::enumerator` and `yyjson::enum_format`](#yyjsonenum_format-yyjsonenumerator), and [`yyjson::schema_name`](#yyjsonschema_name) |
 | a type with a [caster](#yyjsoncastert) | [`yyjson::schema_name`](#yyjsonschema_name) |
@@ -1779,6 +1781,39 @@ inline constexpr auto yyjson::annotations<Contact> = yyjson::annotate(yyjson::an
 yyjson::read<Contact>(R"({"email":"a@example.com","phone":"0"})");  // -> Contact{"a@example.com", "0"}
 yyjson::read<Contact>(R"({})");
 // throws yyjson::bad_cast: Contact is not constructible from JSON without all the keys of one of ["email"], ["phone"] ...
+```
+
+### `yyjson::transparent`
+
+A struct of one field that is read and written as the value of that field, with no object around it.
+
+```cpp
+inline constexpr transparent_t transparent{};
+```
+
+It is a setting of the struct, given to [`yyjson::annotate`](#yyjsonannotationst-yyjsonannotate). The struct has exactly one field that is not skipped, and is that field's value everywhere: as a field, an element, a value of a map, an alternative of a `std::variant` and the root; not yet as the key of a map.
+
+*   The field takes the [constraints](#constraints) and the constraints of elements, which then hold for every use of the struct. A message names the struct, and the path has no segment for the field.
+*   A field of `std::optional<U>` (`U` not a pointer): as a field of another struct, the struct follows the rules of a `std::optional` field (an empty value leaves the key out, [`yyjson::strict`](#yyjsonstrict) does not require the key, `null` keeps the value in `T()`, also under `strict`). Elsewhere, `null` empties it and an empty value is written as `null`.
+*   [`yyjson::validate`](#yyjsonvalidate) and `write(t, yyjson::strict)` check the constraints. [`yyjson::json_schema`](#yyjsonjson_schemat) defines the struct in `$defs` by the schema of its field with the constraints, and with `null` for an optional field.
+*   The struct takes [`yyjson::title`, `yyjson::description`, `yyjson::deprecated`, `yyjson::examples`](#yyjsontitle-yyjsondescription-yyjsondeprecated-yyjsonexamples), [`yyjson::schema`](#yyjsonschema) and [`yyjson::schema_name`](#yyjsonschema_name).
+
+No field or more than one field that is not skipped, the setting given twice, a setting on the field other than the constraints (such as `yyjson::rename`, `yyjson::required`, `yyjson::optional_key`, `yyjson::omit_default`, `yyjson::extra_keys`, `yyjson::adjacent_tag` or the annotations of the JSON Schema), and `yyjson::additional_properties`, `yyjson::dependent_required`, `yyjson::one_of_required` or `yyjson::any_of_required` on the struct are compile errors. See [A struct as the value of its field](conversions.md#a-struct-as-the-value-of-its-field).
+
+```cpp
+struct UserId
+{
+    std::int64_t value = 0;
+};
+
+template <>
+inline constexpr auto yyjson::annotations<UserId> =
+    yyjson::annotate(yyjson::transparent, yyjson::field("value", yyjson::minimum(1)));
+
+auto ids = yyjson::read<std::vector<UserId>>("[7,42]");  // -> {UserId{7}, UserId{42}}
+auto json = yyjson::write(ids);                          // -> [7,42]
+yyjson::read<std::vector<UserId>>("[7,0]");
+// throws yyjson::bad_cast: the value of UserId is less than the minimum 1 at /1 ...
 ```
 
 ### Constraints

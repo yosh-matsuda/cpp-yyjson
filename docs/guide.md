@@ -33,6 +33,7 @@ Each example assumes `#include "cpp_yyjson.hpp"` and the standard headers that i
     *   [Reject unknown, missing or repeated keys](#reject-unknown-missing-or-repeated-keys)
     *   [Require a key](#require-a-key)
     *   [Restrict the values of a field](#restrict-the-values-of-a-field)
+    *   [Restrict the values of a type or of the root](#restrict-the-values-of-a-type-or-of-the-root)
     *   [Check a value before writing it](#check-a-value-before-writing-it)
     *   [Generate the JSON Schema of a type](#generate-the-json-schema-of-a-type)
     *   [Find the value that failed](#find-the-value-that-failed)
@@ -496,6 +497,32 @@ catch (const yyjson::bad_cast& e)
 ```
 
 `yyjson::enum_` and `yyjson::const_` allow only the listed values, and `yyjson::format("date-time")` checks a string by the grammar of a format. `yyjson::items`, `yyjson::unique_items` and the other [constraints of elements](validation.md#constraints-of-elements) restrict the elements of a container, `yyjson::dependent_required` of a struct requires keys together, and `yyjson::one_of_required` requires the keys of exactly one of some groups of fields. `yyjson::pattern` matches a regular expression with an engine that the program chooses, and `yyjson::satisfies<f>` calls a function of your own. Details: [Constraints](validation.md#constraints). To write the types of an existing JSON Schema, look up its keywords in [JSON Schema keywords](validation.md#json-schema-keywords).
+
+### Restrict the values of a type or of the root
+
+Constraints are settings of a field. To give them to a type, such as a user id that every struct holding it checks the same way, wrap the value in a struct of one field annotated with `yyjson::transparent`. The struct is read and written as the value of its field, and the constraints of the field hold in every field, element and map value of the type:
+
+```cpp
+struct UserId
+{
+    std::int64_t value = 0;
+};
+
+template <>
+inline constexpr auto yyjson::annotations<UserId> =
+    yyjson::annotate(yyjson::transparent, yyjson::field("value", yyjson::minimum(1)));
+
+struct Order
+{
+    UserId buyer;
+    std::vector<UserId> watchers;
+};
+
+yyjson::read<Order>(R"({"buyer":42,"watchers":[7,0]})");
+// throws: the value of UserId is less than the minimum 1 at /watchers/1 (line 1, column 27, pos 26)
+```
+
+The same struct puts constraints on the root of a document that is an array, a string or a number, which has no field of its own. Details and the other uses: [A struct as the value of its field](conversions.md#a-struct-as-the-value-of-its-field).
 
 ### Check a value before writing it
 
