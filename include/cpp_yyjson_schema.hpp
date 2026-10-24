@@ -14,18 +14,18 @@
 
 namespace yyjson
 {
-    // Which JSON the schema describes: what `read<T>` accepts, what it accepts under `yyjson::strict`, or what
-    // `write` produces.
-    enum class schema_mode : std::uint8_t
+    // Which conversion the schema describes: the JSON that `read<T>` takes, or the JSON that `write` gives.  The two
+    // differ where a type is read from more than it is written as, such as a caster whose `from_json` and `to_json`
+    // use different types.
+    enum class schema_direction : std::uint8_t
     {
         read,
-        strict,
         write,
     };
 
     struct schema_options
     {
-        schema_mode mode = schema_mode::read;
+        schema_direction direction = schema_direction::read;
         // The value of `$id`, none if empty.
         std::string_view id = {};
         // The prefix of the references to named types, which are put in `$defs` unless it is changed.
@@ -92,11 +92,16 @@ namespace yyjson
 
         template <typename T>
         concept user_read = !yyjson::detail::reads_by_default<T>;
+        // T is written by a `to_json` of the user, which returns a value or writes into one.
+        template <typename T>
+        concept user_write = (!std::derived_from<caster<T>, yyjson::detail::builtin_caster>) &&
+                             (writer::detail::to_json_inp_usr_defined<T> ||
+                              writer::detail::to_json_usr_translator<const T&>);
 
         class generator
         {
         public:
-            explicit generator(const schema_options& options) : options_(options) {}
+            generator(const schema_options& options, bool strict) : options_(options), strict_(strict) {}
 
             // Writes the schema of T into `out`, with the settings of the node `node` of `nodes` (none if null).
             template <typename T>
@@ -107,11 +112,45 @@ namespace yyjson
 
         private:
             schema_options options_;
+            bool strict_;
             std::optional<object_ref> defs_;
             std::set<std::string, std::less<>> names_;
 
-            [[nodiscard]] bool strict() const noexcept { return options_.mode == schema_mode::strict; }
-            [[nodiscard]] bool writing() const noexcept { return options_.mode == schema_mode::write; }
+            // `yyjson::strict` applies to reading only: what `write` gives has every key that is not left out.
+            [[nodiscard]] bool strict() const noexcept { return strict_ && !writing(); }
+            [[nodiscard]] bool writing() const noexcept { return options_.direction == schema_direction::write; }
+
+            // Whether `read<F>` takes back what `write` gives for the value: a caster may write what it does not
+            // read, and such a value is no default of the schema that is read.
+            template <typename F>
+            [[nodiscard]] bool reads_back(const F& value) const
+            {
+                if constexpr (requires(std::string_view s) { yyjson::read<F>(s); })
+                {
+                    try
+                    {
+                        const auto text = yyjson::write(value);
+                        if (strict())
+                            (void)yyjson::read<F>(std::string_view(text), yyjson::strict);
+                        else
+                            (void)yyjson::read<F>(std::string_view(text));
+                        return true;
+                    }
+                    catch (const std::exception&)
+                    {
+                        return false;
+                    }
+                }
+                else
+                    return false;
+            }
+
+            template <typename T>
+            void emit_user_read(object_ref out, const schema_node* nodes, std::size_t node);
+            template <typename T>
+            void emit_user_write(object_ref out, const schema_node* nodes, std::size_t node);
+            template <typename T>
+            void emit_builtin(object_ref out, const schema_node* nodes, std::size_t node);
 
             static void emit_bound(object_ref out, std::string_view key, const yyjson::detail::bound_number& b)
             {
@@ -277,17 +316,75 @@ namespace yyjson
                 out.emplace("type", "array");
                 constraints();
             }
-            else if constexpr (user_read<T>)
-            {
-                if constexpr (yyjson::detail::from_json_translator<T>::castable)
-                    emit<yyjson::detail::from_json_source<T>>(out, nodes, node);
-                else
-                    constraints();  // TODO: a schema that the caster declares
-            }
-            else if constexpr (std::same_as<T, bool>)
-                out.emplace("type", "boolean");
             else if constexpr (std::same_as<T, std::nullptr_t> || std::same_as<T, std::monostate>)
                 out.emplace("type", "null");
+            else if constexpr (user_read<T> || user_write<T>)
+            {
+                // A type may have a caster for one direction and be converted by the library in the other.
+                if (writing())
+                {
+                    if constexpr (user_write<T>)
+                        emit_user_write<T>(out, nodes, node);
+                    else
+                        emit_builtin<T>(out, nodes, node);
+                }
+                else
+                {
+                    if constexpr (user_read<T>)
+                        emit_user_read<T>(out, nodes, node);
+                    else
+                        emit_builtin<T>(out, nodes, node);
+                }
+            }
+            else
+                emit_builtin<T>(out, nodes, node);
+        }
+
+        template <typename T>
+        void generator::emit_user_read(object_ref out, const schema_node* nodes, std::size_t node)
+        {
+            if constexpr (yyjson::detail::from_json_translator<T>::castable)
+                emit<yyjson::detail::from_json_source<T>>(out, nodes, node);
+            else if (nodes != nullptr)
+                emit_constraints(out, nodes[node].constraints);  // TODO: a schema that the type declares
+        }
+
+        template <typename T>
+        void generator::emit_user_write(object_ref out, const schema_node* nodes, std::size_t node)
+        {
+            if constexpr (writer::detail::to_json_inp_usr_defined<T>)
+            {
+                using ref = writer::detail::to_json_input_ref<T>;
+                if constexpr (std::same_as<ref, object_ref>)
+                    out.emplace("type", "object");
+                else if constexpr (std::same_as<ref, array_ref>)
+                    out.emplace("type", "array");
+                // TODO: a schema that the type declares
+            }
+            else
+            {
+                using W = std::remove_cvref_t<decltype(writer::detail::to_json_wrapper(std::declval<const T&>()))>;
+                // The constraints of the field are on the type that is read; they hold for the type written when
+                // the two are the same.
+                constexpr bool same = [] {
+                    if constexpr (yyjson::detail::from_json_translator<T>::castable)
+                        return std::same_as<W, yyjson::detail::from_json_source<T>>;
+                    else
+                        return false;
+                }();
+                emit<W>(out, same ? nodes : nullptr, same ? node : 0);
+            }
+        }
+
+        template <typename T>
+        void generator::emit_builtin(object_ref out, const schema_node* nodes, std::size_t node)
+        {
+            const schema_node* n = nodes != nullptr ? &nodes[node] : nullptr;
+            const auto constraints = [&] {
+                if (n != nullptr) emit_constraints(out, n->constraints);
+            };
+            if constexpr (std::same_as<T, bool>)
+                out.emplace("type", "boolean");
             else if constexpr (std::is_enum_v<T>)
             {
                 emit_named<T>(out, [&](object_ref def) { emit_enum<T>(def); });
@@ -350,28 +447,7 @@ namespace yyjson
                         key_schema(o.emplace("propertyNames", empty_object));
                     value_schema(o.emplace("additionalProperties", empty_object));
                 };
-                // A sequence of key-value pairs is also read from an array of [key, value], and written as an object.
-                if constexpr (!yyjson::detail::object_emplaceable_range<T, reader::const_object_ref>)
-                {
-                    if (!writing())
-                    {
-                        auto any = out.emplace("anyOf", empty_array);
-                        object_form(any.emplace_back(empty_object));
-                        auto arr = any.emplace_back(empty_object);
-                        arr.emplace("type", "array");
-                        if (n != nullptr) emit_constraints(arr, n->constraints);
-                        auto entry = arr.emplace("items", empty_object);
-                        entry.emplace("type", "array");
-                        auto prefix = entry.emplace("prefixItems", empty_array);
-                        auto key = prefix.emplace_back(empty_object);
-                        key.emplace("type", "string");
-                        key_schema(key);
-                        value_schema(prefix.emplace_back(empty_object));
-                        entry.emplace("minItems", 2);
-                        entry.emplace("items", false);
-                        return;
-                    }
-                }
+                // A sequence of key-value pairs is also read from an array of [key, value], which is not declared.
                 object_form(out);
             }
             else
@@ -380,7 +456,7 @@ namespace yyjson
                 out.emplace("type", "array");
                 if (n != nullptr) emit_constraints(out, n->constraints);
                 if constexpr (yyjson::detail::insertable_set<T> || yyjson::detail::unique_keys<T>)
-                    if (!(n != nullptr && n->constraints.has<yyjson::unique_items_t>()) && !(options_.mode == schema_mode::read))
+                    if (!(n != nullptr && n->constraints.has<yyjson::unique_items_t>()))
                         out.emplace("uniqueItems", true);
                 if constexpr (yyjson::detail::std_array<T> || yyjson::detail::c_array<T>)
                 {
@@ -539,14 +615,10 @@ namespace yyjson
                         }
                         else if constexpr (yyjson::detail::is_std_optional<F>::value)
                         {
-                            using U = typename F::value_type;
-                            // A field without a value is left out, and null keeps the value in S() but under
-                            // strict, unless U reads null.
-                            if (options_.mode == schema_mode::read ||
-                                (strict() && yyjson::detail::may_read_null<U>()))
-                                emit<F>(p, field_nodes, node);
-                            else
-                                emit<U>(p, field_nodes, node);
+                            // A field without a value is left out of the object, which is how the type declares
+                            // that it may be absent.  Null is not part of the declaration, although a read without
+                            // `yyjson::strict` takes it, unless the value type reads null itself.
+                            emit<typename F::value_type>(p, field_nodes, node);
                         }
                         else
                             emit<F>(p, field_nodes, node);
@@ -567,7 +639,7 @@ namespace yyjson
                                 else
                                     return false;
                             }();
-                            if (!writing() && !omitted) p.emplace("default", d, copy_string);
+                            if (!writing() && !omitted && reads_back(d)) p.emplace("default", d, copy_string);
                         }
                     }(),
                     ...);
@@ -585,18 +657,36 @@ namespace yyjson
         }
     }  // namespace schema_detail
 
-    // The JSON Schema (2020-12) of T, as a mutable object.  PROTOTYPE.
+    namespace schema_detail
+    {
+        template <typename T>
+        object json_schema(const schema_options& options, bool strict)
+        {
+            auto doc = value(object());
+            auto root = *doc.as_object();
+            root.emplace("$schema", dialect);
+            if (!options.id.empty()) root.emplace("$id", options.id, copy_string);
+            auto gen = generator(options, strict);
+            gen.set_defs(root.emplace("$defs", empty_object));
+            gen.template emit<T>(root);
+            if (!gen.has_defs()) root.erase("$defs");
+            return *std::move(doc).as_object();
+        }
+    }  // namespace schema_detail
+
+    // The JSON Schema (2020-12) of T: the JSON that `read<T>` takes, or with `schema_direction::write` the JSON that
+    // `write` gives, as the types and the annotations declare it.  PROTOTYPE.
     template <typename T>
     [[nodiscard]] object json_schema(const schema_options& options = {})
     {
-        auto doc = value(object());
-        auto root = *doc.as_object();
-        root.emplace("$schema", schema_detail::dialect);
-        if (!options.id.empty()) root.emplace("$id", options.id, copy_string);
-        auto gen = schema_detail::generator(options);
-        gen.set_defs(root.emplace("$defs", empty_object));
-        gen.template emit<T>(root);
-        if (!gen.has_defs()) root.erase("$defs");
-        return *std::move(doc).as_object();
+        return schema_detail::json_schema<T>(options, false);
+    }
+    // The schema of what `read<T>` takes with `yyjson::strict`: the key of a field is required unless the field may
+    // be absent by its type or by `optional_key`, and a struct has no other keys unless `additional_properties`
+    // says otherwise.  The schema of `write` is the same with or without it.
+    template <typename T>
+    [[nodiscard]] object json_schema(strict_t, const schema_options& options = {})
+    {
+        return schema_detail::json_schema<T>(options, true);
     }
 }  // namespace yyjson
