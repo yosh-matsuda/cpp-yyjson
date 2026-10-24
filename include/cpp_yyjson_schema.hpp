@@ -110,6 +110,14 @@ namespace yyjson
         template <typename T>
         inline constexpr char type_identity_tag = 0;
 
+        // The tag that `yyjson::internal_tag` writes in the object of an alternative: its key and the name of the
+        // alternative.
+        struct variant_tag
+        {
+            std::string_view key;
+            std::string_view id;
+        };
+
         class generator;
 
         // The structs and the enumerations that the schemas refer to by name.  A type has one schema per direction,
@@ -424,7 +432,7 @@ namespace yyjson
             {
                 g.emit<T>(out);
             }
-            // Writes the schema of the struct or the enumeration T, which `$defs` has.
+            // Writes the schema of the struct, the enumeration or the named variant T, which `$defs` has.
             template <typename T>
             static void emit_definition(generator& g, object_ref out)
             {
@@ -432,6 +440,8 @@ namespace yyjson
                 {
                     if constexpr (std::is_enum_v<T>)
                         g.emit_enum<T>(out);
+                    else if constexpr (is_variant<T>::value)
+                        g.emit_variant<T>(out);
                     else
                         g.emit_struct<T>(out);
                 }
@@ -444,6 +454,8 @@ namespace yyjson
             bool strict_;
             // The values of `yyjson::const_` and `yyjson::enum_` of the struct whose fields are written.
             const yyjson::detail::json_scalar* values_ = nullptr;
+            // The variants tagged by `internal_tag` whose alternatives are being written in place.
+            std::vector<const void*> inlined_;
 
             // `yyjson::strict` applies to reading only: what `write` gives has every key that is not left out.
             [[nodiscard]] bool strict() const noexcept { return strict_ && !writing(); }
@@ -593,12 +605,26 @@ namespace yyjson
                 return std::string(yyjson::detail::type_name<S>()).append("::").append(
                     yyjson::detail::declared_member_name<S, R>);
             }
-            // Whether T is put in `$defs` and has its metadata there.
+            // Whether T is put in `$defs` and has its metadata there: a struct, an enumeration, or a variant that
+            // `yyjson::schema_name` names.
             template <typename T>
             [[nodiscard]] bool named() const noexcept
             {
-                if constexpr (std::is_enum_v<T> || struct_type<T>)
+                if constexpr (std::is_enum_v<T> || struct_type<T> ||
+                              (is_variant<T>::value && type_setting_count<T, yyjson::schema_name>() != 0))
                     return writing() ? !user_write<T> : !user_read<T>;
+                else
+                    return false;
+            }
+            // Whether `yyjson::schema` declares the schema of T in this direction.
+            template <typename T>
+            [[nodiscard]] bool declares() const
+            {
+                if constexpr (type_setting_count<T, yyjson::schema>() != 0)
+                {
+                    const auto m = type_metadata<T>();
+                    return m.declared_for(writing()) != nullptr;
+                }
                 else
                     return false;
             }
@@ -822,13 +848,37 @@ namespace yyjson
             }
 
             template <typename S>
-            void emit_struct(object_ref out, std::string_view tag_key = {}, std::string_view tag_id = {});
+            void emit_struct(object_ref out, std::span<const variant_tag> tags = {});
             template <typename F, typename Tags, std::size_t... Is>
             void emit_adjacent(array_ref one, std::string_view key, std::optional<std::size_t> held,
                                std::index_sequence<Is...>);
 
             template <typename V>
             void emit_variant(object_ref out);
+            template <typename V>
+            void emit_tagged_variant(object_ref out, std::span<const variant_tag> outer);
+            template <typename A>
+            void emit_tagged(object_ref out, std::span<const variant_tag> tags);
+            // Writes the tags into `properties` and their keys into `required`.  A key that two tags have takes the
+            // id of the first; it fails when the ids differ, as no string is both.
+            static void emit_tags(object_ref properties, std::vector<std::string_view>& required,
+                                  std::span<const variant_tag> tags)
+            {
+                for (std::size_t i = 0; i < tags.size(); ++i)
+                {
+                    const auto first = std::ranges::find(tags, tags[i].key, &variant_tag::key);
+                    if (first == tags.begin() + static_cast<std::ptrdiff_t>(i))
+                    {
+                        properties.emplace(tags[i].key, empty_object).emplace("const", tags[i].id);
+                        required.push_back(tags[i].key);
+                    }
+                    else if (first->id != tags[i].id)
+                    {
+                        auto p = *properties.find(tags[i].key)->second.as_object();
+                        if (!p.contains("not")) p.emplace("not", empty_object);
+                    }
+                }
+            }
 
             template <typename T>
             void emit_range(object_ref out, const schema_node* nodes, std::size_t node);
@@ -906,8 +956,9 @@ namespace yyjson
                 emit_builtin<T>(out, nodes, node);
             if constexpr (std::same_as<T, std::remove_cvref_t<T>>)
             {
-                static_assert(std::is_enum_v<T> || struct_type<T> || type_setting_count<T, yyjson::schema_name>() == 0,
-                              "yyjson::schema_name names a struct or an enumeration");
+                static_assert(std::is_enum_v<T> || struct_type<T> || is_variant<T>::value ||
+                                  type_setting_count<T, yyjson::schema_name>() == 0,
+                              "yyjson::schema_name names a struct, an enumeration or a variant");
                 if (!named<T>()) emit_type_metadata<T>(out);
             }
         }
@@ -974,7 +1025,10 @@ namespace yyjson
             }
             else if constexpr (is_variant<T>::value)
             {
-                emit_variant<T>(out);
+                if (named<T>())
+                    emit_named<T>(out);
+                else
+                    emit_variant<T>(out);
                 constraints();
             }
             else if constexpr (struct_type<T>)
@@ -1145,38 +1199,121 @@ namespace yyjson
         void generator::emit_variant(object_ref out)
         {
             using tags = yyjson::detail::variant_tags<V>;
+            if constexpr (tags::tagging == detail::variant_tagging::internal)
+                emit_tagged_variant<V>(out, {});
+            else
+            {
+                // An adjacent tag is written by the struct that holds the variant.
+                auto any = out.emplace("anyOf", empty_array);
+                [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                    (emit<std::variant_alternative_t<Is, V>>(any.emplace_back(empty_object)), ...);
+                }(std::make_index_sequence<std::variant_size_v<V>>{});
+            }
+        }
+
+        // A variant tagged by `internal_tag`, in an object that the variants in `outer` tag too when it is an
+        // alternative of theirs.  The alternatives are written in place, since a closed struct has to know the keys
+        // of the tags, so a variant that is reached again within them would be written without end: it needs a
+        // name, which puts it in `$defs`.
+        template <typename V>
+        void generator::emit_tagged_variant(object_ref out, std::span<const variant_tag> outer)
+        {
+            using tags = yyjson::detail::variant_tags<V>;
+            if (std::ranges::find(inlined_, &type_identity_tag<V>) != inlined_.end())
+                throw std::invalid_argument(
+                    std::string("the schema of ")
+                        .append(yyjson::detail::type_name<V>())
+                        .append(" refers to itself through an alternative that yyjson::internal_tag tags; give the "
+                                "variant a yyjson::schema_name, which puts it in $defs"));
+            inlined_.push_back(&type_identity_tag<V>);
+            struct pop
+            {
+                std::vector<const void*>& inlined;
+                ~pop() { inlined.pop_back(); }
+            } const guard{inlined_};
+
+            auto list = std::vector<variant_tag>(outer.begin(), outer.end());
+            list.push_back({tags::key, {}});
+            auto one = out.emplace("oneOf", empty_array);
             [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                if constexpr (tags::tagging == detail::variant_tagging::internal)
-                {
-                    auto one = out.emplace("oneOf", empty_array);
-                    (
-                        [&] {
-                            using A = std::variant_alternative_t<Is, V>;
-                            auto branch = one.emplace_back(empty_object);
-                            if constexpr (std::same_as<A, std::monostate>)
+                (
+                    [&] {
+                        using A = std::variant_alternative_t<Is, V>;
+                        auto branch = one.emplace_back(empty_object);
+                        if constexpr (Is == tags::monostate)
+                        {
+                            // Null, without a tag; an object that an outer variant tags is never read as it.
+                            if (outer.empty())
                                 branch.emplace("type", "null");
-                            else if constexpr (struct_type<A>)
-                                emit_struct<A>(branch, tags::key, tags::ids[Is]);
                             else
-                            {
-                                auto all = branch.emplace("allOf", empty_array);
-                                emit<A>(all.emplace_back(empty_object));
-                                auto tag = all.emplace_back(empty_object);
-                                tag.emplace("properties", empty_object)
-                                    .emplace(tags::key, empty_object)
-                                    .emplace("const", tags::ids[Is]);
-                                tag.emplace("required", empty_array).emplace_back(tags::key);
-                            }
-                        }(),
-                        ...);
+                                branch.emplace("not", empty_object);
+                        }
+                        else
+                        {
+                            list.back().id = tags::ids[Is];
+                            emit_tagged<A>(branch, list);
+                        }
+                    }(),
+                    ...);
+            }(std::make_index_sequence<std::variant_size_v<V>>{});
+        }
+
+        // An alternative A in the object that `tags` tag.  The read takes the alternative from the whole object, and
+        // the write adds the tags to what A writes, so a struct is written in place with the tags among its
+        // properties, through a pointer, a translator or another variant tagged in the same object.  Anything else
+        // takes the tags beside its own schema, which has to allow their keys.
+        template <typename A>
+        void generator::emit_tagged(object_ref out, std::span<const variant_tag> tags)
+        {
+            using T = std::remove_cvref_t<A>;
+            const auto beside = [&] {
+                auto all = out.emplace("allOf", empty_array);
+                emit<T>(all.emplace_back(empty_object));
+                auto tag = all.emplace_back(empty_object);
+                auto required = std::vector<std::string_view>();
+                emit_tags(tag.emplace("properties", empty_object), required, tags);
+                auto r = tag.emplace("required", empty_array);
+                for (const auto k : required) r.emplace_back(k);
+            };
+            if (declares<T>()) return beside();
+            if constexpr (user_read<T> || user_write<T>)
+            {
+                if (writing())
+                {
+                    if constexpr (user_write<T> && !writer::detail::to_json_inp_usr_defined<T>)
+                    {
+                        emit_tagged<decltype(writer::detail::to_json_wrapper(std::declval<const T&>()))>(out, tags);
+                        return emit_type_metadata<T>(out);
+                    }
+                    else if constexpr (user_write<T>)
+                        return beside();
                 }
                 else
                 {
-                    // An adjacent tag is written by the struct that holds the variant.
-                    auto any = out.emplace("anyOf", empty_array);
-                    (emit<std::variant_alternative_t<Is, V>>(any.emplace_back(empty_object)), ...);
+                    if constexpr (user_read<T> && yyjson::detail::from_json_translator<T>::castable)
+                    {
+                        emit_tagged<yyjson::detail::from_json_source<T>>(out, tags);
+                        return emit_type_metadata<T>(out);
+                    }
+                    else if constexpr (user_read<T>)
+                        return beside();
                 }
-            }(std::make_index_sequence<std::variant_size_v<V>>{});
+            }
+            if constexpr (yyjson::detail::is_std_optional<T>::value || yyjson::detail::owning_pointer<T>)
+                // Null is not an object, which the tags need.
+                emit_tagged<decltype(*std::declval<T&>())>(out, tags);
+            else if constexpr (struct_type<T>)
+            {
+                emit_struct<T>(out, tags);
+                emit_type_metadata<T>(out);
+            }
+            else if constexpr (yyjson::detail::internally_tagged<T>)
+            {
+                emit_tagged_variant<T>(out, tags);
+                emit_type_metadata<T>(out);
+            }
+            else
+                beside();
         }
 
         // The branches of a variant with an adjacent tag, which are exclusive: one for each alternative, and when
@@ -1223,7 +1360,7 @@ namespace yyjson
         }
 
         template <typename S>
-        void generator::emit_struct(object_ref out, std::string_view tag_key, std::string_view tag_id)
+        void generator::emit_struct(object_ref out, std::span<const variant_tag> tags)
         {
             using rules = yyjson::detail::struct_key_rules<S>;
             using additional = yyjson::detail::additional_keys;
@@ -1244,13 +1381,7 @@ namespace yyjson
             out.emplace("type", "object");
             auto properties = out.emplace("properties", empty_object);
             auto required = std::vector<std::string_view>();
-            auto tag = std::optional<object_ref>();
-            if (!tag_key.empty())
-            {
-                tag = properties.emplace(tag_key, empty_object);
-                tag->emplace("const", tag_id);
-                required.push_back(tag_key);
-            }
+            emit_tags(properties, required, tags);
             auto adjacent = std::optional<array_ref>();
             [[maybe_unused]] const auto defaults = [] {
                 if constexpr (std::default_initializable<S>)
@@ -1268,10 +1399,11 @@ namespace yyjson
                         const auto* field_nodes = yyjson::detail::constrained_field<S, Ks> ? nodes : nullptr;
                         constexpr auto declared = yyjson::detail::struct_declared_index<S, Ks>;
                         const auto m = field_metadata<S, declared>();
-                        // A field that has the key of the tag is read from the tag, whose id it must accept, and is
+                        // A field that has the key of a tag is read from the tag, whose id it must accept, and is
                         // written only when it holds the id.
-                        const bool tagged = tag && key == tag_key;
-                        auto p = tagged ? tag->emplace("allOf", empty_array).emplace_back(empty_object)
+                        const bool tagged = std::ranges::find(tags, key, &variant_tag::key) != tags.end();
+                        auto p = tagged ? properties.find(key)->second.as_object()->emplace("allOf", empty_array)
+                                              .emplace_back(empty_object)
                                         : properties.emplace(key, empty_object);
                         bool rejects = false;
                         if constexpr (yyjson::detail::adjacent_field<S, Ks>)

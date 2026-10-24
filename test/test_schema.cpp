@@ -382,6 +382,34 @@ template <> inline constexpr auto yyjson::annotations<Floats> = yyjson::annotate
     yyjson::field("below", yyjson::exclusive_maximum(0.1), yyjson::minimum(-1)),
     yyjson::field("pick", yyjson::enum_(0.1, 0.2)), yyjson::field("none", yyjson::minimum(1e300)));
 
+// A recursive variant tagged by `internal_tag`, whose alternatives are written in place: it needs a name, which puts
+// it in `$defs`.
+struct TLeaf { int v = 0; };
+struct TBranch;
+using TTree = std::variant<TLeaf, std::shared_ptr<TBranch>>;
+struct TBranch { std::vector<TTree> kids; };
+template <> inline constexpr auto yyjson::annotations<TTree> =
+    yyjson::annotate(yyjson::internal_tag("t", {"leaf", "branch"}), yyjson::schema_name("Tree"));
+struct UBranch;
+using UTree = std::variant<TLeaf, std::shared_ptr<UBranch>>;
+struct UBranch { std::vector<UTree> kids; };
+template <> inline constexpr auto yyjson::annotations<UTree> =
+    yyjson::annotate(yyjson::internal_tag("t", {"leaf", "branch"}));
+
+// Alternatives that take the tag through another type: a variant tagged in the same object, a translator to a
+// struct, a std::optional; and a variant whose alternative is tagged with the same key.
+struct GaugeJson { int level = 0; };
+struct Gauge { int level = 0; };
+template <> struct yyjson::caster<Gauge> {
+    static Gauge from_json(const GaugeJson& g) { return {g.level}; }
+    static GaugeJson to_json(const Gauge& g) { return {g.level}; }
+};
+using Nested = std::variant<Tagged, Gauge, std::optional<Circle>>;
+template <> inline constexpr auto yyjson::annotations<Nested> =
+    yyjson::annotate(yyjson::internal_tag("type", {"shape", "gauge", "circle"}));
+using Twice = std::variant<Tagged>;
+template <> inline constexpr auto yyjson::annotations<Twice> = yyjson::annotate(yyjson::internal_tag("kind", {"circle"}));
+
 // Written only: a borrowed string is not read.
 struct Borrowed { std::string_view s = "x"; const char* p = "y"; };
 
@@ -1049,6 +1077,42 @@ TEST(Schema, Floats)
     });
 }
 
+TEST(Schema, RecursiveTag)
+{
+    EXPECT_EQ(to_jsoncons(yyjson::json_schema<TTree>())["$ref"].as_string(), "#/$defs/Tree");
+    check<TTree>({
+        R"({"t":"leaf","v":1})",
+        R"({"t":"branch","kids":[{"t":"leaf","v":1},{"t":"branch","kids":[]}]})",
+        R"({"t":"branch","kids":[{"t":"leaf","v":"x"}]})",
+        R"({"t":"branch","kids":[{"v":1}]})",
+        R"({"t":"branch"})",
+        R"({"t":"branch","kids":[],"v":1})",
+        "null",
+    });
+}
+
+TEST(Schema, NestedTag)
+{
+    check<Nested>({
+        R"({"type":"shape","kind":"circle","r":1})",
+        R"({"type":"shape","kind":"rect","w":1,"h":2})",
+        R"({"type":"shape","kind":"rect","r":1})",
+        R"({"type":"shape"})",
+        R"({"kind":"circle","r":1})",
+        R"({"type":"gauge","level":3})",
+        R"({"type":"gauge","level":"x"})",
+        R"({"type":"gauge"})",
+        R"({"type":"circle","r":2})",
+        R"({"type":"circle"})",
+        "null",
+    });
+    check<Twice>({
+        R"({"kind":"circle","r":1})",
+        R"({"kind":"rect","w":1,"h":2})",
+        R"({"r":1})",
+    });
+}
+
 TEST(Schema, WriteOnly)
 {
     const auto schema = to_jsoncons(yyjson::json_schema<Borrowed>({.direction = yyjson::schema_direction::write}));
@@ -1064,6 +1128,7 @@ TEST(Schema, Errors)
     EXPECT_THROW((void)yyjson::schema_collection().add<Same1>().add<Same2>().schemas(), std::invalid_argument);
     EXPECT_THROW((void)yyjson::json_schema<BadExample>(), std::invalid_argument);
     EXPECT_THROW((void)yyjson::json_schema<BadText>(), std::invalid_argument);
+    EXPECT_THROW((void)yyjson::json_schema<UTree>(), std::invalid_argument);
 }
 
 // NOLINTEND

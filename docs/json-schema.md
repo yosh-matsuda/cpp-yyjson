@@ -148,10 +148,10 @@ The [constraints](validation.md#constraints) are in both schemas. A plain `write
 | `std::optional<T>` as a field | the schema of `T`, and the key is not required |
 | `std::optional<T>` elsewhere, `std::unique_ptr<T>`, `std::shared_ptr<T>` | `{"anyOf": [T, {"type": "null"}]}` |
 | `std::variant` | `anyOf` of the alternatives |
-| a variant with [`yyjson::internal_tag`](reference.md#yyjsoninternal_tag-yyjsonadjacent_tag) | `oneOf` of the alternatives, each an object with `{"const": id}` for the tag key, which is required |
+| a variant with [`yyjson::internal_tag`](reference.md#yyjsoninternal_tag-yyjsonadjacent_tag) | `oneOf` of the alternatives, each an object with `{"const": id}` for the tag key, which is required. A struct alternative is written in place with the tag among its properties, also through a pointer, a `std::optional`, a translator or another variant tagged in the same object; any other alternative has the tag in `allOf` beside its schema |
 | a field with [`yyjson::adjacent_tag`](reference.md#yyjsoninternal_tag-yyjsonadjacent_tag) | the tag key has `enum` of the ids, and the struct has `allOf` of `oneOf` branches, one for each alternative, that tie the id to the schema of the field |
 | structs | in `$defs`: `{"type": "object", "properties": {...}}`, with `required` and `additionalProperties` as [above](#read-and-write-schemas) |
-| a recursive type | `$ref` to its name in `$defs` |
+| a recursive type | `$ref` to its name in `$defs`; a variant with `yyjson::internal_tag` needs a [name](#names-of-types) for it |
 | [`yyjson::reader::value`, `yyjson::value`](conversions.md#json-values-as-fields) | `{}`, any JSON |
 | `yyjson::reader::object`, `yyjson::object`; the arrays | `{"type": "object"}`; `{"type": "array"}` |
 | a type with a [translator](conversions.md#translator) | the schema of the type that the translator reads or writes |
@@ -239,6 +239,24 @@ Without it, the name is the qualified name of the type with `::` replaced by `.`
 
 Two types with the same name throw `std::invalid_argument` when the schema is generated.
 
+A `std::variant` is written in place, unless `yyjson::schema_name` in its `annotations<V>` puts it in `$defs`. A variant tagged by `yyjson::internal_tag` that refers to itself needs the name, as `Tree` here, since its alternatives are written in place; without it, the schema throws `std::invalid_argument`.
+
+```cpp
+struct Leaf
+{
+    int value = 0;
+};
+struct Branch;
+using Tree = std::variant<Leaf, std::shared_ptr<Branch>>;
+struct Branch
+{
+    std::vector<Tree> children;
+};
+template <>
+inline constexpr auto yyjson::annotations<Tree> =
+    yyjson::annotate(yyjson::internal_tag("type", {"leaf", "branch"}), yyjson::schema_name("Tree"));
+```
+
 ## Several types and OpenAPI
 
 `yyjson::schema_collection` collects the schemas of several types, such as the request and response bodies of an [OpenAPI 3.1](https://spec.openapis.org/oas/v3.1.0) document, whose `components/schemas` is a map of JSON Schemas by name.
@@ -252,8 +270,8 @@ auto components = collection.schemas();  // the value of components/schemas
 ```
 
 *   `add<T>(direction)` adds `T` and the types in it in a direction, read by default. It returns the collection, so calls chain.
-*   `schema<T>(direction)` returns the schema to put in an operation: `$ref` for a struct or an enumeration, the schema itself for another type. It throws `std::logic_error` when `T` was not added in that direction.
-*   `schemas()` returns the schemas of the structs and the enumerations by name, without `$schema`.
+*   `schema<T>(direction)` returns the schema to put in an operation: `$ref` for a named type, the schema itself for another type. It throws `std::logic_error` when `T` was not added in that direction.
+*   `schemas()` returns the schemas of the named types by name, without `$schema`.
 *   A type has one name, unless the added types use it in both directions and its read and write schemas differ; it then has two, `Name-Input` and `Name-Output`. Without `yyjson::strict` most structs differ in this way, since the read schema has fewer required keys and allows unknown keys; `yyjson::schema_collection(yyjson::strict)` makes the read schemas those of strict reading, and the structs then often share one name.
 *   Two types with the same name throw `std::invalid_argument` from `schemas()` and `schema<T>()`.
 

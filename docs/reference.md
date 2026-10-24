@@ -421,11 +421,11 @@ template <typename T>
 yyjson::object json_schema(yyjson::strict_t, const schema_options& options = {});
 ```
 
-The first form gives the schema of what `yyjson::read<T>` reads, or with [`schema_direction::write`](#yyjsonschema_options-yyjsonschema_collection_options) of what `yyjson::write` writes. The second form gives the schema of what `read<T>(json, yyjson::strict)` reads; the write schema is the same in both forms. The result has `$schema`, `$id` when [`schema_options`](#yyjsonschema_options-yyjsonschema_collection_options) gives one, the structs and the enumerations in `$defs`, and the schema of `T`, which is a `$ref` for a struct or an enumeration.
+The first form gives the schema of what `yyjson::read<T>` reads, or with [`schema_direction::write`](#yyjsonschema_options-yyjsonschema_collection_options) of what `yyjson::write` writes. The second form gives the schema of what `read<T>(json, yyjson::strict)` reads; the write schema is the same in both forms. The result has `$schema`, `$id` when [`schema_options`](#yyjsonschema_options-yyjsonschema_collection_options) gives one, the [named types](json-schema.md#names-of-types) in `$defs`, and the schema of `T`, which is a `$ref` for a named type.
 
 JSON that is valid against the schema is read by `read<T>` with the same strictness, with the exceptions listed in [What the schema guarantees](json-schema.md#what-the-schema-guarantees).
 
-Throws `std::invalid_argument` for two types with the same [`yyjson::schema_name`](#yyjsonschema_name), an [example](#yyjsontitle-yyjsondescription-yyjsondeprecated-yyjsonexamples) that `read<T>` does not read, and a [declared schema](#yyjsonschema) that is not a JSON object or a boolean.
+Throws `std::invalid_argument` for two types with the same [`yyjson::schema_name`](#yyjsonschema_name), an [example](#yyjsontitle-yyjsondescription-yyjsondeprecated-yyjsonexamples) that `read<T>` does not read, a [declared schema](#yyjsonschema) that is not a JSON object or a boolean, and a variant with `yyjson::internal_tag` and without `yyjson::schema_name` that refers to itself.
 
 ```cpp
 struct Point
@@ -461,8 +461,8 @@ public:
 
 *   With `yyjson::strict`, the read schemas are those of strict reading.
 *   `add<T>` adds `T` and the types in it, in one direction, and returns `*this`.
-*   `schema<T>` returns the schema of `T` to use in a document, a `$ref` for a struct or an enumeration. It throws `std::logic_error` when `T` was not added in the direction.
-*   `schemas()` returns the schemas of the structs and the enumerations by name, without `$schema`. A type that the added types use in both directions, and whose read and write schemas differ, has the two names `Name-Input` and `Name-Output`.
+*   `schema<T>` returns the schema of `T` to use in a document, a `$ref` for a named type. It throws `std::logic_error` when `T` was not added in the direction.
+*   `schemas()` returns the schemas of the named types by name, without `$schema`. A type that the added types use in both directions, and whose read and write schemas differ, has the two names `Name-Input` and `Name-Output`.
 *   `schema<T>` and `schemas()` throw `std::invalid_argument` as `json_schema<T>` does.
 
 ```cpp
@@ -1532,7 +1532,7 @@ struct schema_collection_options
 
 *   `direction` chooses the schema of `read<T>` or of `write`.
 *   `id` is the value of `$id`; the schema has no `$id` when it is empty.
-*   `ref_prefix` is the beginning of each `$ref` to a struct or an enumeration, followed by its name. `json_schema<T>` always puts their schemas in `$defs`; change the prefix when the program moves them elsewhere. `schema_collection` refers to the place where the program puts `schemas()`.
+*   `ref_prefix` is the beginning of each `$ref` to a named type, followed by its name. `json_schema<T>` always puts their schemas in `$defs`; change the prefix when the program moves them elsewhere. `schema_collection` refers to the place where the program puts `schemas()`.
 
 ```cpp
 auto schema = yyjson::json_schema<Point>(
@@ -1560,7 +1560,7 @@ Specialize `annotations<T>` before the first use of `T`. `annotate` takes these 
 | `T` | Settings |
 | --- | --- |
 | a struct | [`yyjson::field`](#yyjsonfield), [`yyjson::additional_properties`](#yyjsonadditional_properties), [`yyjson::dependent_required`](#yyjsondependent_required) and [`yyjson::schema_name`](#yyjsonschema_name) |
-| a `std::variant` | [`yyjson::internal_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag) |
+| a `std::variant` | [`yyjson::internal_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag) and [`yyjson::schema_name`](#yyjsonschema_name) |
 | an enumeration | [`yyjson::enumerator` and `yyjson::enum_format`](#yyjsonenum_format-yyjsonenumerator), and [`yyjson::schema_name`](#yyjsonschema_name) |
 | any type | [`yyjson::title`, `yyjson::description`, `yyjson::deprecated`, `yyjson::examples`](#yyjsontitle-yyjsondescription-yyjsondeprecated-yyjsonexamples) and [`yyjson::schema`](#yyjsonschema) |
 
@@ -1990,7 +1990,7 @@ See [Declared schemas](json-schema.md#declared-schemas).
 
 ### `yyjson::schema_name`
 
-A setting of a struct or an enumeration that names it in `$defs` of the JSON Schema and in `components/schemas` of OpenAPI.
+A setting of a struct, an enumeration or a `std::variant` that names it in `$defs` of the JSON Schema and in `components/schemas` of OpenAPI.
 
 ```cpp
 struct schema_name
@@ -1999,8 +1999,8 @@ struct schema_name
 };
 ```
 
-*   The name has the characters `[A-Za-z0-9._-]` only, and is not empty; another name is a compile error. Another type than a struct or an enumeration is a compile error in `json_schema<T>`.
-*   Without it, the name comes from the qualified name of the type, which differs between compilers for some types.
+*   The name has the characters `[A-Za-z0-9._-]` only, and is not empty; another name is a compile error. On another type it is a compile error in `json_schema<T>`. A variant takes it in `annotations<V>`, since a `std::variant` has no declaration to annotate.
+*   Without it, the name of a struct or an enumeration comes from the qualified name of the type, which differs between compilers for some types. A variant without it is written in place, and needs it when it refers to itself through an alternative that `yyjson::internal_tag` tags.
 *   Two types with the same name throw `std::invalid_argument` from `json_schema<T>` and `schema_collection`.
 *   It does not change how a value is read or written.
 

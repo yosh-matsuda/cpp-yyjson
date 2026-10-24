@@ -1267,11 +1267,12 @@ namespace yyjson
         }
     };
 
-    // The name of a struct or an enumeration in `$defs` of the JSON Schema that `yyjson::json_schema` generates, and
-    // in `components/schemas` of OpenAPI: `yyjson::annotate(yyjson::schema_name("Person"))` or
+    // The name of a struct, an enumeration or a variant in `$defs` of the JSON Schema that `yyjson::json_schema`
+    // generates, and in `components/schemas` of OpenAPI: `yyjson::annotate(yyjson::schema_name("Person"))` or
     // `struct [[=yyjson::schema_name("Person")]] Person`.  The name has the characters `[A-Za-z0-9._-]` only, as
-    // OpenAPI requires.  Without it the name comes from the qualified name of the type, which differs between
-    // compilers for some types.  It does not change how the value is read or written.
+    // OpenAPI requires.  Without it the name of a struct or an enumeration comes from the qualified name of the type,
+    // which differs between compilers for some types, and a variant is written in place.  It does not change how the
+    // value is read or written.
     struct schema_name
     {
         const char* text_data = nullptr;
@@ -2338,7 +2339,7 @@ namespace yyjson
                       "yyjson::annotate takes yyjson::field(...), yyjson::additional_properties and "
                       "yyjson::dependent_required for a struct, "
                       "yyjson::internal_tag for a variant, yyjson::enumerator(...) and yyjson::enum_format for an "
-                      "enumeration, yyjson::schema_name for a struct or an enumeration, and yyjson::title, "
+                      "enumeration, yyjson::schema_name for a struct, an enumeration or a variant, and yyjson::title, "
                       "yyjson::description, yyjson::examples, yyjson::deprecated and yyjson::schema for any type");
         return detail::annotation_list<As...>{
             detail::annotation_values<std::index_sequence_for<As...>, As...>(values...)};
