@@ -82,6 +82,11 @@ namespace yyjson
             (yyjson::detail::object_emplaceable_range<T, reader::const_object_ref> ||
              yyjson::detail::object_back_emplaceable_range<T, reader::const_object_ref>);
 
+        // A pair of a key and a value, which a tuple of them writes as a member of an object.
+        template <typename P>
+        concept key_value_element =
+            yyjson::detail::pair_like<P> && yyjson::detail::key_type<std::tuple_element_t<0, P>>;
+
         template <typename T>
         struct is_variant : std::false_type
         {
@@ -508,6 +513,44 @@ namespace yyjson
                                    std::index_sequence<Is...>)
         {
             const schema_node* n = nodes != nullptr ? &nodes[node] : nullptr;
+            if constexpr (sizeof...(Is) != 0 && (key_value_element<std::tuple_element_t<Is, T>> && ...))
+            {
+                // An object of a member for each pair, in order.  JSON Schema cannot tie a member to its position, so
+                // each member read has to satisfy the schema of every value and key, and a member written one of them.
+                // The node of the key or the value of the pair at position i, or 0 when it has no constraints.
+                const auto part = [&](std::size_t i, std::size_t k) -> std::size_t {
+                    if (n == nullptr || i >= n->prefix_count) return 0;
+                    const auto& pair = nodes[n->prefix + i];
+                    return k < pair.prefix_count ? pair.prefix + k : 0;
+                };
+                const bool keys_constrained = ((part(Is, 0) != 0) || ...);
+                const bool values_constrained = ((part(Is, 1) != 0) || ...);
+                const char* const combine = writing() ? "anyOf" : "allOf";
+                out.emplace("type", "object");
+                out.emplace("minProperties", sizeof...(Is));
+                out.emplace("maxProperties", sizeof...(Is));
+                if (keys_constrained)
+                {
+                    auto each = out.emplace("propertyNames", empty_object).emplace(combine, empty_array);
+                    (emit<std::string>(each.emplace_back(empty_object), part(Is, 0) != 0 ? nodes : nullptr,
+                                       part(Is, 0)),
+                     ...);
+                }
+                using V0 = std::remove_cvref_t<std::tuple_element_t<1, std::tuple_element_t<0, T>>>;
+                auto values = out.emplace("additionalProperties", empty_object);
+                if (!values_constrained &&
+                    (std::same_as<std::remove_cvref_t<std::tuple_element_t<1, std::tuple_element_t<Is, T>>>, V0> &&
+                     ...))
+                    emit<V0>(values);
+                else
+                {
+                    auto each = values.emplace(combine, empty_array);
+                    (emit<std::tuple_element_t<1, std::tuple_element_t<Is, T>>>(
+                         each.emplace_back(empty_object), part(Is, 1) != 0 ? nodes : nullptr, part(Is, 1)),
+                     ...);
+                }
+                return;
+            }
             out.emplace("type", "array");
             if (n != nullptr) emit_constraints(out, n->constraints);
             auto prefix = out.emplace("prefixItems", empty_array);
@@ -521,7 +564,6 @@ namespace yyjson
                 ...);
             out.emplace("minItems", sizeof...(Is));
             out.emplace("items", false);
-            // TODO: a tuple of key-value pairs is read from an object as well
         }
 
         template <typename V>
