@@ -141,6 +141,22 @@ inline constexpr auto yyjson::annotations<ValidateNulls> =
     yyjson::annotate(yyjson::field("p", yyjson::satisfies<validate_set>),
                      yyjson::field("colors", yyjson::property_names(yyjson::satisfies<validate_red>)));
 
+struct ValidateNullables
+{
+    std::variant<std::monostate, std::string> code;
+    std::variant<double, std::monostate> ratio = std::monostate();
+    std::unique_ptr<int> count;
+    std::optional<std::unique_ptr<int>> level;
+    std::vector<std::unique_ptr<std::string>> tags;
+    std::vector<std::shared_ptr<int>> ids;
+};
+template <>
+inline constexpr auto yyjson::annotations<ValidateNullables> =
+    yyjson::annotate(yyjson::field("code", yyjson::max_length(3)), yyjson::field("ratio", yyjson::maximum(1)),
+                     yyjson::field("count", yyjson::minimum(0)), yyjson::field("level", yyjson::maximum(5)),
+                     yyjson::field("tags", yyjson::items(yyjson::max_length(3))),
+                     yyjson::field("ids", yyjson::unique_items));
+
 namespace
 {
     // a value of T that `set` changes
@@ -314,6 +330,40 @@ TEST(Validate, Nulls)
                    R"(the value of the key "colors" of ValidateNulls has a key that does not satisfy the )"
                    R"(constraints of yyjson::property_names)",
                    "/colors");
+}
+
+TEST(Validate, Nullables)
+{
+    // the constraints check the value that a pointer or a variant with std::monostate holds, and null passes
+    expect_valid(ValidateNullables{});
+    expect_valid(with<ValidateNullables>([](auto& t) {
+        t.code = "abc";
+        t.ratio = 1.0;
+        t.count = std::make_unique<int>(0);
+        t.level = std::make_unique<int>(5);
+        t.level.emplace();
+        t.tags.push_back(nullptr);
+        t.tags.push_back(std::make_unique<std::string>("abc"));
+        t.ids = {nullptr, std::make_shared<int>(1), std::make_shared<int>(2)};
+    }));
+    expect_invalid(with<ValidateNullables>([](auto& t) { t.code = "abcd"; }),
+                   R"(the value of the key "code" of ValidateNullables is longer than the maximum length 3)", "/code");
+    expect_invalid(with<ValidateNullables>([](auto& t) { t.ratio = 2.0; }),
+                   R"(the value of the key "ratio" of ValidateNullables is greater than the maximum 1)", "/ratio");
+    expect_invalid(with<ValidateNullables>([](auto& t) { t.count = std::make_unique<int>(-1); }),
+                   R"(the value of the key "count" of ValidateNullables is less than the minimum 0)", "/count");
+    expect_invalid(with<ValidateNullables>([](auto& t) { t.level = std::make_unique<int>(6); }),
+                   R"(the value of the key "level" of ValidateNullables is greater than the maximum 5)", "/level");
+    expect_invalid(with<ValidateNullables>([](auto& t) {
+                       t.tags.push_back(nullptr);
+                       t.tags.push_back(std::make_unique<std::string>("abcd"));
+                   }),
+                   R"(an element of the value of the key "tags" of ValidateNullables is longer than the maximum )"
+                   R"(length 3)",
+                   "/tags/1");
+    expect_invalid(with<ValidateNullables>([](auto& t) { t.ids = {nullptr, std::make_shared<int>(1), nullptr}; }),
+                   R"(an element of the value of the key "ids" of ValidateNullables is equal to an earlier element)",
+                   "/ids/2");
 }
 
 TEST(Validate, WriteStrict)
