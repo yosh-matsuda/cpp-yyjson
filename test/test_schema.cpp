@@ -306,6 +306,16 @@ struct Narrow { std::int8_t x = 0; };
 template <> inline constexpr auto yyjson::annotations<Narrow> =
     yyjson::annotate(yyjson::field("x", yyjson::minimum(0), yyjson::maximum(1000)));
 
+// min_items and max_items of a map count its properties.
+struct Sized
+{
+    std::map<std::string, int> m;
+    std::vector<std::pair<std::string, int>> kv;
+};
+template <> inline constexpr auto yyjson::annotations<Sized> =
+    yyjson::annotate(yyjson::field("m", yyjson::min_items(1), yyjson::max_items(2)),
+                     yyjson::field("kv", yyjson::min_items(1), yyjson::max_items(2)));
+
 // Written only: a borrowed string is not read.
 struct Borrowed { std::string_view s = "x"; const char* p = "y"; };
 
@@ -873,6 +883,18 @@ TEST(Schema, Narrow)
         R"({"x":-1})",
         R"({"x":127})",
         R"({"x":128})",
+    });
+}
+
+TEST(Schema, Sized)
+{
+    check<Sized>({
+        R"({"m":{"a":1},"kv":{"a":1}})",
+        R"({"m":{"a":1,"b":2},"kv":{"a":1,"b":2}})",
+        R"({"m":{},"kv":{"a":1}})",
+        R"({"m":{"a":1},"kv":{}})",
+        R"({"m":{"a":1,"b":2,"c":3},"kv":{"a":1}})",
+        R"({"m":{"a":1},"kv":{"a":1,"b":2,"c":3}})",
     });
 }
 

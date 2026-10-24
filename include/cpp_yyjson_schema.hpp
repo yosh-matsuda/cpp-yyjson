@@ -945,7 +945,16 @@ namespace yyjson
                 };
                 const auto object_form = [&](object_ref o) {
                     o.emplace("type", "object");
-                    if (n != nullptr) emit_constraints(o, n->constraints);
+                    if (n != nullptr)
+                    {
+                        // min_items and max_items count the entries, which are the properties of the object.
+                        auto rest = n->constraints;
+                        if (rest.has<yyjson::min_items>()) o.emplace("minProperties", rest.min_items);
+                        if (rest.has<yyjson::max_items>()) o.emplace("maxProperties", rest.max_items);
+                        rest.set &= ~(yyjson::detail::constraint_bit<yyjson::min_items> |
+                                      yyjson::detail::constraint_bit<yyjson::max_items>);
+                        emit_constraints(o, rest);
+                    }
                     if (std::is_enum_v<K> || (n != nullptr && n->keys != 0))
                         key_schema(o.emplace("propertyNames", empty_object));
                     value_schema(o.emplace("additionalProperties", empty_object));
