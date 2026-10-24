@@ -1180,9 +1180,11 @@ namespace yyjson
             out.emplace("type", "object");
             auto properties = out.emplace("properties", empty_object);
             auto required = std::vector<std::string_view>();
+            auto tag = std::optional<object_ref>();
             if (!tag_key.empty())
             {
-                properties.emplace(tag_key, empty_object).emplace("const", tag_id);
+                tag = properties.emplace(tag_key, empty_object);
+                tag->emplace("const", tag_id);
                 required.push_back(tag_key);
             }
             auto adjacent = std::optional<array_ref>();
@@ -1202,7 +1204,11 @@ namespace yyjson
                         const auto* field_nodes = yyjson::detail::constrained_field<S, Ks> ? nodes : nullptr;
                         constexpr auto declared = yyjson::detail::struct_declared_index<S, Ks>;
                         const auto m = field_metadata<S, declared>();
-                        auto p = properties.emplace(key, empty_object);
+                        // A field that has the key of the tag is read from the tag, whose id it must accept, and is
+                        // written only when it holds the id.
+                        const bool tagged = tag && key == tag_key;
+                        auto p = tagged ? tag->emplace("allOf", empty_array).emplace_back(empty_object)
+                                        : properties.emplace(key, empty_object);
                         bool rejects = false;
                         if constexpr (yyjson::detail::adjacent_field<S, Ks>)
                         {
@@ -1246,7 +1252,9 @@ namespace yyjson
                                 return !yyjson::detail::omittable<F>;
                             return rules::required[Ks] || (strict() && !rules::optional[Ks]);
                         }();
-                        if (is_required)
+                        if (tagged)
+                            ;
+                        else if (is_required)
                             required.push_back(key);
                         else if constexpr (std::default_initializable<S> && writable<F> &&
                                            !yyjson::detail::adjacent_field<S, Ks>)

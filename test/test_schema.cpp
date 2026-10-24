@@ -334,6 +334,25 @@ struct Empty
     std::tuple<> t;
 };
 
+// An alternative with a field of the tag key, which is read from the tag.
+struct Cat
+{
+    std::string kind = "cat";
+    int lives = 9;
+};
+struct Dog
+{
+    std::string kind = "dog";
+};
+template <> inline constexpr auto yyjson::annotations<Dog> =
+    yyjson::annotate(yyjson::field("kind", yyjson::max_length(2)));
+using Pet = std::variant<Cat, Dog>;
+template <> inline constexpr auto yyjson::annotations<Pet> = yyjson::annotate(yyjson::internal_tag("kind", {"cat", "dog"}));
+struct Owner
+{
+    Pet pet;
+};
+
 // Written only: a borrowed string is not read.
 struct Borrowed { std::string_view s = "x"; const char* p = "y"; };
 
@@ -941,6 +960,17 @@ TEST(Schema, EmptyTuple)
         {R"({"t":[]})", lenient},
         R"({"t":{"a":1}})",
         R"({"t":[1]})",
+    });
+}
+
+TEST(Schema, TagField)
+{
+    check<Owner>({
+        R"({"pet":{"kind":"cat"}})",
+        R"({"pet":{"kind":"cat","lives":3}})",
+        R"({"pet":{"lives":3}})",
+        R"({"pet":{"kind":"dog"}})",
+        R"({"pet":{"kind":"bird"}})",
     });
 }
 
