@@ -368,7 +368,7 @@ namespace cpp_yyjson_codegen
             return "R\"" + delim + "(" + std::string(s) + ")" + delim + "\"";
         }
 
-        inline std::string cpp_string(std::string_view s)
+        inline std::string quoted(std::string_view s)
         {
             const auto control = std::ranges::any_of(s, [](char c) {
                 const auto u = static_cast<unsigned char>(c);
@@ -395,6 +395,14 @@ namespace cpp_yyjson_codegen
                     out += c;
             }
             return out + "\"";
+        }
+
+        // A string literal ends at its first NUL when it converts to a `std::string_view` or a `std::string`, so a
+        // string with NUL carries its length: as `std::string_view("a\000b", 3)` for annotations, or as `type`.
+        inline std::string cpp_string(std::string_view s, std::string_view type = "std::string_view")
+        {
+            if (s.find('\0') == std::string_view::npos) return quoted(s);
+            return std::string(type) + "(" + quoted(s) + ", " + std::to_string(s.size()) + ")";
         }
 
         // identifiers
@@ -1308,7 +1316,7 @@ namespace cpp_yyjson_codegen
                         if (j.is_number()) return " = " + float_literal(j, t.k == tk::f32);
                         return std::nullopt;
                     case tk::string:
-                        if (j.is_string()) return " = " + cpp_string(j.text);
+                        if (j.is_string()) return " = " + cpp_string(j.text, "std::string");
                         return std::nullopt;
                     case tk::named:
                     {

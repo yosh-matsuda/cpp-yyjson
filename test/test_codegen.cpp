@@ -152,6 +152,24 @@ TEST(Codegen, Enums)
     EXPECT_FALSE(has(generate(many, {.cpp26 = true}).code, "enum_range"));
 }
 
+TEST(Codegen, StringsWithNul)
+{
+    // a string literal converted to std::string_view or std::string ends at NUL, so these carry their length
+    const auto r = generate(R"({"type": "object", "properties": {
+        "k": {"enum": ["a\u0000b", "c"]},
+        "s": {"type": "string", "default": "x\u0000y"},
+        "c": {"const": "p\u0000q"},
+        "l": {"type": "array", "items": {"type": "string"}, "default": ["m\u0000n"]},
+        "a\u0000b": {"type": "integer"}
+    }})",
+                            {});
+    EXPECT_EQ(warnings(r), "");
+    EXPECT_TRUE(has(r.code, R"(yyjson::rename(std::string_view("a\000b", 3)))"));
+    EXPECT_TRUE(has(r.code, R"(std::string s = std::string("x\000y", 3);)"));
+    EXPECT_TRUE(has(r.code, R"(yyjson::const_(std::string_view("p\000q", 3)))"));
+    EXPECT_TRUE(has(r.code, R"(std::vector<std::string> l{std::string("m\000n", 3)};)"));
+}
+
 TEST(Codegen, Arrays)
 {
     const auto r = generate(R"({
