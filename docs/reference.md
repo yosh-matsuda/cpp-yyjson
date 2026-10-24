@@ -49,6 +49,7 @@ This page lists the functions, classes and other entities of cpp-yyjson, grouped
     *   [`yyjson::required`](#yyjsonrequired)
     *   [`yyjson::optional_key`](#yyjsonoptional_key)
     *   [`yyjson::omit_default`](#yyjsonomit_default)
+    *   [`yyjson::extra_keys`](#yyjsonextra_keys)
     *   [`yyjson::additional_properties`](#yyjsonadditional_properties)
     *   [`yyjson::dependent_required`](#yyjsondependent_required)
     *   [`yyjson::one_of_required`, `yyjson::any_of_required`](#yyjsonone_of_required-yyjsonany_of_required)
@@ -221,7 +222,7 @@ In this section, the *default* of a field or a value is its value in a value-ini
 *   the alternative that a [tagged variant](conversions.md#tagged-variants) holds;
 *   a `std::optional` of one of them. If it is empty, it first gets a default struct or map, or a tagged variant read from the object.
 
-Each member of the JSON object is merged into the field or the map value that its key names:
+Each member of the JSON object is merged into the field or the map value that its key names, and a key that names no field of a struct into the map of its [`yyjson::extra_keys`](#yyjsonextra_keys) field, if it has one:
 
 *   `null` gives a field its default and erases a key from a map.
 *   A JSON object is merged in the same way. A key that a map does not have yet is first added with a default value.
@@ -335,6 +336,7 @@ void validate(const T& t);
 *   a field that [`yyjson::dependent_required`](#yyjsondependent_required) requires, left out while the field that requires it is written;
 *   groups of [`yyjson::one_of_required` or `yyjson::any_of_required`](#yyjsonone_of_required-yyjsonany_of_required) of which none, or under `one_of_required` more than one, have all their fields written;
 *   a field of an [adjacent tag](#yyjsoninternal_tag-yyjsonadjacent_tag) that does not name the alternative that its variant holds, which `yyjson::write` rejects with `std::invalid_argument`.
+*   a key of the map of a [`yyjson::extra_keys`](#yyjsonextra_keys) field that is also the key of a field or a tag of the struct, which `yyjson::write` rejects with `std::invalid_argument`.
 
 A field that `write` writes as `null`, such as an empty `std::shared_ptr` or a `std::variant` that holds `std::monostate`, is not checked by its constraints, as the read does not check them for `null`. Nor is a field that [`yyjson::omit_default`](#yyjsonomit_default) leaves out, whose key the read does not see. A caster of the program that writes `null` is not detected, and the constraints of its field are checked.
 
@@ -1609,7 +1611,7 @@ template <typename... As>
 consteval field_annotation<As...> field(std::string_view member, As... values);
 ```
 
-`values` are one or more of [`yyjson::rename`](#yyjsonrename), [`yyjson::skip`](#yyjsonskip), [`yyjson::required`](#yyjsonrequired), [`yyjson::optional_key`](#yyjsonoptional_key), [`yyjson::omit_default`](#yyjsonomit_default), [`yyjson::adjacent_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag), the [constraints](#constraints), [`yyjson::items`](#yyjsonitems), [`yyjson::prefix_items`](#yyjsonprefix_items), [`yyjson::contains`, `yyjson::min_contains`, `yyjson::max_contains`](#yyjsoncontains-yyjsonmin_contains-yyjsonmax_contains), [`yyjson::property_names`](#yyjsonproperty_names), [`yyjson::additional_properties(settings...)`](#yyjsonadditional_properties), [`yyjson::title`, `yyjson::description`, `yyjson::deprecated`, `yyjson::examples`](#yyjsontitle-yyjsondescription-yyjsondeprecated-yyjsonexamples) and [`yyjson::schema`](#yyjsonschema). Any other setting is a compile error.
+`values` are one or more of [`yyjson::rename`](#yyjsonrename), [`yyjson::skip`](#yyjsonskip), [`yyjson::required`](#yyjsonrequired), [`yyjson::optional_key`](#yyjsonoptional_key), [`yyjson::omit_default`](#yyjsonomit_default), [`yyjson::extra_keys`](#yyjsonextra_keys), [`yyjson::adjacent_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag), the [constraints](#constraints), [`yyjson::items`](#yyjsonitems), [`yyjson::prefix_items`](#yyjsonprefix_items), [`yyjson::contains`, `yyjson::min_contains`, `yyjson::max_contains`](#yyjsoncontains-yyjsonmin_contains-yyjsonmax_contains), [`yyjson::property_names`](#yyjsonproperty_names), [`yyjson::additional_properties(settings...)`](#yyjsonadditional_properties), [`yyjson::title`, `yyjson::description`, `yyjson::deprecated`, `yyjson::examples`](#yyjsontitle-yyjsondescription-yyjsondeprecated-yyjsonexamples) and [`yyjson::schema`](#yyjsonschema). Any other setting is a compile error.
 
 ### `yyjson::rename`
 
@@ -1665,6 +1667,38 @@ inline constexpr omit_default_t omit_default{};
 
 Writing compares the field with the same field of one `T()`, made once per type, by `operator==`, and leaves out its key when they are equal. Reading treats the key as [`yyjson::optional_key`](#yyjsonoptional_key) does, so a missing key gives the field its value in `T()` and the object reads back as it was written. [`yyjson::validate`](#yyjsonvalidate) and [`write(t, yyjson::strict)`](#yyjsonwrite) do not check the constraints of a field that is left out. The type of the field needs `operator==`, and `T` a default constructor; a C array field is a compile error. It is also a compile error together with `yyjson::required` or `yyjson::optional_key`, on a skipped field and on a field tagged by `yyjson::adjacent_tag`. See [Annotations of keys](validation.md#annotations-of-keys).
 
+### `yyjson::extra_keys`
+
+A map field that receives the keys of the object that name no field of the struct, and whose keys are written after the fields.
+
+```cpp
+inline constexpr extra_keys_t extra_keys{};
+```
+
+The field has no key of its own. Its type is a map whose `key_type` is constructed from and converts to `std::string_view`, and which has `try_emplace`, `find` and `erase`, such as `std::map<std::string, yyjson::value>` or `std::unordered_map<std::string, int>`. The keys of the tags of variants are not given to it.
+
+*   Reading starts from the map in `T()`; [`yyjson::merge_into`](#yyjsonread_into-yyjsonmerge_into) merges into the map that the field has, and erases a key whose value is `null`.
+*   [`yyjson::strict`](#yyjsonstrict) accepts the keys, and rejects a key that appears twice.
+*   [`yyjson::additional_properties(settings...)`](#yyjsonadditional_properties) on the field gives the constraints of the values; the path of an error is `/key`.
+*   Writing a map that has the key of a field or a tag of the struct throws `std::invalid_argument` from `yyjson::write`, `object(t)` and `value(t)`, and `yyjson::bad_cast` from [`yyjson::validate`](#yyjsonvalidate) and `write(t, yyjson::strict)`.
+*   [`yyjson::json_schema`](#yyjsonjson_schemat) gives the struct `additionalProperties` with the schema of the values.
+
+A second such field in the struct, `yyjson::additional_properties(false)` on the struct, a type that is not such a map, any other setting on the field, a field named by `yyjson::dependent_required`, `yyjson::one_of_required` or `yyjson::any_of_required`, and a struct that `VISITABLE_STRUCT` registers are compile errors. See [Keys that name no field](conversions.md#keys-that-name-no-field).
+
+```cpp
+struct Package
+{
+    std::string name;
+    std::map<std::string, yyjson::value> others;
+};
+
+template <>
+inline constexpr auto yyjson::annotations<Package> = yyjson::annotate(yyjson::field("others", yyjson::extra_keys));
+
+auto package = yyjson::read<Package>(R"({"name":"x","license":"MIT"})");  // -> Package{"x", {{"license", "MIT"}}}
+auto json = yyjson::write(package);                                       // -> {"name":"x","license":"MIT"}
+```
+
 ### `yyjson::additional_properties`
 
 Whether the object of a struct may have keys that name no field, or the constraints of the values of a map field.
@@ -1687,6 +1721,8 @@ As in JSON Schema, where `"additionalProperties": false` is the schema that reje
 *   With `false`, reading an object with such a key throws `yyjson::bad_cast`.
 *   With `true`, the struct accepts such keys under `yyjson::strict` too, and ignores them.
 *   Without it, such keys are ignored, and `yyjson::strict` rejects them.
+
+A field with [`yyjson::extra_keys`](#yyjsonextra_keys) receives such keys instead, and takes `additional_properties(settings...)` for their values; `additional_properties(false)` on its struct is a compile error.
 
 See [Annotations of keys](validation.md#annotations-of-keys).
 

@@ -125,6 +125,7 @@ JSON Schema treats `1.0` as an integer, as `read<int>` does.
 | --- | --- | --- | --- |
 | `required` | the fields with [`yyjson::required`](reference.md#yyjsonrequired) | also every field that may not be absent by its type, by [`yyjson::optional_key`](reference.md#yyjsonoptional_key) or by [`yyjson::omit_default`](reference.md#yyjsonomit_default) | the fields that `write` always writes: all but `std::optional`, the other [omittable](conversions.md#omitting-a-field-with-no-value) fields and the fields with `yyjson::omit_default` |
 | `additionalProperties: false` | with [`yyjson::additional_properties(false)`](reference.md#yyjsonadditional_properties) | unless `yyjson::additional_properties(true)` | always |
+| `additionalProperties` with a schema | with a field of [`yyjson::extra_keys`](conversions.md#keys-that-name-no-field): the schema of the values of its map | the same | the same |
 | `default` | for each field that is not required | for each field that is not required | none |
 
 `yyjson::strict` changes only the keys that the annotations leave undecided, as it does for a read. The write schema is the same with or without it. The keys of the [tags](conversions.md#tagged-variants) of variants are known keys.
@@ -160,7 +161,7 @@ The [constraints](validation.md#constraints) are in both schemas. A plain `write
 | `std::variant` | `anyOf` of the alternatives |
 | a variant with [`yyjson::internal_tag`](reference.md#yyjsoninternal_tag-yyjsonadjacent_tag) | `oneOf` of the alternatives, each an object with `{"const": id}` for the tag key, which is required. A struct alternative is written in place with the tag among its properties, also through a pointer, a `std::optional`, a translator or another variant tagged in the same object; any other alternative has the tag in `allOf` beside its schema |
 | a field with [`yyjson::adjacent_tag`](reference.md#yyjsoninternal_tag-yyjsonadjacent_tag) | the tag key has `enum` of the ids, and the struct has `allOf` of `oneOf` branches, one for each alternative, that tie the id to the schema of the field |
-| structs | in `$defs`: `{"type": "object", "properties": {...}}`, with `required` and `additionalProperties` as [above](#read-and-write-schemas) |
+| structs | in `$defs`: `{"type": "object", "properties": {...}}`, with `required` and `additionalProperties` as [above](#read-and-write-schemas). A field of [`yyjson::extra_keys`](conversions.md#keys-that-name-no-field) is not a property; its values give `additionalProperties` |
 | a recursive type | `$ref` to its name in `$defs`; a variant with `yyjson::internal_tag` needs a [name](#names-of-types) for it |
 | [`yyjson::reader::value`, `yyjson::value`](conversions.md#json-values-as-fields) | `{}`, any JSON |
 | `yyjson::reader::object`, `yyjson::object`; the arrays | `{"type": "object"}`; `{"type": "array"}` |

@@ -324,6 +324,7 @@ The annotations of a type change how the type converts, with no caster. Speciali
 | `yyjson::field("member", s...)` | a struct | gives the field `member` the settings `s...` below | [JSON keys](#json-keys) |
 | `yyjson::rename("key")` | a field | reads and writes the field by the JSON key `key` | [JSON keys](#json-keys) |
 | `yyjson::skip` | a field | leaves the field out of reading and writing | [Skipped fields](#skipped-fields) |
+| `yyjson::extra_keys` | a map field | reads the keys that name no field into the map, and writes them back | [Keys that name no field](#keys-that-name-no-field) |
 | `yyjson::required`, `yyjson::optional_key` | a field | requires the key, or lets the object leave it out | [Strict reading](validation.md#strict-reading) |
 | `yyjson::omit_default` | a field | lets the object leave the key out, and leaves it out when writing the value in `T()` | [Fields with a default value](validation.md#fields-with-a-default-value) |
 | `yyjson::minimum(m)`, `yyjson::satisfies<f>` and the other constraints | a field | restricts the values that the field reads | [Constraints](validation.md#constraints) |
@@ -401,9 +402,68 @@ auto json = yyjson::write(Task{"x", [] {}});
 *   Reading still needs what the struct itself needs. `yyjson::read<T>` and `cast<T>` need a default constructible and movable `T`, and `read_into` and `merge_into` need a move-assignable one. A struct with a skipped `std::mutex` can therefore only be written, and one with a skipped `const` or reference member cannot be read by `read_into` or `merge_into`.
 *   `VISITABLE_STRUCT` converts only the members that it lists: leave a member out of the macro instead. `yyjson::skip` on a struct that the macro registers fails to compile.
 
+### Keys that name no field
+
+A struct ignores a key that names none of its fields, and writes only its fields. `yyjson::field("member", yyjson::extra_keys)` gives such keys to a map field instead, which receives each of them with its value and writes them back after the fields:
+
+```cpp
+struct Package
+{
+    std::string name;
+    std::string version;
+    std::map<std::string, yyjson::value> others;
+};
+
+template <>
+inline constexpr auto yyjson::annotations<Package> = yyjson::annotate(yyjson::field("others", yyjson::extra_keys));
+
+auto package = yyjson::read<Package>(R"({"name":"x","version":"1.0","license":"MIT","private":true})");
+// -> Package{"x", "1.0", {{"license", "MIT"}, {"private", true}}}
+package.version = "1.1";
+auto json = yyjson::write(package);
+// -> {"name":"x","version":"1.1","license":"MIT","private":true}
+```
+
+It is for an object that has some keys that the program knows and others that it does not, or whose names are data:
+
+*   A program that edits a file of another program, such as the `package.json` above, keeps the keys that it does not handle, also those that a later version of the format adds. With a map of `yyjson::value`, writing gives them back as they were read.
+*   A format with members of its own beside extensions, such as the `x-` members of OpenAPI, reads the members into fields and the extensions into the map.
+*   An object of a few fixed keys and entries of one type under any other key, which JSON Schema gives by `properties` with `additionalProperties` of a schema, reads into fields and a map of that type. `yyjson::additional_properties(settings...)` on the field gives the constraints of the values, as on any [map field](validation.md#constraints-of-elements):
+
+    ```cpp
+    struct Quota
+    {
+        int fallback = 10;
+        std::map<std::string, int> users;
+    };
+
+    template <>
+    inline constexpr auto yyjson::annotations<Quota> = yyjson::annotate(
+        yyjson::field("users", yyjson::extra_keys, yyjson::additional_properties(yyjson::minimum(0))));
+
+    auto quota = yyjson::read<Quota>(R"({"fallback":5,"alice":20})");
+    // -> Quota{5, {{"alice", 20}}}
+    yyjson::read<Quota>(R"({"fallback":5,"alice":20,"bob":-1})");
+    // throws: the value of the key "bob" of Quota is less than the minimum 0 at /bob (line 1, column 32, pos 31)
+    ```
+
+Without the annotation, a field of type `yyjson::object` keeps a whole object, and a struct its fields only; the annotation gives both in one type.
+
+*   The field has no key of its own. It is a map whose `key_type` is constructed from and converts to `std::string_view`, such as `std::string`, and which has `try_emplace`, `find` and `erase`: `std::map`, `std::unordered_map` and the like. Its values are of any type that the library reads and writes, such as `int`, a struct or `yyjson::value`; a JSON value that this type does not read throws `yyjson::bad_cast`, as in any map.
+*   The keys of the [tags](#tagged-variants) of variants are not given to the map: neither the key of an internal tag in the object of an alternative, nor the key of an adjacent tag beside its field.
+*   [`yyjson::strict`](validation.md#strict-reading) accepts the keys that the map receives. It still rejects a key that appears twice, which the read without it gives the map once, with the last value.
+*   `yyjson::read<T>`, `cast<T>` and `read_into` start from the map in `T()` and add the keys to it. `merge_into` merges the keys into the map that the field has, as into any map: it adds a new key, merges the value of a key that the map has into the value there, and erases a key whose value is `null`.
+*   Writing puts the keys in the order of the map. A key of the map that is also the key of a field or of a tag of the struct would make the object have the key twice: `yyjson::write`, `object(t)` and `value(t)` throw `std::invalid_argument`, and [`yyjson::validate`](validation.md#checking-a-c-value) and `write(t, yyjson::strict)` throw `yyjson::bad_cast`, with the message `the field of yyjson::extra_keys of Quota has the key "fallback", which Quota writes for a field or a tag`.
+*   The path of an error in a value of the map is the key of the value, such as `/bob` above.
+*   The following fail to compile with a `static_assert`:
+    *   two fields with `yyjson::extra_keys` in one struct, or a struct with `yyjson::additional_properties(false)`, which rejects the keys that the field would receive;
+    *   a field of a type that is not such a map;
+    *   another setting on the field than `yyjson::additional_properties(settings...)`, such as `yyjson::rename`, `yyjson::required` or `yyjson::min_items`, and a field named by `yyjson::dependent_required`, `yyjson::one_of_required` or `yyjson::any_of_required`;
+    *   `yyjson::extra_keys` on a struct that `VISITABLE_STRUCT` registers.
+
 ### C++26 annotations
 
-With C++26 static reflection, such as GCC 16 with `-std=c++26 -freflection`, the settings of a field can be written on the member itself as an [annotation](https://wg21.link/p3394). Every setting that `yyjson::field` takes is also an annotation: `[[=yyjson::rename("key")]]`, `[[=yyjson::skip]]`, `[[=yyjson::required]]`, `[[=yyjson::optional_key]]`, `[[=yyjson::omit_default]]`, `[[=yyjson::adjacent_tag(key, ids)]]`, the [constraints](validation.md#constraints), such as `[[=yyjson::minimum(0)]]`, and the [constraints of elements](validation.md#constraints-of-elements), such as `[[=yyjson::items(yyjson::minimum(0))]]` and `[[=yyjson::prefix_items({yyjson::minimum(0)}, {})]]`.
+With C++26 static reflection, such as GCC 16 with `-std=c++26 -freflection`, the settings of a field can be written on the member itself as an [annotation](https://wg21.link/p3394). Every setting that `yyjson::field` takes is also an annotation: `[[=yyjson::rename("key")]]`, `[[=yyjson::skip]]`, `[[=yyjson::required]]`, `[[=yyjson::optional_key]]`, `[[=yyjson::omit_default]]`, `[[=yyjson::extra_keys]]`, `[[=yyjson::adjacent_tag(key, ids)]]`, the [constraints](validation.md#constraints), such as `[[=yyjson::minimum(0)]]`, and the [constraints of elements](validation.md#constraints-of-elements), such as `[[=yyjson::items(yyjson::minimum(0))]]` and `[[=yyjson::prefix_items({yyjson::minimum(0)}, {})]]`.
 
 ```cpp
 struct Project

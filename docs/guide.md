@@ -235,22 +235,25 @@ There is no setting that renames all the keys of a struct, such as from `snake_c
 
 ### Keep the keys that the struct does not have
 
-A struct ignores the keys that it has no field for, and there is no field that collects them. When the program needs them, read a document, cast it, and look at the keys of the document:
+A struct ignores the keys that it has no field for. Annotate a map field with [`yyjson::extra_keys`](conversions.md#keys-that-name-no-field) to receive them, and to write them back after the fields:
 
 ```cpp
 struct User
 {
     std::string name;
+    std::map<std::string, yyjson::value> others;
 };
 
-auto doc = yyjson::read(R"({"name":"Ann","theme":"dark"})");
-auto user = doc.cast<User>();
-for (const auto obj = *doc.as_object(); const auto& [key, value] : obj)
-{
-    if (key != "name") std::cout << key << " = " << value.write() << '\n';
-}
-// -> theme = "dark"
+template <>
+inline constexpr auto yyjson::annotations<User> = yyjson::annotate(yyjson::field("others", yyjson::extra_keys));
+
+auto user = yyjson::read<User>(R"({"name":"Ann","theme":"dark"})");
+// -> User{"Ann", {{"theme", "dark"}}}
+auto json = yyjson::write(user);
+// -> {"name":"Ann","theme":"dark"}
 ```
+
+A program that rewrites a file of another program keeps the keys that it does not handle in this way. With a map of another type, such as `std::map<std::string, int>`, the keys are the entries of an object of a few fixed keys and any others, and `yyjson::additional_properties(settings...)` on the field constrains their values.
 
 ## Types
 
@@ -812,7 +815,6 @@ for (const auto& p : points)
 | `operator<<` for JSON values | [`write()` or `std::format`](#print-a-json-value) |
 | JSON Pointer lookup | [a struct of the members needed](#read-only-a-few-members-of-a-large-document), or `operator[]` and `find` level by level |
 | A rule that renames every key | [rename each field](#map-every-key-to-another-naming-convention) |
-| A field that collects unknown keys | [read a document and look at its keys](#keep-the-keys-that-the-struct-does-not-have) |
 | JSON Lines and streams of values | [read line by line](#read-json-lines) |
 | `std::chrono` types, raw pointers, classes with private members | [a translator](#convert-dates-and-times), as listed in [Conversion rules](conversions.md#conversion-rules) |
 | C++ types from a JSON Schema | write the types by hand; [JSON Schema keywords](validation.md#json-schema-keywords) maps each keyword to a type or an annotation |

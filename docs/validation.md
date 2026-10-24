@@ -101,6 +101,7 @@ Each row below is a `yyjson::bad_cast` that the same read without `yyjson::stric
 *   An untagged `std::variant` takes the first alternative that the strict read accepts. The choice can therefore differ from the read without `yyjson::strict`: `std::variant<Circle, Rect>` reads `{"w":1,"h":2}` as `Rect` with `yyjson::strict` and as `Circle` without it.
 *   The key of an [internal tag](conversions.md#tagged-variants) is a key of the object of the alternative, and the key of an adjacent tag is a key of the struct that holds the variant. Neither is rejected as an unknown key. When the alternative is a struct, the struct checks the key of the tag as one of its own.
 *   A key that `yyjson::additional_properties(true)` lets the object have is ignored as a whole, also when it appears twice.
+*   A key that names no field is accepted when the struct has a field of [`yyjson::extra_keys`](conversions.md#keys-that-name-no-field), which receives it. A key that appears twice is rejected there as in a map.
 *   Multimaps, multisets, ranges and the other types that hold what they are given are read as without `yyjson::strict`.
 *   The option holds for every value that the call reads, including what a [user-defined caster](conversions.md#user-defined-casters) reads with `cast` or `yyjson::read` while the call runs on the same thread. A `from_json` that casts without `yyjson::strict` therefore reads strictly when a strict read calls it.
 *   The keys that a `from_json` looks up by itself, such as with `find` or `operator[]` of an object, are not checked. Rejecting an unknown or a missing key of the object that it reads is up to the caster.
@@ -123,10 +124,11 @@ Any other `std::optional<U>`, such as the root or an element of an array, reads 
 
 ### Annotations of keys
 
-Seven annotations change the rules of the keys for one field or one struct:
+Eight annotations change the rules of the keys for one field or one struct:
 
 *   `yyjson::required` requires the key of a field, with or without `yyjson::strict`.
 *   `yyjson::additional_properties(false)` rejects the keys that name no field of a struct, with or without `yyjson::strict`.
+*   `yyjson::extra_keys` gives the keys that name no field of a struct to a map field, with or without `yyjson::strict`; it is described in [Keys that name no field](conversions.md#keys-that-name-no-field).
 *   `yyjson::optional_key` lets the object leave out the key of a field under `yyjson::strict`.
 *   `yyjson::omit_default` does the same, and also leaves the key out of the written object while the field holds its value in `T()`; it is described in [Fields with a default value](#fields-with-a-default-value).
 *   `yyjson::dependent_required` of a struct requires the keys of some fields when the object has the key of another, with or without `yyjson::strict`; it is described after the first three.
@@ -530,7 +532,7 @@ yyjson::validate(Range{{}, 0, std::nullopt});
 // Range is not constructible from JSON with the key "lower" without the key "upper"
 ```
 
-It checks the constraints of the fields and of the elements, values and keys in them, `yyjson::dependent_required`, `yyjson::one_of_required` and `yyjson::any_of_required` by the fields that `write` writes, a field that its caster leaves out although the strict read requires its key, and the field of an [adjacent tag](conversions.md#tagged-variants) against the alternative of its variant. [`yyjson::validate`](reference.md#yyjsonvalidate) lists what it does not check.
+It checks the constraints of the fields and of the elements, values and keys in them, the keys of a field of [`yyjson::extra_keys`](conversions.md#keys-that-name-no-field) against the keys of the fields and the tags, `yyjson::dependent_required`, `yyjson::one_of_required` and `yyjson::any_of_required` by the fields that `write` writes, a field that its caster leaves out although the strict read requires its key, and the field of an [adjacent tag](conversions.md#tagged-variants) against the alternative of its variant. [`yyjson::validate`](reference.md#yyjsonvalidate) lists what it does not check.
 
 `yyjson::write(t, yyjson::strict)` calls `yyjson::validate(t)` and then writes the same text as `yyjson::write(t)`. A value that it writes is one that `yyjson::read<T>(json, yyjson::strict)` reads back, with the exceptions that `validate` lists:
 
@@ -590,7 +592,7 @@ The tables below list the keywords of [JSON Schema 2020-12](https://json-schema.
 | `properties` | the fields of a struct | a key is the name of the member, or its [`yyjson::rename`](conversions.md#json-keys). |
 | `required` | `yyjson::required`, or [`yyjson::strict`](#strict-reading) for every field | without them, a field whose key is missing keeps its value in `T()`. `merge_into` requires no key. |
 | `additionalProperties: false` | `yyjson::additional_properties(false)` on a struct, or [`yyjson::strict`](#strict-reading) | without them, a struct ignores a key that names no field. |
-| `additionalProperties` with a schema | `yyjson::additional_properties(settings...)` on a map | a struct checks no key that names no field of it. |
+| `additionalProperties` with a schema | `yyjson::additional_properties(settings...)` on a map | a struct gives the keys that name no field to a map field with [`yyjson::extra_keys`](conversions.md#keys-that-name-no-field), whose `yyjson::additional_properties(settings...)` checks their values; without such a field, it checks none. |
 | `propertyNames` | `yyjson::property_names(settings...)` on a map | a struct takes none; its keys are those of its fields, and `yyjson::additional_properties(false)` rejects the others. The key is checked after the conversion to the key type of the map: a key that does not convert, such as an unknown name of an enumeration, is rejected by the conversion before the settings are checked. |
 | `minProperties`, `maxProperties` | `yyjson::min_items(n)`, `yyjson::max_items(n)` on a map | |
 | `patternProperties` | none | `yyjson::property_names` and `yyjson::additional_properties(settings...)` constrain all the keys and all the values of a map alike. |

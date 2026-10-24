@@ -16,7 +16,7 @@ Short answers to questions about behavior that is not a single task, with links 
 
 ### What happens to a key that the struct does not have, a missing key, or a key that appears twice?
 
-By default, `read<T>` ignores an unknown key, and the field of a missing key keeps its default. A [repeated key](validation.md#repeated-keys) gives its field the value of one of the members. [`yyjson::strict`](validation.md#strict-reading) rejects all three with `yyjson::bad_cast`. [What a read checks](validation.md#what-a-read-checks) has the full rules, and the Guide shows how to [reject them](guide.md#reject-unknown-missing-or-repeated-keys) or [require one key](guide.md#require-a-key).
+By default, `read<T>` ignores an unknown key, and the field of a missing key keeps its default. A [repeated key](validation.md#repeated-keys) gives its field the value of one of the members. [`yyjson::strict`](validation.md#strict-reading) rejects all three with `yyjson::bad_cast`. [What a read checks](validation.md#what-a-read-checks) has the full rules, and the Guide shows how to [reject them](guide.md#reject-unknown-missing-or-repeated-keys) or [require one key](guide.md#require-a-key). A map field with [`yyjson::extra_keys`](conversions.md#keys-that-name-no-field) keeps the unknown keys instead of ignoring them.
 
 ### Why does `null` fail to read into a `std::optional` field under `strict`?
 
