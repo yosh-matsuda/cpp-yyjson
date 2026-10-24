@@ -138,8 +138,8 @@ The [constraints](validation.md#constraints) are in both schemas. A plain `write
 | `std::nullptr_t`, `std::monostate` | `{"type": "null"}` |
 | enumerations | in `$defs`: `{"enum": [names]}`; with `enum_format::integer`, an integer with the bounds of the underlying type; with `name_or_integer`, `anyOf` of both |
 | ranges, such as `std::vector<T>` | `{"type": "array", "items": T}` |
-| sets | the same with `"uniqueItems": true` |
-| `std::array<T, N>` | the same with `minItems` and `maxItems` of `N` |
+| sets, but not multisets | the same with `"uniqueItems": true` |
+| `std::array<T, N>` | the same with `minItems` and `maxItems` of `N`, which `yyjson::min_items` and `yyjson::max_items` can only narrow |
 | maps, ranges of key-value pairs | `{"type": "object", "additionalProperties": T}` |
 | maps with enumeration keys | the same with `propertyNames`: the names, or an integer as text |
 | `std::tuple`, `std::pair` | `{"type": "array", "prefixItems": [...], "minItems": N, "items": false}` |
