@@ -1206,6 +1206,46 @@ namespace yyjson
         return result;
     }
 
+    // A JSON Schema of a field or a type that replaces the one that `yyjson::json_schema` derives, in JSON text:
+    // `yyjson::schema(R"({"type":"string","pattern":"^-?[0-9.]+C$"})")` for both directions, or
+    // `yyjson::schema({.read = "...", .write = "..."})`, where a direction left out is derived.  It is for what the
+    // library cannot derive, such as a caster that takes `yyjson::json_view`, and for what the schema cannot say,
+    // such as `yyjson::validate`.  It is not checked against how the value is read or written; the constraints of a
+    // field are still checked on reading, although the schema has only the text.
+    struct schema
+    {
+        struct directions
+        {
+            std::string_view read = {};
+            std::string_view write = {};
+        };
+
+        const char* read_data = nullptr;
+        std::size_t read_size = 0;
+        const char* write_data = nullptr;
+        std::size_t write_size = 0;
+
+        consteval explicit schema(std::string_view text) : schema(directions{text, text}) {}
+        consteval explicit schema(directions d)
+            : read_data(d.read.empty() ? nullptr : detail::static_string(d.read)),
+              read_size(d.read.size()),
+              write_data(d.write.empty() ? nullptr : detail::static_string(d.write)),
+              write_size(d.write.size())
+        {
+            if (d.read.empty() && d.write.empty()) throw "yyjson::schema has no schema";
+        }
+
+        // The text for a direction, or null if it is derived.
+        [[nodiscard]] constexpr const char* text_data(bool writing) const noexcept
+        {
+            return writing ? write_data : read_data;
+        }
+        [[nodiscard]] constexpr std::string_view text(bool writing) const noexcept
+        {
+            return writing ? std::string_view(write_data, write_size) : std::string_view(read_data, read_size);
+        }
+    };
+
     // The name of a struct or an enumeration in `$defs` of the JSON Schema that `yyjson::json_schema` generates, and
     // in `components/schemas` of OpenAPI: `yyjson::annotate(yyjson::schema_name("Person"))` or
     // `struct [[=yyjson::schema_name("Person")]] Person`.  The name has the characters `[A-Za-z0-9._-]` only, as
@@ -1243,11 +1283,12 @@ namespace yyjson
         // `field_key_builder::described`.
         template <typename A>
         concept metadata_setting = std::same_as<A, title> || std::same_as<A, description> ||
-                                   std::same_as<A, deprecated_t> || is_examples<A>::value;
+                                   std::same_as<A, deprecated_t> || is_examples<A>::value || std::same_as<A, schema>;
         template <typename A>
-        inline constexpr std::uint8_t metadata_bit = std::same_as<A, title>         ? 1
-                                                     : std::same_as<A, description> ? 2
+        inline constexpr std::uint8_t metadata_bit = std::same_as<A, title>          ? 1
+                                                     : std::same_as<A, description>  ? 2
                                                      : std::same_as<A, deprecated_t> ? 4
+                                                     : std::same_as<A, schema>       ? 16
                                                                                      : 8;
         // The settings that describe a type in the JSON Schema only, which reading and writing ignore.
         template <typename A>
@@ -2102,7 +2143,7 @@ namespace yyjson
                       "yyjson::field takes yyjson::rename, yyjson::skip, yyjson::required, yyjson::optional_key, "
                       "yyjson::adjacent_tag, the constraints such as yyjson::minimum and yyjson::satisfies<f>, "
                       "yyjson::items and yyjson::additional_properties(settings...), and yyjson::title, "
-                      "yyjson::description, yyjson::examples and yyjson::deprecated");
+                      "yyjson::description, yyjson::examples, yyjson::deprecated and yyjson::schema");
         return {member, {values...}};
     }
 
@@ -2276,7 +2317,7 @@ namespace yyjson
                       "yyjson::dependent_required for a struct, "
                       "yyjson::internal_tag for a variant, yyjson::enumerator(...) and yyjson::enum_format for an "
                       "enumeration, yyjson::schema_name for a struct or an enumeration, and yyjson::title, "
-                      "yyjson::description, yyjson::examples and yyjson::deprecated for any type");
+                      "yyjson::description, yyjson::examples, yyjson::deprecated and yyjson::schema for any type");
         return detail::annotation_list<As...>{
             detail::annotation_values<std::index_sequence_for<As...>, As...>(values...)};
     }
@@ -3082,7 +3123,7 @@ namespace yyjson
                             builder.tag_field(Is);
                         constrain_annotated_field<T, Is>(builder, constraint_types{});
                         constrain_annotated_elements<T, Is>(builder);
-                        describe_annotated_field<T, Is>(builder, type_list<title, description, deprecated_t>{});
+                        describe_annotated_field<T, Is>(builder, type_list<title, description, deprecated_t, schema>{});
                     }(),
                     ...);
             }(std::make_index_sequence<N>{});
@@ -3182,8 +3223,9 @@ namespace yyjson
             static_assert(table.error != field_key_error::same_setting_twice,
                           "a field is given yyjson::skip, yyjson::required, yyjson::optional_key, "
                           "yyjson::adjacent_tag, a constraint such as yyjson::minimum, a setting of the values in "
-                          "it such as yyjson::items, or yyjson::title, yyjson::description, yyjson::examples or "
-                          "yyjson::deprecated twice, or a setting of the values in it has a setting twice");
+                          "it such as yyjson::items, or yyjson::title, yyjson::description, yyjson::examples, "
+                          "yyjson::deprecated or yyjson::schema twice, or a setting of the values in it has a setting "
+                          "twice");
             static_assert(table.error != field_key_error::required_optional_key,
                           "a field annotated with yyjson::required may not be left out of the object, which "
                           "yyjson::optional_key lets it: give the field only one of them");
