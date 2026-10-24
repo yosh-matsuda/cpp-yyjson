@@ -442,15 +442,21 @@ namespace yyjson
             template <typename T>
             static void emit_definition(generator& g, object_ref out)
             {
-                if (!g.emit_declared_type<T>(out))
+                if (g.emit_declared_type<T>(out))
+                    ;
+                else if (g.writing() ? user_write<T> : user_read<T>)
                 {
-                    if constexpr (std::is_enum_v<T>)
-                        g.emit_enum<T>(out);
-                    else if constexpr (is_variant<T>::value)
-                        g.emit_variant<T>(out);
-                    else
-                        g.emit_struct<T>(out);
+                    if constexpr (user_write<T>)
+                        if (g.writing()) g.emit_user_write<T>(out);
+                    if constexpr (user_read<T>)
+                        if (!g.writing()) g.emit_user_read<T>(out);
                 }
+                else if constexpr (std::is_enum_v<T>)
+                    g.emit_enum<T>(out);
+                else if constexpr (is_variant<T>::value)
+                    g.emit_variant<T>(out);
+                else if constexpr (struct_type<T>)
+                    g.emit_struct<T>(out);
                 g.emit_type_metadata<T>(out);
             }
 
@@ -629,15 +635,14 @@ namespace yyjson
                     yyjson::detail::declared_member_name<S, R>);
             }
             // Whether T is put in `$defs` and has its metadata there: a struct, an enumeration, or a variant that
+            // `yyjson::schema_name` names, and in a direction in which a caster of the user converts T, a type that
             // `yyjson::schema_name` names.
             template <typename T>
             [[nodiscard]] bool named() const noexcept
             {
-                if constexpr (std::is_enum_v<T> || struct_type<T> ||
-                              (is_variant<T>::value && type_setting_count<T, yyjson::schema_name>() != 0))
-                    return writing() ? !user_write<T> : !user_read<T>;
-                else
-                    return false;
+                constexpr bool has_name = type_setting_count<T, yyjson::schema_name>() != 0;
+                if (writing() ? user_write<T> : user_read<T>) return has_name;
+                return std::is_enum_v<T> || struct_type<T> || (is_variant<T>::value && has_name);
             }
             // Whether `yyjson::schema` declares the schema of T in this direction.
             template <typename T>
@@ -960,28 +965,26 @@ namespace yyjson
             else if constexpr (user_read<T> || user_write<T>)
             {
                 // A type may have a caster for one direction and be converted by the library in the other.
-                if (writing())
+                if (writing() ? !user_write<T> : !user_read<T>)
+                    emit_builtin<T>(out, nodes, node);
+                else if (named<T>())
+                    emit_named<T>(out);
+                else if (writing())
                 {
-                    if constexpr (user_write<T>)
-                        emit_user_write<T>(out);
-                    else
-                        emit_builtin<T>(out, nodes, node);
+                    if constexpr (user_write<T>) emit_user_write<T>(out);
                 }
                 else
                 {
-                    if constexpr (user_read<T>)
-                        emit_user_read<T>(out);
-                    else
-                        emit_builtin<T>(out, nodes, node);
+                    if constexpr (user_read<T>) emit_user_read<T>(out);
                 }
             }
             else
                 emit_builtin<T>(out, nodes, node);
             if constexpr (std::same_as<T, std::remove_cvref_t<T>>)
             {
-                static_assert(std::is_enum_v<T> || struct_type<T> || is_variant<T>::value ||
-                                  type_setting_count<T, yyjson::schema_name>() == 0,
-                              "yyjson::schema_name names a struct, an enumeration or a variant");
+                static_assert(std::is_enum_v<T> || struct_type<T> || is_variant<T>::value || user_read<T> ||
+                                  user_write<T> || type_setting_count<T, yyjson::schema_name>() == 0,
+                              "yyjson::schema_name names a struct, an enumeration, a variant or a type with a caster");
                 if (!named<T>()) emit_type_metadata<T>(out);
             }
         }

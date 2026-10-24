@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <jsoncons/json.hpp>
 #include <jsoncons_ext/jsonschema/jsonschema.hpp>
 #include <memory>
@@ -285,6 +286,35 @@ template <> inline constexpr auto yyjson::annotations<Ds> = yyjson::annotate(
     yyjson::field("temp", yyjson::schema({.write = R"({"type":"string","pattern":"C$"})"})),
     yyjson::field("never", yyjson::schema("false")),
     yyjson::field("any", yyjson::schema("true"), yyjson::description("anything")));
+
+// Types with casters that `yyjson::schema_name` puts in `$defs`: a translator, a declared schema, and a caster for
+// reading only, whose write schema the library derives from the struct.
+struct Kelvin { double v; };
+template <> struct yyjson::caster<Kelvin> {
+    static Kelvin from_json(double d) { return {d}; }
+    static std::string to_json(const Kelvin& k) { return std::to_string(k.v) + "K"; }
+};
+template <> inline constexpr auto yyjson::annotations<Kelvin> =
+    yyjson::annotate(yyjson::schema_name("Kelvin"), yyjson::description("kelvins"));
+struct Epoch { std::int64_t s; };
+template <> struct yyjson::caster<Epoch> {
+    static Epoch from_json(any_value v) { return {v.cast<std::int64_t>()}; }
+    static std::int64_t to_json(const Epoch& e) { return e.s; }
+};
+template <> inline constexpr auto yyjson::annotations<Epoch> =
+    yyjson::annotate(yyjson::schema(R"({"type":"integer"})"), yyjson::schema_name("Epoch"));
+struct Half { int v = 0; };
+template <> struct yyjson::caster<Half> {
+    static Half from_json(int v) { return {v}; }
+};
+template <> inline constexpr auto yyjson::annotations<Half> = yyjson::annotate(yyjson::schema_name("Half"));
+struct NamedCasters
+{
+    Kelvin k{};
+    std::vector<Kelvin> ks;
+    Epoch at{};
+    Half h{};
+};
 
 // Counts the objects that the generator constructs for the defaults.
 inline int counted_made = 0;
@@ -1150,6 +1180,40 @@ TEST(Schema, WriteOnly)
     const auto schema = to_jsoncons(yyjson::json_schema<Borrowed>({.direction = yyjson::schema_direction::write}));
     EXPECT_TRUE(meta_schema().is_valid(schema));
     EXPECT_TRUE(compile(schema).is_valid(json::parse(std::string(yyjson::write(Borrowed{})))));
+}
+
+// `yyjson::schema_name` on a type with a caster puts the schema of the caster in `$defs`; a collection splits the name
+// while the read and the write schemas differ.
+TEST(Schema, NamedCaster)
+{
+    using enum yyjson::schema_direction;
+    for (const auto direction : {read, write})
+    {
+        const auto schema = to_jsoncons(yyjson::json_schema<NamedCasters>({.direction = direction}));
+        const auto& defs = schema["$defs"];
+        const auto& props = defs["NamedCasters"]["properties"];
+        EXPECT_EQ(props["k"]["$ref"].as_string(), "#/$defs/Kelvin");
+        EXPECT_EQ(props["ks"]["items"]["$ref"].as_string(), "#/$defs/Kelvin");
+        EXPECT_EQ(props["at"]["$ref"].as_string(), "#/$defs/Epoch");
+        EXPECT_EQ(props["h"]["$ref"].as_string(), "#/$defs/Half");
+        EXPECT_EQ(defs["Kelvin"]["type"].as_string(), direction == read ? "number" : "string");
+        EXPECT_EQ(defs["Kelvin"]["description"].as_string(), "kelvins");
+        EXPECT_EQ(defs["Epoch"]["type"].as_string(), "integer");
+        EXPECT_EQ(defs["Half"]["type"].as_string(), direction == read ? "integer" : "object");
+    }
+    check<NamedCasters>({
+        R"({"k":1.5,"ks":[2],"at":3,"h":4})",
+        R"({"k":"1.5K"})",
+        R"({"h":{"v":1}})",
+    });
+
+    const auto schemas = to_jsoncons(
+        yyjson::schema_collection().add<NamedCasters>().add<NamedCasters>(write).build().schemas());
+    std::vector<std::string> names;
+    for (const auto& m : schemas.object_range()) names.emplace_back(m.key());
+    std::ranges::sort(names);
+    EXPECT_EQ(names, (std::vector<std::string>{"Epoch", "Half-Input", "Half-Output", "Kelvin-Input", "Kelvin-Output",
+                                               "NamedCasters-Input", "NamedCasters-Output"}));
 }
 
 // Two types of the same name, an example that the field does not read and a schema text that is not JSON are

@@ -1576,6 +1576,7 @@ Specialize `annotations<T>` before the first use of `T`. `annotate` takes these 
 | a struct | [`yyjson::field`](#yyjsonfield), [`yyjson::additional_properties`](#yyjsonadditional_properties), [`yyjson::dependent_required`](#yyjsondependent_required) and [`yyjson::schema_name`](#yyjsonschema_name) |
 | a `std::variant` | [`yyjson::internal_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag) and [`yyjson::schema_name`](#yyjsonschema_name) |
 | an enumeration | [`yyjson::enumerator` and `yyjson::enum_format`](#yyjsonenum_format-yyjsonenumerator), and [`yyjson::schema_name`](#yyjsonschema_name) |
+| a type with a [caster](#yyjsoncastert) | [`yyjson::schema_name`](#yyjsonschema_name) |
 | any type | [`yyjson::title`, `yyjson::description`, `yyjson::deprecated`, `yyjson::examples`](#yyjsontitle-yyjsondescription-yyjsondeprecated-yyjsonexamples) and [`yyjson::schema`](#yyjsonschema) |
 
 See [Annotations](conversions.md#annotations).
@@ -2004,7 +2005,7 @@ See [Declared schemas](json-schema.md#declared-schemas).
 
 ### `yyjson::schema_name`
 
-A setting of a struct, an enumeration or a `std::variant` that names it in `$defs` of the JSON Schema and in `components/schemas` of OpenAPI.
+A setting of a struct, an enumeration, a `std::variant` or a type with a [caster](#yyjsoncastert) that names it in `$defs` of the JSON Schema and in `components/schemas` of OpenAPI.
 
 ```cpp
 struct schema_name
@@ -2015,6 +2016,7 @@ struct schema_name
 
 *   The name has the characters `[A-Za-z0-9._-]` only, and is not empty; another name is a compile error. On another type it is a compile error in `json_schema<T>`. A variant takes it in `annotations<V>`, since a `std::variant` has no declaration to annotate.
 *   Without it, the name of a struct or an enumeration comes from the qualified name of the type, which differs between compilers for some types. A variant without it is written in place, and needs it when it refers to itself through an alternative that `yyjson::internal_tag` tags.
+*   On a type with a caster, it puts the schema of the caster, or the [declared schema](#yyjsonschema), in `$defs` in the directions that the caster converts. Without it, that schema is written in place.
 *   Two types with the same name throw `std::invalid_argument` from `json_schema<T>` and `schema_collection::build()`.
 *   It does not change how a value is read or written.
 

@@ -164,8 +164,8 @@ The [constraints](validation.md#constraints) are in both schemas. A plain `write
 | a recursive type | `$ref` to its name in `$defs`; a variant with `yyjson::internal_tag` needs a [name](#names-of-types) for it |
 | [`yyjson::reader::value`, `yyjson::value`](conversions.md#json-values-as-fields) | `{}`, any JSON |
 | `yyjson::reader::object`, `yyjson::object`; the arrays | `{"type": "object"}`; `{"type": "array"}` |
-| a type with a [translator](conversions.md#translator) | the schema of the type that the translator reads or writes |
-| a type with another [caster](conversions.md#user-defined-casters), such as one that takes [`yyjson::json_view`](reference.md#yyjsonjson_view) | read: `{}`, any JSON. Write: the schema of the type that `to_json` returns, or `{"type": "object"}` or `{"type": "array"}` for a `to_json` that fills an object or an array |
+| a type with a [translator](conversions.md#translator) | the schema of the type that the translator reads or writes, in place unless [`yyjson::schema_name`](#names-of-types) puts it in `$defs` |
+| a type with another [caster](conversions.md#user-defined-casters), such as one that takes [`yyjson::json_view`](reference.md#yyjsonjson_view) | read: `{}`, any JSON. Write: the schema of the type that `to_json` returns, or `{"type": "object"}` or `{"type": "array"}` for a `to_json` that fills an object or an array. In place unless `yyjson::schema_name` puts it in `$defs` |
 
 [Declare a schema](#declared-schemas) for a type whose caster the library cannot describe.
 
@@ -265,6 +265,25 @@ struct Branch
 template <>
 inline constexpr auto yyjson::annotations<Tree> =
     yyjson::annotate(yyjson::internal_tag("type", {"leaf", "branch"}), yyjson::schema_name("Tree"));
+```
+
+A type that a [caster](conversions.md#user-defined-casters) converts, such as a [translator](conversions.md#translator), is also written in place, unless `yyjson::schema_name` puts the schema of its caster, or its [declared schema](#declared-schemas), in `$defs` under the name. A caster for one direction only, such as a `from_json` without `to_json`, leaves the other direction to the library: there a struct, an enumeration or a variant keeps the name, and another type is written in place. As an alternative of a variant with `yyjson::internal_tag`, a type with a translator is still written in place with the tag, as described in [C++ types](#c-types).
+
+```cpp
+struct Celsius
+{
+    double value;
+};
+template <>
+struct yyjson::caster<Celsius>
+{
+    static Celsius from_json(double d) { return {d}; }
+    static double to_json(const Celsius& c) { return c.value; }
+};
+template <>
+inline constexpr auto yyjson::annotations<Celsius> =
+    yyjson::annotate(yyjson::schema_name("Celsius"), yyjson::description("Degrees Celsius"));
+// "$defs": {"Celsius": {"type": "number", "description": "Degrees Celsius"}, ...}
 ```
 
 ## Several types and OpenAPI
