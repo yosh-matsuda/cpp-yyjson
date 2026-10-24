@@ -301,6 +301,9 @@ struct BadText { int n; };
 template <> inline constexpr auto yyjson::annotations<BadText> =
     yyjson::annotate(yyjson::field("n", yyjson::schema(R"({"type":)")));
 
+// Written only: a borrowed string is not read.
+struct Borrowed { std::string_view s = "x"; const char* p = "y"; };
+
 namespace
 {
     namespace jss = jsoncons::jsonschema;
@@ -856,6 +859,13 @@ TEST(Schema, Collection)
         EXPECT_FALSE(validator.is_valid(json::parse(R"({"order":{"id":1},"at":2})")));
         EXPECT_EQ(validator.is_valid(json::parse(R"({"order":{"id":1,"item":"a"},"at":-1})")), direction == read);
     }
+}
+
+TEST(Schema, WriteOnly)
+{
+    const auto schema = to_jsoncons(yyjson::json_schema<Borrowed>({.direction = yyjson::schema_direction::write}));
+    EXPECT_TRUE(meta_schema().is_valid(schema));
+    EXPECT_TRUE(compile(schema).is_valid(json::parse(std::string(yyjson::write(Borrowed{})))));
 }
 
 // Two types of the same name, an example that the field does not read and a schema text that is not JSON are

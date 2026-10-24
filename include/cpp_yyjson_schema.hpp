@@ -471,7 +471,7 @@ namespace yyjson
             template <typename S, std::size_t K, typename F>
             [[nodiscard]] bool reads_back(const F& d) const
             {
-                if constexpr (requires(std::string_view s) { yyjson::read<F>(s); })
+                if constexpr (readable<F>)
                 {
                     try
                     {
@@ -513,7 +513,7 @@ namespace yyjson
                         throw std::invalid_argument(std::string("yyjson::examples of ").append(of).append(" has ")
                                                         .append(text).append(", which ").append(why));
                     };
-                    if constexpr (requires { yyjson::read<E>(text); })
+                    if constexpr (readable<E>)
                     {
                         auto value = std::optional<E>();
                         try
