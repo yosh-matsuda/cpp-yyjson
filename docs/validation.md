@@ -340,7 +340,7 @@ yyjson::read<Job>(R"({"env":{"PATH":"/bin","home":"/root"}})");
     *   A key that the object leaves out. The field keeps its value in `T()`, or with `merge_into` the value that it has; require the key with `yyjson::required` or [`yyjson::strict`](#strict-reading) to avoid that. A `std::optional` field without a value that `merge_into` merges an object into starts from the value in `T()` of its type, so the keys that the patch leaves out are not checked there either.
     *   `null` as the value of a `std::optional` field that keeps its value in `T()`, as described in [`null` in a `std::optional`](#null-in-a-stdoptional). A `std::optional<int>` field that defaults to `5` keeps `5` under `yyjson::maximum(3)`. Reject such a `null` with `yyjson::strict`.
     *   `null` in `merge_into`, which resets any field to its value in `T()`.
-*   Writing does not check the constraints: `yyjson::write` writes a value that they would reject. Check the value first with [`yyjson::validate`](#checking-a-c-value).
+*   Writing does not check the constraints: `yyjson::write` writes a value that they would reject. Check the value with [`yyjson::validate`](#checking-a-c-value), or write it with `yyjson::write(t, yyjson::strict)`, which checks it first.
 *   `f` of `yyjson::satisfies<f>` may be called more than once for the same value. When `yyjson::read<T>` rejects the text, it reads the text again through the DOM to tell the error. An exception that `f` throws propagates out of the read.
 *   An untagged `std::variant` tries its alternatives in turn. A value that one alternative rejects by a constraint may therefore be read by a later one: without `yyjson::strict`, a struct that ignores unknown keys accepts almost any object. When no alternative accepts the value, the `yyjson::bad_cast` names the variant, such as `std::variant<Circle, Rect> is not constructible from JSON at /shape`, rather than the constraint that each alternative failed. Tag the variant with [`yyjson::internal_tag` or `yyjson::adjacent_tag`](conversions.md#tagged-variants) to read only the alternative that the tag names, and to have its error.
 *   The following fail to compile, most of them with a `static_assert` that tells the reason:
@@ -466,6 +466,14 @@ yyjson::validate(Range{{}, 0, std::nullopt});
 ```
 
 It checks the constraints of the fields and of the elements, values and keys in them, `yyjson::dependent_required` by the fields that `write` writes, a field that its caster leaves out although the strict read requires its key, and the field of an [adjacent tag](conversions.md#tagged-variants) against the alternative of its variant. [`yyjson::validate`](reference.md#yyjsonvalidate) lists what it does not check.
+
+`yyjson::write(t, yyjson::strict)` calls `yyjson::validate(t)` and then writes the same text as `yyjson::write(t)`. A value that it writes is one that `yyjson::read<T>(json, yyjson::strict)` reads back, with the exceptions that `validate` lists:
+
+```cpp
+auto json = yyjson::write(Range{{1, 2}, 0, 5}, yyjson::strict);  // -> {"values":[1,2],"lower":0,"upper":5}
+yyjson::write(Range{{1, -2}}, yyjson::strict);
+// throws: an element of the value of the key "values" of Range is less than the minimum 0 at /values/1
+```
 
 ## JSON Schema keywords
 

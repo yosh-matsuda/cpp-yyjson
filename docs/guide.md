@@ -495,14 +495,13 @@ catch (const yyjson::bad_cast& e)
 
 ### Check a value before writing it
 
-`yyjson::write` does not check the constraints. `yyjson::validate` checks a C++ value by them, as a strict read of the written JSON would, and throws the same `bad_cast`:
+`yyjson::write` does not check the constraints. `yyjson::write` with `yyjson::strict` checks a C++ value by them before it writes it, as a strict read of the written JSON would, and throws the same `bad_cast`. `yyjson::validate` checks it without writing:
 
 ```cpp
 auto users = std::vector<User>{{"Ann", 30}, {"Bob", -1}};
 try
 {
-    yyjson::validate(users);
-    auto json = yyjson::write(users);
+    auto json = yyjson::write(users, yyjson::strict);
 }
 catch (const yyjson::bad_cast& e)
 {

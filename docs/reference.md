@@ -255,6 +255,15 @@ template <typename T>
 json_string write(const T& t, WriteFlag flag = WriteFlag::NoFlag);
 template <typename T>
 void write(const T& t, std::string& out, WriteFlag flag = WriteFlag::NoFlag);
+
+template <typename T>
+json_string write(const T& t, WriteFlag flag, strict_t);
+template <typename T>
+json_string write(const T& t, strict_t);
+template <typename T>
+void write(const T& t, std::string& out, WriteFlag flag, strict_t);
+template <typename T>
+void write(const T& t, std::string& out, strict_t);
 ```
 
 `T` may be any type that a `yyjson::value` can be constructed from. The result is the same as `value(t).write(flag)`, byte for byte.
@@ -262,7 +271,9 @@ void write(const T& t, std::string& out, WriteFlag flag = WriteFlag::NoFlag);
 *   The first form returns the string in a new [`yyjson::json_string`](#yyjsonjson_string-yyjsonkey_string), as `value::write` does.
 *   The second form overwrites `out` and keeps its capacity. A loop that writes many objects into the same `std::string` stops allocating once the string is large enough. `t` must not refer to `out`, neither as `out` itself nor through a `std::string_view` or a pointer into it.
 
-Throws `yyjson::write_error` in the same cases as `value::write`. The second form leaves `out` empty when it throws.
+The forms with [`yyjson::strict`](#yyjsonstrict) check `t` with [`yyjson::validate`](#yyjsonvalidate) before they write anything, so that `yyjson::read<T>(json, yyjson::strict)` reads the result back as far as `t` decides it. Without `yyjson::strict`, `write` does not check the constraints and writes the same text.
+
+Throws `yyjson::write_error` in the same cases as `value::write`, and with `yyjson::strict` also `yyjson::bad_cast` when `validate` throws it. The forms that take `out` leave it empty when they throw.
 
 ```cpp
 using namespace yyjson;
@@ -1306,7 +1317,7 @@ std::cout << arr.write() << std::endl;
 
 ## Options
 
-The flags of reading and writing are the flags of yyjson, and apply to both APIs. The tag value `yyjson::strict` applies to the functions that convert JSON values to C++ types.
+The flags of reading and writing are the flags of yyjson, and apply to both APIs. The tag value `yyjson::strict` applies to the functions that convert JSON values to C++ types, and to `yyjson::write`.
 
 ### `yyjson::ReadFlag`
 
@@ -1386,7 +1397,7 @@ The flags of the second row allow more text but do not change how strict JSON is
 
 ### `yyjson::strict`
 
-A tag value that makes a read reject JSON with more or less than the C++ type takes.
+A tag value that makes a read reject JSON with more or less than the C++ type takes, and makes `yyjson::write` check that a strict read accepts what it writes.
 
 ```cpp
 struct strict_t
@@ -1398,7 +1409,9 @@ inline constexpr strict_t strict{};
 
 `yyjson::read<T>`, `yyjson::read_into`, `yyjson::merge_into`, `yyjson::cast<T>` and the `cast<T>` member functions take it as their last argument. It rejects unknown keys, missing keys, `null` in a `std::optional` field and repeated keys, and applies to every value that the call reads, including the values that a caster reads. The rules are described in [Strict reading](validation.md#strict-reading).
 
-Throws `yyjson::bad_cast` when the JSON does not follow these rules.
+[`yyjson::write`](#yyjsonwrite) takes it as its last argument too, and then checks the C++ object with [`yyjson::validate`](#yyjsonvalidate) before it writes it.
+
+Throws `yyjson::bad_cast` when the JSON, or for `write` the C++ object, does not follow these rules.
 
 ```cpp
 struct Point
@@ -1607,7 +1620,7 @@ inline constexpr satisfies_t satisfies;
 | `yyjson::unique_items` | a range whose elements may be equal | with an element that is written as the same JSON value as an earlier one |
 | `yyjson::satisfies<f>` | any | for which `f(value)` returns `false` |
 
-The constraints are settings of [`yyjson::field`](#yyjsonfield), and of [`yyjson::items`](#yyjsonitems) and the other settings of the elements. `yyjson::unique_items` on a string, on a range of elements that contain a value that has no `operator==` and that is not compared by its parts, and on a set or a map, whose elements are unique by construction, is a compile error; [`yyjson::strict`](#yyjsonstrict) rejects the JSON that repeats an element or a key of them. The constraints apply to the value that a `std::optional`, a `std::unique_ptr`, a `std::shared_ptr` or a `std::variant` of `std::monostate` and one other type holds, nested or not, and not to an empty one, except `yyjson::const_` and `yyjson::enum_`, which an empty one satisfies only when they list `nullptr`. Reading a value that a constraint rejects throws `yyjson::bad_cast`; writing does not check them. `yyjson::const_` and `yyjson::enum_` take strings, numbers or booleans of the kind of the field, and `nullptr` for JSON `null` on those types that can be empty, and not arrays or objects; `yyjson::enum_` takes at least one. They compare them with the value of the field in its type. `yyjson::pattern` needs a [`yyjson::pattern_matcher<>`](#yyjsonpattern_matcher). `yyjson::format` checks the [formats of JSON Schema](validation.md#formats) other than `idn-email`, `idn-hostname`, `iri`, `iri-reference` and `regex`, and the others with a [`yyjson::format_checker<>`](#yyjsonformat_checker). See [Constraints](validation.md#constraints).
+The constraints are settings of [`yyjson::field`](#yyjsonfield), and of [`yyjson::items`](#yyjsonitems) and the other settings of the elements. `yyjson::unique_items` on a string, on a range of elements that contain a value that has no `operator==` and that is not compared by its parts, and on a set or a map, whose elements are unique by construction, is a compile error; [`yyjson::strict`](#yyjsonstrict) rejects the JSON that repeats an element or a key of them. The constraints apply to the value that a `std::optional`, a `std::unique_ptr`, a `std::shared_ptr` or a `std::variant` of `std::monostate` and one other type holds, nested or not, and not to an empty one, except `yyjson::const_` and `yyjson::enum_`, which an empty one satisfies only when they list `nullptr`. Reading a value that a constraint rejects throws `yyjson::bad_cast`; writing checks them only with `yyjson::strict`. `yyjson::const_` and `yyjson::enum_` take strings, numbers or booleans of the kind of the field, and `nullptr` for JSON `null` on those types that can be empty, and not arrays or objects; `yyjson::enum_` takes at least one. They compare them with the value of the field in its type. `yyjson::pattern` needs a [`yyjson::pattern_matcher<>`](#yyjsonpattern_matcher). `yyjson::format` checks the [formats of JSON Schema](validation.md#formats) other than `idn-email`, `idn-hostname`, `iri`, `iri-reference` and `regex`, and the others with a [`yyjson::format_checker<>`](#yyjsonformat_checker). See [Constraints](validation.md#constraints).
 
 ### `yyjson::items`
 
@@ -2007,7 +2020,7 @@ yyjson_write_code code() const noexcept;
 
 ### `yyjson::bad_cast`
 
-Thrown when a JSON value cannot be converted to the C++ type, by `cast`, by the conversion operators and by the data binding API, and by [`yyjson::validate`](#yyjsonvalidate) for a C++ object that the strict read of its JSON would reject.
+Thrown when a JSON value cannot be converted to the C++ type, by `cast`, by the conversion operators and by the data binding API, and by [`yyjson::validate`](#yyjsonvalidate) and `yyjson::write` with `yyjson::strict` for a C++ object that the strict read of its JSON would reject.
 
 ```cpp
 class bad_cast : public std::runtime_error
@@ -2028,7 +2041,7 @@ struct text_position
 
 *   `what()` names the C++ type and the kind of the JSON value.
 *   `path()` returns the JSON Pointer (RFC 6901) to the value, from the value that the cast started at, such as `/users/3/name`.
-*   `position()` returns the position of the value in the text that `read<T>`, `read_into` or `merge_into` read: `line` and `column` count characters from 1, and `pos` counts bytes from 0. A cast of a document and `yyjson::validate` give no position.
+*   `position()` returns the position of the value in the text that `read<T>`, `read_into` or `merge_into` read: `line` and `column` count characters from 1, and `pos` counts bytes from 0. A cast of a document, `yyjson::validate` and `yyjson::write` give no position.
 
 See [Conversion errors](validation.md#conversion-errors) for examples.
 
