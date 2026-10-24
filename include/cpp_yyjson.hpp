@@ -1139,6 +1139,95 @@ namespace yyjson
     template <typename = void>
     struct format_checker;
 
+    // The title and the description of a field or a type in the JSON Schema that `yyjson::json_schema` of
+    // cpp_yyjson_schema.hpp generates: `yyjson::field("member", yyjson::description("..."))` or
+    // `[[=yyjson::description("...")]]` on the member, and `yyjson::annotate(yyjson::title("..."))` or
+    // `struct [[=yyjson::title("...")]] T` on the type.  They do not change how the value is read or written.
+    struct title
+    {
+        const char* text_data = nullptr;
+        std::size_t text_size = 0;
+
+        consteval explicit title(std::string_view text) : text_data(detail::static_string(text)), text_size(text.size())
+        {
+        }
+
+        [[nodiscard]] constexpr std::string_view text() const noexcept { return {text_data, text_size}; }
+    };
+    struct description
+    {
+        const char* text_data = nullptr;
+        std::size_t text_size = 0;
+
+        consteval explicit description(std::string_view text)
+            : text_data(detail::static_string(text)), text_size(text.size())
+        {
+        }
+
+        [[nodiscard]] constexpr std::string_view text() const noexcept { return {text_data, text_size}; }
+    };
+
+    // A field or a type marked as deprecated in the JSON Schema, as JSON Schema's `deprecated`, which
+    // `yyjson::field("member", yyjson::deprecated)` or `[[=yyjson::deprecated]]` gives.  It does not change how the
+    // value is read or written.
+    struct deprecated_t
+    {
+    };
+    inline constexpr deprecated_t deprecated{};
+
+    // Examples of the value of a field or a type in the JSON Schema, as JSON Schema's `examples`, each in JSON text:
+    // `yyjson::field("point", yyjson::examples(R"({"x":1,"y":2})"))`.  `yyjson::json_schema` checks that `read<T>`
+    // of the type reads them.  They do not change how the value is read or written.
+    template <std::size_t N>
+    struct examples_t
+    {
+        std::array<const char*, N> text_data = {};
+        std::array<std::size_t, N> text_size = {};
+
+        [[nodiscard]] static constexpr std::size_t size() noexcept { return N; }
+        [[nodiscard]] constexpr std::string_view text(std::size_t i) const noexcept
+        {
+            return {text_data[i], text_size[i]};
+        }
+    };
+    template <typename... Ss>
+    requires (sizeof...(Ss) != 0) && (std::convertible_to<const Ss&, std::string_view> && ...)
+    consteval examples_t<sizeof...(Ss)> examples(const Ss&... texts)
+    {
+        // assigned for the reason that `yyjson::dependent_required` gives
+        auto result = examples_t<sizeof...(Ss)>{};
+        std::size_t i = 0;
+        (
+            [&](std::string_view text) {
+                result.text_data[i] = detail::static_string(text);
+                result.text_size[i++] = text.size();
+            }(texts),
+            ...);
+        return result;
+    }
+
+    namespace detail
+    {
+        template <typename A>
+        struct is_examples : std::false_type
+        {
+        };
+        template <std::size_t N>
+        struct is_examples<examples_t<N>> : std::true_type
+        {
+        };
+        // The settings that only describe a field or a type in the JSON Schema, and their bits in
+        // `field_key_builder::described`.
+        template <typename A>
+        concept metadata_setting = std::same_as<A, title> || std::same_as<A, description> ||
+                                   std::same_as<A, deprecated_t> || is_examples<A>::value;
+        template <typename A>
+        inline constexpr std::uint8_t metadata_bit = std::same_as<A, title>         ? 1
+                                                     : std::same_as<A, description> ? 2
+                                                     : std::same_as<A, deprecated_t> ? 4
+                                                                                     : 8;
+    }  // namespace detail
+
     namespace detail
     {
         // A JSON string, number, boolean or null, which `yyjson::const_` and `yyjson::enum_` take.  It
@@ -1529,7 +1618,7 @@ namespace yyjson
         template <typename A>
         concept field_setting = std::same_as<A, rename> || std::same_as<A, skip_t> || std::same_as<A, required_t> ||
                                 std::same_as<A, optional_key_t> || adjacent_tag_annotation<A> ||
-                                constraint_setting<A> || element_settings<A>;
+                                constraint_setting<A> || element_settings<A> || metadata_setting<A>;
 
         // The number of the nodes that a position of `yyjson::prefix_items` has at most: its own and those of the
         // settings of the values in it, and the number of the values of `yyjson::const_` and
@@ -1986,7 +2075,8 @@ namespace yyjson
         static_assert((detail::field_setting<As> && ...),
                       "yyjson::field takes yyjson::rename, yyjson::skip, yyjson::required, yyjson::optional_key, "
                       "yyjson::adjacent_tag, the constraints such as yyjson::minimum and yyjson::satisfies<f>, "
-                      "yyjson::items and yyjson::additional_properties(settings...)");
+                      "yyjson::items and yyjson::additional_properties(settings...), and yyjson::title, "
+                      "yyjson::description, yyjson::examples and yyjson::deprecated");
         return {member, {values...}};
     }
 
@@ -2148,8 +2238,8 @@ namespace yyjson
         template <typename... As>
         inline constexpr bool annotate_settings =
             count_true<(is_field_annotation<As>::value || std::same_as<As, additional_properties<>> ||
-                        is_dependent_required<As>::value || internal_tag_annotation<As> || enum_annotation<As>)...> ==
-            sizeof...(As);
+                        is_dependent_required<As>::value || internal_tag_annotation<As> || enum_annotation<As> ||
+                        metadata_setting<As>)...> == sizeof...(As);
     }  // namespace detail
 
     template <typename... As>
@@ -2158,8 +2248,9 @@ namespace yyjson
         static_assert(detail::annotate_settings<As...>,
                       "yyjson::annotate takes yyjson::field(...), yyjson::additional_properties and "
                       "yyjson::dependent_required for a struct, "
-                      "yyjson::internal_tag for a variant, and yyjson::enumerator(...) and yyjson::enum_format for an "
-                      "enumeration");
+                      "yyjson::internal_tag for a variant, yyjson::enumerator(...) and yyjson::enum_format for an "
+                      "enumeration, and yyjson::title, yyjson::description, yyjson::examples and yyjson::deprecated "
+                      "for any type");
         return detail::annotation_list<As...>{
             detail::annotation_values<std::index_sequence_for<As...>, As...>(values...)};
     }
@@ -2646,6 +2737,7 @@ namespace yyjson
             bool visitable = false;
             std::array<bool, N> renamed = {};
             std::array<bool, N> tagged = {};
+            std::array<std::uint8_t, N> described = {};  // the `metadata_bit` of the settings of each field
             std::size_t dependencies_added = 0;
             // where the search for the member of the next `yyjson::field` starts: after the previous one, so that
             // settings in the order of the members are found at once
@@ -2666,7 +2758,7 @@ namespace yyjson
             {
                 if (visitable) return fail(field_key_error::skip_visitable);
                 if (table.skipped[i]) return fail(field_key_error::same_setting_twice);
-                if (renamed[i] || tagged[i] || table.required[i] || table.optional_key[i] ||
+                if (renamed[i] || tagged[i] || table.required[i] || table.optional_key[i] || described[i] != 0 ||
                     !table.schemas.nodes[i].empty())
                     return fail(field_key_error::skipped_with_setting);
                 table.skipped[i] = true;
@@ -2676,6 +2768,13 @@ namespace yyjson
                 if (tagged[i]) return fail(field_key_error::same_setting_twice);
                 if (table.skipped[i]) return fail(field_key_error::skipped_with_setting);
                 tagged[i] = true;
+            }
+            // A setting that only describes the field i in the JSON Schema.
+            constexpr void describe_field(std::size_t i, std::uint8_t bit)
+            {
+                if ((described[i] & bit) != 0) return fail(field_key_error::same_setting_twice);
+                if (table.skipped[i]) return fail(field_key_error::skipped_with_setting);
+                described[i] |= bit;
             }
             constexpr void require_field(std::size_t i)
             {
@@ -2741,6 +2840,8 @@ namespace yyjson
                     make_key_optional(i);
                 else if constexpr (constraint_setting<A> || element_settings<A>)
                     constrain_field(i, a);
+                else if constexpr (metadata_setting<A>)
+                    describe_field(i, metadata_bit<A>);
                 else
                     tag_field(i);
             }
@@ -2759,7 +2860,7 @@ namespace yyjson
                     set_additional(a);
                 else if constexpr (is_dependent_required<A>::value)
                     add_dependency(a);
-                else
+                else if constexpr (!metadata_setting<A>)
                     fail(field_key_error::not_a_struct_setting);
             }
 
@@ -2866,6 +2967,22 @@ namespace yyjson
             }(std::make_index_sequence<element_annotations<T, I>.size()>{});
         }
 
+        // The metadata of the field I of T, of which only `yyjson::examples` is a template.
+        template <typename T, std::size_t I, typename Builder, typename... Ms>
+        constexpr void describe_annotated_field(Builder& builder, type_list<Ms...>)
+        {
+            (
+                [&] {
+                    for (std::size_t k = 0; k < field_reflection::field_annotations<T, I, Ms>.size(); ++k)
+                        builder.describe_field(I, metadata_bit<Ms>);
+                }(),
+                ...);
+            constexpr auto examples =
+                std::define_static_array(template_annotations_of<field_reflection::detail::member_at<T, I>,
+                                                                 ^^yyjson::examples_t>());
+            for (std::size_t k = 0; k < examples.size(); ++k) builder.describe_field(I, metadata_bit<examples_t<1>>);
+        }
+
         // Whether a field of T has an annotation of this library, which gives it a key, skips it or tags it.
         template <typename T>
         inline constexpr bool annotated_members = [] {
@@ -2939,6 +3056,7 @@ namespace yyjson
                             builder.tag_field(Is);
                         constrain_annotated_field<T, Is>(builder, constraint_types{});
                         constrain_annotated_elements<T, Is>(builder);
+                        describe_annotated_field<T, Is>(builder, type_list<title, description, deprecated_t>{});
                     }(),
                     ...);
             }(std::make_index_sequence<N>{});
@@ -2949,7 +3067,9 @@ namespace yyjson
         // skip them or tag them.
         template <typename T>
         inline constexpr bool annotated_fields = [] {
-            if constexpr (std::tuple_size_v<annotation_values_of<T>> != 0)
+            if constexpr ([]<typename... As>(std::type_identity<std::tuple<As...>>) {
+                              return (!metadata_setting<As> || ...);
+                          }(std::type_identity<annotation_values_of<T>>{}))
                 return true;
 #if FIELD_RFL_ANNOTATIONS
             else if constexpr (!visitable<T>)
@@ -3035,8 +3155,9 @@ namespace yyjson
                           "(member, \"key\") pair of VISITABLE_STRUCT");
             static_assert(table.error != field_key_error::same_setting_twice,
                           "a field is given yyjson::skip, yyjson::required, yyjson::optional_key, "
-                          "yyjson::adjacent_tag, a constraint such as yyjson::minimum or a setting of the values in "
-                          "it such as yyjson::items twice, or a setting of the values in it has a setting twice");
+                          "yyjson::adjacent_tag, a constraint such as yyjson::minimum, a setting of the values in "
+                          "it such as yyjson::items, or yyjson::title, yyjson::description, yyjson::examples or "
+                          "yyjson::deprecated twice, or a setting of the values in it has a setting twice");
             static_assert(table.error != field_key_error::required_optional_key,
                           "a field annotated with yyjson::required may not be left out of the object, which "
                           "yyjson::optional_key lets it: give the field only one of them");
@@ -3687,6 +3808,8 @@ namespace yyjson
             {
                 if constexpr (std::same_as<A, enum_format>)
                     set_format(a);
+                else if constexpr (metadata_setting<A>)
+                    return;
                 else if constexpr (is_enumerator_annotation<A>::value)
                 {
                     std::size_t i = N;
