@@ -1206,6 +1206,29 @@ namespace yyjson
         return result;
     }
 
+    // The name of a struct or an enumeration in `$defs` of the JSON Schema that `yyjson::json_schema` generates, and
+    // in `components/schemas` of OpenAPI: `yyjson::annotate(yyjson::schema_name("Person"))` or
+    // `struct [[=yyjson::schema_name("Person")]] Person`.  The name has the characters `[A-Za-z0-9._-]` only, as
+    // OpenAPI requires.  Without it the name comes from the qualified name of the type, which differs between
+    // compilers for some types.  It does not change how the value is read or written.
+    struct schema_name
+    {
+        const char* text_data = nullptr;
+        std::size_t text_size = 0;
+
+        consteval explicit schema_name(std::string_view text)
+            : text_data(detail::static_string(text)), text_size(text.size())
+        {
+            if (text.empty()) throw "yyjson::schema_name is empty";
+            for (const auto c : text)
+                if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' ||
+                      c == '_' || c == '-'))
+                    throw "yyjson::schema_name has a character other than [A-Za-z0-9._-]";
+        }
+
+        [[nodiscard]] constexpr std::string_view text() const noexcept { return {text_data, text_size}; }
+    };
+
     namespace detail
     {
         template <typename A>
@@ -1226,6 +1249,9 @@ namespace yyjson
                                                      : std::same_as<A, description> ? 2
                                                      : std::same_as<A, deprecated_t> ? 4
                                                                                      : 8;
+        // The settings that describe a type in the JSON Schema only, which reading and writing ignore.
+        template <typename A>
+        concept type_metadata_setting = metadata_setting<A> || std::same_as<A, schema_name>;
     }  // namespace detail
 
     namespace detail
@@ -2239,7 +2265,7 @@ namespace yyjson
         inline constexpr bool annotate_settings =
             count_true<(is_field_annotation<As>::value || std::same_as<As, additional_properties<>> ||
                         is_dependent_required<As>::value || internal_tag_annotation<As> || enum_annotation<As> ||
-                        metadata_setting<As>)...> == sizeof...(As);
+                        type_metadata_setting<As>)...> == sizeof...(As);
     }  // namespace detail
 
     template <typename... As>
@@ -2249,8 +2275,8 @@ namespace yyjson
                       "yyjson::annotate takes yyjson::field(...), yyjson::additional_properties and "
                       "yyjson::dependent_required for a struct, "
                       "yyjson::internal_tag for a variant, yyjson::enumerator(...) and yyjson::enum_format for an "
-                      "enumeration, and yyjson::title, yyjson::description, yyjson::examples and yyjson::deprecated "
-                      "for any type");
+                      "enumeration, yyjson::schema_name for a struct or an enumeration, and yyjson::title, "
+                      "yyjson::description, yyjson::examples and yyjson::deprecated for any type");
         return detail::annotation_list<As...>{
             detail::annotation_values<std::index_sequence_for<As...>, As...>(values...)};
     }
@@ -2860,7 +2886,7 @@ namespace yyjson
                     set_additional(a);
                 else if constexpr (is_dependent_required<A>::value)
                     add_dependency(a);
-                else if constexpr (!metadata_setting<A>)
+                else if constexpr (!type_metadata_setting<A>)
                     fail(field_key_error::not_a_struct_setting);
             }
 
@@ -3068,7 +3094,7 @@ namespace yyjson
         template <typename T>
         inline constexpr bool annotated_fields = [] {
             if constexpr ([]<typename... As>(std::type_identity<std::tuple<As...>>) {
-                              return (!metadata_setting<As> || ...);
+                              return (!type_metadata_setting<As> || ...);
                           }(std::type_identity<annotation_values_of<T>>{}))
                 return true;
 #if FIELD_RFL_ANNOTATIONS
@@ -3808,7 +3834,7 @@ namespace yyjson
             {
                 if constexpr (std::same_as<A, enum_format>)
                     set_format(a);
-                else if constexpr (metadata_setting<A>)
+                else if constexpr (type_metadata_setting<A>)
                     return;
                 else if constexpr (is_enumerator_annotation<A>::value)
                 {
