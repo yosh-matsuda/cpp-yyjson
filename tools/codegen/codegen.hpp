@@ -601,6 +601,13 @@ namespace cpp_yyjson_codegen
             std::string loc{};
         };
 
+        // `oneOf` (exactly_one) or `anyOf` of subschemas that only require keys: the groups of keys
+        struct required_groups
+        {
+            bool exactly_one = false;
+            std::vector<std::vector<std::string>> groups{};
+        };
+
         struct decl
         {
             enum class kind_t : std::uint8_t
@@ -617,6 +624,7 @@ namespace cpp_yyjson_codegen
             std::vector<field> fields{};
             bool additional = true;
             std::vector<std::pair<std::string, std::vector<std::string>>> dependent{};  // keys
+            std::vector<required_groups> groups{};                                      // keys
             bool eq = false;
             bool filled = false;
             // enum: member name, JSON name
@@ -1122,7 +1130,9 @@ namespace cpp_yyjson_codegen
                     if (t == nullptr) return {};
                     return type_of(t, ref->text, hint);
                 }
-                if (s->has("anyOf") || s->has("oneOf")) return type_variant(s0, s, loc, hint, named);
+                if ((s->has("anyOf") && !required_groups_of(*s, "anyOf")) ||
+                    (s->has("oneOf") && !required_groups_of(*s, "oneOf")))
+                    return type_variant(s0, s, loc, hint, named);
                 if (s->has("const")) return type_const(*s, loc);
                 if (s->has("enum")) return type_enum(s0, *s, loc, hint, named);
                 auto types = types_of(*s, loc);
@@ -1300,10 +1310,25 @@ namespace cpp_yyjson_codegen
                             dependent.emplace_back(k, std::move(keys));
                     }
                 }
+                auto groups = std::vector<required_groups>();
+                for (const auto* kw : {"oneOf", "anyOf"})
+                    if (auto g = required_groups_of(s, kw))
+                    {
+                        // a key that is not a property is read as any JSON value, as one of `required`
+                        for (const auto& group : g->groups)
+                            for (const auto& k : group)
+                                if (std::ranges::none_of(fields, [&](const auto& f) { return f.key == k; }))
+                                    fields.push_back(field{.member = k,
+                                                           .key = k,
+                                                           .type = make(tk::optional, {make(tk::any)}),
+                                                           .loc = loc + "/" + kw});
+                        groups.push_back(std::move(*g));
+                    }
                 auto& d = decls_[idx];
                 d.fields = std::move(fields);
                 d.additional = additional;
                 d.dependent = std::move(dependent);
+                d.groups = std::move(groups);
                 d.filled = true;
             }
 
@@ -1724,11 +1749,102 @@ namespace cpp_yyjson_codegen
                 return t.size() == 1 && t[0] == "null";
             }
 
+            // a schema that becomes a struct
+            static bool is_struct_schema(const json& s)
+            {
+                if (!s.has("properties") && !s.has("required")) return false;
+                auto t = type_list(s);
+                std::erase(t, "null");
+                return t.empty() ? !s.has("type") : t.size() == 1 && t[0] == "object";
+            }
+
+            // the keys of {"required": [...]}, without other keywords than metadata; nullopt for another schema
+            static std::optional<std::vector<std::string>> only_required(const json& s)
+            {
+                if (!s.is_object()) return std::nullopt;
+                const auto* req = s.find("required");
+                if (req == nullptr || !req->is_array() || req->items.empty()) return std::nullopt;
+                if (std::ranges::any_of(s.members, [](const auto& m) {
+                        return m.first != "required" && m.first != "not" && !is_metadata_key(m.first);
+                    }))
+                    return std::nullopt;
+                auto keys = std::vector<std::string>();
+                for (const auto& e : req->items)
+                {
+                    if (!e.is_string() || std::ranges::find(keys, e.text) != keys.end()) return std::nullopt;
+                    keys.push_back(e.text);
+                }
+                return keys;
+            }
+
+            // `oneOf` or `anyOf` of a struct schema whose subschemas only require keys, which
+            // yyjson::one_of_required or yyjson::any_of_required checks on one struct: [{"required": ["a"]},
+            // {"required": ["b"]}], or the exclusive form, in which each subschema has also `not` of the other groups:
+            // {"required": ["a"], "not": {"required": ["b"]}}, or "not": {"anyOf": [{"required": [...]}, ...]} for
+            // more groups; that is exactly one group under `anyOf` too
+            static std::optional<required_groups> required_groups_of(const json& s, std::string_view kw)
+            {
+                if (!is_struct_schema(s)) return std::nullopt;
+                const auto* list = s.find(kw);
+                if (list == nullptr || !list->is_array() || list->items.empty()) return std::nullopt;
+                using group = std::vector<std::string>;
+                auto r = required_groups{.exactly_one = kw == "oneOf"};
+                auto nots = std::vector<std::optional<std::vector<group>>>();
+                for (const auto& b : list->items)
+                {
+                    auto g = only_required(b);
+                    if (!g) return std::nullopt;
+                    r.groups.push_back(std::move(*g));
+                    const auto* n = b.find("not");
+                    if (n == nullptr)
+                    {
+                        nots.emplace_back();
+                        continue;
+                    }
+                    auto excluded = std::vector<group>();
+                    if (auto x = n->has("not") ? std::nullopt : only_required(*n))
+                        excluded.push_back(std::move(*x));
+                    else if (const auto* a = n->is_object() ? n->find("anyOf") : nullptr;
+                             a != nullptr && a->is_array() && std::ranges::all_of(n->members, [](const auto& m) {
+                                 return m.first == "anyOf" || is_metadata_key(m.first);
+                             }))
+                    {
+                        for (const auto& e : a->items)
+                        {
+                            auto x = e.has("not") ? std::nullopt : only_required(e);
+                            if (!x) return std::nullopt;
+                            excluded.push_back(std::move(*x));
+                        }
+                    }
+                    else
+                        return std::nullopt;
+                    nots.emplace_back(std::move(excluded));
+                }
+                if (std::ranges::none_of(nots, [](const auto& n) { return n.has_value(); })) return r;
+                // each subschema excludes exactly the other groups
+                const auto sorted = [](std::vector<group> gs) {
+                    for (auto& g : gs) std::ranges::sort(g);
+                    std::ranges::sort(gs);
+                    return gs;
+                };
+                for (std::size_t i = 0; i < r.groups.size(); ++i)
+                {
+                    if (!nots[i]) return std::nullopt;
+                    auto others = std::vector<group>();
+                    for (std::size_t j = 0; j < r.groups.size(); ++j)
+                        if (j != i) others.push_back(r.groups[j]);
+                    if (sorted(*nots[i]) != sorted(std::move(others))) return std::nullopt;
+                }
+                r.exactly_one = true;
+                return r;
+            }
+
             typed type_variant(const json* s0, const json* s, const std::string& loc, const std::string& hint,
                                bool named)
             {
-                const auto* any = s->find("anyOf");
-                const auto* one = s->find("oneOf");
+                // a keyword of required groups stays in the schema of each alternative
+                const auto* any = required_groups_of(*s, "anyOf") ? nullptr : s->find("anyOf");
+                const auto* one = required_groups_of(*s, "oneOf") ? nullptr : s->find("oneOf");
                 if (any != nullptr && one != nullptr)
                     warn(loc, "`anyOf` and `oneOf` together are not supported; `oneOf` is ignored");
                 const auto* list = any != nullptr ? any : one;
@@ -1740,7 +1856,8 @@ namespace cpp_yyjson_codegen
                 }
                 auto base = json::object_of();
                 for (const auto& [k, v] : s->members)
-                    if (k != "anyOf" && k != "oneOf" && !is_metadata_key(k)) base.members.emplace_back(k, v);
+                    if (!(k == "anyOf" && any != nullptr) && !(k == "oneOf" && one != nullptr) && !is_metadata_key(k))
+                        base.members.emplace_back(k, v);
                 auto schemas = std::vector<const json*>();
                 auto locs = std::vector<std::string>();
                 for (std::size_t i = 0; i < list->items.size(); ++i)
@@ -1783,7 +1900,9 @@ namespace cpp_yyjson_codegen
                     norm.push_back(n);
                     if (is_null_schema(*n))
                         ++nulls;
-                    else if (n->is_object() && n->has("properties") && !n->has("anyOf") && !n->has("oneOf"))
+                    else if (n->is_object() && n->has("properties") &&
+                             (!n->has("anyOf") || required_groups_of(*n, "anyOf")) &&
+                             (!n->has("oneOf") || required_groups_of(*n, "oneOf")))
                     {
                         const auto t = type_list(*n);
                         if (t.empty() || (t.size() == 1 && t[0] == "object")) objs.push_back(i);
@@ -2495,6 +2614,19 @@ namespace cpp_yyjson_codegen
                     auto ms = std::vector<std::string>();
                     for (const auto& x : keys) ms.push_back(cpp_string(member(x)));
                     items.push_back("yyjson::dependent_required(" + cpp_string(member(k)) + ", {" + join(ms) + "})");
+                }
+                for (const auto& g : d.groups)
+                {
+                    auto gs = std::vector<std::string>();
+                    for (const auto& group : g.groups)
+                    {
+                        auto ms = std::vector<std::string>();
+                        for (const auto& x : group) ms.push_back(cpp_string(member(x)));
+                        gs.push_back("{" + join(ms) + "}");
+                    }
+                    items.push_back(
+                        std::string(g.exactly_one ? "yyjson::one_of_required(" : "yyjson::any_of_required(") +
+                        join(gs) + ")");
                 }
                 return items;
             }

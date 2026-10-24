@@ -245,6 +245,49 @@ TEST(Codegen, Defaults)
     EXPECT_EQ(warnings(o), "");
 }
 
+TEST(Codegen, RequiredGroups)
+{
+    const auto r = generate(R"({
+        "type": "object",
+        "properties": {
+            "file": {
+                "type": "object",
+                "properties": {"name": {"type": "string"}, "path": {"type": "string"}},
+                "oneOf": [{"required": ["name"]}, {"required": ["path"], "description": "by path"}]
+            },
+            "output": {
+                "type": "object",
+                "properties": {"env": {"type": "string"}, "value": {"type": "string"}, "unit": {"type": "string"}},
+                "anyOf": [
+                    {"required": ["env"], "not": {"required": ["value", "unit"]}},
+                    {"required": ["value", "unit"], "not": {"anyOf": [{"required": ["env"]}]}}
+                ]
+            },
+            "icon": {
+                "type": "object",
+                "properties": {"png": {"type": "string"}},
+                "anyOf": [{"required": ["png"]}, {"required": ["svg"]}]
+            },
+            "partial": {
+                "type": "object",
+                "properties": {"p": {"type": "string"}, "q": {"type": "string"}},
+                "oneOf": [{"required": ["p"], "not": {"required": ["q", "r"]}}, {"required": ["q"]}]
+            }
+        }
+    })",
+                            {});
+    // one struct, whatever group of keys the object has
+    EXPECT_TRUE(has(r.code, "yyjson::one_of_required({\"name\"}, {\"path\"})"));
+    // the exclusive form is exactly one group under anyOf too
+    EXPECT_TRUE(has(r.code, "yyjson::one_of_required({\"env\"}, {\"value\", \"unit\"})"));
+    // a key that is not a property
+    EXPECT_TRUE(has(r.code, "    std::optional<yyjson::value> svg;\n"));
+    EXPECT_TRUE(has(r.code, "yyjson::any_of_required({\"png\"}, {\"svg\"})"));
+    // `not` that does not name the other groups stays a variant of structs
+    EXPECT_TRUE(has(r.code, "std::optional<std::variant<RootPartialOption1, RootPartialOption2>> partial;"));
+    EXPECT_EQ(warnings(r), "#/properties/partial/oneOf/0: `not` is not supported and is ignored\n");
+}
+
 TEST(Codegen, Cpp26)
 {
     const auto r = generate(R"({"title": "T", "type": "object", "properties": {"a": {"type": "integer", "maximum": 9}},
