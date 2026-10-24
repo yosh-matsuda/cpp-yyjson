@@ -132,7 +132,7 @@ The [constraints](validation.md#constraints) are in both schemas. A plain `write
 | --- | --- |
 | `bool` | `{"type": "boolean"}` |
 | integer types, including `char` | `{"type": "integer"}` with `minimum` and `maximum` of the type, also for 64-bit types |
-| `float` | `{"type": "number"}` with the bounds of `float` |
+| `float` | `{"type": "number"}` with `minimum` and `maximum` of `float`, written as `write` writes a `float` (`3.4028235e38`) |
 | `double`, `long double` | `{"type": "number"}` |
 | strings | `{"type": "string"}` |
 | `std::nullptr_t`, `std::monostate` | `{"type": "null"}` |
@@ -163,7 +163,7 @@ The [constraints](validation.md#constraints) are in both schemas. A plain `write
 
 The annotations of keys map as in [Read and write schemas](#read-and-write-schemas): `yyjson::rename` gives the key, `yyjson::skip` leaves the field out, and `yyjson::dependent_required` becomes `dependentRequired` of the struct.
 
-Each [constraint](validation.md#constraints) becomes the keyword of the same name, such as `minimum`, `maxLength`, `pattern`, `format`, `const` and `enum`. The [constraints of elements](validation.md#constraints-of-elements) become `items`, `prefixItems`, `contains` with `minContains` and `maxContains`, `uniqueItems`, `propertyNames` and `additionalProperties` with the schema of the values. [JSON Schema keywords](validation.md#json-schema-keywords) lists the correspondence the other way.
+Each [constraint](validation.md#constraints) becomes the keyword of the same name, such as `minimum`, `maxLength`, `pattern`, `format`, `const` and `enum`. A `float` field is the exception for numbers: it compares with the bounds and the values rounded to `float`, so the schema gives those floats in the text that `write` writes, and an exclusive bound becomes `minimum` or `maximum` of the next `float` inward. The [constraints of elements](validation.md#constraints-of-elements) become `items`, `prefixItems`, `contains` with `minContains` and `maxContains`, `uniqueItems`, `propertyNames` and `additionalProperties` with the schema of the values. [JSON Schema keywords](validation.md#json-schema-keywords) lists the correspondence the other way.
 
 Two kinds of constraints have no keyword:
 

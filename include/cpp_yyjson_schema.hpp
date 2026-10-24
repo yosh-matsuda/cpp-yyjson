@@ -2,7 +2,9 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <filesystem>
 #include <limits>
 #include <map>
@@ -663,13 +665,76 @@ namespace yyjson
                 // `validate<f>` has no keyword.
             }
 
+            // The double whose shortest text is what `yyjson::write` writes of f.
+            template <std::floating_point F>
+            static double written_real(F f)
+            {
+                return yyjson::read(yyjson::write(f)).template cast<double>();
+            }
+
+            // A float is compared with the bounds and the values of `const_` and `enum_` rounded to a
+            // float, and is written in the shortest text that reads back as it, which may lie past the double of
+            // the float: 3.4028235e38 for the largest one.  The schema gives those floats as they are written, an
+            // exclusive bound as the inclusive bound of the next float inward.
+            template <std::floating_point I>
+            void emit_float(object_ref out, const schema_node* n) const
+            {
+                using L = std::numeric_limits<I>;
+                using kind = yyjson::detail::bound_number::kind_t;
+                const auto rounded = [](const yyjson::detail::bound_number& b) {
+                    return b.kind == kind::sint   ? static_cast<I>(b.sint)
+                           : b.kind == kind::uint ? static_cast<I>(b.uint)
+                                                  : static_cast<I>(b.real);
+                };
+                out.emplace("type", "number");
+                auto lower = L::lowest();
+                auto upper = L::max();
+                auto rest = yyjson::detail::field_constraints();
+                if (n != nullptr)
+                {
+                    const auto& c = n->constraints;
+                    if (c.has<yyjson::minimum>()) lower = std::max(lower, rounded(c.minimum));
+                    if (c.has<yyjson::exclusive_minimum>())
+                        lower = std::max(lower, std::nextafter(rounded(c.exclusive_minimum), L::infinity()));
+                    if (c.has<yyjson::maximum>()) upper = std::min(upper, rounded(c.maximum));
+                    if (c.has<yyjson::exclusive_maximum>())
+                        upper = std::min(upper, std::nextafter(rounded(c.exclusive_maximum), -L::infinity()));
+                    rest = c;
+                    rest.set &= ~(yyjson::detail::constraint_bit<yyjson::minimum> |
+                                  yyjson::detail::constraint_bit<yyjson::exclusive_minimum> |
+                                  yyjson::detail::constraint_bit<yyjson::maximum> |
+                                  yyjson::detail::constraint_bit<yyjson::exclusive_maximum> |
+                                  yyjson::detail::constraint_bit<yyjson::const_> |
+                                  yyjson::detail::constraint_bit<yyjson::enum_<0>>);
+                }
+                // A bound past the largest float leaves no float to read.
+                if (lower <= L::max() && upper >= L::lowest())
+                {
+                    out.emplace("minimum", written_real(lower));
+                    out.emplace("maximum", written_real(upper));
+                }
+                else
+                    out.emplace("not", empty_object);
+                if (n != nullptr && n->constraints.has<yyjson::const_>())
+                    out.emplace("const", written_real(rounded(values_[n->constraints.constant].number)));
+                if (n != nullptr && n->constraints.has<yyjson::enum_<0>>())
+                {
+                    auto values = out.emplace("enum", empty_array);
+                    for (std::size_t i = 0; i < n->constraints.enum_count; ++i)
+                        values.emplace_back(written_real(rounded(values_[n->constraints.enum_first + i].number)));
+                }
+                emit_constraints(out, rest);
+            }
+
             template <typename I>
             void emit_number(object_ref out, const schema_node* n) const
             {
+                if constexpr (std::floating_point<I> && sizeof(I) < sizeof(double))
+                    return emit_float<I>(out, n);
                 out.emplace("type", std::integral<I> ? "integer" : "number");
                 using L = std::numeric_limits<I>;
                 // A double holds every finite JSON number that the reader accepts.
-                constexpr bool bounded = std::integral<I> || sizeof(I) < sizeof(double);
+                constexpr bool bounded = std::integral<I>;
                 const auto* c = n != nullptr ? &n->constraints : nullptr;
                 // The bounds of the type, unless a constraint of the same keyword is at least as tight.
                 const auto tighter = [](const yyjson::detail::bound_number& b, auto limit, bool lower) {

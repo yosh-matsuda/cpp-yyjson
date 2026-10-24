@@ -353,6 +353,21 @@ struct Owner
     Pet pet;
 };
 
+// Floats, compared with the bounds rounded to a float and written in their shortest text.
+struct Floats
+{
+    float tenth = 0;
+    float positive = 1;
+    float below = 0;
+    float large = 3.4028235e38F;
+    float pick = 0.1F;
+    std::optional<float> none;
+};
+template <> inline constexpr auto yyjson::annotations<Floats> = yyjson::annotate(
+    yyjson::field("tenth", yyjson::maximum(0.1)), yyjson::field("positive", yyjson::exclusive_minimum(0)),
+    yyjson::field("below", yyjson::exclusive_maximum(0.1), yyjson::minimum(-1)),
+    yyjson::field("pick", yyjson::enum_(0.1, 0.2)), yyjson::field("none", yyjson::minimum(1e300)));
+
 // Written only: a borrowed string is not read.
 struct Borrowed { std::string_view s = "x"; const char* p = "y"; };
 
@@ -971,6 +986,22 @@ TEST(Schema, TagField)
         R"({"pet":{"lives":3}})",
         R"({"pet":{"kind":"dog"}})",
         R"({"pet":{"kind":"bird"}})",
+    });
+}
+
+TEST(Schema, Floats)
+{
+    check<Floats>({
+        R"({"tenth":0.1,"positive":1e-45,"below":0.099999994,"large":3.4028235e38,"pick":0.2})",
+        R"({"tenth":0.10000001})",
+        R"({"positive":0})",
+        R"({"positive":-0.0})",
+        R"({"below":0.1})",
+        R"({"below":-1})",
+        R"({"large":-3.4028235e38})",
+        R"({"large":3.4028236e38})",
+        R"({"pick":0.3})",
+        R"({"none":0})",
     });
 }
 
