@@ -9,6 +9,7 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include "cpp_yyjson.hpp"
 
@@ -115,6 +116,8 @@ namespace yyjson
             bool strict_;
             std::optional<object_ref> defs_;
             std::set<std::string, std::less<>> names_;
+            // The values of `yyjson::const_` and `yyjson::enum_` of the struct whose fields are written.
+            const yyjson::detail::json_scalar* values_ = nullptr;
 
             // `yyjson::strict` applies to reading only: what `write` gives has every key that is not left out.
             [[nodiscard]] bool strict() const noexcept { return strict_ && !writing(); }
@@ -162,8 +165,25 @@ namespace yyjson
                     case kind::real: out.emplace(key, b.real); break;
                 }
             }
+            // Calls f with the C++ value of the JSON scalar s.
+            template <typename F>
+            static void visit_scalar(const yyjson::detail::json_scalar& s, F&& f)
+            {
+                using kind = yyjson::detail::json_scalar::kind_t;
+                using number = yyjson::detail::bound_number::kind_t;
+                if (s.kind == kind::string)
+                    f(s.string());
+                else if (s.kind == kind::boolean)
+                    f(s.boolean);
+                else if (s.number.kind == number::sint)
+                    f(s.number.sint);
+                else if (s.number.kind == number::uint)
+                    f(s.number.uint);
+                else
+                    f(s.number.real);
+            }
             // Writes the constraints of a node.  The bounds of a number type are written by `emit_number`.
-            static void emit_constraints(object_ref out, const yyjson::detail::field_constraints& c)
+            void emit_constraints(object_ref out, const yyjson::detail::field_constraints& c) const
             {
                 if (c.has<yyjson::minimum>()) emit_bound(out, "minimum", c.minimum);
                 if (c.has<yyjson::maximum>()) emit_bound(out, "maximum", c.maximum);
@@ -175,6 +195,15 @@ namespace yyjson
                 if (c.has<yyjson::min_items>()) out.emplace("minItems", c.min_items);
                 if (c.has<yyjson::max_items>()) out.emplace("maxItems", c.max_items);
                 if (c.has<yyjson::pattern>()) out.emplace("pattern", c.pattern());
+                if (c.has<yyjson::format>()) out.emplace("format", c.format());
+                if (c.has<yyjson::const_>())
+                    visit_scalar(values_[c.constant], [&](auto v) { out.emplace("const", v); });
+                if (c.has<yyjson::enum_<0>>())
+                {
+                    auto values = out.emplace("enum", empty_array);
+                    for (std::size_t i = 0; i < c.enum_count; ++i)
+                        visit_scalar(values_[c.enum_first + i], [&](auto v) { values.emplace_back(v); });
+                }
                 if (c.has<yyjson::unique_items_t>()) out.emplace("uniqueItems", true);
                 if (c.has<yyjson::min_contains>()) out.emplace("minContains", c.min_contains);
                 if (c.has<yyjson::max_contains>()) out.emplace("maxContains", c.max_contains);
@@ -182,7 +211,7 @@ namespace yyjson
             }
 
             template <typename I>
-            static void emit_number(object_ref out, const schema_node* n)
+            void emit_number(object_ref out, const schema_node* n) const
             {
                 out.emplace("type", std::integral<I> ? "integer" : "number");
                 using L = std::numeric_limits<I>;
@@ -377,7 +406,10 @@ namespace yyjson
                 if (n != nullptr) emit_constraints(out, n->constraints);
             };
             if constexpr (std::same_as<T, bool>)
+            {
                 out.emplace("type", "boolean");
+                constraints();
+            }
             else if constexpr (std::is_enum_v<T>)
             {
                 emit_named<T>(out, [&](object_ref def) { emit_enum<T>(def); });
@@ -567,6 +599,12 @@ namespace yyjson
                     return nullptr;
             }();
 
+            const auto* const outer_values = std::exchange(values_, [] {
+                if constexpr (yyjson::detail::field_table_of<S>::exists)
+                    return yyjson::detail::field_table_of<S>::table.schemas.values.data();
+                else
+                    return static_cast<const yyjson::detail::json_scalar*>(nullptr);
+            }());
             out.emplace("type", "object");
             auto properties = out.emplace("properties", empty_object);
             auto required = std::vector<std::string_view>();
@@ -643,6 +681,18 @@ namespace yyjson
                 auto r = out.emplace("required", empty_array);
                 for (const auto k : required) r.emplace_back(k);
             }
+            if constexpr (!rules::dependencies.empty())
+            {
+                auto dependent = out.emplace("dependentRequired", empty_object);
+                for (const auto& [k, j] : rules::dependencies)
+                {
+                    auto keys = dependent.find(rules::keys[k]);
+                    auto list = keys != dependent.end() ? *keys->second.as_array()
+                                                        : dependent.emplace(rules::keys[k], empty_array);
+                    list.emplace_back(rules::keys[j]);
+                }
+            }
+            values_ = outer_values;
             const bool closed = writing() || rules::additional == additional::denied ||
                                 (strict() && rules::additional != additional::allowed);
             // TODO: unevaluatedProperties when the struct has an adjacent tag in allOf
