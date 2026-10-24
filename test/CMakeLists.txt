@@ -79,6 +79,13 @@ target_link_libraries("${PROJECT_NAME}_test_schema"
 target_compile_options("${PROJECT_NAME}_test_schema"
                        PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
 
+# the generator of tools/codegen, tested as a library
+add_executable("${PROJECT_NAME}_test_codegen" test_codegen.cpp)
+target_include_directories("${PROJECT_NAME}_test_codegen"
+                           PRIVATE ${PROJECT_SOURCE_DIR}/tools/codegen)
+target_link_libraries("${PROJECT_NAME}_test_codegen"
+                      PRIVATE ${PROJECT_NAME} GTest::gtest GTest::gtest_main)
+
 # JSONTestSuite, the number tests and generated texts, from the datasets of the benchmark submodule
 add_executable("${PROJECT_NAME}_test_conformance" test_conformance.cpp)
 target_link_libraries("${PROJECT_NAME}_test_conformance"
@@ -110,6 +117,7 @@ gtest_discover_tests("${PROJECT_NAME}_test" DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests("${PROJECT_NAME}_test_user_casters" DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests("${PROJECT_NAME}_test_conformance" DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests("${PROJECT_NAME}_test_schema" DISCOVERY_MODE PRE_TEST)
+gtest_discover_tests("${PROJECT_NAME}_test_codegen" DISCOVERY_MODE PRE_TEST)
 if(CPPYYJSON_USE_BUNDLED_YYJSON)
   gtest_discover_tests("${PROJECT_NAME}_test_depth_limit" DISCOVERY_MODE
                        PRE_TEST)
