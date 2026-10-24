@@ -58,7 +58,7 @@ TEST(Codegen, Fields)
                     "    yyjson::description(\"A user.\"),\n"
                     "    yyjson::additional_properties(false),\n"
                     "    yyjson::field(\"id\", yyjson::required, yyjson::minimum(1)),\n"));
-    EXPECT_TRUE(has(c, "yyjson::field(\"score\", yyjson::optional_key)"));
+    EXPECT_TRUE(has(c, "yyjson::field(\"score\", yyjson::omit_default)"));
     EXPECT_TRUE(has(c, "yyjson::field(\"class_\", yyjson::rename(\"class\"))"));
     EXPECT_TRUE(has(c, "yyjson::field(\"home_page\", yyjson::rename(\"home-page\"), yyjson::format(\"uri\"))"));
     EXPECT_TRUE(has(c, "yyjson::field(\"token\", yyjson::required)"));
@@ -198,6 +198,51 @@ TEST(Codegen, Arrays)
     EXPECT_TRUE(has(r.code, "yyjson::field(\"counts\", yyjson::additional_properties(yyjson::minimum(0)))"));
     EXPECT_TRUE(has(r.code, "    std::optional<yyjson::object> obj;\n"));
     EXPECT_TRUE(has(r.code, "    std::optional<yyjson::value> any;\n"));
+}
+
+TEST(Codegen, Defaults)
+{
+    const auto schema = R"({
+        "type": "object",
+        "properties": {
+            "limit": {"type": "integer", "minimum": 0, "default": -1},
+            "mode": {"enum": ["fast", "slow"], "default": "slow"},
+            "tags": {"type": "array", "items": {"type": "string"}, "default": ["a"]},
+            "unset": {"type": "string", "default": null},
+            "nullable": {"type": ["string", "null"], "default": null},
+            "point": {"type": "object", "properties": {"x": {"type": "number"}}, "default": {"x": 1}},
+            "id": {"type": "integer", "default": 3}
+        },
+        "required": ["id"]
+    })";
+    const auto r = generate(schema, {});
+    // a default that converts is the initializer, and the key is left out while the field holds it
+    EXPECT_TRUE(has(r.code, "    std::int64_t limit = -1;\n"));
+    EXPECT_TRUE(has(r.code, "yyjson::field(\"limit\", yyjson::omit_default, yyjson::minimum(0))"));
+    EXPECT_TRUE(has(r.code, "    RootMode mode = RootMode::slow;\n"));
+    EXPECT_TRUE(has(r.code, "    std::vector<std::string> tags{\"a\"};\n"));
+    EXPECT_TRUE(has(r.code, "    std::variant<std::monostate, std::string> nullable{};\n"));
+    EXPECT_TRUE(has(r.code, "yyjson::field(\"nullable\", yyjson::omit_default)"));
+    EXPECT_TRUE(has(r.code, "// A field with a default holds it as its initializer and has `yyjson::omit_default`"));
+    // null for a type without null means "unset"
+    EXPECT_TRUE(has(r.code, "    std::optional<std::string> unset;\n"));
+    // a default that does not convert is a comment of a std::optional field
+    EXPECT_TRUE(has(r.code, "    // default: {\"x\":1}\n    std::optional<RootPoint> point;\n"));
+    EXPECT_EQ(warnings(r),
+              "#/properties/point: the default {\"x\":1} is not converted to the C++ type; the field is "
+              "std::optional\n");
+    // the default of a required key only initializes the member
+    EXPECT_TRUE(has(r.code, "    std::int64_t id = 3;\n"));
+    EXPECT_TRUE(has(r.code, "yyjson::field(\"id\", yyjson::required)"));
+
+    const auto o = generate(schema, {.optional_defaults = true});
+    EXPECT_TRUE(has(o.code, "    // default: -1\n    std::optional<std::int64_t> limit;\n"));
+    EXPECT_TRUE(has(o.code, "    // default: [\"a\"]\n    std::optional<std::vector<std::string>> tags;\n"));
+    EXPECT_TRUE(has(o.code, "    std::optional<std::string> unset;\n"));
+    EXPECT_TRUE(
+        has(o.code, "// A std::optional field with a `default:` comment is std::nullopt when the key is missing"));
+    EXPECT_FALSE(has(o.code, "omit_default"));
+    EXPECT_EQ(warnings(o), "");
 }
 
 TEST(Codegen, Cpp26)

@@ -32,10 +32,13 @@ namespace cpp_yyjson_codegen
 {
     struct options
     {
-        std::string ns{};         // namespace of the generated code; empty for the global namespace
-        bool cpp26 = false;       // C++26 annotations ([[=...]]) instead of yyjson::annotations<T>
-        bool strict = false;      // warnings are errors
-        bool pattern = true;      // emit yyjson::pattern (the program provides yyjson::pattern_matcher<>)
+        std::string ns{};     // namespace of the generated code; empty for the global namespace
+        bool cpp26 = false;   // C++26 annotations ([[=...]]) instead of yyjson::annotations<T>
+        bool strict = false;  // warnings are errors
+        bool pattern = true;  // emit yyjson::pattern (the program provides yyjson::pattern_matcher<>)
+        // a field with a default is std::optional<T>, std::nullopt for a missing key, instead of T with the default as
+        // its initializer and yyjson::omit_default
+        bool optional_defaults = false;
         std::string root_name{};  // name of the root type; default: the title, or "Root"
         std::string source{};     // name of the schema in the header comment
     };
@@ -591,8 +594,9 @@ namespace cpp_yyjson_codegen
             std::string member{}, key{};
             ctype type{};
             settings set{};
-            bool required = false, optional_key = false;
-            std::string init{};  // " = x" or "{...}"
+            bool required = false, omit_default = false;
+            std::string init{};          // " = x" or "{...}"
+            std::string default_note{};  // the default of a std::optional field, for a comment
             metadata meta{};
             std::string loc{};
         };
@@ -1210,20 +1214,38 @@ namespace cpp_yyjson_codegen
                         if (dflt == nullptr && target->is_object()) dflt = target->find("default");
                         if (dflt == nullptr && is_required(k) && target->is_object()) dflt = target->find("const");
                         auto f = field{.member = k, .key = k, .meta = meta_of(*own), .loc = floc};
-                        if (dflt != nullptr) f.init = init_for(ft.t, *dflt, floc);
                         f.set = std::move(ft.s);
                         if (is_required(k))
                         {
+                            // the default of a required key is never used by reading; it initializes the member
+                            if (dflt != nullptr) f.init = init_for(ft.t, *dflt, floc);
                             f.type = std::move(ft.t);
                             f.required = true;
                         }
-                        else if (!f.init.empty())
+                        else if (dflt == nullptr || (dflt->is_null() && !is_nullable(ft.t)))
                         {
+                            // no default, or `null` for a type without null, which authors write for "unset": the
+                            // missing key is std::nullopt
+                            f.type = make(tk::optional, {std::move(ft.t)});
+                        }
+                        else if (auto init = opts_.optional_defaults ? std::nullopt : init_value(ft.t, *dflt))
+                        {
+                            // a missing key means the default, which the member holds then; writing leaves the key
+                            // out while the member still holds it, so a default outside the constraints, such as
+                            // -1 for "no limit", is never written and read back
+                            f.init = std::move(*init);
                             f.type = std::move(ft.t);
-                            f.optional_key = true;
+                            f.omit_default = true;
                         }
                         else
+                        {
+                            // std::nullopt is the missing key, which the program reads as the default in the comment
+                            if (!opts_.optional_defaults)
+                                warn(floc, "the default " + dump(*dflt) +
+                                               " is not converted to the C++ type; the field is std::optional");
+                            f.default_note = dump(*dflt);
                             f.type = make(tk::optional, {std::move(ft.t)});
+                        }
                         fields.push_back(std::move(f));
                     }
                 }
@@ -2256,7 +2278,7 @@ namespace cpp_yyjson_codegen
                 f.type = make(tk::pointer, {std::move(t)});
                 if (!f.required) f.type = make(tk::optional, {std::move(f.type)});
                 f.init.clear();
-                f.optional_key = false;
+                f.omit_default = false;
             }
 
             // breaks cycles of structs held by value with std::unique_ptr; returns the structs in definition order
@@ -2449,7 +2471,7 @@ namespace cpp_yyjson_codegen
                 auto items = std::vector<std::string>();
                 if (f.member != f.key) items.push_back("yyjson::rename(" + cpp_string(f.key) + ")");
                 if (f.required) items.emplace_back("yyjson::required");
-                if (f.optional_key) items.emplace_back("yyjson::optional_key");
+                if (f.omit_default) items.emplace_back("yyjson::omit_default");
                 for (auto& s : render_settings(f.set, f.type)) items.push_back(std::move(s));
                 for (auto& s : render_metadata(f.meta)) items.push_back(std::move(s));
                 return items;
@@ -2548,6 +2570,7 @@ namespace cpp_yyjson_codegen
                     for (const auto& f : d.fields)
                     {
                         render_comment(body, f.meta, "    ");
+                        if (!f.default_note.empty()) body += "    // default: " + f.default_note + "\n";
                         const auto fi = field_items(f);
                         body += "    ";
                         if (opts_.cpp26 && !fi.empty()) body += attributes(fi) + " ";
@@ -2606,6 +2629,19 @@ namespace cpp_yyjson_codegen
                     out += "//\n// Warnings:\n";
                     for (const auto& w : warnings_) out += "//   " + w.location + ": " + w.message + "\n";
                 }
+                const auto any_field = [&](auto pred) {
+                    return std::ranges::any_of(decls_,
+                                               [&](const decl& d) { return std::ranges::any_of(d.fields, pred); });
+                };
+                if (any_field([](const field& f) { return f.omit_default; }))
+                    out +=
+                        "//\n// A field with a default holds it as its initializer and has `yyjson::omit_default`: a "
+                        "missing key\n// reads as the default, and writing leaves the key out while the field holds "
+                        "it.\n";
+                if (any_field([](const field& f) { return !f.default_note.empty(); }))
+                    out +=
+                        "//\n// A std::optional field with a `default:` comment is std::nullopt when the key is "
+                        "missing; the\n// program applies the default of the comment.\n";
                 if (uses_pattern_)
                     out +=
                         "//\n// `yyjson::pattern` needs a specialization of `yyjson::pattern_matcher<>` in the "

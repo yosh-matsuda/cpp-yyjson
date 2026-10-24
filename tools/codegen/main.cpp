@@ -19,6 +19,8 @@ Generates C++ types with cpp-yyjson annotations from a JSON Schema (2020-12).
   --root-name <name>    the name of the root type (default: its title, or Root)
   --cpp26               write C++26 annotations ([[=...]]) instead of yyjson::annotations<T>
   --no-pattern          drop `pattern` instead of emitting yyjson::pattern
+  --optional-defaults   make a field with a default std::optional, std::nullopt for a missing key, instead
+                        of holding the default and leaving it out when writing (yyjson::omit_default)
   --strict              treat warnings as errors
   -h, --help            show this help
 )";
@@ -59,6 +61,8 @@ int main(int argc, char** argv)
             opts.strict = true;
         else if (arg == "--no-pattern")
             opts.pattern = false;
+        else if (arg == "--optional-defaults")
+            opts.optional_defaults = true;
         else if (arg.starts_with("-") && arg != "-")
             return fail("unknown option " + std::string(arg) + "\n" + usage);
         else if (input.empty())
