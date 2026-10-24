@@ -328,6 +328,12 @@ template <> inline constexpr auto yyjson::annotations<Fixed> =
     yyjson::annotate(yyjson::field("a", yyjson::min_items(2), yyjson::max_items(5)),
                      yyjson::field("b", yyjson::min_items(3)));
 
+// An empty tuple, written as an empty object.
+struct Empty
+{
+    std::tuple<> t;
+};
+
 // Written only: a borrowed string is not read.
 struct Borrowed { std::string_view s = "x"; const char* p = "y"; };
 
@@ -925,6 +931,16 @@ TEST(Schema, Fixed)
         R"({"a":[1,2],"b":[1,2],"none":[],"bag":[]})",
         R"({"a":[1,2,3,4],"b":[1,2],"none":[],"bag":[]})",
         R"({"a":[1,2,3],"b":[1,2],"none":[1],"bag":[]})",
+    });
+}
+
+TEST(Schema, EmptyTuple)
+{
+    check<Empty>({
+        R"({"t":{}})",
+        {R"({"t":[]})", lenient},
+        R"({"t":{"a":1}})",
+        R"({"t":[1]})",
     });
 }
 

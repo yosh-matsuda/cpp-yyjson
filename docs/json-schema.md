@@ -90,6 +90,7 @@ The other way does not hold: `read<T>` accepts some JSON that the schema rejects
 *   `null` in a `std::optional` field. The schema gives the field the schema of the value type, and leaves the key out of `required`.
 *   An element repeated in a set. The schema has `uniqueItems`.
 *   A range of key-value pairs that is not a map, such as `std::vector<std::pair<std::string, int>>`, written as an array of pairs `[["k", 1]]`. The schema has the object form only. A map, such as `std::map`, does not read the array form.
+*   `std::tuple<>` read from `[]`. The schema has the empty object that `write` writes.
 *   A tuple of key-value pairs: the read checks the value of each key by the type of its position, while the schema checks every value by the schemas of all positions (`allOf` in the read schema, `anyOf` in the write schema).
 *   A [declared schema](#declared-schemas) that is narrower than what the type reads.
 *   An [example](#defaults-and-descriptions) written in one of these lenient forms is outside the read schema.
@@ -143,6 +144,7 @@ The [constraints](validation.md#constraints) are in both schemas. A plain `write
 | maps with enumeration keys | the same with `propertyNames`: the names, or an integer as text |
 | `std::tuple`, `std::pair` | `{"type": "array", "prefixItems": [...], "minItems": N, "items": false}` |
 | a tuple of key-value pairs | an object with `minProperties` and `maxProperties` of `N` |
+| `std::tuple<>` | `{"type": "object", "maxProperties": 0}`, as it is written |
 | `std::optional<T>` as a field | the schema of `T`, and the key is not required |
 | `std::optional<T>` elsewhere, `std::unique_ptr<T>`, `std::shared_ptr<T>` | `{"anyOf": [T, {"type": "null"}]}` |
 | `std::variant` | `anyOf` of the alternatives |

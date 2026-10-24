@@ -1015,7 +1015,15 @@ namespace yyjson
                                    std::index_sequence<Is...>)
         {
             const schema_node* n = nodes != nullptr ? &nodes[node] : nullptr;
-            if constexpr (sizeof...(Is) != 0 && (key_value_element<std::tuple_element_t<Is, T>> && ...))
+            if constexpr (sizeof...(Is) == 0)
+            {
+                // An empty tuple is a tuple of key-value pairs, too: it is written as an empty object, and read from
+                // an empty array as well.
+                out.emplace("type", "object");
+                out.emplace("maxProperties", 0);
+                return;
+            }
+            else if constexpr ((key_value_element<std::tuple_element_t<Is, T>> && ...))
             {
                 // An object of a member for each pair, in order.  JSON Schema cannot tie a member to its position, so
                 // each member read has to satisfy the schema of every value and key, and a member written one of them.
