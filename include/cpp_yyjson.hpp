@@ -1004,6 +1004,111 @@ namespace yyjson
         inline constexpr std::size_t dependency_count<dependent_required_t<N>> = N;
     }  // namespace detail
 
+    // Groups of fields of which an object must have all the keys of exactly one, or of at least one, as JSON
+    // Schema's `oneOf` or `anyOf` of `required`, which `yyjson::one_of_required` and `yyjson::any_of_required` make.
+    // The G groups name F members in all, those of group g up to `group_end[g]`.
+    template <bool ExactlyOne, std::size_t G, std::size_t F>
+    struct required_groups_t
+    {
+        std::array<const char*, F> member_data = {};
+        std::array<std::size_t, F> member_size = {};
+        std::array<std::size_t, G> group_end = {};
+
+        static constexpr bool exactly_one = ExactlyOne;
+        [[nodiscard]] static constexpr std::size_t groups() noexcept { return G; }
+        [[nodiscard]] static constexpr std::size_t members() noexcept { return F; }
+        [[nodiscard]] constexpr std::string_view member(std::size_t i) const noexcept
+        {
+            return {member_data[i], member_size[i]};
+        }
+    };
+
+    namespace detail
+    {
+        template <bool ExactlyOne, std::size_t... Ns>
+        consteval required_groups_t<ExactlyOne, sizeof...(Ns), (std::size_t{0} + ... + Ns)> make_required_groups(
+            const std::string_view (&... groups)[Ns])
+        {
+            // assigned for the reason that `yyjson::dependent_required` gives
+            auto result = required_groups_t<ExactlyOne, sizeof...(Ns), (std::size_t{0} + ... + Ns)>{};
+            std::size_t f = 0;
+            std::size_t g = 0;
+            (
+                [&](const auto& group) {
+                    for (const auto member : group)
+                    {
+                        result.member_data[f] = static_string(member);
+                        result.member_size[f] = member.size();
+                        ++f;
+                    }
+                    result.group_end[g++] = f;
+                }(groups),
+                ...);
+            return result;
+        }
+    }  // namespace detail
+
+    // `yyjson::annotations<T> = yyjson::annotate(yyjson::one_of_required({"env"}, {"value", "unit"}))` or
+    // `struct [[=yyjson::one_of_required({"env"}, {"value", "unit"})]] T`: an object read into the struct T must have
+    // all the keys of exactly one of the groups of members, here the key of `env`, or those of `value` and `unit`,
+    // but not both.  Members are named as in the struct, not by their keys.  Reading an object that has the keys
+    // of none of the groups, or of more than one, throws `yyjson::bad_cast`, except in `yyjson::merge_into`.
+    template <std::size_t... Ns>
+    consteval required_groups_t<true, sizeof...(Ns), (std::size_t{0} + ... + Ns)> one_of_required(
+        const std::string_view (&... groups)[Ns])
+    {
+        static_assert(sizeof...(Ns) != 0, "yyjson::one_of_required takes at least one group of members");
+        return detail::make_required_groups<true>(groups...);
+    }
+
+    // `yyjson::any_of_required({"email"}, {"phone"})`: the same as `yyjson::one_of_required`, except that the
+    // object may have the keys of more than one of the groups.
+    template <std::size_t... Ns>
+    consteval required_groups_t<false, sizeof...(Ns), (std::size_t{0} + ... + Ns)> any_of_required(
+        const std::string_view (&... groups)[Ns])
+    {
+        static_assert(sizeof...(Ns) != 0, "yyjson::any_of_required takes at least one group of members");
+        return detail::make_required_groups<false>(groups...);
+    }
+
+    namespace detail
+    {
+        template <typename A>
+        struct is_required_groups : std::false_type
+        {
+        };
+        template <bool ExactlyOne, std::size_t G, std::size_t F>
+        struct is_required_groups<required_groups_t<ExactlyOne, G, F>> : std::true_type
+        {
+        };
+        // The number of the groups and of the members in them that the annotations of a struct give by
+        // `yyjson::one_of_required` and `yyjson::any_of_required`.
+        struct required_group_size
+        {
+            std::size_t groups = 0;
+            std::size_t members = 0;
+
+            friend constexpr required_group_size operator+(required_group_size a, required_group_size b) noexcept
+            {
+                return {a.groups + b.groups, a.members + b.members};
+            }
+        };
+        template <typename A>
+        inline constexpr required_group_size required_group_count = {};
+        template <bool ExactlyOne, std::size_t G, std::size_t F>
+        inline constexpr required_group_size required_group_count<required_groups_t<ExactlyOne, G, F>> = {G, F};
+        // A group of fields of `yyjson::one_of_required` or `yyjson::any_of_required`: the fields in `fields[begin]`
+        // to `fields[end]` of the table, and the annotation `choice` that it belongs to, whose groups are next to
+        // each other.
+        struct required_group
+        {
+            std::size_t choice = 0;
+            bool exactly_one = false;
+            std::size_t begin = 0;
+            std::size_t end = 0;
+        };
+    }  // namespace detail
+
     namespace detail
     {
         // A number that bounds a field, kept as it was written: a signed or an unsigned integer, or a real.
@@ -2342,16 +2447,17 @@ namespace yyjson
         template <typename... As>
         inline constexpr bool annotate_settings =
             count_true<(is_field_annotation<As>::value || std::same_as<As, additional_properties<>> ||
-                        is_dependent_required<As>::value || internal_tag_annotation<As> || enum_annotation<As> ||
-                        type_metadata_setting<As>)...> == sizeof...(As);
+                        is_dependent_required<As>::value || is_required_groups<As>::value ||
+                        internal_tag_annotation<As> || enum_annotation<As> || type_metadata_setting<As>)...> ==
+            sizeof...(As);
     }  // namespace detail
 
     template <typename... As>
     consteval detail::annotation_list<As...> annotate(As... values)
     {
         static_assert(detail::annotate_settings<As...>,
-                      "yyjson::annotate takes yyjson::field(...), yyjson::additional_properties and "
-                      "yyjson::dependent_required for a struct, "
+                      "yyjson::annotate takes yyjson::field(...), yyjson::additional_properties, "
+                      "yyjson::dependent_required, yyjson::one_of_required and yyjson::any_of_required for a struct, "
                       "yyjson::internal_tag for a variant, yyjson::enumerator(...) and yyjson::enum_format for an "
                       "enumeration, yyjson::schema_name for a struct, an enumeration, a variant or a type with a "
                       "caster, and yyjson::title, "
@@ -2818,8 +2924,10 @@ namespace yyjson
 
         // `M` is the number of the nodes of the settings of the fields and of the values in them, those of field i
         // at index i, `V` the number of the values of `yyjson::const_` and `yyjson::enum_` in them, and
-        // `D` the number of the fields that `yyjson::dependent_required` requires.
-        template <std::size_t N, std::size_t M = N, std::size_t V = 0, std::size_t D = 0>
+        // `D` the number of the fields that `yyjson::dependent_required` requires, and `G` and `F` the number of the
+        // groups of `yyjson::one_of_required` and `yyjson::any_of_required` and of the fields in them.
+        template <std::size_t N, std::size_t M = N, std::size_t V = 0, std::size_t D = 0, std::size_t G = 0,
+                  std::size_t F = 0>
         struct field_key_table
         {
             std::array<std::string_view, N> keys;
@@ -2833,21 +2941,28 @@ namespace yyjson
             bool constrained = false;  // whether a field has a constraint
             // the fields {i, j} where the key of field i requires the key of field j by `yyjson::dependent_required`
             std::array<std::array<std::size_t, 2>, D> dependencies = {};
+            // the groups of `yyjson::one_of_required` and `yyjson::any_of_required`, and the fields in them
+            std::array<required_group, G> groups = {};
+            std::array<std::size_t, F> group_fields = {};
         };
 
         // Applies the settings of `yyjson::field` and of the annotations of the members to the keys of the fields,
         // and keeps the first error.  The functions are constexpr rather than consteval, so that the lambdas that
         // call them need not be immediate functions, which clang before 19 and MSVC do not make them.
-        template <std::size_t N, std::size_t M = N, std::size_t V = 0, std::size_t D = 0>
+        template <std::size_t N, std::size_t M = N, std::size_t V = 0, std::size_t D = 0, std::size_t G = 0,
+                  std::size_t F = 0>
         struct field_key_builder
         {
             std::array<std::string_view, N> members;
-            field_key_table<N, M, V, D> table;
+            field_key_table<N, M, V, D, G, F> table;
             bool visitable = false;
             std::array<bool, N> renamed = {};
             std::array<bool, N> tagged = {};
             std::array<std::uint8_t, N> described = {};  // the `metadata_bit` of the settings of each field
             std::size_t dependencies_added = 0;
+            std::size_t choices_added = 0;
+            std::size_t groups_added = 0;
+            std::size_t group_fields_added = 0;
             // where the search for the member of the next `yyjson::field` starts: after the previous one, so that
             // settings in the order of the members are found at once
             std::size_t next = 0;
@@ -2946,6 +3061,26 @@ namespace yyjson
                     table.dependencies[dependencies_added++] = {i, j};
                 }
             }
+            template <bool ExactlyOne, std::size_t K, std::size_t L>
+            constexpr void add_required_groups(const required_groups_t<ExactlyOne, K, L>& r)
+            {
+                std::size_t f = 0;
+                for (std::size_t g = 0; g < K; ++g)
+                {
+                    if (groups_added == G) return;
+                    auto& group = table.groups[groups_added++];
+                    group = {choices_added, ExactlyOne, group_fields_added, group_fields_added};
+                    for (; f < r.group_end[g]; ++f)
+                    {
+                        const auto i = member_index(r.member(f));
+                        if (i == N) return fail(field_key_error::unknown_member);
+                        if (group_fields_added == F) return;
+                        table.group_fields[group_fields_added++] = i;
+                    }
+                    group.end = group_fields_added;
+                }
+                ++choices_added;
+            }
             template <typename A>
             constexpr void apply_setting(std::size_t i, const A& a)
             {
@@ -2981,13 +3116,15 @@ namespace yyjson
                     set_additional(a);
                 else if constexpr (is_dependent_required<A>::value)
                     add_dependency(a);
+                else if constexpr (is_required_groups<A>::value)
+                    add_required_groups(a);
                 else if constexpr (!type_metadata_setting<A>)
                     fail(field_key_error::not_a_struct_setting);
             }
 
             // Duplicate keys are reported only when a key was given, so that a `VISITABLE_STRUCT` listing a
             // member twice still compiles as it did.  A skipped field has no key in JSON.
-            [[nodiscard]] constexpr field_key_table<N, M, V, D> result() const
+            [[nodiscard]] constexpr field_key_table<N, M, V, D, G, F> result() const
             {
                 auto result = table;
                 result.schemas.check();
@@ -3002,6 +3139,11 @@ namespace yyjson
                 for (const auto& [i, j] : result.dependencies)
                 {
                     if ((result.skipped[i] || result.skipped[j]) && result.error == field_key_error::none)
+                        result.error = field_key_error::dependency_skipped;
+                }
+                for (const auto i : result.group_fields)
+                {
+                    if (result.skipped[i] && result.error == field_key_error::none)
                         result.error = field_key_error::dependency_skipped;
                 }
                 if (result.error != field_key_error::none || std::ranges::find(renamed, true) == renamed.end())
@@ -3136,12 +3278,26 @@ namespace yyjson
             return (std::size_t{0} + ... + dependency_count<dependency_annotation_type<T, Ks>>);
         }(std::make_index_sequence<dependency_annotations<T>.size()>{});
 
-        // Whether the struct T is annotated with `yyjson::additional_properties` or `yyjson::dependent_required`.
+        // The annotations `yyjson::one_of_required` and `yyjson::any_of_required` of the struct T.
+        template <typename T>
+        inline constexpr std::span<const std::meta::info> required_group_annotations =
+            std::define_static_array(template_annotations_of<std::meta::dealias(^^T), ^^yyjson::required_groups_t>());
+        template <typename T, std::size_t K>
+        using required_group_annotation_type =
+            typename[:std::meta::remove_cvref(std::meta::type_of(required_group_annotations<T>[K])):];
+        template <typename T>
+        inline constexpr required_group_size annotated_required_group_count =
+            []<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                return (required_group_size{} + ... + required_group_count<required_group_annotation_type<T, Ks>>);
+            }(std::make_index_sequence<required_group_annotations<T>.size()>{});
+
+        // Whether the struct T is annotated with `yyjson::additional_properties`, `yyjson::dependent_required`,
+        // `yyjson::one_of_required` or `yyjson::any_of_required`.
         template <typename T>
         inline constexpr bool annotated_type = [] {
             if constexpr (std::is_class_v<T>)
                 return !field_reflection::type_annotations<T, additional_properties<>>.empty() ||
-                       !dependency_annotations<T>.empty();
+                       !dependency_annotations<T>.empty() || !required_group_annotations<T>.empty();
             else
                 return false;
         }();
@@ -3157,11 +3313,17 @@ namespace yyjson
                      std::meta::extract<dependency_annotation_type<T, Ks>>(dependency_annotations<T>[Ks])),
                  ...);
             }(std::make_index_sequence<dependency_annotations<T>.size()>{});
+            [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                (builder.add_required_groups(std::meta::extract<required_group_annotation_type<T, Ks>>(
+                     required_group_annotations<T>[Ks])),
+                 ...);
+            }(std::make_index_sequence<required_group_annotations<T>.size()>{});
         }
 
         // Applies the annotations of the fields of a reflected struct.
-        template <typename T, std::size_t N, std::size_t M, std::size_t V, std::size_t D>
-        constexpr void annotate_reflected_fields(field_key_builder<N, M, V, D>& builder)
+        template <typename T, std::size_t N, std::size_t M, std::size_t V, std::size_t D, std::size_t G,
+                  std::size_t F>
+        constexpr void annotate_reflected_fields(field_key_builder<N, M, V, D, G, F>& builder)
         {
             [&]<std::size_t... Is>(std::index_sequence<Is...>) {
                 (
@@ -3234,6 +3396,18 @@ namespace yyjson
 #endif
             return count;
         }();
+        // The number of the groups of `yyjson::one_of_required` and `yyjson::any_of_required` of T and of the
+        // fields in them.
+        template <typename T>
+        inline constexpr required_group_size type_required_group_count = [] {
+            auto count = []<typename... As>(std::type_identity<std::tuple<As...>>) {
+                return (required_group_size{} + ... + required_group_count<As>);
+            }(std::type_identity<annotation_values_of<T>>{});
+#if FIELD_RFL_ANNOTATIONS
+            if constexpr (std::is_class_v<T>) count = count + annotated_required_group_count<T>;
+#endif
+            return count;
+        }();
 
         template <typename T>
         struct reflected_field_names
@@ -3253,8 +3427,9 @@ namespace yyjson
             constexpr auto n = Source::members.size();
             constexpr auto reflected = std::same_as<Source, reflected_field_names<T>>;
             constexpr auto size = value_node_count<T>;
-            auto builder = field_key_builder<n, n + size.nodes, size.values, type_dependency_count<T>>{
-                Source::members, {Source::keys}, !reflected};
+            constexpr auto groups = type_required_group_count<T>;
+            auto builder = field_key_builder<n, n + size.nodes, size.values, type_dependency_count<T>, groups.groups,
+                                             groups.members>{Source::members, {Source::keys}, !reflected};
             for (std::size_t i = 0; i < n; ++i) builder.renamed[i] = Source::keys[i] != Source::members[i];
             for_each_annotation([&](const auto& a) { builder.apply_annotation(a); }, annotations<T>.values);
 #if FIELD_RFL_ANNOTATIONS
@@ -3276,7 +3451,8 @@ namespace yyjson
         {
             static constexpr auto table = make_field_key_table<T, Source>();
             static_assert(table.error != field_key_error::unknown_member,
-                          "yyjson::field or yyjson::dependent_required names a member that does not exist");
+                          "yyjson::field, yyjson::dependent_required, yyjson::one_of_required or "
+                          "yyjson::any_of_required names a member that does not exist");
             static_assert(table.error != field_key_error::renamed_twice,
                           "a field is renamed twice, by yyjson::annotations, by an annotation of the member or by a "
                           "(member, \"key\") pair of VISITABLE_STRUCT");
@@ -3324,7 +3500,8 @@ namespace yyjson
                           "yyjson::prefix_items in it, and up to 16 values of yyjson::const_ and "
                           "yyjson::enum_");
             static_assert(table.error != field_key_error::dependency_skipped,
-                          "yyjson::dependent_required names a member annotated with yyjson::skip, which has no key");
+                          "yyjson::dependent_required, yyjson::one_of_required or yyjson::any_of_required names a "
+                          "member annotated with yyjson::skip, which has no key");
             static constexpr auto value = table.keys;
         };
 
@@ -4651,21 +4828,25 @@ namespace yyjson
                 else
                     return additional_keys::unset;
             }();
+        private:
+            // The index among the fields that are read of the field i of all.
+            static constexpr std::size_t read_index(std::size_t i)
+            {
+                constexpr auto declared = []<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                    return std::array<std::size_t, n>{struct_declared_index<S, Ks>...};
+                }(std::make_index_sequence<n>{});
+                // an index loop, since MSVC does not subtract the iterators of `declared` in a constant expression
+                std::size_t k = 0;
+                while (k < n && declared[k] != i) ++k;
+                return k;
+            }
+
+        public:
             // The fields {k, j}, by their indices among the fields that are read, where the key of field k requires
             // the key of field j by `yyjson::dependent_required`.
             static constexpr auto dependencies = [] {
                 if constexpr (has_table)
                 {
-                    constexpr auto declared = []<std::size_t... Ks>(std::index_sequence<Ks...>) {
-                        return std::array<std::size_t, n>{struct_declared_index<S, Ks>...};
-                    }(std::make_index_sequence<n>{});
-                    // an index loop, since MSVC does not subtract the iterators of `declared` in a constant
-                    // expression
-                    const auto read_index = [&](std::size_t i) {
-                        std::size_t k = 0;
-                        while (k < n && declared[k] != i) ++k;
-                        return k;
-                    };
                     auto result = table().dependencies;
                     for (auto& d : result)
                     {
@@ -4677,9 +4858,36 @@ namespace yyjson
                 else
                     return std::array<std::array<std::size_t, 2>, 0>{};
             }();
+            // The groups of `yyjson::one_of_required` and `yyjson::any_of_required`, and the fields in them by their
+            // indices among the fields that are read.
+            static constexpr auto groups = [] {
+                if constexpr (has_table)
+                    return table().groups;
+                else
+                    return std::array<required_group, 0>{};
+            }();
+            static constexpr auto group_fields = [] {
+                if constexpr (has_table)
+                {
+                    auto result = table().group_fields;
+                    for (auto& i : result) i = read_index(i);
+                    return result;
+                }
+                else
+                    return std::array<std::size_t, 0>{};
+            }();
+            // Whether an object that has the keys of all the fields meets `yyjson::one_of_required`, which it does
+            // not when an annotation has more than one group.
+            static constexpr bool all_keys_allowed = [] {
+                for (std::size_t g = 0; g + 1 < groups.size(); ++g)
+                {
+                    if (groups[g].exactly_one && groups[g].choice == groups[g + 1].choice) return false;
+                }
+                return true;
+            }();
             static constexpr bool always = additional == additional_keys::denied ||
                                            std::ranges::find(required, true) != required.end() ||
-                                           !dependencies.empty();
+                                           !dependencies.empty() || !groups.empty();
             static_assert(
                 []<std::size_t... Ks>(std::index_sequence<Ks...>) {
                     return count_true<(required[Ks] && is_std_optional<struct_field_type<S, Ks>>::value)...> == 0;
@@ -4694,6 +4902,15 @@ namespace yyjson
             // a variant or an enumeration has `annotations<T>` too, but no fields
             if constexpr (visitable<T> || (reflectable<T> && annotated_fields<T>))
                 return struct_key_rules<T>::always;
+            else
+                return false;
+        }();
+        // Whether an object of the struct T that has the keys of all its fields in their order has its keys checked
+        // as well, which `yyjson::one_of_required` with more than one group needs.
+        template <typename T>
+        inline constexpr bool checks_all_keys = [] {
+            if constexpr (visitable<T> || (reflectable<T> && annotated_fields<T>))
+                return !struct_key_rules<T>::all_keys_allowed;
             else
                 return false;
         }();
@@ -4744,6 +4961,69 @@ namespace yyjson
         [[noreturn]] CPPYYJSON_COLD inline void throw_strict_null(cast_target at, std::string_view type)
         {
             throw_bad_cast_at(at, "{} is not constructible from null under yyjson::strict", type);
+        }
+
+        // The first group of the first annotation `yyjson::one_of_required` or `yyjson::any_of_required` of the
+        // struct T that an object does not meet, and the number of the groups of that annotation of which the
+        // object has all the keys, with `has(k)` whether the object has the key of the field k.  The first is
+        // `groups.size()` when the object meets them all.
+        template <typename T, typename Has>
+        constexpr std::pair<std::size_t, std::size_t> unmet_required_groups(const Has& has)
+        {
+            constexpr auto& groups = struct_key_rules<T>::groups;
+            constexpr auto& fields = struct_key_rules<T>::group_fields;
+            std::size_t g = 0;
+            while (g < groups.size())
+            {
+                const auto first = g;
+                std::size_t present = 0;
+                for (; g < groups.size() && groups[g].choice == groups[first].choice; ++g)
+                {
+                    auto all = true;
+                    for (auto f = groups[g].begin; f < groups[g].end && all; ++f) all = has(fields[f]);
+                    present += all ? 1 : 0;
+                }
+                if (present == 0 || (present > 1 && groups[first].exactly_one)) return {first, present};
+            }
+            return {groups.size(), 0};
+        }
+        template <typename T>
+        [[noreturn]] CPPYYJSON_NOINLINE CPPYYJSON_COLD void throw_unmet_required_groups(cast_target at,
+                                                                                         std::size_t first,
+                                                                                         std::size_t present)
+        {
+            using rules = struct_key_rules<T>;
+            auto text = std::string();
+            for (auto g = first; g < rules::groups.size() && rules::groups[g].choice == rules::groups[first].choice;
+                 ++g)
+            {
+                text += g == first ? "[" : ", [";
+                for (auto f = rules::groups[g].begin; f < rules::groups[g].end; ++f)
+                {
+                    if (f != rules::groups[g].begin) text += ", ";
+                    text += '"';
+                    text += rules::keys[rules::group_fields[f]];
+                    text += '"';
+                }
+                text += ']';
+            }
+            if (present == 0)
+                throw_bad_cast_at(at, "{} is not constructible from JSON without all the keys of one of {}",
+                                  type_name<T>(), text);
+            throw_bad_cast_at(at, "{} is not constructible from JSON with all the keys of more than one of {}",
+                              type_name<T>(), text);
+        }
+        // Throws if an object, of which `has(k)` tells whether it has the key of the field k, does not meet
+        // `yyjson::one_of_required` or `yyjson::any_of_required` of the struct T.
+        template <typename T, typename Has>
+        void check_required_groups(cast_target at, const Has& has)
+        {
+            if constexpr (!struct_key_rules<T>::groups.empty())
+            {
+                const auto [first, present] = unmet_required_groups<T>(has);
+                if (first != struct_key_rules<T>::groups.size()) [[unlikely]]
+                    throw_unmet_required_groups<T>(at, first, present);
+            }
         }
         [[noreturn]] CPPYYJSON_COLD inline void throw_repeated_element(cast_target at, std::string_view type)
         {
@@ -6849,7 +7129,16 @@ namespace yyjson
                     if (seen[k] && !seen[j])
                         throw_missing_dependency(target_of(obj), rules::keys[j], rules::keys[k], type_name<T>());
                 }
+                check_required_groups<T>(target_of(obj), [&](std::size_t i) { return seen[i]; });
             }
+        }
+
+        // Throws for an object that has the keys of all the fields of the struct T in their order, which
+        // `yyjson::one_of_required` of T does not let it when it has more than one group.
+        template <typename T, typename Val>
+        CPPYYJSON_NOINLINE CPPYYJSON_COLD void check_all_struct_keys(const Val* obj)
+        {
+            check_required_groups<T>(target_of(obj), [](std::size_t) { return true; });
         }
 
         // The `yyjson_val` or `yyjson_mut_val` of the object `obj` to pass to `check_irregular_struct_keys`.  Passing
@@ -6943,6 +7232,8 @@ namespace yyjson
                 });
             if (!in_order) [[unlikely]]
                 check_irregular_struct_keys<T, false, reflected_key_matcher<T>>(keys);
+            else if constexpr (checks_all_keys<T>)
+                check_all_struct_keys<T>(keys);
             if constexpr (has_adjacent_fields<T>) check_adjacent_tags_without_values(t, obj);
         }
 
@@ -6969,6 +7260,8 @@ namespace yyjson
                 });
             if (!in_order) [[unlikely]]
                 check_irregular_struct_keys<T, false, visit_struct<T>::key_matcher>(keys);
+            else if constexpr (checks_all_keys<T>)
+                check_all_struct_keys<T>(keys);
             if constexpr (has_adjacent_fields<T>) check_adjacent_tags_without_values(t, obj);
         }
 
@@ -12415,7 +12708,8 @@ namespace yyjson
                     return ((constrained_field<T, Ks> ||
                              (omittable<struct_field_type<T, Ks>> && strictly_required_field<T, Ks>)) ||
                             ...) ||
-                           !struct_key_rules<T>::dependencies.empty() || has_adjacent_fields<T>;
+                           !struct_key_rules<T>::dependencies.empty() || !struct_key_rules<T>::groups.empty() ||
+                           has_adjacent_fields<T>;
                 }(std::make_index_sequence<struct_field_count<T>>{});
             else
                 return false;
@@ -12649,7 +12943,8 @@ namespace yyjson
         }
 
         // Checks the fields of `s`, then its keys as `check_irregular_struct_keys` does: the keys that it
-        // requires, then those of `yyjson::dependent_required`, and last its adjacent tags.
+        // requires, then those of `yyjson::dependent_required`, `yyjson::one_of_required` and
+        // `yyjson::any_of_required`, and last its adjacent tags.
         template <typename S>
         void validate_struct(const S& s)
         {
@@ -12669,6 +12964,7 @@ namespace yyjson
             for (const auto& d : rules::dependencies)
                 if (written[d[0]] && !written[d[1]])
                     throw_missing_dependency(cast_target{}, rules::keys[d[1]], rules::keys[d[0]], type_name<S>());
+            check_required_groups<S>(cast_target{}, [&](std::size_t i) { return written[i]; });
             if constexpr (has_adjacent_fields<S>) check_adjacent_tags<S, bad_cast>(s);
         }
 
@@ -12735,7 +13031,8 @@ namespace yyjson
     // Checks the C++ value `t` as `yyjson::read<T>(text, yyjson::strict)` checks the text that `yyjson::write(t)`
     // writes, as far as the value decides it: the constraints of the fields and of the elements, keys and values
     // in them, the fields that `yyjson::required` or `yyjson::strict` requires but whose caster leaves them out,
-    // `yyjson::dependent_required`, and the fields that `yyjson::adjacent_tag` names but that do not name the
+    // `yyjson::dependent_required`, `yyjson::one_of_required`, `yyjson::any_of_required`, and the fields that
+    // `yyjson::adjacent_tag` names but that do not name the
     // alternative of the variant.  It throws `yyjson::bad_cast` with the message that the read gives, and `path()`
     // is the JSON Pointer to the value in the text; the value that a caster of the user converts is not looked into.
     template <writable T>
@@ -19933,6 +20230,12 @@ namespace yyjson
                 {
                     if (k < count && j >= count) fail();
                 }
+                if constexpr (!rules::groups.empty())
+                {
+                    if (yyjson::detail::unmet_required_groups<T>([&](std::size_t i) { return i < count; }).first !=
+                        rules::groups.size())
+                        fail();
+                }
             }
 
             // Checks the fields of the struct T after an object that has the keys of its fields from 0 to `count`
@@ -20060,6 +20363,12 @@ namespace yyjson
                     {
                         if (seen.test(k) && !seen.test(j)) fail();
                     }
+                    if constexpr (!rules::groups.empty())
+                    {
+                        if (yyjson::detail::unmet_required_groups<T>([&](std::size_t i) { return seen.test(i); })
+                                .first != rules::groups.size())
+                            fail();
+                    }
                 }
             }
 
@@ -20126,7 +20435,7 @@ namespace yyjson
                         if (yyjson::detail::checks_keys_always<T> || strict_)
                             check_fields_after_irregular<T, Merge>(seen, hint);
                     }
-                    else if (hint < n) [[unlikely]]
+                    else if (hint < n || yyjson::detail::checks_all_keys<T>) [[unlikely]]
                         check_fields_after_prefix<T, Merge>(hint);
                     return;
                 }
@@ -20231,7 +20540,7 @@ namespace yyjson
                 }(std::make_index_sequence<n>{});
                 if (next <= n)
                     read_fields_rest<T, Merge, Matcher>(open, indent, next, read_field);
-                else if (next != n + 1) [[unlikely]]
+                else if (next != n + 1 || yyjson::detail::checks_all_keys<T>) [[unlikely]]
                     check_fields_after_prefix<T, Merge>(2 * n + 1 - next);
             }
 

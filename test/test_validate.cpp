@@ -67,6 +67,14 @@ struct ValidateKeys
 template <>
 inline constexpr auto yyjson::annotations<ValidateKeys> =
     yyjson::annotate(yyjson::field("d", yyjson::optional_key), yyjson::dependent_required("a", {"b", "d"}));
+struct ValidateGroups
+{
+    std::optional<int> a;
+    ValidateMaybe<int> b;
+};
+template <>
+inline constexpr auto yyjson::annotations<ValidateGroups> =
+    yyjson::annotate(yyjson::one_of_required({"a"}, {"b"}), yyjson::field("b", yyjson::optional_key));
 struct ValidateRequired
 {
     ValidateMaybe<int> c;
@@ -268,6 +276,14 @@ TEST(Validate, Keys)
                    R"(ValidateKeys is not constructible from JSON with the key "a" without the key "d")", "");
     expect_invalid(std::vector<ValidateKeys>{{{}, {}, {true, 1}, {}}, {1, {}, {true, 1}, {true, 1}}},
                    R"(ValidateKeys is not constructible from JSON with the key "a" without the key "b")", "/1");
+    // the keys that the object has are the fields that are written
+    expect_valid(ValidateGroups{1, {}});
+    expect_valid(ValidateGroups{{}, {true, 1}});
+    expect_invalid(ValidateGroups{},
+                   R"(ValidateGroups is not constructible from JSON without all the keys of one of ["a"], ["b"])", "");
+    expect_invalid(
+        ValidateGroups{1, {true, 1}},
+        R"(ValidateGroups is not constructible from JSON with all the keys of more than one of ["a"], ["b"])", "");
 }
 
 TEST(Validate, AdjacentTag)

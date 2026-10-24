@@ -1548,6 +1548,26 @@ namespace yyjson
                     list.emplace_back(rules::keys[j]);
                 }
             }
+            if constexpr (!rules::groups.empty())
+            {
+                // `oneOf` or `anyOf` of the groups, in `allOf` when the struct has one already
+                for (std::size_t g = 0; g < rules::groups.size();)
+                {
+                    const auto first = g;
+                    const std::string_view keyword = rules::groups[first].exactly_one ? "oneOf" : "anyOf";
+                    auto branches = [&] {
+                        if (out.find(keyword) == out.end()) return out.emplace(keyword, empty_array);
+                        if (!adjacent) adjacent = out.emplace("allOf", empty_array);
+                        return adjacent->emplace_back(empty_object).emplace(keyword, empty_array);
+                    }();
+                    for (; g < rules::groups.size() && rules::groups[g].choice == rules::groups[first].choice; ++g)
+                    {
+                        auto keys = branches.emplace_back(empty_object).emplace("required", empty_array);
+                        for (auto f = rules::groups[g].begin; f < rules::groups[g].end; ++f)
+                            keys.emplace_back(rules::keys[rules::group_fields[f]]);
+                    }
+                }
+            }
             values_ = outer_values;
             const bool closed = writing() || rules::additional == additional::denied ||
                                 (strict() && rules::additional != additional::allowed);

@@ -112,6 +112,20 @@ inline constexpr auto yyjson::annotations<OmitD> =
     yyjson::annotate(yyjson::field("limit", yyjson::omit_default, yyjson::minimum(0)),
                      yyjson::field("name", yyjson::omit_default), yyjson::additional_properties(false));
 
+// groups of keys of which exactly one or at least one is in the object
+struct Groups
+{
+    std::optional<std::string> env;
+    std::optional<double> value;
+    std::optional<std::string> unit;
+    std::optional<std::string> email;
+    std::optional<std::string> phone;
+};
+template <>
+inline constexpr auto yyjson::annotations<Groups> =
+    yyjson::annotate(yyjson::one_of_required({"env"}, {"value", "unit"}), yyjson::field("unit", yyjson::rename("u")),
+                     yyjson::any_of_required({"email"}, {"phone"}), yyjson::any_of_required({"env"}, {"phone"}));
+
 
 struct TkC
 {
@@ -1029,6 +1043,24 @@ TEST(Schema, OmitDefault)
     for (const auto& s : {yyjson::json_schema<OmitD>(yyjson::strict),
                           yyjson::json_schema<OmitD>({.direction = yyjson::schema_direction::write})})
         EXPECT_EQ(to_jsoncons(s)["$defs"]["OmitD"]["required"], json::parse(R"(["a"])")) << s.write();
+}
+
+TEST(Schema, RequiredGroups)
+{
+    check<Groups>({
+        R"({"env":"e","email":"a"})",
+        R"({"value":1,"u":"m","phone":"p"})",
+        R"({"env":"e","phone":"p","email":"a"})",
+        R"({"value":1,"phone":"p"})",
+        R"({"env":"e","value":1,"u":"m","phone":"p"})",
+        R"({"env":"e"})",
+        R"({"value":1,"u":"m","email":"a"})",
+    });
+    const auto s = to_jsoncons(yyjson::json_schema<Groups>())["$defs"]["Groups"];
+    EXPECT_EQ(s["oneOf"], json::parse(R"([{"required":["env"]},{"required":["value","u"]}])"));
+    // the keyword that the struct already has goes into allOf
+    EXPECT_EQ(s["anyOf"], json::parse(R"([{"required":["email"]},{"required":["phone"]}])"));
+    EXPECT_EQ(s["allOf"], json::parse(R"([{"anyOf":[{"required":["env"]},{"required":["phone"]}]}])"));
 }
 
 TEST(Schema, VecOpt)

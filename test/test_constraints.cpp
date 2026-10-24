@@ -538,6 +538,38 @@ template <>
 inline constexpr auto yyjson::annotations<Billing> =
     yyjson::annotate(yyjson::dependent_required("card", {"address", "zip"}), yyjson::field("zip", yyjson::rename("postal")));
 
+// one_of_required names members, whose keys are renamed
+struct Measure
+{
+    std::string name;
+    std::optional<std::string> env;
+    std::optional<double> value;
+    std::optional<std::string> unit;
+};
+template <>
+inline constexpr auto yyjson::annotations<Measure> = yyjson::annotate(
+    yyjson::one_of_required({"env"}, {"value", "unit"}), yyjson::field("unit", yyjson::rename("u")));
+// any_of_required and one_of_required together
+struct Reachable
+{
+    std::optional<std::string> email;
+    std::optional<std::string> phone;
+    std::optional<std::string> fax;
+};
+template <>
+inline constexpr auto yyjson::annotations<Reachable> =
+    yyjson::annotate(yyjson::any_of_required({"email"}, {"phone"}), yyjson::one_of_required({"phone"}, {"fax"}));
+// an object of VISITABLE_STRUCT that has the keys of all the fields in their order
+struct ExclusiveVisitable
+{
+    int a = 0;
+    int b = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<ExclusiveVisitable> =
+    yyjson::annotate(yyjson::one_of_required({"a"}, {"b"}));
+VISITABLE_STRUCT(ExclusiveVisitable, a, b);
+
 // the nodes of the settings are counted from the types, and a struct without settings of the values in its fields
 // takes none
 static_assert(yyjson::detail::node_count<decltype(yyjson::items(yyjson::items(yyjson::minimum(0))))>.nodes == 2);
@@ -620,6 +652,21 @@ struct DependsTwice
 template <>
 inline constexpr auto yyjson::annotations<DependsTwice> =
     yyjson::annotate(yyjson::dependent_required("a", {"b"}), yyjson::dependent_required("b", {"a", "c"}));
+// one_of_required and any_of_required name members that are read
+struct GroupOfUnknown
+{
+    int a = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<GroupOfUnknown> = yyjson::annotate(yyjson::one_of_required({"a"}, {"b"}));
+struct GroupOfSkipped
+{
+    int a = 0;
+    int b = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<GroupOfSkipped> =
+    yyjson::annotate(yyjson::any_of_required({"a"}, {"b"}), yyjson::field("b", yyjson::skip));
 namespace compile_rules
 {
     using enum yyjson::detail::field_key_error;
@@ -644,6 +691,9 @@ namespace compile_rules
     static_assert(table_error<DependentUnknown> == unknown_member);
     static_assert(table_error<DependsOnSkipped> == dependency_skipped);
     static_assert(table_error<DependsTwice> == none);
+    static_assert(table_error<GroupOfUnknown> == unknown_member);
+    static_assert(table_error<GroupOfSkipped> == dependency_skipped);
+    static_assert(table_error<Reachable> == none);
 
     using namespace yyjson::detail;
     using string_map = std::map<std::string, int>;
@@ -715,6 +765,13 @@ struct [[= yyjson::dependent_required("card", {"address"})]] KeywordsAnnotated
     std::optional<std::string> card;
     std::optional<std::string> address;
     bool operator==(const KeywordsAnnotated&) const = default;
+};
+
+struct [[ = yyjson::one_of_required({"a"}, {"b"}), = yyjson::any_of_required({"a", "c"}, {"b"}) ]] GroupsAnnotated
+{
+    std::optional<int> a;
+    std::optional<int> b;
+    std::optional<int> c;
 };
 
 struct ConstrainedAnnotated
@@ -1630,6 +1687,80 @@ TEST(Constraints, DependentRequired)
     EXPECT_EQ(e.path(), "/1");
 }
 
+TEST(Constraints, RequiredGroups)
+{
+    const auto none_of = [](std::string_view type, std::string_view groups) {
+        return std::format("{} is not constructible from JSON without all the keys of one of {}", type, groups);
+    };
+    const auto many_of = [](std::string_view type, std::string_view groups) {
+        return std::format("{} is not constructible from JSON with all the keys of more than one of {}", type,
+                           groups);
+    };
+    // every read of `json`: accepted, or rejected at the object with `message`
+    const auto check = []<typename T>(std::type_identity<T>, const char* json, std::string_view message) {
+        const auto reads = std::array<std::function<void()>, 3>{
+            [&] { (void)yyjson::read<T>(json); }, [&] { (void)yyjson::read(json).template cast<T>(); },
+            [&] {
+                auto t = T();
+                yyjson::read_into(json, t);
+            }};
+        for (const auto& read : reads)
+        {
+            if (message.empty())
+                EXPECT_NO_THROW(read()) << json;
+            else
+            {
+                const auto e = bad_cast_of(read);
+                EXPECT_TRUE(message_of(e).starts_with(message)) << json << "\n" << e.what();
+                EXPECT_EQ(e.path(), "") << json;
+            }
+        }
+#if YYJSON_VERSION_HEX >= 0x000C00
+        EXPECT_EQ(read_directly<T>(json, yyjson::ReadFlag::NoFlag).has_value(), message.empty()) << json;
+#endif
+    };
+    constexpr auto measure = std::type_identity<Measure>{};
+    const auto measure_none = none_of("Measure", R"(["env"], ["value", "u"])");
+    const auto measure_many = many_of("Measure", R"(["env"], ["value", "u"])");
+    check(measure, R"({"name":"a","env":"e"})", "");
+    check(measure, R"({"name":"a","value":1,"u":"m"})", "");
+    check(measure, R"({"u":"m","value":1})", "");
+    check(measure, R"({"name":"a","value":1})", measure_none);
+    check(measure, R"({"name":"a"})", measure_none);
+    check(measure, R"({})", measure_none);
+    // the keys of all the fields in their order, and out of order
+    check(measure, R"({"name":"a","env":"e","value":1,"u":"m"})", measure_many);
+    check(measure, R"({"u":"m","env":"e","value":1})", measure_many);
+    // a key whose value is null is a key that the object has
+    check(measure, R"({"env":null})", "");
+
+    constexpr auto reachable = std::type_identity<Reachable>{};
+    check(reachable, R"({"email":"a","fax":"f"})", "");
+    check(reachable, R"({"phone":"p"})", "");
+    check(reachable, R"({"email":"a"})", none_of("Reachable", R"(["phone"], ["fax"])"));
+    check(reachable, R"({"fax":"f"})", none_of("Reachable", R"(["email"], ["phone"])"));
+    check(reachable, R"({"email":"a","phone":"p","fax":"f"})", many_of("Reachable", R"(["phone"], ["fax"])"));
+
+    constexpr auto visitable = std::type_identity<ExclusiveVisitable>{};
+    check(visitable, R"({"b":1})", "");
+    check(visitable, R"({"a":1,"b":2})", many_of("ExclusiveVisitable", R"(["a"], ["b"])"));
+    check(visitable, R"({"b":2,"a":1})", many_of("ExclusiveVisitable", R"(["a"], ["b"])"));
+    check(visitable, R"({})", none_of("ExclusiveVisitable", R"(["a"], ["b"])"));
+
+    // yyjson::strict reports a missing key of a field that is not optional first
+    const auto strict = bad_cast_of([] { (void)yyjson::read<Measure>(R"({"env":"e","value":1})", yyjson::strict); });
+    EXPECT_TRUE(message_of(strict).starts_with(R"(Measure is not constructible from JSON without the key "name")"))
+        << strict.what();
+    EXPECT_THROW((void)yyjson::read<Measure>(R"({"name":"a"})", yyjson::strict), yyjson::bad_cast);
+    // merge_into keeps the fields that the object leaves out
+    auto t = Measure{"a", "e"};
+    yyjson::merge_into(R"({"name":"b","value":1})", t);
+    EXPECT_EQ(t.name, "b");
+    // in a field
+    const auto e = bad_cast_of([] { (void)yyjson::read<std::vector<Measure>>(R"([{"env":"e"},{}])"); });
+    EXPECT_EQ(e.path(), "/1");
+}
+
 #if FIELD_RFL_ANNOTATIONS
 TEST(Constraints, Annotations)
 {
@@ -1672,6 +1803,16 @@ TEST(Constraints, Annotations)
         "/steps/0");
     EXPECT_NO_THROW((void)yyjson::read<KeywordsAnnotated>(R"({"card":"c","address":"a"})"));
     EXPECT_THROW((void)yyjson::read<KeywordsAnnotated>(R"({"card":"c"})"), yyjson::bad_cast);
+
+    EXPECT_NO_THROW((void)yyjson::read<GroupsAnnotated>(R"({"a":1,"c":1})"));
+    EXPECT_NO_THROW((void)yyjson::read<GroupsAnnotated>(R"({"b":1})"));
+    for (const auto& [json, message] :
+         {std::pair{R"({"a":1})", R"(without all the keys of one of ["a", "c"], ["b"])"},
+          std::pair{R"({"a":1,"b":1,"c":1})", R"(with all the keys of more than one of ["a"], ["b"])"}})
+    {
+        const auto e = bad_cast_of([&] { (void)yyjson::read<GroupsAnnotated>(json); });
+        EXPECT_EQ(message_of(e), std::format("GroupsAnnotated is not constructible from JSON {}", message));
+    }
 
     expect_accepted<ConstrainedAnnotated>(R"({"n":3,"s":"xy","even":4})", {3, "xy", 4});
     expect_rejected<ConstrainedAnnotated>(
