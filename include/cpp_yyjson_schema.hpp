@@ -160,6 +160,8 @@ namespace yyjson
             std::string_view description;
             bool deprecated = false;
             std::vector<std::string_view> examples;
+            // The schema that `yyjson::schema` declares, which is not metadata but is given in the same places.
+            std::optional<yyjson::schema> declared;
 
             template <typename A>
             void add(const A& a)
@@ -172,6 +174,13 @@ namespace yyjson
                     deprecated = true;
                 else if constexpr (yyjson::detail::is_examples<A>::value)
                     for (std::size_t i = 0; i < A::size(); ++i) examples.push_back(a.text(i));
+                else if constexpr (std::same_as<A, yyjson::schema>)
+                    declared = a;
+            }
+            // The declared schema of a direction, or null if it is derived.
+            [[nodiscard]] const yyjson::schema* declared_for(bool writing) const noexcept
+            {
+                return declared && declared->text_data(writing) != nullptr ? &*declared : nullptr;
             }
             [[nodiscard]] bool empty() const noexcept
             {
@@ -195,6 +204,7 @@ namespace yyjson
             for (const auto& a : field_reflection::detail::annotations_v<R, yyjson::title>) m.add(a);
             for (const auto& a : field_reflection::detail::annotations_v<R, yyjson::description>) m.add(a);
             for (const auto& a : field_reflection::detail::annotations_v<R, deprecated_t>) m.add(a);
+            for (const auto& a : field_reflection::detail::annotations_v<R, yyjson::schema>) m.add(a);
             [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
                 (m.add(std::meta::extract<examples_annotation_type<R, Ks>>(examples_annotations<R>[Ks])), ...);
             }(std::make_index_sequence<examples_annotations<R>.size()>{});
@@ -232,6 +242,8 @@ namespace yyjson
                 static_assert(field_reflection::detail::annotations_v<member, deprecated_t>.size() <= 1,
                               "a field is given yyjson::deprecated twice");
                 static_assert(examples_annotations<member>.size() <= 1, "a field is given yyjson::examples twice");
+                static_assert(field_reflection::detail::annotations_v<member, yyjson::schema>.size() <= 1,
+                              "a field is given yyjson::schema twice");
                 add_annotated_metadata<member>(m);
             }
 #endif
@@ -262,6 +274,36 @@ namespace yyjson
 #if FIELD_RFL_ANNOTATIONS
             if constexpr (!yyjson::detail::visitable<S>)
                 result = result || !examples_annotations<field_reflection::detail::member_at<S, R>>.empty();
+#endif
+            return result;
+        }
+
+        // Whether the field R of S has `yyjson::schema`.
+        template <typename S, std::size_t R>
+        consteval bool field_has_schema()
+        {
+            auto result = std::apply(
+                [](const auto&... as) {
+                    return (
+                        [&]<typename A>(const A& a) {
+                            if constexpr (yyjson::detail::is_field_annotation<A>::value)
+                                return a.member == yyjson::detail::declared_member_name<S, R> &&
+                                       std::apply(
+                                           []<typename... Vs>(const Vs&...) {
+                                               return (std::same_as<Vs, yyjson::schema> || ...);
+                                           },
+                                           a.values);
+                            else
+                                return false;
+                        }(as) ||
+                        ...);
+                },
+                annotations<S>.values);
+#if FIELD_RFL_ANNOTATIONS
+            if constexpr (!yyjson::detail::visitable<S>)
+                result = result || !field_reflection::detail::annotations_v<field_reflection::detail::member_at<S, R>,
+                                                                            yyjson::schema>
+                                        .empty();
 #endif
             return result;
         }
@@ -301,6 +343,7 @@ namespace yyjson
                           "a type is given yyjson::description twice");
             static_assert(type_setting_count<T, deprecated_t>() <= 1, "a type is given yyjson::deprecated twice");
             static_assert(type_examples_count<T>() <= 1, "a type is given yyjson::examples twice");
+            static_assert(type_setting_count<T, yyjson::schema>() <= 1, "a type is given yyjson::schema twice");
             auto m = metadata();
             std::apply(
                 [&](const auto&... as) {
@@ -384,10 +427,13 @@ namespace yyjson
             template <typename T>
             static void emit_definition(generator& g, object_ref out)
             {
-                if constexpr (std::is_enum_v<T>)
-                    g.emit_enum<T>(out);
-                else
-                    g.emit_struct<T>(out);
+                if (!g.emit_declared_type<T>(out))
+                {
+                    if constexpr (std::is_enum_v<T>)
+                        g.emit_enum<T>(out);
+                    else
+                        g.emit_struct<T>(out);
+                }
                 g.emit_type_metadata<T>(out);
             }
 
@@ -489,12 +535,62 @@ namespace yyjson
                         fail("read<T> cannot read");
                 }
             }
+            // Writes the schema that `yyjson::schema` declares for `of`, and returns whether it is `false`.
+            static bool emit_declared(object_ref out, std::string_view text, std::string_view of)
+            {
+                const auto fail = [&](std::string_view why) {
+                    throw std::invalid_argument(std::string("yyjson::schema of ").append(of).append(" has ")
+                                                    .append(text).append(", which ").append(why));
+                };
+                auto doc = std::optional<reader::value>();
+                try
+                {
+                    doc.emplace(yyjson::read(text));
+                }
+                catch (const std::exception& e)
+                {
+                    fail(std::string("is not JSON: ").append(e.what()));
+                }
+                if (const auto b = doc->as_bool())
+                {
+                    if (*b) return false;
+                    out.emplace("not", empty_object);
+                    return true;
+                }
+                const auto o = doc->as_object();
+                if (!o) fail("is neither an object nor a boolean");
+                // A key of `doc` is copied as a std::string: the reference to a value of a document does not copy it.
+                for (const auto& [k, v] : *o) out.emplace(std::string(k), v);
+                return false;
+            }
+            // Writes the schema that `yyjson::schema` declares for T in this direction, and returns whether there
+            // is one.
+            template <typename T>
+            bool emit_declared_type(object_ref out) const
+            {
+                if constexpr (type_setting_count<T, yyjson::schema>() != 0)
+                {
+                    if (const auto m = type_metadata<T>(); const auto* d = m.declared_for(writing()))
+                    {
+                        emit_declared(out, d->text(writing()), yyjson::detail::type_name<T>());
+                        return true;
+                    }
+                }
+                return false;
+            }
             template <typename T>
             void emit_type_metadata(object_ref out) const
             {
                 if (const auto m = type_metadata<T>(); !m.empty())
                     emit_metadata<T, type_examples_count<T>() != 0>(out, m, yyjson::detail::type_name<T>(),
                                                                     [](const T&) { return true; });
+            }
+            // The name of the field R of S in messages.
+            template <typename S, std::size_t R>
+            [[nodiscard]] static std::string member_of()
+            {
+                return std::string(yyjson::detail::type_name<S>()).append("::").append(
+                    yyjson::detail::declared_member_name<S, R>);
             }
             // Whether T is put in `$defs` and has its metadata there.
             template <typename T>
@@ -696,6 +792,13 @@ namespace yyjson
         template <typename T>
         void generator::emit(object_ref out, const schema_node* nodes, std::size_t node)
         {
+            if constexpr (std::same_as<T, std::remove_cvref_t<T>>)
+                if (!named<T>() && emit_declared_type<T>(out))
+                {
+                    // The declared schema replaces the derived one with the constraints of the field.
+                    emit_type_metadata<T>(out);
+                    return;
+                }
             const schema_node* n = nodes != nullptr ? &nodes[node] : nullptr;
             const auto constraints = [&] {
                 if (n != nullptr) emit_constraints(out, n->constraints);
@@ -746,13 +849,14 @@ namespace yyjson
         }
 
         // The constraints of a field hold for the C++ value that a user caster makes, and the caster's conversion
-        // is unknown, so they are not emitted for the JSON value on either side.
+        // is unknown, so they are not emitted for the JSON value on either side.  A type whose caster takes
+        // `yyjson::json_view` or an emitter gives only `{}` or its "type" here; `yyjson::schema` on the type or the
+        // field declares the rest, and `emit` takes it before coming here.
         template <typename T>
         void generator::emit_user_read(object_ref out)
         {
             if constexpr (yyjson::detail::from_json_translator<T>::castable)
                 emit<yyjson::detail::from_json_source<T>>(out, nullptr, 0);
-            // TODO: a schema that the type declares
         }
 
         template <typename T>
@@ -765,7 +869,6 @@ namespace yyjson
                     out.emplace("type", "object");
                 else if constexpr (std::same_as<ref, array_ref>)
                     out.emplace("type", "array");
-                // TODO: a schema that the type declares
             }
             else
             {
@@ -1060,9 +1163,14 @@ namespace yyjson
                         constexpr auto key = yyjson::detail::struct_field_key<S, Ks>;
                         constexpr auto node = yyjson::detail::struct_declared_index<S, Ks>;
                         const auto* field_nodes = yyjson::detail::constrained_field<S, Ks> ? nodes : nullptr;
+                        constexpr auto declared = yyjson::detail::struct_declared_index<S, Ks>;
+                        const auto m = field_metadata<S, declared>();
                         auto p = properties.emplace(key, empty_object);
+                        bool rejects = false;
                         if constexpr (yyjson::detail::adjacent_field<S, Ks>)
                         {
+                            static_assert(!field_has_schema<S, declared>(),
+                                          "yyjson::schema is not for a field with yyjson::adjacent_tag");
                             // The variant and its tag: one branch for each alternative.
                             using tags = yyjson::detail::struct_field_tags<S, Ks>;
                             if constexpr (yyjson::detail::writes_adjacent_tag<S, tags>)
@@ -1086,8 +1194,13 @@ namespace yyjson
                             // A field without a value is left out of the object, which is how the type declares
                             // that it may be absent.  Null is not part of the declaration, although a read without
                             // `yyjson::strict` takes it, unless the value type reads null itself.
-                            emit<typename F::value_type>(p, field_nodes, node);
+                            if (const auto* d = m.declared_for(writing()))
+                                rejects = emit_declared(p, d->text(writing()), member_of<S, declared>());
+                            else
+                                emit<typename F::value_type>(p, field_nodes, node);
                         }
+                        else if (const auto* d = m.declared_for(writing()))
+                            rejects = emit_declared(p, d->text(writing()), member_of<S, declared>());
                         else
                             emit<F>(p, field_nodes, node);
 
@@ -1108,22 +1221,21 @@ namespace yyjson
                                 else
                                     return false;
                             }();
-                            if (!writing() && !omitted && reads_back<S, Ks>(d)) p.emplace("default", d, copy_string);
+                            if (!writing() && !omitted && !rejects && reads_back<S, Ks>(d))
+                                p.emplace("default", d, copy_string);
                         }
-                        constexpr auto declared = yyjson::detail::struct_declared_index<S, Ks>;
-                        if (const auto m = field_metadata<S, declared>(); !m.empty())
+                        if (!m.empty())
                         {
                             using E = std::conditional_t<yyjson::detail::is_std_optional<F>::value &&
                                                              !yyjson::detail::adjacent_field<S, Ks>,
                                                          typename optional_value<F>::type, F>;
-                            const auto of = std::string(yyjson::detail::type_name<S>()).append("::").append(
-                                yyjson::detail::declared_member_name<S, declared>);
-                            emit_metadata<E, field_has_examples<S, declared>()>(p, m, of, [](const E& v) {
+                            const auto check = [](const E& v) {
                                 if constexpr (std::same_as<E, F>)
                                     return satisfies<S, Ks>(v);
                                 else
                                     return satisfies<S, Ks>(F(v));
-                            });
+                            };
+                            emit_metadata<E, field_has_examples<S, declared>()>(p, m, member_of<S, declared>(), check);
                         }
                     }(),
                     ...);
