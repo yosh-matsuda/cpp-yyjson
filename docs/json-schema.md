@@ -99,7 +99,7 @@ The other way does not hold: `read<T>` accepts some JSON that the schema rejects
 *   An element repeated in a set. The schema has `uniqueItems`.
 *   A range of key-value pairs that is not a map, such as `std::vector<std::pair<std::string, int>>`, written as an array of pairs `[["k", 1]]`. The schema has the object form only. A map, such as `std::map`, does not read the array form.
 *   `std::tuple<>` read from `[]`. The schema has the empty object that `write` writes.
-*   A tuple of key-value pairs: the read checks the value of each key by the type of its position, while the schema checks every value by the schemas of all positions (`allOf` in the read schema, `anyOf` in the write schema).
+*   A tuple of key-value pairs whose values have one type: the read checks the value of each key by the constraints of its position, while the read schema checks every value by those of all positions (`allOf`). The write schema takes any of them (`anyOf`).
 *   A [declared schema](#declared-schemas) that is narrower than what the type reads.
 *   An [example](#defaults-and-descriptions) written in one of these lenient forms is outside the read schema.
 
@@ -112,6 +112,7 @@ The guarantee has exceptions, where valid JSON is not read:
 *   [`yyjson::satisfies<f>`](validation.md#constraints) and the checks of a [caster](conversions.md#user-defined-casters), which the schema cannot express.
 *   A [declared schema](#declared-schemas), which the library does not check.
 *   The depth limit of [recursive types](conversions.md#recursive-types).
+*   A tuple of key-value pairs whose values differ in type, such as `std::tuple<std::pair<std::string, int>, std::pair<std::string, double>>`. No value has all the types, so the read schema checks every value by the schemas of any of the positions (`anyOf`), while the read checks the value of each key by the type of its position: `{"a": 2.5, "b": 1}` is valid and is not read.
 *   The keys of a map whose key type is an enumeration: the schema allows the names of the enumerators and any integer, while the read rejects an integer out of the range of the underlying type.
 
 JSON Schema treats `1.0` as an integer, as `read<int>` does.

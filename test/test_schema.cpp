@@ -433,6 +433,11 @@ namespace
         format_read = 4,
         format_strict = 8,
         format = format_read | format_strict,
+        // the schema describes a document that the library does not read, one of the exceptions that json-schema.md
+        // lists
+        loose_read = 16,
+        loose_strict = 32,
+        loose = loose_read | loose_strict,
     };
 
     struct doc
@@ -528,12 +533,14 @@ namespace
                 const auto accepted = reads<T>(d.json, strict);
                 const auto lenient_bit = strict ? lenient_strict : lenient_read;
                 const auto format_bit = strict ? format_strict : format_read;
+                const auto loose_bit = strict ? loose_strict : loose_read;
                 if (valid && !accepted)
-                    EXPECT_TRUE(d.diff & format_bit) << mode << ": valid, but not read: " << d.json;
+                    EXPECT_TRUE(d.diff & (loose_bit | format_bit)) << mode << ": valid, but not read: " << d.json;
                 else if (!valid && accepted)
                     EXPECT_TRUE(d.diff & (lenient_bit | format_bit)) << mode << ": read, but not valid: " << d.json;
                 else
-                    EXPECT_FALSE(d.diff & (lenient_bit | format_bit)) << mode << ": marked, but agree: " << d.json;
+                    EXPECT_FALSE(d.diff & (lenient_bit | format_bit | loose_bit))
+                        << mode << ": marked, but agree: " << d.json;
             }
             if (!(d.diff & format) && reads<T>(d.json, false))
             {
@@ -843,8 +850,8 @@ TEST(Schema, AdNF)
 TEST(Schema, TupKvMixed)
 {
     check<std::tuple<std::pair<std::string, int>, std::pair<std::string, double>>>({
-        {R"({"a":1,"b":2.5})", lenient},
-        R"({"a":2.5,"b":1})",
+        R"({"a":1,"b":2.5})",
+        {R"({"a":2.5,"b":1})", loose},
         R"({"a":1,"b":2})",
         R"({"a":1})",
         {R"([["a",1],["b",2.5]])", lenient},

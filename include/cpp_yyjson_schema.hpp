@@ -1148,35 +1148,38 @@ namespace yyjson
             else if constexpr ((key_value_element<std::tuple_element_t<Is, T>> && ...))
             {
                 // An object of a member for each pair, in order.  JSON Schema cannot tie a member to its position, so
-                // each member read has to satisfy the schema of every value and key, and a member written one of them.
+                // a member written satisfies the schema of one of the positions, and a member read has to satisfy
+                // those of all of them.  When the values differ in type, no value satisfies them all, and the read
+                // schema takes any of them instead, which accepts members that the read rejects.
                 // The node of the key or the value of the pair at position i, or 0 when it has no constraints.
                 const auto part = [&](std::size_t i, std::size_t k) -> std::size_t {
                     if (n == nullptr || i >= n->prefix_count) return 0;
                     const auto& pair = nodes[n->prefix + i];
                     return k < pair.prefix_count ? pair.prefix + k : 0;
                 };
+                using V0 = std::remove_cvref_t<std::tuple_element_t<1, std::tuple_element_t<0, T>>>;
+                constexpr bool same_values =
+                    (std::same_as<std::remove_cvref_t<std::tuple_element_t<1, std::tuple_element_t<Is, T>>>, V0> &&
+                     ...);
                 const bool keys_constrained = ((part(Is, 0) != 0) || ...);
                 const bool values_constrained = ((part(Is, 1) != 0) || ...);
-                const char* const combine = writing() ? "anyOf" : "allOf";
                 out.emplace("type", "object");
                 out.emplace("minProperties", sizeof...(Is));
                 out.emplace("maxProperties", sizeof...(Is));
                 if (keys_constrained)
                 {
-                    auto each = out.emplace("propertyNames", empty_object).emplace(combine, empty_array);
+                    auto each =
+                        out.emplace("propertyNames", empty_object).emplace(writing() ? "anyOf" : "allOf", empty_array);
                     (emit<std::string>(each.emplace_back(empty_object), part(Is, 0) != 0 ? nodes : nullptr,
                                        part(Is, 0)),
                      ...);
                 }
-                using V0 = std::remove_cvref_t<std::tuple_element_t<1, std::tuple_element_t<0, T>>>;
                 auto values = out.emplace("additionalProperties", empty_object);
-                if (!values_constrained &&
-                    (std::same_as<std::remove_cvref_t<std::tuple_element_t<1, std::tuple_element_t<Is, T>>>, V0> &&
-                     ...))
+                if (!values_constrained && same_values)
                     emit<V0>(values);
                 else
                 {
-                    auto each = values.emplace(combine, empty_array);
+                    auto each = values.emplace(writing() || !same_values ? "anyOf" : "allOf", empty_array);
                     (emit<std::tuple_element_t<1, std::tuple_element_t<Is, T>>>(
                          each.emplace_back(empty_object), part(Is, 1) != 0 ? nodes : nullptr, part(Is, 1)),
                      ...);
