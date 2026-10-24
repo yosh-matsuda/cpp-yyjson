@@ -38,11 +38,14 @@ namespace yyjson
         std::string_view ref_prefix = "#/$defs/";
     };
 
-    struct schema_collection_options
+    namespace schema_detail
     {
-        // The prefix of the references to named types, where the program puts `schemas()`.
-        std::string_view ref_prefix = "#/components/schemas/";
-    };
+        struct collection_options
+        {
+            // The prefix of the references to named types, where the program puts `result::schemas()`.
+            std::string_view ref_prefix = "#/components/schemas/";
+        };
+    }  // namespace schema_detail
 
     namespace schema_detail
     {
@@ -1525,16 +1528,24 @@ namespace yyjson
                 }
             }
             template <typename T>
-            [[nodiscard]] bool contains(bool writing) const noexcept
-            {
-                return find_root<T>(writing) != roots_.size();
-            }
-            template <typename T>
             void emit_root(object_ref out, bool writing)
             {
                 settle();
                 auto g = generator(*names_, writing, strict_);
                 generator::emit_root<T>(g, out);
+            }
+            // Calls `f(id, writing, schema)` with the schema of each root, where `id` tells its type.
+            template <typename F>
+            void emit_roots(F&& f)
+            {
+                settle();
+                for (const auto& r : roots_)
+                {
+                    auto doc = value(object());
+                    auto g = generator(*names_, r.writing, strict_);
+                    r.emit(g, *doc.as_object());
+                    f(r.id, r.writing, *std::move(doc).as_object());
+                }
             }
             // Writes the schemas of the named types into `defs`.
             void emit_definitions(object_ref defs)
@@ -1673,53 +1684,88 @@ namespace yyjson
     }
 
     // The schemas of several types, such as `components/schemas` of an OpenAPI 3.1 document, without `$schema`.  A
-    // struct or an enumeration has one name when its read and write schemas are the same, and otherwise the two
-    // names "Name-Input" and "Name-Output".
+    // named type has one name when its read and write schemas are the same, and otherwise the two names "Name-Input"
+    // and "Name-Output", so the names are settled by `build()`, when all the types are known.
     //
-    //     auto schemas = yyjson::schema_collection();
-    //     schemas.add<Order>().add<Receipt>(yyjson::schema_direction::write);
-    //     auto request = schemas.schema<Order>();  // {"$ref": "#/components/schemas/Order"}
-    //     auto components = schemas.schemas();
+    //     const auto schemas = yyjson::schema_collection(yyjson::strict)
+    //                              .add<Order>()
+    //                              .add<Receipt>(yyjson::schema_direction::write)
+    //                              .build();
+    //     const auto& request = schemas.schema<Order>();  // {"$ref": "#/components/schemas/Order"}
+    //     const auto& components = schemas.schemas();
     class schema_collection
     {
     public:
-        explicit schema_collection(const schema_collection_options& options = {}) : builder_(options.ref_prefix, false)
+        using options = schema_detail::collection_options;
+
+        // The schemas that `build()` generates.
+        class result
         {
-        }
+        public:
+            // The schema of T that `add<T>(direction)` added: a reference for a named type.
+            template <typename T>
+            [[nodiscard]] const object& schema(schema_direction direction = schema_direction::read) const
+            {
+                const auto writing = direction == schema_direction::write;
+                for (const auto& r : roots_)
+                    if (r.id == &schema_detail::type_identity_tag<T> && r.writing == writing) return r.schema;
+                throw std::logic_error(std::string("yyjson::schema_collection::result::schema of ")
+                                           .append(yyjson::detail::type_name<T>())
+                                           .append(" without add in the same direction"));
+            }
+            // The schemas of the named types, by their names.
+            [[nodiscard]] const object& schemas() const noexcept { return schemas_; }
+
+        private:
+            friend class schema_collection;
+            struct root
+            {
+                const void* id;
+                bool writing;
+                object schema;
+            };
+            std::vector<root> roots_;
+            object schemas_;
+
+            explicit result(object schemas) : schemas_(std::move(schemas)) {}
+        };
+
+        explicit schema_collection(const options& opts = {}) : builder_(opts.ref_prefix, false) {}
         // The read schemas are those of `read<T>` with `yyjson::strict`.
-        explicit schema_collection(strict_t, const schema_collection_options& options = {})
-            : builder_(options.ref_prefix, true)
-        {
-        }
+        explicit schema_collection(strict_t, const options& opts = {}) : builder_(opts.ref_prefix, true) {}
 
         template <typename T>
-        schema_collection& add(schema_direction direction = schema_direction::read)
+        schema_collection& add(schema_direction direction = schema_direction::read) &
         {
             builder_.add<T>(direction == schema_direction::write);
             return *this;
         }
-        // The schema of T that `add<T>(direction)` added: a reference for a struct or an enumeration.
         template <typename T>
-        [[nodiscard]] object schema(schema_direction direction = schema_direction::read)
+        schema_collection&& add(schema_direction direction = schema_direction::read) &&
         {
-            const auto writing = direction == schema_direction::write;
-            if (!builder_.contains<T>(writing))
-                throw std::logic_error(std::string("yyjson::schema_collection::schema of ")
-                                           .append(yyjson::detail::type_name<T>())
-                                           .append(" without add in the same direction"));
-            auto doc = value(object());
-            builder_.emit_root<T>(*doc.as_object(), writing);
-            return *std::move(doc).as_object();
+            return std::move(add<T>(direction));
         }
-        // The schemas of the structs and the enumerations, by their names.
-        [[nodiscard]] object schemas()
+
+        // Generates the schemas of the types added.  Throws `std::invalid_argument` as `json_schema<T>` does.
+        [[nodiscard]] result build() const&
         {
-            auto doc = value(object());
-            builder_.emit_definitions(*doc.as_object());
-            return *std::move(doc).as_object();
+            auto b = builder_;
+            return build(b);
         }
+        [[nodiscard]] result build() && { return build(builder_); }
 
     private:
         schema_detail::builder builder_;
+
+        static result build(schema_detail::builder& b)
+        {
+            auto defs = value(object());
+            b.emit_definitions(*defs.as_object());
+            auto r = result(*std::move(defs).as_object());
+            b.emit_roots([&](const void* id, bool writing, object schema) {
+                r.roots_.push_back({id, writing, std::move(schema)});
+            });
+            return r;
+        }
     };
 }  // namespace yyjson

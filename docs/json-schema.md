@@ -262,22 +262,27 @@ inline constexpr auto yyjson::annotations<Tree> =
 `yyjson::schema_collection` collects the schemas of several types, such as the request and response bodies of an [OpenAPI 3.1](https://spec.openapis.org/oas/v3.1.0) document, whose `components/schemas` is a map of JSON Schemas by name.
 
 ```cpp
-auto collection = yyjson::schema_collection();
-collection.add<Order>().add<Receipt>(yyjson::schema_direction::write);
-auto request = collection.schema<Order>();  // {"$ref": "#/components/schemas/Order"}
-auto response = collection.schema<Receipt>(yyjson::schema_direction::write);
-auto components = collection.schemas();  // the value of components/schemas
+const auto schemas = yyjson::schema_collection(yyjson::strict)
+                         .add<Order>()
+                         .add<Receipt>(yyjson::schema_direction::write)
+                         .build();
+const auto& request = schemas.schema<Order>();  // {"$ref": "#/components/schemas/Order"}
+const auto& response = schemas.schema<Receipt>(yyjson::schema_direction::write);
+const auto& components = schemas.schemas();  // the value of components/schemas
 ```
 
 *   `add<T>(direction)` adds `T` and the types in it in a direction, read by default. It returns the collection, so calls chain.
-*   `schema<T>(direction)` returns the schema to put in an operation: `$ref` for a named type, the schema itself for another type. It throws `std::logic_error` when `T` was not added in that direction.
-*   `schemas()` returns the schemas of the named types by name, without `$schema`.
+*   `build()` generates the schemas of all the types added so far and returns them as a `schema_collection::result`. The names are settled at this point, because a type added later can change them; a result keeps the names that it was built with, and the collection can take more types and build again.
+*   `result::schema<T>(direction)` returns the schema to put in an operation: `$ref` for a named type, the schema itself for another type. It throws `std::logic_error` when `T` was not added in that direction.
+*   `result::schemas()` returns the schemas of the named types by name, without `$schema`.
 *   A type has one name, unless the added types use it in both directions and its read and write schemas differ; it then has two, `Name-Input` and `Name-Output`. Without `yyjson::strict` most structs differ in this way, since the read schema has fewer required keys and allows unknown keys; `yyjson::schema_collection(yyjson::strict)` makes the read schemas those of strict reading, and the structs then often share one name.
-*   Two types with the same name throw `std::invalid_argument` from `schemas()` and `schema<T>()`.
+*   Two types with the same name throw `std::invalid_argument` from `build()`.
+
+The results are DOM objects, so the program puts them into a larger document, such as the OpenAPI document, and writes the text with `write()`.
 
 ## Options
 
-`json_schema<T>` takes a `yyjson::schema_options`, and `schema_collection` a `yyjson::schema_collection_options`:
+`json_schema<T>` takes a `yyjson::schema_options`, and `schema_collection` a `yyjson::schema_collection::options`:
 
 ```cpp
 enum class schema_direction { read, write };
@@ -289,7 +294,7 @@ struct schema_options
     std::string_view ref_prefix = "#/$defs/";  // the prefix of $ref to named types
 };
 
-struct schema_collection_options
+struct schema_collection::options
 {
     std::string_view ref_prefix = "#/components/schemas/";
 };
@@ -309,9 +314,6 @@ Where a validator accepts what the library rejects, valid JSON is not read, one 
 
 ## Errors
 
-`json_schema<T>` and the functions of `schema_collection` throw:
-
-*   `std::invalid_argument` for two types with the same [name](#names-of-types), an [example](#defaults-and-descriptions) that does not read or breaks the constraints, and a [declared schema](#declared-schemas) that is not a JSON object or a boolean;
-*   `std::logic_error` from `schema_collection::schema<T>` for a type that was not added in the direction.
+`json_schema<T>` and `schema_collection::build()` throw `std::invalid_argument` for two types with the same [name](#names-of-types), an [example](#defaults-and-descriptions) that does not read or breaks the constraints, and a [declared schema](#declared-schemas) that is not a JSON object or a boolean. `schema_collection::result::schema<T>` throws `std::logic_error` for a type that was not added in the direction.
 
 A type that `read<T>` or `write` cannot convert fails to compile, as for those functions.

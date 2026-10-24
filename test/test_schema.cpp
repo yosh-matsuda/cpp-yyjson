@@ -969,22 +969,27 @@ TEST(Schema, St)
 // that it knows, such as `$defs`).
 TEST(Schema, Collection)
 {
-    auto names = [](yyjson::schema_collection& c) {
-        const auto schemas = to_jsoncons(c.schemas());
+    auto names = [](const yyjson::schema_collection::result& r) {
+        const auto schemas = to_jsoncons(r.schemas());
         std::vector<std::string> v;
         for (const auto& m : schemas.object_range()) v.emplace_back(m.key());
         return v;
     };
     using enum yyjson::schema_direction;
 
+    // A result keeps the names settled when it was built.
     auto lax = yyjson::schema_collection();
-    lax.add<Order>().add<Order>(write);
-    EXPECT_EQ(names(lax), (std::vector<std::string>{"Order-Input", "Order-Output"}));
-    EXPECT_EQ(lax.schema<Order>().write(), R"({"$ref":"#/components/schemas/Order-Input"})");
-    EXPECT_EQ(lax.schema<Order>(write).write(), R"({"$ref":"#/components/schemas/Order-Output"})");
+    const auto first = lax.add<Order>().build();
+    const auto second = lax.add<Order>(write).build();
+    EXPECT_EQ(names(first), (std::vector<std::string>{"Order"}));
+    EXPECT_EQ(first.schema<Order>().write(), R"({"$ref":"#/components/schemas/Order"})");
+    EXPECT_THROW((void)first.schema<Order>(write), std::logic_error);
+    EXPECT_EQ(names(second), (std::vector<std::string>{"Order-Input", "Order-Output"}));
+    EXPECT_EQ(second.schema<Order>().write(), R"({"$ref":"#/components/schemas/Order-Input"})");
+    EXPECT_EQ(second.schema<Order>(write).write(), R"({"$ref":"#/components/schemas/Order-Output"})");
 
-    auto strict = yyjson::schema_collection(yyjson::strict, {.ref_prefix = "#/$defs/"});
-    strict.add<Receipt>().add<Receipt>(write);
+    const auto strict =
+        yyjson::schema_collection(yyjson::strict, {.ref_prefix = "#/$defs/"}).add<Receipt>().add<Receipt>(write).build();
     EXPECT_EQ(names(strict), (std::vector<std::string>{"Order", "Receipt-Input", "Receipt-Output"}));
     EXPECT_THROW((void)strict.schema<Same1>(), std::logic_error);
 
@@ -1125,7 +1130,7 @@ TEST(Schema, WriteOnly)
 TEST(Schema, Errors)
 {
     EXPECT_THROW((void)yyjson::json_schema<BothSame>(), std::invalid_argument);
-    EXPECT_THROW((void)yyjson::schema_collection().add<Same1>().add<Same2>().schemas(), std::invalid_argument);
+    EXPECT_THROW((void)yyjson::schema_collection().add<Same1>().add<Same2>().build(), std::invalid_argument);
     EXPECT_THROW((void)yyjson::json_schema<BadExample>(), std::invalid_argument);
     EXPECT_THROW((void)yyjson::json_schema<BadText>(), std::invalid_argument);
     EXPECT_THROW((void)yyjson::json_schema<UTree>(), std::invalid_argument);

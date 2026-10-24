@@ -40,7 +40,7 @@ This page lists the functions, classes and other entities of cpp-yyjson, grouped
     *   [`yyjson::WriteFlag`](#yyjsonwriteflag)
     *   [Flags of `yyjson::read<T>`](#flags-of-yyjsonreadt)
     *   [`yyjson::strict`](#yyjsonstrict)
-    *   [`yyjson::schema_options`, `yyjson::schema_collection_options`](#yyjsonschema_options-yyjsonschema_collection_options)
+    *   [`yyjson::schema_options`, `yyjson::schema_collection::options`](#yyjsonschema_options-yyjsonschema_collectionoptions)
 *   [Annotations](#annotations)
     *   [`yyjson::annotations<T>`, `yyjson::annotate`](#yyjsonannotationst-yyjsonannotate)
     *   [`yyjson::field`](#yyjsonfield)
@@ -421,7 +421,7 @@ template <typename T>
 yyjson::object json_schema(yyjson::strict_t, const schema_options& options = {});
 ```
 
-The first form gives the schema of what `yyjson::read<T>` reads, or with [`schema_direction::write`](#yyjsonschema_options-yyjsonschema_collection_options) of what `yyjson::write` writes. The second form gives the schema of what `read<T>(json, yyjson::strict)` reads; the write schema is the same in both forms. The result has `$schema`, `$id` when [`schema_options`](#yyjsonschema_options-yyjsonschema_collection_options) gives one, the [named types](json-schema.md#names-of-types) in `$defs`, and the schema of `T`, which is a `$ref` for a named type.
+The first form gives the schema of what `yyjson::read<T>` reads, or with [`schema_direction::write`](#yyjsonschema_options-yyjsonschema_collectionoptions) of what `yyjson::write` writes. The second form gives the schema of what `read<T>(json, yyjson::strict)` reads; the write schema is the same in both forms. The result has `$schema`, `$id` when [`schema_options`](#yyjsonschema_options-yyjsonschema_collectionoptions) gives one, the [named types](json-schema.md#names-of-types) in `$defs`, and the schema of `T`, which is a `$ref` for a named type.
 
 JSON that is valid against the schema is read by `read<T>` with the same strictness, with the exceptions listed in [What the schema guarantees](json-schema.md#what-the-schema-guarantees).
 
@@ -448,28 +448,42 @@ Collects the JSON Schemas of several types by name, as `components/schemas` of a
 class schema_collection
 {
 public:
-    explicit schema_collection(const schema_collection_options& options = {});
-    explicit schema_collection(yyjson::strict_t, const schema_collection_options& options = {});
+    struct options;
+
+    class result
+    {
+    public:
+        template <typename T>
+        const yyjson::object& schema(schema_direction direction = schema_direction::read) const;
+        const yyjson::object& schemas() const noexcept;
+    };
+
+    explicit schema_collection(const options& opts = {});
+    explicit schema_collection(yyjson::strict_t, const options& opts = {});
 
     template <typename T>
-    schema_collection& add(schema_direction direction = schema_direction::read);
+    schema_collection& add(schema_direction direction = schema_direction::read) &;
     template <typename T>
-    yyjson::object schema(schema_direction direction = schema_direction::read);
-    yyjson::object schemas();
+    schema_collection&& add(schema_direction direction = schema_direction::read) &&;
+
+    result build() const&;
+    result build() &&;
 };
 ```
 
-*   With `yyjson::strict`, the read schemas are those of strict reading.
+*   [`options`](#yyjsonschema_options-yyjsonschema_collectionoptions) gives the prefix of the references. With `yyjson::strict`, the read schemas are those of strict reading.
 *   `add<T>` adds `T` and the types in it, in one direction, and returns `*this`.
-*   `schema<T>` returns the schema of `T` to use in a document, a `$ref` for a named type. It throws `std::logic_error` when `T` was not added in the direction.
-*   `schemas()` returns the schemas of the named types by name, without `$schema`. A type that the added types use in both directions, and whose read and write schemas differ, has the two names `Name-Input` and `Name-Output`.
-*   `schema<T>` and `schemas()` throw `std::invalid_argument` as `json_schema<T>` does.
+*   `build()` generates the schemas of the types added so far. The names are settled here: a type that the added types use in both directions, and whose read and write schemas differ, has the two names `Name-Input` and `Name-Output`. A result keeps its names when more types are added and built later. `build()` throws `std::invalid_argument` as `json_schema<T>` does.
+*   `result::schema<T>` returns the schema of `T` to use in a document, a `$ref` for a named type. It throws `std::logic_error` when `T` was not added in the direction.
+*   `result::schemas()` returns the schemas of the named types by name, without `$schema`.
 
 ```cpp
-auto collection = yyjson::schema_collection();
-collection.add<Order>().add<Receipt>(yyjson::schema_direction::write);
-auto request = collection.schema<Order>();  // {"$ref":"#/components/schemas/Order"}
-auto components = collection.schemas();     // {"Order":{...},"Receipt":{...}}
+const auto schemas = yyjson::schema_collection(yyjson::strict)
+                         .add<Order>()
+                         .add<Receipt>(yyjson::schema_direction::write)
+                         .build();
+const auto& request = schemas.schema<Order>();  // {"$ref":"#/components/schemas/Order"}
+const auto& components = schemas.schemas();     // {"Order":{...},"Receipt":{...}}
 ```
 
 See [Several types and OpenAPI](json-schema.md#several-types-and-openapi).
@@ -1506,7 +1520,7 @@ catch (const yyjson::bad_cast& e)
 }
 ```
 
-### `yyjson::schema_options`, `yyjson::schema_collection_options`
+### `yyjson::schema_options`, `yyjson::schema_collection::options`
 
 The options of [`yyjson::json_schema<T>`](#yyjsonjson_schemat) and [`yyjson::schema_collection`](#yyjsonschema_collection), in `cpp_yyjson_schema.hpp`.
 
@@ -1524,7 +1538,7 @@ struct schema_options
     std::string_view ref_prefix = "#/$defs/";
 };
 
-struct schema_collection_options
+struct schema_collection::options
 {
     std::string_view ref_prefix = "#/components/schemas/";
 };
@@ -1532,7 +1546,7 @@ struct schema_collection_options
 
 *   `direction` chooses the schema of `read<T>` or of `write`.
 *   `id` is the value of `$id`; the schema has no `$id` when it is empty.
-*   `ref_prefix` is the beginning of each `$ref` to a named type, followed by its name. `json_schema<T>` always puts their schemas in `$defs`; change the prefix when the program moves them elsewhere. `schema_collection` refers to the place where the program puts `schemas()`.
+*   `ref_prefix` is the beginning of each `$ref` to a named type, followed by its name. `json_schema<T>` always puts their schemas in `$defs`; change the prefix when the program moves them elsewhere. `schema_collection` refers to the place where the program puts `result::schemas()`.
 
 ```cpp
 auto schema = yyjson::json_schema<Point>(
@@ -2001,7 +2015,7 @@ struct schema_name
 
 *   The name has the characters `[A-Za-z0-9._-]` only, and is not empty; another name is a compile error. On another type it is a compile error in `json_schema<T>`. A variant takes it in `annotations<V>`, since a `std::variant` has no declaration to annotate.
 *   Without it, the name of a struct or an enumeration comes from the qualified name of the type, which differs between compilers for some types. A variant without it is written in place, and needs it when it refers to itself through an alternative that `yyjson::internal_tag` tags.
-*   Two types with the same name throw `std::invalid_argument` from `json_schema<T>` and `schema_collection`.
+*   Two types with the same name throw `std::invalid_argument` from `json_schema<T>` and `schema_collection::build()`.
 *   It does not change how a value is read or written.
 
 ```cpp
