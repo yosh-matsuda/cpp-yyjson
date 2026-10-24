@@ -698,9 +698,9 @@ namespace yyjson
                 {
                     auto rest = *c;
                     if (bounded && rest.has<yyjson::minimum>() && !tighter(rest.minimum, L::lowest(), true))
-                        rest.set &= static_cast<std::uint16_t>(~yyjson::detail::constraint_bit<yyjson::minimum>);
+                        rest.set &= ~yyjson::detail::constraint_bit<yyjson::minimum>;
                     if (bounded && rest.has<yyjson::maximum>() && !tighter(rest.maximum, L::max(), false))
-                        rest.set &= static_cast<std::uint16_t>(~yyjson::detail::constraint_bit<yyjson::maximum>);
+                        rest.set &= ~yyjson::detail::constraint_bit<yyjson::maximum>;
                     emit_constraints(out, rest);
                 }
             }

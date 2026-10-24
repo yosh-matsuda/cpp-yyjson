@@ -301,6 +301,11 @@ struct BadText { int n; };
 template <> inline constexpr auto yyjson::annotations<BadText> =
     yyjson::annotate(yyjson::field("n", yyjson::schema(R"({"type":)")));
 
+// A bound wider than the type gives way to the type's, and the other bound stays.
+struct Narrow { std::int8_t x = 0; };
+template <> inline constexpr auto yyjson::annotations<Narrow> =
+    yyjson::annotate(yyjson::field("x", yyjson::minimum(0), yyjson::maximum(1000)));
+
 // Written only: a borrowed string is not read.
 struct Borrowed { std::string_view s = "x"; const char* p = "y"; };
 
@@ -859,6 +864,16 @@ TEST(Schema, Collection)
         EXPECT_FALSE(validator.is_valid(json::parse(R"({"order":{"id":1},"at":2})")));
         EXPECT_EQ(validator.is_valid(json::parse(R"({"order":{"id":1,"item":"a"},"at":-1})")), direction == read);
     }
+}
+
+TEST(Schema, Narrow)
+{
+    check<Narrow>({
+        R"({"x":0})",
+        R"({"x":-1})",
+        R"({"x":127})",
+        R"({"x":128})",
+    });
 }
 
 TEST(Schema, WriteOnly)
