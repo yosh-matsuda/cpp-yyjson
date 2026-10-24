@@ -1191,7 +1191,7 @@ namespace yyjson
                     using A = std::variant_alternative_t<Is, F>;
                     auto branch = one.emplace_back(empty_object);
                     auto bp = branch.emplace("properties", empty_object);
-                    if constexpr (std::same_as<A, std::monostate>)
+                    if constexpr (Is == Tags::monostate)
                     {
                         bp.emplace(key, empty_object).emplace("type", "null");
                         branch.emplace("required", empty_array).emplace_back(key);
@@ -1208,8 +1208,7 @@ namespace yyjson
                 }(),
                 ...);
             if (writing() || !held) return;
-            constexpr auto monostate = std::array{std::same_as<std::variant_alternative_t<Is, F>, std::monostate>...};
-            if (!monostate[*held])
+            if (*held != Tags::monostate)
             {
                 auto branch = one.emplace_back(empty_object);
                 branch.emplace("properties", empty_object)

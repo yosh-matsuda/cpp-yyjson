@@ -183,6 +183,20 @@ struct AdF
 };
 template <> inline constexpr auto yyjson::annotations<AdF> =
     yyjson::annotate(yyjson::field("data", yyjson::adjacent_tag("kind", {"circle", "rect"})));
+// std::monostate named by the tag, which a field of the tag needs
+struct AdN
+{
+    std::variant<std::monostate, Circle> data;
+};
+template <> inline constexpr auto yyjson::annotations<AdN> =
+    yyjson::annotate(yyjson::field("data", yyjson::adjacent_tag("kind", {"none", "circle"})));
+struct AdNF
+{
+    std::string kind = "none";
+    std::variant<std::monostate, Circle> data;
+};
+template <> inline constexpr auto yyjson::annotations<AdNF> =
+    yyjson::annotate(yyjson::field("data", yyjson::adjacent_tag("kind", {"none", "circle"})));
 struct Celsius { double v; };
 template <> struct yyjson::caster<Celsius> {
     static Celsius from_json(double d) { return {d}; }
@@ -765,6 +779,36 @@ TEST(Schema, AdF)
         R"({"kind":null})",
         R"({"extra":1})",
         R"({"kind":"rect","data":{"w":1,"h":2},"extra":1})",
+    });
+}
+
+TEST(Schema, AdN)
+{
+    check<AdN>({
+        R"({})",
+        R"({"kind":"none"})",
+        R"({"kind":"circle"})",
+        R"({"data":null})",
+        R"({"kind":"none","data":null})",
+        R"({"kind":"none","data":{"r":1}})",
+        R"({"kind":"circle","data":{"r":1}})",
+        R"({"kind":"circle","data":null})",
+        R"({"data":{"r":1}})",
+    });
+}
+
+TEST(Schema, AdNF)
+{
+    check<AdNF>({
+        R"({})",
+        R"({"kind":"none"})",
+        R"({"kind":"circle"})",
+        R"({"data":null})",
+        R"({"kind":"none","data":null})",
+        R"({"kind":"none","data":{"r":1}})",
+        R"({"kind":"circle","data":{"r":1}})",
+        R"({"kind":"circle","data":null})",
+        R"({"data":{"r":1}})",
     });
 }
 
