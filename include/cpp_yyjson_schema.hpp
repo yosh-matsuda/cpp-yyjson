@@ -4,10 +4,11 @@
 
 #pragma once
 
+#include <array>
 #include <filesystem>
 #include <limits>
+#include <map>
 #include <optional>
-#include <set>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -34,6 +35,12 @@ namespace yyjson
         std::string_view id = {};
         // The prefix of the references to named types, which are put in `$defs` unless it is changed.
         std::string_view ref_prefix = "#/$defs/";
+    };
+
+    struct schema_collection_options
+    {
+        // The prefix of the references to named types, where the program puts `schemas()`.
+        std::string_view ref_prefix = "#/components/schemas/";
     };
 
     namespace schema_detail
@@ -97,6 +104,52 @@ namespace yyjson
         template <typename... Ts>
         struct is_variant<std::variant<Ts...>> : std::true_type
         {
+        };
+
+        template <typename T>
+        inline constexpr char type_identity_tag = 0;
+
+        class generator;
+
+        // The structs and the enumerations that the schemas refer to by name.  A type has one schema per direction,
+        // or one for both directions when they are the same.
+        struct registry
+        {
+            using body_function = void (*)(generator&, object_ref);
+            struct entry
+            {
+                const void* id;
+                std::string base;
+                std::string_view type_name;
+                body_function body;
+                std::array<bool, 2> used = {};  // read, write
+                bool shared = true;
+            };
+            std::vector<entry> types;
+            // The schemas in the order in which they are found: the type and whether it is the write direction.
+            std::vector<std::pair<std::size_t, bool>> order;
+            std::string ref_prefix;
+            // Whether the names are settled; until then a reference names the entry, which compares the schemas.
+            bool settled = false;
+
+            template <typename T>
+            std::size_t find_or_add(bool writing);
+
+            [[nodiscard]] bool split(std::size_t i) const noexcept
+            {
+                return !types[i].shared && types[i].used[0] && types[i].used[1];
+            }
+            [[nodiscard]] std::string name(std::size_t i, bool writing) const
+            {
+                if (!settled)
+                    return "#" + std::to_string(i) + (split(i) ? (writing ? ":write" : ":read") : "");
+                if (!split(i)) return types[i].base;
+                return types[i].base + (writing ? "-Output" : "-Input");
+            }
+            [[nodiscard]] std::string ref(std::size_t i, bool writing) const
+            {
+                return settled ? ref_prefix + name(i, writing) : name(i, writing);
+            }
         };
 
         // The settings of `yyjson::title`, `yyjson::description`, `yyjson::deprecated` and `yyjson::examples` of a
@@ -264,6 +317,35 @@ namespace yyjson
             return m;
         }
 
+        // The name of the struct or the enumeration T in `$defs`: its `yyjson::schema_name`, or else its qualified
+        // name.
+        template <typename T>
+        std::string schema_name_of()
+        {
+            static_assert(type_setting_count<T, yyjson::schema_name>() <= 1,
+                          "a type is given yyjson::schema_name twice");
+            if constexpr (type_setting_count<T, yyjson::schema_name>() == 0)
+                return def_name<T>();
+            else
+            {
+                auto name = std::string_view();
+                std::apply(
+                    [&](const auto&... as) {
+                        (
+                            [&]<typename A>(const A& a) {
+                                if constexpr (std::same_as<A, yyjson::schema_name>) name = a.text();
+                            }(as),
+                            ...);
+                    },
+                    annotations<T>.values);
+#if FIELD_RFL_ANNOTATIONS
+                for (const yyjson::schema_name& a : field_reflection::type_annotations<T, yyjson::schema_name>)
+                    name = a.text();
+#endif
+                return std::string(name);
+            }
+        }
+
         template <typename T>
         struct optional_value
         {
@@ -286,26 +368,39 @@ namespace yyjson
         class generator
         {
         public:
-            generator(const schema_options& options, bool strict) : options_(options), strict_(strict) {}
+            generator(registry& names, bool writing, bool strict) : names_(names), writing_(writing), strict_(strict)
+            {
+            }
 
             // Writes the schema of T into `out`, with the settings of the node `node` of `nodes` (none if null).
             template <typename T>
             void emit(object_ref out, const schema_node* nodes = nullptr, std::size_t node = 0);
-
-            void set_defs(object_ref defs) { defs_ = defs; }
-            [[nodiscard]] bool has_defs() const noexcept { return !names_.empty(); }
+            template <typename T>
+            static void emit_root(generator& g, object_ref out)
+            {
+                g.emit<T>(out);
+            }
+            // Writes the schema of the struct or the enumeration T, which `$defs` has.
+            template <typename T>
+            static void emit_definition(generator& g, object_ref out)
+            {
+                if constexpr (std::is_enum_v<T>)
+                    g.emit_enum<T>(out);
+                else
+                    g.emit_struct<T>(out);
+                g.emit_type_metadata<T>(out);
+            }
 
         private:
-            schema_options options_;
+            registry& names_;
+            bool writing_;
             bool strict_;
-            std::optional<object_ref> defs_;
-            std::set<std::string, std::less<>> names_;
             // The values of `yyjson::const_` and `yyjson::enum_` of the struct whose fields are written.
             const yyjson::detail::json_scalar* values_ = nullptr;
 
             // `yyjson::strict` applies to reading only: what `write` gives has every key that is not left out.
             [[nodiscard]] bool strict() const noexcept { return strict_ && !writing(); }
-            [[nodiscard]] bool writing() const noexcept { return options_.direction == schema_direction::write; }
+            [[nodiscard]] bool writing() const noexcept { return writing_; }
 
             template <typename F>
             [[nodiscard]] F read_value(std::string_view text) const
@@ -559,17 +654,11 @@ namespace yyjson
                 }
             }
 
-            // Writes `{"$ref": ...}` for a named type, and its schema into `$defs` the first time.
-            template <typename T, typename Body>
-            void emit_named(object_ref out, Body&& body)
+            // Writes `{"$ref": ...}` for a named type, whose schema `$defs` has.
+            template <typename T>
+            void emit_named(object_ref out)
             {
-                auto name = def_name<T>();
-                out.emplace("$ref", std::string(options_.ref_prefix) + name, copy_string);
-                if (names_.contains(name)) return;
-                names_.insert(name);
-                auto def = defs_->emplace(name, empty_object, copy_string);
-                body(def);
-                emit_type_metadata<T>(def);
+                out.emplace("$ref", names_.ref(names_.find_or_add<T>(writing()), writing()), copy_string);
             }
 
             template <typename S>
@@ -587,6 +676,22 @@ namespace yyjson
             template <typename T, std::size_t... Is>
             void emit_tuple(object_ref out, const schema_node* nodes, std::size_t node, std::index_sequence<Is...>);
         };
+
+        template <typename T>
+        std::size_t registry::find_or_add(bool writing)
+        {
+            std::size_t i = 0;
+            while (i < types.size() && types[i].id != &type_identity_tag<T>) ++i;
+            if (i == types.size())
+                types.push_back({&type_identity_tag<T>, schema_name_of<T>(), yyjson::detail::type_name<T>(),
+                                 &generator::emit_definition<T>});
+            if (!types[i].used[writing])
+            {
+                types[i].used[writing] = true;
+                order.emplace_back(i, writing);
+            }
+            return i;
+        }
 
         template <typename T>
         void generator::emit(object_ref out, const schema_node* nodes, std::size_t node)
@@ -633,7 +738,11 @@ namespace yyjson
             else
                 emit_builtin<T>(out, nodes, node);
             if constexpr (std::same_as<T, std::remove_cvref_t<T>>)
+            {
+                static_assert(std::is_enum_v<T> || struct_type<T> || type_setting_count<T, yyjson::schema_name>() == 0,
+                              "yyjson::schema_name names a struct or an enumeration");
                 if (!named<T>()) emit_type_metadata<T>(out);
+            }
         }
 
         // The constraints of a field hold for the C++ value that a user caster makes, and the caster's conversion
@@ -679,7 +788,7 @@ namespace yyjson
             }
             else if constexpr (std::is_enum_v<T>)
             {
-                emit_named<T>(out, [&](object_ref def) { emit_enum<T>(def); });
+                emit_named<T>(out);
                 constraints();
             }
             else if constexpr (std::integral<T> || std::floating_point<T>)
@@ -703,7 +812,7 @@ namespace yyjson
             }
             else if constexpr (struct_type<T>)
             {
-                emit_named<T>(out, [&](object_ref def) { emit_struct<T>(def); });
+                emit_named<T>(out);
                 constraints();
             }
             else if constexpr (yyjson::detail::tuple_like<T> && !std::ranges::range<T>)
@@ -1046,17 +1155,150 @@ namespace yyjson
 
     namespace schema_detail
     {
+        // The schemas of several roots and of the named types that they refer to.  The names are settled when all
+        // the roots are known, because a type whose read and write schemas differ has two names.
+        class builder
+        {
+        public:
+            builder(std::string_view ref_prefix, bool strict) : ref_prefix_(ref_prefix), strict_(strict) {}
+
+            template <typename T>
+            void add(bool writing)
+            {
+                if (find_root<T>(writing) == roots_.size())
+                {
+                    roots_.push_back({&type_identity_tag<T>, writing, &generator::emit_root<T>});
+                    names_.reset();
+                }
+            }
+            template <typename T>
+            [[nodiscard]] bool contains(bool writing) const noexcept
+            {
+                return find_root<T>(writing) != roots_.size();
+            }
+            template <typename T>
+            void emit_root(object_ref out, bool writing)
+            {
+                settle();
+                auto g = generator(*names_, writing, strict_);
+                generator::emit_root<T>(g, out);
+            }
+            // Writes the schemas of the named types into `defs`.
+            void emit_definitions(object_ref defs)
+            {
+                settle();
+                for (const auto& [i, writing] : names_->order)
+                {
+                    if (!names_->split(i) && names_->types[i].used[0] && writing) continue;
+                    auto g = generator(*names_, writing, strict_);
+                    names_->types[i].body(g, defs.emplace(names_->name(i, writing), empty_object, copy_string));
+                }
+            }
+
+        private:
+            struct root
+            {
+                const void* id;
+                bool writing;
+                registry::body_function emit;
+            };
+            std::string ref_prefix_;
+            bool strict_;
+            std::vector<root> roots_;
+            std::optional<registry> names_;
+
+            template <typename T>
+            [[nodiscard]] std::size_t find_root(bool writing) const noexcept
+            {
+                std::size_t i = 0;
+                while (i < roots_.size() && (roots_[i].id != &type_identity_tag<T> || roots_[i].writing != writing))
+                    ++i;
+                return i;
+            }
+
+            [[nodiscard]] std::string definition_text(std::size_t i, bool writing)
+            {
+                auto doc = value(object());
+                auto g = generator(*names_, writing, strict_);
+                names_->types[i].body(g, *doc.as_object());
+                return std::string(doc.write());
+            }
+
+            void settle()
+            {
+                if (names_) return;
+                try
+                {
+                    find_names();
+                }
+                catch (...)
+                {
+                    names_.reset();
+                    throw;
+                }
+            }
+            void find_names()
+            {
+                names_.emplace();
+                names_->ref_prefix = ref_prefix_;
+                // Finds the named types: the schema of each adds the types that it refers to.
+                for (const auto& r : roots_)
+                {
+                    auto doc = value(object());
+                    auto g = generator(*names_, r.writing, strict_);
+                    r.emit(g, *doc.as_object());
+                }
+                for (std::size_t k = 0; k < names_->order.size(); ++k)
+                {
+                    const auto [i, writing] = names_->order[k];
+                    (void)definition_text(i, writing);
+                }
+                // A type shares one name for both directions while its two schemas are the same, where the types
+                // that they refer to are taken as the same if they share a name.  Splitting a type changes the
+                // schemas that refer to it, so this repeats until nothing is split.
+                for (auto changed = true; changed;)
+                {
+                    changed = false;
+                    for (std::size_t i = 0; i < names_->types.size(); ++i)
+                        if (names_->types[i].shared && names_->types[i].used[0] && names_->types[i].used[1] &&
+                            definition_text(i, false) != definition_text(i, true))
+                        {
+                            names_->types[i].shared = false;
+                            changed = true;
+                        }
+                }
+                names_->settled = true;
+                auto owners = std::map<std::string, std::size_t, std::less<>>();
+                for (const auto& [i, writing] : names_->order)
+                {
+                    const auto [it, added] = owners.emplace(names_->name(i, writing), i);
+                    if (!added && it->second != i)
+                        throw std::invalid_argument(
+                            std::string("the JSON Schema has the name \"")
+                                .append(it->first)
+                                .append("\" for both ")
+                                .append(names_->types[it->second].type_name)
+                                .append(" and ")
+                                .append(names_->types[i].type_name)
+                                .append("; give one of them another name with yyjson::schema_name"));
+                }
+            }
+        };
+
         template <typename T>
         object json_schema(const schema_options& options, bool strict)
         {
+            const auto writing = options.direction == schema_direction::write;
+            auto b = builder(options.ref_prefix, strict && !writing);
+            b.add<T>(writing);
             auto doc = value(object());
             auto root = *doc.as_object();
             root.emplace("$schema", dialect);
             if (!options.id.empty()) root.emplace("$id", options.id, copy_string);
-            auto gen = generator(options, strict);
-            gen.set_defs(root.emplace("$defs", empty_object));
-            gen.template emit<T>(root);
-            if (!gen.has_defs()) root.erase("$defs");
+            auto defs = root.emplace("$defs", empty_object);
+            b.emit_definitions(defs);
+            if (defs.empty()) root.erase("$defs");
+            b.emit_root<T>(root, writing);
             return *std::move(doc).as_object();
         }
     }  // namespace schema_detail
@@ -1076,4 +1318,55 @@ namespace yyjson
     {
         return schema_detail::json_schema<T>(options, true);
     }
+
+    // The schemas of several types, such as `components/schemas` of an OpenAPI 3.1 document, without `$schema`.  A
+    // struct or an enumeration has one name when its read and write schemas are the same, and otherwise the two
+    // names "Name-Input" and "Name-Output".
+    //
+    //     auto schemas = yyjson::schema_collection();
+    //     schemas.add<Order>().add<Receipt>(yyjson::schema_direction::write);
+    //     auto request = schemas.schema<Order>();  // {"$ref": "#/components/schemas/Order"}
+    //     auto components = schemas.schemas();
+    class schema_collection
+    {
+    public:
+        explicit schema_collection(const schema_collection_options& options = {}) : builder_(options.ref_prefix, false)
+        {
+        }
+        // The read schemas are those of `read<T>` with `yyjson::strict`.
+        explicit schema_collection(strict_t, const schema_collection_options& options = {})
+            : builder_(options.ref_prefix, true)
+        {
+        }
+
+        template <typename T>
+        schema_collection& add(schema_direction direction = schema_direction::read)
+        {
+            builder_.add<T>(direction == schema_direction::write);
+            return *this;
+        }
+        // The schema of T that `add<T>(direction)` added: a reference for a struct or an enumeration.
+        template <typename T>
+        [[nodiscard]] object schema(schema_direction direction = schema_direction::read)
+        {
+            const auto writing = direction == schema_direction::write;
+            if (!builder_.contains<T>(writing))
+                throw std::logic_error(std::string("yyjson::schema_collection::schema of ")
+                                           .append(yyjson::detail::type_name<T>())
+                                           .append(" without add in the same direction"));
+            auto doc = value(object());
+            builder_.emit_root<T>(*doc.as_object(), writing);
+            return *std::move(doc).as_object();
+        }
+        // The schemas of the structs and the enumerations, by their names.
+        [[nodiscard]] object schemas()
+        {
+            auto doc = value(object());
+            builder_.emit_definitions(*doc.as_object());
+            return *std::move(doc).as_object();
+        }
+
+    private:
+        schema_detail::builder builder_;
+    };
 }  // namespace yyjson
