@@ -173,6 +173,25 @@ struct TagManyHolder
     bool operator==(const TagManyHolder&) const = default;
 };
 
+// `adjacent_tag` names `std::monostate` as any other alternative, which a field of the tag needs
+using TagNamedBody = std::variant<std::monostate, TagCircle>;
+constexpr auto tag_named_body = yyjson::adjacent_tag("kind", {"none", "circle"});
+struct TagNamedBare
+{
+    TagNamedBody body;
+    bool operator==(const TagNamedBare&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<TagNamedBare> = yyjson::annotate(yyjson::field("body", tag_named_body));
+struct TagNamedEnvelope
+{
+    std::string kind = "none";
+    TagNamedBody body;
+    bool operator==(const TagNamedEnvelope&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<TagNamedEnvelope> = yyjson::annotate(yyjson::field("body", tag_named_body));
+
 TEST(TaggedVariant, Internal)
 {
     using namespace yyjson;
@@ -492,6 +511,53 @@ TEST(TaggedVariant, ManyAlternatives)
     expect_read_into(holder, R"({"maybe":{"type":"m1","v":7},"untagged":["x"]})");
     EXPECT_EQ(expect_merge_into(holder, R"({"maybe":{"v":7}})"),
               write(TagManyHolder{holder.tagged, TagMany<15>{7, "c"}, holder.untagged}));
+}
+
+TEST(TaggedVariant, NamedMonostate)
+{
+    using namespace yyjson;
+
+    // the tag of `std::monostate` is written with null, and reads only null
+    const auto bares = std::vector<TagNamedBare>{{}, {TagCircle{1}}};
+    EXPECT_EQ(write(bares), R"([{"kind":"none","body":null},{"kind":"circle","body":{"r":1.0}}])");
+    expect_direct_write(bares);
+    EXPECT_EQ(read<std::vector<TagNamedBare>>(write(bares)), bares);
+    EXPECT_EQ(read(write(bares)).cast<std::vector<TagNamedBare>>(), bares);
+    EXPECT_EQ(read<std::vector<TagNamedBare>>(write(bares), strict), bares);
+    EXPECT_TRUE(expect_direct_read<std::vector<TagNamedBare>>(write(bares)));
+    EXPECT_TRUE(expect_direct_read<std::vector<TagNamedBare>>(R"([{"body":null,"kind":"none"},{"kind":"none"},{}])"));
+    // null without the tag is not `std::monostate` once it has a name
+    for (const auto* json : {R"({"body":null})", R"({"kind":"none","body":1})", R"({"body":{},"kind":"none"})",
+                             R"({"kind":"circle","body":null})"})
+    {
+        EXPECT_THROW((void)read<TagNamedBare>(json), bad_cast) << json;
+        EXPECT_THROW((void)read(json).cast<TagNamedBare>(), bad_cast) << json;
+        expect_direct_read<std::vector<TagNamedBare>>(std::format("[{}]", json));
+    }
+    EXPECT_EQ(expect_merge_into(bares[1], R"({"kind":"none","body":null})"), R"({"kind":"none","body":null})");
+    EXPECT_EQ(expect_merge_into(bares[0], R"({"body":null})"), R"({"kind":"none","body":null})");
+    EXPECT_EQ(expect_merge_into(bares[0], R"({"body":null,"kind":"none"})"), R"({"kind":"none","body":null})");
+    EXPECT_TRUE(expect_merge_into(bares[0], R"({"body":1})").starts_with("bad cast"));
+    EXPECT_TRUE(expect_merge_into(bares[0], R"({"kind":"none","body":{}})").starts_with("bad cast"));
+
+    // a field of the tag names `std::monostate` too, which the write checks
+    const auto envelopes = std::vector<TagNamedEnvelope>{{}, {"circle", TagCircle{1}}};
+    EXPECT_EQ(write(envelopes), R"([{"kind":"none","body":null},{"kind":"circle","body":{"r":1.0}}])");
+    expect_direct_write(envelopes);
+    EXPECT_EQ(read<std::vector<TagNamedEnvelope>>(write(envelopes), strict), envelopes);
+    EXPECT_TRUE(expect_direct_read<std::vector<TagNamedEnvelope>>(write(envelopes)));
+    EXPECT_NO_THROW(validate(envelopes));
+    const auto wrong = TagNamedEnvelope{"circle", {}};
+    EXPECT_THROW((void)write(wrong), std::invalid_argument);
+    EXPECT_THROW((void)value(wrong), std::invalid_argument);
+    EXPECT_THROW(validate(wrong), bad_cast);
+    EXPECT_THROW((void)validate(TagNamedEnvelope{"none", TagCircle{1}}), bad_cast);
+    for (const auto* json : {R"({"kind":"circle","body":null})", R"({"kind":"none","body":{"r":1}})"})
+    {
+        EXPECT_THROW((void)read<TagNamedEnvelope>(json), bad_cast) << json;
+        EXPECT_THROW((void)read(json).cast<TagNamedEnvelope>(), bad_cast) << json;
+        expect_direct_read<std::vector<TagNamedEnvelope>>(std::format("[{}]", json));
+    }
 }
 
 // NOLINTEND

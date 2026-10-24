@@ -514,7 +514,7 @@ JSON often tells the kind of an object by a member that names it, such as `"type
 *   `yyjson::internal_tag(key, ids)` puts the tag in the object of the alternative itself. It is a setting of the variant type, given in `yyjson::annotations<V>`.
 *   `yyjson::adjacent_tag(key, ids)` puts the tag in the object of the struct that holds the variant, next to the field of the variant. It is a setting of that field, given by `yyjson::field` or by a [C++26 annotation](#c26-annotations) of the member.
 
-`ids` names the alternatives other than `std::monostate`, in the order of the template arguments:
+`ids` names the alternatives other than `std::monostate`, in the order of the template arguments. `adjacent_tag` may name `std::monostate` too, as described in [Adjacent tag](#adjacent-tag):
 
 ```cpp
 struct Circle
@@ -560,13 +560,14 @@ Both kinds of tag follow these rules:
 *   The tag may be anywhere in its object, before or after the other members.
 *   A tag that is not a string or that names no alternative throws `yyjson::bad_cast`. So does a missing tag, also in a variant that has `std::monostate`, except in the cases of [missing members](#adjacent-tag) of `adjacent_tag`.
 *   When the object has the key of the tag more than once, the rules of [repeated keys](validation.md#repeated-keys) apply.
-*   `std::monostate` is written as JSON null without a tag, and only JSON null reads as `std::monostate`.
+*   `std::monostate` is written as JSON null without a tag, and only JSON null reads as `std::monostate`. A `std::monostate` that `adjacent_tag` names is written as null with its tag instead.
 *   Any other alternative is written with its tag first: as the first member of its object for `internal_tag`, and as the member right before the field of the variant for `adjacent_tag`. A tag that is a [field of a struct](#a-field-that-holds-the-tag) is written where the field is declared instead.
 *   `cast`, `value` and `object` of the DOM API read and write a tagged variant the same way as `yyjson::read<T>` and `yyjson::write`.
 *   Write the specialization `inline`, as for [the other annotations](#annotations).
 *   The following fail to compile with a `static_assert`:
     *   a variant that has `std::monostate` more than once;
     *   `ids` that do not name each of the other alternatives, or empty or repeated names;
+    *   `internal_tag` that names `std::monostate`;
     *   an empty key;
     *   `yyjson::annotations<V>` with more than one `internal_tag`, or with a `yyjson::field`;
     *   `internal_tag` given to a struct.
@@ -593,7 +594,23 @@ The tag and the member of the variant are two members of one object, and either 
 | | The member of the variant is present | The member of the variant is missing |
 | --- | --- | --- |
 | **The tag is present** | the member is read as the alternative that the tag names | the field keeps its value in `T()`; `yyjson::bad_cast` is thrown unless that value holds the alternative that the tag names |
-| **The tag is missing** | `yyjson::bad_cast`, unless the member is JSON null and the variant has `std::monostate` | the field keeps its value in `T()` |
+| **The tag is missing** | `yyjson::bad_cast`, unless the member is JSON null and the variant has a `std::monostate` without a name | the field keeps its value in `T()` |
+
+`ids` may also name `std::monostate`, in its place among the alternatives. The variant that holds it is then written as null with its tag, as `{"kind":"none","data":null}`, and reads null only with that tag, as any other alternative reads its value. A variant with a [field that holds the tag](#a-field-that-holds-the-tag) has to name `std::monostate`, so that the field can name it, and fails to compile otherwise:
+
+```cpp
+struct Notice
+{
+    std::string kind = "none";
+    std::variant<std::monostate, Circle> data;
+};
+template <>
+inline constexpr auto yyjson::annotations<Notice> =
+    yyjson::annotate(yyjson::field("data", yyjson::adjacent_tag("kind", {"none", "circle"})));
+
+auto json3 = yyjson::write(Notice{});
+// -> {"kind":"none","data":null}
+```
 
 ### A field that holds the tag
 
@@ -624,7 +641,7 @@ auto typed = yyjson::read<TypedEvent>(R"({"kind":"rect","data":{"w":1,"h":2}})")
 
 `read_into` reads a tagged variant as `read<T>` does. `merge_into` chooses what to merge by the tag:
 
-*   When the JSON has no tag, or the tag names the alternative that the variant holds, the JSON is merged into that alternative. A variant that holds `std::monostate` has nothing to merge into, so JSON without a tag throws `yyjson::bad_cast` there.
+*   When the JSON has no tag, or the tag names the alternative that the variant holds, the JSON is merged into that alternative. A variant that holds `std::monostate` has nothing to merge into, so JSON without a tag throws `yyjson::bad_cast` there, unless `std::monostate` has a name and the JSON is null.
 *   When the tag names another alternative, the JSON is read as that alternative.
 *   With `internal_tag`, the JSON is an object that holds the tag. With `adjacent_tag`, the JSON is the member of the variant, of any kind, and the tag is its sibling.
 *   A tag without the member of the variant has to name the alternative that the variant holds, as for `read<T>`.

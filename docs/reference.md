@@ -1905,7 +1905,7 @@ template <std::size_t N>
 consteval auto adjacent_tag(std::string_view key, const std::string_view (&ids)[N]);
 ```
 
-`ids` names the alternatives other than `std::monostate`, in the order of the template arguments.
+`ids` names the alternatives other than `std::monostate`, in the order of the template arguments. `adjacent_tag` may name `std::monostate` too, which is then written as null with its tag, and has to when the struct has a field of the tag.
 
 *   `internal_tag` puts the tag in the object of the alternative, as in `{"type":"circle","radius":1}`. It is a setting of the variant type, given to [`yyjson::annotate`](#yyjsonannotationst-yyjsonannotate).
 *   `adjacent_tag` puts the tag in the object of the struct that holds the variant, next to its field, as in `{"type":"circle","shape":{"radius":1}}`. It is a setting of that field, given to [`yyjson::field`](#yyjsonfield).

@@ -1504,8 +1504,9 @@ namespace yyjson
             adjacent
         };
 
-        // The key of the member that names the alternative of a variant, and the names of its alternatives other than
-        // `std::monostate` in their order, as `internal_tag` and `adjacent_tag` give them.  With C++26 it is a
+        // The key of the member that names the alternative of a variant, and the names of its alternatives in their
+        // order, as `internal_tag` and `adjacent_tag` give them: without `std::monostate`, which only `adjacent_tag`
+        // may name.  With C++26 it is a
         // structural type, which annotates a field as `[[=yyjson::adjacent_tag(...)]]`, and holds the strings in
         // static storage.
 #if defined(__cpp_lib_define_static)
@@ -4089,7 +4090,8 @@ namespace yyjson
 
         // The names of the alternatives of the variant V that `Spec::value`, a `yyjson::internal_tag` or
         // `yyjson::adjacent_tag`, tags.  `alternative(id)` is the index of the alternative that `id` names, or else
-        // that of `std::monostate`, which a missing or unknown tag reads as, or else `std::variant_npos`.
+        // `std::variant_npos`.  `monostate` is the index of a `std::monostate` without a name, which is written as
+        // null without a tag, or else `std::variant_npos`; `adjacent_tag` may name it, as each other alternative.
         template <typename V, typename Spec>
         struct variant_tag_table
         {
@@ -4104,17 +4106,20 @@ namespace yyjson
             static constexpr auto& spec = Spec::value;
             static constexpr auto tagging = std::remove_cvref_t<decltype(spec)>::tagging;
             static constexpr std::string_view key = spec.key();
+            static constexpr bool has_monostate = (std::same_as<Ts, std::monostate> || ...);
+            static_assert((0 + ... + std::same_as<Ts, std::monostate>) <= 1,
+                          "a tagged variant can have std::monostate only once");
+            static_assert(spec.size() + has_monostate == sizeof...(Ts) ||
+                              (tagging == variant_tagging::adjacent && spec.size() == sizeof...(Ts)),
+                          "yyjson::internal_tag must name each alternative of the variant other than std::monostate, "
+                          "and yyjson::adjacent_tag each alternative, with or without std::monostate");
             static constexpr std::size_t monostate = [] {
                 constexpr auto is_monostate = std::array<bool, sizeof...(Ts)>{std::same_as<Ts, std::monostate>...};
                 const auto it = std::ranges::find(is_monostate, true);
-                return it == is_monostate.end() ? std::variant_npos
-                                                : static_cast<std::size_t>(it - is_monostate.begin());
+                return it == is_monostate.end() || spec.size() == sizeof...(Ts)
+                           ? std::variant_npos
+                           : static_cast<std::size_t>(it - is_monostate.begin());
             }();
-            static_assert((0 + ... + std::same_as<Ts, std::monostate>) <= 1,
-                          "a tagged variant can have std::monostate only once");
-            static_assert(spec.size() + (monostate != std::variant_npos) == sizeof...(Ts),
-                          "yyjson::internal_tag and yyjson::adjacent_tag must name each alternative of the variant "
-                          "other than std::monostate");
             static_assert(!key.empty(), "the key of yyjson::internal_tag and yyjson::adjacent_tag must not be empty");
             // the name of each alternative, empty for `std::monostate`
             static constexpr auto ids = [] {
@@ -4423,6 +4428,18 @@ namespace yyjson
                         }()...}),
                         "the field of the key of yyjson::adjacent_tag holds the name of an alternative, which "
                         "an enumeration of yyjson::enum_format::integer cannot");
+                    static_assert(
+                        !any_true({[] {
+                            if constexpr (adjacent_field<S, Ks>)
+                            {
+                                using tags = struct_field_tags<S, Ks>;
+                                return !writes_adjacent_tag<S, tags> && tags::monostate != std::variant_npos;
+                            }
+                            else
+                                return false;
+                        }()...}),
+                        "a variant tagged by yyjson::adjacent_tag whose tag is a field of the struct must name "
+                        "std::monostate too, which the field holds when the variant holds it");
                     return any_true({adjacent_field<S, Ks>...});
                 }(std::make_index_sequence<struct_field_count<S>>{});
             else
@@ -6339,7 +6356,16 @@ namespace yyjson
                 assign_reflected_field_impl(field, value, replaceable);
         }
 
-        // Casts `json` to the alternative `index` of the variant V, or gives `std::monostate` without reading it.
+        // Throws unless `json`, read into `std::monostate`, is null.
+        template <typename Json>
+        void check_monostate_null(const Json& json)
+        {
+            if (!json.is_null()) [[unlikely]]
+                throw_bad_cast_at(target_of(json), "{} is not constructible from JSON other than null",
+                                  type_name<std::monostate>());
+        }
+
+        // Casts `json` to the alternative `index` of the variant V; `std::monostate` takes only null.
         template <typename V, typename Json>
         V cast_alternative(std::size_t index, const Json& json)
         {
@@ -6348,7 +6374,10 @@ namespace yyjson
                 static constexpr cast_function casts[] = {+[]([[maybe_unused]] const Json& j) -> V {
                     using alternative = std::variant_alternative_t<Is, V>;
                     if constexpr (std::same_as<alternative, std::monostate>)
+                    {
+                        check_monostate_null(j);
                         return V(std::in_place_index<Is>);
+                    }
                     else
                         return V(std::in_place_index<Is>, cast_nested<alternative>(j));
                 }...};
@@ -16302,7 +16331,7 @@ namespace yyjson
 
         // Merges `v` into the variant `t` tagged by Tags as the alternative `index` that its tag names: into the
         // alternative that `t` holds when the tag names it or `index` is `std::variant_npos` for no tag, and as a
-        // new alternative otherwise.  `std::monostate` takes nothing to merge into.
+        // new alternative otherwise.  `std::monostate` takes nothing to merge into, and only null when it is named.
         template <typename Tags, typename V>
         void merge_tagged_alternative(V& t, std::size_t index, const const_value_ref& v)
         {
@@ -16318,6 +16347,8 @@ namespace yyjson
                 [&](auto& alternative) {
                     if constexpr (!std::same_as<std::remove_cvref_t<decltype(alternative)>, std::monostate>)
                         merge_from(alternative, v);
+                    else
+                        yyjson::detail::check_monostate_null(v);
                 },
                 t);
         }
@@ -17680,7 +17711,7 @@ namespace yyjson
                 return read_string(buf);
             }
 
-            // Reads the value at `start` into the alternative `index` of the variant T, or skips it for
+            // Reads the value at `start` into the alternative `index` of the variant T, or null into
             // `std::monostate`.
             template <typename T, typename Make>
             void read_tagged_alternative(Make&& make, std::size_t index, const char* start)
@@ -17690,7 +17721,7 @@ namespace yyjson
                     (void)((index == Is && ([&] {
                                 if constexpr (std::same_as<std::variant_alternative_t<Is, T>, std::monostate>)
                                 {
-                                    skip_value();
+                                    read_literal("null");
                                     make(std::in_place_index<Is>);
                                 }
                                 else
@@ -17877,7 +17908,7 @@ namespace yyjson
             }
 
             // Merges the value at `cur_` into the alternative that the variant `v` tagged by Tags holds, which
-            // `std::monostate` cannot take.
+            // `std::monostate` cannot take unless it is named, and then only null.
             template <typename Tags, typename V>
             void merge_alternative(V& v)
             {
@@ -17887,6 +17918,8 @@ namespace yyjson
                     [&](auto& alternative) {
                         if constexpr (!std::same_as<std::remove_cvref_t<decltype(alternative)>, std::monostate>)
                             merge_value(alternative);
+                        else
+                            read_literal("null");
                     },
                     v);
             }
