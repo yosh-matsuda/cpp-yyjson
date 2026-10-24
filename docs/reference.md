@@ -16,6 +16,7 @@ This page lists the functions, classes and other entities of cpp-yyjson, grouped
     *   [`yyjson::read<T>`](#yyjsonreadt)
     *   [`yyjson::read_into`, `yyjson::merge_into`](#yyjsonread_into-yyjsonmerge_into)
     *   [`yyjson::write`](#yyjsonwrite)
+    *   [`yyjson::validate`](#yyjsonvalidate)
     *   [`yyjson::read`](#yyjsonread)
     *   [`yyjson::cast`](#yyjsoncast)
 *   [DOM classes](#dom-classes)
@@ -104,6 +105,7 @@ The member functions of the DOM classes often return *reference classes*, such a
 | [`yyjson::read_into`](#yyjsonread_into-yyjsonmerge_into) | data binding | Reads a JSON string into an existing C++ object, reusing its memory |
 | [`yyjson::merge_into`](#yyjsonread_into-yyjsonmerge_into) | data binding | Applies a JSON string to an existing C++ object as a JSON Merge Patch |
 | [`yyjson::write`](#yyjsonwrite) | data binding | Writes a C++ object to a JSON string |
+| [`yyjson::validate`](#yyjsonvalidate) | data binding | Checks a C++ object against the constraints that a strict read of its JSON checks |
 | [`yyjson::read`](#yyjsonread) | DOM | Reads a JSON string into an immutable document |
 | [`yyjson::cast<T>`](#yyjsoncast) | DOM | Converts a JSON value to a C++ object of type `T` |
 
@@ -293,6 +295,51 @@ for (const auto& points : batches)
 *   the value that a user-defined `to_json` returns, and the output of a `to_json` that takes an [emitter](conversions.md#writing-members-with-an-emitter).
 
 A user-defined `to_json` that [fills](conversions.md#writing-into-a-json-value-in-a-caster) a `writer::value_ref`, `writer::array_ref` or `writer::object_ref` needs a document. The objects that such casters convert are built in one temporary document, and the objects around them are still written directly. The writer frees that document and starts a new one once it holds a megabyte, so the memory of a large write does not grow with the number of such objects. See [Write casters that convert C++ values](performance.md#write-casters-that-convert-c-values) for the cost.
+
+### `yyjson::validate`
+
+Checks a C++ object before it is written, as `yyjson::read<T>(json, yyjson::strict)` checks the JSON that `yyjson::write` writes of it.
+
+```cpp
+template <writable T>
+void validate(const T& t);
+```
+
+`validate` throws `yyjson::bad_cast` for the first of the following that the read would find, and returns otherwise. In a struct, the read checks the values in a field before the field itself, and the keys that the object misses after all the fields:
+
+*   a value that does not satisfy the [constraints](validation.md#constraints) of its field, including the constraints of the elements, the values and the keys in it;
+*   a field whose caster leaves it out with [`should_omit`](conversions.md#omitting-a-field-with-no-value), although the read requires the key: under `yyjson::required`, or under `yyjson::strict` without `yyjson::optional_key`;
+*   a field that [`yyjson::dependent_required`](#yyjsondependent_required) requires, left out while the field that requires it is written;
+*   a field of an [adjacent tag](#yyjsoninternal_tag-yyjsonadjacent_tag) that does not name the alternative that its variant holds, which `yyjson::write` rejects with `std::invalid_argument`.
+
+A field that `write` writes as `null`, such as an empty `std::shared_ptr` or a `std::variant` that holds `std::monostate`, is not checked by its constraints, as the read does not check them for `null`. A caster of the program that writes `null` is not detected, and the constraints of its field are checked.
+
+The message is the one that the read gives, and `path()` is the JSON Pointer to the value in the JSON that `write` writes, such as `/users/3/age`. There is no `position()`. `validate` looks into the fields, the elements and the alternatives that `write` writes, and not into a value that a caster of the program converts.
+
+`validate` checks what the C++ object decides. A strict read of the written JSON can still fail where the read itself adds a check: a `std::variant` without a tag reads the first alternative that accepts the value, which may not be the one that it holds, and a caster of the program reads the text that its `to_json` wrote by its own rules. Keys that a `std::multimap` or a range of pairs writes twice are not an error, since the strict read reads them back.
+
+```cpp
+struct User
+{
+    std::string name;
+    int age = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<User> = yyjson::annotate(yyjson::field("age", yyjson::minimum(0)));
+
+auto users = std::vector<User>{{"Ann", 30}, {"Bob", -1}};
+try
+{
+    yyjson::validate(users);
+}
+catch (const yyjson::bad_cast& e)
+{
+    std::cerr << e.what() << '\n';
+    // -> the value of the key "age" of User is less than the minimum 0 at /1/age
+}
+```
+
+A type without constraints, `required` fields of omittable types, `dependent_required` or adjacent tags, and without such types in it, has nothing to check, and `validate` returns without looking at the object.
 
 ### `yyjson::read`
 
@@ -1960,7 +2007,7 @@ yyjson_write_code code() const noexcept;
 
 ### `yyjson::bad_cast`
 
-Thrown when a JSON value cannot be converted to the C++ type, by `cast`, by the conversion operators and by the data binding API.
+Thrown when a JSON value cannot be converted to the C++ type, by `cast`, by the conversion operators and by the data binding API, and by [`yyjson::validate`](#yyjsonvalidate) for a C++ object that the strict read of its JSON would reject.
 
 ```cpp
 class bad_cast : public std::runtime_error
@@ -1981,7 +2028,7 @@ struct text_position
 
 *   `what()` names the C++ type and the kind of the JSON value.
 *   `path()` returns the JSON Pointer (RFC 6901) to the value, from the value that the cast started at, such as `/users/3/name`.
-*   `position()` returns the position of the value in the text that `read<T>`, `read_into` or `merge_into` read: `line` and `column` count characters from 1, and `pos` counts bytes from 0. A cast of a document gives no position.
+*   `position()` returns the position of the value in the text that `read<T>`, `read_into` or `merge_into` read: `line` and `column` count characters from 1, and `pos` counts bytes from 0. A cast of a document and `yyjson::validate` give no position.
 
 See [Conversion errors](validation.md#conversion-errors) for examples.
 

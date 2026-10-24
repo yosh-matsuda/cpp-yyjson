@@ -33,6 +33,7 @@ Each example assumes `#include "cpp_yyjson.hpp"` and the standard headers that i
     *   [Reject unknown, missing or repeated keys](#reject-unknown-missing-or-repeated-keys)
     *   [Require a key](#require-a-key)
     *   [Restrict the values of a field](#restrict-the-values-of-a-field)
+    *   [Check a value before writing it](#check-a-value-before-writing-it)
     *   [Find the value that failed](#find-the-value-that-failed)
     *   [Check at compile time that a type converts](#check-at-compile-time-that-a-type-converts)
 *   [JSON of any shape](#json-of-any-shape)
@@ -491,6 +492,26 @@ catch (const yyjson::bad_cast& e)
 ```
 
 `yyjson::enum_` and `yyjson::const_` allow only the listed values, and `yyjson::format("date-time")` checks a string by the grammar of a format. `yyjson::items`, `yyjson::unique_items` and the other [constraints of elements](validation.md#constraints-of-elements) restrict the elements of a container, and `yyjson::dependent_required` of a struct requires keys together. `yyjson::pattern` matches a regular expression with an engine that the program chooses, and `yyjson::satisfies<f>` calls a function of your own. Details: [Constraints](validation.md#constraints). To write the types of an existing JSON Schema, look up its keywords in [JSON Schema keywords](validation.md#json-schema-keywords).
+
+### Check a value before writing it
+
+`yyjson::write` does not check the constraints. `yyjson::validate` checks a C++ value by them, as a strict read of the written JSON would, and throws the same `bad_cast`:
+
+```cpp
+auto users = std::vector<User>{{"Ann", 30}, {"Bob", -1}};
+try
+{
+    yyjson::validate(users);
+    auto json = yyjson::write(users);
+}
+catch (const yyjson::bad_cast& e)
+{
+    std::cerr << e.what() << '\n';
+    // -> the value of the key "age" of User is less than the minimum 0 at /1/age
+}
+```
+
+Details: [Checking a C++ value](validation.md#checking-a-c-value).
 
 ### Find the value that failed
 

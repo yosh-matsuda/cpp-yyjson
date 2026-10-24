@@ -6,7 +6,7 @@ This document describes:
 
 *   what a read checks, and what it does with unknown, missing and repeated keys;
 *   how to reject those keys, and `null` in a `std::optional` field, with [strict reading](#strict-reading);
-*   how to restrict the values of fields, and of their elements, with [constraints](#constraints);
+*   how to restrict the values of fields, and of their elements, with [constraints](#constraints), and how to [check a C++ value](#checking-a-c-value) by them before it is written;
 *   what in cpp-yyjson corresponds to each [keyword of JSON Schema](#json-schema-keywords);
 *   the [errors](#errors) that the library reports at run time, and the [compile errors](#compile-errors) of types that cannot be converted.
 
@@ -340,7 +340,7 @@ yyjson::read<Job>(R"({"env":{"PATH":"/bin","home":"/root"}})");
     *   A key that the object leaves out. The field keeps its value in `T()`, or with `merge_into` the value that it has; require the key with `yyjson::required` or [`yyjson::strict`](#strict-reading) to avoid that. A `std::optional` field without a value that `merge_into` merges an object into starts from the value in `T()` of its type, so the keys that the patch leaves out are not checked there either.
     *   `null` as the value of a `std::optional` field that keeps its value in `T()`, as described in [`null` in a `std::optional`](#null-in-a-stdoptional). A `std::optional<int>` field that defaults to `5` keeps `5` under `yyjson::maximum(3)`. Reject such a `null` with `yyjson::strict`.
     *   `null` in `merge_into`, which resets any field to its value in `T()`.
-*   Writing does not check the constraints: `yyjson::write` writes a value that they would reject.
+*   Writing does not check the constraints: `yyjson::write` writes a value that they would reject. Check the value first with [`yyjson::validate`](#checking-a-c-value).
 *   `f` of `yyjson::satisfies<f>` may be called more than once for the same value. When `yyjson::read<T>` rejects the text, it reads the text again through the DOM to tell the error. An exception that `f` throws propagates out of the read.
 *   An untagged `std::variant` tries its alternatives in turn. A value that one alternative rejects by a constraint may therefore be read by a later one: without `yyjson::strict`, a struct that ignores unknown keys accepts almost any object. When no alternative accepts the value, the `yyjson::bad_cast` names the variant, such as `std::variant<Circle, Rect> is not constructible from JSON at /shape`, rather than the constraint that each alternative failed. Tag the variant with [`yyjson::internal_tag` or `yyjson::adjacent_tag`](conversions.md#tagged-variants) to read only the alternative that the tag names, and to have its error.
 *   The following fail to compile, most of them with a `static_assert` that tells the reason:
@@ -440,6 +440,32 @@ inline constexpr auto yyjson::annotations<Item> = yyjson::annotate(yyjson::field
 
 yyjson::read<Item>(R"({"sku":"abc"})");  // throws: the value of the key "sku" of Item does not have the format "sku" at /sku (line 1, column 8, pos 7)
 ```
+
+### Checking a C++ value
+
+`yyjson::validate(t)` checks a C++ value by the rules that `yyjson::read<T>(json, yyjson::strict)` checks the JSON that `yyjson::write(t)` writes, before it is written. It throws `yyjson::bad_cast` with the message that the read would give, at the path that the value would have in that JSON, but without a position:
+
+```cpp
+struct Range
+{
+    std::vector<int> values;
+    std::optional<int> lower;
+    std::optional<int> upper;
+};
+template <>
+inline constexpr auto yyjson::annotations<Range> =
+    yyjson::annotate(yyjson::field("values", yyjson::items(yyjson::minimum(0)), yyjson::unique_items),
+                     yyjson::dependent_required("lower", {"upper"}));
+
+yyjson::validate(Range{{1, -2}});
+// an element of the value of the key "values" of Range is less than the minimum 0 at /values/1
+yyjson::validate(Range{{1, 1}});
+// an element of the value of the key "values" of Range is equal to an earlier element at /values/1
+yyjson::validate(Range{{}, 0, std::nullopt});
+// Range is not constructible from JSON with the key "lower" without the key "upper"
+```
+
+It checks the constraints of the fields and of the elements, values and keys in them, `yyjson::dependent_required` by the fields that `write` writes, a field that its caster leaves out although the strict read requires its key, and the field of an [adjacent tag](conversions.md#tagged-variants) against the alternative of its variant. [`yyjson::validate`](reference.md#yyjsonvalidate) lists what it does not check.
 
 ## JSON Schema keywords
 
