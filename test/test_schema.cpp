@@ -126,6 +126,25 @@ inline constexpr auto yyjson::annotations<Groups> =
     yyjson::annotate(yyjson::one_of_required({"env"}, {"value", "unit"}), yyjson::field("unit", yyjson::rename("u")),
                      yyjson::any_of_required({"email"}, {"phone"}), yyjson::any_of_required({"env"}, {"phone"}));
 
+// keys of no field kept in a map, whose values are constrained, also in an alternative of an internally tagged variant
+struct Extra
+{
+    int a = 0;
+    std::map<std::string, std::vector<int>> more;
+};
+template <>
+inline constexpr auto yyjson::annotations<Extra> = yyjson::annotate(
+    yyjson::field("more", yyjson::extra_keys, yyjson::additional_properties(yyjson::items(yyjson::maximum(3)))));
+struct ExtraCircle
+{
+    int r = 0;
+    std::map<std::string, yyjson::value> more;
+};
+template <>
+inline constexpr auto yyjson::annotations<ExtraCircle> = yyjson::annotate(yyjson::field("more", yyjson::extra_keys));
+using ExtraShape = std::variant<ExtraCircle, Groups>;
+template <>
+inline constexpr auto yyjson::annotations<ExtraShape> = yyjson::annotate(yyjson::internal_tag("type", {"c", "g"}));
 
 struct TkC
 {
@@ -1061,6 +1080,25 @@ TEST(Schema, RequiredGroups)
     // the keyword that the struct already has goes into allOf
     EXPECT_EQ(s["anyOf"], json::parse(R"([{"required":["email"]},{"required":["phone"]}])"));
     EXPECT_EQ(s["allOf"], json::parse(R"([{"anyOf":[{"required":["env"]},{"required":["phone"]}]}])"));
+}
+
+TEST(Schema, ExtraKeys)
+{
+    check<Extra>({
+        R"({"a":1})",
+        R"({"a":1,"x":[1,3],"y":[]})",
+        R"({"x":[4]})",
+        R"({"a":1,"x":2})",
+    });
+    for (const auto& s :
+         {to_jsoncons(yyjson::json_schema<Extra>()), to_jsoncons(yyjson::json_schema<Extra>(yyjson::strict))})
+        EXPECT_EQ(s["$defs"]["Extra"]["additionalProperties"],
+                  json::parse(R"({"type":"array","items":{"type":"integer","minimum":-2147483648,"maximum":3}})"));
+    check<ExtraShape>({
+        R"({"type":"c","r":1,"x":{"y":null}})",
+        R"({"type":"c","x":1})",
+        R"({"type":"g","env":"e","email":"a"})",
+    });
 }
 
 TEST(Schema, VecOpt)

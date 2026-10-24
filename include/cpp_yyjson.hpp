@@ -930,6 +930,16 @@ namespace yyjson
     };
     inline constexpr omit_default_t omit_default{};
 
+    // A map field that receives the members of the object whose keys name no field, as
+    // `yyjson::field("member", yyjson::extra_keys)` or `[[=yyjson::extra_keys]]` gives it.  The field has no key of
+    // its own: its keys and values are written after the other fields, and `yyjson::strict` lets the object have
+    // such keys.  Its type is a map with keys constructible from `std::string_view`, such as
+    // `std::map<std::string, yyjson::value>`, and `yyjson::additional_properties(settings...)` constrains its values.
+    struct extra_keys_t
+    {
+    };
+    inline constexpr extra_keys_t extra_keys{};
+
     // Whether the object of a struct may have keys that name no field, as
     // `yyjson::annotations<T> = yyjson::annotate(yyjson::additional_properties(false))` or
     // `struct [[=yyjson::additional_properties(false)]] T` gives it.  With `false`, reading an object with such a key
@@ -1821,10 +1831,10 @@ namespace yyjson
 
         // The settings that `yyjson::field` takes for a field.
         template <typename A>
-        concept field_setting = std::same_as<A, rename> || std::same_as<A, skip_t> || std::same_as<A, required_t> ||
-                                std::same_as<A, optional_key_t> || std::same_as<A, omit_default_t> ||
-                                adjacent_tag_annotation<A> ||
-                                constraint_setting<A> || element_settings<A> || metadata_setting<A>;
+        concept field_setting =
+            std::same_as<A, rename> || std::same_as<A, skip_t> || std::same_as<A, required_t> ||
+            std::same_as<A, optional_key_t> || std::same_as<A, omit_default_t> || std::same_as<A, extra_keys_t> ||
+            adjacent_tag_annotation<A> || constraint_setting<A> || element_settings<A> || metadata_setting<A>;
 
         // The number of the nodes that a position of `yyjson::prefix_items` has at most: its own and those of the
         // settings of the values in it, and the number of the values of `yyjson::const_` and
@@ -1983,6 +1993,10 @@ namespace yyjson
             contains_missing,
             prefix_position_too_large,
             dependency_skipped,
+            extra_keys_twice,
+            extra_keys_with_setting,
+            extra_keys_visitable,
+            extra_keys_denied,
         };
 
         // The constraints of a value, those in `set` by `constraint_bit`.  The values of `yyjson::const_` and
@@ -2282,7 +2296,8 @@ namespace yyjson
         static_assert(sizeof...(As) != 0, "yyjson::field needs a setting of the field");
         static_assert((detail::field_setting<As> && ...),
                       "yyjson::field takes yyjson::rename, yyjson::skip, yyjson::required, yyjson::optional_key, "
-                      "yyjson::omit_default, yyjson::adjacent_tag, the constraints such as yyjson::minimum and "
+                      "yyjson::omit_default, yyjson::extra_keys, yyjson::adjacent_tag, the constraints such as "
+                      "yyjson::minimum and "
                       "yyjson::satisfies<f>, yyjson::items and yyjson::additional_properties(settings...), and "
                       "yyjson::title, "
                       "yyjson::description, yyjson::examples, yyjson::deprecated and yyjson::schema");
@@ -2936,6 +2951,7 @@ namespace yyjson
             std::array<bool, N> required = {};  // whether a field is annotated with `yyjson::required`
             std::array<bool, N> optional_key = {};  // whether a field is annotated with `yyjson::optional_key`
             std::array<bool, N> omit_default = {};  // whether a field is annotated with `yyjson::omit_default`
+            std::size_t extra = N;                  // the field annotated with `yyjson::extra_keys`, or N
             additional_keys additional = additional_keys::unset;
             schema_tree<M, V> schemas = {{}, N};
             bool constrained = false;  // whether a field has a constraint
@@ -2983,7 +2999,7 @@ namespace yyjson
                 if (visitable) return fail(field_key_error::skip_visitable);
                 if (table.skipped[i]) return fail(field_key_error::same_setting_twice);
                 if (renamed[i] || tagged[i] || table.required[i] || table.optional_key[i] || table.omit_default[i] ||
-                    described[i] != 0 || !table.schemas.nodes[i].empty())
+                    table.extra == i || described[i] != 0 || !table.schemas.nodes[i].empty())
                     return fail(field_key_error::skipped_with_setting);
                 table.skipped[i] = true;
             }
@@ -3023,6 +3039,14 @@ namespace yyjson
                 if (table.required[i] || table.optional_key[i])
                     return fail(field_key_error::omit_default_with_key_setting);
                 table.omit_default[i] = true;
+            }
+            constexpr void receive_extra_keys(std::size_t i)
+            {
+                if (visitable) return fail(field_key_error::extra_keys_visitable);
+                if (table.extra == i) return fail(field_key_error::same_setting_twice);
+                if (table.extra != N) return fail(field_key_error::extra_keys_twice);
+                if (table.skipped[i]) return fail(field_key_error::skipped_with_setting);
+                table.extra = i;
             }
             // A constraint of the field i, or a setting of the values in it.
             template <typename A>
@@ -3094,6 +3118,8 @@ namespace yyjson
                     make_key_optional(i);
                 else if constexpr (std::same_as<A, omit_default_t>)
                     omit_default_value(i);
+                else if constexpr (std::same_as<A, extra_keys_t>)
+                    receive_extra_keys(i);
                 else if constexpr (constraint_setting<A> || element_settings<A>)
                     constrain_field(i, a);
                 else if constexpr (metadata_setting<A>)
@@ -3146,9 +3172,31 @@ namespace yyjson
                     if (result.skipped[i] && result.error == field_key_error::none)
                         result.error = field_key_error::dependency_skipped;
                 }
+                if (const auto e = result.extra; e != N && result.error == field_key_error::none)
+                {
+                    // the field takes only the settings of its values, and the struct has no key to deny
+                    const auto& node = result.schemas.nodes[e];
+                    if (renamed[e] || tagged[e] || result.required[e] || result.optional_key[e] ||
+                        result.omit_default[e] || described[e] != 0 || node.constraints.set != 0 || node.items != 0 ||
+                        node.contains != 0 || node.keys != 0 || node.prefix_count != 0)
+                        result.error = field_key_error::extra_keys_with_setting;
+                    else if (result.additional == additional_keys::denied)
+                        result.error = field_key_error::extra_keys_denied;
+                    for (const auto& [i, j] : result.dependencies)
+                    {
+                        if ((i == e || j == e) && result.error == field_key_error::none)
+                            result.error = field_key_error::dependency_skipped;
+                    }
+                    for (const auto i : result.group_fields)
+                    {
+                        if (i == e && result.error == field_key_error::none)
+                            result.error = field_key_error::dependency_skipped;
+                    }
+                }
                 if (result.error != field_key_error::none || std::ranges::find(renamed, true) == renamed.end())
                     return result;
-                if (!distinct_names(result.keys, [&](std::size_t i) { return !result.skipped[i]; }))
+                if (!distinct_names(result.keys,
+                                    [&](std::size_t i) { return !result.skipped[i] && i != result.extra; }))
                     result.error = field_key_error::duplicate_key;
                 return result;
             }
@@ -3258,6 +3306,7 @@ namespace yyjson
                              !field_reflection::field_annotations<T, Is, required_t>.empty() ||
                              !field_reflection::field_annotations<T, Is, optional_key_t>.empty() ||
                              !field_reflection::field_annotations<T, Is, omit_default_t>.empty() ||
+                             !field_reflection::field_annotations<T, Is, extra_keys_t>.empty() ||
                              !field_reflection::field_annotations<T, Is, adjacent_tag_annotation_type>.empty() ||
                              constraint_annotated<T, Is, constraint_types> || !element_annotations<T, Is>.empty()) ||
                             ...);
@@ -3340,6 +3389,9 @@ namespace yyjson
                         for (std::size_t k = 0; k < field_reflection::field_annotations<T, Is, omit_default_t>.size();
                              ++k)
                             builder.omit_default_value(Is);
+                        for (std::size_t k = 0; k < field_reflection::field_annotations<T, Is, extra_keys_t>.size();
+                             ++k)
+                            builder.receive_extra_keys(Is);
                         for (std::size_t k = 0;
                              k < field_reflection::field_annotations<T, Is, adjacent_tag_annotation_type>.size(); ++k)
                             builder.tag_field(Is);
@@ -3501,7 +3553,18 @@ namespace yyjson
                           "yyjson::enum_");
             static_assert(table.error != field_key_error::dependency_skipped,
                           "yyjson::dependent_required, yyjson::one_of_required or yyjson::any_of_required names a "
-                          "member annotated with yyjson::skip, which has no key");
+                          "member annotated with yyjson::skip or yyjson::extra_keys, which has no key");
+            static_assert(table.error != field_key_error::extra_keys_twice,
+                          "only one field of a struct may be annotated with yyjson::extra_keys");
+            static_assert(table.error != field_key_error::extra_keys_with_setting,
+                          "a field annotated with yyjson::extra_keys has no key of its own and takes only "
+                          "yyjson::additional_properties(settings...), which constrains its values");
+            static_assert(table.error != field_key_error::extra_keys_visitable,
+                          "yyjson::extra_keys needs a struct that the compile-time reflection converts, not a "
+                          "VISITABLE_STRUCT");
+            static_assert(table.error != field_key_error::extra_keys_denied,
+                          "a struct annotated with yyjson::additional_properties(false) has no key for a field "
+                          "annotated with yyjson::extra_keys to receive");
             static constexpr auto value = table.keys;
         };
 
@@ -3514,15 +3577,19 @@ namespace yyjson
                 return std::string_view(field_reflection::field_name<T, I>);
         }();
 
-        // The indices of the fields of a reflected struct that are read and written, which are all but those
-        // annotated with `yyjson::skip`, as a `std::index_sequence`.  `reflected_field_index<T, K>` is the K-th.
+        // The indices of the fields of a reflected struct that are read and written by their keys, which are all
+        // but those annotated with `yyjson::skip` and `yyjson::extra_keys`, as a `std::index_sequence`.
+        // `reflected_field_index<T, K>` is the K-th.
         template <typename T>
         inline constexpr auto unskipped_field_indices = [] {
-            constexpr auto& skipped = field_keys<T, reflected_field_names<T>>::table.skipped;
-            auto indices = std::array<std::size_t, static_cast<std::size_t>(std::ranges::count(skipped, false))>{};
+            constexpr auto& table = field_keys<T, reflected_field_names<T>>::table;
+            constexpr auto& skipped = table.skipped;
+            constexpr auto count =
+                static_cast<std::size_t>(std::ranges::count(skipped, false)) - (table.extra != skipped.size() ? 1 : 0);
+            auto indices = std::array<std::size_t, count>{};
             for (std::size_t i = 0, k = 0; i < skipped.size(); ++i)
             {
-                if (!skipped[i]) indices[k++] = i;
+                if (!skipped[i] && i != table.extra) indices[k++] = i;
             }
             return indices;
         }();
@@ -4569,6 +4636,49 @@ namespace yyjson
         template <typename S, std::size_t I>
         using struct_field_type = std::remove_cvref_t<decltype(struct_field<I>(std::declval<S&>()))>;
 
+        // The field of the struct S annotated with `yyjson::extra_keys`, by its index among all the fields, or
+        // `no_extra_keys`, and whether S has one.
+        inline constexpr std::size_t no_extra_keys = static_cast<std::size_t>(-1);
+        template <typename S>
+        inline constexpr std::size_t extra_keys_index = [] {
+            if constexpr (!visitable<S> && reflectable<S> && annotated_fields<S>)
+            {
+                constexpr auto e = field_keys<S, reflected_field_names<S>>::table.extra;
+                return e == field_reflection::field_count<S> ? no_extra_keys : e;
+            }
+            else
+                return no_extra_keys;
+        }();
+        template <typename S>
+        inline constexpr bool has_extra_keys = extra_keys_index<S> != no_extra_keys;
+
+        // A map that `yyjson::extra_keys` takes: its keys are made from the keys of the object and written back as
+        // strings.
+        template <typename M>
+        concept extra_keys_map =
+            requires {
+                typename M::key_type;
+                typename M::mapped_type;
+            } && std::constructible_from<typename M::key_type, std::string_view> &&
+            std::convertible_to<const typename M::key_type&, std::string_view> && std::ranges::sized_range<M> &&
+            requires(M& m, typename M::key_type k) {
+                m.try_emplace(std::move(k));
+                m.erase(m.find(k));
+            };
+
+        // The field of `s` annotated with `yyjson::extra_keys`.
+        template <typename S>
+        auto& extra_keys_field(S& s) noexcept
+        {
+            using U = std::remove_const_t<S>;
+            auto& field = field_reflection::get_field<extra_keys_index<U>>(s);
+            static_assert(extra_keys_map<std::remove_cvref_t<decltype(field)>>,
+                          "a field annotated with yyjson::extra_keys is a map with keys constructible from and "
+                          "convertible to std::string_view and a try_emplace, such as "
+                          "std::map<std::string, yyjson::value> or std::unordered_map<std::string, int>");
+            return field;
+        }
+
         // Whether the field R of S, by its index among all the fields, is annotated with `yyjson::omit_default`.
         template <typename S, std::size_t R>
         inline constexpr bool omits_default = [] {
@@ -4822,8 +4932,11 @@ namespace yyjson
             static constexpr auto keys = []<std::size_t... Ks>(std::index_sequence<Ks...>) {
                 return std::array<std::string_view, n>{struct_field_key<S, Ks>...};
             }(std::make_index_sequence<n>{});
+            // the field annotated with `yyjson::extra_keys` receives the keys that name no field
             static constexpr auto additional = [] {
-                if constexpr (has_table)
+                if constexpr (has_extra_keys<S>)
+                    return additional_keys::allowed;
+                else if constexpr (has_table)
                     return table().additional;
                 else
                     return additional_keys::unset;
@@ -5082,6 +5195,19 @@ namespace yyjson
         };
         template <typename S, std::size_t K>
         using constraint_level = constraint_node<S, K, struct_declared_index<S, K>>;
+
+        // The settings of the values of the field of S annotated with `yyjson::extra_keys`, which
+        // `yyjson::additional_properties(settings...)` gives, and whether it has any.
+        template <typename S>
+        inline constexpr bool constrained_extra_values = [] {
+            if constexpr (has_extra_keys<S>)
+                return field_table_of<S>::table.schemas.nodes[extra_keys_index<S>].values != 0;
+            else
+                return false;
+        }();
+        template <typename S>
+        using extra_values_level =
+            constraint_node<S, no_extra_keys, field_table_of<S>::table.schemas.nodes[extra_keys_index<S>].values>;
 
         // The constraint that a field does not satisfy.
         enum class constraint_kind : std::uint8_t
@@ -6406,13 +6532,13 @@ namespace yyjson
             using read_type = type;
         };
 
-        template <typename S, std::size_t K, typename Level, typename V, typename Json>
-        void throw_located_violation(const Json& json, constraint_kind k);
+        template <typename S, typename Level, typename V, typename Json>
+        void throw_located_violation(const Json& json, constraint_kind k, std::string_view key);
 
         // Reads the JSON value `e` again, as E through Read, and throws `bad_cast` at it, or at a value in it, if it
         // does not satisfy the node `Level`.  It returns if `e` is not read as E.
-        template <typename S, std::size_t K, typename Level, typename E, typename Read, typename Json>
-        void throw_if_violated(const Json& e)
+        template <typename S, typename Level, typename E, typename Read, typename Json>
+        void throw_if_violated(const Json& e, std::string_view key)
         {
             if constexpr (requires { E(cast_nested<Read>(e)); })
             {
@@ -6428,9 +6554,9 @@ namespace yyjson
                     return;
                 }
                 if (k == constraint_kind::none) return;
-                throw_located_violation<S, K, Level, constrained_value_t<E>>(e, k);
-                throw_constraint_violation(target_of(e), struct_field_key<S, K>, type_name<S>(), k, Level::constraints,
-                                           Level::values, constraint_subject::element);
+                throw_located_violation<S, Level, constrained_value_t<E>>(e, k, key);
+                throw_constraint_violation(target_of(e), key, type_name<S>(), k, Level::constraints, Level::values,
+                                           constraint_subject::element);
             }
         }
 
@@ -6438,8 +6564,8 @@ namespace yyjson
         // violate the constraint `k` of the node `Level`, by reading them again, and throws `bad_cast` at it.  It
         // returns if it finds none, which is the case when the elements did not come from `json`, as those that
         // `yyjson::merge_into` keeps.
-        template <typename S, std::size_t K, typename Level, typename V, typename Json>
-        void throw_located_violation(const Json& json, constraint_kind k)
+        template <typename S, typename Level, typename V, typename Json>
+        void throw_located_violation(const Json& json, constraint_kind k, std::string_view key)
         {
             if constexpr (Level::node.items != 0 && constraint_item_range<V>)
             {
@@ -6451,7 +6577,7 @@ namespace yyjson
                         std::size_t j = 0;
                         for (const auto& e : *a)
                             if (j++ >= Level::node.prefix_count)
-                                throw_if_violated<S, K, typename Level::template at<Level::node.items>, E, Read>(e);
+                                throw_if_violated<S, typename Level::template at<Level::node.items>, E, Read>(e, key);
                     }
             }
             if constexpr (Level::node.values != 0 && constraint_value_range<V>)
@@ -6462,14 +6588,14 @@ namespace yyjson
                 {
                     if (const auto o = json.as_object(); o.has_value())
                     {
-                        for (const auto& kv : *o) throw_if_violated<S, K, next, E, E>(std::get<1>(kv));
+                        for (const auto& kv : *o) throw_if_violated<S, next, E, E>(std::get<1>(kv), key);
                     }
                     else if (const auto a = json.as_array(); a.has_value())
                     {
                         // a map whose keys are not strings, from an array of [key, value] pairs
                         for (const auto& e : *a)
                             if (const auto pair = e.as_array(); pair.has_value() && pair->size() == 2)
-                                throw_if_violated<S, K, next, E, E>((*pair)[1]);
+                                throw_if_violated<S, next, E, E>((*pair)[1], key);
                     }
                 }
             }
@@ -6487,8 +6613,8 @@ namespace yyjson
                                             using E = std::remove_cv_t<std::tuple_element_t<J, V>>;
                                             if (J < a->size())
                                                 throw_if_violated<
-                                                    S, K, typename Level::template at<Level::node.prefix + J>, E, E>(
-                                                    (*a)[J]);
+                                                    S, typename Level::template at<Level::node.prefix + J>, E, E>(
+                                                    (*a)[J], key);
                                         }
                                     }
                                     else
@@ -6496,8 +6622,8 @@ namespace yyjson
                                         using E = typename constrained_element<V, element_kind::items>::type;
                                         using Read = typename constrained_element<V, element_kind::items>::read_type;
                                         if (J < a->size())
-                                            throw_if_violated<S, K, typename Level::template at<Level::node.prefix + J>,
-                                                              E, Read>((*a)[J]);
+                                            throw_if_violated<S, typename Level::template at<Level::node.prefix + J>, E,
+                                                              Read>((*a)[J], key);
                                     }
                                 }(),
                                 ...);
@@ -6512,11 +6638,12 @@ namespace yyjson
                         if (const auto o = json.as_object(); o.has_value())
                             for (const auto& kv : *o)
                             {
-                                const auto key = Key(std::string_view(std::get<0>(kv)));
-                                if (const auto violated = level_violation<next>(key); violated != constraint_kind::none)
-                                    throw_constraint_violation(target_of(std::get<1>(kv)), struct_field_key<S, K>,
-                                                               type_name<S>(), violated, next::constraints,
-                                                               next::values, constraint_subject::key);
+                                const auto name = Key(std::string_view(std::get<0>(kv)));
+                                if (const auto violated = level_violation<next>(name);
+                                    violated != constraint_kind::none)
+                                    throw_constraint_violation(target_of(std::get<1>(kv)), key, type_name<S>(),
+                                                               violated, next::constraints, next::values,
+                                                               constraint_subject::key);
                             }
             }
             if constexpr (Level::node.constraints.template has<unique_items_t>() && constraint_items<V> &&
@@ -6539,7 +6666,7 @@ namespace yyjson
                                 return;
                             }
                             if (const auto j = first_duplicate(elements); j != no_duplicate)
-                                throw_constraint_violation(target_of((*a)[j]), struct_field_key<S, K>, type_name<S>(),
+                                throw_constraint_violation(target_of((*a)[j]), key, type_name<S>(),
                                                            constraint_kind::duplicate_item, Level::constraints,
                                                            Level::values, constraint_subject::element);
                         }
@@ -6550,7 +6677,7 @@ namespace yyjson
         [[noreturn]] CPPYYJSON_COLD void throw_field_violation(const Json& json, constraint_kind k)
         {
             using level = constraint_level<S, K>;
-            throw_located_violation<S, K, level, constrained_value_t<F>>(json, k);
+            throw_located_violation<S, level, constrained_value_t<F>>(json, k, struct_field_key<S, K>);
             throw_constraint_violation(target_of(json), struct_field_key<S, K>, type_name<S>(), k, level::constraints,
                                        level::values);
         }
@@ -7157,10 +7284,109 @@ namespace yyjson
             if (checks_keys_always<T> || strict_reading) check_struct_keys<T, Merge, Matcher>(obj);
         }
 
+        // Throws `bad_cast` at the value `json`, or at a value in it, read as `v` into the field of S annotated with
+        // `yyjson::extra_keys` under the key `key`, unless `v` satisfies the settings of the values of the field.
+        template <typename S, typename V, typename Json>
+        [[noreturn]] CPPYYJSON_NOINLINE CPPYYJSON_COLD void throw_extra_violation(std::string_view key,
+                                                                                  const Json& json, constraint_kind k)
+        {
+            using level = extra_values_level<S>;
+            throw_located_violation<S, level, constrained_value_t<V>>(json, k, key);
+            throw_constraint_violation(target_of(json), key, type_name<S>(), k, level::constraints, level::values);
+        }
+        template <typename S, typename V, typename Json>
+        void check_extra_value(std::string_view key, const V& v, const Json& json)
+        {
+            if constexpr (constrained_extra_values<S>)
+                if (const auto k = level_violation<extra_values_level<S>>(v); k != constraint_kind::none) [[unlikely]]
+                    throw_extra_violation<S, V>(key, json, k);
+        }
+
+        // Calls `f(key, value)` for each member of the object `obj` read into the struct T whose key names no field
+        // of T nor a tag, which the field annotated with `yyjson::extra_keys` receives.  Under `yyjson::strict`, it
+        // throws for such a key that the object has twice.
+        template <typename T, const auto& Matcher, typename Json, typename F>
+        void for_each_extra_member(const Json& obj, F&& f)
+        {
+            constexpr auto n = std::remove_cvref_t<decltype(Matcher)>::size;
+            const auto* const raw = struct_keys_of(obj);
+            const auto strict = strict_reading;
+            auto seen = std::vector<std::string_view>();
+            for (auto&& [k, value] : obj)
+            {
+                const auto key = std::string_view(k);
+                if (Matcher.find(key, 0) < n || is_tag_key<T>(key, raw)) continue;
+                if (strict)
+                {
+                    if (std::ranges::find(seen, key) != seen.end())
+                        throw_repeated_key(target_of(value), key, type_name<T>());
+                    seen.push_back(key);
+                }
+                f(key, value);
+            }
+        }
+
+        // Adds the members of the object `obj` that `for_each_extra_member` gives to the field of `t` annotated with
+        // `yyjson::extra_keys`, replacing the values of the keys that it already has.
+        template <typename T, const auto& Matcher, typename Json>
+        CPPYYJSON_NOINLINE void read_extra_keys(T& t, const Json& obj)
+        {
+            auto& extra = extra_keys_field(t);
+            using M = std::remove_cvref_t<decltype(extra)>;
+            using V = typename M::mapped_type;
+            for_each_extra_member<T, Matcher>(obj, [&](std::string_view key, const auto& value) {
+                auto v = cast_nested<V>(value);
+                check_extra_value<T>(key, v, value);
+                if (auto [it, added] = extra.try_emplace(typename M::key_type(key), std::move(v)); !added)
+                    it->second = std::move(v);
+            });
+        }
+
         template <typename T>
         inline constexpr auto reflected_key_matcher = []<std::size_t... Is>(std::index_sequence<Is...>) {
             return field_key_matcher<sizeof...(Is)>(std::array<std::string_view, sizeof...(Is)>{field_key<T, Is>...});
         }(reflected_fields<T>{});
+
+        template <typename S, typename Error>
+        [[noreturn]] CPPYYJSON_NOINLINE CPPYYJSON_COLD void throw_extra_key_conflict(std::string_view key)
+        {
+            throw Error(
+                std::format("the field of yyjson::extra_keys of {} has the key \"{}\", which {} writes for a "
+                            "field or a tag",
+                            type_name<S>(), key, type_name<S>()));
+        }
+
+        // Throws `Error`, `std::invalid_argument` for a write and `bad_cast` for `yyjson::validate`, if a key of the
+        // field of `s` annotated with `yyjson::extra_keys` is the key of a field of S or of a tag that S writes, which
+        // would be written twice.
+        template <typename S, typename Error = std::invalid_argument>
+        void check_extra_keys(const S& s)
+        {
+            if constexpr (has_extra_keys<S>)
+            {
+                constexpr auto n = reflected_fields<S>::size();
+                for (const auto& [k, v] : extra_keys_field(s))
+                {
+                    const auto key = std::string_view(k);
+                    if (reflected_key_matcher<S>.find(key, 0) < n || is_tag_key<S>(key, nullptr)) [[unlikely]]
+                        throw_extra_key_conflict<S, Error>(key);
+                }
+            }
+        }
+
+        // Throws `Error` if the field annotated with `yyjson::extra_keys` of the alternative `a` of a variant tagged
+        // by `internal_tag` has the key of the tag, which is written for the variant.
+        template <typename Tags, typename Error = std::invalid_argument, typename A>
+        void check_extra_tag_key(const A& a)
+        {
+            if constexpr (has_extra_keys<A>)
+            {
+                const auto& extra = extra_keys_field(a);
+                using M = std::remove_cvref_t<decltype(extra)>;
+                if (!extra.empty() && extra.find(typename M::key_type(Tags::key)) != extra.end()) [[unlikely]]
+                    throw_extra_key_conflict<A, Error>(Tags::key);
+            }
+        }
 
         // Only a field of a struct type is replaced by a new object, and comparing the addresses of all fields
         // for any other costs a struct of many fields more than the field itself when the compiler does not
@@ -7231,7 +7457,10 @@ namespace yyjson
                     }
                 });
             if (!in_order) [[unlikely]]
+            {
                 check_irregular_struct_keys<T, false, reflected_key_matcher<T>>(keys);
+                if constexpr (has_extra_keys<T>) read_extra_keys<T, reflected_key_matcher<T>>(t, obj);
+            }
             else if constexpr (checks_all_keys<T>)
                 check_all_struct_keys<T>(keys);
             if constexpr (has_adjacent_fields<T>) check_adjacent_tags_without_values(t, obj);
@@ -7294,10 +7523,10 @@ namespace yyjson
         template <typename T, typename U = std::remove_cvref_t<T>>
         std::size_t reflected_field_count(T&& t)
         {
-            if constexpr (has_adjacent_fields<U>)
-                return written_field_count<T, U>(t) + written_adjacent_tags(t);
-            else
-                return written_field_count<T, U>(t);
+            auto count = written_field_count<T, U>(t);
+            if constexpr (has_adjacent_fields<U>) count += written_adjacent_tags(t);
+            if constexpr (has_extra_keys<U>) count += std::ranges::size(extra_keys_field(t));
+            return count;
         }
         // The fields that are written, without the tags that `written_adjacent_tags` counts.
         template <typename T, typename U>
@@ -7571,6 +7800,18 @@ namespace yyjson
                     if (holds_default<S, R>(field)) return;
                 emitter.template emplace<Plain>(key, std::forward<Field>(field), ts...);
             }
+        }
+
+        // Emplaces the members of the field of `t` annotated with `yyjson::extra_keys` with `emitter`, after the
+        // fields, in the order of the map.
+        template <typename Emitter, typename T, typename... Ts>
+        void emplace_extra_keys(Emitter& emitter, T&& t, Ts... ts)
+        {
+            using M = std::remove_reference_t<decltype(extra_keys_field(t))>;
+            using R = std::conditional_t<std::is_rvalue_reference_v<T&&>, M&&, M&>;
+            for (auto&& v : static_cast<R>(extra_keys_field(t)))
+                emitter.emplace_member(forward_key<R>(std::get<0>(std::forward<decltype(v)>(v))),
+                                       forward_element<R>(std::get<1>(std::forward<decltype(v)>(v))), ts...);
         }
     }  // namespace detail
 
@@ -7922,12 +8163,14 @@ namespace yyjson
             }
 
             // The structs written field by field without their casters: those that have no `to_json` of
-            // the user, which would decide how they are written.  `std::array` is excluded first: MSVC fails
-            // on the structured binding that `field_namable` tries on it.
+            // the user, which would decide how they are written, and without a field of `yyjson::extra_keys`,
+            // whose objects have no fixed number of members.  `std::array` is excluded first: MSVC fails on the
+            // structured binding that `field_namable` tries on it.
             template <typename T>
             concept directly_create_reflected_object =
                 (!yyjson::detail::std_array<T>) && yyjson::detail::reflectable<std::remove_cvref_t<T>> &&
                 (!visitable<std::remove_cvref_t<T>>) && (!to_json_inp_usr_defined<T>) && (!to_json_usr<T>) &&
+                (!yyjson::detail::has_extra_keys<std::remove_cvref_t<T>>) &&
                 directly_create_reflected_object_impl<std::remove_cvref_t<T>>(
                     yyjson::detail::reflected_fields<std::remove_cvref_t<T>>{});
             // Whether every member of a visitable struct can be created directly, as for a reflected struct above.
@@ -8982,6 +9225,45 @@ namespace yyjson
 #if YYJSON_VERSION_HEX >= 0x000800
                         if constexpr (NoEsc) key->tag |= YYJSON_SUBTYPE_NOESC;
 #endif
+
+                        if constexpr (base_of_value<Field>)
+                        {
+                            doc.set_value(val, std::forward<Field>(field), true);
+                        }
+                        else if constexpr (reader::detail::base_of_value_ref<Field>)
+                        {
+                            doc.set_value(val, std::forward<Field>(field));
+                        }
+                        else
+                        {
+                            success = doc.set_new_value(val, std::forward<Field>(field), ts...);
+                            if (!success) [[unlikely]]
+                                return;
+                        }
+
+                        key->next = val;
+                        val->next = val + 1;
+                        ++count;
+                    }
+                    // Emplaces a member of the field of `yyjson::extra_keys`, which is written even if it is
+                    // omittable, as a member of a map is.
+                    template <typename Key, typename Field, typename... Ts>
+                    requires copy_string_args<Ts...>
+                    void emplace_member(Key&& field_name, Field&& field, Ts... ts)
+                    {
+                        if (!success) [[unlikely]]
+                            return;
+                        if (count >= capacity) [[unlikely]]
+                        {
+                            success = false;
+                            return;
+                        }
+
+                        auto* key = fields + (count * 2);
+                        auto* val = fields + ((count * 2) + 1);
+                        success = doc.set_key(key, std::forward<Key>(field_name), ts...);
+                        if (!success) [[unlikely]]
+                            return;
 
                         if constexpr (base_of_value<Field>)
                         {
@@ -12709,7 +12991,7 @@ namespace yyjson
                              (omittable<struct_field_type<T, Ks>> && strictly_required_field<T, Ks>)) ||
                             ...) ||
                            !struct_key_rules<T>::dependencies.empty() || !struct_key_rules<T>::groups.empty() ||
-                           has_adjacent_fields<T>;
+                           has_adjacent_fields<T> || has_extra_keys<T>;
                 }(std::make_index_sequence<struct_field_count<T>>{});
             else
                 return false;
@@ -12769,39 +13051,36 @@ namespace yyjson
             }
         }
 
-        template <typename S, std::size_t K, typename Level, typename V>
-        void throw_value_located_violation(const V& v, constraint_kind k);
+        template <typename S, typename Level, typename V>
+        void throw_value_located_violation(const V& v, constraint_kind k, std::string_view key);
 
-        // Throws `bad_cast` at the element `e` in the value of the field K of S, which `prefix()` names, or at a
+        // Throws `bad_cast` at the element `e` in the value of the key `key` of S, which `prefix()` names, or at a
         // value in it, if `e` does not satisfy the node `Level`.
-        template <typename S, std::size_t K, typename Level, typename E, typename Prefix>
-        void throw_if_value_violated(const E& e, const Prefix& prefix)
+        template <typename S, typename Level, typename E, typename Prefix>
+        void throw_if_value_violated(const E& e, const Prefix& prefix, std::string_view key)
         {
             const auto k = level_violation<Level>(e);
             if (k == constraint_kind::none) return;
             validate_within(prefix, [&] {
-                if constexpr (is_std_optional<E>::value)
-                {
-                    if (e.has_value()) throw_value_located_violation<S, K, Level>(*e, k);
-                }
-                else
-                    throw_value_located_violation<S, K, Level>(e, k);
-                throw_constraint_violation(cast_target{}, struct_field_key<S, K>, type_name<S>(), k, Level::constraints,
-                                           Level::values, constraint_subject::element);
+                if (const auto* value = held_value(e); value != nullptr)
+                    throw_value_located_violation<S, Level>(*value, k, key);
+                throw_constraint_violation(cast_target{}, key, type_name<S>(), k, Level::constraints, Level::values,
+                                           constraint_subject::element);
             });
         }
-        template <typename S, std::size_t K, typename Level, std::size_t J, typename It, typename End>
-        void throw_if_prefix_violated(It& it, const End& end)
+        template <typename S, typename Level, std::size_t J, typename It, typename End>
+        void throw_if_prefix_violated(It& it, const End& end, std::string_view key)
         {
             if (it == end) return;
-            throw_if_value_violated<S, K, typename Level::template at<Level::node.prefix + J>>(*it, index_prefix<J>{});
+            throw_if_value_violated<S, typename Level::template at<Level::node.prefix + J>>(*it, index_prefix<J>{},
+                                                                                            key);
             ++it;
         }
 
         // Finds the element, the value or the key in the C++ value `v` that makes it violate the constraint `k` of
         // the node `Level`, as `throw_located_violation` does in JSON, and throws `bad_cast` at it.
-        template <typename S, std::size_t K, typename Level, typename V>
-        void throw_value_located_violation(const V& v, constraint_kind k)
+        template <typename S, typename Level, typename V>
+        void throw_value_located_violation(const V& v, constraint_kind k, std::string_view key)
         {
             if constexpr (Level::node.items != 0 && constraint_item_range<V>)
             {
@@ -12811,8 +13090,8 @@ namespace yyjson
                     for (const auto& e : v)
                     {
                         if (j >= Level::node.prefix_count)
-                            throw_if_value_violated<S, K, typename Level::template at<Level::node.items>>(
-                                e, [j] { return index_token(j); });
+                            throw_if_value_violated<S, typename Level::template at<Level::node.items>>(
+                                e, [j] { return index_token(j); }, key);
                         ++j;
                     }
                 }
@@ -12826,12 +13105,12 @@ namespace yyjson
                     for (const auto& e : v)
                     {
                         if constexpr (key_value_range<V>)
-                            throw_if_value_violated<S, K, next>(
-                                std::get<1>(e), [&e] { return key_token(written_key(std::get<0>(e))); });
+                            throw_if_value_violated<S, next>(
+                                std::get<1>(e), [&e] { return key_token(written_key(std::get<0>(e))); }, key);
                         else
                             // a map whose keys are not strings, written as an array of [key, value] pairs
-                            throw_if_value_violated<S, K, next>(std::get<1>(e),
-                                                                [j] { return index_token(j) + "/1"; });
+                            throw_if_value_violated<S, next>(
+                                std::get<1>(e), [j] { return index_token(j) + "/1"; }, key);
                         ++j;
                     }
                 }
@@ -12842,8 +13121,8 @@ namespace yyjson
                 {
                     if constexpr (constraint_tuple<V>)
                         [&]<std::size_t... J>(std::index_sequence<J...>) {
-                            (throw_if_value_violated<S, K, typename Level::template at<Level::node.prefix + J>>(
-                                 std::get<J>(v), index_prefix<J>{}),
+                            (throw_if_value_violated<S, typename Level::template at<Level::node.prefix + J>>(
+                                 std::get<J>(v), index_prefix<J>{}, key),
                              ...);
                         }(std::make_index_sequence<std::min(Level::node.prefix_count, std::tuple_size_v<V>)>{});
                     else
@@ -12851,7 +13130,7 @@ namespace yyjson
                         auto it = std::ranges::begin(v);
                         const auto end = std::ranges::end(v);
                         [&]<std::size_t... J>(std::index_sequence<J...>) {
-                            (throw_if_prefix_violated<S, K, Level, J>(it, end), ...);
+                            (throw_if_prefix_violated<S, Level, J>(it, end, key), ...);
                         }(std::make_index_sequence<Level::node.prefix_count>{});
                     }
                 }
@@ -12865,7 +13144,7 @@ namespace yyjson
                         if (const auto violated = level_violation<next>(std::get<0>(e));
                             violated != constraint_kind::none)
                             validate_within([&e] { return key_token(written_key(std::get<0>(e))); }, [&] {
-                                throw_constraint_violation(cast_target{}, struct_field_key<S, K>, type_name<S>(),
+                                throw_constraint_violation(cast_target{}, key, type_name<S>(),
                                                            violated, next::constraints, next::values,
                                                            constraint_subject::key);
                             });
@@ -12878,7 +13157,7 @@ namespace yyjson
                 if (k == constraint_kind::unique_items)
                     if (const auto j = first_duplicate(v); j != no_duplicate)
                         validate_within([j] { return index_token(j); }, [&] {
-                            throw_constraint_violation(cast_target{}, struct_field_key<S, K>, type_name<S>(),
+                            throw_constraint_violation(cast_target{}, key, type_name<S>(),
                                                        constraint_kind::duplicate_item, Level::constraints,
                                                        Level::values, constraint_subject::element);
                         });
@@ -12891,12 +13170,8 @@ namespace yyjson
         [[noreturn]] CPPYYJSON_COLD void throw_value_violation(const F& field, constraint_kind k)
         {
             using level = constraint_level<S, K>;
-            if constexpr (is_std_optional<F>::value)
-            {
-                if (field.has_value()) throw_value_located_violation<S, K, level>(*field, k);
-            }
-            else
-                throw_value_located_violation<S, K, level>(field, k);
+            if (const auto* value = held_value(field); value != nullptr)
+                throw_value_located_violation<S, level>(*value, k, struct_field_key<S, K>);
             throw_constraint_violation(cast_target{}, struct_field_key<S, K>, type_name<S>(), k, level::constraints,
                                        level::values);
         }
@@ -12942,6 +13217,35 @@ namespace yyjson
             return true;
         }
 
+        // Checks the field of `s` annotated with `yyjson::extra_keys`: that it has no key of a field or a tag, and
+        // the values in it, then their settings, as the read checks them after the fields.
+        template <typename S>
+        void validate_extra_keys(const S& s)
+        {
+            check_extra_keys<S, bad_cast>(s);
+            for (const auto& [k, v] : extra_keys_field(s))
+            {
+                const auto key = std::string_view(k);
+                validate_within([key] { return key_token(key); },
+                                [&] {
+                                    validate_value(v);
+                                    if constexpr (constrained_extra_values<S>)
+                                    {
+                                        using level = extra_values_level<S>;
+                                        if (const auto c = level_violation<level>(v); c != constraint_kind::none)
+                                            [[unlikely]]
+                                            if (!written_as_null(v))
+                                            {
+                                                if (const auto* value = held_value(v); value != nullptr)
+                                                    throw_value_located_violation<S, level>(*value, c, key);
+                                                throw_constraint_violation(cast_target{}, key, type_name<S>(), c,
+                                                                           level::constraints, level::values);
+                                            }
+                                    }
+                                });
+            }
+        }
+
         // Checks the fields of `s`, then its keys as `check_irregular_struct_keys` does: the keys that it
         // requires, then those of `yyjson::dependent_required`, `yyjson::one_of_required` and
         // `yyjson::any_of_required`, and last its adjacent tags.
@@ -12965,6 +13269,7 @@ namespace yyjson
                 if (written[d[0]] && !written[d[1]])
                     throw_missing_dependency(cast_target{}, rules::keys[d[1]], rules::keys[d[0]], type_name<S>());
             check_required_groups<S>(cast_target{}, [&](std::size_t i) { return written[i]; });
+            if constexpr (has_extra_keys<S>) validate_extra_keys(s);
             if constexpr (has_adjacent_fields<S>) check_adjacent_tags<S, bad_cast>(s);
         }
 
@@ -12997,7 +13302,13 @@ namespace yyjson
             }
             else if constexpr (requires { std::variant_size<U>::value; })
             {
-                if (!v.valueless_by_exception()) std::visit([](const auto& a) { validate_value(a); }, v);
+                if (!v.valueless_by_exception())
+                    std::visit(
+                        [](const auto& a) {
+                            if constexpr (internally_tagged<U>) check_extra_tag_key<variant_tags<U>, bad_cast>(a);
+                            validate_value(a);
+                        },
+                        v);
             }
             else if constexpr (validated_struct<U>)
                 validate_struct(v);
@@ -14041,12 +14352,14 @@ namespace yyjson
         static void to_json(writer::object_ref& obj, const T& t, Ts... ts)
         {
             if constexpr (detail::has_adjacent_fields<T>) detail::check_adjacent_tags(t);
+            if constexpr (detail::has_extra_keys<T>) detail::check_extra_keys(t);
             obj.assign_reflected_fields(detail::reflected_field_count(t), [&](auto& emitter) {
                 [&]<std::size_t... Is>(std::index_sequence<Is...>) {
                     (detail::emplace_struct_field<T, Is, detail::is_plain_key(detail::field_key<T, Is>)>(
                          emitter, detail::field_key<T, Is>, detail::forward_field<Is>(t), ts...),
                      ...);
                 }(detail::reflected_fields<T>{});
+                if constexpr (detail::has_extra_keys<T>) detail::emplace_extra_keys(emitter, t, ts...);
             });
         }
         template <typename... Ts>
@@ -14057,6 +14370,7 @@ namespace yyjson
             // The fields are moved one by one out of `t` itself.  `for_each_field` would move them into a
             // temporary first, and a field that the user's caster references would not outlive the call.
             if constexpr (detail::has_adjacent_fields<T>) detail::check_adjacent_tags(t);
+            if constexpr (detail::has_extra_keys<T>) detail::check_extra_keys(t);
             const auto field_count = detail::reflected_field_count(t);
             obj.assign_reflected_fields(field_count, [&](auto& emitter) {
                 [&]<std::size_t... Is>(std::index_sequence<Is...>) {
@@ -14064,6 +14378,7 @@ namespace yyjson
                          emitter, detail::field_key<T, Is>, detail::forward_field<Is>(std::move(t)), ts...),
                      ...);
                 }(detail::reflected_fields<T>{});
+                if constexpr (detail::has_extra_keys<T>) detail::emplace_extra_keys(emitter, std::move(t), ts...);
             });
         }
     };
@@ -14985,6 +15300,8 @@ namespace yyjson
             constexpr auto copy = (sizeof...(Args) != 0);
             std::visit(
                 [&val](const auto& v) {
+                    if constexpr (detail::internally_tagged<std::variant<Ts...>>)
+                        detail::check_extra_tag_key<detail::variant_tags<std::variant<Ts...>>>(v);
                     if constexpr (copy)
                         val = std::pair<decltype(v), copy_string_t>(v, copy_string);
                     else
@@ -15003,6 +15320,8 @@ namespace yyjson
             [[maybe_unused]] const auto index = t.index();
             std::visit(
                 [&val](auto&& v) {
+                    if constexpr (detail::internally_tagged<std::variant<Ts...>>)
+                        detail::check_extra_tag_key<detail::variant_tags<std::variant<Ts...>>>(v);
                     if constexpr (copy)
                         val = std::pair<decltype(v), copy_string_t>(std::move(v), copy_string);
                     else
@@ -16156,12 +16475,15 @@ namespace yyjson
                 using U = std::remove_cvref_t<T>;
                 constexpr auto n = sizeof...(Is);
                 if constexpr (yyjson::detail::has_adjacent_fields<U>) yyjson::detail::check_adjacent_tags(t);
+                if constexpr (yyjson::detail::has_extra_keys<U>) yyjson::detail::check_extra_keys(t);
                 if constexpr (n <= field_part_size)
                     write_field_part<Visitable>(first, std::forward<T>(t), fields);
                 else
                     write_field_parts<Visitable>(
                         first, std::forward<T>(t), fields,
                         std::make_index_sequence<(n + field_part_size - 1) / field_part_size>{});
+                if constexpr (yyjson::detail::has_extra_keys<U>)
+                    write_extra_keys(first, yyjson::detail::extra_keys_field(t), std::is_rvalue_reference<T&&>{});
             }
             template <typename T, std::size_t... Is>
             CPPYYJSON_ALWAYS_INLINE void write_visitable_fields(bool& first, T&& t, std::index_sequence<Is...> fields)
@@ -16186,6 +16508,18 @@ namespace yyjson
                     write_reflected_fields(first, std::forward<T>(t), yyjson::detail::reflected_fields<U>{});
                 else
                     write_key_value_members(first, std::forward<T>(t));
+            }
+            // The members of the field annotated with `yyjson::extra_keys`, after the fields, in the order of the
+            // map, moved from it if `Move`.
+            template <typename M, bool Move>
+            void write_extra_keys(bool& first, M& extra, std::bool_constant<Move>)
+            {
+                using R = std::conditional_t<Move, M&&, M&>;
+                for (auto&& v : static_cast<R>(extra))
+                {
+                    next_key(first, std::string_view(std::get<0>(v)));
+                    write_value(forward_element<R>(std::get<1>(std::forward<decltype(v)>(v))));
+                }
             }
 
             // Whether the writer checks a key of type K for `next_plain_key`.
@@ -16331,6 +16665,7 @@ namespace yyjson
                 std::visit(
                     [&]<typename A>(A&& a) {
                         using W = std::remove_cvref_t<A>;
+                        yyjson::detail::check_extra_tag_key<tags>(a);
                         constexpr auto tagless_struct = [] {
                             if constexpr (to_json_inp_def<to_json_input_ref<A>, A> && !std::is_enum_v<W>)
                                 return !yyjson::detail::writes_member_of_key<W>(tags::key);
@@ -16675,8 +17010,8 @@ namespace yyjson
                 yyjson::detail::call_at_index<struct_field_count<T>>(index, f);
         }
 
-        // Whether T has fields annotated with `yyjson::skip`, which `read_into` gives their values in `T()` as
-        // `t = read<T>(json)` does.
+        // Whether T has fields that no key names, those annotated with `yyjson::skip`, which `read_into` gives
+        // their values in `T()` as `t = read<T>(json)` does, or with `yyjson::extra_keys`.
         template <typename T>
         inline constexpr bool has_skipped_fields = [] {
             if constexpr (!yyjson::detail::visitable<T> && yyjson::detail::annotated_fields<T>)
@@ -16725,6 +17060,8 @@ namespace yyjson
 
         template <typename T>
         void merge_from(T& t, const const_value_ref& v);
+        template <typename T>
+        void merge_extra_keys(T& t, const const_object_ref& obj);
 
         // Merges `v` into the variant `t` tagged by Tags as the alternative `index` that its tag names: into the
         // alternative that `t` holds when the tag names it or `index` is `std::variant_npos` for no tag, and as a
@@ -16805,9 +17142,33 @@ namespace yyjson
                         yyjson::detail::check_constraints<T, I>(field, value);
                 });
             if (!in_order) [[unlikely]]
+            {
                 yyjson::detail::check_irregular_struct_keys<T, true, struct_key_matcher<T>()>(keys);
+                if constexpr (yyjson::detail::has_extra_keys<T>) merge_extra_keys<T>(t, obj);
+            }
             if constexpr (yyjson::detail::has_adjacent_fields<T>)
                 yyjson::detail::check_adjacent_tags_without_values(t, obj);
+        }
+
+        // Merges the members of the object `obj` whose keys name no field of the struct T into the field of `t`
+        // annotated with `yyjson::extra_keys`, as `merge_map_from` merges them into a map.
+        template <typename T>
+        CPPYYJSON_NOINLINE void merge_extra_keys(T& t, const const_object_ref& obj)
+        {
+            auto& extra = yyjson::detail::extra_keys_field(t);
+            using M = std::remove_cvref_t<decltype(extra)>;
+            yyjson::detail::for_each_extra_member<T, struct_key_matcher<T>()>(
+                obj, [&](std::string_view key, const const_value_ref& value) {
+                    auto k = typename M::key_type(key);
+                    if (value.is_null())
+                    {
+                        if (const auto it = extra.find(k); it != extra.end()) extra.erase(it);
+                        return;
+                    }
+                    auto& v = extra.try_emplace(std::move(k)).first->second;
+                    merge_from(v, value);
+                    yyjson::detail::check_extra_value<T>(key, v, value);
+                });
         }
 
         // Throws if the object `obj` has a key twice.
@@ -16998,6 +17359,10 @@ namespace yyjson
             bool into_ = false;
             // whether `yyjson::strict` reads the text, which `strict_reading` tells once per read
             bool strict_ = yyjson::detail::strict_reading;
+            // the field annotated with `yyjson::extra_keys` of the struct whose object is being read, which
+            // `extra_keys_scope` sets; thread-local rather than a member, so that a reader of types without the
+            // annotation does not initialize it
+            static inline constinit thread_local void* extra_ = nullptr;
             std::string scratch_;
             std::string c_string_;  // the source of a translator that takes a `const char*`
             // the copy of a scalar root, in the array unless it is longer
@@ -19510,6 +19875,14 @@ namespace yyjson
                 constexpr auto n = struct_field_count<T>;
                 auto seen = std::bitset<n>();
                 auto adjacent = adjacent_fields_of<T>{cur_};
+                if constexpr (yyjson::detail::has_extra_keys<T>)
+                {
+                    // the keys of the object are added to those of `T()`, as `t = read<T>(json)` does
+                    auto defaults = T();
+                    yyjson::detail::move_field(yyjson::detail::extra_keys_field(t),
+                                               yyjson::detail::extra_keys_field(defaults));
+                }
+                [[maybe_unused]] const auto extra = extra_keys_scope<T>(*this, t);
                 read_fields<T, false, struct_key_matcher<T>()>(
                     [&](std::size_t index) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
                         const auto first = !seen[index];
@@ -19664,6 +20037,7 @@ namespace yyjson
                 [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<T>();
                 auto defaults = struct_defaults<T>();
                 auto adjacent = adjacent_fields_of<T>{cur_};
+                [[maybe_unused]] const auto extra = extra_keys_scope<T>(*this, t);
                 read_fields<T, true, struct_key_matcher<T>()>(
                     [&](std::size_t index) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
                         with_struct_field<T>(
@@ -20372,6 +20746,82 @@ namespace yyjson
                 }
             }
 
+            // Reads the member at `at` of the object at `open` of the struct T, whose key names no field, into the
+            // field annotated with `yyjson::extra_keys` that `extra_` points to, unless the key is a tag, whose value
+            // is skipped.  With `Merge`, null erases the key and any other value is merged into its value.  Fails
+            // where the document throws: for a value that does not satisfy the settings of the values of the field,
+            // and under `yyjson::strict` for a key that the map already has, which the document tells apart from a
+            // key in `T()`, and for a merge, whose keys the document checks.
+            template <typename T, bool Merge>
+            CPPYYJSON_NOINLINE void read_extra_member(const char* open, const char* at)
+            {
+                using yyjson::detail::extra_keys_field;
+                using M = std::remove_cvref_t<decltype(extra_keys_field(std::declval<T&>()))>;
+                auto& extra = *static_cast<M*>(extra_);
+                const char* const value = cur_;
+                cur_ = at;
+                const auto key = typename M::key_type(read_short_string(scratch_));
+                cur_ = value;
+                if (yyjson::detail::is_tag_key<T>(key, open))
+                {
+                    skip_value();
+                    return;
+                }
+                if constexpr (Merge)
+                {
+                    if (strict_) fail();
+                    if (*cur_ == 'n')
+                    {
+                        read_literal("null");
+                        if (const auto it = extra.find(key); it != extra.end()) extra.erase(it);
+                        return;
+                    }
+                    auto& v = extra.try_emplace(key).first->second;
+                    merge_value(v);
+                    check_extra_value<T>(v);
+                }
+                else
+                {
+                    auto v = read_value<typename M::mapped_type>();
+                    check_extra_value<T>(v);
+                    if (auto [it, added] = extra.try_emplace(key, std::move(v)); !added)
+                    {
+                        if (strict_) fail();
+                        it->second = std::move(v);
+                    }
+                }
+            }
+
+            template <typename T, typename V>
+            CPPYYJSON_ALWAYS_INLINE void check_extra_value(const V& v)
+            {
+                if constexpr (yyjson::detail::constrained_extra_values<T>)
+                    if (yyjson::detail::level_violation<yyjson::detail::extra_values_level<T>>(v) !=
+                        yyjson::detail::constraint_kind::none) [[unlikely]]
+                        fail();
+            }
+
+            // Points `extra_` to the field of `t` annotated with `yyjson::extra_keys` while the object of the struct
+            // T is read, if T has one.
+            template <typename T>
+            class extra_keys_scope
+            {
+            public:
+                extra_keys_scope(direct_reader&, T&) noexcept {}
+            };
+            template <typename T>
+            requires yyjson::detail::has_extra_keys<T>
+            class extra_keys_scope<T>
+            {
+                void* saved_ = extra_;
+
+            public:
+                extra_keys_scope(direct_reader&, T& t) noexcept { extra_ = &yyjson::detail::extra_keys_field(t); }
+                extra_keys_scope(const extra_keys_scope&) = delete;
+                extra_keys_scope& operator=(const extra_keys_scope&) = delete;
+                ~extra_keys_scope() { extra_ = saved_; }
+            };
+
             // Reads the members of the object at `open` of the struct T from `cur_` at a key on, with `hint` the
             // field that is expected next, and assigns those that `Matcher` finds with `assign(index)`.  The
             // object has had the keys of the fields before `hint` in their order.  Checks the keys of the object
@@ -20388,10 +20838,10 @@ namespace yyjson
                 {
                     if (*cur_ != '"') [[unlikely]]
                         fail();
+                    [[maybe_unused]] const char* const at = cur_;
                     auto index = n;
                     if constexpr (yyjson::detail::key_watching<Assign>)
                     {
-                        const char* const at = cur_;
                         index = find_watched_field<n>(assign, hint);
                         if (index == n || index != hint) [[unlikely]]
                         {
@@ -20418,6 +20868,8 @@ namespace yyjson
                         assign(index);
                         hint = index + 1;
                     }
+                    else if constexpr (yyjson::detail::has_extra_keys<T>)
+                        read_extra_member<T, Merge>(open, at);
                     else
                         skip_value();
                     skip_ws();
@@ -20584,6 +21036,7 @@ namespace yyjson
             {
                 [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<T>();
                 auto adjacent = adjacent_fields_of<T>{cur_};
+                [[maybe_unused]] const auto extra = extra_keys_scope<T>(*this, t);
                 const auto read_one =
                     [&]<std::size_t K>(std::integral_constant<std::size_t, K>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
                         using yyjson::detail::reflected_field_index;

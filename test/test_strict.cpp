@@ -307,7 +307,52 @@ struct StrictAnnotatedOmitted
     [[= yyjson::omit_default, = yyjson::minimum(0)]] int b = -1;
     bool operator==(const StrictAnnotatedOmitted&) const = default;
 };
+struct ExtraAnnotated
+{
+    int a = 0;
+    [[ = yyjson::extra_keys, = yyjson::additional_properties(yyjson::maximum(9)) ]] std::map<std::string, int> more;
+    bool operator==(const ExtraAnnotated&) const = default;
+};
 #endif
+
+// a struct that keeps the keys of no field in a map, whose values are constrained, as an alternative of an internally
+// tagged variant, and with values of any type
+struct ExtraOpen
+{
+    int a = 0;
+    std::map<std::string, int> more;
+    bool operator==(const ExtraOpen&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<ExtraOpen> =
+    yyjson::annotate(yyjson::field("more", yyjson::extra_keys, yyjson::additional_properties(yyjson::minimum(0))));
+struct ExtraSeeded
+{
+    int a = 0;
+    std::map<std::string, int> more = {{"seed", 1}};
+    bool operator==(const ExtraSeeded&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<ExtraSeeded> = yyjson::annotate(yyjson::field("more", yyjson::extra_keys));
+struct ExtraCircle
+{
+    int r = 0;
+    std::unordered_map<std::string, int> more;
+    bool operator==(const ExtraCircle&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<ExtraCircle> = yyjson::annotate(yyjson::field("more", yyjson::extra_keys));
+using ExtraShape = std::variant<ExtraCircle, StrictRect>;
+template <>
+inline constexpr auto yyjson::annotations<ExtraShape> =
+    yyjson::annotate(yyjson::internal_tag("type", {"circle", "rect"}));
+struct ExtraAny
+{
+    int a = 0;
+    std::map<std::string, yyjson::value> rest;
+};
+template <>
+inline constexpr auto yyjson::annotations<ExtraAny> = yyjson::annotate(yyjson::field("rest", yyjson::extra_keys));
 
 namespace
 {
@@ -846,6 +891,81 @@ TEST(Strict, Scope)
     EXPECT_EQ(yyjson::read(R"({"x":1,"w":0})").cast<StrictPoint>(), (StrictPoint{1, 0, {}}));
 }
 
+TEST(Strict, ExtraKeys)
+{
+    // the keys of no field go to the map, in any order and under `yyjson::strict` too
+    expect_strict<ExtraOpen>(R"({"a":1,"x":2,"y":3})", {1, {{"x", 2}, {"y", 3}}});
+    expect_strict<ExtraOpen>(R"({"y":3,"a":1,"x":2})", {1, {{"x", 2}, {"y", 3}}});
+    expect_strict<ExtraOpen>(R"({"a":1})", {1, {}});
+    expect_lenient<ExtraOpen>(R"({"x":2,"a":1})", {1, {{"x", 2}}});
+    // their values are read and checked as the values of a map field, and a repeated key is rejected by strict only
+    expect_rejected<ExtraOpen>(R"({"a":1,"x":-1})",
+                               R"(the value of the key "x" of ExtraOpen is less than the minimum 0)", "/x");
+    expect_rejected<ExtraOpen>(R"({"a":1,"x":"s"})", "", "/x");
+    EXPECT_EQ(bad_cast_of([] { (void)yyjson::read<ExtraOpen>(R"({"a":1,"x":-1})"); }).path(), "/x");
+    expect_rejected<ExtraOpen>(R"({"a":1,"x":1,"x":2})", R"(the object read into ExtraOpen has the key "x" twice)",
+                               "/x");
+    expect_lenient<ExtraOpen>(R"({"a":1,"x":1,"x":2})", {1, {{"x", 2}}});
+    // a read starts from the map of `T()`, and `merge_into` adds to the map and erases the keys of null
+    expect_strict<ExtraSeeded>(R"({"a":1,"x":2})", {1, {{"seed", 1}, {"x", 2}}});
+    const auto kept = ExtraOpen{1, {{"x", 1}, {"y", 2}}};
+    EXPECT_EQ(expect_merge_into(kept, R"({"x":5,"y":null,"z":3})"), yyjson::write(ExtraOpen{1, {{"x", 5}, {"z", 3}}}));
+    EXPECT_EQ(merged(kept, R"({"x":5,"y":null,"z":3})", yyjson::ReadFlag::NoFlag),
+              yyjson::write(ExtraOpen{1, {{"x", 5}, {"z", 3}}}));
+    auto target = kept;
+    EXPECT_THROW(yyjson::merge_into(R"({"x":-1})", target), yyjson::bad_cast);
+
+    // the map is written after the fields, in its order
+    const auto open = ExtraOpen{1, {{"y", 3}, {"x", 2}}};
+    EXPECT_EQ(yyjson::write(open), R"({"a":1,"x":2,"y":3})");
+    EXPECT_EQ(yyjson::value(open).write(), R"({"a":1,"x":2,"y":3})");
+    EXPECT_EQ(yyjson::write(open, yyjson::strict), R"({"a":1,"x":2,"y":3})");
+    expect_direct_write(open);
+    expect_direct_write(std::vector{open, ExtraOpen()});
+    const auto nested = std::map<std::string, std::vector<std::optional<ExtraOpen>>>{{"k", {open}}};
+    EXPECT_EQ(yyjson::value(nested).write(), R"({"k":[{"a":1,"x":2,"y":3}]})");
+    expect_direct_write(nested);
+    expect_direct_write(std::tuple{open, std::array{open}});
+    EXPECT_EQ(yyjson::read<ExtraOpen>(yyjson::write(open), yyjson::strict), open);
+    // a key that the struct writes for a field is rejected, and a value that violates the settings by validate
+    const auto conflict = ExtraOpen{1, {{"a", 2}}};
+    EXPECT_THROW((void)yyjson::write(conflict), std::invalid_argument);
+    EXPECT_THROW((void)yyjson::value(conflict), std::invalid_argument);
+    EXPECT_THROW((void)yyjson::write(std::vector{conflict}), std::invalid_argument);
+    EXPECT_EQ(
+        message_of(bad_cast_of([&] { yyjson::validate(conflict); })),
+        R"(the field of yyjson::extra_keys of ExtraOpen has the key "a", which ExtraOpen writes for a field or a tag)");
+    const auto negative = ExtraOpen{1, {{"x", -1}}};
+    EXPECT_EQ(yyjson::write(negative), R"({"a":1,"x":-1})");
+    EXPECT_EQ(bad_cast_of([&] { yyjson::validate(negative); }).path(), "/x");
+    EXPECT_EQ(bad_cast_of([&] { (void)yyjson::write(std::vector{negative}, yyjson::strict); }).path(), "/0/x");
+
+    // the tag of an internally tagged variant is not a key of the map, and the map may not write it
+    expect_strict<ExtraShape>(R"({"type":"circle","r":1,"x":2})", ExtraCircle{1, {{"x", 2}}});
+    expect_strict<ExtraShape>(R"({"x":2,"r":1,"type":"circle"})", ExtraCircle{1, {{"x", 2}}});
+    const auto shape = ExtraShape(ExtraCircle{1, {{"x", 2}}});
+    EXPECT_EQ(yyjson::write(shape), R"({"type":"circle","r":1,"x":2})");
+    expect_direct_write(shape);
+    const auto tagged = ExtraShape(ExtraCircle{1, {{"type", 2}}});
+    EXPECT_THROW((void)yyjson::write(tagged), std::invalid_argument);
+    EXPECT_THROW((void)yyjson::value(tagged), std::invalid_argument);
+    EXPECT_THROW(yyjson::validate(tagged), yyjson::bad_cast);
+    EXPECT_EQ(yyjson::write(ExtraCircle{1, {{"type", 2}}}), R"({"r":1,"type":2})");
+
+    // values of any type
+    const auto json = R"({"a":1,"b":[1,{"c":null}],"d":"s"})";
+    const auto any = yyjson::read<ExtraAny>(json, yyjson::strict);
+    EXPECT_EQ(any.rest.size(), 2);
+    EXPECT_EQ(yyjson::write(any), json);
+    EXPECT_EQ(yyjson::value(yyjson::read(json).cast<ExtraAny>()).write(), json);
+
+#if FIELD_RFL_ANNOTATIONS
+    expect_strict<ExtraAnnotated>(R"({"a":1,"x":2})", {1, {{"x", 2}}});
+    expect_rejected<ExtraAnnotated>(R"({"a":1,"x":10})", "", "/x");
+    EXPECT_EQ(yyjson::write(ExtraAnnotated{1, {{"x", 2}}}), R"({"a":1,"x":2})");
+#endif
+}
+
 // The rules that the static assertions of `yyjson::omit_default` enforce, on the error of the table of the keys
 #define OMIT_DEFAULT_RULE(NAME, ...)  \
     struct NAME                       \
@@ -875,5 +995,43 @@ namespace omit_default_rules
     static_assert(table_error<OmitTagged> == omit_default_tagged);
     static_assert(table_error<OmitAlone> == none);
 }  // namespace omit_default_rules
+
+// The rules that the static assertions of `yyjson::extra_keys` enforce
+#define EXTRA_KEYS_RULE(NAME, ...)    \
+    struct NAME                       \
+    {                                 \
+        int v = 0;                    \
+        std::map<std::string, int> m; \
+        std::map<std::string, int> n; \
+    };                                \
+    template <>                       \
+    inline constexpr auto yyjson::annotations<NAME> = yyjson::annotate(__VA_ARGS__);
+EXTRA_KEYS_RULE(ExtraTwice, yyjson::field("m", yyjson::extra_keys), yyjson::field("n", yyjson::extra_keys))
+EXTRA_KEYS_RULE(ExtraRenamed, yyjson::field("m", yyjson::extra_keys, yyjson::rename("k")))
+EXTRA_KEYS_RULE(ExtraRequired, yyjson::field("m", yyjson::extra_keys, yyjson::required))
+EXTRA_KEYS_RULE(ExtraCounted, yyjson::field("m", yyjson::extra_keys, yyjson::min_items(1)))
+EXTRA_KEYS_RULE(ExtraDescribed, yyjson::field("m", yyjson::extra_keys, yyjson::description("d")))
+EXTRA_KEYS_RULE(ExtraNamed, yyjson::field("m", yyjson::extra_keys, yyjson::property_names(yyjson::max_length(3))))
+EXTRA_KEYS_RULE(ExtraDenied, yyjson::additional_properties(false), yyjson::field("m", yyjson::extra_keys))
+EXTRA_KEYS_RULE(ExtraDependency, yyjson::dependent_required("v", {"m"}), yyjson::field("m", yyjson::extra_keys))
+EXTRA_KEYS_RULE(ExtraAllowed, yyjson::additional_properties(true),
+                yyjson::field("m", yyjson::extra_keys, yyjson::additional_properties(yyjson::minimum(0))))
+#undef EXTRA_KEYS_RULE
+namespace extra_keys_rules
+{
+    template <typename T>
+    constexpr auto table_error =
+        yyjson::detail::make_field_key_table<T, yyjson::detail::reflected_field_names<T>>().error;
+    using enum yyjson::detail::field_key_error;
+    static_assert(table_error<ExtraTwice> == extra_keys_twice);
+    static_assert(table_error<ExtraRenamed> == extra_keys_with_setting);
+    static_assert(table_error<ExtraRequired> == extra_keys_with_setting);
+    static_assert(table_error<ExtraCounted> == extra_keys_with_setting);
+    static_assert(table_error<ExtraDescribed> == extra_keys_with_setting);
+    static_assert(table_error<ExtraNamed> == extra_keys_with_setting);
+    static_assert(table_error<ExtraDenied> == extra_keys_denied);
+    static_assert(table_error<ExtraDependency> == dependency_skipped);
+    static_assert(table_error<ExtraAllowed> == none);
+}  // namespace extra_keys_rules
 
 // NOLINTEND

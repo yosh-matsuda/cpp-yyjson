@@ -1568,6 +1568,18 @@ namespace yyjson
                     }
                 }
             }
+            if constexpr (yyjson::detail::has_extra_keys<S>)
+            {
+                // The keys that no field has go to the field of `yyjson::extra_keys`, in both directions and with
+                // `yyjson::strict` too, so the other keys take the schema of its values.
+                constexpr auto e = yyjson::detail::extra_keys_index<S>;
+                using M = std::remove_cvref_t<decltype(yyjson::detail::extra_keys_field(std::declval<S&>()))>;
+                const auto v = nodes != nullptr ? nodes[e].values : 0;
+                emit<typename M::mapped_type>(out.emplace("additionalProperties", empty_object),
+                                              v != 0 ? nodes : nullptr, v);
+                values_ = outer_values;
+                return;
+            }
             values_ = outer_values;
             const bool closed = writing() || rules::additional == additional::denied ||
                                 (strict() && rules::additional != additional::allowed);
