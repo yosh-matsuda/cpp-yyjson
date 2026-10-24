@@ -179,6 +179,8 @@ namespace
         const auto r = validate_error([&] { (void)yyjson::read<T>(json, yyjson::strict); });
         EXPECT_TRUE(message_of(r).starts_with(message)) << json << "\n" << r.what();
         EXPECT_EQ(r.path(), path) << json;
+        const auto w = validate_error([&] { (void)yyjson::write(t, yyjson::strict); });
+        EXPECT_EQ(std::string_view(w.what()), std::string_view(e.what()));
     }
 
     template <typename T>
@@ -186,6 +188,7 @@ namespace
     {
         EXPECT_NO_THROW(yyjson::validate(t));
         EXPECT_NO_THROW((void)yyjson::read<T>(std::string(yyjson::write(t)), yyjson::strict));
+        EXPECT_EQ(std::string(yyjson::write(t, yyjson::strict)), std::string(yyjson::write(t)));
     }
 }  // namespace
 
@@ -308,6 +311,30 @@ TEST(Validate, Nulls)
                    R"(the value of the key "colors" of ValidateNulls has a key that does not satisfy the )"
                    R"(constraints of yyjson::property_names)",
                    "/colors");
+}
+
+TEST(Validate, WriteStrict)
+{
+    const auto valid = ValidateFields{1, {1, 2}, {{"a", 1}}, 3};
+    EXPECT_EQ(std::string(yyjson::write(valid, yyjson::WriteFlag::Pretty, yyjson::strict)),
+              std::string(yyjson::write(valid, yyjson::WriteFlag::Pretty)));
+    auto out = std::string("old");
+    yyjson::write(valid, out, yyjson::strict);
+    EXPECT_EQ(out, std::string(yyjson::write(valid)));
+    yyjson::write(valid, out, yyjson::WriteFlag::Pretty, yyjson::strict);
+    EXPECT_EQ(out, std::string(yyjson::write(valid, yyjson::WriteFlag::Pretty)));
+
+    // the value is checked before anything is written, and `out` is left empty
+    const auto invalid = with<ValidateFields>([](auto& t) { t.x = -1; });
+    EXPECT_NO_THROW((void)yyjson::write(invalid));
+    const auto e = validate_error([&] { yyjson::write(invalid, out, yyjson::strict); });
+    EXPECT_EQ(e.path(), "/x");
+    EXPECT_TRUE(out.empty());
+    out = "old";
+    EXPECT_THROW(yyjson::write(invalid, out, yyjson::WriteFlag::Pretty, yyjson::strict), yyjson::bad_cast);
+    EXPECT_TRUE(out.empty());
+    // the adjacent tag that `write` rejects with `std::invalid_argument` is a `yyjson::bad_cast` here
+    EXPECT_THROW((void)yyjson::write(ValidateEnvelope{"rect", ValidateCircle{}}, yyjson::strict), yyjson::bad_cast);
 }
 
 TEST(Validate, Unchecked)

@@ -16100,6 +16100,32 @@ namespace yyjson
     }
 #endif
 
+    // Write as the overloads above with `yyjson::strict`, which first checks `t` with `yyjson::validate`, so that
+    // `yyjson::read<T>(text, yyjson::strict)` reads the text back as far as `t` decides it.
+    template <writable T>
+    [[nodiscard]] json_string write(const T& t, WriteFlag write_flag, strict_t)
+    {
+        validate(t);
+        return yyjson::write(t, write_flag);
+    }
+    template <writable T>
+    [[nodiscard]] json_string write(const T& t, strict_t s)
+    {
+        return yyjson::write(t, WriteFlag::NoFlag, s);
+    }
+    template <writable T>
+    void write(const T& t, std::string& out, WriteFlag write_flag, strict_t)
+    {
+        out.clear();
+        validate(t);
+        yyjson::write(t, out, write_flag);
+    }
+    template <writable T>
+    void write(const T& t, std::string& out, strict_t s)
+    {
+        yyjson::write(t, out, WriteFlag::NoFlag, s);
+    }
+
     // A type that cannot be written is rejected by name, along with the field or the element of it that cannot be
     // written, in `cannot_be_written`.  See `yyjson::diagnostic`.
     template <typename T, typename cannot_be_written = detail::write_cause<T>>
@@ -16109,6 +16135,22 @@ namespace yyjson
     template <typename T, typename cannot_be_written = detail::write_cause<T>>
     requires (!writable<T>)
     void write(const T& t, std::string& out, WriteFlag write_flag = WriteFlag::NoFlag) = CPPYYJSON_DELETED_FUNCTION(
+        "T cannot be written as JSON: `cannot_be_written` names the field or element that cannot be");
+    template <typename T, typename cannot_be_written = detail::write_cause<T>>
+    requires (!writable<T>)
+    json_string write(const T& t, WriteFlag write_flag, strict_t) = CPPYYJSON_DELETED_FUNCTION(
+        "T cannot be written as JSON: `cannot_be_written` names the field or element that cannot be");
+    template <typename T, typename cannot_be_written = detail::write_cause<T>>
+    requires (!writable<T>)
+    json_string write(const T& t, strict_t) = CPPYYJSON_DELETED_FUNCTION(
+        "T cannot be written as JSON: `cannot_be_written` names the field or element that cannot be");
+    template <typename T, typename cannot_be_written = detail::write_cause<T>>
+    requires (!writable<T>)
+    void write(const T& t, std::string& out, WriteFlag write_flag, strict_t) = CPPYYJSON_DELETED_FUNCTION(
+        "T cannot be written as JSON: `cannot_be_written` names the field or element that cannot be");
+    template <typename T, typename cannot_be_written = detail::write_cause<T>>
+    requires (!writable<T>)
+    void write(const T& t, std::string& out, strict_t) = CPPYYJSON_DELETED_FUNCTION(
         "T cannot be written as JSON: `cannot_be_written` names the field or element that cannot be");
 
     namespace reader::detail
