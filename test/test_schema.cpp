@@ -146,6 +146,58 @@ using ExtraShape = std::variant<ExtraCircle, Groups>;
 template <>
 inline constexpr auto yyjson::annotations<ExtraShape> = yyjson::annotate(yyjson::internal_tag("type", {"c", "g"}));
 
+// structs read and written as the value of their only field, whose constraints and metadata they take, also as the
+// fields, elements and alternatives of others
+struct TId
+{
+    int value = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<TId> =
+    yyjson::annotate(yyjson::transparent, yyjson::description("A user"), yyjson::field("value", yyjson::minimum(1)));
+struct TTags
+{
+    std::vector<std::string> v;
+};
+template <>
+inline constexpr auto yyjson::annotations<TTags> = yyjson::annotate(
+    yyjson::transparent, yyjson::field("v", yyjson::min_items(1), yyjson::items(yyjson::max_length(3))));
+struct TLimit
+{
+    std::optional<int> o = 7;
+};
+template <>
+inline constexpr auto yyjson::annotations<TLimit> =
+    yyjson::annotate(yyjson::transparent, yyjson::field("o", yyjson::maximum(10)));
+struct TBag
+{
+    std::map<std::string, int> m;
+};
+template <>
+inline constexpr auto yyjson::annotations<TBag> =
+    yyjson::annotate(yyjson::transparent, yyjson::field("m", yyjson::min_items(1)));
+struct TPoint
+{
+    int x = 0;
+};
+struct TWrap
+{
+    TPoint in;
+};
+template <>
+inline constexpr auto yyjson::annotations<TWrap> = yyjson::annotate(yyjson::transparent);
+using TShape = std::variant<TPoint, TWrap, TBag>;
+template <>
+inline constexpr auto yyjson::annotations<TShape> = yyjson::annotate(yyjson::internal_tag("t", {"p", "w", "b"}));
+struct TAccount
+{
+    TId id{1};
+    TTags tags{{"a"}};
+    std::vector<TId> ids;
+    TLimit limit;
+    TShape shape;
+};
+
 struct TkC
 {
     std::tuple<std::pair<std::string, int>, std::pair<std::string, int>> t{{"a", 1}, {"b", 2}};
@@ -1099,6 +1151,40 @@ TEST(Schema, ExtraKeys)
         R"({"type":"c","x":1})",
         R"({"type":"g","env":"e","email":"a"})",
     });
+}
+
+TEST(Schema, Transparent)
+{
+    check<TAccount>({
+        R"({"id":3,"tags":["a"],"ids":[],"shape":{"t":"p","x":1}})",
+        R"({"id":3,"tags":["a"],"ids":[1,2],"limit":10,"shape":{"t":"w","x":1}})",
+        R"({"id":3,"tags":["a"],"ids":[],"shape":{"t":"b","k":1}})",
+        R"({"id":3,"tags":["a"],"ids":[],"shape":{"t":"b"}})",
+        R"({"id":0,"tags":["a"],"ids":[],"shape":{"t":"p"}})",
+        R"({"id":3,"tags":[],"ids":[],"shape":{"t":"p"}})",
+        R"({"id":3,"tags":["long"],"ids":[],"shape":{"t":"p"}})",
+        R"({"id":3,"tags":["a"],"ids":[0],"shape":{"t":"p"}})",
+        R"({"id":3,"tags":["a"],"ids":[],"limit":11,"shape":{"t":"p"}})",
+        R"({"id":"3","tags":["a"],"ids":[],"shape":{"t":"p"}})",
+    });
+    // a transparent struct is a definition of the schema of its field, with its metadata
+    const auto read = to_jsoncons(yyjson::json_schema<TAccount>());
+    EXPECT_EQ(read["$defs"]["TId"],
+              json::parse(R"({"type":"integer","maximum":2147483647,"minimum":1,"description":"A user"})"));
+    EXPECT_EQ(read["$defs"]["TLimit"],
+              json::parse(R"({"anyOf":[{"type":"integer","minimum":-2147483648,"maximum":10},{"type":"null"}]})"));
+    EXPECT_EQ(read["$defs"]["TAccount"]["properties"]["limit"], json::parse(R"({"$ref":"#/$defs/TLimit","default":7})"));
+    // an element of an empty optional value is null
+    check<std::vector<TLimit>>({
+        R"([null,3])",
+        R"([11])",
+    });
+    // a field of an optional value is not required by `yyjson::strict`, nor by the write schema
+    for (const auto& s : {to_jsoncons(yyjson::json_schema<TAccount>(yyjson::strict)),
+                          to_jsoncons(yyjson::json_schema<TAccount>({.direction = yyjson::schema_direction::write}))})
+        EXPECT_EQ(s["$defs"]["TAccount"]["required"], json::parse(R"(["id","tags","ids","shape"])"));
+    // and the root refers to it, as to a struct
+    EXPECT_EQ(to_jsoncons(yyjson::json_schema<TId>())["$ref"], json("#/$defs/TId"));
 }
 
 TEST(Schema, VecOpt)

@@ -57,6 +57,7 @@ add_executable(
   test_tagged_variant.cpp
   test_error_path.cpp
   test_strict.cpp
+  test_transparent.cpp
   test_constraints.cpp
   test_validate.cpp
   test_many_fields.cpp)

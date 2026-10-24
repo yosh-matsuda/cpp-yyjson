@@ -460,6 +460,8 @@ namespace yyjson
                     g.emit_enum<T>(out);
                 else if constexpr (is_variant<T>::value)
                     g.emit_variant<T>(out);
+                else if constexpr (yyjson::detail::transparent_struct<T>)
+                    g.emit_transparent<T>(out, {});
                 else if constexpr (struct_type<T>)
                     g.emit_struct<T>(out);
                 g.emit_type_metadata<T>(out);
@@ -883,6 +885,8 @@ namespace yyjson
 
             template <typename S>
             void emit_struct(object_ref out, std::span<const variant_tag> tags = {});
+            template <typename S>
+            void emit_transparent(object_ref out, std::span<const variant_tag> tags);
             template <typename F, typename Tags, std::size_t... Is>
             void emit_adjacent(array_ref one, std::string_view key, std::optional<std::size_t> held,
                                std::index_sequence<Is...>);
@@ -892,7 +896,8 @@ namespace yyjson
             template <typename V>
             void emit_tagged_variant(object_ref out, std::span<const variant_tag> outer);
             template <typename A>
-            void emit_tagged(object_ref out, std::span<const variant_tag> tags);
+            void emit_tagged(object_ref out, std::span<const variant_tag> tags, const schema_node* nodes = nullptr,
+                             std::size_t node = 0);
             // Writes the tags into `properties` and their keys into `required`.  A key that two tags have takes the
             // id of the first; it fails when the ids differ, as no string is both.
             static void emit_tags(object_ref properties, std::vector<std::string_view>& required,
@@ -1315,13 +1320,17 @@ namespace yyjson
         // the write adds the tags to what A writes, so a struct is written in place with the tags among its
         // properties, through a pointer, a translator or another variant tagged in the same object.  Anything else
         // takes the tags beside its own schema, which has to allow their keys.
+        //
+        // `nodes` and `node` are the settings of the field of a struct annotated with `yyjson::transparent`, which
+        // A is the type of.  A struct and a variant take none that a schema has.
         template <typename A>
-        void generator::emit_tagged(object_ref out, std::span<const variant_tag> tags)
+        void generator::emit_tagged(object_ref out, std::span<const variant_tag> tags, const schema_node* nodes,
+                                    std::size_t node)
         {
             using T = std::remove_cvref_t<A>;
             const auto beside = [&] {
                 auto all = out.emplace("allOf", empty_array);
-                emit<T>(all.emplace_back(empty_object));
+                emit<T>(all.emplace_back(empty_object), nodes, node);
                 auto tag = all.emplace_back(empty_object);
                 auto required = std::vector<std::string_view>();
                 emit_tags(tag.emplace("properties", empty_object), required, tags);
@@ -1354,7 +1363,12 @@ namespace yyjson
             }
             if constexpr (yyjson::detail::is_std_optional<T>::value || yyjson::detail::owning_pointer<T>)
                 // Null is not an object, which the tags need.
-                emit_tagged<decltype(*std::declval<T&>())>(out, tags);
+                emit_tagged<decltype(*std::declval<T&>())>(out, tags, nodes, node);
+            else if constexpr (yyjson::detail::transparent_struct<T>)
+            {
+                emit_transparent<T>(out, tags);
+                emit_type_metadata<T>(out);
+            }
             else if constexpr (struct_type<T>)
             {
                 emit_struct<T>(out, tags);
@@ -1410,6 +1424,30 @@ namespace yyjson
             auto absent = one.emplace_back(empty_object).emplace("not", empty_object).emplace("anyOf", empty_array);
             absent.emplace_back(empty_object).emplace("required", empty_array).emplace_back(Tags::key);
             absent.emplace_back(empty_object).emplace("required", empty_array).emplace_back(key);
+        }
+
+        // A struct annotated with `yyjson::transparent` is the value of its field, with the settings of the field.  An
+        // optional field gives null too, which a struct reads and writes as an element, a value of a map or the
+        // root, and which a field of a struct reads as the default.  A tagged alternative is the object only.
+        template <typename S>
+        void generator::emit_transparent(object_ref out, std::span<const variant_tag> tags)
+        {
+            using F = yyjson::detail::struct_field_type<S, 0>;
+            using V = std::conditional_t<yyjson::detail::is_std_optional<F>::value, typename optional_value<F>::type, F>;
+            constexpr auto node = yyjson::detail::struct_declared_index<S, 0>;
+            const schema_node* nodes = nullptr;
+            const yyjson::detail::json_scalar* values = nullptr;
+            if constexpr (yyjson::detail::constrained_field<S, 0>)
+            {
+                nodes = yyjson::detail::field_table_of<S>::table.schemas.nodes.data();
+                values = yyjson::detail::field_table_of<S>::table.schemas.values.data();
+            }
+            const auto* const outer_values = std::exchange(values_, values);
+            if (tags.empty())
+                emit<F>(out, nodes, node);
+            else
+                emit_tagged<V>(out, tags, nodes, node);
+            values_ = outer_values;
         }
 
         template <typename S>

@@ -940,6 +940,16 @@ namespace yyjson
     };
     inline constexpr extra_keys_t extra_keys{};
 
+    // A struct that is read and written as the value of its only field, as
+    // `yyjson::annotations<T> = yyjson::annotate(yyjson::transparent)` or `struct [[=yyjson::transparent]] T` gives
+    // it.  The struct has exactly one field that is not skipped; the field takes constraints and the settings of
+    // its values but no key settings, and the struct takes metadata only.  A constraint on the field holds for the
+    // value itself, which makes such a struct a type with constraints of its own, such as `UserId`.
+    struct transparent_t
+    {
+    };
+    inline constexpr transparent_t transparent{};
+
     // Whether the object of a struct may have keys that name no field, as
     // `yyjson::annotations<T> = yyjson::annotate(yyjson::additional_properties(false))` or
     // `struct [[=yyjson::additional_properties(false)]] T` gives it.  With `false`, reading an object with such a key
@@ -1997,6 +2007,10 @@ namespace yyjson
             extra_keys_with_setting,
             extra_keys_visitable,
             extra_keys_denied,
+            transparent_twice,
+            transparent_field_count,
+            transparent_field_setting,
+            transparent_struct_setting,
         };
 
         // The constraints of a value, those in `set` by `constraint_bit`.  The values of `yyjson::const_` and
@@ -2462,9 +2476,9 @@ namespace yyjson
         template <typename... As>
         inline constexpr bool annotate_settings =
             count_true<(is_field_annotation<As>::value || std::same_as<As, additional_properties<>> ||
-                        is_dependent_required<As>::value || is_required_groups<As>::value ||
-                        internal_tag_annotation<As> || enum_annotation<As> || type_metadata_setting<As>)...> ==
-            sizeof...(As);
+                        std::same_as<As, transparent_t> || is_dependent_required<As>::value ||
+                        is_required_groups<As>::value || internal_tag_annotation<As> || enum_annotation<As> ||
+                        type_metadata_setting<As>)...> == sizeof...(As);
     }  // namespace detail
 
     template <typename... As>
@@ -2472,7 +2486,7 @@ namespace yyjson
     {
         static_assert(detail::annotate_settings<As...>,
                       "yyjson::annotate takes yyjson::field(...), yyjson::additional_properties, "
-                      "yyjson::dependent_required, yyjson::one_of_required and yyjson::any_of_required for a struct, "
+                      "yyjson::transparent, yyjson::dependent_required, yyjson::one_of_required and yyjson::any_of_required for a struct, "
                       "yyjson::internal_tag for a variant, yyjson::enumerator(...) and yyjson::enum_format for an "
                       "enumeration, yyjson::schema_name for a struct, an enumeration, a variant or a type with a "
                       "caster, and yyjson::title, "
@@ -2929,6 +2943,19 @@ namespace yyjson
             return true;
         }
 
+        // Whether the class T is annotated with `yyjson::transparent`, which `caster<T>` is specialized for.
+        template <typename T>
+        inline constexpr bool transparent_annotated =
+            []<typename... As>(std::type_identity<std::tuple<As...>>) {
+                return (std::same_as<As, transparent_t> || ...);
+            }(std::type_identity<annotation_values_of<T>>{})
+#if FIELD_RFL_ANNOTATIONS
+            || !field_reflection::type_annotations<T, transparent_t>.empty()
+#endif
+            ;
+        template <typename T>
+        concept transparent_struct = std::is_class_v<T> && transparent_annotated<T>;
+
         // `yyjson::additional_properties` of a struct, if it has one.
         enum class additional_keys : std::uint8_t
         {
@@ -2953,6 +2980,7 @@ namespace yyjson
             std::array<bool, N> omit_default = {};  // whether a field is annotated with `yyjson::omit_default`
             std::size_t extra = N;                  // the field annotated with `yyjson::extra_keys`, or N
             additional_keys additional = additional_keys::unset;
+            bool transparent = false;  // whether the struct is annotated with `yyjson::transparent`
             schema_tree<M, V> schemas = {{}, N};
             bool constrained = false;  // whether a field has a constraint
             // the fields {i, j} where the key of field i requires the key of field j by `yyjson::dependent_required`
@@ -3056,6 +3084,11 @@ namespace yyjson
                 table.schemas.add(i, a);
                 table.constrained = true;
             }
+            constexpr void make_transparent()
+            {
+                if (table.transparent) return fail(field_key_error::transparent_twice);
+                table.transparent = true;
+            }
             constexpr void set_additional(additional_properties<> a)
             {
                 if (table.additional != additional_keys::unset) return fail(field_key_error::additional_twice);
@@ -3140,6 +3173,8 @@ namespace yyjson
                 }
                 else if constexpr (std::same_as<A, additional_properties<>>)
                     set_additional(a);
+                else if constexpr (std::same_as<A, transparent_t>)
+                    make_transparent();
                 else if constexpr (is_dependent_required<A>::value)
                     add_dependency(a);
                 else if constexpr (is_required_groups<A>::value)
@@ -3192,6 +3227,28 @@ namespace yyjson
                         if (i == e && result.error == field_key_error::none)
                             result.error = field_key_error::dependency_skipped;
                     }
+                }
+                if (result.transparent && result.error == field_key_error::none)
+                {
+                    // the struct is its only field, which has no key, and has no keys of its own to settle
+                    std::size_t count = 0;
+                    std::size_t f = N;
+                    for (std::size_t i = 0; i < N; ++i)
+                    {
+                        if (!result.skipped[i])
+                        {
+                            ++count;
+                            f = i;
+                        }
+                    }
+                    if (count != 1)
+                        result.error = field_key_error::transparent_field_count;
+                    else if (renamed[f] || tagged[f] || result.required[f] || result.optional_key[f] ||
+                             result.omit_default[f] || result.extra == f || described[f] != 0)
+                        result.error = field_key_error::transparent_field_setting;
+                    else if (result.additional != additional_keys::unset || dependencies_added != 0 ||
+                             choices_added != 0)
+                        result.error = field_key_error::transparent_struct_setting;
                 }
                 if (result.error != field_key_error::none || std::ranges::find(renamed, true) == renamed.end())
                     return result;
@@ -3340,12 +3397,13 @@ namespace yyjson
                 return (required_group_size{} + ... + required_group_count<required_group_annotation_type<T, Ks>>);
             }(std::make_index_sequence<required_group_annotations<T>.size()>{});
 
-        // Whether the struct T is annotated with `yyjson::additional_properties`, `yyjson::dependent_required`,
-        // `yyjson::one_of_required` or `yyjson::any_of_required`.
+        // Whether the struct T is annotated with `yyjson::additional_properties`, `yyjson::transparent`,
+        // `yyjson::dependent_required`, `yyjson::one_of_required` or `yyjson::any_of_required`.
         template <typename T>
         inline constexpr bool annotated_type = [] {
             if constexpr (std::is_class_v<T>)
                 return !field_reflection::type_annotations<T, additional_properties<>>.empty() ||
+                       !field_reflection::type_annotations<T, transparent_t>.empty() ||
                        !dependency_annotations<T>.empty() || !required_group_annotations<T>.empty();
             else
                 return false;
@@ -3357,6 +3415,8 @@ namespace yyjson
         {
             for (const additional_properties<>& a : field_reflection::type_annotations<T, additional_properties<>>)
                 builder.set_additional(a);
+            for (std::size_t k = 0; k < field_reflection::type_annotations<T, transparent_t>.size(); ++k)
+                builder.make_transparent();
             [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
                 (builder.add_dependency(
                      std::meta::extract<dependency_annotation_type<T, Ks>>(dependency_annotations<T>[Ks])),
@@ -3565,6 +3625,20 @@ namespace yyjson
             static_assert(table.error != field_key_error::extra_keys_denied,
                           "a struct annotated with yyjson::additional_properties(false) has no key for a field "
                           "annotated with yyjson::extra_keys to receive");
+            static_assert(table.error != field_key_error::transparent_twice,
+                          "a struct is annotated with yyjson::transparent twice");
+            static_assert(table.error != field_key_error::transparent_field_count,
+                          "a struct annotated with yyjson::transparent is read and written as the value of its only "
+                          "field: it needs exactly one field that is not skipped");
+            static_assert(table.error != field_key_error::transparent_field_setting,
+                          "the field of a struct annotated with yyjson::transparent has no key: it takes constraints "
+                          "and the settings of the values in it, but no key, yyjson::required, yyjson::optional_key, "
+                          "yyjson::omit_default, yyjson::extra_keys, yyjson::adjacent_tag or metadata such as "
+                          "yyjson::description, which the struct takes instead");
+            static_assert(table.error != field_key_error::transparent_struct_setting,
+                          "a struct annotated with yyjson::transparent is not an object: it takes no "
+                          "yyjson::additional_properties, yyjson::dependent_required, yyjson::one_of_required or "
+                          "yyjson::any_of_required");
             static constexpr auto value = table.keys;
         };
 
@@ -4635,6 +4709,15 @@ namespace yyjson
         }
         template <typename S, std::size_t I>
         using struct_field_type = std::remove_cvref_t<decltype(struct_field<I>(std::declval<S&>()))>;
+        // The field of a struct annotated with `yyjson::transparent`, an rvalue if the struct is one.
+        template <typename S>
+        CPPYYJSON_ALWAYS_INLINE inline constexpr decltype(auto) transparent_field(S&& s) noexcept
+        {
+            if constexpr (std::is_lvalue_reference_v<S>)
+                return (struct_field<0>(s));
+            else
+                return std::move(struct_field<0>(s));
+        }
 
         // The field of the struct S annotated with `yyjson::extra_keys`, by its index among all the fields, or
         // `no_extra_keys`, and whether S has one.
@@ -4729,6 +4812,15 @@ namespace yyjson
                 return std::string_view(visit_struct<S>::names[I]);
             else
                 return field_key<S, reflected_field_index<S, I>>;
+        }();
+        // The key that names the field K of S in the message of a constraint that it violates, which is none, a
+        // null `data()`, for the field of a struct annotated with `yyjson::transparent`.
+        template <typename S, std::size_t K>
+        inline constexpr std::string_view violation_key = [] {
+            if constexpr (transparent_struct<S>)
+                return std::string_view();
+            else
+                return struct_field_key<S, K>;
         }();
 
         // The index of the field of S whose key is `key`, or `struct_field_count<S>`.
@@ -4889,11 +4981,24 @@ namespace yyjson
         template <typename T>
         consteval bool may_read_null();
 
+        // A `std::optional`, or a struct annotated with `yyjson::transparent` whose field is one, which `write` leaves
+        // out when it holds no value.
+        template <typename F>
+        consteval bool optional_field_type()
+        {
+            if constexpr (is_std_optional<F>::value)
+                return true;
+            else if constexpr (transparent_struct<F>)
+                return optional_field_type<struct_field_type<F, 0>>();
+            else
+                return false;
+        }
+
         // The rules of the keys of the object of the struct S beyond reading its fields, by the index of a field
-        // among those that are read: the fields annotated with `yyjson::required`, the `std::optional` fields and
-        // those annotated with `yyjson::optional_key` or `yyjson::omit_default`, which `yyjson::strict` lets the
-        // object leave out, and `yyjson::additional_properties`.  The keys are checked without `yyjson::strict` when
-        // `always` is true.
+        // among those that are read: the fields annotated with `yyjson::required`, the `std::optional` fields (also
+        // through `yyjson::transparent`) and those annotated with `yyjson::optional_key` or `yyjson::omit_default`,
+        // which `yyjson::strict` lets the object leave out, and `yyjson::additional_properties`.  The keys are
+        // checked without `yyjson::strict` when `always` is true.
         template <typename S>
         struct struct_key_rules
         {
@@ -4923,11 +5028,11 @@ namespace yyjson
             }(std::make_index_sequence<n>{});
             static constexpr auto optional = []<std::size_t... Ks>(std::index_sequence<Ks...>) {
                 if constexpr (has_table)
-                    return std::array<bool, n>{(is_std_optional<struct_field_type<S, Ks>>::value ||
+                    return std::array<bool, n>{(optional_field_type<struct_field_type<S, Ks>>() ||
                                                 table().optional_key[struct_declared_index<S, Ks>] ||
                                                 table().omit_default[struct_declared_index<S, Ks>])...};
                 else
-                    return std::array<bool, n>{is_std_optional<struct_field_type<S, Ks>>::value...};
+                    return std::array<bool, n>{optional_field_type<struct_field_type<S, Ks>>()...};
             }(std::make_index_sequence<n>{});
             static constexpr auto keys = []<std::size_t... Ks>(std::index_sequence<Ks...>) {
                 return std::array<std::string_view, n>{struct_field_key<S, Ks>...};
@@ -5342,6 +5447,7 @@ namespace yyjson
             const auto subject_text = subject == constraint_subject::element ? "an element of the value"
                                       : subject == constraint_subject::key   ? "a key of the value"
                                                                              : "the value";
+            if (key.data() == nullptr) throw_bad_cast_at(at, "{} of {} {}", subject_text, type, what);
             throw_bad_cast_at(at, "{} of the key \"{}\" of {} {}", subject_text, key, type, what);
         }
 
@@ -6677,8 +6783,8 @@ namespace yyjson
         [[noreturn]] CPPYYJSON_COLD void throw_field_violation(const Json& json, constraint_kind k)
         {
             using level = constraint_level<S, K>;
-            throw_located_violation<S, level, constrained_value_t<F>>(json, k, struct_field_key<S, K>);
-            throw_constraint_violation(target_of(json), struct_field_key<S, K>, type_name<S>(), k, level::constraints,
+            throw_located_violation<S, level, constrained_value_t<F>>(json, k, violation_key<S, K>);
+            throw_constraint_violation(target_of(json), violation_key<S, K>, type_name<S>(), k, level::constraints,
                                        level::values);
         }
 
@@ -6774,8 +6880,22 @@ namespace yyjson
             }(std::make_index_sequence<struct_field_count<S>>{});
         }
 
-        // `replaceable` tells whether a new object may be constructed in the place of the field.
-        template <typename Field, typename Json>
+        template <typename T, typename Json>
+        void assign_transparent(T& t, const Json& json, bool replaceable);
+
+        // Whether the field of `T`, a struct annotated with `yyjson::transparent`, is a `std::optional` that null
+        // leaves as it is when `T` is a field of a struct.  Elsewhere, as an element, a value of a map, an
+        // alternative or the root, null empties it, as it reads a `std::optional` there.
+        template <typename T>
+        concept transparent_over_optional =
+            is_std_optional<struct_field_type<T, 0>>::value &&
+            std::derived_from<caster<struct_field_type<T, 0>>, builtin_caster> &&
+            !owning_pointer<typename struct_field_type<T, 0>::value_type>;
+
+        // `replaceable` tells whether a new object may be constructed in the place of the field.  `Keyed` is false
+        // for the field of a struct annotated with `yyjson::transparent`, which is a value rather than a key, and
+        // which `yyjson::strict` therefore lets take null as it lets an element.
+        template <typename Field, typename Json, bool Keyed = true>
         void assign_reflected_field_impl(Field& field, const Json& value, bool replaceable)
         {
             using field_type = std::remove_cvref_t<Field>;
@@ -6791,6 +6911,11 @@ namespace yyjson
             if constexpr (c_array<field_type>)
             {
                 assign_c_array(field, value);
+            }
+            else if constexpr (transparent_struct<field_type> &&
+                               std::derived_from<caster<field_type>, builtin_caster>)
+            {
+                assign_transparent(field, value, replaceable);
             }
             else if constexpr (requires { caster<field_type>::from_json(field, value); })
             {
@@ -7419,6 +7544,23 @@ namespace yyjson
                 return [&]<std::size_t... Js>(std::index_sequence<Js...>) {
                     return has_own_bytes<I>(t.*yyjson::detail::member_pointer<Js>(members)...);
                 }(std::make_index_sequence<std::tuple_size_v<std::remove_cvref_t<decltype(members)>>>{});
+        }
+
+        // Reads `json` into the field of `t`, a struct annotated with `yyjson::transparent`, as into a field of a
+        // struct, and checks the constraints of the field unless `json` is null, which leaves the field as it is.
+        // `replaceable` tells whether a new object may be constructed in the place of `t`, and so of its field.
+        template <typename T, typename Json>
+        void assign_transparent(T& t, const Json& json, bool replaceable)
+        {
+            using field_type = struct_field_type<T, 0>;
+            auto& field = struct_field<0>(t);
+            if constexpr (visitable<T>)
+                replaceable = false;
+            else
+                replaceable = replaceable && reflected_field_replaceable<reflected_field_index<T, 0>>(t);
+            assign_reflected_field_impl<field_type, Json, false>(field, json, replaceable);
+            if constexpr (constrained_field<T, 0>)
+                if (!json.is_null()) check_constraints<T, 0>(field, json);
         }
 
         // `assign_fields_in_order` for the fields of the struct T, which calls `assign(k, value, obj)` instead
@@ -12985,6 +13127,8 @@ namespace yyjson
         {
             if constexpr (!std::is_class_v<T> || write_conversion::opaque<T>)
                 return false;
+            else if constexpr (transparent_struct<T>)
+                return constrained_field<T, 0>;
             else if constexpr (validated_struct<T>)
                 return []<std::size_t... Ks>(std::index_sequence<Ks...>) {
                     return ((constrained_field<T, Ks> ||
@@ -13171,8 +13315,8 @@ namespace yyjson
         {
             using level = constraint_level<S, K>;
             if (const auto* value = held_value(field); value != nullptr)
-                throw_value_located_violation<S, level>(*value, k, struct_field_key<S, K>);
-            throw_constraint_violation(cast_target{}, struct_field_key<S, K>, type_name<S>(), k, level::constraints,
+                throw_value_located_violation<S, level>(*value, k, violation_key<S, K>);
+            throw_constraint_violation(cast_target{}, violation_key<S, K>, type_name<S>(), k, level::constraints,
                                        level::values);
         }
 
@@ -13309,6 +13453,17 @@ namespace yyjson
                             validate_value(a);
                         },
                         v);
+            }
+            else if constexpr (transparent_struct<U>)
+            {
+                // the field is the value itself, which adds nothing to the path
+                const auto& field = struct_field<0>(v);
+                validate_value(field);
+                if constexpr (constrained_field<U, 0>)
+                {
+                    if (const auto k = constraint_violation<U, 0>(field); k != constraint_kind::none) [[unlikely]]
+                        if (!written_as_null(field)) throw_value_violation<U, 0>(field, k);
+                }
             }
             else if constexpr (validated_struct<U>)
                 validate_struct(v);
@@ -14510,6 +14665,74 @@ namespace yyjson
         }
     };
 
+    // A struct annotated with `yyjson::transparent`, which is read and written as the value of its only field.
+    // The field is read in place as a field of a struct is, and its constraints are checked unless the value is
+    // null.  Null empties a `std::optional` field, as it does a `std::optional` value; only a field of a struct
+    // keeps the value in `T()`.
+    template <typename T>
+    requires detail::transparent_struct<T>
+    struct caster<T> : detail::builtin_caster
+    {
+        using field_type = detail::struct_field_type<T, 0>;
+
+        static bool should_omit(const T& t)
+        requires detail::omittable<field_type>
+        {
+            return detail::should_omit_field(detail::struct_field<0>(t));
+        }
+
+        // `t` is a value of its own, unless it is a field of a struct, which `detail::assign_transparent` reads
+        // into instead with what the struct allows.
+        template <typename Json>
+        requires field_assignable<Json, field_type>
+        static void from_json(T& t, const Json& json)
+        {
+            if constexpr (detail::transparent_over_optional<T>)
+            {
+                if (json.is_null())
+                {
+                    detail::struct_field<0>(t).reset();
+                    return;
+                }
+            }
+            detail::assign_transparent(t, json, true);
+        }
+
+        template <typename Json>
+        requires field_assignable<Json, field_type>
+        static T from_json(const Json& json)
+        {
+            auto t = T();
+            from_json(t, json);
+            return t;
+        }
+
+        template <typename... Ts>
+        requires detail::copy_string_args<Ts...> && requires(writer::value_ref& v, const field_type& f) {
+            v = f;
+            v = std::pair<const field_type&, copy_string_t>(f, copy_string);
+        }
+        static void to_json(writer::value_ref& v, const T& t, Ts...)
+        {
+            if constexpr (sizeof...(Ts) != 0)
+                v = std::pair<const field_type&, copy_string_t>(detail::transparent_field(t), copy_string);
+            else
+                v = detail::transparent_field(t);
+        }
+        template <typename... Ts>
+        requires detail::copy_string_args<Ts...> && requires(writer::value_ref& v, field_type&& f) {
+            v = std::move(f);
+            v = std::pair<field_type&&, copy_string_t>(std::move(f), copy_string);
+        }
+        static void to_json(writer::value_ref& v, T&& t, Ts...)
+        {
+            if constexpr (sizeof...(Ts) != 0)
+                v = std::pair<field_type&&, copy_string_t>(detail::transparent_field(std::move(t)), copy_string);
+            else
+                v = detail::transparent_field(std::move(t));
+        }
+    };
+
     template <>
     struct caster<std::monostate>
     {
@@ -14605,6 +14828,8 @@ namespace yyjson
                     return json_kind_array;
                 else if constexpr (variant_json_kinds<T>::is_variant)
                     return variant_json_kinds<T>::template value<Json>();
+                else if constexpr (transparent_struct<T>)
+                    return accepted_json_kinds<struct_field_type<T, 0>, Json>();
                 else if constexpr (owning_pointer<T>)
                     return json_kind_null | accepted_json_kinds<typename is_owning_pointer<T>::value_type, Json>();
                 else if constexpr (is_std_optional<T>::value)
@@ -14693,6 +14918,9 @@ namespace yyjson
             };
             static constexpr bool inner = builtin_cast && std::derived_from<caster<T>, builtin_caster> &&
                                           (owning_pointer<T> || is_std_optional<T>::value);
+            // a struct annotated with `yyjson::transparent`, whose field is the value
+            static constexpr bool transparent =
+                builtin_cast && std::derived_from<caster<T>, builtin_caster> && transparent_struct<T>;
             static constexpr bool source = !builtin_cast && from_json_translator<T>::castable && !recursive_type<T>;
             static constexpr bool elements =
                 !builtin_cast && !from_json_translator<T>::castable && array_castable_range<T, reader::const_array_ref>;
@@ -14734,6 +14962,8 @@ namespace yyjson
                 else
                     return may_reject_nested<typename T::value_type>();
             }
+            else if constexpr (n::transparent)
+                return may_reject_nested<struct_field_type<T, 0>>();
             else if constexpr (n::source)
                 return may_reject_nested<from_json_source<T>>();
             else
@@ -14764,6 +14994,8 @@ namespace yyjson
                 else
                     return may_cast<typename T::value_type>(json, kind);
             }
+            else if constexpr (n::transparent)
+                return may_cast<struct_field_type<T, 0>>(json, kind);
             else if constexpr (n::source)
                 return may_cast<from_json_source<T>>(json, kind);
             else
@@ -16647,6 +16879,7 @@ namespace yyjson
                              (builtin && (yyjson::detail::owning_pointer<U> || is_optional<U>::value) &&
                               std::same_as<V, value_ref>) ||
                              (builtin && is_variant<U>::value && std::same_as<V, value_ref>) ||
+                             (builtin && yyjson::detail::transparent_struct<U> && std::same_as<V, value_ref>) ||
                              (builtin && std::same_as<U, std::vector<bool>> && std::same_as<V, array_ref>) ||
                              (builtin && yyjson::detail::tuple_like<U> &&
                               (std::same_as<V, array_ref> || std::same_as<V, object_ref>)));
@@ -16752,6 +16985,11 @@ namespace yyjson
                         write_internally_tagged(std::forward<T>(t));
                     else
                         std::visit([&](auto&& v) { write_value(std::forward<decltype(v)>(v)); }, std::forward<T>(t));
+                }
+                else if constexpr (std::derived_from<caster<U>, yyjson::detail::builtin_caster> &&
+                                   yyjson::detail::transparent_struct<U> && std::same_as<V, value_ref>)
+                {
+                    write_value(yyjson::detail::transparent_field(std::forward<T>(t)));
                 }
                 else if constexpr (std::derived_from<caster<U>, yyjson::detail::builtin_caster> &&
                                    std::same_as<U, std::vector<bool>> && std::same_as<V, array_ref>)
@@ -16929,15 +17167,29 @@ namespace yyjson
 
     namespace reader::detail
     {
+        // A struct annotated with `yyjson::transparent`, which is read as its field is.
+        template <typename T>
+        concept transparent_readable =
+            yyjson::detail::transparent_struct<T> && std::derived_from<caster<T>, yyjson::detail::builtin_caster>;
+
         // A field that a caster reads over its old value, which `read_into` and `merge_into` reset to its value in
-        // `T()` first, so that the caster sees the value that it sees when the struct is read anew.
+        // `T()` first, so that the caster sees the value that it sees when the struct is read anew.  The field of
+        // a struct annotated with `yyjson::transparent` decides it for the struct.
         template <typename Field>
-        concept reads_over_old_value =
-            (!std::is_array_v<Field>) &&
-            (yyjson::detail::from_json_translator<Field>::in_place ||
-             (requires(Field& field, const const_value_ref& v) { caster<Field>::from_json(field, v); } &&
-              !(yyjson::detail::is_std_optional<Field>::value &&
-                std::derived_from<caster<Field>, yyjson::detail::builtin_caster>)));
+        consteval bool reads_over_old_value_of()
+        {
+            if constexpr (std::is_array_v<Field>)
+                return false;
+            else if constexpr (transparent_readable<Field>)
+                return reads_over_old_value_of<yyjson::detail::struct_field_type<Field, 0>>();
+            else
+                return yyjson::detail::from_json_translator<Field>::in_place ||
+                       (requires(Field& field, const const_value_ref& v) { caster<Field>::from_json(field, v); } &&
+                        !(yyjson::detail::is_std_optional<Field>::value &&
+                          std::derived_from<caster<Field>, yyjson::detail::builtin_caster>));
+        }
+        template <typename Field>
+        concept reads_over_old_value = reads_over_old_value_of<Field>();
 
         // A struct that the default caster reads field by field and whose fields can all be move-assigned, so
         // that `read_into` reads over its fields and `merge_into` merges an object into them.
@@ -16978,13 +17230,28 @@ namespace yyjson
         // A value that `merge_into` merges a JSON object into: a struct, a map, a variant tagged by `internal_tag`,
         // or an optional of one of them, which gets a value first if it has none: `T()` for a struct or a map, and
         // the variant read from the object.  Any other value is replaced.
+        // A struct annotated with `yyjson::transparent` is merged into as its field is.
         template <typename T>
-        concept mergeable = (!std::is_array_v<T>) &&
-                            (struct_mergeable<T> || map_mergeable<T> || tagged_mergeable<T> ||
-                             (yyjson::detail::is_std_optional<T>::value &&
-                              std::derived_from<caster<T>, yyjson::detail::builtin_caster> &&
-                              (struct_mergeable<typename T::value_type> || map_mergeable<typename T::value_type> ||
-                               tagged_mergeable<typename T::value_type>)));
+        consteval bool mergeable_of();
+        template <typename T>
+        concept transparent_mergeable = transparent_readable<T> && mergeable_of<yyjson::detail::struct_field_type<T, 0>>();
+        template <typename T>
+        consteval bool mergeable_of()
+        {
+            if constexpr (std::is_array_v<T>)
+                return false;
+            else if constexpr (struct_mergeable<T> || map_mergeable<T> || tagged_mergeable<T> ||
+                               transparent_mergeable<T>)
+                return true;
+            else if constexpr (yyjson::detail::is_std_optional<T>::value &&
+                               std::derived_from<caster<T>, yyjson::detail::builtin_caster>)
+                return struct_mergeable<typename T::value_type> || map_mergeable<typename T::value_type> ||
+                       tagged_mergeable<typename T::value_type> || transparent_mergeable<typename T::value_type>;
+            else
+                return false;
+        }
+        template <typename T>
+        concept mergeable = mergeable_of<T>();
 
         template <typename T>
         CPPYYJSON_ALWAYS_INLINE inline constexpr const auto& struct_key_matcher() noexcept
@@ -17224,6 +17491,13 @@ namespace yyjson
                     {
                         using tags = yyjson::detail::variant_tags<T>;
                         merge_tagged<tags>(t, yyjson::detail::tagged_alternative<T, tags>(*obj), v);
+                    }
+                    else if constexpr (transparent_mergeable<T>)
+                    {
+                        auto& field = struct_field<0>(t);
+                        merge_from(field, v);
+                        if constexpr (yyjson::detail::constrained_field<T, 0>)
+                            yyjson::detail::check_constraints<T, 0>(field, v);
                     }
                     else if constexpr (tagged_mergeable<typename T::value_type>)
                     {
@@ -17632,6 +17906,8 @@ namespace yyjson
                     else
                         return node<false, type_list<value_node<yyjson::detail::from_json_source<T>, Loop>>>{};
                 }
+                else if constexpr (transparent_readable<T>)
+                    return field_part<yyjson::detail::struct_field_type<T, 0>, Loop>();
                 else if constexpr (from_json_val_usr_defined<T>)
                 {
                     if constexpr (yyjson::detail::owning_pointer<T> &&
@@ -17695,6 +17971,8 @@ namespace yyjson
                 using yyjson::detail::type_list;
                 if constexpr (std::is_array_v<F>)
                     return node<false, type_list<value_node<std::remove_cv_t<std::remove_all_extents_t<F>>, true>>>{};
+                else if constexpr (transparent_readable<F>)
+                    return field_part<yyjson::detail::struct_field_type<F, 0>, Loop>();
                 else if constexpr (requires(F& field, const const_value_ref& v) { caster<F>::from_json(field, v); })
                 {
                     if constexpr (is_std_optional<F>::value &&
@@ -18337,6 +18615,8 @@ namespace yyjson
                     else
                         return may_read<typename T::value_type>();
                 }
+                else if constexpr (n::transparent)
+                    return may_read<d::struct_field_type<T, 0>>();
                 else if constexpr (n::source)
                     return may_read<d::from_json_source<T>>();
                 else
@@ -19275,6 +19555,21 @@ namespace yyjson
                         return yyjson::detail::from_json_translator<T>::convert(std::move(source));
                     });
                 }
+                else if constexpr (transparent_readable<T>)
+                {
+                    auto result = T();
+                    if constexpr (yyjson::detail::transparent_over_optional<T>)
+                    {
+                        if (*cur_ == 'n')
+                        {
+                            read_literal("null");
+                            struct_field<0>(result).reset();
+                            return result;
+                        }
+                    }
+                    read_field(result, true);
+                    return result;
+                }
                 else if constexpr (from_json_val_usr_defined<T>)
                 {
                     if constexpr (yyjson::detail::owning_pointer<T> &&
@@ -19951,6 +20246,12 @@ namespace yyjson
                     });
                     return;
                 }
+                else if constexpr (transparent_readable<field_type>)
+                {
+                    // null leaves an optional in the struct as it is
+                    if (first && *cur_ == 'n') [[unlikely]]
+                        reset_field<I>(t);
+                }
                 read_field(field, false);
             }
 
@@ -19975,6 +20276,11 @@ namespace yyjson
                             merge_map(t);
                         else if constexpr (tagged_mergeable<T>)
                             merge_tagged_variant(t);
+                        else if constexpr (transparent_mergeable<T>)
+                        {
+                            merge_value(struct_field<0>(t));
+                            if constexpr (yyjson::detail::constrained_field<T, 0>) check_constraints<T, 0>(t);
+                        }
                         else if constexpr (tagged_mergeable<typename T::value_type>)
                         {
                             if (t.has_value())
@@ -20389,6 +20695,8 @@ namespace yyjson
                 using field_type = std::remove_cvref_t<Field>;
                 if constexpr (std::is_array_v<field_type>)
                     read_c_array(field);
+                else if constexpr (transparent_readable<field_type>)
+                    read_transparent_field(field, replaceable);
                 else if constexpr (requires(const const_value_ref& v) { caster<field_type>::from_json(field, v); })
                 {
                     if constexpr (is_std_optional<field_type>::value &&
@@ -20535,6 +20843,37 @@ namespace yyjson
                 }
                 else
                     field = read_value<field_type>();
+            }
+
+            // Reads the value at `cur_` into the field of `t`, a struct annotated with `yyjson::transparent`, as
+            // `detail::assign_transparent` reads a value of a document: null leaves an optional field as it is, also
+            // under `yyjson::strict`, and the constraints are checked unless the value is null.
+            template <typename T>
+            void read_transparent_field(T& t, bool replaceable)
+            {
+                auto& field = struct_field<0>(t);
+                using field_type = std::remove_cvref_t<decltype(field)>;
+                if constexpr (yyjson::detail::visitable<T>)
+                    replaceable = false;
+                else
+                    replaceable = replaceable && yyjson::detail::reflected_field_replaceable<
+                                                     yyjson::detail::reflected_field_index<T, 0>>(t);
+                const bool null = *cur_ == 'n';
+                if constexpr (is_std_optional<field_type>::value &&
+                              std::derived_from<caster<field_type>, yyjson::detail::builtin_caster>)
+                {
+                    if constexpr (!yyjson::detail::owning_pointer<typename field_type::value_type>)
+                    {
+                        if (null)
+                        {
+                            read_literal("null");
+                            return;
+                        }
+                    }
+                }
+                read_field(field, replaceable);
+                if constexpr (yyjson::detail::constrained_field<T, 0>)
+                    if (!null) check_constraints<T, 0>(t);
             }
 
             // Reads the key at `cur_` and finds it with `matcher`.  The keys of a type that are not read, or not
