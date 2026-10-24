@@ -286,6 +286,9 @@ TEST(Validate, Nested)
     using members = std::tuple<std::pair<std::string, int>, std::pair<std::string, ValidateVisitable>>;
     expect_invalid(members{{"i", 1}, {"v", {0}}},
                    R"(the value of the key "a" of ValidateVisitable is less than the minimum 1)", "/v/a");
+    // but one with enumeration keys as an array of pairs
+    expect_invalid(std::tuple<std::pair<ValidateColor, ValidateVisitable>>{{ValidateColor::green, {0}}},
+                   R"(the value of the key "a" of ValidateVisitable is less than the minimum 1)", "/0/1/a");
 
     // an untagged variant is read by trying each alternative, so only `validate` names the field
     const auto e = validate_error([] { yyjson::validate(std::variant<int, ValidateVisitable>(ValidateVisitable{0})); });

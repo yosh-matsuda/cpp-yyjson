@@ -2663,6 +2663,9 @@ namespace yyjson
         template <typename Pair>
         concept key_value_like = pair_like<Pair> && (key_type<std::tuple_element_t<0, Pair>> ||
                                                      enum_key<std::remove_cv_t<std::tuple_element_t<0, Pair>>>);
+        // A pair that an object holds as a member: `writer::object_ref::emplace` takes only a string as a key.
+        template <typename Pair>
+        concept string_key_pair = pair_like<Pair> && key_type<std::remove_cv_t<std::tuple_element_t<0, Pair>>>;
         template <typename T>
         concept omittable = requires(const std::remove_cvref_t<T>& t) {
             { caster<std::remove_cvref_t<T>>::should_omit(t) } -> std::convertible_to<bool>;
@@ -12584,8 +12587,9 @@ namespace yyjson
             else if constexpr (tuple_like<U>)
             {
                 [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                    // a tuple of key-value pairs is written as an object, as `caster` of a tuple does
-                    constexpr bool members = (key_value_like<std::tuple_element_t<Is, U>> && ...);
+                    // a tuple of pairs whose keys are strings is written as an object, as `caster` of a tuple does;
+                    // one with enumeration keys is written as an array of pairs
+                    constexpr bool members = (string_key_pair<std::tuple_element_t<Is, U>> && ...);
                     (validate_tuple_element<members, Is>(v), ...);
                 }(std::make_index_sequence<std::tuple_size_v<U>>{});
             }
