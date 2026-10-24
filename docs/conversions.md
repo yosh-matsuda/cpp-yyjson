@@ -302,7 +302,7 @@ The annotations of a type change how the type converts, with no caster. Speciali
 | `yyjson::rename("key")` | a field | reads and writes the field by the JSON key `key` | [JSON keys](#json-keys) |
 | `yyjson::skip` | a field | leaves the field out of reading and writing | [Skipped fields](#skipped-fields) |
 | `yyjson::required`, `yyjson::optional_key` | a field | requires the key, or lets the object leave it out | [Strict reading](validation.md#strict-reading) |
-| `yyjson::minimum(m)`, `yyjson::validate<f>` and the other constraints | a field | restricts the values that the field reads | [Constraints](validation.md#constraints) |
+| `yyjson::minimum(m)`, `yyjson::satisfies<f>` and the other constraints | a field | restricts the values that the field reads | [Constraints](validation.md#constraints) |
 | `yyjson::items(s...)`, `yyjson::additional_properties(s...)` | a range field, a map field | restricts the elements, or the values of the map | [Constraints of elements](validation.md#constraints-of-elements) |
 | `yyjson::unique_items`, `yyjson::prefix_items(p...)`, `yyjson::contains(s...)` with `yyjson::min_contains(n)` and `yyjson::max_contains(m)`, `yyjson::property_names(s...)` | a range or tuple field, a map field | rejects equal elements, restricts the elements by position or by their number, or restricts the keys | [Constraints of elements](validation.md#constraints-of-elements) |
 | `yyjson::adjacent_tag(key, ids)` | a field of a `std::variant` | tells the alternative by a sibling member | [Tagged variants](#tagged-variants) |

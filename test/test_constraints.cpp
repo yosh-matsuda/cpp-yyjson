@@ -70,9 +70,9 @@ struct Validated
 };
 template <>
 inline constexpr auto yyjson::annotations<Validated> =
-    yyjson::annotate(yyjson::field("even", yyjson::validate<is_even>),
-                     yyjson::field("text", yyjson::validate<[](const std::string& s) noexcept { return s != "bad"; }>),
-                     yyjson::field("nonzero", yyjson::validate<[](const std::optional<int>& v) { return v != 0; }>));
+    yyjson::annotate(yyjson::field("even", yyjson::satisfies<is_even>),
+                     yyjson::field("text", yyjson::satisfies<[](const std::string& s) noexcept { return s != "bad"; }>),
+                     yyjson::field("nonzero", yyjson::satisfies<[](const std::optional<int>& v) { return v != 0; }>));
 
 struct ConstrainedVisitable
 {
@@ -157,11 +157,11 @@ inline constexpr auto yyjson::annotations<Elements> = yyjson::annotate(
     yyjson::field("pair", yyjson::items(yyjson::maximum(9))),
     yyjson::field("names", yyjson::items(yyjson::pattern("^[a-z]+$"))),
     yyjson::field("set", yyjson::items(yyjson::maximum(5))),
-    yyjson::field("uset", yyjson::items(yyjson::validate<is_even>)),
+    yyjson::field("uset", yyjson::items(yyjson::satisfies<is_even>)),
     yyjson::field("limits", yyjson::max_items(3), yyjson::additional_properties(yyjson::maximum(100))),
     yyjson::field("groups", yyjson::additional_properties(yyjson::min_items(1), yyjson::items(yyjson::minimum(1)))),
     yyjson::field("by_id", yyjson::additional_properties(yyjson::maximum(5))),
-    yyjson::field("ordered", yyjson::items(yyjson::validate<is_small_pair>)),
+    yyjson::field("ordered", yyjson::items(yyjson::satisfies<is_small_pair>)),
     yyjson::field("holes", yyjson::items(yyjson::maximum(5))),
     yyjson::field("tags", yyjson::items(yyjson::max_length(3))),
     yyjson::field("nested", yyjson::items(yyjson::min_items(1), yyjson::items(yyjson::max_length(3)))));
@@ -215,7 +215,7 @@ struct Prefixed
 template <>
 inline constexpr auto yyjson::annotations<Prefixed> = yyjson::annotate(
     yyjson::field("row",
-                  yyjson::prefix_items(yyjson::minimum(0), {yyjson::max_length(2), yyjson::validate<is_lower>}, {})),
+                  yyjson::prefix_items(yyjson::minimum(0), {yyjson::max_length(2), yyjson::satisfies<is_lower>}, {})),
     yyjson::field("range", yyjson::prefix_items(yyjson::maximum(5), yyjson::minimum(5))),
     yyjson::field("head", yyjson::prefix_items({yyjson::minimum(0)}, {}), yyjson::items(yyjson::maximum(9))),
     yyjson::field("arr", yyjson::prefix_items({}, yyjson::minimum(1))),
@@ -232,7 +232,7 @@ struct Keyed
 template <>
 inline constexpr auto yyjson::annotations<Keyed> = yyjson::annotate(
     yyjson::field("m", yyjson::property_names(yyjson::max_length(3), yyjson::pattern("^[a-z]+$"))),
-    yyjson::field("u", yyjson::property_names(yyjson::validate<is_short>)),
+    yyjson::field("u", yyjson::property_names(yyjson::satisfies<is_short>)),
     yyjson::field("deep", yyjson::additional_properties(yyjson::property_names(yyjson::min_length(2)))));
 
 struct Containing
@@ -339,7 +339,7 @@ struct Unusual
 template <>
 inline constexpr auto yyjson::annotations<Unusual> = yyjson::annotate(
     yyjson::field("pts", yyjson::unique_items),
-    yyjson::field("sides", yyjson::property_names(yyjson::validate<is_left>)),
+    yyjson::field("sides", yyjson::property_names(yyjson::satisfies<is_left>)),
     yyjson::field("mm", yyjson::unique_items), yyjson::field("kv", yyjson::property_names(yyjson::max_length(1))),
     yyjson::field("dq", yyjson::prefix_items(yyjson::minimum(0)), yyjson::items(yyjson::maximum(9))),
     yyjson::field("ls", yyjson::prefix_items({}, yyjson::minimum(1)), yyjson::items(yyjson::maximum(9))),
@@ -623,7 +623,7 @@ struct ConstrainedAnnotated
 {
     [[ = yyjson::minimum(1), = yyjson::maximum(3) ]] int n = 1;
     [[= yyjson::pattern("^x")]] std::string s = "x";
-    [[= yyjson::validate<is_even>]] int even = 0;
+    [[= yyjson::satisfies<is_even>]] int even = 0;
     bool operator==(const ConstrainedAnnotated&) const = default;
 };
 #endif
@@ -787,11 +787,11 @@ TEST(Constraints, Validate)
     expect_accepted<Validated>(R"({"nonzero":1})", {0, {}, 1});
 
     expect_rejected<Validated>(R"({"even":1})",
-                               R"(the value of the key "even" of Validated is rejected by yyjson::validate)", "/even");
+                               R"(the value of the key "even" of Validated is rejected by yyjson::satisfies)", "/even");
     expect_rejected<Validated>(R"({"text":"bad"})",
-                               R"(the value of the key "text" of Validated is rejected by yyjson::validate)", "/text");
+                               R"(the value of the key "text" of Validated is rejected by yyjson::satisfies)", "/text");
     expect_rejected<Validated>(R"({"nonzero":0})",
-                               R"(the value of the key "nonzero" of Validated is rejected by yyjson::validate)",
+                               R"(the value of the key "nonzero" of Validated is rejected by yyjson::satisfies)",
                                "/nonzero");
 }
 
@@ -895,7 +895,7 @@ TEST(Constraints, Elements)
                               "/names/1");
     // the element of a set or of an unordered set is found in the array
     expect_rejected<Elements>(R"({"set":[1,9,3]})", prefix("set") + "is greater than the maximum 5", "/set/1");
-    expect_rejected<Elements>(R"({"uset":[2,4,6,3,8]})", prefix("uset") + "is rejected by yyjson::validate", "/uset/3");
+    expect_rejected<Elements>(R"({"uset":[2,4,6,3,8]})", prefix("uset") + "is rejected by yyjson::satisfies", "/uset/3");
     // the values of a map, and the constraints of the map itself
     expect_rejected<Elements>(R"({"limits":{"a":1,"b":101}})", prefix("limits") + "is greater than the maximum 100",
                               "/limits/b");
@@ -909,7 +909,7 @@ TEST(Constraints, Elements)
     // a map whose keys are not strings is an array of pairs, whose values are the second elements
     expect_rejected<Elements>(R"({"by_id":[[1,5],[2,6]]})", prefix("by_id") + "is greater than the maximum 5",
                               "/by_id/1/1");
-    expect_rejected<Elements>(R"({"ordered":[[1,2],[4,3]]})", prefix("ordered") + "is rejected by yyjson::validate",
+    expect_rejected<Elements>(R"({"ordered":[[1,2],[4,3]]})", prefix("ordered") + "is rejected by yyjson::satisfies",
                               "/ordered/1");
     // the value of a std::optional element, and the elements of a std::optional field
     expect_rejected<Elements>(R"({"holes":[null,6]})", prefix("holes") + "is greater than the maximum 5", "/holes/1");
@@ -985,7 +985,7 @@ TEST(Constraints, PrefixItems)
     expect_rejected<Prefixed>(R"({"row":[-1,"ab",0]})", prefix("row") + "is less than the minimum 0", "/row/0");
     expect_rejected<Prefixed>(R"({"row":[0,"abc",0]})", prefix("row") + "is longer than the maximum length 2",
                               "/row/1");
-    expect_rejected<Prefixed>(R"({"row":[0,"AB",0]})", prefix("row") + "is rejected by yyjson::validate", "/row/1");
+    expect_rejected<Prefixed>(R"({"row":[0,"AB",0]})", prefix("row") + "is rejected by yyjson::satisfies", "/row/1");
     expect_rejected<Prefixed>(R"({"range":[6,5]})", prefix("range") + "is greater than the maximum 5", "/range/0");
     expect_rejected<Prefixed>(R"({"range":[5,4]})", prefix("range") + "is less than the minimum 5", "/range/1");
     // yyjson::items applies to the elements after the prefix
@@ -1009,7 +1009,7 @@ TEST(Constraints, PropertyNames)
     expect_rejected<Keyed>(R"({"m":{"ab":1,"abcd":2}})", prefix("m") + "is longer than the maximum length 3",
                            "/m/abcd");
     expect_rejected<Keyed>(R"({"m":{"A":1}})", prefix("m") + R"(does not match the pattern "^[a-z]+$")", "/m/A");
-    expect_rejected<Keyed>(R"({"u":{"abc":1}})", prefix("u") + "is rejected by yyjson::validate", "/u/abc");
+    expect_rejected<Keyed>(R"({"u":{"abc":1}})", prefix("u") + "is rejected by yyjson::satisfies", "/u/abc");
     expect_rejected<Keyed>(R"({"deep":{"x":{"ab":1,"a":2}}})", prefix("deep") + "is shorter than the minimum length 2",
                            "/deep/x/a");
 }
@@ -1426,7 +1426,7 @@ TEST(Constraints, Annotations)
     expect_rejected<ConstrainedAnnotated>(
         R"({"s":"y"})", R"(the value of the key "s" of ConstrainedAnnotated does not match the pattern "^x")", "/s");
     expect_rejected<ConstrainedAnnotated>(
-        R"({"even":3})", R"(the value of the key "even" of ConstrainedAnnotated is rejected by yyjson::validate)",
+        R"({"even":3})", R"(the value of the key "even" of ConstrainedAnnotated is rejected by yyjson::satisfies)",
         "/even");
 }
 #endif

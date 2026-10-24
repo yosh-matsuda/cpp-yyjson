@@ -235,7 +235,7 @@ Some fields are not merged but first reset to their default and then replaced:
 *   A field converted by a user-defined caster, a [translator](conversions.md#translator) or an [in-place translator](conversions.md#reading-into-an-existing-field), since the caster reads the whole value.
 *   A struct with a field that cannot be move-assigned, such as `std::atomic`. It is read as `read<T>` reads it.
 
-Merging the same JSON string twice gives the same result as merging it once; `merge_into` relies on this when it falls back to a document after a direct read that failed halfway. The exception is a string with a [key twice](validation.md#repeated-keys) in an object. Its result is unspecified, and the second pass may also make a [`yyjson::validate<f>`](validation.md#constraints) reject an intermediate value.
+Merging the same JSON string twice gives the same result as merging it once; `merge_into` relies on this when it falls back to a document after a direct read that failed halfway. The exception is a string with a [key twice](validation.md#repeated-keys) in an object. Its result is unspecified, and the second pass may also make a [`yyjson::satisfies<f>`](validation.md#constraints) reject an intermediate value.
 
 > [!NOTE]
 > With Clang and libstdc++, `std::is_default_constructible_v` is `false` for a struct that has a default member initializer, a defaulted `operator==` and a `std::map` of its own type. `merge_into` then replaces such a struct instead of merging into it. Removing the default member initializer or the defaulted `operator==` avoids this.
@@ -1510,7 +1510,7 @@ consteval explicit min_items(std::size_t n);
 consteval explicit max_items(std::size_t n);
 inline constexpr unique_items_t unique_items{};
 template <auto F>
-inline constexpr validator validate;
+inline constexpr satisfies_t satisfies;
 ```
 
 | Constraint | The field | Rejects a value |
@@ -1529,7 +1529,7 @@ inline constexpr validator validate;
 | `yyjson::min_items(n)` | a range or a map | with fewer than `n` elements |
 | `yyjson::max_items(n)` | a range or a map | with more than `n` elements |
 | `yyjson::unique_items` | a range whose elements may be equal | with an element equal to an earlier one by `operator==` |
-| `yyjson::validate<f>` | any | for which `f(value)` returns `false` |
+| `yyjson::satisfies<f>` | any | for which `f(value)` returns `false` |
 
 The constraints are settings of [`yyjson::field`](#yyjsonfield), and of [`yyjson::items`](#yyjsonitems) and the other settings of the elements. `yyjson::unique_items` on a string, on a range whose elements have no `operator==`, and on a set or a map, whose elements are unique by construction, is a compile error; [`yyjson::strict`](#yyjsonstrict) rejects the JSON that repeats an element or a key of them. They apply to the value that a `std::optional` holds, and not to an empty one. Reading a value that a constraint rejects throws `yyjson::bad_cast`; writing does not check them. `yyjson::const_value` and `yyjson::enum_values` take strings, numbers or booleans of the kind of the field, and not `null`, arrays or objects; `yyjson::enum_values` takes at least one. They compare them with the value of the field in its type. `yyjson::pattern` needs a [`yyjson::pattern_matcher<>`](#yyjsonpattern_matcher). `yyjson::format` checks the [formats of JSON Schema](validation.md#formats) other than `idn-email`, `idn-hostname`, `iri`, `iri-reference` and `regex`, and the others with a [`yyjson::format_checker<>`](#yyjsonformat_checker). See [Constraints](validation.md#constraints).
 
@@ -1550,7 +1550,7 @@ struct items
 | `yyjson::items(settings...)` | a range read from a JSON array, such as `std::vector`, `std::array`, `std::set` and a map from an array of pairs | each element |
 | `yyjson::additional_properties(settings...)` | a map, or another [range of key-value pairs](conversions.md#conversion-rules) such as `std::vector<std::pair<std::string, int>>` | each value |
 
-`settings` are one or more of the [constraints](#constraints), and [`yyjson::items`](#yyjsonitems), [`yyjson::prefix_items`](#yyjsonprefix_items), [`yyjson::contains`, `yyjson::min_contains`, `yyjson::max_contains`](#yyjsoncontains-yyjsonmin_contains-yyjsonmax_contains), [`yyjson::property_names`](#yyjsonproperty_names) or `yyjson::additional_properties(settings...)` for the elements of the elements. Key settings such as `yyjson::rename`, a setting given twice at one level, `yyjson::items` on a string or on a range of key-value pairs, which is read from a JSON object, `yyjson::additional_properties(settings...)` on a range that is neither a map nor a range of key-value pairs, and either of them without a setting are compile errors. An element that is a `std::optional` is checked through the value that it holds, and a `std::optional` field through the range that it holds. `yyjson::validate<f>` takes the type of the element, or the type that a `std::optional` element holds; the element of a map from an array of pairs is `std::pair<const Key, Value>`.
+`settings` are one or more of the [constraints](#constraints), and [`yyjson::items`](#yyjsonitems), [`yyjson::prefix_items`](#yyjsonprefix_items), [`yyjson::contains`, `yyjson::min_contains`, `yyjson::max_contains`](#yyjsoncontains-yyjsonmin_contains-yyjsonmax_contains), [`yyjson::property_names`](#yyjsonproperty_names) or `yyjson::additional_properties(settings...)` for the elements of the elements. Key settings such as `yyjson::rename`, a setting given twice at one level, `yyjson::items` on a string or on a range of key-value pairs, which is read from a JSON object, `yyjson::additional_properties(settings...)` on a range that is neither a map nor a range of key-value pairs, and either of them without a setting are compile errors. An element that is a `std::optional` is checked through the value that it holds, and a `std::optional` field through the range that it holds. `yyjson::satisfies<f>` takes the type of the element, or the type that a `std::optional` element holds; the element of a map from an array of pairs is `std::pair<const Key, Value>`.
 
 ```cpp
 struct Scores
@@ -1657,7 +1657,7 @@ struct property_names
 };
 ```
 
-`settings` are one or more of the [constraints](#constraints) that apply to the key type of the map, such as `yyjson::max_length`, `yyjson::pattern` and `yyjson::validate<f>`, whose `f` takes the key type. The field must be a map or another [range of key-value pairs](conversions.md#conversion-rules), such as `std::vector<std::pair<std::string, int>>`, which are read from JSON objects; a map whose keys are neither strings nor enumerations, which is read from an array of pairs, is a compile error. A sequence of pairs that is read from an array of `[key, value]` pairs is checked too, and its error is reported at the field.
+`settings` are one or more of the [constraints](#constraints) that apply to the key type of the map, such as `yyjson::max_length`, `yyjson::pattern` and `yyjson::satisfies<f>`, whose `f` takes the key type. The field must be a map or another [range of key-value pairs](conversions.md#conversion-rules), such as `std::vector<std::pair<std::string, int>>`, which are read from JSON objects; a map whose keys are neither strings nor enumerations, which is read from an array of pairs, is a compile error. A sequence of pairs that is read from an array of `[key, value]` pairs is checked too, and its error is reported at the field.
 
 ```cpp
 struct Labels

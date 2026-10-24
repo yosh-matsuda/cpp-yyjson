@@ -1222,8 +1222,8 @@ namespace yyjson
     template <typename... Vs>
     enum_values(const Vs&...) -> enum_values<sizeof...(Vs)>;
 
-    // A check of a field that `yyjson::validate<f>` gives, which `f` makes with the value of the field.
-    struct validator
+    // A check of a field that `yyjson::satisfies<f>` gives, which `f` makes with the value of the field.
+    struct satisfies_t
     {
         bool (*check)(const void*) = nullptr;
         // the name of the type that `check` takes, which tells it at compile time as an address cannot under
@@ -1240,55 +1240,55 @@ namespace yyjson
         constexpr std::string_view type_name() noexcept;
 
         template <typename F>
-        struct validator_parameter
+        struct predicate_parameter
         {
         };
         template <typename R, typename P>
-        struct validator_parameter<R (*)(P)>
+        struct predicate_parameter<R (*)(P)>
         {
             using type = std::remove_cvref_t<P>;
         };
         template <typename R, typename P>
-        struct validator_parameter<R (*)(P) noexcept> : validator_parameter<R (*)(P)>
+        struct predicate_parameter<R (*)(P) noexcept> : predicate_parameter<R (*)(P)>
         {
         };
         template <typename R, typename C, typename P>
-        struct validator_parameter<R (C::*)(P) const> : validator_parameter<R (*)(P)>
+        struct predicate_parameter<R (C::*)(P) const> : predicate_parameter<R (*)(P)>
         {
         };
         template <typename R, typename C, typename P>
-        struct validator_parameter<R (C::*)(P) const noexcept> : validator_parameter<R (*)(P)>
+        struct predicate_parameter<R (C::*)(P) const noexcept> : predicate_parameter<R (*)(P)>
         {
         };
         template <typename F>
         requires requires { &F::operator(); }
-        struct validator_parameter<F> : validator_parameter<decltype(&F::operator())>
+        struct predicate_parameter<F> : predicate_parameter<decltype(&F::operator())>
         {
         };
 
         template <auto F>
-        bool call_validator(const void* value)
+        bool call_predicate(const void* value)
         {
-            using parameter = typename validator_parameter<decltype(F)>::type;
+            using parameter = typename predicate_parameter<decltype(F)>::type;
             return static_cast<bool>(F(*static_cast<const parameter*>(value)));
         }
 
         // Clang 18 and older reject `static_string` in the initializer of a variable template as taking the
-        // address of a consteval function, so the validator is built in a consteval function.
+        // address of a consteval function, so the value is built in a consteval function.
         template <auto F>
-        consteval validator make_validator()
+        consteval satisfies_t make_predicate()
         {
-            constexpr auto parameter = type_name<typename validator_parameter<decltype(F)>::type>();
-            return {&call_validator<F>, static_string(parameter), parameter.size()};
+            constexpr auto parameter = type_name<typename predicate_parameter<decltype(F)>::type>();
+            return {&call_predicate<F>, static_string(parameter), parameter.size()};
         }
     }  // namespace detail
 
     // A function or a lambda that takes the value of a field, or the value of a `std::optional` field, and returns
-    // whether it is valid, as `yyjson::field("member", yyjson::validate<f>)` or `[[=yyjson::validate<f>]]` gives
+    // whether it is valid, as `yyjson::field("member", yyjson::satisfies<f>)` or `[[=yyjson::satisfies<f>]]` gives
     // it.  Reading a value that it rejects throws `yyjson::bad_cast`.
     template <auto F>
-    requires requires { typename detail::validator_parameter<decltype(F)>::type; }
-    inline constexpr validator validate = detail::make_validator<F>();
+    requires requires { typename detail::predicate_parameter<decltype(F)>::type; }
+    inline constexpr satisfies_t satisfies = detail::make_predicate<F>();
 
     // Reads a value strictly, when it is given to `yyjson::read`, `yyjson::read_into`, `yyjson::merge_into` and
     // `cast`: an object read into a struct must have the key of every field that is not a `std::optional`, and no
@@ -1409,7 +1409,7 @@ namespace yyjson
         };
         using constraint_types =
             type_list<minimum, maximum, exclusive_minimum, exclusive_maximum, multiple_of, min_length, max_length,
-                      min_items, max_items, pattern, validator, unique_items_t, min_contains, max_contains,
+                      min_items, max_items, pattern, satisfies_t, unique_items_t, min_contains, max_contains,
                       const_value, enum_values<0>, format>;
         // The type of the constraint A in `constraint_types`, where every `yyjson::enum_values` is `enum_values<0>`.
         template <typename A>
@@ -1569,7 +1569,7 @@ namespace yyjson
 
     // The settings of the elements of a range field that is read from a JSON array, as JSON Schema's `items`:
     // `yyjson::field("scores", yyjson::items(yyjson::minimum(0)))` or `[[=yyjson::items(yyjson::minimum(0))]]`.
-    // It takes the constraints, such as `yyjson::minimum` and `yyjson::validate<f>`, which apply to each element
+    // It takes the constraints, such as `yyjson::minimum` and `yyjson::satisfies<f>`, which apply to each element
     // or to the value of an element that is a `std::optional`, and the settings of the values in the elements, such
     // as `yyjson::items`.  With `yyjson::prefix_items`, it applies to the elements after those of the positions.
     template <typename... As>
@@ -1581,7 +1581,7 @@ namespace yyjson
         {
             static_assert(sizeof...(As) != 0, "yyjson::items needs a setting of the elements");
             static_assert((detail::element_setting<As> && ...),
-                          "yyjson::items takes the constraints such as yyjson::minimum and yyjson::validate<f>, "
+                          "yyjson::items takes the constraints such as yyjson::minimum and yyjson::satisfies<f>, "
                           "yyjson::items, yyjson::prefix_items, yyjson::contains, yyjson::property_names and "
                           "yyjson::additional_properties(settings...)");
         }
@@ -1602,7 +1602,7 @@ namespace yyjson
         {
             static_assert((detail::element_setting<As> && ...),
                           "yyjson::additional_properties of a field takes the constraints such as yyjson::minimum "
-                          "and yyjson::validate<f>, yyjson::items, yyjson::prefix_items, yyjson::contains, "
+                          "and yyjson::satisfies<f>, yyjson::items, yyjson::prefix_items, yyjson::contains, "
                           "yyjson::property_names and yyjson::additional_properties(settings...); "
                           "yyjson::additional_properties(bool) annotates a struct");
         }
@@ -1629,7 +1629,7 @@ namespace yyjson
         {
             static_assert(sizeof...(As) != 0, "yyjson::contains needs a setting of the elements");
             static_assert((detail::element_setting<As> && ...),
-                          "yyjson::contains takes the constraints such as yyjson::minimum and yyjson::validate<f>, "
+                          "yyjson::contains takes the constraints such as yyjson::minimum and yyjson::satisfies<f>, "
                           "yyjson::items, yyjson::prefix_items, yyjson::contains, yyjson::property_names and "
                           "yyjson::additional_properties(settings...)");
         }
@@ -1639,7 +1639,7 @@ namespace yyjson
 
     // The settings of the keys of a map field that is read from a JSON object, as JSON Schema's `propertyNames`:
     // `yyjson::field("labels", yyjson::property_names(yyjson::pattern("^[a-z]+$")))`.  It takes the constraints of
-    // a string and `yyjson::validate<f>`, which takes the key type of the map.
+    // a string and `yyjson::satisfies<f>`, which takes the key type of the map.
     template <typename... As>
     struct property_names
     {
@@ -1650,7 +1650,7 @@ namespace yyjson
             static_assert(sizeof...(As) != 0, "yyjson::property_names needs a setting of the keys");
             static_assert((detail::constraint_setting<As> && ...),
                           "yyjson::property_names takes the constraints such as yyjson::max_length and "
-                          "yyjson::validate<f>");
+                          "yyjson::satisfies<f>");
         }
     };
 
@@ -1700,7 +1700,7 @@ namespace yyjson
             std::size_t constant = 0;
             std::size_t enum_first = 0;
             std::size_t enum_count = 0;
-            validator validate;
+            satisfies_t predicate;
 
             template <typename A>
             [[nodiscard]] constexpr bool has() const noexcept
@@ -1747,8 +1747,8 @@ namespace yyjson
                     format_data = a.name_data;
                     format_size = a.name_size;
                 }
-                else if constexpr (std::same_as<A, validator>)
-                    validate = a;
+                else if constexpr (std::same_as<A, satisfies_t>)
+                    predicate = a;
             }
         };
 
@@ -1922,7 +1922,7 @@ namespace yyjson
             {
                 static_assert((element_setting<As> && ...),
                               "a position of yyjson::prefix_items takes the constraints such as yyjson::minimum and "
-                              "yyjson::validate<f>, yyjson::items, yyjson::prefix_items, yyjson::contains, "
+                              "yyjson::satisfies<f>, yyjson::items, yyjson::prefix_items, yyjson::contains, "
                               "yyjson::property_names and yyjson::additional_properties(settings...)");
                 (tree.add(0, settings), ...);
                 tree.check();
@@ -1973,7 +1973,7 @@ namespace yyjson
         static_assert(sizeof...(As) != 0, "yyjson::field needs a setting of the field");
         static_assert((detail::field_setting<As> && ...),
                       "yyjson::field takes yyjson::rename, yyjson::skip, yyjson::required, yyjson::optional_key, "
-                      "yyjson::adjacent_tag, the constraints such as yyjson::minimum and yyjson::validate<f>, "
+                      "yyjson::adjacent_tag, the constraints such as yyjson::minimum and yyjson::satisfies<f>, "
                       "yyjson::items and yyjson::additional_properties(settings...)");
         return {member, {values...}};
     }
@@ -4255,7 +4255,7 @@ namespace yyjson
             min_items,
             max_items,
             pattern,
-            validate,
+            satisfies,
             items,           // an element of a range
             values,          // a value of a map
             unique_items,    // two elements that are equal
@@ -4366,7 +4366,7 @@ namespace yyjson
                         return std::format("has more than {} {} the constraints of yyjson::contains", c.max_contains,
                                            c.max_contains == 1 ? "item that satisfies" : "items that satisfy");
                     default:
-                        return "is rejected by yyjson::validate";
+                        return "is rejected by yyjson::satisfies";
                 }
             }();
             const auto subject_text = subject == constraint_subject::element ? "an element of the value"
@@ -5227,31 +5227,31 @@ namespace yyjson
         constraint_kind level_violation(const F& field)
         {
             constexpr const field_constraints& c = Level::constraints;
-            constexpr bool validates_field = c.has<validator>() && c.validate.parameter() == type_name<F>();
+            constexpr bool validates_field = c.has<satisfies_t>() && c.predicate.parameter() == type_name<F>();
             if constexpr (is_std_optional<F>::value)
             {
                 using U = typename F::value_type;
                 constexpr bool validates_value =
-                    c.has<validator>() && !validates_field && c.validate.parameter() == type_name<U>();
-                static_assert(!c.has<validator>() || validates_field || validates_value,
-                              "the function of yyjson::validate takes the type of the field, of the element or of the "
+                    c.has<satisfies_t>() && !validates_field && c.predicate.parameter() == type_name<U>();
+                static_assert(!c.has<satisfies_t>() || validates_field || validates_value,
+                              "the function of yyjson::satisfies takes the type of the field, of the element or of the "
                               "key, or the type that the std::optional holds");
                 if (field.has_value())
                 {
                     if (const auto k = value_constraint_violation<Level>(*field); k != constraint_kind::none) return k;
                     if constexpr (validates_value)
-                        if (!c.validate.check(std::addressof(*field))) return constraint_kind::validate;
+                        if (!c.predicate.check(std::addressof(*field))) return constraint_kind::satisfies;
                 }
             }
             else
             {
-                static_assert(!c.has<validator>() || validates_field,
-                              "the function of yyjson::validate takes the type of the field, of the element or of the "
+                static_assert(!c.has<satisfies_t>() || validates_field,
+                              "the function of yyjson::satisfies takes the type of the field, of the element or of the "
                               "key");
                 if (const auto k = value_constraint_violation<Level>(field); k != constraint_kind::none) return k;
             }
             if constexpr (validates_field)
-                if (!c.validate.check(std::addressof(field))) return constraint_kind::validate;
+                if (!c.predicate.check(std::addressof(field))) return constraint_kind::satisfies;
             if constexpr (Level::node.structured())
             {
                 if constexpr (is_std_optional<F>::value)
