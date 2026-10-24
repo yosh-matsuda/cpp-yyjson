@@ -176,6 +176,35 @@ inline constexpr auto yyjson::annotations<ElementsVisitable> =
     yyjson::annotate(yyjson::field("v", yyjson::items(yyjson::exclusive_minimum(0))));
 VISITABLE_STRUCT(ElementsVisitable, v);
 
+// the values that smart pointers and a std::variant of std::monostate hold, as those of std::optional
+bool fits_in_three(const std::string& s) { return s.size() < 4; }
+struct Nullables
+{
+    std::variant<std::monostate, std::string> code;
+    std::variant<double, std::monostate> ratio = std::monostate();
+    std::shared_ptr<std::string> name;
+    std::shared_ptr<std::vector<int>> list;
+    std::vector<std::shared_ptr<int>> ids;
+    bool operator==(const Nullables& other) const { return written(*this) == written(other); }
+};
+template <>
+inline constexpr auto yyjson::annotations<Nullables> = yyjson::annotate(
+    yyjson::field("code", yyjson::max_length(3)), yyjson::field("ratio", yyjson::maximum(1)),
+    yyjson::field("name", yyjson::satisfies<fits_in_three>),
+    yyjson::field("list", yyjson::min_items(1), yyjson::items(yyjson::maximum(9))),
+    yyjson::field("ids", yyjson::unique_items));
+struct Owned
+{
+    std::unique_ptr<int> count;
+    std::optional<std::unique_ptr<int>> level;
+    std::vector<std::unique_ptr<std::string>> tags;
+};
+template <>
+inline constexpr auto yyjson::annotations<Owned> = yyjson::annotate(
+    yyjson::field("count", yyjson::minimum(0)),
+    yyjson::field("level", yyjson::maximum(5), yyjson::satisfies<[](const int& v) { return v != 3; }>),
+    yyjson::field("tags", yyjson::items(yyjson::max_length(3)), yyjson::unique_items));
+
 // the elements of a range that are equal to an earlier one, the positions of a range or of a tuple, the keys of a
 // map, and the elements of a range that satisfy settings
 struct Unordered
@@ -926,6 +955,69 @@ TEST(Constraints, Elements)
         R"({"v":[1,0]})",
         R"(an element of the value of the key "v" of ElementsVisitable is not greater than the exclusive minimum 0)",
         "/v/1");
+}
+
+TEST(Constraints, Nullables)
+{
+    auto expected = Nullables();
+    expected.ids = {nullptr, std::make_shared<int>(1)};
+    expect_accepted<Nullables>(R"({"code":null,"ratio":null,"name":null,"list":null,"ids":[null,1]})", expected);
+    expected.code = "abc";
+    expected.ratio = 1.0;
+    expected.name = std::make_shared<std::string>("abc");
+    expected.list = std::make_shared<std::vector<int>>(std::vector{9});
+    expected.ids = {std::make_shared<int>(1), std::make_shared<int>(2)};
+    expect_accepted<Nullables>(R"({"code":"abc","ratio":1.0,"name":"abc","list":[9],"ids":[1,2]})", expected);
+
+    const auto field = [](std::string_view key) {
+        return std::format(R"(the value of the key "{}" of Nullables )", key);
+    };
+    const auto element = [](std::string_view key) {
+        return std::format(R"(an element of the value of the key "{}" of Nullables )", key);
+    };
+    expect_rejected<Nullables>(R"({"code":"abcd"})", field("code") + "is longer than the maximum length 3", "/code");
+    expect_rejected<Nullables>(R"({"ratio":1.5})", field("ratio") + "is greater than the maximum 1", "/ratio");
+    expect_rejected<Nullables>(R"({"name":"abcd"})", field("name") + "is rejected by yyjson::satisfies", "/name");
+    expect_rejected<Nullables>(R"({"list":[]})", field("list") + "has fewer items than the minimum 1", "/list");
+    expect_rejected<Nullables>(R"({"list":[1,10]})", element("list") + "is greater than the maximum 9", "/list/1");
+    // smart pointers compare the values that they hold, and null is equal to null
+    expect_rejected<Nullables>(R"({"ids":[1,2,1]})", element("ids") + "is equal to an earlier element", "/ids/2");
+    expect_rejected<Nullables>(R"({"ids":[null,1,null]})", element("ids") + "is equal to an earlier element",
+                               "/ids/2");
+
+    // std::unique_ptr, in a field, in a std::optional and in the elements
+    const auto owned = yyjson::read<Owned>(R"({"count":null,"level":null,"tags":[null,"abc"]})");
+    // null into the std::optional gives an empty pointer, which the pointer reads null as
+    EXPECT_EQ(owned.count, nullptr);
+    EXPECT_EQ(owned.level, std::optional<std::unique_ptr<int>>(nullptr));
+    EXPECT_EQ(written(owned), R"({"count":null,"level":null,"tags":[null,"abc"]})");
+    EXPECT_EQ(written(yyjson::read<Owned>(R"({"count":0,"level":5,"tags":["a","b"]})")),
+              R"({"count":0,"level":5,"tags":["a","b"]})");
+    const auto expect_owned_rejected = [](std::string_view json, std::string_view message, std::string_view path) {
+        const auto check = [&](const yyjson::bad_cast& e) {
+            EXPECT_TRUE(message_of(e).starts_with(message)) << json << "\n" << e.what();
+            EXPECT_EQ(e.path(), path) << json;
+        };
+        check(bad_cast_of([&] { (void)yyjson::read<Owned>(json); }));
+        check(bad_cast_of([&] { (void)yyjson::read<Owned>(json, yyjson::ReadFlag::AllowComments); }));
+        check(bad_cast_of([&] {
+            auto t = Owned();
+            yyjson::merge_into(json, t);
+        }));
+        check(bad_cast_of([&] { (void)yyjson::read(json).cast<Owned>(); }));
+    };
+    const auto owned_field = [](std::string_view key) {
+        return std::format(R"(the value of the key "{}" of Owned )", key);
+    };
+    expect_owned_rejected(R"({"count":-1})", owned_field("count") + "is less than the minimum 0", "/count");
+    expect_owned_rejected(R"({"level":6})", owned_field("level") + "is greater than the maximum 5", "/level");
+    expect_owned_rejected(R"({"level":3})", owned_field("level") + "is rejected by yyjson::satisfies", "/level");
+    expect_owned_rejected(R"({"tags":[null,"abcd"]})",
+                          R"(an element of the value of the key "tags" of Owned is longer than the maximum length 3)",
+                          "/tags/1");
+    expect_owned_rejected(R"({"tags":["a",null,"a"]})",
+                          R"(an element of the value of the key "tags" of Owned is equal to an earlier element)",
+                          "/tags/2");
 }
 
 TEST(Constraints, ElementsMerge)

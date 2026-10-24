@@ -5012,6 +5012,87 @@ namespace yyjson
             }
         }
 
+        // The types that hold a value or nothing: `std::optional`, `std::shared_ptr`, `std::unique_ptr`, and a
+        // `std::variant` of `std::monostate` and one other type.  The constraints of a field or an element of such a
+        // type check the value that it holds, if any.
+        template <typename T>
+        struct nullable_holder
+        {
+        };
+        template <typename T>
+        struct nullable_holder<std::optional<T>>
+        {
+            using value_type = T;
+            static const T* get(const std::optional<T>& v) noexcept
+            {
+                return v.has_value() ? std::addressof(*v) : nullptr;
+            }
+        };
+        template <typename T>
+        requires owning_pointer<T>
+        struct nullable_holder<T>
+        {
+            using value_type = typename is_owning_pointer<T>::value_type;
+            static const value_type* get(const T& v) noexcept { return v.get(); }
+        };
+        template <typename T>
+        requires (!std::same_as<T, std::monostate>)
+        struct nullable_holder<std::variant<std::monostate, T>>
+        {
+            using value_type = T;
+            static const T* get(const std::variant<std::monostate, T>& v) noexcept { return std::get_if<1>(&v); }
+        };
+        template <typename T>
+        requires (!std::same_as<T, std::monostate>)
+        struct nullable_holder<std::variant<T, std::monostate>>
+        {
+            using value_type = T;
+            static const T* get(const std::variant<T, std::monostate>& v) noexcept { return std::get_if<0>(&v); }
+        };
+        template <typename T>
+        concept nullable = requires { typename nullable_holder<T>::value_type; };
+
+        // The type of the value that constraints check in a value of the type T: the innermost value of the holders
+        // above, or T itself.
+        template <typename T>
+        struct constrained_value
+        {
+            using type = T;
+        };
+        template <nullable T>
+        struct constrained_value<T> : constrained_value<std::remove_cv_t<typename nullable_holder<T>::value_type>>
+        {
+        };
+        template <typename T>
+        using constrained_value_t = typename constrained_value<T>::type;
+
+        // The innermost value that `v` holds, `v` itself if it is not a holder, or null.
+        template <typename T>
+        const constrained_value_t<T>* held_value(const T& v) noexcept
+        {
+            if constexpr (nullable<T>)
+            {
+                const auto* p = nullable_holder<T>::get(v);
+                return p == nullptr ? nullptr : held_value(*p);
+            }
+            else
+                return std::addressof(v);
+        }
+
+        // Whether `a` and `b` are equal, comparing the values that the holders hold rather than the pointers.
+        template <typename T>
+        bool equal_held(const T& a, const T& b)
+        {
+            if constexpr (nullable<T>)
+            {
+                const auto* x = nullable_holder<T>::get(a);
+                const auto* y = nullable_holder<T>::get(b);
+                return x == nullptr || y == nullptr ? x == y : equal_held(*x, *y);
+            }
+            else
+                return a == b;
+        }
+
         template <typename T>
         concept constraint_string = std::convertible_to<const T&, std::string_view>;
         template <typename T>
@@ -5051,8 +5132,9 @@ namespace yyjson
         inline constexpr std::size_t no_duplicate = static_cast<std::size_t>(-1);
 
         // The index of the first element of the range `r` that is equal to an earlier element by `operator==`, or
-        // `no_duplicate`.  Many elements that `<=>` orders are sorted, and compared with `==` within each group of
-        // equivalent elements, leaving out NaN, which is equal to nothing; others are compared pairwise.
+        // `no_duplicate`; a smart pointer compares the value that it holds.  Many elements that `<=>` orders are
+        // sorted, and compared with `==` within each group of equivalent elements, leaving out NaN, which is equal to
+        // nothing; others, and those that hold a value or nothing, are compared pairwise.
         template <typename R>
         std::size_t first_duplicate(const R& r)
         {
@@ -5064,11 +5146,11 @@ namespace yyjson
                 for (auto it = std::ranges::begin(r); it != std::ranges::end(r); ++it, ++j)
                 {
                     for (auto jt = std::ranges::begin(r); jt != it; ++jt)
-                        if (*jt == *it) return j;
+                        if (equal_held(*jt, *it)) return j;
                 }
                 return no_duplicate;
             };
-            if constexpr (!std::is_lvalue_reference_v<reference> ||
+            if constexpr (!std::is_lvalue_reference_v<reference> || nullable<E> ||
                           !(floating || std::three_way_comparable<E, std::weak_ordering>))
                 return pairwise();
             else
@@ -5140,8 +5222,7 @@ namespace yyjson
                 return static_cast<std::string_view>(v) == s.string();
         }
 
-        // The constraint of the level `Level` that the value `v`, or the value that it holds when it is a
-        // `std::optional`, does not satisfy.
+        // The constraint of the level `Level` that the value `v` does not satisfy.
         template <typename Level, typename V>
         constraint_kind value_constraint_violation(const V& v)
         {
@@ -5227,40 +5308,34 @@ namespace yyjson
         constraint_kind level_violation(const F& field)
         {
             constexpr const field_constraints& c = Level::constraints;
+            using U = constrained_value_t<F>;
             constexpr bool validates_field = c.has<satisfies_t>() && c.predicate.parameter() == type_name<F>();
-            if constexpr (is_std_optional<F>::value)
+            constexpr bool validates_value = nullable<F> && c.has<satisfies_t>() && !validates_field &&
+                                             c.predicate.parameter() == type_name<U>();
+            static_assert(!c.has<satisfies_t>() || validates_field || validates_value,
+                          "the function of yyjson::satisfies takes the type of the field, of the element or of the "
+                          "key, or the type of the innermost value that std::optional, smart pointers and std::variant "
+                          "of std::monostate hold");
+            const U* value = nullptr;
+            if constexpr (nullable<F>)
             {
-                using U = typename F::value_type;
-                constexpr bool validates_value =
-                    c.has<satisfies_t>() && !validates_field && c.predicate.parameter() == type_name<U>();
-                static_assert(!c.has<satisfies_t>() || validates_field || validates_value,
-                              "the function of yyjson::satisfies takes the type of the field, of the element or of the "
-                              "key, or the type that the std::optional holds");
-                if (field.has_value())
+                value = held_value(field);
+                if (value != nullptr)
                 {
-                    if (const auto k = value_constraint_violation<Level>(*field); k != constraint_kind::none) return k;
+                    if (const auto k = value_constraint_violation<Level>(*value); k != constraint_kind::none) return k;
                     if constexpr (validates_value)
-                        if (!c.predicate.check(std::addressof(*field))) return constraint_kind::satisfies;
+                        if (!c.predicate.check(value)) return constraint_kind::satisfies;
                 }
             }
             else
             {
-                static_assert(!c.has<satisfies_t>() || validates_field,
-                              "the function of yyjson::satisfies takes the type of the field, of the element or of the "
-                              "key");
+                value = std::addressof(field);
                 if (const auto k = value_constraint_violation<Level>(field); k != constraint_kind::none) return k;
             }
             if constexpr (validates_field)
                 if (!c.predicate.check(std::addressof(field))) return constraint_kind::satisfies;
             if constexpr (Level::node.structured())
-            {
-                if constexpr (is_std_optional<F>::value)
-                {
-                    if (field.has_value()) return structure_violation<Level>(*field);
-                }
-                else
-                    return structure_violation<Level>(field);
-            }
+                if (value != nullptr) return structure_violation<Level>(*value);
             return constraint_kind::none;
         }
 
@@ -5312,9 +5387,9 @@ namespace yyjson
                               "object that a set or a map is read from repeats nothing under yyjson::strict");
                 if constexpr (constraint_items<V> && !unique_keys<V>)
                 {
-                    static_assert(
-                        std::equality_comparable<std::remove_cvref_t<std::ranges::range_reference_t<const V>>>,
-                        "yyjson::unique_items compares the elements with operator==");
+                    static_assert(std::equality_comparable<
+                                      constrained_value_t<std::remove_cvref_t<std::ranges::range_reference_t<const V>>>>,
+                                  "yyjson::unique_items compares the elements with operator==");
                     if (first_duplicate(v) != no_duplicate) return constraint_kind::unique_items;
                 }
             }
@@ -5406,18 +5481,6 @@ namespace yyjson
             return level_violation<constraint_level<S, K>>(field);
         }
 
-        // The value that a value of the type F is checked as, which a `std::optional` holds.
-        template <typename F>
-        struct constrained_range
-        {
-            using type = F;
-        };
-        template <typename F>
-        struct constrained_range<std::optional<F>>
-        {
-            using type = F;
-        };
-
         // The type of an element of the range R, and the type that it is read as, which is a pair of a mutable key
         // and a value for a map from an array of pairs; or the type of a value of the map R.
         enum class element_kind : std::uint8_t
@@ -5470,7 +5533,7 @@ namespace yyjson
                     return;
                 }
                 if (k == constraint_kind::none) return;
-                throw_located_violation<S, K, Level, typename constrained_range<E>::type>(e, k);
+                throw_located_violation<S, K, Level, constrained_value_t<E>>(e, k);
                 throw_constraint_violation(target_of(e), struct_field_key<S, K>, type_name<S>(), k, Level::constraints,
                                            Level::values, constraint_subject::element);
             }
@@ -5592,7 +5655,7 @@ namespace yyjson
         [[noreturn]] CPPYYJSON_COLD void throw_field_violation(const Json& json, constraint_kind k)
         {
             using level = constraint_level<S, K>;
-            throw_located_violation<S, K, level, typename constrained_range<F>::type>(json, k);
+            throw_located_violation<S, K, level, constrained_value_t<F>>(json, k);
             throw_constraint_violation(target_of(json), struct_field_key<S, K>, type_name<S>(), k, level::constraints,
                                        level::values);
         }
