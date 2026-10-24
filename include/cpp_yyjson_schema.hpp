@@ -146,9 +146,9 @@ namespace yyjson
             }
 
             template <typename T>
-            void emit_user_read(object_ref out, const schema_node* nodes, std::size_t node);
+            void emit_user_read(object_ref out);
             template <typename T>
-            void emit_user_write(object_ref out, const schema_node* nodes, std::size_t node);
+            void emit_user_write(object_ref out);
             template <typename T>
             void emit_builtin(object_ref out, const schema_node* nodes, std::size_t node);
 
@@ -324,14 +324,14 @@ namespace yyjson
                 if (writing())
                 {
                     if constexpr (user_write<T>)
-                        emit_user_write<T>(out, nodes, node);
+                        emit_user_write<T>(out);
                     else
                         emit_builtin<T>(out, nodes, node);
                 }
                 else
                 {
                     if constexpr (user_read<T>)
-                        emit_user_read<T>(out, nodes, node);
+                        emit_user_read<T>(out);
                     else
                         emit_builtin<T>(out, nodes, node);
                 }
@@ -340,17 +340,18 @@ namespace yyjson
                 emit_builtin<T>(out, nodes, node);
         }
 
+        // The constraints of a field hold for the C++ value that a user caster makes, and the caster's conversion
+        // is unknown, so they are not emitted for the JSON value on either side.
         template <typename T>
-        void generator::emit_user_read(object_ref out, const schema_node* nodes, std::size_t node)
+        void generator::emit_user_read(object_ref out)
         {
             if constexpr (yyjson::detail::from_json_translator<T>::castable)
-                emit<yyjson::detail::from_json_source<T>>(out, nodes, node);
-            else if (nodes != nullptr)
-                emit_constraints(out, nodes[node].constraints);  // TODO: a schema that the type declares
+                emit<yyjson::detail::from_json_source<T>>(out, nullptr, 0);
+            // TODO: a schema that the type declares
         }
 
         template <typename T>
-        void generator::emit_user_write(object_ref out, const schema_node* nodes, std::size_t node)
+        void generator::emit_user_write(object_ref out)
         {
             if constexpr (writer::detail::to_json_inp_usr_defined<T>)
             {
@@ -364,15 +365,7 @@ namespace yyjson
             else
             {
                 using W = std::remove_cvref_t<decltype(writer::detail::to_json_wrapper(std::declval<const T&>()))>;
-                // The constraints of the field are on the type that is read; they hold for the type written when
-                // the two are the same.
-                constexpr bool same = [] {
-                    if constexpr (yyjson::detail::from_json_translator<T>::castable)
-                        return std::same_as<W, yyjson::detail::from_json_source<T>>;
-                    else
-                        return false;
-                }();
-                emit<W>(out, same ? nodes : nullptr, same ? node : 0);
+                emit<W>(out, nullptr, 0);
             }
         }
 
