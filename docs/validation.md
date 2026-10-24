@@ -17,7 +17,7 @@ The settings of a field and of a struct go into `yyjson::annotations<T>` or on t
 A read checks the JSON at three levels:
 
 *   The text, which has to be JSON as [RFC 8259](https://www.rfc-editor.org/rfc/rfc8259) defines it, or as the `ReadFlag`s relax it. Text that is not throws `yyjson::read_error`. An object may have a key more than once: a document keeps every member in order, and `operator[]`, `find` and `contains` of an object find the first.
-*   The shape, which has to convert to the C++ type by the [conversion rules](conversions.md#conversion-rules). [`yyjson::strict`](#strict-reading), `yyjson::required`, `yyjson::additional_properties(false)`, `yyjson::dependent_required` and the [tags](conversions.md#tagged-variants) of variants add rules for the keys of objects. A value that breaks them throws `yyjson::bad_cast`.
+*   The shape, which has to convert to the C++ type by the [conversion rules](conversions.md#conversion-rules). [`yyjson::strict`](#strict-reading), `yyjson::required`, `yyjson::additional_properties(false)`, `yyjson::dependent_required`, `yyjson::one_of_required`, `yyjson::any_of_required` and the [tags](conversions.md#tagged-variants) of variants add rules for the keys of objects. A value that breaks them throws `yyjson::bad_cast`.
 *   The value of a field, which has to satisfy the [constraints](#constraints) of the field. They are checked on the C++ value that the field gets, and a value that breaks them throws `yyjson::bad_cast`.
 
 `yyjson::read<T>`, `read_into` and `merge_into` check all three as they read. `cast<T>` checks the last two on a document.
@@ -123,13 +123,14 @@ Any other `std::optional<U>`, such as the root or an element of an array, reads 
 
 ### Annotations of keys
 
-Five annotations change the rules of the keys for one field or one struct:
+Seven annotations change the rules of the keys for one field or one struct:
 
 *   `yyjson::required` requires the key of a field, with or without `yyjson::strict`.
 *   `yyjson::additional_properties(false)` rejects the keys that name no field of a struct, with or without `yyjson::strict`.
 *   `yyjson::optional_key` lets the object leave out the key of a field under `yyjson::strict`.
 *   `yyjson::omit_default` does the same, and also leaves the key out of the written object while the field holds its value in `T()`; it is described in [Fields with a default value](#fields-with-a-default-value).
 *   `yyjson::dependent_required` of a struct requires the keys of some fields when the object has the key of another, with or without `yyjson::strict`; it is described after the first three.
+*   `yyjson::one_of_required` and `yyjson::any_of_required` of a struct require the keys of exactly one, or at least one, of some groups of fields, with or without `yyjson::strict`; they are described after `yyjson::dependent_required`.
 
 ```cpp
 struct Request
@@ -181,6 +182,33 @@ yyjson::read<Payment>(R"({"card":"1234","address":"x"})");  // throws: Payment i
 *   It is checked with or without `yyjson::strict`, except in the objects that `merge_into` merges into. A struct may have it for several members.
 *   A member that the struct does not have, and a [skipped field](conversions.md#skipped-fields), are compile errors. With [C++26 annotations](conversions.md#c26-annotations), write `struct [[=yyjson::dependent_required("card", {"address", "zip"})]] Payment`.
 *   The check adds no cost to an object that has the keys of all the fields in their order, as an object that `yyjson::write` wrote does.
+
+`yyjson::one_of_required({...}, {...}, ...)` of a struct requires all the keys of exactly one of the groups of fields, and `yyjson::any_of_required({...}, {...}, ...)` all the keys of at least one of them, as the keywords `oneOf` and `anyOf` of JSON Schema whose subschemas have only `required` do. They are for an object that gives the same thing in one of several forms:
+
+```cpp
+struct Measure
+{
+    std::string name;
+    std::optional<std::string> env;  // the name of an environment variable that holds the value
+    std::optional<double> value;
+    std::optional<std::string> unit;
+};
+template <>
+inline constexpr auto yyjson::annotations<Measure> =
+    yyjson::annotate(yyjson::one_of_required({"env"}, {"value", "unit"}));
+
+yyjson::read<Measure>(R"({"name":"cpu","env":"CPU_LIMIT"})");          // -> Measure{"cpu", "CPU_LIMIT", std::nullopt, std::nullopt}
+yyjson::read<Measure>(R"({"name":"cpu","value":2,"unit":"core"})");     // -> Measure{"cpu", std::nullopt, 2, "core"}
+yyjson::read<Measure>(R"({"name":"cpu","value":2})");                   // throws: Measure is not constructible from JSON without all the keys of one of ["env"], ["value", "unit"] (line 1, column 1, pos 0)
+yyjson::read<Measure>(R"({"name":"cpu","env":"CPU_LIMIT","value":2,"unit":"core"})");
+// throws: Measure is not constructible from JSON with all the keys of more than one of ["env"], ["value", "unit"] (line 1, column 1, pos 0)
+```
+
+*   A group is there when the object has all of its keys; an object that has only some of the keys of a group does not have the group. The fields are named by their members, and the message gives their keys, which `yyjson::rename` may change. A key whose value is `null` is a key that the object has.
+*   It is checked with or without `yyjson::strict`, except in the objects that `merge_into` merges into. A struct may have several of them, which all apply, and a group may have one member.
+*   Make the fields of the groups `std::optional`, or give them `yyjson::optional_key` or `yyjson::omit_default`. `yyjson::strict` requires the key of any other field, so that a strict read of a `yyjson::one_of_required` with such fields in two groups rejects every object. For the same reason, `yyjson::validate` and `yyjson::write` with `yyjson::strict` check the groups by the fields that are written: a `std::optional` field that holds no value is not written and is not there.
+*   A member that the struct does not have, and a [skipped field](conversions.md#skipped-fields), are compile errors. With [C++26 annotations](conversions.md#c26-annotations), write `struct [[=yyjson::one_of_required({"env"}, {"value", "unit"})]] Measure`.
+*   The check adds no cost to an object that has the keys of all the fields in their order, as an object that `yyjson::write` wrote does, except under `yyjson::one_of_required` of two or more groups, which such an object always breaks: the struct then checks its keys once more.
 
 ### Fields with a default value
 
@@ -502,7 +530,7 @@ yyjson::validate(Range{{}, 0, std::nullopt});
 // Range is not constructible from JSON with the key "lower" without the key "upper"
 ```
 
-It checks the constraints of the fields and of the elements, values and keys in them, `yyjson::dependent_required` by the fields that `write` writes, a field that its caster leaves out although the strict read requires its key, and the field of an [adjacent tag](conversions.md#tagged-variants) against the alternative of its variant. [`yyjson::validate`](reference.md#yyjsonvalidate) lists what it does not check.
+It checks the constraints of the fields and of the elements, values and keys in them, `yyjson::dependent_required`, `yyjson::one_of_required` and `yyjson::any_of_required` by the fields that `write` writes, a field that its caster leaves out although the strict read requires its key, and the field of an [adjacent tag](conversions.md#tagged-variants) against the alternative of its variant. [`yyjson::validate`](reference.md#yyjsonvalidate) lists what it does not check.
 
 `yyjson::write(t, yyjson::strict)` calls `yyjson::validate(t)` and then writes the same text as `yyjson::write(t)`. A value that it writes is one that `yyjson::read<T>(json, yyjson::strict)` reads back, with the exceptions that `validate` lists:
 
@@ -567,6 +595,7 @@ The tables below list the keywords of [JSON Schema 2020-12](https://json-schema.
 | `minProperties`, `maxProperties` | `yyjson::min_items(n)`, `yyjson::max_items(n)` on a map | |
 | `patternProperties` | none | `yyjson::property_names` and `yyjson::additional_properties(settings...)` constrain all the keys and all the values of a map alike. |
 | `dependentRequired` | `yyjson::dependent_required("member", {"other", ...})` on a struct, described in [Annotations of keys](#annotations-of-keys) | the fields are named by their members. `merge_into` does not check it. |
+| `oneOf`, `anyOf` of subschemas with only `required` | `yyjson::one_of_required({...}, ...)`, `yyjson::any_of_required({...}, ...)` on a struct, described in [Annotations of keys](#annotations-of-keys) | the fields are named by their members. `merge_into` does not check them. |
 | `dependentSchemas` | none | `yyjson::satisfies<f>` on a struct field. |
 | `unevaluatedProperties` | none | `yyjson::additional_properties(false)` or [`yyjson::strict`](#strict-reading). |
 
@@ -576,7 +605,7 @@ The tables below list the keywords of [JSON Schema 2020-12](https://json-schema.
 | --- | --- | --- |
 | `allOf` | the constraints of one field, which all apply | a field takes each constraint once. |
 | `anyOf` | `std::variant` | the first alternative that accepts the value by its conversion and its constraints is read, as described in [How constraints are checked](#how-constraints-are-checked). |
-| `oneOf` | a [tagged variant](conversions.md#tagged-variants) | the tag names the alternative, as a `const` of a member in each alternative of `oneOf` does. An untagged variant does not check that only one alternative accepts the value. |
+| `oneOf` | a [tagged variant](conversions.md#tagged-variants) | the tag names the alternative, as a `const` of a member in each alternative of `oneOf` does. An untagged variant does not check that only one alternative accepts the value. For subschemas with only `required`, see `yyjson::one_of_required` in [Objects](#objects). |
 | `not` | `yyjson::satisfies<f>` | |
 | `if`, `then`, `else` | a [tagged variant](conversions.md#tagged-variants), or `yyjson::satisfies<f>` | |
 | `$ref`, `$defs` | a C++ type, used in more than one place or in itself as a [recursive type](conversions.md#recursive-types) | |

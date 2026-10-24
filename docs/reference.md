@@ -51,6 +51,7 @@ This page lists the functions, classes and other entities of cpp-yyjson, grouped
     *   [`yyjson::omit_default`](#yyjsonomit_default)
     *   [`yyjson::additional_properties`](#yyjsonadditional_properties)
     *   [`yyjson::dependent_required`](#yyjsondependent_required)
+    *   [`yyjson::one_of_required`, `yyjson::any_of_required`](#yyjsonone_of_required-yyjsonany_of_required)
     *   [Constraints](#constraints)
     *   [`yyjson::items`](#yyjsonitems)
     *   [`yyjson::prefix_items`](#yyjsonprefix_items)
@@ -332,6 +333,7 @@ void validate(const T& t);
 *   a value that does not satisfy the [constraints](validation.md#constraints) of its field, including the constraints of the elements, the values and the keys in it;
 *   a field whose caster leaves it out with [`should_omit`](conversions.md#omitting-a-field-with-no-value), although the read requires the key: under `yyjson::required`, or under `yyjson::strict` without `yyjson::optional_key`;
 *   a field that [`yyjson::dependent_required`](#yyjsondependent_required) requires, left out while the field that requires it is written;
+*   groups of [`yyjson::one_of_required` or `yyjson::any_of_required`](#yyjsonone_of_required-yyjsonany_of_required) of which none, or under `one_of_required` more than one, have all their fields written;
 *   a field of an [adjacent tag](#yyjsoninternal_tag-yyjsonadjacent_tag) that does not name the alternative that its variant holds, which `yyjson::write` rejects with `std::invalid_argument`.
 
 A field that `write` writes as `null`, such as an empty `std::shared_ptr` or a `std::variant` that holds `std::monostate`, is not checked by its constraints, as the read does not check them for `null`. Nor is a field that [`yyjson::omit_default`](#yyjsonomit_default) leaves out, whose key the read does not see. A caster of the program that writes `null` is not detected, and the constraints of its field are checked.
@@ -361,7 +363,7 @@ catch (const yyjson::bad_cast& e)
 }
 ```
 
-A type without constraints, `required` fields of omittable types, `dependent_required` or adjacent tags, and without such types in it, has nothing to check, and `validate` returns without looking at the object.
+A type without constraints, `required` fields of omittable types, `dependent_required`, `one_of_required`, `any_of_required` or adjacent tags, and without such types in it, has nothing to check, and `validate` returns without looking at the object.
 
 ### `yyjson::read`
 
@@ -1574,7 +1576,7 @@ Specialize `annotations<T>` before the first use of `T`. `annotate` takes these 
 
 | `T` | Settings |
 | --- | --- |
-| a struct | [`yyjson::field`](#yyjsonfield), [`yyjson::additional_properties`](#yyjsonadditional_properties), [`yyjson::dependent_required`](#yyjsondependent_required) and [`yyjson::schema_name`](#yyjsonschema_name) |
+| a struct | [`yyjson::field`](#yyjsonfield), [`yyjson::additional_properties`](#yyjsonadditional_properties), [`yyjson::dependent_required`](#yyjsondependent_required), [`yyjson::one_of_required`, `yyjson::any_of_required`](#yyjsonone_of_required-yyjsonany_of_required) and [`yyjson::schema_name`](#yyjsonschema_name) |
 | a `std::variant` | [`yyjson::internal_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag) and [`yyjson::schema_name`](#yyjsonschema_name) |
 | an enumeration | [`yyjson::enumerator` and `yyjson::enum_format`](#yyjsonenum_format-yyjsonenumerator), and [`yyjson::schema_name`](#yyjsonschema_name) |
 | a type with a [caster](#yyjsoncastert) | [`yyjson::schema_name`](#yyjsonschema_name) |
@@ -1711,6 +1713,36 @@ inline constexpr auto yyjson::annotations<Payment> = yyjson::annotate(yyjson::de
 
 yyjson::read<Payment>(R"({"card":"1234"})");
 // throws yyjson::bad_cast: Payment is not constructible from JSON with the key "card" without the key "address" ...
+```
+
+### `yyjson::one_of_required`, `yyjson::any_of_required`
+
+Groups of fields of which an object read into a struct must have all the keys of exactly one, or of at least one, as the keywords `oneOf` and `anyOf` of JSON Schema whose subschemas have only `required`.
+
+```cpp
+template <std::size_t... Ns>
+consteval /* unspecified */ one_of_required(const std::string_view (&... groups)[Ns]);
+template <std::size_t... Ns>
+consteval /* unspecified */ any_of_required(const std::string_view (&... groups)[Ns]);
+```
+
+They are settings of the struct, given to [`yyjson::annotate`](#yyjsonannotationst-yyjsonannotate), and take one or more groups, each a braced list of members of the struct, whose keys `yyjson::rename` may change. A group is there when the object has the keys of all its members. Reading an object in which no group is there, or under `one_of_required` more than one, throws `yyjson::bad_cast`, with or without [`yyjson::strict`](#yyjsonstrict), except in `yyjson::merge_into`. A struct may have several of them. A name that is not a member of the struct, and a skipped field, are compile errors.
+
+The fields of the groups should be `std::optional`, or have [`yyjson::optional_key`](#yyjsonoptional_key) or [`yyjson::omit_default`](#yyjsonomit_default): `yyjson::strict` requires the key of any other field, so that a strict read of a `one_of_required` with such fields in two groups rejects every object. See [Annotations of keys](validation.md#annotations-of-keys).
+
+```cpp
+struct Contact
+{
+    std::optional<std::string> email;
+    std::optional<std::string> phone;
+};
+
+template <>
+inline constexpr auto yyjson::annotations<Contact> = yyjson::annotate(yyjson::any_of_required({"email"}, {"phone"}));
+
+yyjson::read<Contact>(R"({"email":"a@example.com","phone":"0"})");  // -> Contact{"a@example.com", "0"}
+yyjson::read<Contact>(R"({})");
+// throws yyjson::bad_cast: Contact is not constructible from JSON without all the keys of one of ["email"], ["phone"] ...
 ```
 
 ### Constraints
