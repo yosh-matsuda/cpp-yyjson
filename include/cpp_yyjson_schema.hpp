@@ -975,7 +975,8 @@ namespace yyjson
                                       yyjson::detail::constraint_bit<yyjson::max_items>);
                     emit_constraints(out, rest);
                 }
-                if constexpr (yyjson::detail::insertable_set<T> || yyjson::detail::unique_keys<T>)
+                // A multiset keeps repeated elements: only a container whose `insert` can refuse one has unique items.
+                if constexpr (yyjson::detail::unique_keys<T>)
                     if (!(n != nullptr && n->constraints.has<yyjson::unique_items_t>()))
                         out.emplace("uniqueItems", true);
                 if constexpr (fixed)
