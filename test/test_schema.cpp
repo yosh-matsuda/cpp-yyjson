@@ -130,6 +130,24 @@ template <> inline constexpr auto yyjson::annotations<Kw> = yyjson::annotate(
     yyjson::field("codes", yyjson::items(yyjson::enum_("x", "y"))),
     yyjson::dependent_required("card", {"billing", "zip"}),
     yyjson::dependent_required("billing", {"zip"}));
+struct Nul
+{
+    std::variant<std::monostate, std::string> code;
+    std::variant<std::string, std::monostate> kind = std::monostate();
+    std::unique_ptr<int> count;
+    std::shared_ptr<std::vector<int>> list;
+    std::optional<std::unique_ptr<int>> level;
+    std::vector<std::unique_ptr<std::string>> tags;
+    std::vector<std::shared_ptr<int>> ids;
+};
+template <> inline constexpr auto yyjson::annotations<Nul> = yyjson::annotate(
+    yyjson::field("code", yyjson::max_length(3)),
+    yyjson::field("kind", yyjson::enum_("a", "b")),
+    yyjson::field("count", yyjson::minimum(0)),
+    yyjson::field("list", yyjson::min_items(1), yyjson::items(yyjson::maximum(9))),
+    yyjson::field("level", yyjson::maximum(5)),
+    yyjson::field("tags", yyjson::items(yyjson::max_length(3))),
+    yyjson::field("ids", yyjson::unique_items));
 struct Fm
 {
     std::optional<std::string> date_time;
@@ -699,6 +717,25 @@ TEST(Schema, Kw)
         R"({"billing":"b"})",
         R"({"billing":"b","zip":"z"})",
         R"({"version":2,"kind":"a","ratio":0.5,"on":true,"when":"2024-01-02T03:04:05Z","codes":[],"card":"1"})",
+    });
+}
+
+// The constraints hold for the value of a pointer or of a variant with std::monostate, and null passes them.
+TEST(Schema, Nul)
+{
+    check<Nul>({
+        R"({})",
+        R"({"code":null,"kind":null,"count":null,"list":null,"level":null,"tags":[null],"ids":[null,1]})",
+        R"({"code":"abc","kind":"a","count":0,"list":[9],"level":5,"tags":["abc"],"ids":[1,2]})",
+        R"({"code":"abcd"})",
+        R"({"kind":"c"})",
+        R"({"count":-1})",
+        R"({"list":[]})",
+        R"({"list":[10]})",
+        R"({"level":6})",
+        R"({"tags":["abcd"]})",
+        R"({"ids":[1,1]})",
+        R"({"ids":[null,null]})",
     });
 }
 

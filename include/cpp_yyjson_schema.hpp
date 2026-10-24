@@ -415,6 +415,11 @@ namespace yyjson
             using type = T;
         };
 
+        // A variant of std::monostate and a value, which is null or the value, and not tagged by `internal_tag`.
+        template <typename T>
+        concept nullable_variant = is_variant<T>::value && yyjson::detail::nullable<T> &&
+                                   (yyjson::detail::variant_tags<T>::tagging != detail::variant_tagging::internal);
+
         template <typename T>
         concept user_read = !yyjson::detail::reads_by_default<T>;
         // T is written by a `to_json` of the user, which returns a value or writes into one.
@@ -531,8 +536,9 @@ namespace yyjson
             }
 
             // Writes the metadata `m` of a field or a type into `out`, where it replaces that of the type of the
-            // field.  Each example is read into E and checked by `check`; the schema of reading has it as it is
-            // written, and the schema of `write` has what `write` gives for the value read.
+            // field.  Each example is read into E and checked by `check`, which takes the `std::optional<E>` that
+            // holds it; the schema of reading has it as it is written, and the schema of `write` has what `write`
+            // gives for the value read.
             template <typename E, bool Examples, typename Check>
             void emit_metadata(object_ref out, const metadata& m, std::string_view of, Check&& check) const
             {
@@ -567,7 +573,7 @@ namespace yyjson
                         {
                             fail(std::string("read<T> does not read: ").append(e.what()));
                         }
-                        if (!check(*value)) fail("does not satisfy the constraints");
+                        if (!check(value)) fail("does not satisfy the constraints");
                         if (!writing())
                             list.emplace_back(yyjson::read(text), copy_string);
                         else if constexpr (writable<E>)
@@ -625,7 +631,7 @@ namespace yyjson
             {
                 if (const auto m = type_metadata<T>(); !m.empty())
                     emit_metadata<T, type_examples_count<T>() != 0>(out, m, yyjson::detail::type_name<T>(),
-                                                                    [](const T&) { return true; });
+                                                                    [](const std::optional<T>&) { return true; });
             }
             // The name of the field R of S in messages.
             template <typename S, std::size_t R>
@@ -1048,6 +1054,24 @@ namespace yyjson
                 auto any = out.emplace("anyOf", empty_array);
                 emit<U>(any.emplace_back(empty_object), nodes, node);
                 any.emplace_back(empty_object).emplace("type", "null");
+            }
+            else if constexpr (nullable_variant<T>)
+            {
+                // The constraints hold for the value that is not null, as through a pointer; a named variant keeps
+                // its reference and has them beside it.
+                const auto alternatives = [&](auto any) {
+                    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                        (emit<std::variant_alternative_t<Is, T>>(any.emplace_back(empty_object), nodes, node), ...);
+                    }(std::make_index_sequence<2>{});
+                };
+                if (!named<T>())
+                    alternatives(out.emplace("anyOf", empty_array));
+                else
+                {
+                    emit_named<T>(out);
+                    if (n != nullptr && (n->constraints.set != 0 || n->structured()))
+                        alternatives(out.emplace("anyOf", empty_array));
+                }
             }
             else if constexpr (is_variant<T>::value)
             {
@@ -1494,11 +1518,12 @@ namespace yyjson
                             using E = std::conditional_t<yyjson::detail::is_std_optional<F>::value &&
                                                              !yyjson::detail::adjacent_field<S, Ks>,
                                                          typename optional_value<F>::type, F>;
-                            const auto check = [](const E& v) {
+                            // F is E, or the std::optional<E> that holds the example
+                            const auto check = [](const std::optional<E>& v) {
                                 if constexpr (std::same_as<E, F>)
-                                    return satisfies<S, Ks>(v);
+                                    return satisfies<S, Ks>(*v);
                                 else
-                                    return satisfies<S, Ks>(F(v));
+                                    return satisfies<S, Ks>(v);
                             };
                             emit_metadata<E, field_has_examples<S, declared>()>(p, m, member_of<S, declared>(), check);
                         }
