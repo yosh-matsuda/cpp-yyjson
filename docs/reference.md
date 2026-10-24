@@ -19,6 +19,8 @@ This page lists the functions, classes and other entities of cpp-yyjson, grouped
     *   [`yyjson::validate`](#yyjsonvalidate)
     *   [`yyjson::read`](#yyjsonread)
     *   [`yyjson::cast`](#yyjsoncast)
+    *   [`yyjson::json_schema<T>`](#yyjsonjson_schemat)
+    *   [`yyjson::schema_collection`](#yyjsonschema_collection)
 *   [DOM classes](#dom-classes)
     *   [`yyjson::reader::value`](#yyjsonreadervalue)
     *   [`yyjson::reader::array`, `yyjson::reader::const_array_ref`](#yyjsonreaderarray-yyjsonreaderconst_array_ref)
@@ -38,6 +40,7 @@ This page lists the functions, classes and other entities of cpp-yyjson, grouped
     *   [`yyjson::WriteFlag`](#yyjsonwriteflag)
     *   [Flags of `yyjson::read<T>`](#flags-of-yyjsonreadt)
     *   [`yyjson::strict`](#yyjsonstrict)
+    *   [`yyjson::schema_options`, `yyjson::schema_collection_options`](#yyjsonschema_options-yyjsonschema_collection_options)
 *   [Annotations](#annotations)
     *   [`yyjson::annotations<T>`, `yyjson::annotate`](#yyjsonannotationst-yyjsonannotate)
     *   [`yyjson::field`](#yyjsonfield)
@@ -56,6 +59,9 @@ This page lists the functions, classes and other entities of cpp-yyjson, grouped
     *   [`yyjson::format_checker<>`](#yyjsonformat_checker)
     *   [`yyjson::internal_tag`, `yyjson::adjacent_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag)
     *   [`yyjson::enum_format`, `yyjson::enumerator`](#yyjsonenum_format-yyjsonenumerator)
+    *   [`yyjson::title`, `yyjson::description`, `yyjson::deprecated`, `yyjson::examples`](#yyjsontitle-yyjsondescription-yyjsondeprecated-yyjsonexamples)
+    *   [`yyjson::schema`](#yyjsonschema)
+    *   [`yyjson::schema_name`](#yyjsonschema_name)
     *   [`VISITABLE_STRUCT`](#visitable_struct)
 *   [Casters](#casters)
     *   [`yyjson::caster<T>`](#yyjsoncastert)
@@ -108,12 +114,16 @@ The member functions of the DOM classes often return *reference classes*, such a
 | [`yyjson::validate`](#yyjsonvalidate) | data binding | Checks a C++ object against the constraints that a strict read of its JSON checks |
 | [`yyjson::read`](#yyjsonread) | DOM | Reads a JSON string into an immutable document |
 | [`yyjson::cast<T>`](#yyjsoncast) | DOM | Converts a JSON value to a C++ object of type `T` |
+| [`yyjson::json_schema<T>`](#yyjsonjson_schemat) | JSON Schema | Generates the JSON Schema of what `read<T>` reads or `write` writes |
+| [`yyjson::schema_collection`](#yyjsonschema_collection) | JSON Schema | Collects the JSON Schemas of several types, as for an OpenAPI document |
 
 The *data binding API* converts between JSON text and C++ types without building a JSON document in between. The *DOM API* reads JSON into a document of immutable values, and builds documents of mutable values with the [DOM classes](#dom-classes). Use the DOM API in these cases:
 
 *   The shape of the JSON is not known in advance.
 *   The JSON that you build has no C++ type.
 *   You convert only parts of a document.
+
+The JSON Schema functions are in `cpp_yyjson_schema.hpp`, which a program includes besides `cpp_yyjson.hpp`; see [Generating JSON Schema](json-schema.md).
 
 Both APIs convert the types of [Converting C++ types](conversions.md) with the same casters, and give the same results: `write(t)` gives the same text as `value(t).write()`, and `read<T>(json)` gives the same value as `read(json).cast<T>()`, unless an object has a [key twice](validation.md#repeated-keys). `test/test_conformance.cpp` checks the reading functions against the DOM API on the files of [JSONTestSuite](https://github.com/nst/JSONTestSuite), on real documents and on random texts.
 
@@ -399,6 +409,70 @@ auto doc = yyjson::read(R"({"x":1,"y":2})");
 auto point = yyjson::cast<std::map<std::string, int>>(doc);
 // -> {{"x", 1}, {"y", 2}}
 ```
+
+### `yyjson::json_schema<T>`
+
+Generates the [JSON Schema](https://json-schema.org/draft/2020-12) (2020-12) of `T`, in `cpp_yyjson_schema.hpp`.
+
+```cpp
+template <typename T>
+yyjson::object json_schema(const schema_options& options = {});
+template <typename T>
+yyjson::object json_schema(yyjson::strict_t, const schema_options& options = {});
+```
+
+The first form gives the schema of what `yyjson::read<T>` reads, or with [`schema_direction::write`](#yyjsonschema_options-yyjsonschema_collection_options) of what `yyjson::write` writes. The second form gives the schema of what `read<T>(json, yyjson::strict)` reads; the write schema is the same in both forms. The result has `$schema`, `$id` when [`schema_options`](#yyjsonschema_options-yyjsonschema_collection_options) gives one, the structs and the enumerations in `$defs`, and the schema of `T`, which is a `$ref` for a struct or an enumeration.
+
+JSON that is valid against the schema is read by `read<T>` with the same strictness, with the exceptions listed in [What the schema guarantees](json-schema.md#what-the-schema-guarantees).
+
+Throws `std::invalid_argument` for two types with the same [`yyjson::schema_name`](#yyjsonschema_name), an [example](#yyjsontitle-yyjsondescription-yyjsondeprecated-yyjsonexamples) that `read<T>` does not read, and a [declared schema](#yyjsonschema) that is not a JSON object or a boolean.
+
+```cpp
+struct Point
+{
+    int x;
+    int y;
+};
+
+std::cout << yyjson::json_schema<std::vector<double>>().write() << std::endl;
+// {"$schema":"https://json-schema.org/draft/2020-12/schema","type":"array","items":{"type":"number"}}
+auto schema = yyjson::json_schema<Point>(yyjson::strict);
+// $defs/Point: {"type":"object","properties":{"x":{...},"y":{...}},"required":["x","y"],"additionalProperties":false}
+```
+
+### `yyjson::schema_collection`
+
+Collects the JSON Schemas of several types by name, as `components/schemas` of an [OpenAPI 3.1](https://spec.openapis.org/oas/v3.1.0) document, in `cpp_yyjson_schema.hpp`.
+
+```cpp
+class schema_collection
+{
+public:
+    explicit schema_collection(const schema_collection_options& options = {});
+    explicit schema_collection(yyjson::strict_t, const schema_collection_options& options = {});
+
+    template <typename T>
+    schema_collection& add(schema_direction direction = schema_direction::read);
+    template <typename T>
+    yyjson::object schema(schema_direction direction = schema_direction::read);
+    yyjson::object schemas();
+};
+```
+
+*   With `yyjson::strict`, the read schemas are those of strict reading.
+*   `add<T>` adds `T` and the types in it, in one direction, and returns `*this`.
+*   `schema<T>` returns the schema of `T` to use in a document, a `$ref` for a struct or an enumeration. It throws `std::logic_error` when `T` was not added in the direction.
+*   `schemas()` returns the schemas of the structs and the enumerations by name, without `$schema`. A type that the added types use in both directions, and whose read and write schemas differ, has the two names `Name-Input` and `Name-Output`.
+*   `schema<T>` and `schemas()` throw `std::invalid_argument` as `json_schema<T>` does.
+
+```cpp
+auto collection = yyjson::schema_collection();
+collection.add<Order>().add<Receipt>(yyjson::schema_direction::write);
+auto request = collection.schema<Order>();  // {"$ref":"#/components/schemas/Order"}
+auto components = collection.schemas();     // {"Order":{...},"Receipt":{...}}
+```
+
+See [Several types and OpenAPI](json-schema.md#several-types-and-openapi).
 
 ## DOM classes
 
@@ -1432,6 +1506,39 @@ catch (const yyjson::bad_cast& e)
 }
 ```
 
+### `yyjson::schema_options`, `yyjson::schema_collection_options`
+
+The options of [`yyjson::json_schema<T>`](#yyjsonjson_schemat) and [`yyjson::schema_collection`](#yyjsonschema_collection), in `cpp_yyjson_schema.hpp`.
+
+```cpp
+enum class schema_direction : std::uint8_t
+{
+    read,
+    write
+};
+
+struct schema_options
+{
+    schema_direction direction = schema_direction::read;
+    std::string_view id = {};
+    std::string_view ref_prefix = "#/$defs/";
+};
+
+struct schema_collection_options
+{
+    std::string_view ref_prefix = "#/components/schemas/";
+};
+```
+
+*   `direction` chooses the schema of `read<T>` or of `write`.
+*   `id` is the value of `$id`; the schema has no `$id` when it is empty.
+*   `ref_prefix` is the beginning of each `$ref` to a struct or an enumeration, followed by its name. `json_schema<T>` always puts their schemas in `$defs`; change the prefix when the program moves them elsewhere. `schema_collection` refers to the place where the program puts `schemas()`.
+
+```cpp
+auto schema = yyjson::json_schema<Point>(
+    {.direction = yyjson::schema_direction::write, .id = "https://example.com/point.json"});
+```
+
 ## Annotations
 
 Annotations set how a type converts: the JSON keys and the constraints of the fields of a struct, the tag of a variant, and the names of an enumeration. Give them in a specialization of [`yyjson::annotations<T>`](#yyjsonannotationst-yyjsonannotate). With the reflection of C++26, the same settings can also be written on the declarations, as `[[=yyjson::rename("key")]]`; see [C++26 annotations](conversions.md#c26-annotations).
@@ -1452,9 +1559,10 @@ Specialize `annotations<T>` before the first use of `T`. `annotate` takes these 
 
 | `T` | Settings |
 | --- | --- |
-| a struct | [`yyjson::field`](#yyjsonfield), [`yyjson::additional_properties`](#yyjsonadditional_properties) and [`yyjson::dependent_required`](#yyjsondependent_required) |
+| a struct | [`yyjson::field`](#yyjsonfield), [`yyjson::additional_properties`](#yyjsonadditional_properties), [`yyjson::dependent_required`](#yyjsondependent_required) and [`yyjson::schema_name`](#yyjsonschema_name) |
 | a `std::variant` | [`yyjson::internal_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag) |
-| an enumeration | [`yyjson::enumerator` and `yyjson::enum_format`](#yyjsonenum_format-yyjsonenumerator) |
+| an enumeration | [`yyjson::enumerator` and `yyjson::enum_format`](#yyjsonenum_format-yyjsonenumerator), and [`yyjson::schema_name`](#yyjsonschema_name) |
+| any type | [`yyjson::title`, `yyjson::description`, `yyjson::deprecated`, `yyjson::examples`](#yyjsontitle-yyjsondescription-yyjsondeprecated-yyjsonexamples) and [`yyjson::schema`](#yyjsonschema) |
 
 See [Annotations](conversions.md#annotations).
 
@@ -1483,7 +1591,7 @@ template <typename... As>
 consteval field_annotation<As...> field(std::string_view member, As... values);
 ```
 
-`values` are one or more of [`yyjson::rename`](#yyjsonrename), [`yyjson::skip`](#yyjsonskip), [`yyjson::required`](#yyjsonrequired), [`yyjson::optional_key`](#yyjsonoptional_key), [`yyjson::adjacent_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag), the [constraints](#constraints), [`yyjson::items`](#yyjsonitems), [`yyjson::prefix_items`](#yyjsonprefix_items), [`yyjson::contains`, `yyjson::min_contains`, `yyjson::max_contains`](#yyjsoncontains-yyjsonmin_contains-yyjsonmax_contains), [`yyjson::property_names`](#yyjsonproperty_names) and [`yyjson::additional_properties(settings...)`](#yyjsonadditional_properties). Any other setting is a compile error.
+`values` are one or more of [`yyjson::rename`](#yyjsonrename), [`yyjson::skip`](#yyjsonskip), [`yyjson::required`](#yyjsonrequired), [`yyjson::optional_key`](#yyjsonoptional_key), [`yyjson::adjacent_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag), the [constraints](#constraints), [`yyjson::items`](#yyjsonitems), [`yyjson::prefix_items`](#yyjsonprefix_items), [`yyjson::contains`, `yyjson::min_contains`, `yyjson::max_contains`](#yyjsoncontains-yyjsonmin_contains-yyjsonmax_contains), [`yyjson::property_names`](#yyjsonproperty_names), [`yyjson::additional_properties(settings...)`](#yyjsonadditional_properties), [`yyjson::title`, `yyjson::description`, `yyjson::deprecated`, `yyjson::examples`](#yyjsontitle-yyjsondescription-yyjsondeprecated-yyjsonexamples) and [`yyjson::schema`](#yyjsonschema). Any other setting is a compile error.
 
 ### `yyjson::rename`
 
@@ -1824,6 +1932,85 @@ consteval enumerator_annotation<As...> enumerator(std::string_view name, As... v
 *   `enumerator(name, yyjson::rename("json-name"))` gives the enumerator `name` another JSON name. It takes only [`yyjson::rename`](#yyjsonrename).
 
 Both are settings of the enumeration, given to [`yyjson::annotate`](#yyjsonannotationst-yyjsonannotate). See [Formats and renamed enumerators](conversions.md#formats-and-renamed-enumerators).
+
+### `yyjson::title`, `yyjson::description`, `yyjson::deprecated`, `yyjson::examples`
+
+Settings of a field or a type that describe it in the JSON Schema that [`yyjson::json_schema<T>`](#yyjsonjson_schemat) generates, as the keywords `title`, `description`, `deprecated` and `examples` do. They do not change how a value is read or written.
+
+```cpp
+consteval explicit title(std::string_view text);
+consteval explicit description(std::string_view text);
+inline constexpr deprecated_t deprecated{};
+template <typename... Ss>
+consteval examples_t<sizeof...(Ss)> examples(const Ss&... json_texts);
+```
+
+*   Give them to [`yyjson::field`](#yyjsonfield) for a field, and to [`yyjson::annotate`](#yyjsonannotationst-yyjsonannotate) for a type. With C++26 reflection, they can be written on a member or on the declaration of a struct or an enumeration.
+*   Each of them may be given once to a field and once to a type; a second one is a compile error.
+*   `examples` takes each example as JSON text. `json_schema<T>` reads each one with `read<T>` of the field or the type, with the strictness of the schema, and checks its constraints; one that fails throws `std::invalid_argument`. The write schema has what `write` writes of the value read.
+
+```cpp
+template <>
+inline constexpr auto yyjson::annotations<Point> =
+    yyjson::annotate(yyjson::title("Point"), yyjson::field("x", yyjson::description("Pixels from the left"),
+                                                          yyjson::examples("0", "640")));
+```
+
+See [Defaults and descriptions](json-schema.md#defaults-and-descriptions).
+
+### `yyjson::schema`
+
+A setting of a field or a type that declares its JSON Schema in JSON text, in place of the schema that [`yyjson::json_schema<T>`](#yyjsonjson_schemat) derives.
+
+```cpp
+struct schema
+{
+    struct directions
+    {
+        std::string_view read = {};
+        std::string_view write = {};
+    };
+    consteval explicit schema(std::string_view json_text);
+    consteval explicit schema(directions d);
+};
+```
+
+*   `schema(text)` declares the schema of both directions, and `schema({.read = ..., .write = ...})` declares them apart; a direction left out is derived. Both empty is a compile error.
+*   It replaces the whole derived schema, including the keywords of the constraints of a field, which are still checked on read. The library does not check it.
+*   The declaration of a field overrides that of its type. A field with `yyjson::adjacent_tag` cannot take it.
+*   Text that is not a JSON object or a boolean throws `std::invalid_argument` from `json_schema<T>`.
+
+```cpp
+template <>
+inline constexpr auto yyjson::annotations<Rgb> =
+    yyjson::annotate(yyjson::schema(R"({"type":"string","pattern":"^#[0-9a-f]{6}$"})"));
+```
+
+See [Declared schemas](json-schema.md#declared-schemas).
+
+### `yyjson::schema_name`
+
+A setting of a struct or an enumeration that names it in `$defs` of the JSON Schema and in `components/schemas` of OpenAPI.
+
+```cpp
+struct schema_name
+{
+    consteval explicit schema_name(std::string_view name);
+};
+```
+
+*   The name has the characters `[A-Za-z0-9._-]` only, and is not empty; another name is a compile error. Another type than a struct or an enumeration is a compile error in `json_schema<T>`.
+*   Without it, the name comes from the qualified name of the type, which differs between compilers for some types.
+*   Two types with the same name throw `std::invalid_argument` from `json_schema<T>` and `schema_collection`.
+*   It does not change how a value is read or written.
+
+```cpp
+template <>
+inline constexpr auto yyjson::annotations<Point> = yyjson::annotate(yyjson::schema_name("Point"));
+// struct [[=yyjson::schema_name("Point")]] Point { ... };  with C++26 reflection
+```
+
+See [Names of types](json-schema.md#names-of-types).
 
 ### `VISITABLE_STRUCT`
 
@@ -2328,13 +2515,14 @@ The CMake options are listed in [Installation](../README.md#cmake-options) of th
 
 ### Headers
 
-Include `cpp_yyjson.hpp` only; it includes the other headers. cpp-yyjson is built in three layers:
+Include `cpp_yyjson.hpp`; it includes the other headers that it needs. Include `cpp_yyjson_schema.hpp` too to [generate JSON Schema](json-schema.md); it includes `cpp_yyjson.hpp`. cpp-yyjson is built in three layers:
 
 | Layer | Files | Role |
 | --- | --- | --- |
 | backend | `yyjson.h`, `src/yyjson.c` | yyjson: documents, parsing and serialization. By default the [bundled backend](../README.md#bundled-backend), which CMake compiles from `src/yyjson.c` into a static library; an external yyjson otherwise. |
 | JSON text | `yyjson_ext.hpp` | reads and writes JSON text directly, without a document, one value at a time: whitespace, numbers, strings and their escapes, UTF-8 checks, and the read and write flags of yyjson. It knows nothing of C++ types. |
 | C++ types | `cpp_yyjson.hpp`, `field_reflection.hpp` | everything in this reference: the DOM classes, the conversions of C++ types, `read<T>` and `write`, which map C++ types onto the JSON text layer. |
+| JSON Schema | `cpp_yyjson_schema.hpp` | `json_schema<T>` and `schema_collection`, which describe the C++ types of the layer below. |
 
 `yyjson_ext.hpp` is an implementation detail, header-only like `cpp_yyjson.hpp`. Its classes, `yyjson::text_writer` and `yyjson::text_reader`, may change in any release, so do not use them directly. It uses only the public API of `yyjson.h`. With an external yyjson older than 0.12.0, `read<T>` and `write` do not use it; see [Backend versions](#backend-versions).
 

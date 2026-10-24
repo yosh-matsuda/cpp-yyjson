@@ -34,6 +34,7 @@ Each example assumes `#include "cpp_yyjson.hpp"` and the standard headers that i
     *   [Require a key](#require-a-key)
     *   [Restrict the values of a field](#restrict-the-values-of-a-field)
     *   [Check a value before writing it](#check-a-value-before-writing-it)
+    *   [Generate the JSON Schema of a type](#generate-the-json-schema-of-a-type)
     *   [Find the value that failed](#find-the-value-that-failed)
     *   [Check at compile time that a type converts](#check-at-compile-time-that-a-type-converts)
 *   [JSON of any shape](#json-of-any-shape)
@@ -512,6 +513,22 @@ catch (const yyjson::bad_cast& e)
 
 Details: [Checking a C++ value](validation.md#checking-a-c-value).
 
+### Generate the JSON Schema of a type
+
+`yyjson::json_schema<T>()` in `cpp_yyjson_schema.hpp` returns the JSON Schema of what `read<T>` reads, with the keys, the constraints and the descriptions of the annotations:
+
+```cpp
+#include <cpp_yyjson_schema.hpp>
+
+auto schema = yyjson::json_schema<User>().write();
+auto strict_schema = yyjson::json_schema<User>(yyjson::strict).write();
+auto output_schema = yyjson::json_schema<User>({.direction = yyjson::schema_direction::write}).write();
+```
+
+JSON that is valid against the schema is read by `read<T>`, with the exceptions listed in [What the schema guarantees](json-schema.md#what-the-schema-guarantees). For the schemas of an OpenAPI document, use `yyjson::schema_collection`.
+
+Details: [Generating JSON Schema](json-schema.md).
+
 ### Find the value that failed
 
 `bad_cast` names the value by a [JSON Pointer](https://www.rfc-editor.org/rfc/rfc6901) and, for a read from text, by its line and column:
@@ -798,4 +815,4 @@ for (const auto& p : points)
 | A field that collects unknown keys | [read a document and look at its keys](#keep-the-keys-that-the-struct-does-not-have) |
 | JSON Lines and streams of values | [read line by line](#read-json-lines) |
 | `std::chrono` types, raw pointers, classes with private members | [a translator](#convert-dates-and-times), as listed in [Conversion rules](conversions.md#conversion-rules) |
-| JSON Schema output | the [constraints](validation.md#constraints) check values but produce no schema; [JSON Schema keywords](validation.md#json-schema-keywords) maps a schema to types and annotations |
+| C++ types from a JSON Schema | write the types by hand; [JSON Schema keywords](validation.md#json-schema-keywords) maps each keyword to a type or an annotation |

@@ -418,7 +418,7 @@ auto json = yyjson::write(project);
 ```
 
 *   The annotations of the members and a `yyjson::annotations` specialization can be combined, as long as no field gets the same setting twice; that fails to compile.
-*   Of the annotations on the struct itself, only [`yyjson::additional_properties`](validation.md#strict-reading) and [`yyjson::dependent_required`](validation.md#annotations-of-keys) are read.
+*   Of the annotations on the struct itself, only [`yyjson::additional_properties`](validation.md#strict-reading), [`yyjson::dependent_required`](validation.md#annotations-of-keys) and the annotations of the [JSON Schema](json-schema.md#defaults-and-descriptions) (`yyjson::title`, `yyjson::description`, `yyjson::deprecated`, `yyjson::examples`, `yyjson::schema` and `yyjson::schema_name`) are read. A member takes the same annotations of the JSON Schema except `yyjson::schema_name`.
 *   An enumeration takes a [format](#formats-and-renamed-enumerators) on its declaration, as in `enum class [[=yyjson::enum_format::integer]] Permission : unsigned { ... };`. An enumerator takes a new name, as in `in_progress [[=yyjson::rename("in-progress")]],`. These combine with `yyjson::annotations<E>` as the settings of fields do. An annotation on an alias, that is, an enumerator with the value of one declared before it, is not read.
 *   The annotations apply to the structs that the compile-time reflection converts. An annotation of this library on a member of a struct that `VISITABLE_STRUCT` registers fails to compile; use the pairs of the macro or `yyjson::annotations` there.
 *   The annotations are read when the macro `FIELD_RFL_ANNOTATIONS` is `1`. `yyjson::rename`, `yyjson::skip` and the tags are always available for `yyjson::annotations`.

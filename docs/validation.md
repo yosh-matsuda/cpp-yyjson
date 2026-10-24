@@ -7,7 +7,7 @@ This document describes:
 *   what a read checks, and what it does with unknown, missing and repeated keys;
 *   how to reject those keys, and `null` in a `std::optional` field, with [strict reading](#strict-reading);
 *   how to restrict the values of fields, and of their elements, with [constraints](#constraints), and how to [check a C++ value](#checking-a-c-value) by them before it is written;
-*   what in cpp-yyjson corresponds to each [keyword of JSON Schema](#json-schema-keywords);
+*   what in cpp-yyjson corresponds to each [keyword of JSON Schema](#json-schema-keywords), which [Generating JSON Schema](json-schema.md) writes;
 *   the [errors](#errors) that the library reports at run time, and the [compile errors](#compile-errors) of types that cannot be converted.
 
 The settings of a field and of a struct go into `yyjson::annotations<T>` or on the members as C++26 annotations, as described in [Annotations](conversions.md#annotations).
@@ -477,7 +477,7 @@ yyjson::write(Range{{1, -2}}, yyjson::strict);
 
 ## JSON Schema keywords
 
-The tables below list the keywords of [JSON Schema 2020-12](https://json-schema.org/draft/2020-12) that check a value, and `default`, with what reads the same JSON in cpp-yyjson. A keyword is a constraint of the same name, a C++ type, a rule of the keys of a struct, or none. The library neither reads nor writes a schema: the tables are for translating a schema into C++ types and annotations by hand.
+The tables below list the keywords of [JSON Schema 2020-12](https://json-schema.org/draft/2020-12) that check a value, and `default`, with what reads the same JSON in cpp-yyjson. A keyword is a constraint of the same name, a C++ type, a rule of the keys of a struct, or none. [`yyjson::json_schema<T>()`](json-schema.md) writes these keywords for the annotations of a type. The library does not read a schema: to write the C++ types of a schema, translate it by hand with the tables.
 
 `yyjson::satisfies<f>` checks any condition on the value of a field, including one between the fields of a struct field. It does not apply to the root, which the program checks after the read.
 

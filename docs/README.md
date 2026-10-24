@@ -15,6 +15,7 @@ cpp-yyjson is a C++20 JSON library with two APIs: the *data binding API* (`yyjso
 
 *   [Converting C++ types](conversions.md): which C++ types convert to JSON and how, JSON keys and annotations, enumerations, variants and user-defined casters.
 *   [Validation and errors](validation.md): what a read checks, strict reading, constraints, the keywords of JSON Schema that they correspond to, and the errors that the library reports.
+*   [Generating JSON Schema](json-schema.md): the JSON Schema of a C++ type for reading or writing, what it guarantees, and the schemas of an OpenAPI document.
 
 ## Reference
 
