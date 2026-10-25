@@ -850,6 +850,62 @@ namespace yyjson
 
     namespace detail
     {
+        template <std::size_t I, typename M>
+        struct member_leaf
+        {
+            M pointer;
+        };
+        template <typename Is, typename... Ms>
+        struct member_list_base;
+        template <std::size_t... Is, typename... Ms>
+        struct member_list_base<std::index_sequence<Is...>, Ms...> : member_leaf<Is, Ms>...
+        {
+            constexpr explicit member_list_base(Ms... ms) noexcept : member_leaf<Is, Ms>{ms}... {}
+        };
+        template <std::size_t I, typename M>
+        constexpr M member_at_leaf(const member_leaf<I, M>& leaf) noexcept
+        {
+            return leaf.pointer;
+        }
+        // The pointers to the members that `VISITABLE_STRUCT` registers.  `std::tuple` of libstdc++ nests one level
+        // per element, and constructing it in a constant expression exceeds the depth limit of the compiler with a
+        // few hundred members; with the pointers as template arguments instead of values, every function that
+        // takes the list grows with the number of members, and reading a struct of a few hundred fields takes
+        // gigabytes to compile.  `std::tuple_size` and `std::tuple_element` apply to it, and `member_pointer<I>`
+        // gives the I-th pointer.
+        template <typename... Ms>
+        struct member_list : member_list_base<std::make_index_sequence<sizeof...(Ms)>, Ms...>
+        {
+            constexpr explicit member_list(Ms... ms) noexcept
+                : member_list_base<std::make_index_sequence<sizeof...(Ms)>, Ms...>(ms...)
+            {
+            }
+        };
+        template <typename... Ms>
+        member_list(Ms...) -> member_list<Ms...>;
+        template <std::size_t I, typename L>
+        constexpr auto member_pointer(const L& members) noexcept
+        {
+            return member_at_leaf<I>(members);
+        }
+    }  // namespace detail
+}  // namespace yyjson
+
+template <typename... Ms>
+struct std::tuple_size<yyjson::detail::member_list<Ms...>> : std::integral_constant<std::size_t, sizeof...(Ms)>
+{
+};
+template <std::size_t I, typename... Ms>
+struct std::tuple_element<I, yyjson::detail::member_list<Ms...>>
+{
+    using type = decltype(yyjson::detail::member_at_leaf<I>(std::declval<const yyjson::detail::member_list<Ms...>&>()));
+};
+
+namespace yyjson
+{
+
+    namespace detail
+    {
         // A string in static storage, where `std::define_static_string` puts it, as an annotation value has to
         // be a structural type and cannot point to a string literal.
         consteval const char* static_string(std::string_view s)
@@ -1939,9 +1995,10 @@ namespace yyjson
                 else if constexpr (visitable<T>)
                     return []<std::size_t... Is>(std::index_sequence<Is...>) {
                         return decltype(nodes(
-                            type_list<decltype(std::declval<T&>().*std::get<Is>(visit_struct<T>::members))...>{})){};
+                            type_list<decltype(std::declval<T&>().*
+                                               yyjson::detail::member_pointer<Is>(visit_struct<T>::members))...>{})){};
                     }(std::make_index_sequence<
-                        std::tuple_size_v<std::remove_cv_t<decltype(visit_struct<T>::members)>>>{});
+                               std::tuple_size_v<std::remove_cv_t<decltype(visit_struct<T>::members)>>>{});
                 else if constexpr (std_array<T>)
                     return decltype(nodes(typename template_type_args<T>::type{})){};
                 else if constexpr (yyjson::detail::reflectable<T>)
@@ -2516,7 +2573,8 @@ namespace yyjson
         template <typename S, std::size_t R>
         struct declared_field_type_of<S, R, true>
         {
-            using type = std::remove_cvref_t<decltype(std::declval<S&>().*std::get<R>(visit_struct<S>::members))>;
+            using type = std::remove_cvref_t<decltype(std::declval<S&>().*
+                                                      yyjson::detail::member_pointer<R>(visit_struct<S>::members))>;
         };
         template <typename S, std::size_t R>
         using declared_field_type = typename declared_field_type_of<S, R>::type;
@@ -2623,7 +2681,7 @@ namespace yyjson
         CPPYYJSON_ALWAYS_INLINE inline constexpr auto& struct_field(S& s) noexcept
         {
             if constexpr (visitable<S>)
-                return s.*std::get<I>(visit_struct<S>::members);
+                return s.*yyjson::detail::member_pointer<I>(visit_struct<S>::members);
             else
                 return field_reflection::get_field<reflected_field_index<S, I>>(s);
         }
@@ -3249,6 +3307,23 @@ namespace yyjson
                 }(std::make_index_sequence<field_reflection::field_count<T>>{});
         }
 
+        // The same as `reflected_field_replaceable` for a struct registered by `VISITABLE_STRUCT`.  Comparing the
+        // addresses of all fields for every field would also cost a struct of a few hundred fields gigabytes of
+        // memory to compile.
+        template <std::size_t I, typename T>
+        CPPYYJSON_ALWAYS_INLINE inline bool visitable_field_replaceable(T& t) noexcept
+        {
+            constexpr auto& members = visit_struct<T>::members;
+            using field_type = std::remove_cvref_t<decltype(t.*yyjson::detail::member_pointer<I>(members))>;
+            if constexpr (!std::is_class_v<field_type> || !std::is_aggregate_v<field_type> ||
+                          !std::is_nothrow_default_constructible_v<field_type>)
+                return false;
+            else
+                return [&]<std::size_t... Js>(std::index_sequence<Js...>) {
+                    return has_own_bytes<I>(t.*yyjson::detail::member_pointer<Js>(members)...);
+                }(std::make_index_sequence<std::tuple_size_v<std::remove_cvref_t<decltype(members)>>>{});
+        }
+
         // `assign_fields_in_order` for the fields of the struct T, which calls `assign(k, value, obj)` instead
         // when T has a field that `adjacent_tag` tags, to read its tag from the object.  `assign` must not name
         // the object: a lambda captures it even from a discarded `if constexpr` branch, which keeps the object
@@ -3284,19 +3359,17 @@ namespace yyjson
         // The same as `assign_reflected_fields` for a struct registered by `VISITABLE_STRUCT`, whose
         // fields are given as pointers to members in the order of their names.
         template <typename T, typename Json, typename... Members>
-        void assign_visitable_fields(T& t, const std::tuple<Members...>& members, const Json& obj)
+        void assign_visitable_fields(T& t, const member_list<Members...>& members, const Json& obj)
         {
             [[maybe_unused]] const auto guard = recursion_guard<T>();
             assign_struct_fields_by_key<T, visit_struct<T>::key_matcher>(
                 obj, [&]<std::size_t I>(std::integral_constant<std::size_t, I>, const auto& value,
                                         const auto&... object) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
-                    auto& field = t.*std::get<I>(members);
+                    auto& field = t.*yyjson::detail::member_pointer<I>(members);
                     if constexpr (adjacent_field<T, I>)
                         assign_adjacent_field<field_tags<T, I>>(field, value, object...);
                     else
-                        assign_reflected_field(field, value, [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                            return has_own_bytes<I>(t.*std::get<Is>(members)...);
-                        }(std::index_sequence_for<Members...>{}));
+                        assign_reflected_field(field, value, visitable_field_replaceable<I>(t));
                 });
             if constexpr (has_adjacent_fields<T>) check_adjacent_tags_without_values(t, obj);
         }
@@ -3991,7 +4064,8 @@ namespace yyjson
             // once for each such struct that a type leads to.
             template <typename T, std::size_t I>
             using visitable_member_t =
-                std::remove_cvref_t<decltype(std::declval<const T&>().*std::get<I>(visit_struct<T>::members))>;
+                std::remove_cvref_t<decltype(std::declval<const T&>().*
+                                             yyjson::detail::member_pointer<I>(visit_struct<T>::members))>;
             template <typename T, bool CheckRecursive = false>
             consteval bool visitable_fields_creatable()
             {
@@ -8416,10 +8490,10 @@ namespace yyjson
                 return type_list<>{};
             else if constexpr (visitable<T>)
                 return []<std::size_t... Is>(std::index_sequence<Is...>) {
-                    return type_list<
-                        cause_child<visitable_field_label<T, Is>,
-                                    std::remove_reference_t<decltype(std::declval<T&>().*
-                                                                     std::get<Is>(visit_struct<T>::members))>>...>{};
+                    return type_list<cause_child<
+                        visitable_field_label<T, Is>,
+                        std::remove_reference_t<decltype(std::declval<T&>().*yyjson::detail::member_pointer<Is>(
+                                                                                 visit_struct<T>::members))>>...>{};
                 }(std::make_index_sequence<std::tuple_size_v<std::remove_cv_t<decltype(visit_struct<T>::members)>>>{});
             else if constexpr (is_std_optional<T>::value)
                 return type_list<cause_child<element_label<T>, typename T::value_type>>{};
@@ -13109,11 +13183,12 @@ namespace yyjson
                 if constexpr (yyjson::detail::has_adjacent_fields<U>) yyjson::detail::check_adjacent_tags(t);
                 if constexpr (std::is_rvalue_reference_v<T&&>)
                     (write_field<U, Is, visitable_key<U, Is>>(
-                         first, yyjson::detail::writable_field(std::move(t.*std::get<Is>(members)))),
+                         first, yyjson::detail::writable_field(
+                                    std::move(t.*yyjson::detail::member_pointer<Is>(members)))),
                      ...);
                 else
-                    (write_field<U, Is, visitable_key<U, Is>>(first,
-                                                              yyjson::detail::writable_field(t.*std::get<Is>(members))),
+                    (write_field<U, Is, visitable_key<U, Is>>(
+                         first, yyjson::detail::writable_field(t.*yyjson::detail::member_pointer<Is>(members))),
                      ...);
             }
             template <typename T, std::size_t... Is>
@@ -14464,6 +14539,22 @@ namespace yyjson
                         Parts...> : join<node<L || PL, yyjson::detail::type_list<Es..., PEs...>>, Parts...>
             {
             };
+            // eight parts at a time, so that a struct of a thousand fields stays within the depth limit of the
+            // instantiations
+            template <bool L, typename... Es, bool L1, typename... E1s, bool L2, typename... E2s, bool L3,
+                      typename... E3s, bool L4, typename... E4s, bool L5, typename... E5s, bool L6, typename... E6s,
+                      bool L7, typename... E7s, bool L8, typename... E8s, typename... Parts>
+            struct join<node<L, yyjson::detail::type_list<Es...>>, node<L1, yyjson::detail::type_list<E1s...>>,
+                        node<L2, yyjson::detail::type_list<E2s...>>, node<L3, yyjson::detail::type_list<E3s...>>,
+                        node<L4, yyjson::detail::type_list<E4s...>>, node<L5, yyjson::detail::type_list<E5s...>>,
+                        node<L6, yyjson::detail::type_list<E6s...>>, node<L7, yyjson::detail::type_list<E7s...>>,
+                        node<L8, yyjson::detail::type_list<E8s...>>, Parts...>
+                : join<node<L || L1 || L2 || L3 || L4 || L5 || L6 || L7 || L8,
+                            yyjson::detail::type_list<Es..., E1s..., E2s..., E3s..., E4s..., E5s..., E6s..., E7s...,
+                                                      E8s...>>,
+                       Parts...>
+            {
+            };
 
             // The part of a tuple: the values of its members when it is read from an object, and its elements
             // when it is read from an array.  A class rather than nested lambdas, in which MSVC loses the
@@ -14636,9 +14727,10 @@ namespace yyjson
                 return []<std::size_t... Is>(std::index_sequence<Is...>) {
                     return typename join<
                         node<false>,
-                        decltype(field_part<std::remove_cvref_t<decltype(std::declval<T&>().*
-                                                                         std::get<Is>(visit_struct<T>::members))>,
-                                            Loop>())...>::type{};
+                        decltype(field_part<
+                                 std::remove_cvref_t<decltype(std::declval<T&>().*yyjson::detail::member_pointer<Is>(
+                                                                                      visit_struct<T>::members))>,
+                                 Loop>())...>::type{};
                 }(std::make_index_sequence<std::tuple_size_v<members>>{});
             }
 
@@ -18681,16 +18773,11 @@ namespace yyjson
             void read_visitable_fields(T& t)
             {
                 [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<T>();
-                constexpr auto& members = visit_struct<T>::members;
                 auto adjacent = adjacent_fields_of<T>{cur_};
                 const auto read_one =
                     [&]<std::size_t I>(std::integral_constant<std::size_t, I>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
-                        constexpr auto size = std::tuple_size_v<std::remove_cvref_t<decltype(members)>>;
-                        const auto replaceable = [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                            return yyjson::detail::has_own_bytes<I>(t.*std::get<Is>(members)...);
-                        };
                         const auto read = [&](auto& field) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
-                            read_field(field, replaceable(std::make_index_sequence<size>{}));
+                            read_field(field, yyjson::detail::visitable_field_replaceable<I>(t));
                         };
                         read_struct_field<T, I>(t, adjacent, read);
                     };
@@ -18709,15 +18796,10 @@ namespace yyjson
                 auto adjacent = adjacent_fields_of<T>{cur_};
                 if constexpr (yyjson::detail::visitable<T>)
                 {
-                    constexpr auto& members = visit_struct<T>::members;
                     const auto read_one =
                         [&]<std::size_t I>(std::integral_constant<std::size_t, I>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
-                            constexpr auto size = std::tuple_size_v<std::remove_cvref_t<decltype(members)>>;
-                            const auto replaceable = [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                                return yyjson::detail::has_own_bytes<I>(t.*std::get<Is>(members)...);
-                            };
                             const auto read = [&](auto& field) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
-                                read_field(field, replaceable(std::make_index_sequence<size>{}));
+                                read_field(field, yyjson::detail::visitable_field_replaceable<I>(t));
                             };
                             read_struct_field<T, I>(t, adjacent, read);
                         };
@@ -19623,48 +19705,24 @@ struct std::formatter<T>
 #define STRIGIFY(x) CPPYYJSON_STRIGIFY_IMPL(x)
 #define CPPYYJSON_CONCAT_IMPL(x, y) x##y
 #define CPPYYJSON_CONCAT(x, y) CPPYYJSON_CONCAT_IMPL(x, y)
-#define CPPYYJSON_INDEX_SEQ()                                                                                        \
-    32, 31, 30, 29, 28, 27, 26, 25, 24, 23, 22, 21, 20, 19, 18, 17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, \
-        2, 1, 0
-#define CPPYYJSON_VA_ARGS_SIZE_IMPL_(_1, _2, _3, _4, _5, _6, _7, _8, _9, _10, _11, _12, _13, _14, _15, _16, _17, _18, \
-                                     _19, _20, _21, _22, _23, _24, _25, _26, _27, _28, _29, _30, _31, _32, N, ...)    \
-    N
-#define CPPYYJSON_VA_ARGS_SIZE_IMPL(...) CPPYYJSON_VA_ARGS_SIZE_IMPL_(__VA_ARGS__)
-#define CPPYYJSON_VA_ARGS_SIZE(...) CPPYYJSON_VA_ARGS_SIZE_IMPL(__VA_ARGS__, CPPYYJSON_INDEX_SEQ())
-#define CPPYYJSON_FOR_EACH_IMPL_1(FUNC, _1) FUNC(_1)
-#define CPPYYJSON_FOR_EACH_IMPL_2(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_1(FUNC, __VA_ARGS__)
-#define CPPYYJSON_FOR_EACH_IMPL_3(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_2(FUNC, __VA_ARGS__)
-#define CPPYYJSON_FOR_EACH_IMPL_4(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_3(FUNC, __VA_ARGS__)
-#define CPPYYJSON_FOR_EACH_IMPL_5(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_4(FUNC, __VA_ARGS__)
-#define CPPYYJSON_FOR_EACH_IMPL_6(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_5(FUNC, __VA_ARGS__)
-#define CPPYYJSON_FOR_EACH_IMPL_7(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_6(FUNC, __VA_ARGS__)
-#define CPPYYJSON_FOR_EACH_IMPL_8(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_7(FUNC, __VA_ARGS__)
-#define CPPYYJSON_FOR_EACH_IMPL_9(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_8(FUNC, __VA_ARGS__)
-#define CPPYYJSON_FOR_EACH_IMPL_10(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_9(FUNC, __VA_ARGS__)
-#define CPPYYJSON_FOR_EACH_IMPL_11(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_10(FUNC, __VA_ARGS__)
-#define CPPYYJSON_FOR_EACH_IMPL_12(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_11(FUNC, __VA_ARGS__)
-#define CPPYYJSON_FOR_EACH_IMPL_13(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_12(FUNC, __VA_ARGS__)
-#define CPPYYJSON_FOR_EACH_IMPL_14(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_13(FUNC, __VA_ARGS__)
-#define CPPYYJSON_FOR_EACH_IMPL_15(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_14(FUNC, __VA_ARGS__)
-#define CPPYYJSON_FOR_EACH_IMPL_16(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_15(FUNC, __VA_ARGS__)
-#define CPPYYJSON_FOR_EACH_IMPL_17(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_16(FUNC, __VA_ARGS__)
-#define CPPYYJSON_FOR_EACH_IMPL_18(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_17(FUNC, __VA_ARGS__)
-#define CPPYYJSON_FOR_EACH_IMPL_19(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_18(FUNC, __VA_ARGS__)
-#define CPPYYJSON_FOR_EACH_IMPL_20(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_19(FUNC, __VA_ARGS__)
-#define CPPYYJSON_FOR_EACH_IMPL_21(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_20(FUNC, __VA_ARGS__)
-#define CPPYYJSON_FOR_EACH_IMPL_22(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_21(FUNC, __VA_ARGS__)
-#define CPPYYJSON_FOR_EACH_IMPL_23(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_22(FUNC, __VA_ARGS__)
-#define CPPYYJSON_FOR_EACH_IMPL_24(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_23(FUNC, __VA_ARGS__)
-#define CPPYYJSON_FOR_EACH_IMPL_25(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_24(FUNC, __VA_ARGS__)
-#define CPPYYJSON_FOR_EACH_IMPL_26(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_25(FUNC, __VA_ARGS__)
-#define CPPYYJSON_FOR_EACH_IMPL_27(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_26(FUNC, __VA_ARGS__)
-#define CPPYYJSON_FOR_EACH_IMPL_28(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_27(FUNC, __VA_ARGS__)
-#define CPPYYJSON_FOR_EACH_IMPL_29(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_28(FUNC, __VA_ARGS__)
-#define CPPYYJSON_FOR_EACH_IMPL_30(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_29(FUNC, __VA_ARGS__)
-#define CPPYYJSON_FOR_EACH_IMPL_31(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_30(FUNC, __VA_ARGS__)
-#define CPPYYJSON_FOR_EACH_IMPL_32(FUNC, _1, ...) FUNC(_1) CPPYYJSON_FOR_EACH_IMPL_31(FUNC, __VA_ARGS__)
-#define CPPYYJSON_FOR_EACH(FUNC, ...) \
-    CPPYYJSON_CONCAT(CPPYYJSON_FOR_EACH_IMPL_, CPPYYJSON_VA_ARGS_SIZE(__VA_ARGS__))(FUNC, __VA_ARGS__)
+// CPPYYJSON_FOR_EACH(F, a, b, ...) gives `F(a), F(b), ...`, for up to 1365 arguments: each scan of
+// CPPYYJSON_PP_EXPAND expands one more step of the recursion.
+#define CPPYYJSON_PP_PARENS ()
+#define CPPYYJSON_PP_EXPAND(...) \
+    CPPYYJSON_PP_EXPAND4(CPPYYJSON_PP_EXPAND4(CPPYYJSON_PP_EXPAND4(CPPYYJSON_PP_EXPAND4(__VA_ARGS__))))
+#define CPPYYJSON_PP_EXPAND4(...) \
+    CPPYYJSON_PP_EXPAND3(CPPYYJSON_PP_EXPAND3(CPPYYJSON_PP_EXPAND3(CPPYYJSON_PP_EXPAND3(__VA_ARGS__))))
+#define CPPYYJSON_PP_EXPAND3(...) \
+    CPPYYJSON_PP_EXPAND2(CPPYYJSON_PP_EXPAND2(CPPYYJSON_PP_EXPAND2(CPPYYJSON_PP_EXPAND2(__VA_ARGS__))))
+#define CPPYYJSON_PP_EXPAND2(...) \
+    CPPYYJSON_PP_EXPAND1(CPPYYJSON_PP_EXPAND1(CPPYYJSON_PP_EXPAND1(CPPYYJSON_PP_EXPAND1(__VA_ARGS__))))
+#define CPPYYJSON_PP_EXPAND1(...) \
+    CPPYYJSON_PP_EXPAND0(CPPYYJSON_PP_EXPAND0(CPPYYJSON_PP_EXPAND0(CPPYYJSON_PP_EXPAND0(__VA_ARGS__))))
+#define CPPYYJSON_PP_EXPAND0(...) __VA_ARGS__
+#define CPPYYJSON_FOR_EACH(FUNC, ...) __VA_OPT__(CPPYYJSON_PP_EXPAND(CPPYYJSON_FOR_EACH_STEP(FUNC, __VA_ARGS__)))
+#define CPPYYJSON_FOR_EACH_STEP(FUNC, X, ...) \
+    FUNC(X) __VA_OPT__(, CPPYYJSON_FOR_EACH_AGAIN CPPYYJSON_PP_PARENS(FUNC, __VA_ARGS__))
+#define CPPYYJSON_FOR_EACH_AGAIN() CPPYYJSON_FOR_EACH_STEP
 
 // An argument of `VISITABLE_STRUCT` is a member name or a parenthesized pair of a member name and its JSON key.
 #define CPPYYJSON_VISITABLE_PROBE(...) ~, 1
@@ -19682,16 +19740,18 @@ struct std::formatter<T>
 #define CPPYYJSON_VISITABLE_PAIR_KEY(MEMBER, KEY) KEY
 #define CPPYYJSON_VISITABLE_SELECT(NAME, X) CPPYYJSON_CONCAT(NAME, CPPYYJSON_VISITABLE_IS_PAIR(X))(X)
 
-#define VISITABLE_STRUCT_IMPL1(X) std::string_view(CPPYYJSON_VISITABLE_SELECT(CPPYYJSON_VISITABLE_MEMBER_NAME_, X)),
-#define VISITABLE_STRUCT_IMPL2(X) std::string_view(CPPYYJSON_VISITABLE_SELECT(CPPYYJSON_VISITABLE_KEY_, X)),
-#define VISITABLE_STRUCT_IMPL4(X) &class_type::CPPYYJSON_VISITABLE_SELECT(CPPYYJSON_VISITABLE_MEMBER_, X),
+#define VISITABLE_STRUCT_IMPL1(X) std::string_view(CPPYYJSON_VISITABLE_SELECT(CPPYYJSON_VISITABLE_MEMBER_NAME_, X))
+#define VISITABLE_STRUCT_IMPL2(X) std::string_view(CPPYYJSON_VISITABLE_SELECT(CPPYYJSON_VISITABLE_KEY_, X))
+#define VISITABLE_STRUCT_IMPL4(X) &class_type::CPPYYJSON_VISITABLE_SELECT(CPPYYJSON_VISITABLE_MEMBER_, X)
 #define VISITABLE_STRUCT(CLASS, ...)                                                                                \
     static_assert(std::default_initializable<CLASS>, #CLASS " is not default initializable");                       \
     template <>                                                                                                     \
     struct yyjson::visit_struct<CLASS> : public std::true_type                                                      \
     {                                                                                                               \
         using class_type = CLASS;                                                                                   \
-        static constexpr auto field_count = CPPYYJSON_VA_ARGS_SIZE(__VA_ARGS__);                                    \
+        static constexpr yyjson::detail::member_list members{                                                       \
+            CPPYYJSON_FOR_EACH(VISITABLE_STRUCT_IMPL4, __VA_ARGS__)};                                               \
+        static constexpr auto field_count = std::tuple_size_v<std::remove_cv_t<decltype(members)>>;                 \
         struct field_names                                                                                          \
         {                                                                                                           \
             static constexpr std::array<std::string_view, field_count> members{                                     \
@@ -19700,7 +19760,6 @@ struct std::formatter<T>
                 CPPYYJSON_FOR_EACH(VISITABLE_STRUCT_IMPL2, __VA_ARGS__)};                                           \
         };                                                                                                          \
         static constexpr auto names = yyjson::detail::field_keys<CLASS, field_names>::value;                        \
-        static constexpr std::tuple members{CPPYYJSON_FOR_EACH(VISITABLE_STRUCT_IMPL4, __VA_ARGS__)};               \
         static constexpr yyjson::detail::field_key_matcher key_matcher{names};                                      \
         template <typename Object>                                                                                  \
         static auto from_json_impl(const Object& obj)                                                               \
@@ -19715,7 +19774,9 @@ struct std::formatter<T>
             if constexpr (yyjson::detail::has_adjacent_fields<CLASS>) yyjson::detail::check_adjacent_tags(t);       \
             [&]<std::size_t... Is>(std::index_sequence<Is...>) {                                                    \
                 (yyjson::detail::emplace_struct_field<CLASS, Is, yyjson::detail::is_plain_key(names[Is])>(          \
-                     emitter, names[Is], yyjson::detail::writable_field(std::forward<T>(t).*std::get<Is>(members)), \
+                     emitter, names[Is],                                                                            \
+                     yyjson::detail::writable_field(                                                                \
+                         std::forward<T>(t).*yyjson::detail::member_pointer<Is>(members)),                          \
                      ts...),                                                                                        \
                  ...);                                                                                              \
             }(std::make_index_sequence<field_count>{});                                                             \
