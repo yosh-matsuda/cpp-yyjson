@@ -228,6 +228,13 @@ inline constexpr auto yyjson::annotations<Unique> = yyjson::annotate(
     yyjson::field("reals", yyjson::unique_items), yyjson::field("plain", yyjson::unique_items),
     yyjson::field("opts", yyjson::unique_items), yyjson::field("nested", yyjson::items(yyjson::unique_items)));
 
+struct UniqueJson
+{
+    std::vector<yyjson::value> any;
+};
+template <>
+inline constexpr auto yyjson::annotations<UniqueJson> = yyjson::annotate(yyjson::field("any", yyjson::unique_items));
+
 bool is_lower(const std::string& s)
 {
     return std::ranges::all_of(s, [](char c) { return 'a' <= c && c <= 'z'; });
@@ -1061,6 +1068,12 @@ TEST(Constraints, UniqueItems)
                                       "s9",  "s8",  "s7",  "s6",  "s5",  "s4",  "s3",  "s2",  "s1",  "s0"}});
     expect_rejected<Unique>(strs + R"("s3","s19"]})", equal("strs"), "/strs/20");
     expect_rejected<Unique>(reals + "-0.0]}", equal("reals"), "/reals/20");
+
+    // JSON values compare as JSON: numbers by value, objects regardless of the order of the members
+    EXPECT_EQ(yyjson::read<UniqueJson>(R"({"any":[1,"1",[1],{"a":1},null,true]})").any.size(), 6);
+    expect_rejected<UniqueJson>(
+        R"({"any":[{"a":1,"b":[2]},{"b":[2.0],"a":1}]})",
+        R"(an element of the value of the key "any" of UniqueJson is equal to an earlier element)", "/any/1");
 }
 
 TEST(Constraints, PrefixItems)

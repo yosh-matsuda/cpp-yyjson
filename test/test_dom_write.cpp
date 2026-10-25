@@ -2676,4 +2676,45 @@ TEST(Writer, MoveOnlyVariantAlternative)
     EXPECT_EQ(value(V(3), copy_string).write(), "3");
 }
 
+TEST(Writer, Equality)
+{
+    using namespace yyjson;  // NOLINT
+
+    const auto a = read(R"({"x":1,"y":[1,2.0,{"z":null}],"s":"t"})");
+    const auto same = read(R"({"s":"t","y":[1.0,2,{"z":null}],"x":1})");
+    const auto other = read(R"({"s":"t","y":[1.0,2,{"z":false}],"x":1})");
+    EXPECT_TRUE(a == same);
+    EXPECT_TRUE(a != other);
+
+    // immutable and mutable values, owning or not, compare with each other
+    const auto m = value(a);
+    EXPECT_TRUE((m == a && a == m && m == same && m != other));
+    EXPECT_TRUE(*a.as_object() == *m.as_object());
+    EXPECT_TRUE((*m.as_object())["y"] == *(*same.as_object())["y"].as_array());
+    EXPECT_TRUE((object{{"k", array{1, "v"}}} == read(R"({"k":[1.0,"v"]})")));
+
+    // numbers by their value
+    const auto eq = [](std::string_view l, std::string_view r) { return read(l) == read(r); };
+    EXPECT_TRUE(eq("0.0", "-0.0"));
+    EXPECT_TRUE(eq("1", "1.0"));
+    EXPECT_TRUE(eq("18446744073709551615", "18446744073709551615"));
+    EXPECT_FALSE(eq("-1", "18446744073709551615"));
+    EXPECT_TRUE(eq("9007199254740992", "9007199254740992.0"));
+    EXPECT_FALSE(eq("9007199254740993", "9007199254740992.0"));
+    EXPECT_TRUE(eq("-9223372036854775808", "-9223372036854775808.0"));
+    EXPECT_FALSE(eq("9223372036854775807", "9223372036854775808.0"));
+    EXPECT_FALSE(eq("1", "1.5"));
+    EXPECT_FALSE(eq("1", R"("1")"));
+
+    // the same keys, the same number of members and elements
+    EXPECT_FALSE(eq(R"({"a":1})", R"({"b":1})"));
+    EXPECT_FALSE(eq(R"({"a":1})", R"({"a":1,"b":1})"));
+    EXPECT_FALSE(eq("[1]", "[1,1]"));
+    EXPECT_FALSE(eq("[1,2]", "[2,1]"));
+
+    // only JSON values compare with JSON values
+    static_assert(!std::equality_comparable_with<value, int>);
+    static_assert(!std::equality_comparable_with<reader::value, std::string>);
+}
+
 // NOLINTEND
