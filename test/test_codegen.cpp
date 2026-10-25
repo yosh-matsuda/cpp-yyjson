@@ -249,6 +249,34 @@ TEST(Codegen, Variants)
                     "    yyjson::internal_tag(\"kind\", {\"circle\", \"square\"}));"));
 }
 
+TEST(Codegen, VariantAlternativeMetadata)
+{
+    // an inline alternative has no field for its metadata, so its struct carries it
+    const auto r = generate(R"({
+        "type": "object",
+        "properties": {
+            "tagged": {"oneOf": [
+                {"type": "object", "description": "A circle", "properties": {"kind": {"const": "circle"}},
+                 "required": ["kind"]},
+                {"type": "object", "title": "Box", "properties": {"kind": {"const": "box"}}, "required": ["kind"]}
+            ]},
+            "untagged": {"anyOf": [
+                {"type": "object", "description": "Named point", "properties": {"name": {"type": "string"}}},
+                {"type": "integer", "description": "Index"}
+            ]}
+        }
+    })",
+                            {});
+    EXPECT_EQ(warnings(r), "");
+    EXPECT_TRUE(has(r.code,
+                    "yyjson::annotations<Circle> = yyjson::annotate(\n"
+                    "    yyjson::description(\"A circle\"),"));
+    EXPECT_TRUE(has(r.code,
+                    "yyjson::annotations<Box> = yyjson::annotate(\n"
+                    "    yyjson::title(\"Box\"),"));
+    EXPECT_TRUE(has(r.code, "yyjson::description(\"Named point\")"));
+}
+
 TEST(Codegen, ConstOfReferencedEnum)
 {
     // a `const` beside a reference to an enumeration of the same one value keeps the enumeration, also as a tag

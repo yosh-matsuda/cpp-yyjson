@@ -1852,6 +1852,19 @@ namespace cpp_yyjson_codegen
                 return r.k == tk::named && decls_[r.decl].kind == decl::kind_t::structure;
             }
 
+            // an alternative of a variant has no field to carry its metadata, so an unnamed struct made from it takes
+            // the metadata of the alternative's schema
+            void adopt_metadata(const ctype& t, const json& s)
+            {
+                if (t.k != tk::named) return;
+                auto& d = decls_[t.decl];
+                const auto& m = d.meta;
+                if (d.kind != decl::kind_t::structure || !d.schema_name.empty() || m.title || m.description ||
+                    m.comment || m.deprecated || !m.examples.empty())
+                    return;
+                d.meta = meta_of(s);
+            }
+
             int rank(const ctype& t) const
             {
                 const auto& r = resolved(t);
@@ -2290,6 +2303,7 @@ namespace cpp_yyjson_codegen
                                        ? pascal(title->text)
                                        : hint + "Option" + std::to_string(i + 1);
                     alts.push_back(type_of(schemas[i], locs[i], h));
+                    adopt_metadata(alts.back().t, *n);
                 }
                 (void)s0;
                 (void)named;
@@ -2358,6 +2372,7 @@ namespace cpp_yyjson_codegen
                         const auto i = objs[j];
                         auto t = type_of(schemas[i], locs[i], pascal(ids[j]).empty() ? "Alternative" : pascal(ids[j]));
                         if (!is_struct(t.t)) return std::nullopt;
+                        adopt_metadata(t.t, *norm[i]);
                         if (std::ranges::any_of(args,
                                                 [&](const auto& a) { return spell(a, true) == spell(t.t, true); }))
                             return std::nullopt;
