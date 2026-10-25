@@ -1833,9 +1833,9 @@ namespace cpp_yyjson_codegen
                     {
                         for (const auto& e : a->items)
                         {
-                            auto x = e.has("not") ? std::nullopt : only_required(e);
-                            if (!x) return std::nullopt;
-                            excluded.push_back(std::move(*x));
+                            auto y = e.has("not") ? std::nullopt : only_required(e);
+                            if (!y) return std::nullopt;
+                            excluded.push_back(std::move(*y));
                         }
                     }
                     else
