@@ -13558,7 +13558,7 @@ namespace yyjson
             std::visit(
                 [&val](const auto& v) {
                     if constexpr (copy)
-                        val = std::make_tuple(v, copy_string);
+                        val = std::pair<decltype(v), copy_string_t>(v, copy_string);
                     else
                         val = v;
                 },
@@ -13576,7 +13576,7 @@ namespace yyjson
             std::visit(
                 [&val](auto&& v) {
                     if constexpr (copy)
-                        val = std::make_tuple(std::move(v), copy_string);
+                        val = std::pair<decltype(v), copy_string_t>(std::move(v), copy_string);
                     else
                         val = std::move(v);
                 },
