@@ -383,6 +383,27 @@ namespace cpp_yyjson_codegen
             return "R\"" + delim + "(" + std::string(s) + ")" + delim + "\"";
         }
 
+        // the lines of a text for `//` comments: a compiler ends a line also at a lone CR, and joins a line that ends
+        // with a backslash to the next one, so the lines are split at CR and LF and lose their trailing backslashes
+        inline std::vector<std::string_view> comment_lines(std::string_view text)
+        {
+            auto lines = std::vector<std::string_view>();
+            while (!text.empty())
+            {
+                const auto nl = std::min(text.find_first_of("\r\n"), text.size());
+                auto line = text.substr(0, nl);
+                while (!line.empty() && (line.back() == ' ' || line.back() == '\t' || line.back() == '\\'))
+                    line.remove_suffix(1);
+                lines.push_back(line);
+                text.remove_prefix(nl);
+                if (text.starts_with("\r\n"))
+                    text.remove_prefix(2);
+                else if (!text.empty())
+                    text.remove_prefix(1);
+            }
+            return lines;
+        }
+
         inline std::string quoted(std::string_view s)
         {
             const auto control = std::ranges::any_of(s, [](char c) {
@@ -2863,27 +2884,11 @@ namespace cpp_yyjson_codegen
             static void render_comment(std::string& out, const metadata& m, std::string_view indent)
             {
                 if (m.description)
-                {
-                    auto text = std::string_view(*m.description);
-                    while (!text.empty())
-                    {
-                        const auto nl = std::min(text.find('\n'), text.size());
-                        auto line = text.substr(0, nl);
-                        while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.remove_suffix(1);
+                    for (const auto line : comment_lines(*m.description))
                         out += std::string(indent) + (line.empty() ? "///" : "/// " + std::string(line)) + "\n";
-                        text.remove_prefix(std::min(nl + 1, text.size()));
-                    }
-                }
                 if (m.comment)
-                {
-                    auto text = std::string_view(*m.comment);
-                    while (!text.empty())
-                    {
-                        const auto nl = std::min(text.find('\n'), text.size());
-                        out += std::string(indent) + "// " + std::string(text.substr(0, nl)) + "\n";
-                        text.remove_prefix(std::min(nl + 1, text.size()));
-                    }
-                }
+                    for (const auto line : comment_lines(*m.comment))
+                        out += std::string(indent) + (line.empty() ? "//" : "// " + std::string(line)) + "\n";
             }
 
             std::vector<std::string> field_items(const field& f)
@@ -3079,7 +3084,12 @@ namespace cpp_yyjson_codegen
                 if (!warnings_.empty())
                 {
                     out += "//\n// Warnings:\n";
-                    for (const auto& w : warnings_) out += "//   " + w.location + ": " + w.message + "\n";
+                    for (const auto& w : warnings_)
+                    {
+                        const auto text = w.location + ": " + w.message;
+                        for (auto first = true; const auto line : comment_lines(text))
+                            out += (std::exchange(first, false) ? "//   " : "//     ") + std::string(line) + "\n";
+                    }
                 }
                 const auto any_field = [&](auto pred) {
                     return std::ranges::any_of(decls_,

@@ -66,6 +66,21 @@ TEST(Codegen, Fields)
     EXPECT_TRUE(has(c, "yyjson::field(\"token\", yyjson::required)"));
 }
 
+TEST(Codegen, Comments)
+{
+    // a lone CR ends a line, and a trailing backslash joins the next line to the comment
+    const auto r = generate(R"({
+        "type": "object",
+        "properties": {
+            "a": {"type": "string", "description": "one\rtwo\r\nthree\\\nfour", "$comment": "x\\\ry"},
+            "b\rc": {"enum": ["", "on"]}
+        }
+    })",
+                            {});
+    EXPECT_TRUE(has(r.code, "    /// one\n    /// two\n    /// three\n    /// four\n    // x\n    // y\n"));
+    EXPECT_TRUE(has(r.code, "//   #/properties/b\n//     c: `enum` has the empty string;"));
+}
+
 TEST(Codegen, AdditionalPropertiesExplicit)
 {
     // strict reading rejects unknown keys unless the struct says otherwise
