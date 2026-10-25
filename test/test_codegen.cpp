@@ -683,6 +683,22 @@ TEST(Codegen, ReferenceRoot)
     EXPECT_TRUE(has(constrained.code, "yyjson::field(\"value\", yyjson::minimum(0))"));
 }
 
+TEST(Codegen, AnyRoot)
+{
+    // a root without keywords of a type accepts any JSON value, unless it is a file of definitions
+    for (const auto* s : {R"({})", R"({"$schema": "https://json-schema.org/draft/2020-12/schema", "title": "Any"})",
+                          R"({"x-vendor": 1})"})
+    {
+        const auto r = generate(s, {.root_name = "Root"});
+        EXPECT_EQ(warnings(r), "") << s;
+        EXPECT_TRUE(has(r.code, "using Root = yyjson::value;\n")) << s;
+    }
+    const auto defs = generate(R"({"$defs": {"N": {"type": "integer"}}, "x-vendor": 1})", {});
+    EXPECT_EQ(warnings(defs), "");
+    EXPECT_TRUE(has(defs.code, "using N = std::int64_t;\n"));
+    EXPECT_FALSE(has(defs.code, "Root"));
+}
+
 TEST(Codegen, Errors)
 {
     const auto message = [](std::string_view schema, const options& opts) {

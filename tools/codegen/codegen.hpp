@@ -3498,13 +3498,16 @@ namespace cpp_yyjson_codegen
                     root_path_ = std::filesystem::path(opts_.path).lexically_normal().generic_string();
                 if (const auto id = absolute_id(root_); !id.empty()) ids_.emplace(id, "");
                 prepare(root_, "", absolute_id(root_), is_draft07(root_), "#");
+                // a root of metadata and definitions only is a file of definitions and has no type; without
+                // definitions, it accepts any JSON value
                 const auto root_typed =
-                    root_.is_bool() || (!is_pure_ref(root_) && std::ranges::any_of(root_.members, [](const auto& m) {
-                        static const auto only = std::set<std::string_view>{
-                            "$schema",     "$id",         "$defs",   "definitions", "$comment",  "title",
-                            "description", "$vocabulary", "$anchor", "examples",    "deprecated"};
-                        return !only.contains(m.first);
-                    }));
+                    root_.is_bool() ||
+                    (!is_pure_ref(root_) && (std::ranges::any_of(root_.members,
+                                                                 [](const auto& m) {
+                                                                     return is_type_key(m.first) ||
+                                                                            is_ignored_key(m.first);
+                                                                 }) ||
+                                             (!root_.has("$defs") && !root_.has("definitions"))));
                 auto root_name = std::string();
                 if (root_.is_object())
                 {
