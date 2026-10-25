@@ -626,18 +626,16 @@ A mutable value refers to the strings that it is built from instead of copying t
 
 ### Compare two JSON values
 
-The DOM values have no `operator==`. Cast both to a C++ type that fits both values, here a map of numbers and arrays, and compare those. This ignores the order of the keys:
+`==` compares two JSON values as JSON. Numbers compare by their value, so `1` and `1.0` are equal, and objects compare regardless of the order of their members; see [Comparison](reference.md#comparison). An immutable value compares with a mutable one:
 
 ```cpp
 auto a = yyjson::read(R"({"x":1,"y":[1,2]})");
-auto b = yyjson::read(R"({"y":[1,2],"x":1})");
-
-using Generic = std::map<std::string, std::variant<int, std::vector<int>>>;
-auto same = a.cast<Generic>() == b.cast<Generic>();
+auto b = yyjson::object{{"y", yyjson::array{1.0, 2}}, {"x", 1}};
+auto same = a == b;
 // -> true
 ```
 
-Comparing the strings that `write()` gives works for two values that have their keys in the same order.
+A struct with a member of a JSON value, such as `yyjson::object`, can therefore have a defaulted `operator==` and be an element of a range with [`yyjson::unique_items`](validation.md#constraints).
 
 ## Input formats
 
@@ -775,7 +773,6 @@ for (const auto& p : points)
 | Reading and writing files | [read the file into a string](#read-a-json-file); [write the string to a stream](#write-json-to-a-file) |
 | Error codes instead of exceptions | catch the [exceptions](#handle-errors) in a function that returns what you need |
 | `operator<<` for JSON values | [`write()` or `std::format`](#print-a-json-value) |
-| `operator==` for JSON values | [compare C++ values](#compare-two-json-values) |
 | JSON Pointer lookup | [a struct of the members needed](#read-only-a-few-members-of-a-large-document), or `operator[]` and `find` level by level |
 | A rule that renames every key | [rename each field](#map-every-key-to-another-naming-convention) |
 | A field that collects unknown keys | [read a document and look at its keys](#keep-the-keys-that-the-struct-does-not-have) |

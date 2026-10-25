@@ -28,6 +28,7 @@ This page lists the functions, classes and other entities of cpp-yyjson, grouped
     *   [Reference classes](#reference-classes)
     *   [`yyjson::json_string`, `yyjson::key_string`](#yyjsonjson_string-yyjsonkey_string)
     *   [`yyjson::copy_string`, `yyjson::empty_array`, `yyjson::empty_object`](#yyjsoncopy_string-yyjsonempty_array-yyjsonempty_object)
+    *   [Comparison](#comparison)
     *   [`std::format` support](#stdformat-support)
     *   [Conversion from immutable to mutable](#conversion-from-immutable-to-mutable)
     *   [Inserting the same value more than once](#inserting-the-same-value-more-than-once)
@@ -1169,6 +1170,31 @@ items.emplace_back(1);
 str.clear();
 std::cout << obj.write() << std::endl;
 // {"name":"temporary","items":[1]}
+```
+
+### Comparison
+
+```cpp
+template <typename L, typename R>  // JSON values: DOM classes and reference classes, immutable or mutable
+bool operator==(const L& left, const R& right);
+```
+
+Two JSON values are equal when they are the same JSON value, which is how JSON Schema compares values for `const`, `enum` and `uniqueItems`:
+
+*   Numbers compare by their value. An integer and a real number are equal when they are the same number exactly, so `1` and `1.0` are equal and `9007199254740993` and `9007199254740992.0` are not. `0.0` and `-0.0` are equal, and NaN, which yyjson reads only with `yyjson::ReadFlag::AllowInfAndNan`, is equal to nothing.
+*   Strings compare by their bytes; a raw value, which `yyjson::ReadFlag::NumberAsRaw` and `yyjson::ReadFlag::BignumAsRaw` give, by its text, and only with a raw value.
+*   Arrays are equal when they have the same elements in the same order.
+*   Objects are equal when they have the same number of members and every member of one has a member of the same key and an equal value in the other, in any order. An object that repeats a key may compare equal to an object that does not.
+
+An immutable value compares with a mutable one, and an owning class with a reference class. `!=` is the negation. A JSON value does not compare with a C++ value; [cast](#yyjsoncast) it first. Comparing two objects takes time linear in their size when their members are in the same order and quadratic otherwise.
+
+```cpp
+using namespace yyjson;
+
+auto doc = read(R"({"id":1,"tags":["a","b"]})");
+auto obj = object{{"tags", array{"a", "b"}}, {"id", 1.0}};
+std::cout << std::boolalpha << (doc == obj) << std::endl;
+// true
 ```
 
 ### `std::format` support
