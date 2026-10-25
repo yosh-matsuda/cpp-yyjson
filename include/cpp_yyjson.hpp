@@ -13175,29 +13175,75 @@ namespace yyjson
                 }
             }
 
-            template <typename T, std::size_t... Is>
-            CPPYYJSON_ALWAYS_INLINE void write_visitable_fields(bool& first, T&& t, std::index_sequence<Is...>)
+            // The fields Is of the struct t, registered with `VISITABLE_STRUCT` if `Visitable`.
+            template <bool Visitable, typename T, std::size_t... Is>
+            CPPYYJSON_ALWAYS_INLINE void write_field_part(bool& first, T&& t, std::index_sequence<Is...>)
             {
                 using U = std::remove_cvref_t<T>;
-                constexpr auto& members = visit_struct<U>::members;
-                if constexpr (yyjson::detail::has_adjacent_fields<U>) yyjson::detail::check_adjacent_tags(t);
-                if constexpr (std::is_rvalue_reference_v<T&&>)
+                if constexpr (!Visitable)
+                    (write_field<U, Is, reflected_key<U, Is>>(first,
+                                                              yyjson::detail::forward_field<Is>(std::forward<T>(t))),
+                     ...);
+                else if constexpr (std::is_rvalue_reference_v<T&&>)
                     (write_field<U, Is, visitable_key<U, Is>>(
                          first, yyjson::detail::writable_field(
-                                    std::move(t.*yyjson::detail::member_pointer<Is>(members)))),
+                                    std::move(t.*yyjson::detail::member_pointer<Is>(visit_struct<U>::members)))),
                      ...);
                 else
                     (write_field<U, Is, visitable_key<U, Is>>(
-                         first, yyjson::detail::writable_field(t.*yyjson::detail::member_pointer<Is>(members))),
+                         first, yyjson::detail::writable_field(
+                                    t.*yyjson::detail::member_pointer<Is>(visit_struct<U>::members))),
                      ...);
             }
-            template <typename T, std::size_t... Is>
-            CPPYYJSON_ALWAYS_INLINE void write_reflected_fields(bool& first, T&& t, std::index_sequence<Is...>)
+            // The number of fields above which a struct is written in parts of as many fields, each in a function
+            // of its own: GCC takes a time that grows with the square of the number of the fields inlined into
+            // one function.
+            static constexpr std::size_t field_part_size = 64;
+            // The K-th of the indices Is.
+            template <std::size_t K, std::size_t... Is>
+            static consteval std::size_t field_index()
+            {
+                constexpr std::size_t indices[] = {Is...};
+                return indices[K];
+            }
+            // The part P of the fields Is, whose fields are the Ks-th of Is from `P * field_part_size` on.
+            template <bool Visitable, std::size_t P, typename T, std::size_t... Is, std::size_t... Ks>
+            void write_field_part_apart(bool& first, T&& t, std::index_sequence<Is...>, std::index_sequence<Ks...>)
+            {
+                write_field_part<Visitable>(first, std::forward<T>(t),
+                                            std::index_sequence<field_index<P * field_part_size + Ks, Is...>()...>{});
+            }
+            template <bool Visitable, typename T, std::size_t... Is, std::size_t... Ps>
+            CPPYYJSON_ALWAYS_INLINE void write_field_parts(bool& first, T&& t, std::index_sequence<Is...> fields,
+                                                           std::index_sequence<Ps...>)
+            {
+                (write_field_part_apart<Visitable, Ps>(
+                     first, std::forward<T>(t), fields,
+                     std::make_index_sequence<std::min(field_part_size, sizeof...(Is) - Ps * field_part_size)>{}),
+                 ...);
+            }
+            template <bool Visitable, typename T, std::size_t... Is>
+            CPPYYJSON_ALWAYS_INLINE void write_struct_fields(bool& first, T&& t, std::index_sequence<Is...> fields)
             {
                 using U = std::remove_cvref_t<T>;
+                constexpr auto n = sizeof...(Is);
                 if constexpr (yyjson::detail::has_adjacent_fields<U>) yyjson::detail::check_adjacent_tags(t);
-                (write_field<U, Is, reflected_key<U, Is>>(first, yyjson::detail::forward_field<Is>(std::forward<T>(t))),
-                 ...);
+                if constexpr (n <= field_part_size)
+                    write_field_part<Visitable>(first, std::forward<T>(t), fields);
+                else
+                    write_field_parts<Visitable>(
+                        first, std::forward<T>(t), fields,
+                        std::make_index_sequence<(n + field_part_size - 1) / field_part_size>{});
+            }
+            template <typename T, std::size_t... Is>
+            CPPYYJSON_ALWAYS_INLINE void write_visitable_fields(bool& first, T&& t, std::index_sequence<Is...> fields)
+            {
+                write_struct_fields<true>(first, std::forward<T>(t), fields);
+            }
+            template <typename T, std::size_t... Is>
+            CPPYYJSON_ALWAYS_INLINE void write_reflected_fields(bool& first, T&& t, std::index_sequence<Is...> fields)
+            {
+                write_struct_fields<false>(first, std::forward<T>(t), fields);
             }
             // The members of the object that T is written as, for `object_emitter::emplace_members`, after those
             // already written to the object.
