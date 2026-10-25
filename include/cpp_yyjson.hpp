@@ -1663,6 +1663,9 @@ namespace yyjson
             enum_name_table<N> table;
             bool formatted = false;
             std::array<bool, N> renamed = {};
+            // where the search for the next `yyjson::enumerator` starts: after the previous one, so that settings in
+            // the order of the declaration are found at once
+            std::size_t next = 0;
 
             constexpr void fail(enum_annotation_error error)
             {
@@ -1689,9 +1692,18 @@ namespace yyjson
                     set_format(a);
                 else if constexpr (is_enumerator_annotation<A>::value)
                 {
-                    std::size_t i = 0;
-                    while (i < N && declared[i] != a.name) ++i;
+                    std::size_t i = N;
+                    for (std::size_t k = 0; k < N; ++k)
+                    {
+                        const auto j = (next + k) % N;
+                        if (declared[j] == a.name)
+                        {
+                            i = j;
+                            break;
+                        }
+                    }
                     if (i == N) return fail(enum_annotation_error::unknown_enumerator);
+                    next = i + 1;
                     std::apply(
                         [&]<typename... Rs>(const Rs&... r) {
                             if constexpr ((std::same_as<Rs, rename> && ...)) (rename_enumerator(i, r.key()), ...);

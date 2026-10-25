@@ -820,6 +820,40 @@ enum class Swapped
 template <>
 inline constexpr auto yyjson::annotations<Swapped> =
     yyjson::annotate(yyjson::enumerator("a", yyjson::rename("b")), yyjson::enumerator("b", yyjson::rename("a")));
+// 600 renamed enumerators, as an enumeration of time zones generated from a schema has: `std::tuple` of libstdc++
+// could not hold that many settings in a constant expression
+#define MANY_10(f, p) f(p##0) f(p##1) f(p##2) f(p##3) f(p##4) f(p##5) f(p##6) f(p##7) f(p##8) f(p##9)
+#define MANY_100(f, p)                                                                                              \
+    MANY_10(f, p##0)                                                                                                \
+    MANY_10(f, p##1)                                                                                                \
+    MANY_10(f, p##2)                                                                                                \
+    MANY_10(f, p##3)                                                                                                \
+    MANY_10(f, p##4)                                                                                                \
+    MANY_10(f, p##5)                                                                                                \
+    MANY_10(f, p##6)                                                                                                \
+    MANY_10(f, p##7)                                                                                                \
+    MANY_10(f, p##8)                                                                                                \
+    MANY_10(f, p##9)
+#define MANY_600(f) MANY_100(f, v0) MANY_100(f, v1) MANY_100(f, v2) MANY_100(f, v3) MANY_100(f, v4) MANY_100(f, v5)
+#define MANY_ENUMERATOR(x) x,
+#define MANY_RENAME(x) yyjson::enumerator(#x, yyjson::rename("k" #x)),
+enum class Many
+{
+    MANY_600(MANY_ENUMERATOR)
+};
+template <>
+struct field_reflection::enum_range<Many>
+{
+    static constexpr int min = 0;
+    static constexpr int max = 599;
+};
+template <>
+inline constexpr auto yyjson::annotations<Many> = yyjson::annotate(MANY_600(MANY_RENAME) yyjson::enum_format::name);
+#undef MANY_RENAME
+#undef MANY_ENUMERATOR
+#undef MANY_600
+#undef MANY_100
+#undef MANY_10
 
 struct FormatFields
 {
@@ -854,6 +888,10 @@ TEST(Reflection, EnumFormats)
     EXPECT_EQ(written(std::vector<Swapped>{Swapped::a, Swapped::b}), R"(["b","a"])");
     EXPECT_EQ(yyjson::read<std::vector<Swapped>>(R"(["b","a"])"), (std::vector<Swapped>{Swapped::a, Swapped::b}));
     EXPECT_EQ(yyjson::read(R"(["b"])").cast<std::vector<Swapped>>(), std::vector<Swapped>{Swapped::a});
+    EXPECT_EQ(written(std::vector<Many>{Many::v000, Many::v599}), R"(["kv000","kv599"])");
+    EXPECT_EQ(yyjson::read<Many>(R"("kv321")"), Many::v321);
+    EXPECT_EQ(yyjson::read(R"("kv599")").cast<Many>(), Many::v599);
+    EXPECT_THROW((void)yyjson::read<Many>(R"("v321")"), bad_cast);
 
     // `enum_format::integer` reads and writes integers only
     const auto perms = std::vector<Perm>{Perm::read, static_cast<Perm>(3)};
