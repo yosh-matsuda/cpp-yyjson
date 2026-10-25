@@ -2012,14 +2012,24 @@ namespace cpp_yyjson_codegen
                 return t.empty() ? !s.has("type") : t.size() == 1 && t[0] == "object";
             }
 
-            // the keys of {"required": [...]}, without other keywords than metadata; nullopt for another schema
-            static std::optional<std::vector<std::string>> only_required(const json& s)
+            // the keys of {"required": [...]}, without other keywords than metadata; nullopt for another schema.
+            // `properties` may repeat properties of the struct schema `parent` with the same schemas.
+            static std::optional<std::vector<std::string>> only_required(const json& s, const json* parent = nullptr)
             {
                 if (!s.is_object()) return std::nullopt;
                 const auto* req = s.find("required");
                 if (req == nullptr || !req->is_array() || req->items.empty()) return std::nullopt;
-                if (std::ranges::any_of(s.members, [](const auto& m) {
-                        return m.first != "required" && m.first != "not" && !is_metadata_key(m.first);
+                const auto* own = parent != nullptr ? parent->find("properties") : nullptr;
+                const auto repeated = [&](const json& props) {
+                    return own != nullptr && own->is_object() && props.is_object() &&
+                           std::ranges::all_of(props.members, [&](const auto& m) {
+                               const auto* p = own->find(m.first);
+                               return p != nullptr && equal(*p, m.second);
+                           });
+                };
+                if (std::ranges::any_of(s.members, [&](const auto& m) {
+                        return m.first != "required" && m.first != "not" && !is_metadata_key(m.first) &&
+                               !(m.first == "properties" && repeated(m.second));
                     }))
                     return std::nullopt;
                 auto keys = std::vector<std::string>();
@@ -2046,7 +2056,7 @@ namespace cpp_yyjson_codegen
                 auto nots = std::vector<std::optional<std::vector<group>>>();
                 for (const auto& b : list->items)
                 {
-                    auto g = only_required(b);
+                    auto g = only_required(b, &s);
                     if (!g) return std::nullopt;
                     r.groups.push_back(std::move(*g));
                     const auto* n = b.find("not");

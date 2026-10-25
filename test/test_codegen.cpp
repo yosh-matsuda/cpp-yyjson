@@ -288,6 +288,35 @@ TEST(Codegen, RequiredGroups)
     // `not` that does not name the other groups stays a variant of structs
     EXPECT_TRUE(has(r.code, "std::optional<std::variant<RootPartialOption1, RootPartialOption2>> partial;"));
     EXPECT_EQ(warnings(r), "#/properties/partial/oneOf/0: `not` is not supported and is ignored\n");
+
+    // subschemas that repeat properties of the struct with the same schemas, here of a recursive type
+    const auto repeated = generate(R"({
+        "$ref": "#/$defs/Item",
+        "$defs": {
+            "Item": {
+                "type": "object",
+                "properties": {
+                    "item": {"$ref": "#/$defs/Item"},
+                    "list": {"type": "array", "items": {"$ref": "#/$defs/Item"}}
+                },
+                "oneOf": [
+                    {"properties": {"item": {"$ref": "#/$defs/Item"}}, "required": ["item"]},
+                    {"properties": {"list": {"type": "array", "items": {"$ref": "#/$defs/Item"}}}, "required": ["list"]}
+                ]
+            }
+        }
+    })",
+                                   {});
+    EXPECT_EQ(warnings(repeated), "");
+    EXPECT_TRUE(has(repeated.code, "yyjson::one_of_required({\"item\"}, {\"list\"})"));
+    // a different schema of the property in a subschema stays a variant
+    const auto narrowed = generate(R"({
+        "type": "object",
+        "properties": {"a": {"type": "string"}, "b": {"type": "string"}},
+        "oneOf": [{"properties": {"a": {"type": "string", "maxLength": 3}}, "required": ["a"]}, {"required": ["b"]}]
+    })",
+                                   {});
+    EXPECT_TRUE(has(narrowed.code, "using Root = std::variant<RootOption1, RootOption2>;"));
 }
 
 TEST(Codegen, ExtraKeys)
