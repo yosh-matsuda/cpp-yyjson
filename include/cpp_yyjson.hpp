@@ -1607,6 +1607,9 @@ namespace yyjson
             bool visitable = false;
             std::array<bool, N> renamed = {};
             std::array<bool, N> tagged = {};
+            // where the search for the member of the next `yyjson::field` starts: after the previous one, so that
+            // settings in the order of the members are found at once
+            std::size_t next = 0;
 
             constexpr void fail(field_key_error error)
             {
@@ -1632,6 +1635,17 @@ namespace yyjson
                 if (table.skipped[i]) return fail(field_key_error::skipped_with_setting);
                 tagged[i] = true;
             }
+            // The index of the member `member`, or N.  The search starts at `start` and wraps around.
+            [[nodiscard]] constexpr std::size_t member_index(std::string_view member,
+                                                             std::size_t start = 0) const noexcept
+            {
+                for (std::size_t k = 0; k < N; ++k)
+                {
+                    const auto i = (start + k) % N;
+                    if (members[i] == member) return i;
+                }
+                return N;
+            }
             template <typename A>
             constexpr void apply_setting(std::size_t i, const A& a)
             {
@@ -1648,9 +1662,9 @@ namespace yyjson
             {
                 if constexpr (is_field_annotation<A>::value)
                 {
-                    std::size_t i = 0;
-                    while (i < N && members[i] != a.member) ++i;
+                    const auto i = member_index(a.member, next);
                     if (i == N) return fail(field_key_error::unknown_member);
+                    next = i + 1;
                     std::apply([&](const auto&... values) { (apply_setting(i, values), ...); }, a.values);
                 }
                 else
