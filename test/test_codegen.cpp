@@ -475,14 +475,25 @@ TEST(Codegen, Defaults)
     EXPECT_FALSE(has(o.code, "omit_default"));
     EXPECT_EQ(warnings(o), "");
 
-    // yyjson::omit_default needs operator==, which yyjson::value has not; yyjson::optional_key still reads a missing
-    // key as the default
-    const auto v = generate(R"({"type": "object", "properties": {"list": {"type": "array", "default": []}}})", {});
-    EXPECT_TRUE(has(v.code, "    std::vector<yyjson::value> list{};\n"));
+    // yyjson::omit_default needs operator==, which a struct holding a std::unique_ptr has not; yyjson::optional_key
+    // still reads a missing key as the default
+    const auto v = generate(R"({"type": "object", "properties": {"list": {"type": "array", "default": [],
+                                "items": {"$ref": "#/$defs/N"}}},
+                                "$defs": {"N": {"type": "object", "properties": {"next": {"$ref": "#/$defs/N"}}}}})",
+                            {});
+    EXPECT_TRUE(has(v.code, "    std::vector<N> list{};\n"));
     EXPECT_FALSE(has(v.code, "omit_default"));
     EXPECT_TRUE(has(v.code, "yyjson::field(\"list\", yyjson::optional_key)"));
-    EXPECT_EQ(warnings(v), "#/properties/list: the type std::vector<yyjson::value> has no operator==; the field is "
+    EXPECT_EQ(warnings(v), "#/properties/list: the type std::vector<N> has no operator==; the field is "
                            "written also when it holds the default\n");
+
+    // JSON values compare with operator==
+    const auto j = generate(R"({"type": "object", "properties": {"list": {"type": "array", "default": [],
+                                "uniqueItems": true}}})",
+                            {});
+    EXPECT_TRUE(has(j.code, "yyjson::field(\"list\", yyjson::omit_default, yyjson::unique_items)"));
+    EXPECT_TRUE(has(j.code, "bool operator==(const Root&) const = default;"));
+    EXPECT_EQ(warnings(j), "");
 }
 
 TEST(Codegen, RequiredGroups)

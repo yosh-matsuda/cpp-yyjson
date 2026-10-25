@@ -2985,8 +2985,6 @@ namespace cpp_yyjson_codegen
             {
                 switch (t.k)
                 {
-                    case tk::any:
-                    case tk::object:
                     case tk::pointer:
                         return false;
                     case tk::named:
