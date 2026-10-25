@@ -403,10 +403,12 @@ TEST(Codegen, Defaults)
     EXPECT_FALSE(has(o.code, "omit_default"));
     EXPECT_EQ(warnings(o), "");
 
-    // yyjson::omit_default needs operator==, which yyjson::value has not
+    // yyjson::omit_default needs operator==, which yyjson::value has not; yyjson::optional_key still reads a missing
+    // key as the default
     const auto v = generate(R"({"type": "object", "properties": {"list": {"type": "array", "default": []}}})", {});
     EXPECT_TRUE(has(v.code, "    std::vector<yyjson::value> list{};\n"));
     EXPECT_FALSE(has(v.code, "omit_default"));
+    EXPECT_TRUE(has(v.code, "yyjson::field(\"list\", yyjson::optional_key)"));
     EXPECT_EQ(warnings(v), "#/properties/list: the type std::vector<yyjson::value> has no operator==; the field is "
                            "written also when it holds the default\n");
 }

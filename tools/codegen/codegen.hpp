@@ -637,6 +637,7 @@ namespace cpp_yyjson_codegen
             ctype type{};
             settings set{};
             bool required = false, omit_default = false;
+            bool optional_key = false;   // yyjson::optional_key: a missing key keeps the initializer
             bool extra = false;          // yyjson::extra_keys: a map of the keys that name no property; no key
             std::string init{};          // " = x" or "{...}"
             std::string default_note{};  // the default of a std::optional field, for a comment
@@ -2803,6 +2804,7 @@ namespace cpp_yyjson_codegen
                 if (!f.required) f.type = make(tk::optional, {std::move(f.type)});
                 f.init.clear();
                 f.omit_default = false;
+                f.optional_key = false;
             }
 
             // breaks cycles of structs held by value with std::unique_ptr; returns the structs in definition order
@@ -2940,7 +2942,8 @@ namespace cpp_yyjson_codegen
                             changed = true;
                         }
                 }
-                // yyjson::omit_default compares the field with its default by operator==
+                // yyjson::omit_default compares the field with its default by operator==; yyjson::optional_key still
+                // reads a missing key as the default
                 for (auto& d : decls_)
                     for (auto& f : d.fields)
                         if (f.omit_default && !equality(f.type))
@@ -2948,6 +2951,7 @@ namespace cpp_yyjson_codegen
                             warn(f.loc, "the type " + spell(f.type) +
                                             " has no operator==; the field is written also when it holds the default");
                             f.omit_default = false;
+                            f.optional_key = true;
                         }
             }
 
@@ -3295,6 +3299,7 @@ namespace cpp_yyjson_codegen
                 if (f.member != f.key) items.push_back("yyjson::rename(" + cpp_string(f.key) + ")");
                 if (f.required) items.emplace_back("yyjson::required");
                 if (f.omit_default) items.emplace_back("yyjson::omit_default");
+                if (f.optional_key) items.emplace_back("yyjson::optional_key");
                 for (auto& s : render_settings(f.set, f.type)) items.push_back(std::move(s));
                 for (auto& s : render_metadata(f.meta)) items.push_back(std::move(s));
                 return items;
@@ -3492,6 +3497,10 @@ namespace cpp_yyjson_codegen
                         "//\n// A field with a default holds it as its initializer and has `yyjson::omit_default`: a "
                         "missing key\n// reads as the default, and writing leaves the key out while the field holds "
                         "it.\n";
+                if (any_field([](const field& f) { return f.optional_key; }))
+                    out += "//\n// A field with a default and `yyjson::optional_key` holds the default as its "
+                           "initializer: a missing\n// key reads as the default, and writing writes the key also "
+                           "while the field holds it.\n";
                 if (std::ranges::any_of(decls_, [](const decl& d) { return d.transparent; }))
                     out +=
                         "//\n// A struct with `yyjson::transparent` is read and written as the value of its only "
