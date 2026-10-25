@@ -2760,6 +2760,15 @@ namespace cpp_yyjson_codegen
                             changed = true;
                         }
                 }
+                // yyjson::omit_default compares the field with its default by operator==
+                for (auto& d : decls_)
+                    for (auto& f : d.fields)
+                        if (f.omit_default && !equality(f.type))
+                        {
+                            warn(f.loc, "the type " + spell(f.type) +
+                                            " has no operator==; the field is written also when it holds the default");
+                            f.omit_default = false;
+                        }
             }
 
             // rendering

@@ -279,6 +279,13 @@ TEST(Codegen, Defaults)
         has(o.code, "// A std::optional field with a `default:` comment is std::nullopt when the key is missing"));
     EXPECT_FALSE(has(o.code, "omit_default"));
     EXPECT_EQ(warnings(o), "");
+
+    // yyjson::omit_default needs operator==, which yyjson::value has not
+    const auto v = generate(R"({"type": "object", "properties": {"list": {"type": "array", "default": []}}})", {});
+    EXPECT_TRUE(has(v.code, "    std::vector<yyjson::value> list{};\n"));
+    EXPECT_FALSE(has(v.code, "omit_default"));
+    EXPECT_EQ(warnings(v), "#/properties/list: the type std::vector<yyjson::value> has no operator==; the field is "
+                           "written also when it holds the default\n");
 }
 
 TEST(Codegen, RequiredGroups)
