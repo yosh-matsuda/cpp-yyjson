@@ -87,6 +87,15 @@ target_include_directories("${PROJECT_NAME}_test_codegen"
 target_link_libraries("${PROJECT_NAME}_test_codegen"
                       PRIVATE ${PROJECT_NAME} GTest::gtest GTest::gtest_main)
 
+# types generated at build time by cpp_yyjson_generate(), when the generator is built
+if(TARGET cpp_yyjson_codegen)
+  add_executable("${PROJECT_NAME}_test_codegen_cmake" test_codegen_cmake.cpp)
+  target_link_libraries("${PROJECT_NAME}_test_codegen_cmake"
+                        PRIVATE ${PROJECT_NAME} GTest::gtest GTest::gtest_main)
+  cpp_yyjson_generate("${PROJECT_NAME}_test_codegen_cmake" codegen/order.schema.json
+                      NAMESPACE model)
+endif()
+
 # JSONTestSuite, the number tests and generated texts, from the datasets of the benchmark submodule
 add_executable("${PROJECT_NAME}_test_conformance" test_conformance.cpp)
 target_link_libraries("${PROJECT_NAME}_test_conformance"
@@ -119,6 +128,9 @@ gtest_discover_tests("${PROJECT_NAME}_test_user_casters" DISCOVERY_MODE PRE_TEST
 gtest_discover_tests("${PROJECT_NAME}_test_conformance" DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests("${PROJECT_NAME}_test_schema" DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests("${PROJECT_NAME}_test_codegen" DISCOVERY_MODE PRE_TEST)
+if(TARGET cpp_yyjson_codegen)
+  gtest_discover_tests("${PROJECT_NAME}_test_codegen_cmake" DISCOVERY_MODE PRE_TEST)
+endif()
 if(CPPYYJSON_USE_BUNDLED_YYJSON)
   gtest_discover_tests("${PROJECT_NAME}_test_depth_limit" DISCOVERY_MODE
                        PRE_TEST)

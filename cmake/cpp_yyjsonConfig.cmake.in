@@ -9,4 +9,5 @@ if(NOT CPPYYJSON_USE_BUNDLED_YYJSON)
 endif()
 
 include("${CMAKE_CURRENT_LIST_DIR}/@PROJECT_NAME@Targets.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/cpp_yyjson_codegen.cmake")
 check_required_components("@PROJECT_NAME@")

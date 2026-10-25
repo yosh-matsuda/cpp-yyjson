@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Order",
+  "type": "object",
+  "properties": {
+    "id": {"type": "integer", "minimum": 1},
+    "customer": {"$ref": "customer.schema.json"},
+    "items": {"type": "array", "items": {"$ref": "#/$defs/Item"}, "minItems": 1}
+  },
+  "required": ["id", "customer", "items"],
+  "$defs": {
+    "Item": {
+      "type": "object",
+      "properties": {
+        "name": {"type": "string"},
+        "quantity": {"type": "integer", "default": 1}
+      },
+      "required": ["name"]
+    }
+  }
+}

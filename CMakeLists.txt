@@ -315,6 +315,7 @@ if(CPPYYJSON_IS_TOPLEVEL_PROJECT)
   # install config files
   install(FILES "${PROJECT_BINARY_DIR}/${PROJECT_NAME}Config.cmake"
                 "${PROJECT_BINARY_DIR}/${PROJECT_NAME}ConfigVersion.cmake"
+                "${PROJECT_SOURCE_DIR}/cmake/cpp_yyjson_codegen.cmake"
           DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/${PROJECT_NAME})
 
   # install header files
@@ -334,6 +335,7 @@ endif()
 if(CPPYYJSON_BUILD_CODEGEN)
   add_subdirectory(tools/codegen)
 endif()
+include(cmake/cpp_yyjson_codegen.cmake)
 
 # test and benchmark
 if(CPPYYJSON_BUILD_TEST OR CPPYYJSON_BUILD_BENCH)
