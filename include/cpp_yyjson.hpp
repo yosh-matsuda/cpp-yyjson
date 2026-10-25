@@ -2585,6 +2585,9 @@ namespace yyjson
             std::array<bool, N> renamed = {};
             std::array<bool, N> tagged = {};
             std::size_t dependencies_added = 0;
+            // where the search for the member of the next `yyjson::field` starts: after the previous one, so that
+            // settings in the order of the members are found at once
+            std::size_t next = 0;
 
             constexpr void fail(field_key_error error)
             {
@@ -2639,12 +2642,16 @@ namespace yyjson
                 if (table.additional != additional_keys::unset) return fail(field_key_error::additional_twice);
                 table.additional = a.allowed ? additional_keys::allowed : additional_keys::denied;
             }
-            // The index of the member `member`, or N.
-            [[nodiscard]] constexpr std::size_t member_index(std::string_view member) const noexcept
+            // The index of the member `member`, or N.  The search starts at `start` and wraps around.
+            [[nodiscard]] constexpr std::size_t member_index(std::string_view member,
+                                                             std::size_t start = 0) const noexcept
             {
-                std::size_t i = 0;
-                while (i < N && members[i] != member) ++i;
-                return i;
+                for (std::size_t k = 0; k < N; ++k)
+                {
+                    const auto i = (start + k) % N;
+                    if (members[i] == member) return i;
+                }
+                return N;
             }
             template <std::size_t K>
             constexpr void add_dependency(const dependent_required_t<K>& d)
@@ -2681,8 +2688,9 @@ namespace yyjson
             {
                 if constexpr (is_field_annotation<A>::value)
                 {
-                    const auto i = member_index(a.member);
+                    const auto i = member_index(a.member, next);
                     if (i == N) return fail(field_key_error::unknown_member);
+                    next = i + 1;
                     std::apply([&](const auto&... values) { (apply_setting(i, values), ...); }, a.values);
                 }
                 else if constexpr (std::same_as<A, additional_properties<>>)
