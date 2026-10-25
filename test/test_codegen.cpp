@@ -759,6 +759,14 @@ TEST(Codegen, TransparentRoot)
         generate(R"({"type": "array", "items": {"type": "integer"}, "title": "Ns", "description": "d"})", {});
     EXPECT_TRUE(has(titled.code, "/// Ns\n/// d\nusing Ns = std::vector<std::int64_t>;\n"));
 
+    // uniqueItems dropped for elements without operator== leaves no constraint, and the root an alias
+    const auto dropped =
+        generate(R"({"type": "array", "uniqueItems": true, "title": "Ns", "items": {"$ref": "#/$defs/N"},
+                     "$defs": {"N": {"type": "object", "properties": {"next": {"$ref": "#/$defs/N"}}}}})",
+                 {});
+    EXPECT_TRUE(has(dropped.code, "/// Ns\nusing Ns = std::vector<N>;\n"));
+    EXPECT_FALSE(has(dropped.code, "yyjson::transparent"));
+
     // a definition refers to the root struct
     const auto c26 = generate(
         R"({"type": "string", "format": "email", "$defs": {"L": {"type": "array", "items": {"$ref": "#"}}}})",

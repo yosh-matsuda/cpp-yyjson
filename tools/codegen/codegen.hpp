@@ -2868,8 +2868,9 @@ namespace cpp_yyjson_codegen
                 f.optional_key = false;
             }
 
-            // breaks cycles of structs held by value with std::unique_ptr; returns the structs in definition order
-            std::vector<int> order_structs()
+            // breaks cycles of structs held by value with std::unique_ptr: a struct that holds itself by value,
+            // directly or through others, holds the field that closes the cycle through a pointer
+            void break_cycles()
             {
                 auto state = std::vector<int>(decls_.size(), 0);
                 const auto visit = [&](const auto& self, int i) -> void {
@@ -2890,6 +2891,12 @@ namespace cpp_yyjson_codegen
                 };
                 for (std::size_t i = 0; i < decls_.size(); ++i)
                     if (decls_[i].kind == decl::kind_t::structure && state[i] == 0) visit(visit, static_cast<int>(i));
+            }
+
+            // returns the structs in definition order
+            std::vector<int> order_structs()
+            {
+                auto state = std::vector<int>(decls_.size(), 0);
 
                 // the elements of containers may be incomplete, but a defaulted operator== instantiates a std::variant
                 // of them, which clang rejects for an incomplete alternative. So every struct that a field names is
@@ -3422,8 +3429,29 @@ namespace cpp_yyjson_codegen
                 return s + "]]";
             }
 
+            // a transparent root whose constraints are all dropped (uniqueItems of elements without operator==)
+            // becomes an alias, as a root without constraints is
+            void demote_transparent()
+            {
+                compute_equality();
+                for (std::size_t i = 0; i < decls_.size(); ++i)
+                {
+                    auto& d = decls_[i];
+                    if (!d.transparent || !render_settings(d.fields[0].set, d.fields[0].type).empty()) continue;
+                    d.kind = decl::kind_t::alias;
+                    d.transparent = false;
+                    d.target = d.fields[0].type;
+                    d.fields.clear();
+                    if (d.target.k == tk::variant && d.target.tagged)
+                        for (auto& n : notes_)
+                            if (n.alias < 0 && spell(n.type) == spell(d.target)) n.alias = static_cast<int>(i);
+                }
+            }
+
             std::string render()
             {
+                break_cycles();
+                demote_transparent();
                 name_members();
                 const auto structs = order_structs();
                 const auto aliases = order_aliases();
