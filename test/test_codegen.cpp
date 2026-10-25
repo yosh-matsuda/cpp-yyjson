@@ -153,6 +153,38 @@ TEST(Codegen, Recursion)
     EXPECT_FALSE(has(r.code, "struct Root"));
 }
 
+TEST(Codegen, RecursionThroughKeywords)
+{
+    // keywords beside a recursive reference that add nothing to the type keep the reference
+    const auto r = generate(R"({
+        "type": "object",
+        "properties": {
+            "items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "anyOf": [{"properties": {"name": {"type": "string"}}, "required": ["name"]}, {"$ref": "#"}]
+                }
+            },
+            "a": {"allOf": [{"$ref": "#/$defs/T"}, {"x-vendor": true}]},
+            "b": {"allOf": [{"$ref": "#/$defs/T"}, {"if": {"required": ["c"]}, "then": {"required": ["d"]}}]}
+        },
+        "$defs": {
+            "T": {
+                "type": "object",
+                "properties": {"self": {"allOf": [{"$ref": "#/$defs/T"}, {"description": "d", "x-vendor": 1}]}}
+            }
+        }
+    })",
+                            {});
+    EXPECT_EQ(warnings(r), "#/properties/b/allOf/1: `if` is not supported and is ignored\n"
+                           "#/properties/b/allOf/1: `then` is not supported and is ignored\n");
+    EXPECT_TRUE(has(r.code, "std::optional<std::vector<std::variant<RootItemsItemOption1, Root>>> items;\n"));
+    EXPECT_TRUE(has(r.code, "    std::optional<T> a;\n"));
+    EXPECT_TRUE(has(r.code, "    std::optional<T> b;\n"));
+    EXPECT_TRUE(has(r.code, "    std::optional<std::unique_ptr<T>> self;\n"));
+}
+
 TEST(Codegen, Variants)
 {
     const auto r = generate(R"({

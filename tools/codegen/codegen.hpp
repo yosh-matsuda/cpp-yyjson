@@ -716,10 +716,47 @@ namespace cpp_yyjson_codegen
             return keys.contains(k);
         }
 
+        // the keywords that the generator does not support and leaves out of the C++ type, with a warning
+        inline constexpr auto ignored_keys = std::array<std::string_view, 9>{
+            "if",          "then", "else", "not", "dependentSchemas", "unevaluatedProperties", "unevaluatedItems",
+            "$dynamicRef", "$recursiveRef"};
+        inline bool is_ignored_key(std::string_view k)
+        {
+            return std::ranges::find(ignored_keys, k) != ignored_keys.end();
+        }
+
+        // the keywords from which the generator builds the C++ type; others (vendor keys such as `markdownDescription`)
+        // are left out silently
+        inline bool is_type_key(std::string_view k)
+        {
+            static const auto keys = std::set<std::string_view>{
+                "$ref",           "type",          "enum",
+                "const",          "properties",    "required",
+                "additionalProperties", "patternProperties", "propertyNames",
+                "minProperties",  "maxProperties", "dependentRequired",
+                "dependencies",   "items",         "prefixItems",
+                "additionalItems", "contains",     "minContains",
+                "maxContains",    "minItems",      "maxItems",
+                "uniqueItems",    "minLength",     "maxLength",
+                "pattern",        "format",        "minimum",
+                "maximum",        "exclusiveMinimum", "exclusiveMaximum",
+                "multipleOf",     "allOf",         "anyOf",
+                "oneOf"};
+            return keys.contains(k);
+        }
+
+        // a schema that gives the C++ type nothing: true, or no keyword the generator builds a type from
+        inline bool adds_nothing(const json& s)
+        {
+            if (s.is_bool()) return s.b;
+            return s.is_object() && std::ranges::none_of(s.members, [](const auto& m) { return is_type_key(m.first); });
+        }
+
+        // a reference without keywords beside it that the generator would merge into the referred schema
         inline bool is_pure_ref(const json& s)
         {
             return s.is_object() && s.has("$ref") && std::ranges::all_of(s.members, [](const auto& m) {
-                       return m.first == "$ref" || is_metadata_key(m.first);
+                       return m.first == "$ref" || !(is_type_key(m.first) || is_ignored_key(m.first));
                    });
         }
 
@@ -1084,29 +1121,39 @@ namespace cpp_yyjson_codegen
                     if (k != "allOf" && k != "$ref") base.members.emplace_back(k, v);
                 upgrade(base);
                 const auto* all = s->find("allOf");
-                if (!s->has("$ref") && all != nullptr && all->is_array() && all->items.size() == 1 &&
-                    is_pure_ref(all->items[0]) &&
-                    std::ranges::all_of(base.members, [](const auto& m) { return is_metadata_key(m.first); }))
+                // The elements of allOf that give the type something.  The others give metadata, which the base
+                // takes, and keywords that are ignored: merging them would turn a reference to a recursive type
+                // into a copy of it at every level.
+                auto parts = std::vector<std::pair<const json*, std::string>>();
+                if (all != nullptr && all->is_array())
+                    for (std::size_t i = 0; i < all->items.size(); ++i)
+                    {
+                        const auto& e = all->items[i];
+                        auto l = loc + "/allOf/" + std::to_string(i);
+                        if (!adds_nothing(e))
+                            parts.emplace_back(&e, std::move(l));
+                        else if (e.is_object())
+                        {
+                            warn_unsupported(e, l);
+                            for (const auto& [k, v] : e.members)
+                                if (is_metadata_key(k) && !base.has(k)) base.set(k, v);
+                        }
+                    }
+                if (!s->has("$ref") && all != nullptr && all->is_array() && parts.size() == 1 &&
+                    is_pure_ref(*parts[0].first) && adds_nothing(base))
                 {
                     // {"allOf": [{"$ref": ...}]} with metadata only: keep the reference to the named type
-                    base.set("$ref", *all->items[0].find("$ref"));
+                    warn_unsupported(base, loc);
+                    std::erase_if(base.members, [](const auto& m) { return is_ignored_key(m.first); });
+                    base.set("$ref", *parts[0].first->find("$ref"));
                     const auto* r = store(std::move(base));
                     normalizing_.erase(s);
                     return normalized_[s] = r;
                 }
                 if (const auto* ref = s->find("$ref"))
                     if (const auto* t = resolve(*ref, loc)) base = merge(base, *normalize_full(t, loc), loc);
-                if (all != nullptr)
-                {
-                    if (!all->is_array())
-                        warn(loc, "`allOf` is not an array");
-                    else
-                        for (std::size_t i = 0; i < all->items.size(); ++i)
-                        {
-                            const auto l = loc + "/allOf/" + std::to_string(i);
-                            base = merge(base, *normalize_full(&all->items[i], l), l);
-                        }
-                }
+                if (all != nullptr && !all->is_array()) warn(loc, "`allOf` is not an array");
+                for (const auto& [e, l] : parts) base = merge(base, *normalize_full(e, l), l);
                 const auto* r = store(std::move(base));
                 normalizing_.erase(s);
                 return normalized_[s] = r;
@@ -1393,10 +1440,8 @@ namespace cpp_yyjson_codegen
 
             void warn_unsupported(const json& s, const std::string& loc)
             {
-                for (const auto* k :
-                     {"if", "then", "else", "not", "dependentSchemas", "unevaluatedProperties", "unevaluatedItems",
-                      "$dynamicRef", "$recursiveRef"})
-                    if (s.has(k)) warn(loc, std::string("`") + k + "` is not supported and is ignored");
+                for (const auto k : ignored_keys)
+                    if (s.has(k)) warn(loc, "`" + std::string(k) + "` is not supported and is ignored");
             }
 
             typed type_content(const json* s0, const std::string& loc, const std::string& hint, bool named)
@@ -2178,14 +2223,15 @@ namespace cpp_yyjson_codegen
                 }
                 auto base = json::object_of();
                 for (const auto& [k, v] : s->members)
-                    if (!(k == "anyOf" && any != nullptr) && !(k == "oneOf" && one != nullptr) && !is_metadata_key(k))
+                    if (!(k == "anyOf" && any != nullptr) && !(k == "oneOf" && one != nullptr) && !is_metadata_key(k) &&
+                        !is_ignored_key(k))
                         base.members.emplace_back(k, v);
                 auto schemas = std::vector<const json*>();
                 auto locs = std::vector<std::string>();
                 for (std::size_t i = 0; i < list->items.size(); ++i)
                 {
                     locs.push_back(loc + "/" + kw + "/" + std::to_string(i));
-                    if (base.members.empty())
+                    if (base.members.empty() || ref_within_base(base, list->items[i], locs.back()))
                         schemas.push_back(&list->items[i]);
                     else
                     {
@@ -2208,6 +2254,24 @@ namespace cpp_yyjson_codegen
                 (void)s0;
                 (void)named;
                 return make_variant(std::move(alts), loc);
+            }
+
+            // whether an alternative that only refers to a schema already meets the `type` that is the only keyword
+            // beside `anyOf` / `oneOf`; it then keeps its reference, since merging the type into a copy of the referred
+            // schema would expand a recursive reference without end:
+            // `{"type": "object", "anyOf": [{...}, {"$ref": "#"}]}`
+            bool ref_within_base(const json& base, const json& alt, const std::string& loc)
+            {
+                if (!is_pure_ref(alt) || base.members.size() != 1 || base.members[0].first != "type") return false;
+                const auto* t = &alt;
+                for (auto n = 0; t != nullptr && is_pure_ref(*t) && n < 64; ++n) t = resolve(*t->find("$ref"), loc);
+                if (t == nullptr || !t->is_object()) return false;
+                const auto have = type_list(*t);
+                const auto allowed = type_list(base);
+                return !have.empty() && std::ranges::all_of(have, [&](const auto& x) {
+                    return std::ranges::find(allowed, x) != allowed.end() ||
+                           (x == "integer" && std::ranges::find(allowed, "number") != allowed.end());
+                });
             }
 
             std::optional<typed> tagged_variant(const std::vector<const json*>& schemas,
