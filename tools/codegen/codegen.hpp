@@ -1467,7 +1467,13 @@ namespace cpp_yyjson_codegen
                     d.filled = true;
                     return cache_[s0] = typed{named_type(add_decl(std::move(d))), {}};
                 }
-                auto d = decl{.kind = decl::kind_t::alias, .name = name, .loc = loc, .target = r.t, .set = r.s};
+                // the metadata of an alias goes only to a comment: a `using` declaration takes no annotations
+                auto d = decl{.kind = decl::kind_t::alias,
+                              .name = name,
+                              .meta = meta_of(*s0),
+                              .loc = loc,
+                              .target = r.t,
+                              .set = r.s};
                 if (const auto it = def_keys_.find(s0); it != def_keys_.end()) d.schema_name = it->second;
                 const auto idx = add_decl(std::move(d));
                 if (r.t.k == tk::variant && r.t.tagged)
@@ -3456,6 +3462,9 @@ namespace cpp_yyjson_codegen
                 for (const auto i : aliases)
                 {
                     const auto& d = decls_[i];
+                    if (d.meta.title)
+                        for (const auto line : comment_lines(*d.meta.title))
+                            body += line.empty() ? "///\n" : "/// " + std::string(line) + "\n";
                     render_comment(body, d.meta, "");
                     body += "using " + d.name + " = " + spell(d.target) + ";\n\n";
                 }

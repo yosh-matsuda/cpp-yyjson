@@ -754,6 +754,11 @@ TEST(Codegen, TransparentRoot)
     EXPECT_TRUE(has(plain.code, "using Root = std::vector<std::int64_t>;\n"));
     EXPECT_FALSE(has(plain.code, "yyjson::transparent"));
 
+    // the metadata of an alias root goes to a comment
+    const auto titled =
+        generate(R"({"type": "array", "items": {"type": "integer"}, "title": "Ns", "description": "d"})", {});
+    EXPECT_TRUE(has(titled.code, "/// Ns\n/// d\nusing Ns = std::vector<std::int64_t>;\n"));
+
     // a definition refers to the root struct
     const auto c26 = generate(
         R"({"type": "string", "format": "email", "$defs": {"L": {"type": "array", "items": {"$ref": "#"}}}})",
