@@ -1,10 +1,13 @@
 // cpp-yyjson-codegen: C++ types with cpp-yyjson annotations from a JSON Schema.
 // This file is part of cpp-yyjson (https://github.com/yosh-matsuda/cpp-yyjson), MIT License.
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <iterator>
 #include <optional>
 #include <sstream>
+#include <string>
+#include <vector>
 
 #include "codegen.hpp"
 
@@ -18,6 +21,8 @@ Generates C++ types with cpp-yyjson annotations from a JSON Schema (2020-12, 201
                         "address.json#/$defs/Street", is read from the directory of the schema, and its
                         types go to the same header
   -o, --output <file>   the header to write (default: the standard output)
+  --depfile <file>      also write the schema files read, in the format of a Makefile rule for the header,
+                        for a build system to generate the header again when one of them changes (needs -o)
   --namespace <ns>      the namespace of the generated types, such as "app::model"
   --root-name <name>    the name of the root type (default: its title, or Root)
   --cpp26               write C++26 annotations ([[=...]]) instead of yyjson::annotations<T>
@@ -35,6 +40,22 @@ Generates C++ types with cpp-yyjson annotations from a JSON Schema (2020-12, 201
         std::cerr << "cpp-yyjson-codegen: " << message << "\n";
         return 2;
     }
+
+    // A path in a Makefile rule, absolute and with forward slashes, as Ninja and Make read it.
+    std::string depfile_path(const std::string& path)
+    {
+        auto ec = std::error_code();
+        auto p = std::filesystem::absolute(path, ec);
+        if (ec) p = path;
+        auto out = std::string();
+        for (const auto c : p.lexically_normal().generic_string())
+        {
+            if (c == ' ' || c == '#') out += '\\';
+            if (c == '$') out += '$';
+            out += c;
+        }
+        return out;
+    }
 }  // namespace
 
 int main(int argc, char** argv)
@@ -42,6 +63,7 @@ int main(int argc, char** argv)
     auto opts = cpp_yyjson_codegen::options();
     auto input = std::string();
     auto output = std::string();
+    auto depfile = std::string();
     for (auto i = 1; i < argc; ++i)
     {
         const auto arg = std::string_view(argv[i]);
@@ -54,11 +76,14 @@ int main(int argc, char** argv)
             std::cout << usage;
             return 0;
         }
-        if (arg == "-o" || arg == "--output" || arg == "--namespace" || arg == "--root-name")
+        if (arg == "-o" || arg == "--output" || arg == "--depfile" || arg == "--namespace" || arg == "--root-name")
         {
             const auto v = value();
             if (!v) return fail(std::string(arg) + " needs a value");
-            (arg == "--namespace" ? opts.ns : arg == "--root-name" ? opts.root_name : output) = *v;
+            (arg == "--namespace"   ? opts.ns
+             : arg == "--root-name" ? opts.root_name
+             : arg == "--depfile"   ? depfile
+                                    : output) = *v;
         }
         else if (arg == "--cpp26")
             opts.cpp26 = true;
@@ -82,6 +107,7 @@ int main(int argc, char** argv)
         std::cerr << usage;
         return 2;
     }
+    if (!depfile.empty() && output.empty()) return fail("--depfile needs -o");
 
     auto text = std::string();
     if (input == "-")
@@ -94,9 +120,11 @@ int main(int argc, char** argv)
     }
     opts.source = input == "-" ? "<stdin>" : input;
     if (input != "-") opts.path = input;
-    opts.load = [](const std::string& path) -> std::optional<std::string> {
+    auto read_files = std::vector<std::string>();
+    opts.load = [&read_files](const std::string& path) -> std::optional<std::string> {
         auto in = std::ifstream(path, std::ios::binary);
         if (!in) return std::nullopt;
+        read_files.push_back(path);
         return std::string(std::istreambuf_iterator<char>(in), {});
     };
     if (const auto slash = opts.source.find_last_of("/\\"); slash != std::string::npos)
@@ -113,6 +141,14 @@ int main(int argc, char** argv)
         {
             auto out = std::ofstream(output, std::ios::binary);
             if (!(out << r.code)) return fail("cannot write " + output);
+        }
+        if (!depfile.empty())
+        {
+            auto rule = depfile_path(output) + ":";
+            if (input != "-") rule += " " + depfile_path(input);
+            for (const auto& f : read_files) rule += " " + depfile_path(f);
+            auto out = std::ofstream(depfile, std::ios::binary);
+            if (!(out << rule << "\n")) return fail("cannot write " + depfile);
         }
         return 0;
     }
