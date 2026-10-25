@@ -226,25 +226,55 @@ namespace yyjson
         }
 #endif
 
+        // The member that each element of `annotations<S>` names with `yyjson::field`, or an empty name.  It is
+        // computed once for a struct, so that a field looks up its settings without instantiating code for every
+        // element: a struct of a few hundred annotated fields would otherwise take tens of gigabytes to compile.
+        template <typename S>
+        inline constexpr auto field_annotation_members = yyjson::detail::apply_annotations(
+            [](const auto&... as) {
+                return std::array<std::string_view, sizeof...(as)>{[]<typename A>(const A& a) -> std::string_view {
+                    if constexpr (yyjson::detail::is_field_annotation<A>::value)
+                        return a.member;
+                    else
+                        return {};
+                }(as)...};
+            },
+            annotations<S>.values);
+
+        // The indices in `annotations<S>` of the `yyjson::field` settings of the field R, by its index among all
+        // the fields.
+        template <typename S, std::size_t R>
+        consteval std::size_t field_annotation_count()
+        {
+            return static_cast<std::size_t>(std::ranges::count(field_annotation_members<S>,
+                                                               yyjson::detail::declared_member_name<S, R>));
+        }
+        template <typename S, std::size_t R>
+        inline constexpr auto field_annotation_indices = [] {
+            auto result = std::array<std::size_t, field_annotation_count<S, R>()>{};
+            auto k = std::size_t{0};
+            for (std::size_t i = 0; i < field_annotation_members<S>.size(); ++i)
+                if (field_annotation_members<S>[i] == yyjson::detail::declared_member_name<S, R>) result[k++] = i;
+            return result;
+        }();
+
+        // f(a) with each `yyjson::field` a of the field R of S in `annotations<S>`.
+        template <typename S, std::size_t R, typename F>
+        constexpr void for_each_field_annotation(F&& f)
+        {
+            [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                (f(yyjson::detail::annotation_at<field_annotation_indices<S, R>[Ks]>(annotations<S>.values)), ...);
+            }(std::make_index_sequence<field_annotation_indices<S, R>.size()>{});
+        }
+
         // The metadata of the field R of the struct S, by its index among all the fields.  The settings are checked
         // with the keys of the fields, where a field has each of them once at most.
         template <typename S, std::size_t R>
         metadata field_metadata()
         {
             auto m = metadata();
-            std::apply(
-                [&](const auto&... as) {
-                    (
-                        [&]<typename A>(const A& a) {
-                            if constexpr (yyjson::detail::is_field_annotation<A>::value)
-                            {
-                                if (a.member == yyjson::detail::declared_member_name<S, R>)
-                                    std::apply([&](const auto&... vs) { (m.add(vs), ...); }, a.values);
-                            }
-                        }(as),
-                        ...);
-                },
-                annotations<S>.values);
+            for_each_field_annotation<S, R>(
+                [&](const auto& a) { std::apply([&](const auto&... vs) { (m.add(vs), ...); }, a.values); });
 #if FIELD_RFL_ANNOTATIONS
             if constexpr (!yyjson::detail::visitable<S>)
             {
@@ -269,23 +299,14 @@ namespace yyjson
         template <typename S, std::size_t R>
         consteval bool field_has_examples()
         {
-            auto result = std::apply(
-                [](const auto&... as) {
-                    return (
-                        [&]<typename A>(const A& a) {
-                            if constexpr (yyjson::detail::is_field_annotation<A>::value)
-                                return a.member == yyjson::detail::declared_member_name<S, R> &&
-                                       std::apply(
-                                           []<typename... Vs>(const Vs&...) {
-                                               return (yyjson::detail::is_examples<Vs>::value || ...);
-                                           },
-                                           a.values);
-                            else
-                                return false;
-                        }(as) ||
-                        ...);
-                },
-                annotations<S>.values);
+            auto result = false;
+            for_each_field_annotation<S, R>([&](const auto& a) {
+                result = result || std::apply(
+                                       []<typename... Vs>(const Vs&...) {
+                                           return (yyjson::detail::is_examples<Vs>::value || ...);
+                                       },
+                                       a.values);
+            });
 #if FIELD_RFL_ANNOTATIONS
             if constexpr (!yyjson::detail::visitable<S>)
                 result = result || !examples_annotations<field_reflection::detail::member_at<S, R>>.empty();
@@ -297,23 +318,14 @@ namespace yyjson
         template <typename S, std::size_t R>
         consteval bool field_has_schema()
         {
-            auto result = std::apply(
-                [](const auto&... as) {
-                    return (
-                        [&]<typename A>(const A& a) {
-                            if constexpr (yyjson::detail::is_field_annotation<A>::value)
-                                return a.member == yyjson::detail::declared_member_name<S, R> &&
-                                       std::apply(
-                                           []<typename... Vs>(const Vs&...) {
-                                               return (std::same_as<Vs, yyjson::schema> || ...);
-                                           },
-                                           a.values);
-                            else
-                                return false;
-                        }(as) ||
-                        ...);
-                },
-                annotations<S>.values);
+            auto result = false;
+            for_each_field_annotation<S, R>([&](const auto& a) {
+                result = result || std::apply(
+                                       []<typename... Vs>(const Vs&...) {
+                                           return (std::same_as<Vs, yyjson::schema> || ...);
+                                       },
+                                       a.values);
+            });
 #if FIELD_RFL_ANNOTATIONS
             if constexpr (!yyjson::detail::visitable<S>)
                 result = result || !field_reflection::detail::annotations_v<field_reflection::detail::member_at<S, R>,
