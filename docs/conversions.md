@@ -278,7 +278,7 @@ An empty struct, such as `struct Tag {};`, converts to and from `{}`, and the me
 
 ### `VISITABLE_STRUCT`
 
-The `VISITABLE_STRUCT` macro registers the fields of a struct or a class by name. Use it when the compile-time reflection does not apply to the type, such as a class with a constructor of its own, or to convert only some of the fields. A registered type converts only the fields that the macro lists, and the registration takes precedence over the reflection:
+The `VISITABLE_STRUCT` macro registers the fields of a struct or a class by name. Use it when the compile-time reflection does not apply to the type, such as a class with a constructor of its own or, with C++20, a struct of more than 100 fields, or to convert only some of the fields. The macro takes up to 1365 fields. A registered type converts only the fields that the macro lists, and the registration takes precedence over the reflection:
 
 ```cpp
 // register the fields except `c`
