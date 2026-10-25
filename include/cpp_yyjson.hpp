@@ -629,11 +629,60 @@ namespace yyjson
         return {name, {values...}};
     }
 
+    namespace detail
+    {
+        template <std::size_t I, typename A>
+        struct annotation_leaf
+        {
+            A value;
+        };
+        template <typename Is, typename... As>
+        struct annotation_values;
+        // The settings of `annotate(...)`, one base per setting.  `std::tuple` of libstdc++ nests one level per
+        // element, and constructing it in a constant expression exceeds the depth limit of the compiler with a few
+        // hundred settings, which a generated enumeration of time zones has.
+        template <std::size_t... Is, typename... As>
+        struct annotation_values<std::index_sequence<Is...>, As...> : annotation_leaf<Is, As>...
+        {
+            constexpr explicit annotation_values(const As&... values) : annotation_leaf<Is, As>{values}... {}
+        };
+        template <std::size_t I, typename A>
+        constexpr const A& annotation_at(const annotation_leaf<I, A>& leaf) noexcept
+        {
+            return leaf.value;
+        }
+        // The number of the values in Bs that are true.  The settings of an `annotate(...)` can be more than 256,
+        // and clang before 22 takes no more operands in a fold expression, so the functions over them expand their
+        // packs in an array.
+        template <bool... Bs>
+        inline constexpr std::size_t count_true = [] {
+            constexpr bool values[] = {false, Bs...};
+            auto n = std::size_t{0};
+            for (const auto value : values) n += value ? 1 : 0;
+            return n;
+        }();
+        // f(setting) for each setting of an `annotate(...)`, in order.
+        template <typename F, std::size_t... Is, typename... As>
+        constexpr void for_each_annotation(F&& f, const annotation_values<std::index_sequence<Is...>, As...>& v)
+        {
+            // not const: MSVC rejects a const array whose initializer calls f (C2737)
+            [[maybe_unused]] bool done[] = {true, (f(static_cast<const annotation_leaf<Is, As>&>(v).value), true)...};
+        }
+        // f(settings...) with the settings of an `annotate(...)`.
+        template <typename F, std::size_t... Is, typename... As>
+        constexpr decltype(auto) apply_annotations(F&& f, const annotation_values<std::index_sequence<Is...>, As...>& v)
+        {
+            return std::forward<F>(f)(static_cast<const annotation_leaf<Is, As>&>(v).value...);
+        }
+    }  // namespace detail
+
     // The settings of the conversion of a type, which `yyjson::annotations<T>` holds.
     template <typename... As>
     struct annotation_list
     {
-        std::tuple<As...> values;
+        // the types of the settings
+        using types = std::tuple<As...>;
+        detail::annotation_values<std::index_sequence_for<As...>, As...> values;
     };
 
     namespace detail
@@ -657,17 +706,20 @@ namespace yyjson
         // The settings that `annotations<E>` of an enumeration takes.
         template <typename A>
         concept enum_annotation = is_enumerator_annotation<A>::value || std::same_as<A, enum_format>;
+
+        template <typename... As>
+        inline constexpr bool annotate_settings =
+            count_true<(is_field_annotation<As>::value || internal_tag_annotation<As> || enum_annotation<As>)...> ==
+            sizeof...(As);
     }  // namespace detail
 
     template <typename... As>
     consteval annotation_list<As...> annotate(As... values)
     {
-        static_assert(((detail::is_field_annotation<As>::value || detail::internal_tag_annotation<As> ||
-                        detail::enum_annotation<As>) &&
-                       ...),
+        static_assert(detail::annotate_settings<As...>,
                       "yyjson::annotate takes yyjson::field(...) for a struct, yyjson::internal_tag for a variant, "
                       "and yyjson::enumerator(...) and yyjson::enum_format for an enumeration");
-        return {{values...}};
+        return annotation_list<As...>{detail::annotation_values<std::index_sequence_for<As...>, As...>(values...)};
     }
 
     // The settings of the conversion of T.  A specialization, which comes before the first use of T, is
@@ -1081,7 +1133,30 @@ namespace yyjson
             ((field_reflection::field_count<T> > 0) || (std::is_empty_v<T> && !library_class<T>()));
 
         template <typename T>
-        using annotation_values_of = std::remove_cvref_t<decltype(annotations<T>.values)>;
+        using annotation_values_of = typename std::remove_cvref_t<decltype(annotations<T>)>::types;
+
+        // Whether the names at the indices that `use` selects differ from each other.  A constant expression may
+        // take only so many steps, and comparing every pair of a few hundred names that share a long prefix, one
+        // character at a time, took millions: a table of their hashes takes steps about as many as their characters.
+        template <std::size_t N, typename Use>
+        constexpr bool distinct_names(const std::array<std::string_view, N>& names, Use use)
+        {
+            constexpr auto size = std::bit_ceil(2 * N + 1);
+            std::uint64_t hashes[size]{};
+            std::size_t slots[size]{};  // the index of a name and one, or zero
+            for (std::size_t i = 0; i < N; ++i)
+            {
+                if (!use(i)) continue;
+                auto hash = std::uint64_t{14695981039346656037ULL};
+                for (const char c : names[i]) hash = (hash ^ static_cast<unsigned char>(c)) * 1099511628211ULL;
+                auto k = static_cast<std::size_t>(hash) & (size - 1);
+                for (; slots[k] != 0; k = (k + 1) & (size - 1))
+                    if (hashes[k] == hash && names[slots[k] - 1] == names[i]) return false;
+                hashes[k] = hash;
+                slots[k] = i + 1;
+            }
+            return true;
+        }
 
         enum class field_key_error
         {
@@ -1172,14 +1247,8 @@ namespace yyjson
                 auto result = table;
                 if (result.error != field_key_error::none || std::ranges::find(renamed, true) == renamed.end())
                     return result;
-                for (std::size_t i = 0; i < N; ++i)
-                {
-                    for (std::size_t j = i + 1; j < N; ++j)
-                    {
-                        if (!result.skipped[i] && !result.skipped[j] && result.keys[i] == result.keys[j])
-                            result.error = field_key_error::duplicate_key;
-                    }
-                }
+                if (!distinct_names(result.keys, [&](std::size_t i) { return !result.skipped[i]; }))
+                    result.error = field_key_error::duplicate_key;
                 return result;
             }
         };
@@ -1192,7 +1261,7 @@ namespace yyjson
         inline constexpr bool adjacent_field_annotation<field_annotation<As...>> = (adjacent_tag_annotation<As> || ...);
         template <typename T>
         inline constexpr bool annotates_adjacent_fields = []<typename... As>(std::type_identity<std::tuple<As...>>) {
-            return (adjacent_field_annotation<As> || ...);
+            return count_true<adjacent_field_annotation<As>...> != 0;
         }(std::type_identity<annotation_values_of<T>>{});
 
 #if FIELD_RFL_ANNOTATIONS
@@ -1270,7 +1339,7 @@ namespace yyjson
                 constexpr auto reflected = std::same_as<Source, reflected_field_names<T>>;
                 auto builder = field_key_builder<n>{Source::members, {Source::keys}, !reflected};
                 for (std::size_t i = 0; i < n; ++i) builder.renamed[i] = Source::keys[i] != Source::members[i];
-                std::apply([&](const auto&... a) { (builder.apply_annotation(a), ...); }, annotations<T>.values);
+                for_each_annotation([&](const auto& a) { builder.apply_annotation(a); }, annotations<T>.values);
 #if FIELD_RFL_ANNOTATIONS
                 if constexpr (reflected)
                     annotate_reflected_fields<T>(builder);
@@ -1576,16 +1645,6 @@ namespace yyjson
             }
         }
 
-        // Whether the first `n` of `names` differ from each other.
-        template <std::size_t N>
-        consteval bool distinct_names(const std::array<std::string_view, N>& names, std::size_t n)
-        {
-            for (std::size_t i = 0; i < n; ++i)
-                for (std::size_t j = 0; j < i; ++j)
-                    if (names[i] == names[j]) return false;
-            return true;
-        }
-
         enum class enum_annotation_error
         {
             none,
@@ -1617,6 +1676,9 @@ namespace yyjson
             enum_name_table<N> table;
             bool formatted = false;
             std::array<bool, N> renamed = {};
+            // where the search for the next `yyjson::enumerator` starts: after the previous one, so that settings in
+            // the order of the declaration are found at once
+            std::size_t next = 0;
 
             constexpr void fail(enum_annotation_error error)
             {
@@ -1643,9 +1705,18 @@ namespace yyjson
                     set_format(a);
                 else if constexpr (is_enumerator_annotation<A>::value)
                 {
-                    std::size_t i = 0;
-                    while (i < N && declared[i] != a.name) ++i;
+                    std::size_t i = N;
+                    for (std::size_t k = 0; k < N; ++k)
+                    {
+                        const auto j = (next + k) % N;
+                        if (declared[j] == a.name)
+                        {
+                            i = j;
+                            break;
+                        }
+                    }
                     if (i == N) return fail(enum_annotation_error::unknown_enumerator);
+                    next = i + 1;
                     std::apply(
                         [&]<typename... Rs>(const Rs&... r) {
                             if constexpr ((std::same_as<Rs, rename> && ...)) (rename_enumerator(i, r.key()), ...);
@@ -1669,9 +1740,9 @@ namespace yyjson
                     if (result.format == enum_format::name_or_integer && !digits.empty() &&
                         std::ranges::all_of(digits, [](char c) { return c >= '0' && c <= '9'; }))
                         result.error = enum_annotation_error::integer_name;
-                    for (std::size_t j = 0; j < i; ++j)
-                        if (name == result.names[j]) result.error = enum_annotation_error::duplicate_name;
                 }
+                if (!distinct_names(result.names, [](std::size_t) { return true; }))
+                    result.error = enum_annotation_error::duplicate_name;
                 return result;
             }
         };
@@ -1689,8 +1760,8 @@ namespace yyjson
                 constexpr auto& declared = field_reflection::enum_names<E>;
                 auto builder = enum_name_builder<count>{{declared}};
                 if constexpr (std::same_as<E, std::byte>) builder.table.format = enum_format::integer;
-                std::apply([&](const auto&... a) { (builder.apply_annotation(a, declared), ...); },
-                           annotations<E>.values);
+                for_each_annotation([&](const auto& a) { builder.apply_annotation(a, declared); },
+                                    annotations<E>.values);
 #if FIELD_RFL_ANNOTATIONS
                 for (const enum_format format : field_reflection::type_annotations<E, enum_format>)
                     builder.set_format(format);
@@ -1857,13 +1928,8 @@ namespace yyjson
                 [] {
                     if (spec.size() + (monostate != std::variant_npos) != sizeof...(Ts)) return true;
                     for (std::size_t i = 0; i < sizeof...(Ts); ++i)
-                    {
-                        if (i == monostate) continue;
-                        if (ids[i].empty()) return false;
-                        for (std::size_t j = 0; j < i; ++j)
-                            if (j != monostate && ids[i] == ids[j]) return false;
-                    }
-                    return true;
+                        if (i != monostate && ids[i].empty()) return false;
+                    return distinct_names(ids, [](std::size_t i) { return i != monostate; });
                 }(),
                 "the names of the alternatives in yyjson::internal_tag and yyjson::adjacent_tag must be distinct and "
                 "not empty");
@@ -1906,7 +1972,7 @@ namespace yyjson
                 if constexpr (index == std::tuple_size_v<values_type>)
                     return no_variant_tag{};
                 else
-                    return std::get<index>(annotations<V>.values);
+                    return annotation_at<index>(annotations<V>.values);
             }();
         };
 
@@ -1974,7 +2040,7 @@ namespace yyjson
             if constexpr (Count == 0)
                 return no_variant_tag{};
             else
-                return std::get<K>(std::get<I>(annotations<S>.values).values);
+                return std::get<K>(annotation_at<I>(annotations<S>.values).values);
         }
 
         // The `yyjson::adjacent_tag` of the field R of S, in `annotations<S>` or, with C++26, on the member.
@@ -1987,35 +2053,31 @@ namespace yyjson
                 auto result = std::array<std::size_t, 3>{std::variant_npos, std::variant_npos, 0};
                 if constexpr (annotates_adjacent_fields<S>)
                 {
-                    constexpr auto name = declared_member_name<S, R>;
-                    std::apply(
-                        [&](const auto&... entries) {
-                            auto j = std::size_t{0};
-                            (
-                                [&](const auto& entry) {
-                                    using E = std::remove_cvref_t<decltype(entry)>;
-                                    if constexpr (adjacent_field_annotation<E>)
-                                    {
-                                        if (entry.member == name)
-                                        {
-                                            [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
-                                                (
-                                                    [&] {
-                                                        using A = std::tuple_element_t<Ks, decltype(entry.values)>;
-                                                        if constexpr (adjacent_tag_annotation<A>)
-                                                        {
-                                                            result[0] = j;
-                                                            result[1] = Ks;
-                                                            ++result[2];
-                                                        }
-                                                    }(),
-                                                    ...);
-                                            }(std::make_index_sequence<std::tuple_size_v<decltype(entry.values)>>{});
-                                        }
-                                    }
-                                    ++j;
-                                }(entries),
-                                ...);
+                    auto j = std::size_t{0};
+                    for_each_annotation(
+                        [&](const auto& entry) {
+                            using E = std::remove_cvref_t<decltype(entry)>;
+                            if constexpr (adjacent_field_annotation<E>)
+                            {
+                                // not a local constexpr variable: MSVC cannot use one in a generic lambda (C2326)
+                                if (entry.member == declared_member_name<S, R>)
+                                {
+                                    [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                                        (
+                                            [&] {
+                                                using A = std::tuple_element_t<Ks, decltype(entry.values)>;
+                                                if constexpr (adjacent_tag_annotation<A>)
+                                                {
+                                                    result[0] = j;
+                                                    result[1] = Ks;
+                                                    ++result[2];
+                                                }
+                                            }(),
+                                            ...);
+                                    }(std::make_index_sequence<std::tuple_size_v<decltype(entry.values)>>{});
+                                }
+                            }
+                            ++j;
                         },
                         annotations<S>.values);
                 }
@@ -2208,6 +2270,8 @@ namespace yyjson
                 return struct_field_count<S>;
             else
                 return []<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                    // the number of the tags and whether their keys are distinct; clang before 22 cannot evaluate a
+                    // lambda that captures in the condition of the static_assert
                     constexpr auto keys = [] {
                         auto result = std::array<std::string_view, sizeof...(Ks)>{};
                         auto n = std::size_t{0};
@@ -2217,12 +2281,12 @@ namespace yyjson
                                     result[n++] = struct_field_tags<S, Ks>::key;
                             }(),
                             ...);
-                        return std::pair(result, n);
+                        return std::pair(n, distinct_names(result, [n](std::size_t i) { return i < n; }));
                     }();
-                    static_assert(distinct_names(keys.first, keys.second),
+                    static_assert(keys.second,
                                   "two fields tagged by yyjson::adjacent_tag with the same key need a field of that "
                                   "key");
-                    return sizeof...(Ks) + keys.second;
+                    return sizeof...(Ks) + keys.first;
                 }(std::make_index_sequence<struct_field_count<S>>{});
         }();
 
@@ -2469,23 +2533,45 @@ namespace yyjson
 
             constexpr explicit field_key_matcher(const std::array<std::string_view, N>& names) : names_(names)
             {
+                // A radix sort on the bytes of the lengths, which keeps the names of the same length in their order.
+                // A constant expression may take only so many steps, and comparing a few thousand names, which an
+                // enumeration can have, in `std::ranges::sort` took more than clang allows.
                 for (std::size_t i = 0; i < N; ++i) order_[i] = i;
-                std::ranges::sort(order_, [this](std::size_t a, std::size_t b) {
-                    return names_[a].size() < names_[b].size() || (names_[a].size() == names_[b].size() && a < b);
-                });
+                auto longest = std::size_t{0};
+                for (const auto name : names_) longest = std::max(longest, name.size());
+                for (std::size_t shift = 0; shift < std::numeric_limits<std::size_t>::digits && (longest >> shift) != 0;
+                     shift += 8)
+                {
+                    std::array<std::size_t, 257> start = {};
+                    for (const auto i : order_) ++start[((names_[i].size() >> shift) & 0xFF) + 1];
+                    for (std::size_t b = 0; b < 256; ++b) start[b + 1] += start[b];
+                    auto sorted = order_;
+                    for (const auto i : order_) sorted[start[(names_[i].size() >> shift) & 0xFF]++] = i;
+                    order_ = sorted;
+                }
                 for (std::size_t i = 0; i < N; ++i) sizes_[i] = names_[order_[i]].size();
                 for (std::size_t i = 0; i < N; ++i)
                 {
-                    plain_[i] = std::ranges::none_of(names_[i], [](char c) {
-                        return c == '"' || c == '\\' || static_cast<unsigned char>(c) < 0x20;
-                    });
-                    if (plain_[i] && names_[i].size() < key_bytes)
+                    // the characters through a pointer and the words through locals, for the same reason
+                    const auto* const p = names_[i].data();
+                    const auto n = names_[i].size();
+                    auto plain = true;
+                    for (std::size_t j = 0; j < n && plain; ++j)
+                        plain = p[j] != '"' && p[j] != '\\' && static_cast<unsigned char>(p[j]) >= 0x20;
+                    plain_[i] = plain;
+                    if (!plain || n >= key_bytes) continue;
+                    auto& key = key_[i];
+                    auto& mask = key_mask_[i];
+                    auto word = std::uint64_t{0};
+                    for (std::size_t j = 0; j <= n; ++j)
                     {
-                        for (std::size_t j = 0; j <= names_[i].size(); ++j)
+                        const auto c = j < n ? p[j] : '"';
+                        word |= std::uint64_t{static_cast<unsigned char>(c)} << (j % 8 * 8);
+                        if (j % 8 == 7 || j == n)
                         {
-                            const auto c = j < names_[i].size() ? names_[i][j] : '"';
-                            key_[i][j / 8] |= std::uint64_t{static_cast<unsigned char>(c)} << (j % 8 * 8);
-                            key_mask_[i][j / 8] |= std::uint64_t{0xFF} << (j % 8 * 8);
+                            key[j / 8] = word;
+                            mask[j / 8] = j % 8 == 7 ? ~std::uint64_t{0} : (std::uint64_t{1} << (j % 8 * 8 + 8)) - 1;
+                            word = 0;
                         }
                     }
                 }
@@ -15358,6 +15444,13 @@ namespace yyjson
                 make(index, read_value<alternative>());
             }
 
+            // Whether the reader default-constructs the variant T and emplaces the alternative into it instead of
+            // constructing T with `std::in_place_index<I>`.  The standard library implements that constructor by
+            // a chain of constructors as long as I for every I and every list of arguments, and their names hold
+            // the alternatives, so a variant of hundreds of alternatives takes tens of gigabytes to compile.
+            template <typename T>
+            static constexpr bool emplaced_variant = std::variant_size_v<T> > 16 && std::is_default_constructible_v<T>;
+
             // Emplaces the alternative I into `v`.
             template <typename T, std::size_t I, typename... Args>
             CPPYYJSON_ALWAYS_INLINE static T& emplace_alternative(T& v, std::in_place_index_t<I>, Args&&... args)
@@ -15506,7 +15599,10 @@ namespace yyjson
                     read_variant<T>([&](auto index, auto&&... args) -> T& {
                         if (result.has_value())
                             return emplace_alternative(*result, index, std::forward<decltype(args)>(args)...);
-                        return result.emplace(index, std::forward<decltype(args)>(args)...);
+                        if constexpr (emplaced_variant<T>)
+                            return emplace_alternative(result.emplace(), index, std::forward<decltype(args)>(args)...);
+                        else
+                            return result.emplace(index, std::forward<decltype(args)>(args)...);
                     });
                     return std::move(*result);
                 }
@@ -15946,7 +16042,11 @@ namespace yyjson
                                     return emplace_alternative(result.back(), index,
                                                                std::forward<decltype(args)>(args)...);
                                 made = true;
-                                return result.emplace_back(index, std::forward<decltype(args)>(args)...);
+                                if constexpr (emplaced_variant<value_type>)
+                                    return emplace_alternative(result.emplace_back(), index,
+                                                               std::forward<decltype(args)>(args)...);
+                                else
+                                    return result.emplace_back(index, std::forward<decltype(args)>(args)...);
                             });
                         }
                         else if constexpr (constructs_from_reader<value_type> && requires {
@@ -16540,7 +16640,11 @@ namespace yyjson
                             read_variant<value_type>([&](auto index, auto&&... args) -> value_type& {
                                 if (field.has_value())
                                     return emplace_alternative(*field, index, std::forward<decltype(args)>(args)...);
-                                return field.emplace(index, std::forward<decltype(args)>(args)...);
+                                if constexpr (emplaced_variant<value_type>)
+                                    return emplace_alternative(field.emplace(), index,
+                                                               std::forward<decltype(args)>(args)...);
+                                else
+                                    return field.emplace(index, std::forward<decltype(args)>(args)...);
                             });
                             return;
                         }
