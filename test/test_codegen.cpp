@@ -336,6 +336,7 @@ TEST(Codegen, Defaults)
             "tags": {"type": "array", "items": {"type": "string"}, "default": ["a"]},
             "unset": {"type": "string", "default": null},
             "nullable": {"type": ["string", "null"], "default": null},
+            "nullables": {"type": ["string", "array", "null"], "items": {"type": "string"}, "default": null},
             "point": {"type": "object", "properties": {"x": {"type": "number"}}, "default": {"x": 1}},
             "id": {"type": "integer", "default": 3}
         },
@@ -349,6 +350,9 @@ TEST(Codegen, Defaults)
     EXPECT_TRUE(has(r.code, "    std::vector<std::string> tags{\"a\"};\n"));
     EXPECT_TRUE(has(r.code, "    std::variant<std::monostate, std::string> nullable{};\n"));
     EXPECT_TRUE(has(r.code, "yyjson::field(\"nullable\", yyjson::omit_default)"));
+    // null of a variant of more alternatives is its first one, std::monostate, too
+    EXPECT_TRUE(has(r.code, "    std::variant<std::monostate, std::string, std::vector<std::string>> nullables{};\n"));
+    EXPECT_TRUE(has(r.code, "yyjson::field(\"nullables\", yyjson::omit_default)"));
     EXPECT_TRUE(has(r.code, "// A field with a default holds it as its initializer and has `yyjson::omit_default`"));
     // null for a type without null means "unset"
     EXPECT_TRUE(has(r.code, "    std::optional<std::string> unset;\n"));

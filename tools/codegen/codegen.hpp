@@ -705,6 +705,12 @@ namespace cpp_yyjson_codegen
             return t.k == tk::variant && !t.tagged && t.args.size() == 2 && t.args[0].k == tk::monostate;
         }
 
+        // a variant that reads null as its first alternative, std::monostate
+        inline bool holds_null(const ctype& t)
+        {
+            return t.k == tk::variant && !t.tagged && !t.args.empty() && t.args[0].k == tk::monostate;
+        }
+
         inline bool is_metadata_key(std::string_view k)
         {
             static const auto keys =
@@ -1557,7 +1563,7 @@ namespace cpp_yyjson_codegen
                             f.type = std::move(ft.t);
                             f.required = true;
                         }
-                        else if (dflt == nullptr || (dflt->is_null() && !is_nullable(ft.t)))
+                        else if (dflt == nullptr || (dflt->is_null() && !holds_null(ft.t)))
                         {
                             // no default, or `null` for a type without null, which authors write for "unset": the
                             // missing key is std::nullopt
@@ -1719,9 +1725,9 @@ namespace cpp_yyjson_codegen
                         return std::nullopt;
                     }
                     case tk::variant:
+                        if (holds_null(t) && j.is_null()) return "{}"s;
                         if (is_nullable(t))
                         {
-                            if (j.is_null()) return "{}"s;
                             if (const auto v = init_value(t.args[1], j); v && v->starts_with(" = "))
                                 return "{std::in_place_index<1>, " + v->substr(3) + "}";
                         }
