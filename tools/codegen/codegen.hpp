@@ -1990,7 +1990,19 @@ namespace cpp_yyjson_codegen
                     r.s.constraints.push_back(c + ")");
                     alts.push_back(std::move(r));
                 }
-                if (!strings.empty()) alts.push_back(make_enum(s0, s, strings, loc, hint, named && groups == 1));
+                if (std::ranges::find(strings, std::string()) != strings.end())
+                {
+                    // yyjson::rename cannot give an enumerator the empty name
+                    warn(loc, "`enum` has the empty string; the value is std::string with yyjson::enum_");
+                    auto r = typed{make(tk::string), {}};
+                    auto c = std::string("yyjson::enum_(");
+                    for (auto seen = std::set<std::string>(); const auto& v : strings)
+                        if (seen.insert(v).second) c += (seen.size() > 1 ? ", " : "") + cpp_string(v);
+                    r.s.constraints.push_back(c + ")");
+                    alts.push_back(std::move(r));
+                }
+                else if (!strings.empty())
+                    alts.push_back(make_enum(s0, s, strings, loc, hint, named && groups == 1));
                 if (alts.size() == 1) return nullable ? make_nullable(std::move(alts[0])) : std::move(alts[0]);
                 if (nullable) alts.push_back({make(tk::monostate), {}});
                 return make_variant(std::move(alts), loc);

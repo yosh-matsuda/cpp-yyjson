@@ -152,6 +152,13 @@ TEST(Codegen, Enums)
                     "struct field_reflection::enum_range<RootE>\n{\n    static constexpr int min = 0;\n"
                     "    static constexpr int max = 199;\n};"));
     EXPECT_FALSE(has(generate(many, {.cpp26 = true}).code, "enum_range"));
+
+    // an enumerator cannot be renamed to the empty string
+    const auto e = generate(R"({"type": "object", "properties": {"s": {"enum": ["", "on", ""]}}})", {});
+    EXPECT_TRUE(has(e.code, "    std::optional<std::string> s;\n"));
+    EXPECT_TRUE(has(e.code, "yyjson::field(\"s\", yyjson::enum_(\"\", \"on\"))"));
+    EXPECT_EQ(warnings(e),
+              "#/properties/s: `enum` has the empty string; the value is std::string with yyjson::enum_\n");
 }
 
 TEST(Codegen, ManyFields)
