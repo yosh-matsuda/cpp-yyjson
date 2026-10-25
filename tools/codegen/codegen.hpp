@@ -1430,6 +1430,16 @@ namespace cpp_yyjson_codegen
                     // the constraints of a root that is not an object have no field to go on: a struct of one field
                     // with yyjson::transparent, which is read and written as the value of the field, takes them
                     auto d = decl{.kind = decl::kind_t::structure, .name = name, .meta = meta_of(*s0), .loc = loc};
+                    // a root that refers to an alias takes the metadata of the alias, which has no place for it
+                    if (const auto* t = is_pure_ref(*s0) ? resolve(*s0->find("$ref"), loc) : nullptr; t != nullptr)
+                    {
+                        auto m = meta_of(*t);
+                        if (!d.meta.title) d.meta.title = std::move(m.title);
+                        if (!d.meta.description) d.meta.description = std::move(m.description);
+                        if (!d.meta.comment) d.meta.comment = std::move(m.comment);
+                        d.meta.deprecated = d.meta.deprecated || m.deprecated;
+                        if (d.meta.examples.empty()) d.meta.examples = std::move(m.examples);
+                    }
                     d.transparent = true;
                     d.fields.push_back(field{.member = "value", .key = "value", .type = r.t, .set = r.s, .loc = loc});
                     d.filled = true;

@@ -685,6 +685,13 @@ TEST(Codegen, ReferenceRoot)
     EXPECT_TRUE(has(constrained.code, "using N = std::int64_t;\n"));
     EXPECT_TRUE(has(constrained.code, "struct Root\n{\n    N value;\n"));
     EXPECT_TRUE(has(constrained.code, "yyjson::field(\"value\", yyjson::minimum(0))"));
+
+    // the alias has no place for metadata, so the transparent root takes it; the root's own metadata comes first
+    const auto meta = generate(
+        R"({"$ref": "#/$defs/N", "description": "root",
+            "$defs": {"N": {"type": "integer", "minimum": 0, "title": "N", "description": "n"}}})",
+        {});
+    EXPECT_TRUE(has(meta.code, "yyjson::title(\"N\"),\n    yyjson::description(\"root\"),\n    yyjson::transparent"));
 }
 
 TEST(Codegen, AnyRoot)
