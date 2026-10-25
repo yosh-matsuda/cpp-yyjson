@@ -2672,4 +2672,24 @@ TEST(Writer, JsonStringToString)
     EXPECT_EQ(by_ref(object{{"a", 6}}.write()), R"({"a":6})");
 }
 
+namespace
+{
+    struct MoveOnlyBox
+    {
+        std::unique_ptr<std::string> text;
+    };
+}  // namespace
+
+TEST(Writer, MoveOnlyVariantAlternative)
+{
+    using namespace yyjson;
+    using V = std::variant<MoveOnlyBox, int>;
+
+    // the alternative is written in place, not copied, also when the strings are copied
+    auto v = V(MoveOnlyBox{std::make_unique<std::string>("abc")});
+    EXPECT_EQ(value(v, copy_string).write(), R"({"text":"abc"})");
+    EXPECT_EQ(value(std::move(v), copy_string).write(), R"({"text":"abc"})");
+    EXPECT_EQ(value(V(3), copy_string).write(), "3");
+}
+
 // NOLINTEND
