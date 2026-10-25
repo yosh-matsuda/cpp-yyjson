@@ -373,11 +373,29 @@ TEST(Codegen, Warnings)
     EXPECT_TRUE(
         has(generate(schema, {}).code, "`yyjson::pattern` needs a specialization of `yyjson::pattern_matcher<>`"));
 
-    const auto root = generate(R"({"type": "array", "items": {"type": "integer"}, "maxItems": 3})", {});
-    EXPECT_TRUE(has(root.code, "using Root = std::vector<std::int64_t>;\n"));
-    EXPECT_EQ(warnings(root),
-              "#: constraints of a root that is not an object cannot be attached to the alias Root; "
-              "they are dropped\n");
+}
+
+TEST(Codegen, TransparentRoot)
+{
+    const auto r = generate(R"({"type": "array", "items": {"type": "integer"}, "maxItems": 3})", {});
+    EXPECT_EQ(warnings(r), "");
+    EXPECT_TRUE(has(r.code, "struct Root\n{\n    std::vector<std::int64_t> value;\n"));
+    EXPECT_TRUE(has(r.code, "yyjson::annotations<Root> = yyjson::annotate(\n    yyjson::transparent,\n"
+                            "    yyjson::field(\"value\", yyjson::max_items(3)));"));
+    EXPECT_TRUE(has(r.code, "// A struct with `yyjson::transparent` is read and written as the value"));
+
+    // without constraints the root stays an alias
+    const auto plain = generate(R"({"type": "array", "items": {"type": "integer"}})", {});
+    EXPECT_TRUE(has(plain.code, "using Root = std::vector<std::int64_t>;\n"));
+    EXPECT_FALSE(has(plain.code, "yyjson::transparent"));
+
+    // a definition refers to the root struct
+    const auto c26 = generate(
+        R"({"type": "string", "format": "email", "$defs": {"L": {"type": "array", "items": {"$ref": "#"}}}})",
+        {.cpp26 = true});
+    EXPECT_TRUE(has(c26.code, "using L = std::vector<Root>;\n"));
+    EXPECT_TRUE(has(c26.code, "struct [[=yyjson::transparent]] Root\n{\n"
+                              "    [[=yyjson::format(\"email\")]] std::string value;\n"));
 }
 
 TEST(Codegen, Errors)

@@ -631,6 +631,7 @@ namespace cpp_yyjson_codegen
             std::vector<required_groups> groups{};                                      // keys
             bool eq = false;
             bool filled = false;
+            bool transparent = false;  // yyjson::transparent: read and written as the value of its only field
             // enum: member name, JSON name
             std::vector<std::pair<std::string, std::string>> enumerators{};
             // alias
@@ -1106,6 +1107,16 @@ namespace cpp_yyjson_codegen
                 auto r = type_content(s0, loc, name, true);
                 busy_.erase(s0);
                 if (find_decl(name) >= 0) return cache_[s0] = r;
+                if (s0 == &root_ && !r.s.empty())
+                {
+                    // the constraints of a root that is not an object have no field to go on: a struct of one field
+                    // with yyjson::transparent, which is read and written as the value of the field, takes them
+                    auto d = decl{.kind = decl::kind_t::structure, .name = name, .meta = meta_of(*s0), .loc = loc};
+                    d.transparent = true;
+                    d.fields.push_back(field{.member = "value", .key = "value", .type = r.t, .set = r.s, .loc = loc});
+                    d.filled = true;
+                    return cache_[s0] = typed{named_type(add_decl(std::move(d))), {}};
+                }
                 auto d = decl{.kind = decl::kind_t::alias, .name = name, .loc = loc, .target = r.t, .set = r.s};
                 if (const auto it = def_keys_.find(s0); it != def_keys_.end()) d.schema_name = it->second;
                 const auto idx = add_decl(std::move(d));
@@ -2619,6 +2630,11 @@ namespace cpp_yyjson_codegen
                 auto items = std::vector<std::string>();
                 if (!d.schema_name.empty()) items.push_back("yyjson::schema_name(" + cpp_string(d.schema_name) + ")");
                 for (auto& s : render_metadata(d.meta)) items.push_back(std::move(s));
+                if (d.transparent)
+                {
+                    items.emplace_back("yyjson::transparent");
+                    return items;
+                }
                 // explicit, so that a read under yyjson::strict accepts the keys that the schema accepts
                 items.emplace_back(d.additional ? "yyjson::additional_properties(true)"
                                                 : "yyjson::additional_properties(false)");
@@ -2788,6 +2804,10 @@ namespace cpp_yyjson_codegen
                         "//\n// A field with a default holds it as its initializer and has `yyjson::omit_default`: a "
                         "missing key\n// reads as the default, and writing leaves the key out while the field holds "
                         "it.\n";
+                if (std::ranges::any_of(decls_, [](const decl& d) { return d.transparent; }))
+                    out +=
+                        "//\n// A struct with `yyjson::transparent` is read and written as the value of its only "
+                        "field, whose\n// constraints are those of the root.\n";
                 if (any_field([](const field& f) { return f.extra; }))
                     out +=
                         "//\n// A field with `yyjson::extra_keys` holds the keys of the object that name no other "
@@ -2878,14 +2898,7 @@ namespace cpp_yyjson_codegen
                             defs.emplace_back(std::string("#/") + kw + "/" + pointer_token(k), &v);
                         }
                 for (const auto& [loc, v] : defs) type_of(v, loc, def_names_.at(v));
-                if (root_typed)
-                {
-                    type_of(&root_, "#", root_name);
-                    if (const auto i = find_decl(root_name);
-                        i >= 0 && decls_[i].kind == decl::kind_t::alias && !decls_[i].set.empty())
-                        warn("#", "constraints of a root that is not an object cannot be attached to the alias " +
-                                      root_name + "; they are dropped");
-                }
+                if (root_typed) type_of(&root_, "#", root_name);
                 if (decls_.empty()) warn("#", "the schema defines no type");
                 auto code = render();
                 if (opts_.strict && !warnings_.empty()) throw error(warnings_);
