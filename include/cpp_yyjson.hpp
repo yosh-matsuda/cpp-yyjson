@@ -3223,15 +3223,42 @@ namespace yyjson
         // type that a question was asked about, which made a struct of a few hundred fields take minutes to compile.
         struct graph_node_info;
         using graph_node_fn = graph_node_info (*)() noexcept;
+        struct graph_edge
+        {
+            graph_node_fn node;
+            std::uint64_t hash;
+        };
         struct graph_node_info
         {
-            const graph_node_fn* edges;
+            const graph_edge* edges;
             std::size_t size;
-            std::uint64_t hash;
             bool marked;
         };
         template <typename N>
         constexpr graph_node_info graph_node() noexcept;
+        // A hash of the signature of this function, which names `T`. Only a sample of its characters is hashed: the
+        // names of the nodes run to thousands of characters, and the walk needs no more than a spread of the slots.
+        // The tail is taken in full because the names of two nodes often differ only there.
+        template <typename T>
+        constexpr std::uint64_t type_name_hash_of() noexcept
+        {
+#if defined(__clang__) || defined(__GNUC__)
+            constexpr auto name = std::string_view{__PRETTY_FUNCTION__};
+#elif defined(_MSC_VER)
+            constexpr auto name = std::string_view{__FUNCSIG__};
+#else
+            constexpr auto name = std::string_view{};
+#endif
+            auto hash = std::uint64_t{14695981039346656037ULL} ^ name.size();
+            const auto mix = [&](char c) { hash = (hash ^ static_cast<unsigned char>(c)) * 1099511628211ULL; };
+            constexpr auto tail = std::size_t{48};
+            constexpr auto step = name.size() / 16 + 1;
+            for (auto i = std::size_t{0}; i < name.size(); i += step) mix(name[i]);
+            for (auto i = name.size() > tail ? name.size() - tail : 0; i < name.size(); ++i) mix(name[i]);
+            return hash;
+        }
+        template <typename T>
+        inline constexpr std::uint64_t type_name_hash = type_name_hash_of<T>();
         // The array has a type that does not depend on its initializer, which can lead back to this array, and an
         // element more than the nodes, which keeps it from being empty.
         template <typename Edges>
@@ -3240,14 +3267,8 @@ namespace yyjson
         struct graph_edges<type_list<Ns...>>
         {
             static constexpr std::size_t size = sizeof...(Ns);
-            static constexpr graph_node_fn nodes[sizeof...(Ns) + 1] = {&graph_node<Ns>..., nullptr};
+            static constexpr graph_edge nodes[sizeof...(Ns) + 1] = {{&graph_node<Ns>, type_name_hash<Ns>}..., {}};
         };
-        template <typename T>
-        inline constexpr std::uint64_t type_name_hash = [] {
-            auto hash = std::uint64_t{14695981039346656037ULL};
-            for (const auto c : type_name<T>()) hash = (hash ^ static_cast<unsigned char>(c)) * 1099511628211ULL;
-            return hash;
-        }();
         template <typename N>
         constexpr graph_node_info graph_node() noexcept
         {
@@ -3258,7 +3279,7 @@ namespace yyjson
                     return false;
             }();
             using edges = graph_edges<typename N::edges>;
-            return {edges::nodes, edges::size, type_name_hash<N>, marked};
+            return {edges::nodes, edges::size, marked};
         }
 
         // Whether the walk from the node `from` reaches `target` along one edge or more, or a marked node along none
@@ -3266,16 +3287,16 @@ namespace yyjson
         constexpr bool graph_search(graph_node_fn from, graph_node_fn target)
         {
             // open addressing, at most half full
-            auto visited = std::vector<graph_node_fn>(64, nullptr);
+            auto visited = std::vector<graph_edge>(16);
             auto count = std::size_t{0};
-            const auto insert = [&](graph_node_fn f) {
+            const auto insert = [&](const graph_edge& e) {
                 const auto mask = visited.size() - 1;
-                for (auto k = static_cast<std::size_t>(f().hash) & mask;; k = (k + 1) & mask)
+                for (auto k = static_cast<std::size_t>(e.hash) & mask;; k = (k + 1) & mask)
                 {
-                    if (visited[k] == f) return false;
-                    if (visited[k] == nullptr)
+                    if (visited[k].node == e.node) return false;
+                    if (visited[k].node == nullptr)
                     {
-                        visited[k] = f;
+                        visited[k] = e;
                         ++count;
                         return true;
                     }
@@ -3289,16 +3310,16 @@ namespace yyjson
                 if (node.marked) return true;
                 for (std::size_t i = 0; i < node.size; ++i)
                 {
-                    const auto next = node.edges[i];
-                    if (next == target) return true;
+                    const auto& next = node.edges[i];
+                    if (next.node == target) return true;
                     if (2 * (count + 1) > visited.size())
                     {
-                        auto old = std::exchange(visited, std::vector<graph_node_fn>(2 * visited.size(), nullptr));
+                        auto old = std::exchange(visited, std::vector<graph_edge>(2 * visited.size()));
                         count = 0;
-                        for (const auto f : old)
-                            if (f != nullptr) insert(f);
+                        for (const auto& e : old)
+                            if (e.node != nullptr) insert(e);
                     }
-                    if (insert(next)) stack.push_back(next);
+                    if (insert(next)) stack.push_back(next.node);
                 }
             }
             return false;
