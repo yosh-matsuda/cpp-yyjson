@@ -185,6 +185,35 @@ TEST(Codegen, RecursionThroughKeywords)
     EXPECT_TRUE(has(r.code, "    std::optional<std::unique_ptr<T>> self;\n"));
 }
 
+TEST(Codegen, DefinitionOrder)
+{
+    // the structs in a container come first, since a defaulted operator== instantiates a std::variant of them, which
+    // clang rejects for an incomplete alternative; in a cycle through a container, a struct held by value comes first
+    const auto r = generate(R"({
+        "type": "object",
+        "properties": {"a": {"$ref": "#/$defs/A"}},
+        "$defs": {
+            "A": {
+                "type": "object",
+                "properties": {"list": {"type": "array", "items": {"anyOf": [{"$ref": "#/$defs/B"}, {"$ref": "#/$defs/C"}]}}}
+            },
+            "I": {"type": "object", "properties": {"j": {"$ref": "#/$defs/J"}}},
+            "J": {"type": "object", "properties": {"is": {"type": "array", "items": {"$ref": "#/$defs/I"}}}},
+            "B": {"type": "object", "properties": {"b": {"type": "integer"}}, "required": ["b"]},
+            "C": {"type": "object", "properties": {"c": {"type": "string"}}, "required": ["c"]}
+        }
+    })",
+                            {});
+    EXPECT_EQ(warnings(r), "");
+    const auto at = [&](std::string_view name) { return r.code.find("struct " + std::string(name) + "\n{"); };
+    EXPECT_LT(at("B"), at("A"));
+    EXPECT_LT(at("C"), at("A"));
+    EXPECT_LT(at("A"), at("Root"));
+    EXPECT_LT(at("J"), at("I"));
+    EXPECT_TRUE(has(r.code, "    std::optional<J> j;\n"));
+    EXPECT_FALSE(has(r.code, "unique_ptr"));
+}
+
 TEST(Codegen, Variants)
 {
     const auto r = generate(R"({

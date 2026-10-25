@@ -13,6 +13,7 @@
 #include <limits>
 #include <map>
 #include <optional>
+#include <ranges>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -2808,7 +2809,6 @@ namespace cpp_yyjson_codegen
             std::vector<int> order_structs()
             {
                 auto state = std::vector<int>(decls_.size(), 0);
-                auto order = std::vector<int>();
                 const auto visit = [&](const auto& self, int i) -> void {
                     state[i] = 1;
                     for (auto& f : decls_[i].fields)
@@ -2824,10 +2824,66 @@ namespace cpp_yyjson_codegen
                             if (state[j] == 0) self(self, j);
                     }
                     state[i] = 2;
-                    order.push_back(i);
                 };
                 for (std::size_t i = 0; i < decls_.size(); ++i)
                     if (decls_[i].kind == decl::kind_t::structure && state[i] == 0) visit(visit, static_cast<int>(i));
+
+                // the elements of containers may be incomplete, but a defaulted operator== instantiates a std::variant
+                // of them, which clang rejects for an incomplete alternative. So every struct that a field names is
+                // defined first, except in a cycle, which goes through containers now: the strongly connected
+                // components of all named structs come in dependency order, and the structs of one component in the
+                // order of the structs they hold by value
+                const auto named = [&](int i) {
+                    auto deps = std::vector<int>();
+                    for (const auto& f : decls_[i].fields) named_in(f.type, deps);
+                    for (std::size_t n = 0; n < deps.size(); ++n)
+                        if (const auto j = deps[n];
+                            decls_[j].kind == decl::kind_t::alias &&
+                            std::ranges::find(deps.begin(), deps.begin() + n, j) == deps.begin() + n)
+                            named_in(decls_[j].target, deps);
+                    std::erase_if(deps, [&](int j) { return decls_[j].kind != decl::kind_t::structure; });
+                    return deps;
+                };
+                auto index = std::vector<int>(decls_.size(), -1), low = index, component = index;
+                auto stack = std::vector<int>();
+                auto order = std::vector<int>();
+                auto next = 0;
+                const auto connect = [&](const auto& self, int i) -> void {
+                    index[i] = low[i] = next++;
+                    stack.push_back(i);
+                    for (const auto j : named(i))
+                        if (index[j] < 0)
+                        {
+                            self(self, j);
+                            low[i] = std::min(low[i], low[j]);
+                        }
+                        else if (component[j] < 0)
+                            low[i] = std::min(low[i], index[j]);
+                    if (low[i] != index[i]) return;
+                    auto members = std::vector<int>();
+                    do
+                    {
+                        members.push_back(stack.back());
+                        component[stack.back()] = i;
+                        stack.pop_back();
+                    } while (members.back() != i);
+                    for (const auto k : members) state[k] = 0;
+                    const auto place = [&](const auto& again, int k) -> void {
+                        state[k] = 1;
+                        for (const auto& f : decls_[k].fields)
+                        {
+                            auto deps = std::vector<int>();
+                            by_value(f.type, deps);
+                            for (const auto j : deps)
+                                if (component[j] == i && state[j] == 0) again(again, j);
+                        }
+                        order.push_back(k);
+                    };
+                    for (const auto k : members | std::views::reverse)
+                        if (state[k] == 0) place(place, k);
+                };
+                for (std::size_t i = 0; i < decls_.size(); ++i)
+                    if (decls_[i].kind == decl::kind_t::structure && index[i] < 0) connect(connect, static_cast<int>(i));
                 return order;
             }
 
