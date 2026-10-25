@@ -3,6 +3,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <optional>
 #include <sstream>
 
 #include "codegen.hpp"
@@ -11,9 +12,11 @@ namespace
 {
     constexpr auto usage = R"(usage: cpp-yyjson-codegen <schema.json> [options]
 
-Generates C++ types with cpp-yyjson annotations from a JSON Schema (2020-12).
+Generates C++ types with cpp-yyjson annotations from a JSON Schema (2020-12, 2019-09, draft-07 or draft-06).
 
-  <schema.json>         the schema; "-" reads the standard input
+  <schema.json>         the schema; "-" reads the standard input. A reference to another file, such as
+                        "address.json#/$defs/Street", is read from the directory of the schema, and its
+                        types go to the same header
   -o, --output <file>   the header to write (default: the standard output)
   --namespace <ns>      the namespace of the generated types, such as "app::model"
   --root-name <name>    the name of the root type (default: its title, or Root)
@@ -90,6 +93,12 @@ int main(int argc, char** argv)
         text.assign(std::istreambuf_iterator<char>(in), {});
     }
     opts.source = input == "-" ? "<stdin>" : input;
+    if (input != "-") opts.path = input;
+    opts.load = [](const std::string& path) -> std::optional<std::string> {
+        auto in = std::ifstream(path, std::ios::binary);
+        if (!in) return std::nullopt;
+        return std::string(std::istreambuf_iterator<char>(in), {});
+    };
     if (const auto slash = opts.source.find_last_of("/\\"); slash != std::string::npos)
         opts.source = opts.source.substr(slash + 1);
 

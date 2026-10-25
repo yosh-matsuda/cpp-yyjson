@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <map>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -336,6 +338,102 @@ TEST(Codegen, ExtraKeys)
     EXPECT_TRUE(has(k, "struct Closed\n{\n    std::optional<std::int64_t> b;\n\n    bool operator=="));
     EXPECT_TRUE(has(k, "struct Root\n{\n    std::optional<Open> open;\n    std::optional<Closed> closed;\n"
                        "    std::map<std::string, yyjson::value> extra;\n"));
+}
+
+TEST(Codegen, Draft07)
+{
+    const auto r = generate(R"({
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+            "p": {"type": "array", "items": [{"type": "integer"}, {"type": "integer"}], "additionalItems": false,
+                  "minItems": 2},
+            "q": {"type": "array", "items": [{"type": "string", "maxLength": 2}],
+                  "additionalItems": {"type": "string"}},
+            "r": {"$ref": "#/definitions/N", "minimum": 5},
+            "s": {"$ref": "#n"}
+        },
+        "dependencies": {"p": ["q"]},
+        "definitions": {"N": {"$id": "#n", "type": "integer", "maximum": 9}}
+    })",
+                            {});
+    EXPECT_EQ(warnings(r), "#/properties/r: draft-07 ignores the keywords beside `$ref`: `minimum`\n");
+    EXPECT_TRUE(has(r.code, "    std::optional<std::tuple<std::int64_t, std::int64_t>> p;\n"
+                            "    std::optional<std::vector<std::string>> q;\n"
+                            "    std::optional<N> r;\n    std::optional<N> s;\n"));
+    EXPECT_TRUE(has(r.code, "    yyjson::dependent_required(\"p\", {\"q\"}),\n"
+                            "    yyjson::field(\"q\", yyjson::prefix_items(yyjson::max_length(2))),\n"
+                            "    yyjson::field(\"r\", yyjson::maximum(9)),\n"));
+
+    // 2020-12 applies the keywords beside $ref, and `dependencies` with a schema is `dependentSchemas`
+    const auto d = generate(R"({
+        "type": "object",
+        "properties": {"r": {"$ref": "#/$defs/N", "minimum": 5}},
+        "dependencies": {"r": {"required": ["x"]}},
+        "$defs": {"N": {"type": "integer"}}
+    })",
+                            {});
+    EXPECT_EQ(warnings(d), "#: `dependentSchemas` is not supported and is ignored\n");
+    EXPECT_TRUE(has(d.code, "yyjson::field(\"r\", yyjson::minimum(5))"));
+}
+
+TEST(Codegen, FileReferences)
+{
+    const auto files = std::map<std::string, std::string>{
+        {"schemas/sub/address.schema.json",
+         R"({"$schema": "http://json-schema.org/draft-07/schema#", "type": "object",
+             "properties": {"street": {"$ref": "#/definitions/Street"}, "back": {"$ref": "../order.json#/$defs/Code"}},
+             "definitions": {"Street": {"type": "string", "maxLength": 40}}})"},
+        {"schemas/street.json", R"({"title": "street name", "type": "string", "minLength": 1})"},
+        {"schemas/broken.json", "{"},
+        {"schemas/point.json", R"({"$defs": {"Point": {"type": "object", "properties": {"y": {"type": "number"}}}}})"}};
+    auto opts = options{.path = "schemas/order.json"};
+    opts.load = [&](const std::string& path) -> std::optional<std::string> {
+        const auto it = files.find(path);
+        return it == files.end() ? std::nullopt : std::optional(it->second);
+    };
+    const auto schema = R"({
+        "$id": "https://example.com/schemas/order.json",
+        "type": "object",
+        "properties": {
+            "ship": {"$ref": "sub/address.schema.json"},
+            "street": {"$ref": "./sub/address.schema.json#/definitions/Street"},
+            "by_id": {"$ref": "https://example.com/schemas/street.json"},
+            "code": {"$ref": "order.json#/$defs/Code"},
+            "remote": {"$ref": "https://other.example/x.json"},
+            "missing": {"$ref": "missing.json"},
+            "broken": {"$ref": "broken.json"},
+            "point": {"$ref": "#/$defs/Point"},
+            "point2": {"$ref": "point.json#/$defs/Point"}
+        },
+        "$defs": {"Code": {"type": "string"}, "Street": {"type": "integer"},
+                  "Point": {"type": "object", "properties": {"x": {"type": "number"}}}}
+    })";
+    const auto r = generate(schema, opts);
+    EXPECT_TRUE(has(r.code, "using Code = std::string;\n"));
+    EXPECT_TRUE(has(r.code, "using Street = std::int64_t;\n"));
+    EXPECT_TRUE(has(r.code, "using Street2 = std::string;\n"));
+    EXPECT_TRUE(has(r.code, "using StreetName = std::string;\n"));
+    EXPECT_TRUE(has(r.code, "struct Address\n{\n    std::optional<Street2> street;\n    std::optional<Code> back;\n"));
+    EXPECT_TRUE(has(r.code, "    std::optional<Address> ship;\n    std::optional<Street2> street;\n"
+                            "    std::optional<StreetName> by_id;\n    std::optional<Code> code;\n"
+                            "    std::optional<yyjson::value> remote;\n"));
+    EXPECT_TRUE(has(r.code, "yyjson::field(\"street\", yyjson::max_length(40))"));
+    EXPECT_TRUE(has(r.code, "yyjson::field(\"by_id\", yyjson::min_length(1))"));
+    // an entry of another file whose name is taken gets the next name and no schema_name
+    EXPECT_TRUE(has(r.code, "struct Point2\n{\n    std::optional<double> y;\n"));
+    EXPECT_TRUE(has(r.code, "yyjson::annotations<Point> = yyjson::annotate(\n    yyjson::schema_name(\"Point\")"));
+    EXPECT_TRUE(
+        has(r.code, "yyjson::annotations<Point2> = yyjson::annotate(\n    yyjson::additional_properties(true));"));
+    const auto w = warnings(r);
+    EXPECT_TRUE(has(w, "#/properties/remote: the reference \"https://other.example/x.json\" is a URI that is not the "
+                       "`$id` of a schema read; it is read as any JSON value\n"));
+    EXPECT_TRUE(has(w, "#/properties/missing: the file \"schemas/missing.json\" of the reference "
+                       "\"schemas/missing.json\" cannot be read; it is read as any JSON value\n"));
+    EXPECT_TRUE(has(w, "#/properties/broken: the file \"schemas/broken.json\" is not valid JSON"));
+
+    // without a loader, a reference to another file is any JSON value
+    EXPECT_TRUE(has(generate(schema, {}).code, "    std::optional<yyjson::value> ship;\n"));
 }
 
 TEST(Codegen, Cpp26)

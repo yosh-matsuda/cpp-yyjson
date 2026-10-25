@@ -3,10 +3,13 @@
 #pragma once
 
 #include <algorithm>
+#include <cctype>
 #include <charconv>
 #include <cmath>
 #include <cstdint>
 #include <deque>
+#include <filesystem>
+#include <functional>
 #include <limits>
 #include <map>
 #include <optional>
@@ -44,6 +47,12 @@ namespace cpp_yyjson_codegen
         bool keep_unknown_keys = false;
         std::string root_name{};  // name of the root type; default: the title, or "Root"
         std::string source{};     // name of the schema in the header comment
+        // path of the schema; a reference to another file, such as "address.json#/$defs/Street", is resolved against
+        // its directory
+        std::string path{};
+        // reads the file of a path made from `path` and a reference, or returns std::nullopt; without it, references
+        // to other files are read as any JSON value
+        std::function<std::optional<std::string>(const std::string&)> load{};
     };
 
     struct diagnostic
@@ -728,6 +737,11 @@ namespace cpp_yyjson_codegen
             const options& opts_;
             json root_;
             std::deque<json> store_;                        // schemas built by the generator
+            std::deque<json> files_;                        // schemas of other files
+            std::map<std::string, const json*> documents_;  // key of a reference ("" or a file path) -> schema
+            std::map<std::string, std::string> ids_;        // absolute $id of a file -> its key
+            std::string root_path_;                         // lexically normal path of the schema
+            std::set<std::string> schema_names_;            // schema_name of $defs entries
             std::deque<decl> decls_;
             std::map<const json*, std::string> def_names_;  // $defs entries -> type name
             std::map<const json*, std::string> def_keys_;   // $defs entries -> schema_name
@@ -757,6 +771,173 @@ namespace cpp_yyjson_codegen
                 return &store_.back();
             }
 
+            static bool is_absolute_uri(std::string_view r)
+            {
+                const auto colon = r.find(':');
+                if (colon == std::string_view::npos || colon == 0 || !std::isalpha(static_cast<unsigned char>(r[0])))
+                    return false;
+                return std::ranges::all_of(r.substr(0, colon), [](char c) {
+                    return std::isalnum(static_cast<unsigned char>(c)) || c == '+' || c == '-' || c == '.';
+                });
+            }
+
+            static std::string file_key(const std::string& dir, std::string_view rel)
+            {
+                return (std::filesystem::path(dir) / std::filesystem::path(std::string(rel)))
+                    .lexically_normal()
+                    .generic_string();
+            }
+
+            static bool is_draft07(const json& doc)
+            {
+                const auto* d = doc.find("$schema");
+                const auto has = [&](std::string_view x) { return d->text.find(x) != std::string::npos; };
+                return d != nullptr && d->is_string() && (has("draft-07/") || has("draft-06/"));
+            }
+
+            void check_dialect(const json& doc, const std::string& loc)
+            {
+                const auto* d = doc.find("$schema");
+                if (d == nullptr) return;
+                const auto dialect = d->is_string() ? d->text : std::string();
+                if (is_draft07(doc) || dialect.find("draft/2020-12/schema") != std::string::npos ||
+                    dialect.find("draft/2019-09/schema") != std::string::npos)
+                    return;
+                warn(loc, "the dialect \"" + dialect + "\" is read as JSON Schema 2020-12");
+            }
+
+            // a reference as "key#fragment" or "key": the key is empty for the schema, the path of another file, or a
+            // URI
+            std::string canonical_ref(std::string_view r, const std::string& key, const std::string& id) const
+            {
+                const auto hash = r.find('#');
+                const auto base = r.substr(0, hash);
+                const auto fragment = hash == std::string_view::npos ? std::string_view() : r.substr(hash);
+                const auto dir = std::filesystem::path(key.empty() ? root_path_ : key).parent_path().generic_string();
+                auto target = std::string();
+                if (base.empty())
+                    target = key;
+                else if (is_absolute_uri(base))
+                {
+                    // a URI under the directory of the $id of the file names a file beside it
+                    const auto slash = id.rfind('/');
+                    if (base == id)
+                        target = key;
+                    else if (slash != std::string::npos && base.starts_with(std::string_view(id).substr(0, slash + 1)))
+                        target = file_key(dir, base.substr(slash + 1));
+                    else
+                        target = std::string(base);
+                }
+                else
+                    target = file_key(dir, base);
+                if (!target.empty() && target == root_path_) target.clear();
+                return target.empty() && fragment.empty() ? std::string("#") : target + std::string(fragment);
+            }
+
+            // rewrites the references of a file to their canonical form, and drops the keywords beside a reference
+            // of draft-07, which ignores them
+            void prepare(json& j, const std::string& key, const std::string& id, bool draft07, const std::string& loc)
+            {
+                if (j.is_object())
+                {
+                    if (auto* r = const_cast<json*>(j.find("$ref")); r != nullptr && r->is_string())
+                    {
+                        r->text = canonical_ref(r->text, key, id);
+                        if (draft07 && !is_pure_ref(j))
+                        {
+                            auto dropped = std::string();
+                            std::erase_if(j.members, [&](const auto& m) {
+                                if (m.first == "$ref" || is_metadata_key(m.first)) return false;
+                                dropped += (dropped.empty() ? "`" : ", `") + m.first + "`";
+                                return true;
+                            });
+                            warn(loc, "draft-07 ignores the keywords beside `$ref`: " + dropped);
+                        }
+                    }
+                    for (auto& [k, v] : j.members)
+                        if (k != "enum" && k != "const" && k != "default" && k != "examples")
+                            prepare(v, key, id, draft07, loc + "/" + pointer_token(k));
+                }
+                for (std::size_t i = 0; i < j.items.size(); ++i)
+                    prepare(j.items[i], key, id, draft07, loc + "/" + std::to_string(i));
+            }
+
+            static std::string absolute_id(const json& doc)
+            {
+                const auto* id = doc.find("$id");
+                if (id == nullptr || !id->is_string() || !is_absolute_uri(id->text)) return {};
+                return id->text.substr(0, id->text.find('#'));
+            }
+
+            // the schema of a key, read from its file when it is not read yet; nullptr with a warning
+            const json* document(const std::string& key, const std::string& r, const std::string& loc)
+            {
+                if (key.empty()) return &root_;
+                if (const auto it = documents_.find(key); it != documents_.end()) return it->second;
+                if (const auto it = ids_.find(key); it != ids_.end()) return documents_.at(it->second);
+                if (is_absolute_uri(key))
+                {
+                    warn(loc, "the reference \"" + r +
+                                  "\" is a URI that is not the `$id` of a schema read; it is read as any JSON value");
+                    return nullptr;
+                }
+                if (!opts_.load)
+                {
+                    warn(loc, "the reference \"" + r + "\" is not in this document and is read as any JSON value");
+                    return nullptr;
+                }
+                auto text = opts_.load(key);
+                if (!text)
+                {
+                    warn(loc, "the file \"" + key + "\" of the reference \"" + r +
+                                  "\" cannot be read; it is read as any JSON value");
+                    return nullptr;
+                }
+                auto doc = json();
+                try
+                {
+                    doc = to_json(yyjson::read(*text));
+                }
+                catch (const std::exception& e)
+                {
+                    warn(loc, "the file \"" + key + "\" is not valid JSON (" + e.what() +
+                                  "); the reference is read as any JSON value");
+                    return nullptr;
+                }
+                const auto* d = &files_.emplace_back(std::move(doc));
+                documents_[key] = d;
+                check_dialect(*d, key + "#");
+                const auto id = absolute_id(*d);
+                if (!id.empty()) ids_.emplace(id, key);
+                prepare(files_.back(), key, id, is_draft07(*d), key + "#");
+                return d;
+            }
+
+            // a type name for a schema of another file: its root, or an entry of its $defs
+            void name_target(const json* doc, const json* t, const std::string& key)
+            {
+                if (doc == &root_ || def_names_.contains(t)) return;
+                if (t == doc)
+                {
+                    const auto* title = doc->find("title");
+                    const auto stem = std::filesystem::path(key).filename().string();
+                    const auto titled = title != nullptr && title->is_string() && !pascal(title->text).empty();
+                    def_names_[t] =
+                        unique_type_name(titled ? pascal(title->text) : pascal(stem.substr(0, stem.find('.'))));
+                    return;
+                }
+                for (const auto* kw : {"$defs", "definitions"})
+                    if (const auto* d = doc->find(kw); d != nullptr && d->is_object())
+                        for (const auto& [k, v] : d->members)
+                            if (&v == t) name_def(t, k);
+            }
+
+            void name_def(const json* t, const std::string& k)
+            {
+                def_names_[t] = unique_type_name(k);
+                if (is_schema_name(k) && schema_names_.insert(k).second) def_keys_[t] = k;
+            }
+
             // the target of a $ref, or nullptr with a warning
             const json* resolve(const json& ref, const std::string& loc)
             {
@@ -766,19 +947,23 @@ namespace cpp_yyjson_codegen
                     return nullptr;
                 }
                 const auto& r = ref.text;
-                if (r.empty() || r[0] != '#')
-                {
-                    warn(loc, "the reference \"" + r + "\" is not in this document and is read as any JSON value");
-                    return nullptr;
-                }
-                const auto fragment = percent_decode(std::string_view(r).substr(1));
+                const auto hash = r.find('#');
+                const auto key = r.substr(0, hash);
+                const auto* doc = document(key, r, loc);
+                if (doc == nullptr) return nullptr;
+                const auto fragment =
+                    hash == std::string::npos ? std::string() : percent_decode(std::string_view(r).substr(hash + 1));
                 if (!fragment.empty() && fragment[0] != '/')
                 {
-                    if (const auto* a = find_anchor(root_, fragment)) return a;
+                    if (const auto* a = find_anchor(*doc, fragment))
+                    {
+                        name_target(doc, a, key);
+                        return a;
+                    }
                     warn(loc, "the anchor \"" + r + "\" is not found");
                     return nullptr;
                 }
-                const auto* cur = &root_;
+                const auto* cur = doc;
                 for (std::size_t pos = 1; pos <= fragment.size() && !fragment.empty();)
                 {
                     const auto end = std::min(fragment.find('/', pos), fragment.size());
@@ -802,6 +987,7 @@ namespace cpp_yyjson_codegen
                         return nullptr;
                     }
                 }
+                name_target(doc, cur, key);
                 return cur;
             }
 
@@ -810,6 +996,11 @@ namespace cpp_yyjson_codegen
                 if (j.is_object())
                 {
                     if (const auto* a = j.find("$anchor"); a != nullptr && a->is_string() && a->text == name) return &j;
+                    // draft-07 names a schema by a fragment in $id
+                    if (const auto* a = j.find("$id");
+                        a != nullptr && a->is_string() && a->text.size() == name.size() + 1 && a->text[0] == '#' &&
+                        std::string_view(a->text).substr(1) == name)
+                        return &j;
                     for (const auto& [k, v] : j.members)
                         if (k != "enum" && k != "const" && k != "default" && k != "examples")
                             if (const auto* f = find_anchor(v, name)) return f;
@@ -845,7 +1036,10 @@ namespace cpp_yyjson_codegen
                 if (!s->is_object()) return s;
                 const auto has_all = s->has("allOf");
                 const auto ref_siblings = s->has("$ref") && !is_pure_ref(*s);
-                if (!has_all && !ref_siblings) return s;
+                const auto* items = s->find("items");
+                const auto legacy =
+                    (items != nullptr && items->is_array()) || s->has("additionalItems") || s->has("dependencies");
+                if (!has_all && !ref_siblings && !legacy) return s;
                 if (const auto it = normalized_.find(s); it != normalized_.end()) return it->second;
                 if (!normalizing_.insert(s).second)
                 {
@@ -855,6 +1049,7 @@ namespace cpp_yyjson_codegen
                 auto base = json::object_of();
                 for (const auto& [k, v] : s->members)
                     if (k != "allOf" && k != "$ref") base.members.emplace_back(k, v);
+                upgrade(base);
                 const auto* all = s->find("allOf");
                 if (!s->has("$ref") && all != nullptr && all->is_array() && all->items.size() == 1 &&
                     is_pure_ref(all->items[0]) &&
@@ -882,6 +1077,40 @@ namespace cpp_yyjson_codegen
                 const auto* r = store(std::move(base));
                 normalizing_.erase(s);
                 return normalized_[s] = r;
+            }
+
+            // the keywords of draft-07 as their 2020-12 counterparts: `items` of an array and `additionalItems` as
+            // `prefixItems` and `items`, `dependencies` as `dependentRequired` and `dependentSchemas`
+            static void upgrade(json& s)
+            {
+                const auto erase = [&](std::string_view k) {
+                    std::erase_if(s.members, [&](const auto& m) { return m.first == k; });
+                };
+                if (const auto* items = s.find("items"); items != nullptr && items->is_array())
+                {
+                    auto prefix = *items;
+                    const auto* rest = s.find("additionalItems");
+                    auto more = rest != nullptr ? std::optional<json>(*rest) : std::nullopt;
+                    erase("items");
+                    erase("additionalItems");
+                    s.set("prefixItems", std::move(prefix));
+                    if (more) s.set("items", std::move(*more));
+                }
+                erase("additionalItems");  // ignored without an array of `items`
+                if (const auto* deps = s.find("dependencies"); deps != nullptr && deps->is_object())
+                {
+                    auto required = s.has("dependentRequired") ? *s.find("dependentRequired") : json::object_of();
+                    auto schemas = s.has("dependentSchemas") ? *s.find("dependentSchemas") : json::object_of();
+                    for (const auto& [k, v] : deps->members)
+                    {
+                        auto& to = v.is_array() ? required : schemas;
+                        if (!to.has(k)) to.set(k, v);
+                    }
+                    erase("dependencies");
+                    if (!required.members.empty()) s.set("dependentRequired", std::move(required));
+                    if (!schemas.members.empty()) s.set("dependentSchemas", std::move(schemas));
+                }
+                erase("dependencies");
             }
 
             static json all_of(const json& a, const json& b)
@@ -1130,7 +1359,7 @@ namespace cpp_yyjson_codegen
             {
                 for (const auto* k :
                      {"if", "then", "else", "not", "dependentSchemas", "unevaluatedProperties", "unevaluatedItems",
-                      "$dynamicRef", "$recursiveRef", "dependencies", "additionalItems"})
+                      "$dynamicRef", "$recursiveRef"})
                     if (s.has(k)) warn(loc, std::string("`") + k + "` is not supported and is ignored");
             }
 
@@ -1143,7 +1372,7 @@ namespace cpp_yyjson_codegen
                 {
                     const auto* t = resolve(*ref, loc);
                     if (t == nullptr) return {};
-                    return type_of(t, ref->text, hint);
+                    return type_of(t, ref->text.find('#') == std::string::npos ? ref->text + "#" : ref->text, hint);
                 }
                 if ((s->has("anyOf") && !required_groups_of(*s, "anyOf")) ||
                     (s->has("oneOf") && !required_groups_of(*s, "oneOf")))
@@ -2864,12 +3093,11 @@ namespace cpp_yyjson_codegen
                     fail("", std::string("the schema is not valid JSON: ") + e.what());
                 }
                 if (!root_.is_object() && !root_.is_bool()) fail("#", "the schema is not an object or a boolean");
-                if (const auto* d = root_.find("$schema"); d != nullptr)
-                {
-                    const auto dialect = d->is_string() ? d->text : std::string();
-                    if (dialect.find("draft/2020-12/schema") == std::string::npos)
-                        warn("#", "the dialect \"" + dialect + "\" is read as JSON Schema 2020-12");
-                }
+                check_dialect(root_, "#");
+                if (!opts_.path.empty())
+                    root_path_ = std::filesystem::path(opts_.path).lexically_normal().generic_string();
+                if (const auto id = absolute_id(root_); !id.empty()) ids_.emplace(id, "");
+                prepare(root_, "", absolute_id(root_), is_draft07(root_), "#");
                 const auto root_typed =
                     root_.is_bool() || (!is_pure_ref(root_) && std::ranges::any_of(root_.members, [](const auto& m) {
                         static const auto only = std::set<std::string_view>{
@@ -2893,8 +3121,7 @@ namespace cpp_yyjson_codegen
                     if (const auto* d = root_.find(kw); d != nullptr && d->is_object())
                         for (const auto& [k, v] : d->members)
                         {
-                            def_names_[&v] = unique_type_name(k);
-                            if (is_schema_name(k)) def_keys_[&v] = k;
+                            name_def(&v, k);
                             defs.emplace_back(std::string("#/") + kw + "/" + pointer_token(k), &v);
                         }
                 for (const auto& [loc, v] : defs) type_of(v, loc, def_names_.at(v));
