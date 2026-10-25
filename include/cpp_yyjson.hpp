@@ -13140,16 +13140,23 @@ namespace yyjson
             else
                 return false;
         }
+        // A node of the graph of `conversion_node`, which is marked when `yyjson::validate` checks something of a
+        // value of its type.
+        template <typename T>
+        struct validation_node;
         template <typename... Ts>
-        consteval bool any_validates_itself(type_list<conversion_node<write_conversion, Ts>...>)
+        auto validation_nodes(type_list<conversion_node<write_conversion, Ts>...>) -> type_list<validation_node<Ts>...>;
+        template <typename T>
+        struct validation_node
         {
-            return (validates_itself<Ts>() || ...);
-        }
+            using edges = decltype(validation_nodes(typename conversion_node<write_conversion, T>::edges{}));
+            static constexpr bool marked = validates_itself<T>();
+        };
         // Whether `yyjson::validate` checks something of a value of the type T or of the values in it, which the
         // types that T leads to tell, as for `yyjson::writable`.
         template <typename T>
         inline constexpr bool needs_validation =
-            any_validates_itself(closure_t<type_list<conversion_node<write_conversion, std::remove_cvref_t<T>>>>{});
+            graph_search(&graph_node<validation_node<std::remove_cvref_t<T>>>, nullptr);
 
         inline std::string index_token(std::size_t i) { return "/" + std::to_string(i); }
         inline std::string key_token(std::string_view key) { return "/" + bad_cast_access::escape(key); }
