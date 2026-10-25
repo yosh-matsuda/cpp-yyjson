@@ -81,6 +81,42 @@ TEST(Codegen, Comments)
     EXPECT_TRUE(has(r.code, "//   #/properties/b\n//     c: `enum` has the empty string;"));
 }
 
+TEST(Codegen, Examples)
+{
+    // an example that does not read as the C++ type would make json_schema<>() throw, so it becomes a comment
+    const auto r = generate(R"({
+        "type": "object",
+        "properties": {
+            "n": {"type": "integer", "minimum": 0, "examples": [1, -1, "a"]},
+            "tags": {"type": "array", "items": {"type": "string"}, "examples": ["a", ["b"]]},
+            "mode": {"enum": ["on", "off"], "examples": ["on", "maybe"]},
+            "id": {"type": "string", "pattern": "^a", "examples": ["ab"]},
+            "len": {"type": "string", "maxLength": 2, "examples": ["\u3042\u3044"]}
+        },
+        "required": ["n"],
+        "examples": [{"n": 1}, {"n": 1, "x": 2}]
+    })",
+                            {});
+    EXPECT_EQ(warnings(r),
+              "#/properties/n: 2 examples do not read as the C++ type; the comment `example:` has them\n"
+              "#/properties/tags: an example does not read as the C++ type; the comment `example:` has it\n"
+              "#/properties/mode: an example does not read as the C++ type; the comment `example:` has it\n"
+              "#/properties/id: an example may not read as the C++ type: the generator does not check `pattern` "
+              "and `contains`; the comment `example:` has it\n");
+    EXPECT_TRUE(has(r.code, "    // example: -1\n    // example: \"a\"\n    std::int64_t n;\n"));
+    EXPECT_TRUE(has(r.code, "    // example: \"a\"\n    std::optional<std::vector<std::string>> tags;\n"));
+    EXPECT_TRUE(has(r.code, "    // example: \"maybe\"\n    std::optional<RootMode> mode;\n"));
+    EXPECT_TRUE(has(r.code, "    // example: \"ab\"\n    std::optional<std::string> id;\n"));
+    EXPECT_TRUE(has(r.code, "yyjson::field(\"n\", yyjson::required, yyjson::minimum(0), yyjson::examples(R\"(1)\"))"));
+    EXPECT_TRUE(has(r.code, "yyjson::field(\"tags\", yyjson::examples(R\"([\"b\"])\"))"));
+    EXPECT_TRUE(has(r.code, "yyjson::field(\"mode\", yyjson::examples(R\"(\"on\")\"))"));
+    // max_length counts code points
+    EXPECT_TRUE(has(r.code, "yyjson::max_length(2), yyjson::examples("));
+    // the struct accepts unknown keys
+    EXPECT_TRUE(has(r.code, "yyjson::examples(R\"({\"n\":1})\", R\"({\"n\":1,\"x\":2})\")"));
+    EXPECT_TRUE(has(r.code, "// An `example:` comment holds an example"));
+}
+
 TEST(Codegen, AdditionalPropertiesExplicit)
 {
     // strict reading rejects unknown keys unless the struct says otherwise
