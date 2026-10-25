@@ -496,6 +496,33 @@ TEST(Codegen, TransparentRoot)
                               "    [[=yyjson::format(\"email\")]] std::string value;\n"));
 }
 
+TEST(Codegen, ReferenceRoot)
+{
+    // a root of only `$ref` gets the root name as an alias of the target
+    const auto r = generate(
+        R"({"$ref": "#/$defs/gen.Item",
+            "$defs": {"gen.Item": {"type": "object", "properties": {"x": {"type": "integer"}}}}})",
+        {});
+    EXPECT_EQ(warnings(r), "");
+    EXPECT_TRUE(has(r.code, "struct gen_Item\n{\n"));
+    EXPECT_TRUE(has(r.code, "using Root = gen_Item;\n"));
+
+    // the target already has the root name
+    const auto same = generate(
+        R"({"$ref": "#/$defs/Config",
+            "$defs": {"Config": {"type": "object", "properties": {"x": {"type": "integer"}}}}})",
+        {.root_name = "Config"});
+    EXPECT_TRUE(has(same.code, "struct Config\n{\n"));
+    EXPECT_FALSE(has(same.code, "using Config"));
+
+    // a constrained alias target makes a transparent root
+    const auto constrained =
+        generate(R"({"$ref": "#/$defs/N", "$defs": {"N": {"type": "integer", "minimum": 0}}})", {});
+    EXPECT_TRUE(has(constrained.code, "using N = std::int64_t;\n"));
+    EXPECT_TRUE(has(constrained.code, "struct Root\n{\n    N value;\n"));
+    EXPECT_TRUE(has(constrained.code, "yyjson::field(\"value\", yyjson::minimum(0))"));
+}
+
 TEST(Codegen, Errors)
 {
     const auto message = [](std::string_view schema, const options& opts) {

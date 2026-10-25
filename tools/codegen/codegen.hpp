@@ -3106,13 +3106,16 @@ namespace cpp_yyjson_codegen
                         return !only.contains(m.first);
                     }));
                 auto root_name = std::string();
-                if (root_typed)
+                if (root_.is_object())
                 {
                     const auto* title = root_.find("title");
                     root_name = !opts_.root_name.empty() ? opts_.root_name
                                 : title != nullptr && title->is_string() && !pascal(title->text).empty()
                                     ? sanitize(pascal(title->text))
                                     : std::string("Root");
+                }
+                if (root_typed)
+                {
                     type_names_.insert(root_name);
                     def_names_[&root_] = root_name;
                 }
@@ -3125,7 +3128,21 @@ namespace cpp_yyjson_codegen
                             defs.emplace_back(std::string("#/") + kw + "/" + pointer_token(k), &v);
                         }
                 for (const auto& [loc, v] : defs) type_of(v, loc, def_names_.at(v));
-                if (root_typed) type_of(&root_, "#", root_name);
+                if (root_typed)
+                    type_of(&root_, "#", root_name);
+                else if (is_pure_ref(root_))
+                {
+                    // a root that only refers to another schema has the type of that schema, under the root name too
+                    const auto* target = resolve(*root_.find("$ref"), "#");
+                    const auto it = def_names_.find(target);
+                    if (target != &root_ && (it == def_names_.end() || it->second != root_name))
+                    {
+                        const auto name = type_names_.contains(root_name) ? unique_type_name(root_name) : root_name;
+                        type_names_.insert(name);
+                        def_names_[&root_] = name;
+                        type_named(&root_, "#");
+                    }
+                }
                 if (decls_.empty()) warn("#", "the schema defines no type");
                 auto code = render();
                 if (opts_.strict && !warnings_.empty()) throw error(warnings_);
