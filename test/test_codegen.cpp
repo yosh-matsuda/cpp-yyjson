@@ -135,10 +135,13 @@ TEST(Codegen, Recursion)
                 "properties": {
                     "children": {"type": "array", "items": {"$ref": "#/$defs/Node"}},
                     "next": {"$ref": "#/$defs/Node"},
-                    "parent": {"anyOf": [{"$ref": "#/$defs/Node"}, {"type": "null"}]}
+                    "parent": {"anyOf": [{"$ref": "#/$defs/Node"}, {"type": "null"}]},
+                    "link": {"anyOf": [{"type": "null"}, {"type": "string"}, {"$ref": "#/$defs/Node"}]},
+                    "shape": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/Leaf"}, {"$ref": "#/$defs/Node"}]}
                 },
                 "required": ["parent"]
-            }
+            },
+            "Leaf": {"type": "object", "properties": {"kind": {"const": "leaf"}}, "required": ["kind"]}
         }
     })",
                             {});
@@ -148,9 +151,27 @@ TEST(Codegen, Recursion)
     // only std::optional is left out when empty, so a field that may be absent keeps it
     EXPECT_TRUE(has(r.code, "    std::optional<std::unique_ptr<Node>> next;\n"));
     EXPECT_TRUE(has(r.code, "    std::unique_ptr<Node> parent;\n"));
+    // an empty std::unique_ptr is null, so the variant inside it has no std::monostate
+    EXPECT_TRUE(has(r.code, "    std::optional<std::unique_ptr<std::variant<std::string, Node>>> link;\n"));
+    EXPECT_TRUE(has(r.code, "    std::optional<std::unique_ptr<std::variant<Leaf, Node>>> shape;\n"));
     EXPECT_TRUE(has(r.code, "yyjson::field(\"parent\", yyjson::required)"));
-    EXPECT_FALSE(has(r.code, "operator=="));
+    EXPECT_FALSE(has(r.code, "operator==(const Node&"));
     EXPECT_FALSE(has(r.code, "struct Root"));
+}
+
+TEST(Codegen, RecursionThroughTaggedVariant)
+{
+    const auto r = generate(R"({"$ref": "#/$defs/Node", "$defs": {
+        "Node": {"type": "object", "required": ["kind"], "properties": {"kind": {"const": "node"},
+                 "shape": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/Leaf"}, {"$ref": "#/$defs/Node"}]}}},
+        "Leaf": {"type": "object", "properties": {"kind": {"const": "leaf"}}, "required": ["kind"]}
+    }})",
+                            {});
+    EXPECT_EQ(warnings(r), "");
+    EXPECT_TRUE(has(r.code, "    std::optional<std::unique_ptr<std::variant<Leaf, Node>>> shape;\n"));
+    EXPECT_TRUE(has(r.code,
+                    "yyjson::annotations<std::variant<Leaf, Node>> = yyjson::annotate(\n"
+                    "    yyjson::internal_tag(\"kind\", {\"leaf\", \"node\"}));"));
 }
 
 TEST(Codegen, RecursionThroughKeywords)

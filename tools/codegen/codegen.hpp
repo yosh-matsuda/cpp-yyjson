@@ -2835,7 +2835,25 @@ namespace cpp_yyjson_codegen
             {
                 auto t = f.type;
                 if (t.k == tk::optional) t = t.args[0];
-                if (is_nullable(t)) t = t.args[1];
+                // an empty std::unique_ptr reads and writes null, so a variant does not need std::monostate for it
+                if (t.k == tk::variant && !t.args.empty() && t.args[0].k == tk::monostate)
+                {
+                    auto v = t;
+                    v.args.erase(v.args.begin());
+                    if (v.tagged)
+                    {
+                        const auto it =
+                            std::ranges::find_if(notes_, [&](const auto& n) { return spell(n.type) == spell(t); });
+                        if (it != notes_.end())
+                        {
+                            auto n = *it;
+                            n.type = v;
+                            n.alias = -1;
+                            notes_.push_back(std::move(n));
+                        }
+                    }
+                    t = v.args.size() == 1 && !v.tagged ? v.args[0] : std::move(v);
+                }
                 // only std::optional is left out when empty: an empty std::unique_ptr is written as null
                 f.type = make(tk::pointer, {std::move(t)});
                 if (!f.required) f.type = make(tk::optional, {std::move(f.type)});
