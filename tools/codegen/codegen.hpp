@@ -1147,10 +1147,30 @@ namespace cpp_yyjson_codegen
                                 if (is_metadata_key(k) && !base.has(k)) base.set(k, v);
                         }
                     }
-                if (!s->has("$ref") && all != nullptr && all->is_array() && parts.size() == 1 &&
-                    is_pure_ref(*parts[0].first) && adds_nothing(base))
+                // {"allOf": [{"$ref": ...}]} with metadata only, or with a `const` that the referred schema already
+                // fixes, as an enumeration of one value: keep the reference to the named type
+                const auto keeps_ref = [&] {
+                    if (s->has("$ref") || all == nullptr || !all->is_array() || parts.size() != 1 ||
+                        !is_pure_ref(*parts[0].first))
+                        return false;
+                    const auto* c = base.find("const");
+                    if (c == nullptr) return adds_nothing(base);
+                    auto rest = base;
+                    std::erase_if(rest.members, [](const auto& m) { return m.first == "const"; });
+                    if (!adds_nothing(rest)) return false;
+                    const auto* t = resolve(*parts[0].first->find("$ref"), parts[0].second);
+                    if (t == nullptr) return false;
+                    const auto* n = normalize_full(t, parts[0].second);
+                    const auto* e = n->is_object() ? n->find("enum") : nullptr;
+                    const auto* k = n->is_object() ? n->find("const") : nullptr;
+                    if (!(k != nullptr && equal(*k, *c)) &&
+                        !(e != nullptr && e->is_array() && e->items.size() == 1 && equal(e->items[0], *c)))
+                        return false;
+                    base = std::move(rest);
+                    return true;
+                };
+                if (keeps_ref())
                 {
-                    // {"allOf": [{"$ref": ...}]} with metadata only: keep the reference to the named type
                     warn_unsupported(base, loc);
                     std::erase_if(base.members, [](const auto& m) { return is_ignored_key(m.first); });
                     base.set("$ref", *parts[0].first->find("$ref"));
@@ -2108,6 +2128,8 @@ namespace cpp_yyjson_codegen
                 const auto* p = props != nullptr ? props->find(key) : nullptr;
                 if (p == nullptr) return nullptr;
                 const auto* n = normalize_full(p, loc);
+                // a reference that normalizing keeps, beside metadata or a `const` that it fixes
+                if (is_pure_ref(*n)) n = normalize_full(n, loc);
                 if (!n->is_object()) return nullptr;
                 if (const auto* c = n->find("const"); c != nullptr && c->is_string()) return c;
                 if (const auto* e = n->find("enum");

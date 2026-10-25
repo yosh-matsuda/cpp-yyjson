@@ -249,6 +249,29 @@ TEST(Codegen, Variants)
                     "    yyjson::internal_tag(\"kind\", {\"circle\", \"square\"}));"));
 }
 
+TEST(Codegen, ConstOfReferencedEnum)
+{
+    // a `const` beside a reference to an enumeration of the same one value keeps the enumeration, also as a tag
+    const auto r = generate(R"({
+        "type": "object",
+        "properties": {
+            "shape": {"oneOf": [
+                {"type": "object", "required": ["kind"],
+                 "properties": {"kind": {"const": "circle", "allOf": [{"$ref": "#/$defs/CircleKind"}]}}},
+                {"type": "object", "properties": {"kind": {"const": "box"}}, "required": ["kind"]}
+            ]},
+            "other": {"const": "x", "allOf": [{"$ref": "#/$defs/Two"}]}
+        },
+        "$defs": {"CircleKind": {"enum": ["circle"]}, "Two": {"enum": ["x", "y"]}}
+    })",
+                            {});
+    EXPECT_EQ(warnings(r), "");
+    EXPECT_TRUE(has(r.code, "    CircleKind kind;\n"));
+    EXPECT_TRUE(has(r.code, "yyjson::internal_tag(\"kind\", {\"circle\", \"box\"})"));
+    // an enumeration of more values does not fix the value
+    EXPECT_TRUE(has(r.code, "yyjson::field(\"other\", yyjson::const_(\"x\"))"));
+}
+
 TEST(Codegen, Enums)
 {
     auto many = std::string(R"({"type": "object", "properties": {"e": {"enum": [)");
