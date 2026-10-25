@@ -1113,8 +1113,11 @@ namespace cpp_yyjson_codegen
                 erase("dependencies");
             }
 
+            // both schemas; one of them when they are equal, so that a schema repeated beside a reference to a
+            // recursive type does not inline the type again at every level
             static json all_of(const json& a, const json& b)
             {
+                if (equal(a, b)) return a;
                 auto j = json::object_of();
                 j.set("allOf", json::array_of({a, b}));
                 return j;
