@@ -154,6 +154,40 @@ TEST(Codegen, Enums)
     EXPECT_FALSE(has(generate(many, {.cpp26 = true}).code, "enum_range"));
 }
 
+TEST(Codegen, ManyFields)
+{
+    const auto schema = [](int n) {
+        auto s = std::string(R"({"title": "T", "type": "object", "properties": {)");
+        for (auto i = 0; i < n; ++i)
+            s += (i == 0 ? "\"p-" : ", \"p-") + std::to_string(i) + "\": {\"type\": \"integer\"}";
+        return s + "}}";
+    };
+    // the reflection of C++20 takes up to 100 fields
+    const auto r = generate(schema(101), {});
+    EXPECT_EQ(warnings(r), "");
+    EXPECT_TRUE(has(r.code, "// A struct of more than 100 fields is registered with VISITABLE_STRUCT"));
+    EXPECT_TRUE(has(r.code, "    yyjson::field(\"p_100\", yyjson::rename(\"p-100\")));\n\n"
+                            "VISITABLE_STRUCT(T,\n                 p_0,\n                 p_1,\n"));
+    EXPECT_TRUE(has(r.code, "                 p_100);\n"));
+    EXPECT_FALSE(has(generate(schema(100), {}).code, "VISITABLE_STRUCT"));
+    EXPECT_FALSE(has(generate(schema(101), {.cpp26 = true}).code, "VISITABLE_STRUCT"));
+    EXPECT_TRUE(has(generate(schema(101), {.ns = "a::b"}).code, "VISITABLE_STRUCT(a::b::T,\n"));
+
+    // VISITABLE_STRUCT takes no yyjson::extra_keys
+    const auto kept = generate(schema(99), {.keep_unknown_keys = true});
+    EXPECT_EQ(warnings(kept), "");
+    EXPECT_TRUE(has(kept.code, " extra;"));
+    const auto dropped = generate(schema(100), {.keep_unknown_keys = true});
+    EXPECT_EQ(warnings(dropped), "#: a struct of more than 100 fields has no field of yyjson::extra_keys without "
+                                 "--cpp26; the keys that name no property are dropped\n");
+    EXPECT_FALSE(has(dropped.code, " extra;"));
+    EXPECT_TRUE(has(generate(schema(100), {.cpp26 = true, .keep_unknown_keys = true}).code, "yyjson::extra_keys"));
+
+    EXPECT_FALSE(has(generate(schema(1365), {}).code, "p_1365"));
+    EXPECT_THROW(generate(schema(1366), {}), cpp_yyjson_codegen::error);
+    EXPECT_FALSE(has(generate(schema(1366), {.cpp26 = true}).code, "VISITABLE_STRUCT"));
+}
+
 TEST(Codegen, StringsWithNul)
 {
     // a string literal converted to std::string_view or std::string ends at NUL, so these carry their length

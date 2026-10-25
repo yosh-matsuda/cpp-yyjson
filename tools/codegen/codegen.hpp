@@ -621,6 +621,10 @@ namespace cpp_yyjson_codegen
             std::vector<std::vector<std::string>> groups{};
         };
 
+        // the fields of a struct that the reflection of C++20 takes, and that VISITABLE_STRUCT takes
+        inline constexpr std::size_t max_reflected_fields = 100;
+        inline constexpr std::size_t max_visitable_fields = 1365;
+
         struct decl
         {
             enum class kind_t : std::uint8_t
@@ -1571,6 +1575,18 @@ namespace cpp_yyjson_codegen
                                                            .loc = loc + "/" + kw});
                         groups.push_back(std::move(*g));
                     }
+                if (!opts_.cpp26 && fields.size() > max_visitable_fields)
+                    fail(loc, "a struct of more than " + std::to_string(max_visitable_fields) +
+                                  " properties needs --cpp26: VISITABLE_STRUCT takes no more");
+                if (extra && !opts_.cpp26 && fields.size() >= max_reflected_fields)
+                {
+                    // the field would make a struct that VISITABLE_STRUCT registers, which takes no
+                    // yyjson::extra_keys
+                    warn(loc, "a struct of more than " + std::to_string(max_reflected_fields) +
+                                  " fields has no field of yyjson::extra_keys without --cpp26; the keys that name no "
+                                  "property are dropped");
+                    extra.reset();
+                }
                 if (extra)
                 {
                     auto f = field{.type = make(tk::map, {std::move(extra->t)}), .loc = loc + "/additionalProperties"};
@@ -3001,6 +3017,13 @@ namespace cpp_yyjson_codegen
                         auto all = items;
                         for (auto& s : field_specs) all.push_back(std::move(s));
                         if (!all.empty()) after += "\n" + annotation_spec(q + d.name, all);
+                        // after the annotations, which the macro needs to see
+                        if (d.fields.size() > max_reflected_fields)
+                        {
+                            after += "\nVISITABLE_STRUCT(" + q + d.name;
+                            for (const auto& f : d.fields) after += ",\n                 " + f.member;
+                            after += ");\n";
+                        }
                     }
                 }
 
@@ -3058,6 +3081,12 @@ namespace cpp_yyjson_codegen
                     out +=
                         "//\n// A std::optional field with a `default:` comment is std::nullopt when the key is "
                         "missing; the\n// program applies the default of the comment.\n";
+                if (!opts_.cpp26 && std::ranges::any_of(decls_, [](const decl& d) {
+                        return d.kind == decl::kind_t::structure && d.fields.size() > max_reflected_fields;
+                    }))
+                    out += "//\n// A struct of more than " + std::to_string(max_reflected_fields) +
+                           " fields is registered with VISITABLE_STRUCT: the reflection of C++20\n// takes no "
+                           "more.\n";
                 if (uses_pattern_)
                     out +=
                         "//\n// `yyjson::pattern` needs a specialization of `yyjson::pattern_matcher<>` in the "
