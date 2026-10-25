@@ -3133,10 +3133,12 @@ namespace yyjson
 
         // The nodes of a graph of types that are reachable from some of them, each node `N` leading to those in
         // the `type_list` `typename N::edges`.  The nodes are visited once each, in a left fold over the edges
-        // that carries the visited nodes along, so that a graph whose paths branch and join again takes as many
-        // steps as it has edges, and the depth of the instantiations is that of the walk.  The edges of a node are
-        // folded in a single instantiation, which keeps a struct with many fields from nesting one level deeper
-        // per field, and without resolving a call to a function, which takes much more of the compiler's stack.
+        // that carries the visited nodes along, and the depth of the instantiations is that of the walk.  The edges
+        // of a node are folded in a single instantiation, which keeps a struct with many fields from nesting one
+        // level deeper per field, and without resolving a call to a function, which takes much more of the
+        // compiler's stack.  Each visit looks for the node among those visited and makes a longer list of them,
+        // which takes time and memory quadratic in the number of nodes: the closure only lists the types for a
+        // static assertion to name one, and `graph_search` below answers the questions about a graph.
         template <typename Visited, typename N, bool Seen = type_list_has<N, Visited>>
         struct closure_visit
         {
@@ -3213,18 +3215,108 @@ namespace yyjson
             using edges = decltype(edges_of());
         };
 
+        // A graph of types that a constant expression walks, in which the node of a type `N` that has the
+        // `type_list` `typename N::edges` is the function `graph_node<N>`, identified by its address, and is marked
+        // if `N::marked` is true.  Each node is instantiated once, however many walks pass through it, and a walk
+        // keeps the nodes that it visited in a hash table of the names of their types, so that it takes as many
+        // steps as the part of the graph that it visits has edges.  The closures above were folded again for every
+        // type that a question was asked about, which made a struct of a few hundred fields take minutes to compile.
+        struct graph_node_info;
+        using graph_node_fn = graph_node_info (*)() noexcept;
+        struct graph_node_info
+        {
+            const graph_node_fn* edges;
+            std::size_t size;
+            std::uint64_t hash;
+            bool marked;
+        };
+        template <typename N>
+        constexpr graph_node_info graph_node() noexcept;
+        // The array has a type that does not depend on its initializer, which can lead back to this array, and an
+        // element more than the nodes, which keeps it from being empty.
+        template <typename Edges>
+        struct graph_edges;
+        template <typename... Ns>
+        struct graph_edges<type_list<Ns...>>
+        {
+            static constexpr std::size_t size = sizeof...(Ns);
+            static constexpr graph_node_fn nodes[sizeof...(Ns) + 1] = {&graph_node<Ns>..., nullptr};
+        };
+        template <typename T>
+        inline constexpr std::uint64_t type_name_hash = [] {
+            auto hash = std::uint64_t{14695981039346656037ULL};
+            for (const auto c : type_name<T>()) hash = (hash ^ static_cast<unsigned char>(c)) * 1099511628211ULL;
+            return hash;
+        }();
+        template <typename N>
+        constexpr graph_node_info graph_node() noexcept
+        {
+            constexpr bool marked = [] {
+                if constexpr (requires { N::marked; })
+                    return bool{N::marked};
+                else
+                    return false;
+            }();
+            using edges = graph_edges<typename N::edges>;
+            return {edges::nodes, edges::size, type_name_hash<N>, marked};
+        }
+
+        // Whether the walk from the node `from` reaches `target` along one edge or more, or a marked node along none
+        // or more.
+        constexpr bool graph_search(graph_node_fn from, graph_node_fn target)
+        {
+            // open addressing, at most half full
+            auto visited = std::vector<graph_node_fn>(64, nullptr);
+            auto count = std::size_t{0};
+            const auto insert = [&](graph_node_fn f) {
+                const auto mask = visited.size() - 1;
+                for (auto k = static_cast<std::size_t>(f().hash) & mask;; k = (k + 1) & mask)
+                {
+                    if (visited[k] == f) return false;
+                    if (visited[k] == nullptr)
+                    {
+                        visited[k] = f;
+                        ++count;
+                        return true;
+                    }
+                }
+            };
+            auto stack = std::vector<graph_node_fn>{from};
+            while (!stack.empty())
+            {
+                const auto node = stack.back()();
+                stack.pop_back();
+                if (node.marked) return true;
+                for (std::size_t i = 0; i < node.size; ++i)
+                {
+                    const auto next = node.edges[i];
+                    if (next == target) return true;
+                    if (2 * (count + 1) > visited.size())
+                    {
+                        auto old = std::exchange(visited, std::vector<graph_node_fn>(2 * visited.size(), nullptr));
+                        count = 0;
+                        for (const auto f : old)
+                            if (f != nullptr) insert(f);
+                    }
+                    if (insert(next)) stack.push_back(next);
+                }
+            }
+            return false;
+        }
+
         // Whether a value of type T can hold a value of type `Target`, or is one.
         template <typename Target, typename T>
-        constexpr bool type_reaches = type_list_has<type_node<std::remove_cvref_t<Target>>,
-                                                    closure_t<type_list<type_node<std::remove_cvref_t<T>>>>>;
+        constexpr bool type_reaches =
+            std::is_same_v<std::remove_cvref_t<Target>, std::remove_cvref_t<T>> ||
+            graph_search(&graph_node<type_node<std::remove_cvref_t<T>>>,
+                         &graph_node<type_node<std::remove_cvref_t<Target>>>);
 
         // A class that holds a value of its own type, through its fields.  Whether it can be read or written is not
         // checked through its fields, which would depend on itself.
         template <typename T>
         concept recursive_type =
-            std::is_class_v<std::remove_cvref_t<T>> &&
-            type_list_has<type_node<std::remove_cvref_t<T>>,
-                          closure_t<typename type_node<std::remove_cvref_t<T>>::edges>>;
+            std::is_class_v<std::remove_cvref_t<T>> && graph_search(&graph_node<type_node<std::remove_cvref_t<T>>>,
+                                                                    &graph_node<type_node<std::remove_cvref_t<T>>>);
 
         // The values of recursive types that are being read on this thread, one inside the other.
         inline constinit thread_local std::size_t recursion_depth = 0;
@@ -11301,12 +11393,15 @@ namespace yyjson
                 std::type_identity<type_list<>>, read_type_edges<T>>::type;
         };
 
+        // A value of T read from JSON can hold a value of type U.
+        template <typename U, typename T>
+        constexpr bool reads_type =
+            std::is_same_v<T, U> || graph_search(&graph_node<read_type_node<T>>, &graph_node<read_type_node<U>>);
+
         // A value of T read from JSON can hold a string that points into the JSON or into a document, which
         // `yyjson::read<T>` frees before it returns.
         template <typename T>
-        concept reads_borrowed_strings =
-            type_list_has<read_type_node<std::string_view>, closure_t<type_list<read_type_node<T>>>> ||
-            type_list_has<read_type_node<const char*>, closure_t<type_list<read_type_node<T>>>>;
+        concept reads_borrowed_strings = reads_type<std::string_view, T> || reads_type<const char*, T>;
         template <typename T>
         constexpr void assert_reads_owned_strings() noexcept
         {
@@ -11314,9 +11409,8 @@ namespace yyjson
                           "T cannot hold a std::string_view or a const char*, which would point into JSON text or "
                           "a document that does not outlive the call: use std::string, or cast a document that the "
                           "program keeps");
-            static_assert(
-                !type_list_has<read_type_node<json_view>, closure_t<type_list<read_type_node<std::remove_cv_t<T>>>>>,
-                "T cannot hold a yyjson::json_view, which is valid only while the caster that takes it runs");
+            static_assert(!reads_type<json_view, std::remove_cv_t<T>>,
+                          "T cannot hold a yyjson::json_view, which is valid only while the caster that takes it runs");
         }
 
         // `caster<T>` names `from_json` but no form of it can be called, as when the translator form is overloaded
@@ -11342,25 +11436,34 @@ namespace yyjson
         {
             [[maybe_unused]] constexpr auto all = (assert_from_json_usable<Ts>() && ...);
         }
+        // A node of the graph of `read_type_node` that is marked when a caster names a `from_json` that cannot be
+        // called.
+        template <typename T>
+        struct usable_read_type_node;
+        template <typename... Us>
+        auto usable_read_type_nodes(type_list<read_type_node<Us>...>) -> type_list<usable_read_type_node<Us>...>;
+        template <typename T>
+        struct usable_read_type_node
+        {
+            using edges = decltype(usable_read_type_nodes(typename read_type_node<T>::edges{}));
+            static constexpr bool marked = from_json_unusable<T>;
+        };
         // Every type that is read for a value of T, which a `caster` of the user reads or this library does, has a
         // `from_json` that can be called if its caster names one.
         template <typename T>
+        constexpr bool reads_with_usable_from_json = !graph_search(&graph_node<usable_read_type_node<T>>, nullptr);
+        template <typename T>
         constexpr void assert_reads_through_casters() noexcept
         {
-            assert_from_json_usable(closure_t<type_list<read_type_node<std::remove_cv_t<T>>>>{});
-        }
-
-        template <typename... Ts>
-        constexpr bool reads_with_usable_from_json(type_list<read_type_node<Ts>...>) noexcept
-        {
-            return (!from_json_unusable<Ts> && ...);
+            // the types are listed only to name the one that fails
+            if constexpr (!reads_with_usable_from_json<std::remove_cv_t<T>>)
+                assert_from_json_usable(closure_t<type_list<read_type_node<std::remove_cv_t<T>>>>{});
         }
         // A value of T read from JSON passes the static assertions of `yyjson::read<T>`.
         template <typename T>
         concept reads_owned_values =
             (!reads_borrowed_strings<T>) &&
-            (!type_list_has<read_type_node<json_view>, closure_t<type_list<read_type_node<T>>>>) &&
-            reads_with_usable_from_json(closure_t<type_list<read_type_node<T>>>{});
+            (!reads_type<json_view, T>) && reads_with_usable_from_json<T>;
     }  // namespace detail
 
     // The types that a compile error names when `yyjson::read<T>`, `yyjson::read_into`, `yyjson::merge_into` or
@@ -11549,15 +11652,6 @@ namespace yyjson
                 return type_list<>{};
         }
 
-        // A node of the graph in which a type leads to its fields and elements that are converted with it.
-        template <typename P, typename T>
-        struct conversion_node
-        {
-            template <typename... Labels, typename... Cs>
-            static auto nodes(type_list<cause_child<Labels, Cs>...>)
-                -> type_list<conversion_node<P, std::remove_cvref_t<Cs>>...>;
-            using edges = decltype(nodes(cause_children<P, T>()));
-        };
         template <typename P, typename T>
         consteval bool converts_if_recursive()
         {
@@ -11566,16 +11660,22 @@ namespace yyjson
             else
                 return true;
         }
-        template <typename P, typename... Ts>
-        consteval bool converts_recursive_nodes(type_list<conversion_node<P, Ts>...>)
+        // A node of the graph in which a type leads to its fields and elements that are converted with it, and
+        // which is marked when the type is recursive and cannot be converted.
+        template <typename P, typename T>
+        struct conversion_node
         {
-            return (converts_if_recursive<P, Ts>() && ...);
-        }
+            template <typename... Labels, typename... Cs>
+            static auto nodes(type_list<cause_child<Labels, Cs>...>)
+                -> type_list<conversion_node<P, std::remove_cvref_t<Cs>>...>;
+            using edges = decltype(nodes(cause_children<P, T>()));
+            static constexpr bool marked = !converts_if_recursive<P, T>();
+        };
         // The fields of a recursive type are not checked where the type is, which would depend on itself.  They
         // are checked once for every recursive type that T leads to, which finds every field on a cycle, since
         // every cycle of types passes through one.
         template <typename P, typename T>
-        concept converts_recursive_types = converts_recursive_nodes<P>(closure_t<type_list<conversion_node<P, T>>>{});
+        concept converts_recursive_types = !graph_search(&graph_node<conversion_node<P, T>>, nullptr);
 
         // `yyjson::castable<yyjson::reader::const_value_ref, T>` that also checks the fields of recursive types.
         // Those are checked first: a type that holds a recursive type which cannot be converted can make the
@@ -17622,12 +17722,12 @@ namespace yyjson
         public:
             // Whether reading T calls `with_document` for each element of a range or a map: then a document of the
             // whole text is cheaper.  The nodes follow `read_value`, `read_object`, `read_array_into` and
-            // `read_field`, and `Loop` is whether the value is an element.  A node is `local` if it calls
+            // `read_field`, and `Loop` is whether the value is an element.  A node is `marked` if it calls
             // `with_document` itself, and T reads documents in a loop if a node that it reaches is.
             template <bool Local, typename Edges = yyjson::detail::type_list<>>
             struct node
             {
-                static constexpr bool local = Local;
+                static constexpr bool marked = Local;
                 using edges = Edges;
             };
             template <typename T, bool Loop>
@@ -17638,11 +17738,10 @@ namespace yyjson
             struct fields_node;
 
             // The object, the array and the fields that a value reads in its own place are parts joined into the
-            // node of the value, not nodes of their own: the walk, whose cost grows with the square of the nodes,
-            // then takes about one node for each type.  A field read in place leads to the node of its type, which
-            // reads the same fields.  The parts are joined by a class rather than by a call: the call would look
-            // up its arguments, and MSVC then instantiates the nodes in their edges, which can be the node whose
-            // edges are being computed.
+            // node of the value, not nodes of their own, so that the walk takes about one node for each type.  A
+            // field read in place leads to the node of its type, which reads the same fields.  The parts are joined
+            // by a class rather than by a call: the call would look up its arguments, and MSVC then instantiates the
+            // nodes in their edges, which can be the node whose edges are being computed.
             template <typename Joined, typename... Parts>
             struct join
             {
@@ -17861,16 +17960,10 @@ namespace yyjson
             {
             };
 
-            template <typename... Ns>
-            static consteval bool any_local(yyjson::detail::type_list<Ns...>)
-            {
-                return (Ns::local || ...);
-            }
-
         public:
             template <typename T>
             static constexpr bool reads_documents_in_loop =
-                any_local(yyjson::detail::closure_t<yyjson::detail::type_list<value_node<T, false>>>{});
+                yyjson::detail::graph_search(&yyjson::detail::graph_node<value_node<T, false>>, nullptr);
 
             template <typename T>
             T read_root()
