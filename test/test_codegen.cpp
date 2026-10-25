@@ -288,6 +288,56 @@ TEST(Codegen, RequiredGroups)
     EXPECT_EQ(warnings(r), "#/properties/partial/oneOf/0: `not` is not supported and is ignored\n");
 }
 
+TEST(Codegen, ExtraKeys)
+{
+    // `additionalProperties` with a schema beside `properties`: a map of the other keys, by the value schema
+    const auto r = generate(R"({
+        "type": "object",
+        "properties": {"name": {"type": "string"}, "extra": {"type": "integer"}},
+        "additionalProperties": {"type": "integer", "minimum": 0}
+    })",
+                            {});
+    EXPECT_EQ(warnings(r), "");
+    EXPECT_TRUE(
+        has(r.code, "    std::optional<std::int64_t> extra;\n    std::map<std::string, std::int64_t> extra_2;\n"));
+    EXPECT_TRUE(has(r.code, "    yyjson::field(\"extra_2\", yyjson::extra_keys, "
+                            "yyjson::additional_properties(yyjson::minimum(0))));"));
+    EXPECT_TRUE(has(r.code, "// A field with `yyjson::extra_keys` holds the keys of the object"));
+
+    // `patternProperties`: the other keys as any JSON value, with a warning
+    const auto p = generate(R"({
+        "type": "object",
+        "properties": {"a": {"type": "string"}},
+        "patternProperties": {"^x-": {"type": "string"}},
+        "additionalProperties": false
+    })",
+                            {});
+    EXPECT_EQ(warnings(p),
+              "#/patternProperties: `patternProperties` is not supported; the keys that name no property are kept "
+              "in the field of yyjson::extra_keys as any JSON value, and `additionalProperties` is not checked\n");
+    EXPECT_TRUE(has(p.code, "    std::map<std::string, yyjson::value> extra;\n"));
+    EXPECT_TRUE(
+        has(p.code, "    yyjson::additional_properties(true),\n    yyjson::field(\"extra\", yyjson::extra_keys));"));
+
+    // --keep-unknown-keys: every struct that accepts other keys keeps them
+    const auto schema = R"({
+        "type": "object",
+        "properties": {"open": {"$ref": "#/$defs/Open"}, "closed": {"$ref": "#/$defs/Closed"}},
+        "$defs": {
+            "Open": {"type": "object", "properties": {"a": {"type": "integer"}}},
+            "Closed": {"type": "object", "properties": {"b": {"type": "integer"}}, "additionalProperties": false}
+        }
+    })";
+    EXPECT_FALSE(has(generate(schema, {}).code, "extra"));
+    const auto k = generate(schema, {.keep_unknown_keys = true}).code;
+    EXPECT_TRUE(
+        has(k, "struct Open\n{\n    std::optional<std::int64_t> a;\n"
+               "    std::map<std::string, yyjson::value> extra;\n"));
+    EXPECT_TRUE(has(k, "struct Closed\n{\n    std::optional<std::int64_t> b;\n\n    bool operator=="));
+    EXPECT_TRUE(has(k, "struct Root\n{\n    std::optional<Open> open;\n    std::optional<Closed> closed;\n"
+                       "    std::map<std::string, yyjson::value> extra;\n"));
+}
+
 TEST(Codegen, Cpp26)
 {
     const auto r = generate(R"({"title": "T", "type": "object", "properties": {"a": {"type": "integer", "maximum": 9}},

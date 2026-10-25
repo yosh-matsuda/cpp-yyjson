@@ -39,6 +39,9 @@ namespace cpp_yyjson_codegen
         // a field with a default is std::optional<T>, std::nullopt for a missing key, instead of T with the default as
         // its initializer and yyjson::omit_default
         bool optional_defaults = false;
+        // a struct that accepts any other key gets `std::map<std::string, yyjson::value> extra` with
+        // yyjson::extra_keys, which keeps the keys that name no property
+        bool keep_unknown_keys = false;
         std::string root_name{};  // name of the root type; default: the title, or "Root"
         std::string source{};     // name of the schema in the header comment
     };
@@ -595,6 +598,7 @@ namespace cpp_yyjson_codegen
             ctype type{};
             settings set{};
             bool required = false, omit_default = false;
+            bool extra = false;          // yyjson::extra_keys: a map of the keys that name no property; no key
             std::string init{};          // " = x" or "{...}"
             std::string default_note{};  // the default of a std::optional field, for a comment
             metadata meta{};
@@ -1263,26 +1267,26 @@ namespace cpp_yyjson_codegen
                     if (std::ranges::none_of(fields, [&](const auto& f) { return f.key == k; }))
                         fields.push_back(field{
                             .member = k, .key = k, .type = make(tk::any), .required = true, .loc = loc + "/required"});
+                // the keys that name no property: rejected, accepted and dropped, or kept in a field of
+                // yyjson::extra_keys, whose map holds them by the schema of `additionalProperties`
                 auto additional = true;
-                if (const auto* ap = s.find("additionalProperties"))
-                {
-                    if (ap->is_bool())
-                        additional = ap->b;
-                    else if (!(ap->is_object() && ap->members.empty()))
-                        warn(loc + "/additionalProperties",
-                             "a schema of `additionalProperties` beside `properties` is not supported; other keys are "
-                             "accepted as any JSON value");
-                }
+                auto extra = std::optional<typed>();
+                const auto* ap = s.find("additionalProperties");
+                const auto ap_any =
+                    ap == nullptr || (ap->is_bool() && ap->b) || (ap->is_object() && ap->members.empty());
                 if (s.has("patternProperties"))
                 {
-                    if (!additional)
-                        warn(loc, "`patternProperties` is not supported; `additionalProperties: false` is dropped");
-                    else
-                        warn(loc,
-                             "`patternProperties` beside `properties` is not supported; other keys are accepted as any "
-                             "JSON value");
-                    additional = true;
+                    warn(loc + "/patternProperties",
+                         std::string("`patternProperties` is not supported; the keys that name no property are kept in "
+                                     "the field of yyjson::extra_keys as any JSON value") +
+                             (ap_any ? "" : ", and `additionalProperties` is not checked"));
+                    extra = typed{make(tk::any), {}};
                 }
+                else if (ap != nullptr && ap->is_bool())
+                    additional = ap->b;
+                else if (!ap_any)
+                    extra = type_of(ap, loc + "/additionalProperties", decls_[idx].name + "Extra");
+                if (!extra && additional && opts_.keep_unknown_keys) extra = typed{make(tk::any), {}};
                 for (const auto* k : {"minProperties", "maxProperties", "propertyNames"})
                     if (s.has(k))
                         warn(loc,
@@ -1324,6 +1328,13 @@ namespace cpp_yyjson_codegen
                                                            .loc = loc + "/" + kw});
                         groups.push_back(std::move(*g));
                     }
+                if (extra)
+                {
+                    auto f = field{.type = make(tk::map, {std::move(extra->t)}), .loc = loc + "/additionalProperties"};
+                    f.extra = true;
+                    if (!extra->s.empty()) f.set.additional.push_back(std::move(extra->s));
+                    fields.push_back(std::move(f));
+                }
                 auto& d = decls_[idx];
                 d.fields = std::move(fields);
                 d.additional = additional;
@@ -2357,7 +2368,7 @@ namespace cpp_yyjson_codegen
                     auto used = std::set<std::string>();
                     for (auto& f : d.fields)
                     {
-                        const auto base = sanitize(f.key);
+                        const auto base = f.extra ? std::string("extra") : sanitize(f.key);
                         auto m = base;
                         if (type_names_.contains(m)) m += "_";
                         for (auto n = 2; used.contains(m); ++n) m = base + "_" + std::to_string(n);
@@ -2588,6 +2599,13 @@ namespace cpp_yyjson_codegen
             std::vector<std::string> field_items(const field& f)
             {
                 auto items = std::vector<std::string>();
+                if (f.extra)
+                {
+                    // the field has no key, and takes only the settings of its values
+                    items.emplace_back("yyjson::extra_keys");
+                    for (auto& s : render_settings(f.set, f.type)) items.push_back(std::move(s));
+                    return items;
+                }
                 if (f.member != f.key) items.push_back("yyjson::rename(" + cpp_string(f.key) + ")");
                 if (f.required) items.emplace_back("yyjson::required");
                 if (f.omit_default) items.emplace_back("yyjson::omit_default");
@@ -2606,7 +2624,7 @@ namespace cpp_yyjson_codegen
                                                 : "yyjson::additional_properties(false)");
                 const auto member = [&](std::string_view key) {
                     for (const auto& f : d.fields)
-                        if (f.key == key) return f.member;
+                        if (!f.extra && f.key == key) return f.member;
                     return std::string(key);
                 };
                 for (const auto& [k, keys] : d.dependent)
@@ -2770,6 +2788,10 @@ namespace cpp_yyjson_codegen
                         "//\n// A field with a default holds it as its initializer and has `yyjson::omit_default`: a "
                         "missing key\n// reads as the default, and writing leaves the key out while the field holds "
                         "it.\n";
+                if (any_field([](const field& f) { return f.extra; }))
+                    out +=
+                        "//\n// A field with `yyjson::extra_keys` holds the keys of the object that name no other "
+                        "field, and\n// writing puts them after the fields.\n";
                 if (any_field([](const field& f) { return !f.default_note.empty(); }))
                     out +=
                         "//\n// A std::optional field with a `default:` comment is std::nullopt when the key is "

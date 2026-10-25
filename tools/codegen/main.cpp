@@ -21,6 +21,8 @@ Generates C++ types with cpp-yyjson annotations from a JSON Schema (2020-12).
   --no-pattern          drop `pattern` instead of emitting yyjson::pattern
   --optional-defaults   make a field with a default std::optional, std::nullopt for a missing key, instead
                         of holding the default and leaving it out when writing (yyjson::omit_default)
+  --keep-unknown-keys   give every struct that accepts other keys a map `extra` with yyjson::extra_keys,
+                        which keeps those keys and writes them back
   --strict              treat warnings as errors
   -h, --help            show this help
 )";
@@ -63,6 +65,8 @@ int main(int argc, char** argv)
             opts.pattern = false;
         else if (arg == "--optional-defaults")
             opts.optional_defaults = true;
+        else if (arg == "--keep-unknown-keys")
+            opts.keep_unknown_keys = true;
         else if (arg.starts_with("-") && arg != "-")
             return fail("unknown option " + std::string(arg) + "\n" + usage);
         else if (input.empty())
