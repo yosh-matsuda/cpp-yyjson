@@ -11088,6 +11088,172 @@ namespace yyjson
         };
     }  // namespace writer::detail
 
+    namespace detail::json_compare
+    {
+        // the accessors of yyjson for both kinds of value; the yyjson before 0.13.0 takes no const pointers
+        inline yyjson_type type_of(yyjson_val* v) noexcept { return yyjson_get_type(v); }
+        inline yyjson_type type_of(yyjson_mut_val* v) noexcept { return yyjson_mut_get_type(v); }
+        inline yyjson_subtype subtype_of(yyjson_val* v) noexcept { return yyjson_get_subtype(v); }
+        inline yyjson_subtype subtype_of(yyjson_mut_val* v) noexcept { return yyjson_mut_get_subtype(v); }
+        inline bool bool_of(yyjson_val* v) noexcept { return yyjson_get_bool(v); }
+        inline bool bool_of(yyjson_mut_val* v) noexcept { return yyjson_mut_get_bool(v); }
+        inline std::uint64_t uint_of(yyjson_val* v) noexcept { return yyjson_get_uint(v); }
+        inline std::uint64_t uint_of(yyjson_mut_val* v) noexcept { return yyjson_mut_get_uint(v); }
+        inline std::int64_t sint_of(yyjson_val* v) noexcept { return yyjson_get_sint(v); }
+        inline std::int64_t sint_of(yyjson_mut_val* v) noexcept { return yyjson_mut_get_sint(v); }
+        inline double real_of(yyjson_val* v) noexcept { return yyjson_get_real(v); }
+        inline double real_of(yyjson_mut_val* v) noexcept { return yyjson_mut_get_real(v); }
+        inline std::string_view text_of(yyjson_val* v) noexcept { return {yyjson_get_str(v), yyjson_get_len(v)}; }
+        inline std::string_view text_of(yyjson_mut_val* v) noexcept
+        {
+            return {yyjson_mut_get_str(v), yyjson_mut_get_len(v)};
+        }
+        inline std::size_t size_of(yyjson_val* v) noexcept { return yyjson_get_len(v); }
+        inline std::size_t size_of(yyjson_mut_val* v) noexcept { return yyjson_mut_get_len(v); }
+
+        template <typename V>
+        struct node;
+        template <>
+        struct node<yyjson_val>
+        {
+            static yyjson_arr_iter arr_iter(yyjson_val* v) noexcept
+            {
+                auto it = yyjson_arr_iter();
+                yyjson_arr_iter_init(v, &it);
+                return it;
+            }
+            static yyjson_val* arr_next(yyjson_arr_iter& it) noexcept { return yyjson_arr_iter_next(&it); }
+            static yyjson_obj_iter obj_iter(yyjson_val* v) noexcept
+            {
+                auto it = yyjson_obj_iter();
+                yyjson_obj_iter_init(v, &it);
+                return it;
+            }
+            static yyjson_val* obj_next(yyjson_obj_iter& it) noexcept { return yyjson_obj_iter_next(&it); }
+            static yyjson_val* obj_value(yyjson_val* key) noexcept { return yyjson_obj_iter_get_val(key); }
+            static yyjson_val* obj_find(yyjson_obj_iter& it, std::string_view key) noexcept
+            {
+                return yyjson_obj_iter_getn(&it, key.data(), key.size());
+            }
+        };
+        template <>
+        struct node<yyjson_mut_val>
+        {
+            static yyjson_mut_arr_iter arr_iter(yyjson_mut_val* v) noexcept
+            {
+                auto it = yyjson_mut_arr_iter();
+                yyjson_mut_arr_iter_init(v, &it);
+                return it;
+            }
+            static yyjson_mut_val* arr_next(yyjson_mut_arr_iter& it) noexcept { return yyjson_mut_arr_iter_next(&it); }
+            static yyjson_mut_obj_iter obj_iter(yyjson_mut_val* v) noexcept
+            {
+                auto it = yyjson_mut_obj_iter();
+                yyjson_mut_obj_iter_init(v, &it);
+                return it;
+            }
+            static yyjson_mut_val* obj_next(yyjson_mut_obj_iter& it) noexcept { return yyjson_mut_obj_iter_next(&it); }
+            static yyjson_mut_val* obj_value(yyjson_mut_val* key) noexcept { return yyjson_mut_obj_iter_get_val(key); }
+            static yyjson_mut_val* obj_find(yyjson_mut_obj_iter& it, std::string_view key) noexcept
+            {
+                return yyjson_mut_obj_iter_getn(&it, key.data(), key.size());
+            }
+        };
+
+        // whether an integer and a real number are the same number, exactly
+        inline bool same_number(const std::int64_t i, const double d) noexcept
+        {
+            return d >= -0x1p63 && d < 0x1p63 && d == std::trunc(d) && static_cast<std::int64_t>(d) == i;
+        }
+        inline bool same_number(const std::uint64_t u, const double d) noexcept
+        {
+            return d >= 0.0 && d < 0x1p64 && d == std::trunc(d) && static_cast<std::uint64_t>(d) == u;
+        }
+
+        template <typename A, typename B>
+        bool numbers_equal(A* a, B* b) noexcept
+        {
+            const auto sa = subtype_of(a);
+            const auto sb = subtype_of(b);
+            if (sa == YYJSON_SUBTYPE_REAL && sb == YYJSON_SUBTYPE_REAL) return real_of(a) == real_of(b);
+            if (sa == YYJSON_SUBTYPE_REAL) return numbers_equal(b, a);
+            if (sb == YYJSON_SUBTYPE_REAL)
+                return sa == YYJSON_SUBTYPE_UINT ? same_number(uint_of(a), real_of(b))
+                                                 : same_number(sint_of(a), real_of(b));
+            if (sa == sb) return uint_of(a) == uint_of(b);
+            const auto i = sa == YYJSON_SUBTYPE_SINT ? sint_of(a) : sint_of(b);
+            return i >= 0 && static_cast<std::uint64_t>(i) == (sa == YYJSON_SUBTYPE_UINT ? uint_of(a) : uint_of(b));
+        }
+
+        template <typename A, typename B>
+        bool values_equal(A* a, B* b)
+        {
+            const auto type = type_of(a);
+            if (type != type_of(b)) return false;
+            switch (type)
+            {
+                case YYJSON_TYPE_NULL:
+                    return true;
+                case YYJSON_TYPE_BOOL:
+                    return bool_of(a) == bool_of(b);
+                case YYJSON_TYPE_NUM:
+                    return numbers_equal(a, b);
+                case YYJSON_TYPE_STR:
+                case YYJSON_TYPE_RAW:
+                    return text_of(a) == text_of(b);
+                case YYJSON_TYPE_ARR:
+                {
+                    if (size_of(a) != size_of(b)) return false;
+                    auto ia = node<A>::arr_iter(a);
+                    auto ib = node<B>::arr_iter(b);
+                    for (auto n = size_of(a); n > 0; --n)
+                        if (!values_equal(node<A>::arr_next(ia), node<B>::arr_next(ib))) return false;
+                    return true;
+                }
+                case YYJSON_TYPE_OBJ:
+                {
+                    if (size_of(a) != size_of(b)) return false;
+                    auto ia = node<A>::obj_iter(a);
+                    // a lookup by the iterator starts after the member found last, so that the members in the
+                    // same order are found at once
+                    auto ib = node<B>::obj_iter(b);
+                    for (auto n = size_of(a); n > 0; --n)
+                    {
+                        auto* const key = node<A>::obj_next(ia);
+                        auto* const vb = node<B>::obj_find(ib, text_of(key));
+                        if (vb == nullptr || !values_equal(node<A>::obj_value(key), vb)) return false;
+                    }
+                    return true;
+                }
+                default:
+                    return false;
+            }
+        }
+
+        template <typename T>
+        concept json_value = reader::detail::base_of_value_ref<T> || writer::detail::base_of_value<T>;
+
+        // Two JSON values are equal when they are the same JSON value: numbers by their value (`1` and `1.0` are
+        // equal), objects regardless of the order of their members.  Found by ADL through the using-declarations in
+        // the namespaces of the values, so that comparing an immutable value with a mutable one is not ambiguous.
+        template <json_value L, json_value R>
+        bool operator==(const L& left, const R& right)
+        {
+            using access = writer::detail::json_value_access;
+            using LV = std::remove_const_t<std::remove_pointer_t<decltype(access::get(left))>>;
+            using RV = std::remove_const_t<std::remove_pointer_t<decltype(access::get(right))>>;
+            return values_equal(const_cast<LV*>(access::get(left)), const_cast<RV*>(access::get(right)));
+        }
+    }  // namespace detail::json_compare
+    namespace reader
+    {
+        using yyjson::detail::json_compare::operator==;
+    }
+    namespace writer::detail
+    {
+        using yyjson::detail::json_compare::operator==;
+    }
+
     namespace detail
     {
         inline void insert_variant_tag(writer::value_ref& val, std::string_view key, std::string_view id,
