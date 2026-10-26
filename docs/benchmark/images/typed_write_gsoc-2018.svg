@@ -6,34 +6,34 @@
 <line x1="300.0" y1="50" x2="300.0" y2="280" class="grid"/>
 <text x="300.0" y="298" class="value" text-anchor="middle">0.000 ms</text>
 <line x1="438.0" y1="50" x2="438.0" y2="280" class="grid"/>
-<text x="438.0" y="298" class="value" text-anchor="middle">516 µs</text>
+<text x="438.0" y="298" class="value" text-anchor="middle">515 µs</text>
 <line x1="576.0" y1="50" x2="576.0" y2="280" class="grid"/>
 <text x="576.0" y="298" class="value" text-anchor="middle">1.03 ms</text>
 <line x1="714.0" y1="50" x2="714.0" y2="280" class="grid"/>
 <text x="714.0" y="298" class="value" text-anchor="middle">1.55 ms</text>
 <line x1="852.0" y1="50" x2="852.0" y2="280" class="grid"/>
-<text x="852.0" y="298" class="value" text-anchor="middle">2.07 ms</text>
+<text x="852.0" y="298" class="value" text-anchor="middle">2.06 ms</text>
 <text x="24" y="76" class="heading">New output buffer per write</text>
 <text x="24" y="100" class="label">cpp-yyjson write(t)</text>
-<rect x="300" y="89" width="97.2" height="14" rx="2" fill="#2563eb"/>
+<rect x="300" y="89" width="97.3" height="14" rx="2" fill="#2563eb"/>
 <text x="864" y="100" class="value">364 µs</text>
 <text x="24" y="124" class="label">cpp-yyjson DOM: value(t).write()</text>
-<rect x="300" y="113" width="176.0" height="14" rx="2" fill="#93c5fd"/>
-<text x="864" y="124" class="value">658 µs</text>
+<rect x="300" y="113" width="176.6" height="14" rx="2" fill="#93c5fd"/>
+<text x="864" y="124" class="value">659 µs</text>
 <text x="24" y="148" class="label">Glaze glz::write</text>
-<rect x="300" y="137" width="243.0" height="14" rx="2" fill="#ca8a04"/>
-<text x="864" y="148" class="value">909 µs</text>
+<rect x="300" y="137" width="245.3" height="14" rx="2" fill="#ca8a04"/>
+<text x="864" y="148" class="value">916 µs</text>
 <text x="24" y="172" class="label">reflect-cpp rfl::json::write</text>
 <rect x="300" y="161" width="511.1" height="14" rx="2" fill="#16a34a"/>
 <text x="864" y="172" class="value">1.91 ms</text>
 <text x="24" y="198" class="heading">Reused output buffer</text>
 <text x="24" y="222" class="label">cpp-yyjson write(t, out)</text>
-<rect x="300" y="211" width="95.8" height="14" rx="2" fill="#2563eb"/>
-<text x="864" y="222" class="value">359 µs</text>
+<rect x="300" y="211" width="96.6" height="14" rx="2" fill="#2563eb"/>
+<text x="864" y="222" class="value">361 µs</text>
 <text x="24" y="246" class="label">Glaze glz::write</text>
-<rect x="300" y="235" width="145.4" height="14" rx="2" fill="#ca8a04"/>
-<text x="864" y="246" class="value">544 µs</text>
+<rect x="300" y="235" width="146.4" height="14" rx="2" fill="#ca8a04"/>
+<text x="864" y="246" class="value">547 µs</text>
 <text x="24" y="270" class="label">cpp-yyjson DOM: value(t).write(alc)</text>
-<rect x="300" y="259" width="155.8" height="14" rx="2" fill="#93c5fd"/>
-<text x="864" y="270" class="value">583 µs</text>
+<rect x="300" y="259" width="156.3" height="14" rx="2" fill="#93c5fd"/>
+<text x="864" y="270" class="value">584 µs</text>
 </svg>
