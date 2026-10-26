@@ -4778,6 +4778,10 @@ namespace yyjson
                 return false;
         }();
 
+        // Whether `a` and `b` are written as the same JSON value; defined after the concepts of the writer.
+        template <typename T>
+        bool json_equal(const T& a, const T& b);
+
         // The value of S whose fields `yyjson::omit_default` compares with, made once.
         template <typename S>
         const S& default_struct()
@@ -4786,8 +4790,8 @@ namespace yyjson
             return value;
         }
 
-        // Whether `field`, the field R of S by its index among all the fields, holds the value that it has in `S()`,
-        // so that `yyjson::omit_default` leaves its key out of the object.
+        // Whether `field`, the field R of S by its index among all the fields, is written as the same JSON value as
+        // it is in `S()`, which `json_equal` tells, so that `yyjson::omit_default` leaves its key out of the object.
         template <typename S, std::size_t R, typename F>
         bool holds_default(const F& field)
         {
@@ -4800,11 +4804,7 @@ namespace yyjson
                 else
                     return field_reflection::get_field<R>(default_struct<S>());
             }();
-            using D = std::remove_cvref_t<decltype(d)>;
-            static_assert(!std::is_array_v<D> && std::equality_comparable<D>,
-                          "yyjson::omit_default compares a field with the field of T() by operator==, which the type "
-                          "of the field does not have");
-            return field == d;
+            return json_equal<std::remove_cvref_t<decltype(d)>>(field, d);
         }
         template <typename S, std::size_t I>
         inline constexpr std::string_view struct_field_key = [] {
@@ -6174,10 +6174,6 @@ namespace yyjson
             else
                 return std::addressof(v);
         }
-
-        // Whether `a` and `b` are written as the same JSON value; defined after the concepts of the writer.
-        template <typename T>
-        bool json_equal(const T& a, const T& b);
 
         template <typename T>
         concept constraint_string = std::convertible_to<const T&, std::string_view>;

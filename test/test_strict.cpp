@@ -46,6 +46,23 @@ template <>
 inline constexpr auto yyjson::annotations<StrictOmitted> =
     yyjson::annotate(yyjson::field("limit", yyjson::omit_default, yyjson::minimum(0)),
                      yyjson::field("name", yyjson::omit_default), yyjson::field("o", yyjson::omit_default));
+// fields compared with `T()` as the JSON that they are written as: a struct without `operator==`, a pointer by the
+// value that it points to, and a C array
+struct StrictOmittedPoint
+{
+    int x = 1;
+};
+struct StrictOmittedParts
+{
+    int a = 0;
+    StrictOmittedPoint p;
+    std::unique_ptr<int> u = std::make_unique<int>(7);
+    int c[2] = {1, 2};
+};
+template <>
+inline constexpr auto yyjson::annotations<StrictOmittedParts> =
+    yyjson::annotate(yyjson::field("p", yyjson::omit_default), yyjson::field("u", yyjson::omit_default),
+                     yyjson::field("c", yyjson::omit_default));
 struct StrictOmittedVisitable
 {
     int a = 0;
@@ -544,6 +561,18 @@ TEST(Strict, OmitDefault)
     negative.limit = -2;
     EXPECT_EQ(bad_cast_of([&] { yyjson::validate(negative); }).path(), "/limit");
     EXPECT_THROW((void)yyjson::write(negative, yyjson::strict), yyjson::bad_cast);
+
+    // the fields are compared as the JSON that they are written as
+    auto parts = StrictOmittedParts();
+    EXPECT_EQ(yyjson::write(parts), R"({"a":0})");
+    EXPECT_EQ(yyjson::value(parts).write(), R"({"a":0})");
+    parts.p.x = 2;
+    parts.u = std::make_unique<int>(8);
+    parts.c[1] = 3;
+    EXPECT_EQ(yyjson::write(parts), R"({"a":0,"p":{"x":2},"u":8,"c":[1,3]})");
+    EXPECT_EQ(yyjson::value(parts).write(), R"({"a":0,"p":{"x":2},"u":8,"c":[1,3]})");
+    parts.u.reset();
+    EXPECT_EQ(yyjson::write(parts), R"({"a":0,"p":{"x":2},"u":null,"c":[1,3]})");
 
     // `VISITABLE_STRUCT`
     EXPECT_EQ(yyjson::write(StrictOmittedVisitable()), R"({"a":0})");
