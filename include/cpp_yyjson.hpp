@@ -1796,13 +1796,30 @@ namespace yyjson
             return static_cast<bool>(call_constant<F>(*static_cast<const parameter*>(value)));
         }
 
+#if !defined(__cpp_lib_define_static)
+        // The name of the type T in a variable, to which a template argument may point, as `yyjson::alt` needs for
+        // `yyjson::satisfies<f>`: not to the string of `__PRETTY_FUNCTION__` that `type_name` reads it from.
+        template <typename T>
+        inline constexpr auto type_name_chars = [] {
+            constexpr auto name = type_name<T>();
+            auto result = std::array<char, name.size() + 1>{};
+            for (std::size_t i = 0; i < name.size(); ++i) result[i] = name[i];
+            return result;
+        }();
+#endif
+
         // Clang 18 and older reject `static_string` in the initializer of a variable template as taking the
         // address of a consteval function, so the value is built in a consteval function.
         template <auto F>
         consteval satisfies_t make_predicate()
         {
-            constexpr auto parameter = type_name<typename predicate_parameter<decltype(F)>::type>();
+            using parameter_type = typename predicate_parameter<decltype(F)>::type;
+            constexpr auto parameter = type_name<parameter_type>();
+#if defined(__cpp_lib_define_static)
             return {&call_predicate<F>, static_string(parameter), parameter.size()};
+#else
+            return {&call_predicate<F>, type_name_chars<parameter_type>.data(), parameter.size()};
+#endif
         }
     }  // namespace detail
 
