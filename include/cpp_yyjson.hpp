@@ -9719,17 +9719,21 @@ namespace yyjson
                 *buf_.cur++ = '\n';
                 write_indent();
             }
-            void close(char c, bool empty)
+            // Called at the end of every object and array.  Left to itself, GCC stopped inlining it into the
+            // writers of larger structs, and the call doubled the branch misses of the typed citm_catalog write.
+            // The line break of pretty output stays out of line to keep the inlined part small.
+            CPPYYJSON_ALWAYS_INLINE void close(char c, bool empty)
             {
                 --level_;
-                if (pretty_ && !empty)
-                {
-                    ensure(1);
-                    *buf_.cur++ = '\n';
-                    write_indent();
-                }
+                if (pretty_ && !empty) close_line();
                 ensure(1);
                 *buf_.cur++ = c;
+            }
+            CPPYYJSON_NOINLINE void close_line()
+            {
+                ensure(1);
+                *buf_.cur++ = '\n';
+                write_indent();
             }
             void end_key()
             {
