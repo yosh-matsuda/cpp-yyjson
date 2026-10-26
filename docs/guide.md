@@ -635,7 +635,7 @@ auto same = a == b;
 // -> true
 ```
 
-A struct with a member of a JSON value, such as `yyjson::object`, can therefore have a defaulted `operator==` and be an element of a range with [`yyjson::unique_items`](validation.md#constraints).
+A struct with a member of a JSON value, such as `yyjson::object`, can therefore have a defaulted `operator==`. [`yyjson::unique_items`](validation.md#constraints) compares the elements of a range of such structs by their fields, and the JSON values among them by this `operator==`.
 
 ## Input formats
 
