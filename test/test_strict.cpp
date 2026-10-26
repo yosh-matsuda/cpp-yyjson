@@ -73,6 +73,63 @@ template <>
 inline constexpr auto yyjson::annotations<StrictOmittedVisitable> =
     yyjson::annotate(yyjson::field("b", yyjson::omit_default));
 VISITABLE_STRUCT(StrictOmittedVisitable, a, b);
+// fields whose defaults a function makes when the object leaves out their keys: a struct that holds itself, whose
+// default holds no other, a range, a value that violates its constraint as "not set", and the holders of a value
+struct DefaultTree;
+DefaultTree default_tree();
+struct DefaultTree
+{
+    std::string name;
+    std::optional<std::unique_ptr<DefaultTree>> child;
+    std::vector<int> sizes;
+    int limit = 0;
+    std::shared_ptr<int> shared;
+    std::variant<std::monostate, std::string> label;
+
+    friend bool operator==(const DefaultTree& a, const DefaultTree& b)
+    {
+        const auto same_child = a.child.has_value() == b.child.has_value() &&
+                                (!a.child.has_value() || (*a.child == nullptr) == (*b.child == nullptr)) &&
+                                (!a.child.has_value() || *a.child == nullptr || **a.child == **b.child);
+        const auto same_shared = (a.shared == nullptr) == (b.shared == nullptr) &&
+                                 (a.shared == nullptr || *a.shared == *b.shared);
+        return a.name == b.name && same_child && a.sizes == b.sizes && a.limit == b.limit && same_shared &&
+               a.label == b.label;
+    }
+};
+template <>
+inline constexpr auto yyjson::annotations<DefaultTree> =
+    yyjson::annotate(yyjson::field("child", yyjson::default_from<&default_tree>),
+                     yyjson::field("sizes", yyjson::default_from<[] { return std::vector{1, 2}; }>),
+                     yyjson::field("limit", yyjson::default_from<[] { return -1; }>, yyjson::minimum(0)),
+                     yyjson::field("shared", yyjson::default_from<[] { return 4; }>),
+                     yyjson::field("label", yyjson::default_from<[] { return std::string("none"); }>));
+DefaultTree default_tree()
+{
+    auto t = DefaultTree();
+    t.name = "leaf";
+    return t;
+}
+struct DefaultVisitable
+{
+    int a = 0;
+    int b = 0;
+    bool operator==(const DefaultVisitable&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<DefaultVisitable> =
+    yyjson::annotate(yyjson::field("b", yyjson::default_from<[] { return 3; }>));
+VISITABLE_STRUCT(DefaultVisitable, a, b);
+// more fields than the reader without a document compares in order
+struct DefaultWide
+{
+    int f0 = 0, f1 = 0, f2 = 0, f3 = 0, f4 = 0, f5 = 0, f6 = 0, f7 = 0, f8 = 0, f9 = 0;
+    bool operator==(const DefaultWide&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<DefaultWide> =
+    yyjson::annotate(yyjson::field("f2", yyjson::default_from<[] { return 2; }>),
+                     yyjson::field("f9", yyjson::default_from<[] { return 9; }>));
 struct StrictClosed
 {
     int a = 0;
@@ -324,6 +381,21 @@ struct StrictAnnotatedOmitted
     [[= yyjson::omit_default, = yyjson::minimum(0)]] int b = -1;
     bool operator==(const StrictAnnotatedOmitted&) const = default;
 };
+struct DefaultAnnotated;
+DefaultAnnotated default_annotated();
+// the class is incomplete in the annotations of its members, so a function declared before it makes its default
+struct DefaultAnnotated
+{
+    int a = 0;
+    [[= yyjson::default_from<[] { return 5; }>]] int b = 0;
+    [[= yyjson::default_from<&default_annotated>]] std::optional<std::unique_ptr<DefaultAnnotated>> next;
+};
+DefaultAnnotated default_annotated()
+{
+    auto t = DefaultAnnotated();
+    t.a = 9;
+    return t;
+}
 struct ExtraAnnotated
 {
     int a = 0;
@@ -584,6 +656,106 @@ TEST(Strict, OmitDefault)
     EXPECT_EQ(yyjson::value(StrictAnnotatedOmitted{0, 2}).write(), R"({"a":0,"b":2})");
     expect_strict<StrictAnnotatedOmitted>(R"({"a":1})", {1, -1});
     EXPECT_NO_THROW(yyjson::validate(StrictAnnotatedOmitted()));
+#endif
+}
+
+TEST(Strict, DefaultFrom)
+{
+    // every read of an object without the keys gives the fields the values that the functions make, and the value
+    // of the struct that holds itself holds no other
+    const auto filled = [](std::string name) {
+        auto t = DefaultTree();
+        t.name = std::move(name);
+        t.child = std::make_unique<DefaultTree>(default_tree());
+        t.sizes = {1, 2};
+        t.limit = -1;
+        t.shared = std::make_shared<int>(4);
+        t.label = "none";
+        return t;
+    };
+    const auto expected = filled("");
+    const auto check = [](std::string_view json, const DefaultTree& t) {
+        EXPECT_EQ(yyjson::read<DefaultTree>(json), t) << json;
+        EXPECT_EQ(yyjson::read<DefaultTree>(json, yyjson::strict), t) << json;
+        EXPECT_EQ(yyjson::read(json).cast<DefaultTree>(), t) << json;
+        EXPECT_EQ(yyjson::value(yyjson::read(json)).cast<DefaultTree>(), t) << json;
+        auto into = DefaultTree();
+        into.limit = 7;
+        into.sizes = {9};
+        yyjson::read_into(json, into);
+        EXPECT_EQ(into, t) << json;
+#if YYJSON_VERSION_HEX >= 0x000C00
+        auto direct = std::optional<DefaultTree>();
+        EXPECT_TRUE(read_root_directly(json, yyjson::ReadFlag::NoFlag, [&](auto& reader) {
+            direct.emplace(reader.template read_root<DefaultTree>());
+            return std::string();
+        }));
+        EXPECT_TRUE(direct.has_value() && *direct == t) << json;
+        auto direct_into = std::optional<DefaultTree>(DefaultTree());
+        EXPECT_TRUE(read_root_directly(json, yyjson::ReadFlag::NoFlag, [&](auto& reader) {
+            reader.read_root_into(*direct_into);
+            return std::string();
+        }));
+        EXPECT_TRUE(*direct_into == t) << json;
+#endif
+    };
+    check(R"({"name":""})", expected);
+    EXPECT_FALSE((*expected.child)->child.has_value());
+    // an object in the object has its missing keys filled too, and null keeps the value of `T()`
+    auto nested = filled("root");
+    nested.child = std::make_unique<DefaultTree>(filled("a"));
+    check(R"({"name":"root","child":{"name":"a"}})", nested);
+    auto given = DefaultTree();
+    given.child = std::unique_ptr<DefaultTree>();
+    given.sizes = {3};
+    given.limit = 2;
+    check(R"({"name":"","child":null,"sizes":[3],"limit":2,"shared":null,"label":null})", given);
+    expect_rejected<DefaultTree>(R"({"limit":-1})", "", "/limit");
+
+    // the key of a field that holds that value is left out, by the document and by `yyjson::write`, and a field
+    // whose default violates its constraints is not checked then
+    EXPECT_EQ(yyjson::write(expected), R"({"name":""})");
+    EXPECT_EQ(yyjson::value(expected).write(), R"({"name":""})");
+    expect_direct_write(expected);
+    expect_direct_write(nested);
+    EXPECT_EQ(yyjson::write(nested), R"({"name":"root","child":{"name":"a"}})");
+    EXPECT_NO_THROW(yyjson::validate(expected));
+    EXPECT_EQ(yyjson::write(expected, yyjson::strict), R"({"name":""})");
+    EXPECT_EQ(yyjson::write(given), R"({"name":"","child":null,"sizes":[3],"limit":2,"shared":null,"label":null})");
+
+    // `T()` and `yyjson::merge_into` do not call the functions: the missing keys keep the fields
+    auto merged = DefaultTree();
+    yyjson::merge_into(R"({"name":"m"})", merged);
+    EXPECT_FALSE(merged.child.has_value());
+    EXPECT_TRUE(merged.sizes.empty());
+    EXPECT_EQ(merged.limit, 0);
+    EXPECT_EQ(yyjson::write(merged), R"({"name":"m","sizes":[],"limit":0,"shared":null,"label":null})");
+
+    // more fields, in any order
+    const auto wide = DefaultWide{.f0 = 1, .f2 = 2, .f8 = 8, .f9 = 9};
+    for (const auto json : {R"({"f0":1,"f8":8})", R"({"f8":8,"f0":1})"})
+    {
+        EXPECT_TRUE(expect_direct_read<DefaultWide>(json)) << json;
+        EXPECT_EQ(yyjson::read<DefaultWide>(json), wide) << json;
+        EXPECT_TRUE(expect_read_into(DefaultWide{.f2 = 5}, json)) << json;
+    }
+    EXPECT_EQ(yyjson::read<DefaultWide>(R"({"f8":8,"f7":0,"f6":0,"f5":0,"f4":0,"f3":0,"f1":0,"f0":1})", yyjson::strict),
+              wide);
+    EXPECT_EQ(yyjson::write(wide), R"({"f0":1,"f1":0,"f3":0,"f4":0,"f5":0,"f6":0,"f7":0,"f8":8})");
+
+    // `VISITABLE_STRUCT`
+    EXPECT_EQ(yyjson::read<DefaultVisitable>(R"({"a":1})"), (DefaultVisitable{1, 3}));
+    EXPECT_EQ(yyjson::read(R"({"a":1})").cast<DefaultVisitable>(), (DefaultVisitable{1, 3}));
+    expect_strict<DefaultVisitable>(R"({"a":1})", {1, 3});
+    EXPECT_EQ(yyjson::write(DefaultVisitable{1, 3}), R"({"a":1})");
+    EXPECT_EQ(yyjson::value(DefaultVisitable{1, 4}).write(), R"({"a":1,"b":4})");
+#if FIELD_RFL_ANNOTATIONS
+    const auto annotated = yyjson::read<DefaultAnnotated>(R"({"a":1})", yyjson::strict);
+    EXPECT_EQ(annotated.b, 5);
+    ASSERT_TRUE(annotated.next.has_value() && *annotated.next != nullptr);
+    EXPECT_EQ((*annotated.next)->a, 9);
+    EXPECT_EQ((*annotated.next)->b, 0);
+    EXPECT_EQ(yyjson::write(annotated), R"({"a":1})");
 #endif
 }
 
@@ -1024,6 +1196,43 @@ namespace omit_default_rules
     static_assert(table_error<OmitTagged> == omit_default_tagged);
     static_assert(table_error<OmitAlone> == none);
 }  // namespace omit_default_rules
+
+// The rules of `yyjson::default_from`, which leaves out the key as `yyjson::omit_default` does
+#define DEFAULT_FROM_RULE(NAME, ...)  \
+    struct NAME                       \
+    {                                 \
+        int v = 0;                    \
+        std::variant<int, bool> w;    \
+    };                                \
+    template <>                       \
+    inline constexpr auto yyjson::annotations<NAME> = yyjson::annotate(__VA_ARGS__);
+constexpr int seven() { return 7; }
+DEFAULT_FROM_RULE(DefaultOmitted, yyjson::field("v", yyjson::default_from<&seven>, yyjson::omit_default))
+DEFAULT_FROM_RULE(DefaultAfterOmitted, yyjson::field("v", yyjson::omit_default, yyjson::default_from<&seven>))
+DEFAULT_FROM_RULE(DefaultTwice, yyjson::field("v", yyjson::default_from<&seven>, yyjson::default_from<&seven>))
+DEFAULT_FROM_RULE(DefaultRequired, yyjson::field("v", yyjson::required, yyjson::default_from<&seven>))
+DEFAULT_FROM_RULE(DefaultOptionalKey, yyjson::field("v", yyjson::default_from<&seven>, yyjson::optional_key))
+DEFAULT_FROM_RULE(DefaultSkipped, yyjson::field("v", yyjson::skip, yyjson::default_from<&seven>))
+DEFAULT_FROM_RULE(DefaultTagged,
+                  yyjson::field("w", yyjson::default_from<[] { return std::variant<int, bool>(); }>,
+                                yyjson::adjacent_tag("t", {"i", "b"})))
+DEFAULT_FROM_RULE(DefaultAlone, yyjson::field("v", yyjson::default_from<&seven>))
+#undef DEFAULT_FROM_RULE
+namespace default_from_rules
+{
+    template <typename T>
+    constexpr auto table_error =
+        yyjson::detail::make_field_key_table<T, yyjson::detail::reflected_field_names<T>>().error;
+    using enum yyjson::detail::field_key_error;
+    static_assert(table_error<DefaultOmitted> == default_from_with_omit_default);
+    static_assert(table_error<DefaultAfterOmitted> == default_from_with_omit_default);
+    static_assert(table_error<DefaultTwice> == same_setting_twice);
+    static_assert(table_error<DefaultRequired> == omit_default_with_key_setting);
+    static_assert(table_error<DefaultOptionalKey> == omit_default_with_key_setting);
+    static_assert(table_error<DefaultSkipped> == skipped_with_setting);
+    static_assert(table_error<DefaultTagged> == omit_default_tagged);
+    static_assert(table_error<DefaultAlone> == none);
+}  // namespace default_from_rules
 
 // The rules that the static assertions of `yyjson::extra_keys` enforce
 #define EXTRA_KEYS_RULE(NAME, ...)    \
