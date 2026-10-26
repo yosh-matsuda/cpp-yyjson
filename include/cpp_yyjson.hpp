@@ -5258,19 +5258,9 @@ namespace yyjson
                 return std::addressof(v);
         }
 
-        // Whether `a` and `b` are equal, comparing the values that the holders hold rather than the pointers.
+        // Whether `a` and `b` are written as the same JSON value; defined after the concepts of the writer.
         template <typename T>
-        bool equal_held(const T& a, const T& b)
-        {
-            if constexpr (nullable<T>)
-            {
-                const auto* x = nullable_holder<T>::get(a);
-                const auto* y = nullable_holder<T>::get(b);
-                return x == nullptr || y == nullptr ? x == y : equal_held(*x, *y);
-            }
-            else
-                return a == b;
-        }
+        bool json_equal(const T& a, const T& b);
 
         template <typename T>
         concept constraint_string = std::convertible_to<const T&, std::string_view>;
@@ -5310,10 +5300,22 @@ namespace yyjson
 
         inline constexpr std::size_t no_duplicate = static_cast<std::size_t>(-1);
 
-        // The index of the first element of the range `r` that is equal to an earlier element by `operator==`, or
-        // `no_duplicate`; a smart pointer compares the value that it holds.  Many elements that `<=>` orders are
-        // sorted, and compared with `==` within each group of equivalent elements, leaving out NaN, which is equal to
-        // nothing; others, and those that hold a value or nothing, are compared pairwise.
+        // The types whose `<=>` takes the values that `json_equal` tells equal as equivalent, so that a range of
+        // them may be sorted to find a duplicate.  The `<=>` of a struct may compare other members, or compare
+        // them otherwise, than the fields that it is written with.
+        template <typename T>
+        inline constexpr bool orders_as_json = std::is_arithmetic_v<T> || std::is_enum_v<T> ||
+                                               std::same_as<T, std::string> || std::same_as<T, std::string_view>;
+        template <typename A, typename B>
+        inline constexpr bool orders_as_json<std::pair<A, B>> =
+            orders_as_json<std::remove_cv_t<A>> && orders_as_json<std::remove_cv_t<B>>;
+        template <typename... Ts>
+        inline constexpr bool orders_as_json<std::tuple<Ts...>> = (orders_as_json<std::remove_cv_t<Ts>> && ...);
+
+        // The index of the first element of the range `r` that is written as the same JSON value as an earlier
+        // element, which `json_equal` tells, or `no_duplicate`.  Many elements of `orders_as_json` types are
+        // sorted, and compared within each group of equivalent elements, leaving out NaN, which is equal to nothing;
+        // others are compared pairwise.
         template <typename R>
         std::size_t first_duplicate(const R& r)
         {
@@ -5325,12 +5327,12 @@ namespace yyjson
                 for (auto it = std::ranges::begin(r); it != std::ranges::end(r); ++it, ++j)
                 {
                     for (auto jt = std::ranges::begin(r); jt != it; ++jt)
-                        if (equal_held(*jt, *it)) return j;
+                        if (json_equal<E>(*jt, *it)) return j;
                 }
                 return no_duplicate;
             };
-            if constexpr (!std::is_lvalue_reference_v<reference> || nullable<E> ||
-                          !(floating || std::three_way_comparable<E, std::weak_ordering>))
+            if constexpr (!std::is_lvalue_reference_v<reference> ||
+                          !(floating || (orders_as_json<E> && std::three_way_comparable<E, std::weak_ordering>)))
                 return pairwise();
             else
             {
@@ -5566,9 +5568,6 @@ namespace yyjson
                               "object that a set or a map is read from repeats nothing under yyjson::strict");
                 if constexpr (constraint_items<V> && !unique_keys<V>)
                 {
-                    static_assert(std::equality_comparable<
-                                      constrained_value_t<std::remove_cvref_t<std::ranges::range_reference_t<const V>>>>,
-                                  "yyjson::unique_items compares the elements with operator==");
                     if (first_duplicate(v) != no_duplicate) return constraint_kind::unique_items;
                 }
             }
@@ -11584,6 +11583,83 @@ namespace yyjson
         template <typename T>
         concept reflected_range_aggregate =
             std::is_class_v<T> && std::is_aggregate_v<T> && (!std_array<T>) && reflectable<T>;
+
+        // Whether `a` and `b` are written as the same JSON value, which `yyjson::unique_items` and
+        // `yyjson::omit_default` compare.  The values that the writer converts itself are compared by their
+        // parts: a struct by its fields, and not by its `operator==`; a range by its elements in their order, or as
+        // a set when it is unordered; a tuple by its elements; a variant by its alternative and value; a holder by
+        // the value that it holds, an empty one being equal only to an empty one.  Others, such as numbers,
+        // strings, JSON values and the types that a caster of the user converts, are compared by `operator==`.
+        template <typename T>
+        bool json_equal(const T& a, const T& b)
+        {
+            using U = std::remove_cv_t<T>;
+            if constexpr (char_string_array<U>)
+                return std::string_view(a, char_array_size(a)) == std::string_view(b, char_array_size(b));
+            else if constexpr (std::is_array_v<U>)
+            {
+                for (std::size_t i = 0; i < std::extent_v<U>; ++i)
+                    if (!json_equal(a[i], b[i])) return false;
+                return true;
+            }
+            else if constexpr (std::same_as<U, const char*> || std::same_as<U, char*>)
+                return a == nullptr || b == nullptr ? a == b : std::string_view(a) == std::string_view(b);
+            else if constexpr (!std::is_class_v<U> || writer::detail::base_of_value<U> ||
+                               reader::detail::base_of_value_ref<U> ||
+                               (caster_names_to_json<U> && !std::derived_from<caster<U>, builtin_caster>))
+            {
+                static_assert(std::equality_comparable<U>,
+                              "yyjson compares a value of this type, which it does not write by its parts, with "
+                              "operator==, as yyjson::unique_items and yyjson::omit_default do");
+                return a == b;
+            }
+            else if constexpr (nullable<U>)
+            {
+                const auto* x = nullable_holder<U>::get(a);
+                const auto* y = nullable_holder<U>::get(b);
+                return x == nullptr || y == nullptr ? x == y : json_equal(*x, *y);
+            }
+            else if constexpr (requires { std::variant_size<U>::value; })
+            {
+                if (a.index() != b.index()) return false;
+                if (a.valueless_by_exception()) return true;
+                return [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                    auto r = false;
+                    (void)((a.index() == Is && (r = json_equal(*std::get_if<Is>(&a), *std::get_if<Is>(&b)), true)) ||
+                           ...);
+                    return r;
+                }(std::make_index_sequence<std::variant_size_v<U>>{});
+            }
+            else if constexpr (std::convertible_to<const U&, std::string_view>)
+                return std::string_view(a) == std::string_view(b);
+            else if constexpr (visitable<U> || reflected_range_aggregate<U> ||
+                               (!std::ranges::range<U> && !tuple_like<U> && reflectable<U>))
+                return [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                    return (json_equal(struct_field<Ks>(a), struct_field<Ks>(b)) && ...);
+                }(std::make_index_sequence<struct_field_count<U>>{});
+            else if constexpr (std::ranges::range<const U>)
+            {
+                if constexpr (std::ranges::sized_range<const U>)
+                    if (std::ranges::size(a) != std::ranges::size(b)) return false;
+                using E = std::remove_cvref_t<std::ranges::range_reference_t<const U>>;
+                const auto eq = [](const E& x, const E& y) { return json_equal(x, y); };
+                if constexpr (requires { typename U::hasher; })
+                    return std::ranges::is_permutation(a, b, eq);
+                else
+                    return std::ranges::equal(a, b, eq);
+            }
+            else if constexpr (tuple_like<U>)
+                return [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                    return (json_equal(std::get<Is>(a), std::get<Is>(b)) && ...);
+                }(std::make_index_sequence<std::tuple_size_v<U>>{});
+            else
+            {
+                static_assert(std::equality_comparable<U>,
+                              "yyjson compares a value of this type, which it does not write by its parts, with "
+                              "operator==, as yyjson::unique_items and yyjson::omit_default do");
+                return a == b;
+            }
+        }
 
         // How a type is read or written, for checking a recursive type and for naming the cause of an error.
         // `opaque<T>` holds for a T that a caster of the user converts, whose members this library does not look

@@ -235,6 +235,35 @@ struct UniqueJson
 template <>
 inline constexpr auto yyjson::annotations<UniqueJson> = yyjson::annotate(yyjson::field("any", yyjson::unique_items));
 
+// elements that are compared by the values that they are written with, and not by `operator==`
+struct UniqueBox
+{
+    std::shared_ptr<int> p;
+};
+struct UniqueLoose
+{
+    int v = 0;
+    bool operator==(const UniqueLoose&) const { return true; }
+};
+struct UniqueTree
+{
+    int v = 0;
+    std::vector<UniqueTree> kids;
+};
+struct UniqueParts
+{
+    std::vector<UniqueBox> boxes;
+    std::vector<UniqueLoose> loose;
+    std::vector<UniqueTree> trees;
+    std::vector<std::unordered_map<std::string, int>> maps;
+    std::vector<std::tuple<int, std::string>> tuples;
+};
+template <>
+inline constexpr auto yyjson::annotations<UniqueParts> = yyjson::annotate(
+    yyjson::field("boxes", yyjson::unique_items), yyjson::field("loose", yyjson::unique_items),
+    yyjson::field("trees", yyjson::unique_items), yyjson::field("maps", yyjson::unique_items),
+    yyjson::field("tuples", yyjson::unique_items));
+
 bool is_lower(const std::string& s)
 {
     return std::ranges::all_of(s, [](char c) { return 'a' <= c && c <= 'z'; });
@@ -1074,6 +1103,29 @@ TEST(Constraints, UniqueItems)
     expect_rejected<UniqueJson>(
         R"({"any":[{"a":1,"b":[2]},{"b":[2.0],"a":1}]})",
         R"(an element of the value of the key "any" of UniqueJson is equal to an earlier element)", "/any/1");
+
+    // C++ values compare as the JSON that they are written as
+    const auto parts = [](std::string_view key) {
+        return std::format(R"(an element of the value of the key "{}" of UniqueParts is equal to an earlier element)",
+                           key);
+    };
+    EXPECT_EQ(yyjson::read<UniqueParts>(R"({"boxes":[{"p":1},{"p":2},{"p":null}],"loose":[{"v":1},{"v":2}],)"
+                                        R"("trees":[{"v":1,"kids":[{"v":2,"kids":[]}]},{"v":1,"kids":[]}],)"
+                                        R"("maps":[{"a":1,"b":2},{"a":1}]})")
+                  .boxes.size(),
+              3);
+    expect_rejected<UniqueParts>(R"({"boxes":[{"p":1},{"p":1}]})", parts("boxes"), "/boxes/1");
+    expect_rejected<UniqueParts>(R"({"boxes":[{"p":null},{"p":2},{"p":null}]})", parts("boxes"), "/boxes/2");
+    expect_rejected<UniqueParts>(R"({"loose":[{"v":1},{"v":1}]})", parts("loose"), "/loose/1");
+    expect_rejected<UniqueParts>(
+        R"({"trees":[{"v":1,"kids":[{"v":2,"kids":[]}]},{"v":1,"kids":[{"v":2,"kids":[]}]}]})", parts("trees"),
+        "/trees/1");
+    expect_rejected<UniqueParts>(R"({"maps":[{"a":1,"b":2,"c":3},{"c":3,"b":2,"a":1}]})", parts("maps"), "/maps/1");
+    // a range of tuples is sorted from 17 elements on
+    auto tuples = std::string(R"({"tuples":[)");
+    for (auto i = 0; i < 20; ++i) tuples += std::format(R"([{},"{}"],)", i % 2, i);
+    EXPECT_EQ(yyjson::read<UniqueParts>(tuples.substr(0, tuples.size() - 1) + "]}").tuples.size(), 20);
+    expect_rejected<UniqueParts>(tuples + R"([1,"7"]]})", parts("tuples"), "/tuples/20");
 }
 
 TEST(Constraints, PrefixItems)
