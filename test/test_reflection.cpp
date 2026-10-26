@@ -1068,6 +1068,43 @@ static_assert(yyjson::readable<std::unique_ptr<int>> && yyjson::writable<std::un
 static_assert(yyjson::readable<yyjson::value> && yyjson::writable<yyjson::value>);
 static_assert(yyjson::writable<yyjson::reader::const_value_ref>);
 
+// The C++20 backend does not reflect a struct with a reference member, and its fields are not checked: the check of
+// `children` would depend on itself. The C++26 backend reflects it and writes it.
+struct RecursiveWithReference
+{
+    std::vector<RecursiveWithReference> children;
+    const int& ref;
+};
+static_assert(std::constructible_from<yyjson::object, const RecursiveWithReference&> == bool(FIELD_RFL_STD_REFLECTION));
+static_assert(yyjson::writable<RecursiveWithReference> == bool(FIELD_RFL_STD_REFLECTION));
+
+// A range whose elements are of its own type, as a handle of a Python object in nanobind, is not an array, and
+// the check of its elements does not depend on itself
+class SelfRange
+{
+    const void* handle_ = nullptr;
+
+public:
+    [[nodiscard]] const void* handle() const { return handle_; }
+    [[nodiscard]] const SelfRange* begin() const { return this; }
+    [[nodiscard]] const SelfRange* end() const { return this; }
+};
+template <typename R>
+struct RangeView
+{
+    const R& range;
+    std::string_view separator;
+};
+struct SelfRangeField
+{
+    std::vector<SelfRange> items;
+};
+static_assert(!std::constructible_from<yyjson::value, const SelfRange&>);
+static_assert(!std::constructible_from<yyjson::value, const std::vector<SelfRange>&>);
+static_assert(!std::constructible_from<yyjson::object, const RangeView<std::vector<SelfRange>>&>);
+static_assert(!std::constructible_from<yyjson::value, const SelfRangeField&>);
+static_assert(!yyjson::writable<std::vector<SelfRange>> && !yyjson::writable<SelfRangeField>);
+
 // A `VISITABLE_STRUCT` is converted only when each of its members is, as a reflected struct is
 struct VisitableDuration
 {

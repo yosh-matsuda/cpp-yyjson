@@ -3403,10 +3403,14 @@ namespace yyjson
             concept key_value_like_create_value_callable =
                 key_value_like<Pair> && create_element_callable<std::tuple_element_t<1, Pair>>;
 
+            // A range whose elements are of its own type, such as `nanobind::handle`, is not one: it would be an
+            // array of arrays without end, and the check of its elements would depend on itself.
             template <typename Range>
             concept create_value_range =
-                std::ranges::input_range<Range> && create_element_callable<std::ranges::range_value_t<Range>> &&
-                (!create_primitive_callable<Range>) && (!convertible_to_create_array_callable<Range>);
+                std::ranges::input_range<Range> &&
+                (!std::same_as<std::remove_cvref_t<std::ranges::range_value_t<Range>>, std::remove_cvref_t<Range>>) &&
+                create_element_callable<std::ranges::range_value_t<Range>> && (!create_primitive_callable<Range>) &&
+                (!convertible_to_create_array_callable<Range>);
 
             // The types `set_value` stores straight into the value it is handed.
             template <typename T>
@@ -6320,9 +6324,11 @@ namespace yyjson
             }
 
             // `std::array` is written as a JSON array, as the reader casts it from one.  Other aggregates
-            // are reflected into objects even if they have `begin()` and `end()`.
+            // are reflected into objects even if they have `begin()` and `end()`.  `reflectable` comes first as a
+            // constraint of its own: the `&&` in `to_json_with_reflection_impl` would still check the fields of a
+            // struct that is not reflected, and such a check may depend on itself.
             template <typename T>
-            concept to_json_with_reflection = (!yyjson::detail::std_array<T>) &&
+            concept to_json_with_reflection = (!yyjson::detail::std_array<T>) && yyjson::detail::reflectable<T> &&
                                               to_json_with_reflection_impl<T>(yyjson::detail::reflected_fields<T>());
 
         }  // namespace detail
@@ -8564,8 +8570,8 @@ namespace yyjson
         }
 
         template <copy_string_args... Ts>
-        requires writer::detail::to_json_with_reflection<T> && (!visitable<T>) &&
-                 (!writer::detail::to_json_usr_translator<T>)
+        requires (!visitable<T>) && (!writer::detail::to_json_usr_translator<T>) &&
+                 writer::detail::to_json_with_reflection<T>
         static void to_json(writer::object_ref& obj, const T& t, Ts... ts)
         {
             if constexpr (detail::has_adjacent_fields<T>) detail::check_adjacent_tags(t);
@@ -8578,8 +8584,8 @@ namespace yyjson
             });
         }
         template <copy_string_args... Ts>
-        requires writer::detail::to_json_with_reflection<T> && (!visitable<T>) &&
-                 (!writer::detail::to_json_usr_translator<T>)
+        requires (!visitable<T>) && (!writer::detail::to_json_usr_translator<T>) &&
+                 writer::detail::to_json_with_reflection<T>
         static void to_json(writer::object_ref& obj, T&& t, Ts... ts)
         {
             // The fields are moved one by one out of `t` itself.  `for_each_field` would move them into a
