@@ -263,7 +263,7 @@ TEST(Reader, RecursiveTypes)
     expect_recursive<RecList>(R"({"v":1,"next":{"v":2,"next":{"v":3,"next":null}}})");
     expect_recursive<RecUList>(R"({"v":1,"next":{"v":2,"next":{"v":3,"next":null}},"kids":[{"v":4},null]})");
     expect_recursive<RecDict>(R"({"v":1,"children":{"x":{"v":2,"children":{"y":{"v":3}}},"z":{}}})");
-    expect_recursive<RecA>(R"({"a":1,"bs":[{"as":[{"a":2,"bs":[{}]}]},{"as":null}]})");
+    expect_recursive<RecA>(R"({"a":1,"bs":[{"as":[{"a":2,"bs":[{}]}]},{}]})");
     expect_recursive<RecVisitable>(R"({"v":1,"kids":[{"v":2,"kids":[{"v":3}]}]})");
     expect_recursive<RecJson>(R"({"a":[1,true,null,"s",{"b":[[],{}]}]})");
     expect_recursive<RecNest>(R"([[],[[[]],[]]])");

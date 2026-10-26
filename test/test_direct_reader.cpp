@@ -328,12 +328,14 @@ TEST(DirectReader, Structs)
         }
     }
 
-    EXPECT_TRUE((expect_direct_read<X>(R"({"a":1,"b":null,"c":"s"})")));
+    EXPECT_TRUE((expect_direct_read<X>(R"({"a":1,"c":"s"})")));
+    expect_direct_read<X>(R"({"a":1,"b":null,"c":"s"})");
     EXPECT_TRUE((expect_direct_read<X>(R"({"a":1,"b":2.5})")));
     EXPECT_TRUE((expect_direct_read<Z>(R"({"c":"z","a":1})")));
     EXPECT_TRUE((expect_direct_read<std::vector<Z>>(R"([{"a":1},{"a":2,"b":3}])")));
     EXPECT_TRUE(
-        (expect_direct_read<NullableField>(R"({"optional_value":null,"nullable_value":null,"tri_state":null})")));
+        (expect_direct_read<NullableField>(R"({"nullable_value":null,"tri_state":null})")));
+    expect_direct_read<NullableField>(R"({"optional_value":null})");
     EXPECT_TRUE((expect_direct_read<NullableField>(R"({"optional_value":1,"nullable_value":2,"tri_state":3})")));
     EXPECT_TRUE((expect_direct_read<Shape>(R"({"name":"s","origin":{"x":1,"y":2,"valid":true}})")));
     EXPECT_TRUE((expect_direct_read<CounterRecord>(R"({"name":"c","hits":3})")));
@@ -365,7 +367,9 @@ TEST(DirectReader, Containers)
     EXPECT_TRUE((expect_direct_read<ReadRecord>(
         R"({"name":"r","points":[[1,2]],"tag":"t","series":{"s":[0.5]},"keys":{"a":1,"v":[2]},"note":"n",)"
         R"("pair":[1,"p"]})")));
-    EXPECT_TRUE((expect_direct_read<ReadRecord>(R"({"tag":1,"keys":null,"note":null})")));
+    EXPECT_TRUE((expect_direct_read<ReadRecord>(R"({"tag":1})")));
+    expect_direct_read<ReadRecord>(R"({"tag":1,"keys":null})");
+    EXPECT_TRUE((expect_direct_read<ReadRecord>(R"({"tag":1,"note":null})")));
     expect_direct_read<ReadRecord>(R"({"tag":1.5})");
 
     // the text that the reader leaves to the document, and invalid text
@@ -403,14 +407,14 @@ TEST(DirectReader, BoolFields)
     using namespace yyjson;
 
     for (const auto* json : {R"({"a":true,"b":false,"c":true})", R"({"a":false,"b":true,"c":false})",
-                             R"({"c":null,"b":false })", R"({"b" : false})"})
+                             R"({"c":true,"b":false })", R"({"b" : false})"})
     {
         EXPECT_TRUE((expect_direct_read<BoolFields>(json))) << json;
         EXPECT_TRUE((expect_direct_read<std::vector<BoolFields>>("[" + std::string(json) + "]"))) << json;
     }
     for (const auto* json : {R"({"a":tru})", R"({"a":fals})", R"({"a":true)", R"({"a":false)", R"({"a":t)",
                              R"({"a":f)", R"({"a":truex})", R"({"a":falsee})", R"({"a":True})", R"({"a":null})",
-                             R"({"a":1})", R"({"a":"true"})", R"({"b":tRue})", R"({"b":fAlse})"})
+                             R"({"c":null})", R"({"a":1})", R"({"a":"true"})", R"({"b":tRue})", R"({"b":fAlse})"})
     {
         expect_direct_read<BoolFields>(json);
         expect_direct_read<std::vector<BoolFields>>("[" + std::string(json) + "]");

@@ -266,11 +266,12 @@ TEST(Reader, TranslatorFromJson)
     expect_direct_read<std::vector<Meters>>(R"(["1"])");
     expect_direct_read<std::vector<BothForms>>(R"(["1"])");
     expect_direct_read<std::vector<WithJsonForm>>(R"(["1"])");
-    for (const auto* json : {painted_json, R"({"border":null,"both":1.0})", "{}"})
+    for (const auto* json : {painted_json, R"({"both":1.0})", "{}"})
     {
         EXPECT_TRUE(expect_direct_read<Painted>(json)) << json;
     }
     expect_direct_read<Painted>(R"({"width":"1"})");
+    expect_direct_read<Painted>(R"({"border":null})");
     expect_direct_read<Painted>(R"({"both":1.5})");
 }
 

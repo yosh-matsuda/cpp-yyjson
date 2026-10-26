@@ -213,7 +213,8 @@ TEST(TaggedVariant, Internal)
     EXPECT_EQ(read(write(nested)).cast<TagNested>(), nested);
     expect_direct_write(nested);
     EXPECT_TRUE(expect_direct_read<TagNested>(write(nested)));
-    EXPECT_TRUE(expect_direct_read<TagNested>(R"({"shapes":[null,{"type":"circle"}],"maybe":null})"));
+    EXPECT_TRUE(expect_direct_read<TagNested>(R"({"shapes":[null,{"type":"circle"}]})"));
+    expect_direct_read<TagNested>(R"({"maybe":null})");
     EXPECT_THROW((void)read<TagNested>(R"({"shapes":[{"type":"zzz"}]})"), bad_cast);
     expect_direct_read<TagNested>(R"({"shapes":[{"type":"zzz"}]})");
 

@@ -2471,8 +2471,7 @@ TEST(Writer, PredefinedCaster)
     EXPECT_EQ(x1.b, x2.b);
     EXPECT_EQ(x1.c, x2.c);
 
-    auto x_null = cast<X>(object{{"a", 1}, {"b", nullptr}, {"c", "x"}});
-    EXPECT_EQ(std::nullopt, x_null.b);
+    EXPECT_THROW(cast<X>(object{{"a", 1}, {"b", nullptr}, {"c", "x"}}), yyjson::bad_cast);
 
     const auto many_fields = ManyFields{.f01 = 1,
                                         .f02 = 2,
@@ -2516,8 +2515,8 @@ TEST(Writer, PredefinedCaster)
     EXPECT_TRUE(nullable_obj1["nullable_value"].is_null());
     EXPECT_FALSE(nullable_obj1.contains("tri_state"));
 
-    auto nullable2 =
-        cast<NullableField>(object{{"optional_value", nullptr}, {"nullable_value", nullptr}, {"tri_state", nullptr}});
+    EXPECT_THROW(cast<NullableField>(object{{"optional_value", nullptr}}), yyjson::bad_cast);
+    auto nullable2 = cast<NullableField>(object{{"nullable_value", nullptr}, {"tri_state", nullptr}});
     EXPECT_FALSE(nullable2.optional_value.has_value());
     EXPECT_EQ(nullptr, nullable2.nullable_value);
     EXPECT_TRUE(nullable2.tri_state.has_value());

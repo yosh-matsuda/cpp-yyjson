@@ -8654,13 +8654,21 @@ namespace yyjson
     {
     };
 
+    namespace detail
+    {
+        // Whether `cast<T>` may read null, as `accepted_json_kinds` tells.
+        template <typename T>
+        consteval bool may_read_null();
+    }  // namespace detail
+
     template <typename T>
     struct caster<std::optional<T>> : detail::builtin_caster
     {
         // A field that holds no value is left out of the JSON object.
         static bool should_omit(const std::optional<T>& t) { return !t.has_value(); }
 
-        // A field keeps the value that it holds when the JSON value is null.
+        // A field is read as T: an absent key leaves it without a value, so null is read into T if T can be read
+        // from null, and is an error otherwise.
         template <typename Json>
         requires castable<Json, T>
         static void from_json(std::optional<T>& field, const Json& json)
@@ -8673,7 +8681,13 @@ namespace yyjson
                     return;
                 }
             }
-            if (!json.is_null() || detail::owning_pointer<T>) field = cast<T>(json);
+            if constexpr (!detail::may_read_null<T>())
+            {
+                if (json.is_null()) [[unlikely]]
+                    detail::throw_bad_cast("{} is not constructible from JSON null",
+                                           detail::type_name<std::optional<T>>());
+            }
+            field = cast<T>(json);
         }
 
         // Null gives no value, and any other JSON value is read as `cast<T>` reads it.
@@ -8849,6 +8863,12 @@ namespace yyjson
                 if constexpr (json_string_constructible<T> || enum_by_name<T>) kinds |= json_kind_string;
                 return static_cast<std::uint16_t>(kinds);
             }
+        }
+
+        template <typename T>
+        consteval bool may_read_null()
+        {
+            return (accepted_json_kinds<T, reader::const_value_ref>() & json_kind_null) != 0;
         }
 
         template <typename... Ts>
@@ -16045,9 +16065,8 @@ namespace yyjson
                 check_adjacent_tags_without_values(t, adjacent);
             }
 
-            // Reads a field as `read_field` does, but on its first key in the object resets first what
-            // `read_field` would keep of the old value to its value in `T()`: everything for a caster that reads
-            // over it, and an optional for a null.
+            // Reads a field as `read_field` does, but on its first key in the object resets first a field that a
+            // caster reads over its old value to its value in `T()`.
             template <std::size_t I, typename T>
             CPPYYJSON_ALWAYS_INLINE void read_field_over(T& t, bool first)
             {
@@ -16061,30 +16080,7 @@ namespace yyjson
                         field = std::move(struct_field<I>(defaults));
                     }
                 }
-                else if constexpr (is_std_optional<field_type>::value)
-                {
-                    if (first && *cur_ == 'n')
-                    {
-                        // most optionals are empty in `T()`, which is told once per field instead of building
-                        // `T()` for every null
-                        static const auto empty_by_default = [] {
-                            auto defaults = T();
-                            return !struct_field<I>(defaults).has_value();
-                        }();
-                        if (empty_by_default)
-                            field.reset();
-                        else [[unlikely]]
-                            reset_field<I>(t);
-                    }
-                }
                 read_field(field, false);
-            }
-
-            template <std::size_t I, typename T>
-            CPPYYJSON_COLD static void reset_field(T& t)
-            {
-                auto defaults = T();
-                struct_field<I>(t) = std::move(struct_field<I>(defaults));
             }
 
             // Merges the value at `cur_` into `t` as `merge_from` merges a value of a document.
@@ -16462,13 +16458,10 @@ namespace yyjson
                                 return;
                             }
                         }
-                        if constexpr (!yyjson::detail::owning_pointer<value_type>)
+                        if constexpr (!yyjson::detail::may_read_null<value_type>())
                         {
-                            if (*cur_ == 'n')
-                            {
-                                read_literal("null");
-                                return;
-                            }
+                            if (*cur_ == 'n') [[unlikely]]
+                                fail();
                         }
                         if constexpr (yyjson::detail::default_string<value_type>)
                         {

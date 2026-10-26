@@ -52,15 +52,53 @@ TEST(Reader, OptionalFieldKeepsDefault)
 {
     using namespace yyjson;
 
-    // a null and a missing key both leave the field as it is
-    EXPECT_EQ(cast<DefaultRecord>(read(R"({"id":1,"level":null})")).level, 7);
+    // a missing key leaves the field as it is, and a null is an error when the value type cannot be read from it
     EXPECT_EQ(cast<DefaultRecord>(read(R"({"id":1})")).level, 7);
     EXPECT_EQ(cast<DefaultRecord>(read(R"({"id":1,"level":9})")).level, 9);
+    EXPECT_THROW(cast<DefaultRecord>(read(R"({"id":1,"level":null})")), bad_cast);
 
-    // a field that holds a shared pointer takes the null instead
+    // a field that holds a shared pointer takes the null
     const auto with_null = cast<DefaultRecord>(read(R"({"id":1,"ptr":null})"));
     ASSERT_TRUE(with_null.ptr.has_value());
     EXPECT_EQ(*with_null.ptr, nullptr);
+}
+
+struct NullFields
+{
+    std::optional<int> number = 1;
+    std::optional<std::variant<std::monostate, int>> nullable;
+    std::vector<std::optional<int>> elements;
+    bool operator==(const NullFields&) const = default;
+};
+
+TEST(Reader, OptionalFieldNull)
+{
+    using namespace yyjson;
+
+    // null in a field is read as the value type reads it, and is an error when the value type cannot be
+    try
+    {
+        (void)read<NullFields>(R"({"number":null})");
+        ADD_FAILURE();
+    }
+    catch (const bad_cast& e)
+    {
+        EXPECT_STREQ(e.what(), "std::optional<int> is not constructible from JSON null");
+    }
+    EXPECT_FALSE(expect_direct_read<NullFields>(R"({"number":null})") && reads_directly);
+    EXPECT_FALSE(expect_read_into(NullFields{}, R"({"number":null})") && reads_directly);
+    EXPECT_TRUE(expect_direct_read<NullFields>(R"({"nullable":null,"elements":[null,2]})"));
+    auto holding = NullFields{};
+    holding.number = 5;
+    holding.nullable = 3;
+    EXPECT_TRUE(expect_read_into(holding, R"({"nullable":null})"));
+    const auto read_null = read<NullFields>(R"({"nullable":null,"elements":[null,2]})");
+    EXPECT_EQ(read_null, (NullFields{1, std::variant<std::monostate, int>(), {std::nullopt, 2}}));
+
+    // a merge patch gives the field its default value on null
+    auto merged = holding;
+    merge_into(R"({"number":null,"nullable":null})", merged);
+    EXPECT_EQ(merged, NullFields{});
 }
 
 TEST(Reader, PairRangeNeedsKeyToReadObject)
@@ -324,7 +362,8 @@ TEST(Reader, ReflectedStructInContainer)
 
     // an object replaces the value held by an optional field, not merges into it
     check(R"({"preset":{"x":7}})", OuterRecord{{}, std::nullopt, InnerRecord{7, {1, 2}}});
-    check(R"({"preset":null})", OuterRecord{});
+    EXPECT_THROW(cast<OuterRecord>(read(R"({"preset":null})")), bad_cast);
+    EXPECT_THROW(cast<OuterRecord>(value(read(R"({"preset":null})"))), bad_cast);
 
     // an element that is not an object is an error
     EXPECT_THROW(cast<OuterRecord>(read(R"({"items":[{"x":2},"s"]})")), bad_cast);
