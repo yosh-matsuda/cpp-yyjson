@@ -1838,6 +1838,70 @@ TEST(Constraints, RequiredGroups)
     EXPECT_EQ(e.path(), "/1");
 }
 
+// alternatives of yyjson::any_of and yyjson::one_of, with settings given as values and through pointers
+constexpr std::string_view alternative_id_regex = "^[a-z]+$";
+constexpr auto alternative_id_pattern = yyjson::pattern(alternative_id_regex);
+constexpr bool alternative_even(int v) { return v % 2 == 0; }
+using Alternatives = yyjson::any_of<
+    yyjson::alt<int, yyjson::minimum(0), yyjson::maximum(9), yyjson::satisfies<alternative_even>,
+                yyjson::description("small")>,
+    yyjson::alt<int, yyjson::minimum(100), yyjson::enum_(100, 200)>,
+    yyjson::alt<std::string, &alternative_id_pattern, yyjson::max_length(8), yyjson::title("id")>,
+    yyjson::alt<std::vector<int>, yyjson::items(yyjson::minimum(1)), yyjson::contains(yyjson::maximum(3)),
+                yyjson::min_contains(1)>,
+    std::tuple<int, std::string>>;
+using ExactlyOne = yyjson::one_of<yyjson::alt<std::string, yyjson::pattern("^x")>, double>;
+namespace compile_rules
+{
+    template <typename... As>
+    constexpr auto alternatives_error = yyjson::detail::alternative_table<As...>::tree.error;
+    using enum yyjson::detail::field_key_error;
+    static_assert(alternatives_error<yyjson::alt<int, yyjson::minimum(0)>, yyjson::alt<int, yyjson::minimum(0)>> ==
+                  none);
+    static_assert(alternatives_error<int, yyjson::alt<int, yyjson::minimum(0), yyjson::minimum(1)>> ==
+                  same_setting_twice);
+    static_assert(alternatives_error<yyjson::alt<int, yyjson::title("a"), yyjson::title("b")>> == same_setting_twice);
+    static_assert(alternatives_error<yyjson::alt<int, yyjson::multiple_of(0)>> == multiple_of_not_positive);
+    static_assert(alternatives_error<yyjson::alt<std::vector<int>, yyjson::max_contains(2)>> == contains_missing);
+    static_assert(alternatives_error<yyjson::alt<std::vector<int>, yyjson::items(yyjson::min_contains(1))>> ==
+                  contains_missing);
+
+    static_assert(std::variant_size_v<Alternatives> == 5 && std::variant_size_v<const ExactlyOne> == 2);
+    static_assert(std::same_as<std::variant_alternative_t<2, Alternatives>, std::string>);
+    static_assert(std::same_as<std::variant_alternative_t<4, Alternatives>, std::tuple<int, std::string>>);
+    static_assert(!std::is_aggregate_v<Alternatives>);
+    static_assert(yyjson::detail::constrained_alternative<Alternatives, 0>);
+    static_assert(!yyjson::detail::constrained_alternative<Alternatives, 4>);
+    static_assert(!yyjson::detail::combined_alternatives<ExactlyOne>::table::tree.nodes[1].constraints.set);
+    static_assert(yyjson::detail::combined_alternatives<ExactlyOne>::exactly_one);
+    static_assert(!yyjson::detail::combined_alternatives<Alternatives>::exactly_one);
+    static_assert(yyjson::detail::alternative_level<Alternatives, 1>::values.size() == 2);
+    static_assert(yyjson::detail::alternative_level<Alternatives, 2>::constraints.pattern_text.view() ==
+                  "^[a-z]+$");
+    static_assert(yyjson::detail::alternative_level<Alternatives, 3>::node.contains != 0);
+}  // namespace compile_rules
+
+TEST(Constraints, AlternativeTypes)
+{
+    // the alternatives of the same type are told apart by the index
+    auto a = Alternatives(std::in_place_index<1>, 200);
+    EXPECT_EQ(a.index(), 1);
+    EXPECT_EQ(std::get<1>(a), 200);
+    a = std::string("abc");
+    EXPECT_TRUE(std::holds_alternative<std::string>(a));
+    EXPECT_EQ(std::visit([](const auto& v) { return sizeof(v); }, a), sizeof(std::string));
+    const auto b = a;
+    EXPECT_EQ(a, b);
+    a.emplace<0>(4);
+    EXPECT_NE(a, b);
+    EXPECT_EQ(*std::get_if<0>(&a), 4);
+
+    auto e = ExactlyOne(1.5);
+    EXPECT_EQ(e.index(), 1);
+    e = "x";
+    EXPECT_EQ(std::get<std::string>(e), "x");
+}
+
 #if FIELD_RFL_ANNOTATIONS
 TEST(Constraints, Annotations)
 {

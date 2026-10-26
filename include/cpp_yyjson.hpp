@@ -2610,6 +2610,232 @@ namespace yyjson
         return {member, {values...}};
     }
 
+    // An alternative of `yyjson::any_of` or `yyjson::one_of`: a value of T, with the settings of the value that
+    // a field of T takes, other than those of its key.  `yyjson::any_of<yyjson::alt<int, yyjson::minimum(0)>,
+    // std::string>` holds an `int` or a `std::string`.  A setting is given as a value or as a pointer to a constexpr
+    // variable, which a setting made from a `std::string_view` needs: `yyjson::alt<std::string, &id_pattern>`.
+    // It is only an argument of `yyjson::any_of` and `yyjson::one_of`, and never a value, so it is not defined.
+    // (A definition that failed to compile would fail where argument-dependent lookup completes it, as `a == b`
+    // does for `yyjson::any_of` arguments.)
+    template <typename T, auto... Settings>
+    struct alt;
+
+    namespace detail
+    {
+        // Whether the template argument `S` of `yyjson::alt` is a setting or a pointer to one.
+        template <auto S>
+        inline constexpr bool alternative_setting_argument =
+            std::is_class_v<std::remove_cv_t<decltype(S)>> ||
+            (std::is_pointer_v<decltype(S)> && std::is_class_v<std::remove_cv_t<std::remove_pointer_t<decltype(S)>>>);
+        // The setting `S` of `yyjson::alt`, or the one that it points to, in static storage.
+        template <auto S>
+        consteval const auto& alternative_setting_value() noexcept
+        {
+            if constexpr (std::is_pointer_v<decltype(S)>)
+                return *S;
+            else
+                return S;
+        }
+        template <auto S>
+        using alternative_setting_t = std::remove_cvref_t<decltype(alternative_setting_value<S>())>;
+
+        // The settings that `yyjson::alt` takes: those of a value, and those that describe it in the JSON Schema.
+        template <typename A>
+        concept alternative_setting = element_setting<A> || (metadata_setting<A> && !std::same_as<A, schema>);
+
+        // The type of the alternative A of `yyjson::any_of` or `yyjson::one_of`, which is `yyjson::alt<T, ...>` or
+        // T, and its settings: the number of the nodes and of the values that they add to `schema_tree`, and
+        // `for_each(f)` calls f with each of them.
+        template <typename A>
+        struct alternative_traits
+        {
+            using type = A;
+            static constexpr tree_size size = {};
+            template <typename F>
+            static constexpr void for_each(F&&)
+            {
+            }
+        };
+        template <typename T, auto... Settings>
+        struct alternative_traits<alt<T, Settings...>>
+        {
+            static_assert((alternative_setting_argument<Settings> && ...),
+                          "yyjson::alt takes settings, or pointers to constexpr variables that hold them");
+            static_assert(((!alternative_setting_argument<Settings> ||
+                            alternative_setting<alternative_setting_t<Settings>>) &&
+                           ...),
+                          "yyjson::alt takes the constraints such as yyjson::minimum and yyjson::satisfies<f>, "
+                          "yyjson::items, yyjson::prefix_items, yyjson::contains, yyjson::property_names, "
+                          "yyjson::additional_properties(settings...), and yyjson::title, yyjson::description, "
+                          "yyjson::examples and yyjson::deprecated; not the settings of a key");
+            static_assert(!requires { typename alternative_traits<T>::alt_type; },
+                          "yyjson::alt takes the type of a value, and not another yyjson::alt");
+
+            using type = T;
+            using alt_type = alt<T, Settings...>;
+            static constexpr tree_size size = (tree_size{} + ... + node_count<alternative_setting_t<Settings>>);
+            template <typename F>
+            static constexpr void for_each(F&& f)
+            {
+                (f(alternative_setting_value<Settings>()), ...);
+            }
+        };
+        template <typename A>
+        using alternative_type_t = typename alternative_traits<A>::type;
+
+        // The settings of the alternatives As: the node i of `tree` holds those of the alternative i.
+        template <typename... As>
+        struct alternative_table
+        {
+            static constexpr tree_size size =
+                (tree_size{sizeof...(As), 0} + ... + alternative_traits<As>::size);
+            static constexpr schema_tree<size.nodes, size.values> tree = [] {
+                auto t = schema_tree<size.nodes, size.values>{{}, sizeof...(As)};
+                std::size_t i = 0;
+                (
+                    [&] {
+                        std::uint8_t described = 0;
+                        alternative_traits<As>::for_each([&]<typename A>(const A& a) {
+                            if constexpr (metadata_setting<A>)
+                            {
+                                if ((described & metadata_bit<A>) != 0) t.fail(field_key_error::same_setting_twice);
+                                described |= metadata_bit<A>;
+                            }
+                            else
+                                t.add(i, a);
+                        });
+                        ++i;
+                    }(),
+                    ...);
+                t.check();
+                return t;
+            }();
+        };
+
+        // Fails to compile if the settings of the alternatives As are wrong.
+        template <typename... As>
+        consteval bool check_alternatives()
+        {
+            constexpr auto error = alternative_table<As...>::tree.error;
+            static_assert(error != field_key_error::same_setting_twice,
+                          "an alternative of yyjson::any_of or yyjson::one_of has the same setting twice");
+            static_assert(error != field_key_error::multiple_of_not_positive,
+                          "yyjson::multiple_of takes a number greater than 0");
+            static_assert(error != field_key_error::contains_missing,
+                          "yyjson::min_contains and yyjson::max_contains bound the number of the elements that "
+                          "satisfy yyjson::contains, which has to come with them");
+            static_assert(error != field_key_error::prefix_position_too_large,
+                          "a position of yyjson::prefix_items holds the settings of the values in it in up to 8 "
+                          "nodes: one for itself and one for each yyjson::items, yyjson::contains, "
+                          "yyjson::property_names, yyjson::additional_properties(settings...) and position of "
+                          "yyjson::prefix_items in it, up to 16 values of yyjson::const_ and "
+                          "yyjson::enum_, and, before C++26, up to 256 characters of the strings written as "
+                          "string literals; pass a longer string as a std::string_view");
+            return error == field_key_error::none;
+        }
+
+        // The settings at the node `Node` of the tree of `Table::tree`, as `constraint_node` has them.
+        template <typename Table, std::size_t Node>
+        struct table_node
+        {
+            static constexpr schema_node node = Table::tree.nodes[Node];
+            static constexpr field_constraints constraints = node.constraints;
+            static constexpr auto values = [] {
+                constexpr std::size_t constants = constraints.has<const_<>>() ? 1 : 0;
+                auto result = std::array<json_scalar, constants + constraints.enum_count>{};
+                if constexpr (constants != 0) result[0] = Table::tree.values[constraints.constant];
+                for (std::size_t i = 0; i < constraints.enum_count; ++i)
+                    result[constants + i] = Table::tree.values[constraints.enum_first + i];
+                return result;
+            }();
+            template <std::size_t C>
+            using at = table_node<Table, C>;
+        };
+    }  // namespace detail
+
+    // A value of one of the types of the alternatives As, each `yyjson::alt<T, settings...>` or a type T, as JSON
+    // Schema's `anyOf`.  It is the `std::variant` of the types.  Reading takes the first alternative that reads the
+    // JSON value and whose settings it satisfies.  Alternatives of the same type are told apart by `index()`.
+    template <typename... As>
+    struct any_of : std::variant<detail::alternative_type_t<As>...>
+    {
+        static_assert(sizeof...(As) != 0, "yyjson::any_of needs an alternative");
+        static_assert(detail::check_alternatives<As...>());
+
+        using variant_type = std::variant<detail::alternative_type_t<As>...>;
+        using variant_type::variant_type;
+        using variant_type::operator=;
+    };
+
+    // A value of one of the types of the alternatives As, as JSON Schema's `oneOf`, and as `yyjson::any_of`, except
+    // that reading rejects a JSON value that more than one alternative reads and whose settings it satisfies.
+    template <typename... As>
+    struct one_of : std::variant<detail::alternative_type_t<As>...>
+    {
+        static_assert(sizeof...(As) != 0, "yyjson::one_of needs an alternative");
+        static_assert(detail::check_alternatives<As...>());
+
+        using variant_type = std::variant<detail::alternative_type_t<As>...>;
+        using variant_type::variant_type;
+        using variant_type::operator=;
+    };
+
+    namespace detail
+    {
+        // Whether V is `yyjson::any_of` or `yyjson::one_of`, its alternatives, and their settings.
+        template <typename V>
+        struct combined_alternatives
+        {
+            static constexpr bool value = false;
+        };
+        template <typename... As>
+        struct combined_alternatives<any_of<As...>>
+        {
+            static constexpr bool value = true;
+            static constexpr bool exactly_one = false;
+            using alternatives = type_list<As...>;
+            using table = alternative_table<As...>;
+        };
+        template <typename... As>
+        struct combined_alternatives<one_of<As...>>
+        {
+            static constexpr bool value = true;
+            static constexpr bool exactly_one = true;
+            using alternatives = type_list<As...>;
+            using table = alternative_table<As...>;
+        };
+        template <typename V>
+        concept combined_variant = combined_alternatives<std::remove_cv_t<V>>::value;
+        // The settings of the alternative I of V, which is `yyjson::any_of` or `yyjson::one_of`.
+        template <typename V, std::size_t I>
+        using alternative_level = table_node<typename combined_alternatives<V>::table, I>;
+        // Whether the alternative I of V has a setting of its value.
+        template <typename V, std::size_t I>
+        inline constexpr bool constrained_alternative = !combined_alternatives<V>::table::tree.nodes[I].empty();
+    }  // namespace detail
+}  // namespace yyjson
+
+template <typename... As>
+struct std::variant_size<yyjson::any_of<As...>> : std::variant_size<typename yyjson::any_of<As...>::variant_type>
+{
+};
+template <typename... As>
+struct std::variant_size<yyjson::one_of<As...>> : std::variant_size<typename yyjson::one_of<As...>::variant_type>
+{
+};
+template <std::size_t I, typename... As>
+struct std::variant_alternative<I, yyjson::any_of<As...>>
+    : std::variant_alternative<I, typename yyjson::any_of<As...>::variant_type>
+{
+};
+template <std::size_t I, typename... As>
+struct std::variant_alternative<I, yyjson::one_of<As...>>
+    : std::variant_alternative<I, typename yyjson::one_of<As...>::variant_type>
+{
+};
+
+namespace yyjson
+{
     // How an enumeration is written and read: by the names of its enumerators, as the integer of its underlying
     // type, or by the name and as the integer when the value has no name.  It annotates the enumeration:
     // `yyjson::annotations<E> = yyjson::annotate(yyjson::enum_format::integer)` or
