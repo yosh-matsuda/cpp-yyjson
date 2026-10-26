@@ -2676,6 +2676,35 @@ TEST(Writer, MoveOnlyVariantAlternative)
     EXPECT_EQ(value(V(3), copy_string).write(), "3");
 }
 
+TEST(Writer, EmplaceJsonValueCopyKey)
+{
+    using namespace yyjson;
+
+    // the key is copied with copy_string also when the value is a JSON value
+    auto obj = object();
+    {
+        const auto src = read(R"({"a": 1})");
+        auto mut = value(2);
+        const auto ro = mut;
+        auto other = object();
+        auto it = other.emplace("x", 0);
+        auto key = std::string("k0");
+        obj.emplace(key, (*src.as_object())["a"], copy_string);
+        key = "k1";
+        obj.emplace(key, mut, copy_string);
+        key = "k2";
+        obj.emplace(key, ro, copy_string);
+        key = "k3";
+        obj.emplace_no_iter(key, (*src.as_object())["a"], copy_string);
+        key = "k4";
+        obj.emplace_no_iter(key, value(5), copy_string);
+        key = "k5";
+        obj.try_emplace(key, (*it).second, copy_string);
+        key = "zz";
+    }
+    EXPECT_EQ(obj.write(), R"({"k0":1,"k1":2,"k2":2,"k3":1,"k4":5,"k5":0})");
+}
+
 TEST(Writer, Equality)
 {
     using namespace yyjson;  // NOLINT
