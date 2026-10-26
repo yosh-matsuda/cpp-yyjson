@@ -8762,13 +8762,27 @@ namespace yyjson
     {
     };
 
+    namespace detail
+    {
+        // Whether `cast<T>` may read null, as `accepted_json_kinds` tells.
+        template <typename T>
+        consteval bool may_read_null();
+
+        // Whether a field of type T reads null as a missing key.
+        template <typename T>
+        constexpr bool null_reads_as_missing = false;
+        template <typename T>
+        constexpr bool null_reads_as_missing<std::optional<T>> = !may_read_null<T>();
+    }  // namespace detail
+
     template <typename T>
     struct caster<std::optional<T>> : detail::builtin_caster
     {
         // A field that holds no value is left out of the JSON object.
         static bool should_omit(const std::optional<T>& t) { return !t.has_value(); }
 
-        // A field keeps the value that it holds when the JSON value is null.
+        // A field reads null as a missing key and keeps the value that it holds, unless T reads null, which then
+        // tells null from a missing key.
         template <typename Json>
         requires castable<Json, T>
         static void from_json(std::optional<T>& field, const Json& json)
@@ -8781,7 +8795,7 @@ namespace yyjson
                     return;
                 }
             }
-            if (!json.is_null() || detail::owning_pointer<T>) field = cast<T>(json);
+            if (!json.is_null() || detail::may_read_null<T>()) field = cast<T>(json);
         }
 
         // Null gives no value, and any other JSON value is read as `cast<T>` reads it.
@@ -8957,6 +8971,12 @@ namespace yyjson
                 if constexpr (json_string_constructible<T> || enum_by_name<T>) kinds |= json_kind_string;
                 return static_cast<std::uint16_t>(kinds);
             }
+        }
+
+        template <typename T>
+        consteval bool may_read_null()
+        {
+            return (accepted_json_kinds<T, reader::const_value_ref>() & json_kind_null) != 0;
         }
 
         template <typename... Ts>
@@ -16218,9 +16238,9 @@ namespace yyjson
                 check_adjacent_tags_without_values(t, adjacent);
             }
 
-            // Reads a field as `read_field` does, but on its first key in the object resets first what
-            // `read_field` would keep of the old value to its value in `T()`: everything for a caster that reads
-            // over it, and an optional for a null.
+            // Reads a field as `read_field` does, but on its first key in the object puts back its value in `T()`
+            // where `read_field` would keep the old value: before a caster that reads over it, and after an
+            // optional reads a null as a missing key.
             template <std::size_t I, typename T>
             CPPYYJSON_ALWAYS_INLINE void read_field_over(T& t, bool first)
             {
@@ -16234,10 +16254,10 @@ namespace yyjson
                         field = std::move(struct_field<I>(defaults));
                     }
                 }
-                else if constexpr (is_std_optional<field_type>::value)
+                else if constexpr (yyjson::detail::null_reads_as_missing<field_type>)
                 {
-                    if (first && *cur_ == 'n')
-                    {
+                    read_field(field, false, [&] {
+                        if (!first) return;
                         // most optionals are empty in `T()`, which is told once per field instead of building
                         // `T()` for every null
                         static const auto empty_by_default = [] {
@@ -16248,7 +16268,8 @@ namespace yyjson
                             field.reset();
                         else [[unlikely]]
                             reset_field<I>(t);
-                    }
+                    });
+                    return;
                 }
                 read_field(field, false);
             }
@@ -16605,10 +16626,16 @@ namespace yyjson
                 close(open);
             }
 
+            struct ignore_null
+            {
+                void operator()() const noexcept {}
+            };
+
             // Assigns the value at `cur_` to a field of a struct as `assign_reflected_field` assigns it from a
-            // document.
-            template <typename Field>
-            CPPYYJSON_ALWAYS_INLINE void read_field(Field& field, bool replaceable)
+            // document. A null read as a missing key calls `on_null`.
+            template <typename Field, typename OnNull = ignore_null>
+            CPPYYJSON_ALWAYS_INLINE void read_field(Field& field, bool replaceable,
+                                                    [[maybe_unused]] OnNull on_null = {})
             {
                 using field_type = std::remove_cvref_t<Field>;
                 if constexpr (std::is_array_v<field_type>)
@@ -16635,11 +16662,12 @@ namespace yyjson
                                 return;
                             }
                         }
-                        if constexpr (!yyjson::detail::owning_pointer<value_type>)
+                        if constexpr (!yyjson::detail::may_read_null<value_type>())
                         {
                             if (*cur_ == 'n')
                             {
                                 read_literal("null");
+                                on_null();
                                 return;
                             }
                         }

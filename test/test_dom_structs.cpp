@@ -63,6 +63,41 @@ TEST(Reader, OptionalFieldKeepsDefault)
     EXPECT_EQ(*with_null.ptr, nullptr);
 }
 
+struct NullFields
+{
+    std::optional<int> number = 1;
+    std::optional<std::variant<std::monostate, int>> nullable;
+    std::vector<std::optional<int>> elements;
+    bool operator==(const NullFields&) const = default;
+};
+
+TEST(Reader, OptionalFieldNull)
+{
+    using namespace yyjson;
+
+    // null in a field is read as a missing key unless the value type reads null, which keeps a third state
+    EXPECT_TRUE(expect_direct_read<NullFields>(R"({"number":null,"nullable":null,"elements":[null,2]})"));
+    const auto read_null = read<NullFields>(R"({"number":null,"nullable":null,"elements":[null,2]})");
+    EXPECT_EQ(read_null, (NullFields{1, std::variant<std::monostate, int>(), {std::nullopt, 2}}));
+    EXPECT_EQ(read(R"({"number":null})").cast<NullFields>(), NullFields{});
+    EXPECT_FALSE(read<NullFields>("{}").nullable.has_value());
+
+    // reading into an object gives the field its value in `T()`, as a missing key does
+    auto holding = NullFields{};
+    holding.number = 5;
+    holding.nullable = 3;
+    EXPECT_TRUE(expect_read_into(holding, R"({"number":null})"));
+    EXPECT_TRUE(expect_read_into(holding, R"({"nullable":null})"));
+    auto into = holding;
+    read_into(R"({"number":null})", into);
+    EXPECT_EQ(into, NullFields{});
+
+    // a merge patch gives the field its default value on null
+    auto merged = holding;
+    merge_into(R"({"number":null,"nullable":null})", merged);
+    EXPECT_EQ(merged, NullFields{});
+}
+
 struct OptionalDomFields
 {
     int id = 0;
@@ -80,6 +115,12 @@ TEST(Reader, OptionalDomFields)
     EXPECT_EQ(write(read<OptionalDomFields>(json)), json);
     EXPECT_EQ(write(read(json).cast<OptionalDomFields>()), json);
     EXPECT_EQ(write(read<OptionalDomFields>(R"({"id":2})")), R"({"id":2})");
+
+    // `yyjson::value` reads null, so a null is held instead of being taken as a missing key
+    const auto* const null_value = R"({"id":3,"value":null})";
+    EXPECT_TRUE(read<OptionalDomFields>(null_value).value.has_value());
+    EXPECT_TRUE(read(null_value).cast<OptionalDomFields>().value.has_value());
+    EXPECT_EQ(write(read<OptionalDomFields>(null_value)), null_value);
 }
 
 TEST(Reader, PairRangeNeedsKeyToReadObject)
