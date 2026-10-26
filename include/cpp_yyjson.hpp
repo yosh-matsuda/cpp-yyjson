@@ -3403,10 +3403,14 @@ namespace yyjson
             concept key_value_like_create_value_callable =
                 key_value_like<Pair> && create_element_callable<std::tuple_element_t<1, Pair>>;
 
+            // A range whose elements are of its own type, such as `nanobind::handle`, is not one: it would be an
+            // array of arrays without end, and the check of its elements would depend on itself.
             template <typename Range>
             concept create_value_range =
-                std::ranges::input_range<Range> && create_element_callable<std::ranges::range_value_t<Range>> &&
-                (!create_primitive_callable<Range>) && (!convertible_to_create_array_callable<Range>);
+                std::ranges::input_range<Range> &&
+                (!std::same_as<std::remove_cvref_t<std::ranges::range_value_t<Range>>, std::remove_cvref_t<Range>>) &&
+                create_element_callable<std::ranges::range_value_t<Range>> && (!create_primitive_callable<Range>) &&
+                (!convertible_to_create_array_callable<Range>);
 
             // The types `set_value` stores straight into the value it is handed.
             template <typename T>

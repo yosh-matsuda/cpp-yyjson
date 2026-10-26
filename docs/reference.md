@@ -764,7 +764,7 @@ auto v_moved = value(std::move(stdstr));
 
 #### `yyjson::array`
 
-The mutable JSON array class is created by the *range of JSON value constructible* or the `yyjson::value::as_array` member function. This class adapts `std::ranges::input_range` concept.
+The mutable JSON array class is created by the *range of JSON value constructible* or the `yyjson::value::as_array` member function. This class adapts `std::ranges::input_range` concept. A range whose elements are of its own type, such as `nanobind::handle`, is not converted to an array, which would nest without end.
 
 **Constructor**
 
