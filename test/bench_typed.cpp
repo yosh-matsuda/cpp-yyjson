@@ -599,11 +599,13 @@ namespace
     // reflect-cpp returns the object in an `rfl::Result`, which a caller can use in place;
     // the rows keep it, without moving the object out.  It has no read into an existing
     // object, and writes either into a new string or into a stream, so it has no rows of
-    // reused objects or buffers.
+    // reused objects or buffers.  reflect-cpp rejects a missing key of a field that is not
+    // a `std::optional` by default; `rfl::DefaultIfMissing` lets it read the `nullable`
+    // `ref` of github_events, which some of the payloads leave out, as the other libraries do.
     template <typename D>
     auto reflectcpp_read(std::string_view json)
     {
-        return rfl::json::read<typename D::type, bench_typed::reflectcpp_rename>(json);
+        return rfl::json::read<typename D::type, bench_typed::reflectcpp_rename, rfl::DefaultIfMissing>(json);
     }
 
     template <typename D>

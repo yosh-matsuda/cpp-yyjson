@@ -14,9 +14,11 @@
 // reflect-cpp through the processor `reflectcpp_rename`.  Nothing is skipped, so a
 // library that is fast at skipping values gains little here.
 //
-// A key whose value is always null in the document is a `std::optional`, as is a key
-// that only some of the objects have.  The libraries leave out an empty optional when
-// writing, so they write the same keys.
+// A key that only some of the objects have is a `std::optional`, which the libraries
+// leave out when writing it empty.  A key whose value is null, always or in some of the
+// objects, is a `nullable`, a `std::variant` with `std::monostate` for null: a
+// `std::optional` field of cpp-yyjson means a key that may be missing and does not read
+// null.  All three libraries write an empty `nullable` as null.
 
 #include <cpp_yyjson.hpp>
 #if defined(CPPYYJSON_GLAZE_BENCHMARKS)
@@ -36,6 +38,9 @@
 
 namespace bench_typed
 {
+    template <typename T>
+    using nullable = std::variant<std::monostate, T>;
+
     // canada.json: a GeoJSON polygon of 111 thousand coordinate pairs, as `double` and as
     // `float`, whose numbers are read by narrowing a `double` and written with fewer digits.
     // As `std::variant<std::int64_t, double>`, every number that is not an integer skips
@@ -85,13 +90,13 @@ namespace bench_typed
     {
         struct event_t
         {
-            std::optional<std::string> description;
+            nullable<std::string> description;
             std::int64_t id;
-            std::optional<std::string> logo;
+            nullable<std::string> logo;
             std::string name;
             std::vector<std::int64_t> subTopicIds;
-            std::optional<std::string> subjectCode;
-            std::optional<std::string> subtitle;
+            nullable<std::string> subjectCode;
+            nullable<std::string> subtitle;
             std::vector<std::int64_t> topicIds;
             bool operator==(const event_t&) const = default;
         };
@@ -122,11 +127,11 @@ namespace bench_typed
         {
             std::int64_t eventId;
             std::int64_t id;
-            std::optional<std::string> logo;
-            std::optional<std::string> name;
+            nullable<std::string> logo;
+            nullable<std::string> name;
             std::vector<price_t> prices;
             std::vector<seat_category_t> seatCategories;
-            std::optional<std::string> seatMapImage;
+            nullable<std::string> seatMapImage;
             std::int64_t start;
             std::string venueCode;
             bool operator==(const performance_t&) const = default;
@@ -189,7 +194,7 @@ namespace bench_typed
             std::string screen_name;
             std::string location;
             std::string description;
-            std::optional<std::string> url;
+            nullable<std::string> url;
             user_entities_t entities;
             bool protected_;
             std::int64_t followers_count;
@@ -197,8 +202,8 @@ namespace bench_typed
             std::int64_t listed_count;
             std::string created_at;
             std::int64_t favourites_count;
-            std::optional<std::int64_t> utc_offset;
-            std::optional<std::string> time_zone;
+            nullable<std::int64_t> utc_offset;
+            nullable<std::string> time_zone;
             bool geo_enabled;
             bool verified;
             std::int64_t statuses_count;
@@ -296,16 +301,16 @@ namespace bench_typed
     std::string text;                                      \
     std::string source;                                    \
     bool truncated;                                        \
-    std::optional<std::int64_t> in_reply_to_status_id;     \
-    std::optional<std::string> in_reply_to_status_id_str;  \
-    std::optional<std::int64_t> in_reply_to_user_id;       \
-    std::optional<std::string> in_reply_to_user_id_str;    \
-    std::optional<std::string> in_reply_to_screen_name;    \
+    nullable<std::int64_t> in_reply_to_status_id;          \
+    nullable<std::string> in_reply_to_status_id_str;       \
+    nullable<std::int64_t> in_reply_to_user_id;            \
+    nullable<std::string> in_reply_to_user_id_str;         \
+    nullable<std::string> in_reply_to_screen_name;         \
     user_t user;                                           \
-    std::optional<std::string> geo;                        \
-    std::optional<std::string> coordinates;                \
-    std::optional<std::string> place;                      \
-    std::optional<std::string> contributors;
+    nullable<std::string> geo;                             \
+    nullable<std::string> coordinates;                     \
+    nullable<std::string> place;                           \
+    nullable<std::string> contributors;
 #define BENCH_TYPED_TWITTER_STATUS_TAIL     \
     std::int64_t retweet_count;             \
     std::int64_t favorite_count;            \
@@ -471,14 +476,14 @@ namespace bench_typed
             bool public_;
             bool has_wiki;
             std::string subscribers_url;
-            std::optional<std::string> mirror_url;
+            nullable<std::string> mirror_url;
             std::int64_t watchers_count;
             std::int64_t id;
             bool has_downloads;
             std::string git_commits_url;
             std::string downloads_url;
             std::string pulls_url;
-            std::optional<std::string> homepage;
+            nullable<std::string> homepage;
             std::string issue_comment_url;
             std::string hooks_url;
             std::string subscription_url;
@@ -499,9 +504,9 @@ namespace bench_typed
 
         struct pull_request_t
         {
-            std::optional<std::string> html_url;
-            std::optional<std::string> patch_url;
-            std::optional<std::string> diff_url;
+            nullable<std::string> html_url;
+            nullable<std::string> patch_url;
+            nullable<std::string> diff_url;
             bool operator==(const pull_request_t&) const = default;
         };
 
@@ -515,14 +520,14 @@ namespace bench_typed
             std::string labels_url;
             pull_request_t pull_request;
             std::string created_at;
-            std::optional<std::string> closed_at;
-            std::optional<std::string> milestone;
+            nullable<std::string> closed_at;
+            nullable<std::string> milestone;
             std::string title;
             std::string body;
             std::string updated_at;
             std::int64_t number;
             std::string state;
-            std::optional<user_t> assignee;
+            nullable<user_t> assignee;
             std::int64_t id;
             std::string events_url;
             std::string comments_url;
@@ -548,7 +553,7 @@ namespace bench_typed
             std::string html_url;
             std::string title;
             std::string sha;
-            std::optional<std::string> summary;
+            nullable<std::string> summary;
             std::string action;
             bool operator==(const page_t&) const = default;
         };
@@ -557,7 +562,10 @@ namespace bench_typed
         {
             std::optional<std::vector<commit_t>> commits;
             std::optional<std::int64_t> distinct_size;
-            std::optional<std::string> ref;
+            // null in some payloads and missing in others; an optional of a nullable would read
+            // null as an empty optional in Glaze and reflect-cpp, so a missing key reads as null
+            // too and is written back as null.
+            nullable<std::string> ref;
             std::optional<std::int64_t> push_id;
             std::optional<std::string> head;
             std::optional<std::string> before;
@@ -714,5 +722,23 @@ namespace bench_typed
         }
     };
 }  // namespace bench_typed
+
+// reflect-cpp reads and writes `std::monostate` as an empty object; `nullable` needs null.
+template <class R, class W, class ProcessorsType>
+requires rfl::parsing::AreReaderAndWriter<R, W, std::monostate>
+struct rfl::parsing::Parser<R, W, std::monostate, ProcessorsType>
+{
+    static rfl::Result<std::monostate> read(const R& r, const typename R::InputVarType& var) noexcept
+    {
+        if (r.is_empty(var)) return std::monostate{};
+        return rfl::error("Expected null.");
+    }
+
+    template <class P>
+    static void write(const W& w, const std::monostate&, const P& parent)
+    {
+        rfl::parsing::Parent<W>::add_null(w, parent);
+    }
+};
 #endif
 // NOLINTEND
