@@ -7049,18 +7049,16 @@ namespace yyjson
         void assign_transparent(T& t, const Json& json, bool replaceable);
 
         // Whether the field of `T`, a struct annotated with `yyjson::transparent`, is a `std::optional` that null
-        // leaves as it is when `T` is a field of a struct.  Elsewhere, as an element, a value of a map, an
-        // alternative or the root, null empties it, as it reads a `std::optional` there.
+        // empties when `T` is an element, a value of a map, an alternative or the root, as it empties a
+        // `std::optional` there.  As a field of a struct, `T` reads null as the field reads it.
         template <typename T>
         concept transparent_over_optional =
-            is_std_optional<struct_field_type<T, 0>>::value &&
+            transparent_struct<T> && is_std_optional<struct_field_type<T, 0>>::value &&
             std::derived_from<caster<struct_field_type<T, 0>>, builtin_caster> &&
             !owning_pointer<typename struct_field_type<T, 0>::value_type>;
 
-        // `replaceable` tells whether a new object may be constructed in the place of the field.  `Keyed` is false
-        // for the field of a struct annotated with `yyjson::transparent`, which is a value rather than a key, and
-        // which `yyjson::strict` therefore lets take null as it lets an element.
-        template <typename Field, typename Json, bool Keyed = true>
+        // `replaceable` tells whether a new object may be constructed in the place of the field.
+        template <typename Field, typename Json>
         void assign_reflected_field_impl(Field& field, const Json& value, bool replaceable)
         {
             using field_type = std::remove_cvref_t<Field>;
@@ -7724,20 +7722,19 @@ namespace yyjson
         }
 
         // Reads `json` into the field of `t`, a struct annotated with `yyjson::transparent`, as into a field of a
-        // struct, and checks the constraints of the field unless `json` is null, which leaves the field as it is.
+        // struct, and checks the constraints of the field unless it reads null as a missing key.
         // `replaceable` tells whether a new object may be constructed in the place of `t`, and so of its field.
         template <typename T, typename Json>
         void assign_transparent(T& t, const Json& json, bool replaceable)
         {
-            using field_type = struct_field_type<T, 0>;
             auto& field = struct_field<0>(t);
             if constexpr (visitable<T>)
                 replaceable = false;
             else
                 replaceable = replaceable && reflected_field_replaceable<reflected_field_index<T, 0>>(t);
-            assign_reflected_field_impl<field_type, Json, false>(field, json, replaceable);
+            assign_reflected_field_impl(field, json, replaceable);
             if constexpr (constrained_field<T, 0>)
-                if (!json.is_null()) check_constraints<T, 0>(field, json);
+                if (checks_null_field<struct_field_type<T, 0>> || !json.is_null()) check_constraints<T, 0>(field, json);
         }
 
         // `assign_fields_in_order` for the fields of the struct T, which calls `assign(k, value, obj)` instead
@@ -14856,9 +14853,8 @@ namespace yyjson
     };
 
     // A struct annotated with `yyjson::transparent`, which is read and written as the value of its only field.
-    // The field is read in place as a field of a struct is, and its constraints are checked unless the value is
-    // null.  Null empties a `std::optional` field, as it does a `std::optional` value; only a field of a struct
-    // keeps the value in `T()`.
+    // The field is read in place as a field of a struct is, and its constraints are checked.  Null empties a
+    // `std::optional` field, as it does a `std::optional` value, unless `T` is a field of a struct.
     template <typename T>
     requires detail::transparent_struct<T>
     struct caster<T> : detail::builtin_caster
@@ -21039,8 +21035,7 @@ namespace yyjson
             }
 
             // Reads the value at `cur_` into the field of `t`, a struct annotated with `yyjson::transparent`, as
-            // `detail::assign_transparent` reads a value of a document: null leaves an optional field as it is, also
-            // under `yyjson::strict`, and the constraints are checked unless the value is null.
+            // `detail::assign_transparent` reads a value of a document.
             template <typename T>
             void read_transparent_field(T& t, bool replaceable)
             {
@@ -21051,22 +21046,10 @@ namespace yyjson
                 else
                     replaceable = replaceable && yyjson::detail::reflected_field_replaceable<
                                                      yyjson::detail::reflected_field_index<T, 0>>(t);
-                const bool null = *cur_ == 'n';
-                if constexpr (is_std_optional<field_type>::value &&
-                              std::derived_from<caster<field_type>, yyjson::detail::builtin_caster>)
-                {
-                    if constexpr (!yyjson::detail::owning_pointer<typename field_type::value_type>)
-                    {
-                        if (null)
-                        {
-                            read_literal("null");
-                            return;
-                        }
-                    }
-                }
+                [[maybe_unused]] const bool null = *cur_ == 'n';
                 read_field(field, replaceable);
                 if constexpr (yyjson::detail::constrained_field<T, 0>)
-                    if (!null) check_constraints<T, 0>(t);
+                    if (yyjson::detail::checks_null_field<field_type> || !null) check_constraints<T, 0>(t);
             }
 
             // Reads the key at `cur_` and finds it with `matcher`.  The keys of a type that are not read, or not

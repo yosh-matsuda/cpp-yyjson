@@ -268,16 +268,29 @@ TEST(Transparent, Values)
     ASSERT_TRUE(position.has_value());
     EXPECT_EQ(position->pos, 6);
 
-    // a field of an empty optional value is left out, which `yyjson::strict` accepts, and null in it keeps the
-    // default, as for a field of std::optional; `merge_into` resets it to the default
+    // a field of an empty optional value is left out, which `yyjson::strict` accepts, and null in it is read as a
+    // missing key, as for a field of std::optional, which `yyjson::strict` rejects; `merge_into` resets it to the
+    // default
     auto empty = Account();
     empty.limit.o.reset();
     expect_written(empty, R"({"id":1,"tags":["a"],"ids":[],"by_name":{},"w":{"a":1,"b":"x"}})");
     expect_read<Account>(R"({"id":1,"tags":["a"],"ids":[],"by_name":{},"w":{"a":1,"b":"x"}})", Account());
     EXPECT_EQ(yyjson::read<Account>(R"({"limit":null})"), Account());
-    EXPECT_EQ(yyjson::read<Account>(
-                  R"({"id":1,"tags":["a"],"ids":[],"by_name":{},"w":{"a":1,"b":"x"},"limit":null})", yyjson::strict),
-              Account());
+    EXPECT_EQ(yyjson::read(R"({"limit":null})").cast<Account>(), Account());
+    auto into = Account();
+    into.limit.o = 9;
+    yyjson::read_into(R"({"limit":null})", into);
+    EXPECT_EQ(into, Account());
+    constexpr auto strict_null = R"({"id":1,"tags":["a"],"ids":[],"by_name":{},"w":{"a":1,"b":"x"},"limit":null})";
+    for (const auto& read : std::array<std::function<void()>, 2>{
+             [&] { (void)yyjson::read<Account>(strict_null, yyjson::strict); },
+             [&] { (void)yyjson::read(strict_null).cast<Account>(yyjson::strict); }})
+    {
+        const auto e = bad_cast_of(read);
+        EXPECT_TRUE(message_of(e).starts_with("std::optional<int> is not constructible from null under yyjson::strict"))
+            << e.what();
+        EXPECT_EQ(e.path(), "/limit");
+    }
     EXPECT_EQ(yyjson::read<Limit>("null"), Limit{std::nullopt});
     auto merged = Account();
     merged.limit.o = 9;
