@@ -7179,23 +7179,23 @@ namespace yyjson
                 (!visitable<std::remove_cvref_t<T>>) && (!to_json_inp_usr_defined<T>) && (!to_json_usr<T>) &&
                 directly_create_reflected_object_impl<std::remove_cvref_t<T>>(
                     yyjson::detail::reflected_fields<std::remove_cvref_t<T>>{});
-            // Whether every member of a visitable struct can be written, as for a reflected struct above.
-            // `CheckRecursive` checks the members of a recursive struct as well, which `yyjson::writable` does
-            // once for each such struct that a type leads to.
+            // Whether every member of a visitable struct can be created directly, as for a reflected struct above.
             template <typename T, std::size_t I>
             using visitable_member_t =
                 std::remove_cvref_t<decltype(std::declval<const T&>().*
                                              yyjson::detail::member_pointer<I>(visit_struct<T>::members))>;
-            template <typename T, bool CheckRecursive = false>
+            template <typename T>
+            inline constexpr std::size_t visitable_member_count =
+                std::tuple_size_v<std::remove_cv_t<decltype(visit_struct<T>::members)>>;
+            template <typename T>
             consteval bool visitable_fields_creatable()
             {
-                using members = std::remove_cv_t<decltype(visit_struct<T>::members)>;
-                if constexpr (!CheckRecursive && yyjson::detail::recursive_type<T>)
+                if constexpr (yyjson::detail::recursive_type<T>)
                     return true;
                 else
                     return []<std::size_t... Is>(std::index_sequence<Is...>) {
                         return (create_value_callable<visitable_member_t<T, Is>> && ...);
-                    }(std::make_index_sequence<std::tuple_size_v<members>>{});
+                    }(std::make_index_sequence<visitable_member_count<T>>{});
             }
             template <typename T>
             concept directly_create_visitable_object =
@@ -10302,6 +10302,23 @@ namespace yyjson
             concept to_json_with_reflection = (!yyjson::detail::std_array<T>) && yyjson::detail::reflectable<T> &&
                                               to_json_with_reflection_impl<T>(yyjson::detail::reflected_fields<T>());
 
+            // Whether every member of a visitable struct can be put in an object, as above for a reflected struct.
+            // A member of a DOM type such as `yyjson::object` can, although `visitable_fields_creatable` excludes
+            // it from the paths that create the members directly.
+            template <typename T, std::size_t... Is>
+            consteval bool visitable_fields_emplaceable(std::index_sequence<Is...>)
+            {
+                if constexpr (yyjson::detail::recursive_type<T>)
+                    return true;
+                else
+                    return requires(const visitable_member_t<T, Is>&... members) {
+                        (std::declval<object_ref&>().emplace(std::string_view(), members), ...);
+                    };
+            }
+            template <typename T>
+            concept to_json_with_visitable =
+                visitable_fields_emplaceable<T>(std::make_index_sequence<visitable_member_count<T>>());
+
         }  // namespace detail
 
         using value = detail::value;
@@ -11689,7 +11706,9 @@ namespace yyjson
                 else if constexpr (opaque<T>)
                     return true;
                 else if constexpr (visitable<T>)
-                    return writer::detail::visitable_fields_creatable<T, true>();
+                    return []<std::size_t... Is>(std::index_sequence<Is...>) {
+                        return (writes_value<writer::detail::visitable_member_t<T, Is>> && ...);
+                    }(std::make_index_sequence<writer::detail::visitable_member_count<T>>());
                 else if constexpr (!std_array<T> && reflectable<T>)
                     return []<std::size_t... Is>(std::index_sequence<Is...>) {
                         return (writes_value<field_reflection::field_type<T, Is>> && ...);
@@ -12871,14 +12890,14 @@ namespace yyjson
 
         template <typename... Ts>
         requires copy_string_args<Ts...> && visitable<T> && (!writer::detail::to_json_usr_translator<T>) &&
-                 (writer::detail::visitable_fields_creatable<T>())
+                 writer::detail::to_json_with_visitable<T>
         static void to_json(writer::object_ref& obj, const T& t, Ts... ts)
         {
             visit_struct<T>::to_json_impl(obj, t, ts...);
         }
         template <typename... Ts>
         requires copy_string_args<Ts...> && visitable<T> && (!writer::detail::to_json_usr_translator<T>) &&
-                 (writer::detail::visitable_fields_creatable<T>())
+                 writer::detail::to_json_with_visitable<T>
         static void to_json(writer::object_ref& obj, T&& t, Ts... ts)
         {
             visit_struct<T>::to_json_impl(obj, std::move(t), ts...);
