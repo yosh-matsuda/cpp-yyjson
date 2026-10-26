@@ -621,8 +621,7 @@ namespace yyjson
                 }
                 const auto o = doc->as_object();
                 if (!o) fail("is neither an object nor a boolean");
-                // A key of `doc` is copied as a std::string: the reference to a value of a document does not copy it.
-                for (const auto& [k, v] : *o) out.emplace(std::string(k), v);
+                for (const auto& [k, v] : *o) out.emplace(k, v, copy_string);
                 return false;
             }
             // Writes the schema that `yyjson::schema` declares for T in this direction, and returns whether there
