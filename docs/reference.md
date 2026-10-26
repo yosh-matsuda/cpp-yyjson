@@ -1357,7 +1357,7 @@ Besides the strings, ranges, maps and sets described above, the library has cast
 *   `std::tuple`-like
 *   `std::vector<bool>` (specialized)
 
-For reflected object fields, `std::optional` represents field presence: fields with `std::nullopt` are omitted when serialized, and JSON null is ignored when deserializing into the optional field. If JSON null is a value to be preserved, use `std::shared_ptr` or `std::unique_ptr` instead: an empty pointer is written as null, and null is read as an empty pointer. Any other `std::optional<T>`, such as the root or an element of an array, is deserialized from JSON null into `std::nullopt` and from any other value as `T` is.
+For reflected object fields, `std::optional` represents field presence: fields with `std::nullopt` are omitted when serialized, and a key that the JSON object does not have leaves the optional field as it is. JSON null in the field is read as `T` reads it: a `T` that can be read from null, such as `std::shared_ptr`, `std::unique_ptr`, a `std::variant` with `std::monostate`, or another `std::optional`, holds the value read from null, and any other `T`, such as `int` or `std::string`, throws `yyjson::bad_cast`. If JSON null is a value to be preserved, use `std::shared_ptr`, `std::unique_ptr` or a `std::variant` with `std::monostate`: an empty pointer and `std::monostate` are written as null, and null is read as them. Any other `std::optional<T>`, such as the root or an element of an array, is deserialized from JSON null into `std::nullopt` and from any other value as `T` is.
 
 ```cpp
 using namespace yyjson;
@@ -1373,11 +1373,14 @@ auto settings1 = Settings{};
 auto obj1 = object(settings1);
 // -> {"limit": null}
 
-auto obj2 = object{{"timeout", nullptr}, {"limit", nullptr}, {"explicit_limit", nullptr}};
+auto obj2 = object{{"limit", nullptr}, {"explicit_limit", nullptr}};
 auto settings2 = cast<Settings>(obj2);
 // -> timeout == std::nullopt
 // -> limit == nullptr
 // -> explicit_limit.has_value() && *explicit_limit == nullptr
+
+auto obj3 = object{{"timeout", nullptr}};
+// cast<Settings>(obj3) throws yyjson::bad_cast: std::optional<int> is not constructible from JSON null
 
 auto ptr_json = value(std::make_shared<int>(3));                          // serialize
 // -> 3
@@ -1860,7 +1863,7 @@ The library calls the in-place form where it already owns the object, which is a
 
 A field is read in this order:
 
-1.  `caster<field_type>::from_json(field, json)`, the [in-place form that takes a JSON value](#reading-a-json-value-in-a-caster), if the caster has it. `std::optional` uses this form to keep the value of the field when the JSON value is null.
+1.  `caster<field_type>::from_json(field, json)`, the [in-place form that takes a JSON value](#reading-a-json-value-in-a-caster), if the caster has it. `std::optional` uses this form to read a JSON object into the value of the field in place.
 2.  `caster<field_type>::from_json(field, cast<U>(json))`, the in-place translator, if the caster has it.
 3.  `cast<field_type>`, which calls the `from_json` that returns the value if the caster has it, and a pre-defined conversion otherwise.
 
