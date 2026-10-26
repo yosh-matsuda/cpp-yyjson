@@ -1551,9 +1551,7 @@ namespace yyjson
                         else if constexpr (std::default_initializable<S> && writable<F> &&
                                            !yyjson::detail::adjacent_field<S, Ks>)
                         {
-                            if (defaults != nullptr)
-                            {
-                                const auto& d = yyjson::detail::struct_field<Ks>(*defaults);
+                            const auto emit_default = [&](const F& d) {
                                 const bool omitted = [&] {
                                     if constexpr (yyjson::detail::omittable<F>)
                                         return yyjson::detail::should_omit_field(d);
@@ -1561,7 +1559,14 @@ namespace yyjson
                                         return false;
                                 }();
                                 if (!omitted && !rejects && reads_back<S, Ks>(d)) p.emplace("default", d, copy_string);
-                            }
+                            };
+                            // the value that reading gives the field when the object leaves out its key
+                            if (defaults == nullptr)
+                                ;
+                            else if constexpr (yyjson::detail::has_default_from<S, declared>)
+                                emit_default(yyjson::detail::default_field_value<S, declared, F>());
+                            else
+                                emit_default(yyjson::detail::struct_field<Ks>(*defaults));
                         }
                         if (!m.empty())
                         {

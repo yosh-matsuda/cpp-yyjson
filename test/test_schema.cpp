@@ -112,6 +112,28 @@ inline constexpr auto yyjson::annotations<OmitD> =
     yyjson::annotate(yyjson::field("limit", yyjson::omit_default, yyjson::minimum(0)),
                      yyjson::field("name", yyjson::omit_default), yyjson::additional_properties(false));
 
+// fields whose defaults functions make, one of which holds the struct itself and one of which violates the constraint
+struct DefaultFromD;
+DefaultFromD default_from_d();
+struct DefaultFromD
+{
+    std::string name;
+    std::optional<std::unique_ptr<DefaultFromD>> child;
+    std::vector<int> sizes;
+    int limit = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<DefaultFromD> =
+    yyjson::annotate(yyjson::field("child", yyjson::default_from<&default_from_d>),
+                     yyjson::field("sizes", yyjson::default_from<[] { return std::vector{1, 2}; }>),
+                     yyjson::field("limit", yyjson::default_from<[] { return -1; }>, yyjson::minimum(0)));
+DefaultFromD default_from_d()
+{
+    auto d = DefaultFromD();
+    d.name = "leaf";
+    return d;
+}
+
 // groups of keys of which exactly one or at least one is in the object
 struct Groups
 {
@@ -1114,6 +1136,26 @@ TEST(Schema, OmitDefault)
     for (const auto& s : {yyjson::json_schema<OmitD>(yyjson::strict),
                           yyjson::json_schema<OmitD>({.direction = yyjson::schema_direction::write})})
         EXPECT_EQ(to_jsoncons(s)["$defs"]["OmitD"]["required"], json::parse(R"(["a"])")) << s.write();
+}
+
+TEST(Schema, DefaultFrom)
+{
+    check<DefaultFromD>({
+        R"({"name":"a"})",
+        R"({"name":"a","child":{"name":"b","child":{"name":"c"}},"sizes":[],"limit":3})",
+        R"({"name":"a","limit":-1})",
+        R"({"name":"a","child":null})",
+        R"({})",
+    });
+    // the defaults are what the functions make, except one that violates the constraint; the value that a function
+    // makes is not filled, so the fields of the child that differ from their defaults are written
+    const auto s = to_jsoncons(yyjson::json_schema<DefaultFromD>())["$defs"]["DefaultFromD"]["properties"];
+    EXPECT_EQ(s["child"]["default"], json::parse(R"({"name":"leaf","sizes":[],"limit":0})"));
+    EXPECT_EQ(s["sizes"]["default"], json::parse("[1,2]"));
+    EXPECT_FALSE(s["limit"].contains("default"));
+    for (const auto& t : {yyjson::json_schema<DefaultFromD>(yyjson::strict),
+                          yyjson::json_schema<DefaultFromD>({.direction = yyjson::schema_direction::write})})
+        EXPECT_EQ(to_jsoncons(t)["$defs"]["DefaultFromD"]["required"], json::parse(R"(["name"])")) << t.write();
 }
 
 TEST(Schema, RequiredGroups)
