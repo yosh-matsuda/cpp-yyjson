@@ -883,6 +883,84 @@ namespace yyjson
             return s.data();
 #endif
         }
+
+        // A string of a setting, such as the regular expression of `yyjson::pattern`.  `setting_string<>` points
+        // to it in static storage, which a string literal is.  Before C++26 a setting made from a string literal is
+        // `setting_string<N>`, which holds the characters: a template argument may hold a pointer to a string in
+        // static storage, as with C++26 `std::define_static_string`, but not to a string literal.  It ends at the
+        // first null character, as a `std::string_view` made from the literal does.
+        template <std::size_t N = 0>
+        struct setting_string
+        {
+            char data[N] = {};
+            std::size_t size = 0;
+
+            consteval explicit setting_string(const char (&s)[N])
+            {
+                while (size + 1 < N && s[size] != '\0') ++size;
+                for (std::size_t i = 0; i < size; ++i) data[i] = s[i];
+            }
+            [[nodiscard]] constexpr std::string_view view() const noexcept { return {data, size}; }
+        };
+        template <>
+        struct setting_string<0>
+        {
+            const char* data = nullptr;
+            std::size_t size = 0;
+
+            consteval explicit setting_string(std::string_view s) : data(static_string(s)), size(s.size()) {}
+            [[nodiscard]] constexpr std::string_view view() const noexcept { return {data, size}; }
+        };
+
+        // The number of the characters of the arguments `Ss` that are string literals, which a setting made from
+        // them holds before C++26 as `setting_string` tells.
+        template <typename S>
+        inline constexpr std::size_t literal_size = 0;
+#if !defined(__cpp_lib_define_static)
+        template <std::size_t N>
+        inline constexpr std::size_t literal_size<char[N]> = N;
+        template <std::size_t N>
+        inline constexpr std::size_t literal_size<const char[N]> = N;
+#endif
+        template <typename... Ss>
+        inline constexpr std::size_t literal_sizes = (std::size_t{0} + ... + literal_size<Ss>);
+
+        // A string in a setting or in `schema_tree`: at `data`, or at `offset` in the characters that the setting
+        // or the tree holds when `data` is null and `size` is not 0.
+        struct tree_string
+        {
+            const char* data = nullptr;
+            std::size_t size = 0;
+            std::size_t offset = 0;
+
+            [[nodiscard]] constexpr bool held() const noexcept { return data == nullptr && size != 0; }
+            [[nodiscard]] constexpr std::string_view view() const noexcept { return {data, size}; }
+        };
+
+        // The characters of the strings that a setting holds, which `tree_string::offset` points into.
+        template <std::size_t L>
+        struct char_pool
+        {
+            char data[L] = {};
+            std::size_t size = 0;
+
+            // Appends `s` and gives where it is.
+            constexpr tree_string add(std::string_view s) noexcept
+            {
+                const auto offset = size;
+                for (const auto c : s) data[size++] = c;
+                return {nullptr, s.size(), offset};
+            }
+            [[nodiscard]] constexpr std::string_view view(const tree_string& s) const noexcept
+            {
+                return s.held() ? std::string_view(data + s.offset, s.size) : s.view();
+            }
+        };
+        template <>
+        struct char_pool<0>
+        {
+            [[nodiscard]] constexpr std::string_view view(const tree_string& s) const noexcept { return s.view(); }
+        };
     }  // namespace detail
 
     // The JSON key of a field, as `yyjson::field("member", yyjson::rename("key"))` in `yyjson::annotations<T>`
@@ -1250,18 +1328,31 @@ namespace yyjson
     // A regular expression that a string field must match somewhere in it, as `yyjson::field("member",
     // yyjson::pattern("^[a-z]+$"))` or `[[=yyjson::pattern("^[a-z]+$")]]` gives it.  The program provides the
     // regular expressions by specializing `yyjson::pattern_matcher<>`, so that this library includes no engine.
+    // Before C++26, `yyjson::pattern("...")` holds the characters of the literal, so that it can be a template
+    // argument, as in `yyjson::alt`; see `detail::setting_string`.
+    template <std::size_t N = 0>
     struct pattern
     {
-        const char* regex_data = nullptr;
-        std::size_t regex_size = 0;
+        detail::setting_string<N> regex_string;
 
         consteval explicit pattern(std::string_view regex)
-            : regex_data(detail::static_string(regex)), regex_size(regex.size())
+        requires (N == 0)
+            : regex_string(regex)
+        {
+        }
+        template <std::size_t K>
+        requires (K == N && N != 0)
+        consteval explicit pattern(const char (&regex)[K]) : regex_string(regex)
         {
         }
 
-        [[nodiscard]] constexpr std::string_view regex() const noexcept { return {regex_data, regex_size}; }
+        [[nodiscard]] constexpr std::string_view regex() const noexcept { return regex_string.view(); }
     };
+    pattern(std::string_view) -> pattern<>;
+#if !defined(__cpp_lib_define_static)
+    template <std::size_t N>
+    pattern(const char (&)[N]) -> pattern<N>;
+#endif
 
     // The matcher of `yyjson::pattern`, which the program specializes before reading a struct that has one:
     // constructible from the `std::string_view` of the pattern, and callable with the `std::string_view` of a string
@@ -1274,18 +1365,29 @@ namespace yyjson
     // "time", "duration", "email", "hostname", "ipv4", "ipv6", "uri", "uri-reference", "uuid", "uri-template",
     // "json-pointer" and "relative-json-pointer"; the program checks the other names by specializing
     // `yyjson::format_checker<>`.
+    template <std::size_t N = 0>
     struct format
     {
-        const char* name_data = nullptr;
-        std::size_t name_size = 0;
+        detail::setting_string<N> name_string;
 
         consteval explicit format(std::string_view name)
-            : name_data(detail::static_string(name)), name_size(name.size())
+        requires (N == 0)
+            : name_string(name)
+        {
+        }
+        template <std::size_t K>
+        requires (K == N && N != 0)
+        consteval explicit format(const char (&name)[K]) : name_string(name)
         {
         }
 
-        [[nodiscard]] constexpr std::string_view name() const noexcept { return {name_data, name_size}; }
+        [[nodiscard]] constexpr std::string_view name() const noexcept { return name_string.view(); }
     };
+    format(std::string_view) -> format<>;
+#if !defined(__cpp_lib_define_static)
+    template <std::size_t N>
+    format(const char (&)[N]) -> format<N>;
+#endif
 
     // The checker of the formats of `yyjson::format` that the library does not check, which the program
     // specializes before reading a struct that has one: constructible from the `std::string_view` of the name of the
@@ -1298,29 +1400,52 @@ namespace yyjson
     // cpp_yyjson_schema.hpp generates: `yyjson::field("member", yyjson::description("..."))` or
     // `[[=yyjson::description("...")]]` on the member, and `yyjson::annotate(yyjson::title("..."))` or
     // `struct [[=yyjson::title("...")]] T` on the type.  They do not change how the value is read or written.
+    template <std::size_t N = 0>
     struct title
     {
-        const char* text_data = nullptr;
-        std::size_t text_size = 0;
+        detail::setting_string<N> text_string;
 
-        consteval explicit title(std::string_view text) : text_data(detail::static_string(text)), text_size(text.size())
+        consteval explicit title(std::string_view text)
+        requires (N == 0)
+            : text_string(text)
+        {
+        }
+        template <std::size_t K>
+        requires (K == N && N != 0)
+        consteval explicit title(const char (&text)[K]) : text_string(text)
         {
         }
 
-        [[nodiscard]] constexpr std::string_view text() const noexcept { return {text_data, text_size}; }
+        [[nodiscard]] constexpr std::string_view text() const noexcept { return text_string.view(); }
     };
+    title(std::string_view) -> title<>;
+#if !defined(__cpp_lib_define_static)
+    template <std::size_t N>
+    title(const char (&)[N]) -> title<N>;
+#endif
+    template <std::size_t N = 0>
     struct description
     {
-        const char* text_data = nullptr;
-        std::size_t text_size = 0;
+        detail::setting_string<N> text_string;
 
         consteval explicit description(std::string_view text)
-            : text_data(detail::static_string(text)), text_size(text.size())
+        requires (N == 0)
+            : text_string(text)
+        {
+        }
+        template <std::size_t K>
+        requires (K == N && N != 0)
+        consteval explicit description(const char (&text)[K]) : text_string(text)
         {
         }
 
-        [[nodiscard]] constexpr std::string_view text() const noexcept { return {text_data, text_size}; }
+        [[nodiscard]] constexpr std::string_view text() const noexcept { return text_string.view(); }
     };
+    description(std::string_view) -> description<>;
+#if !defined(__cpp_lib_define_static)
+    template <std::size_t N>
+    description(const char (&)[N]) -> description<N>;
+#endif
 
     // A field or a type marked as deprecated in the JSON Schema, as JSON Schema's `deprecated`, which
     // `yyjson::field("member", yyjson::deprecated)` or `[[=yyjson::deprecated]]` gives.  It does not change how the
@@ -1333,29 +1458,33 @@ namespace yyjson
     // Examples of the value of a field or a type in the JSON Schema, as JSON Schema's `examples`, each in JSON text:
     // `yyjson::field("point", yyjson::examples(R"({"x":1,"y":2})"))`.  `yyjson::json_schema` checks that `read<T>`
     // of the type reads them.  They do not change how the value is read or written.
-    template <std::size_t N>
+    // Before C++26 it holds the texts given as string literals, the L characters of them, as
+    // `detail::setting_string` tells.
+    template <std::size_t N, std::size_t L = 0>
     struct examples_t
     {
-        std::array<const char*, N> text_data = {};
-        std::array<std::size_t, N> text_size = {};
+        std::array<detail::tree_string, N> texts = {};
+        detail::char_pool<L> chars = {};
 
         [[nodiscard]] static constexpr std::size_t size() noexcept { return N; }
-        [[nodiscard]] constexpr std::string_view text(std::size_t i) const noexcept
-        {
-            return {text_data[i], text_size[i]};
-        }
+        [[nodiscard]] constexpr std::string_view text(std::size_t i) const noexcept { return chars.view(texts[i]); }
     };
     template <typename... Ss>
     requires (sizeof...(Ss) != 0) && (std::convertible_to<const Ss&, std::string_view> && ...)
-    consteval examples_t<sizeof...(Ss)> examples(const Ss&... texts)
+    consteval examples_t<sizeof...(Ss), detail::literal_sizes<Ss...>> examples(const Ss&... texts)
     {
         // assigned for the reason that `yyjson::dependent_required` gives
-        auto result = examples_t<sizeof...(Ss)>{};
+        auto result = examples_t<sizeof...(Ss), detail::literal_sizes<Ss...>>{};
         std::size_t i = 0;
         (
-            [&](std::string_view text) {
-                result.text_data[i] = detail::static_string(text);
-                result.text_size[i++] = text.size();
+            [&]<typename S>(const S& text) {
+                if constexpr (detail::literal_size<S> != 0)
+                    result.texts[i++] = result.chars.add(detail::setting_string(text).view());
+                else
+                {
+                    const auto view = std::string_view(text);
+                    result.texts[i++] = {detail::static_string(view), view.size()};
+                }
             }(texts),
             ...);
         return result;
@@ -1432,18 +1561,51 @@ namespace yyjson
         struct is_examples : std::false_type
         {
         };
-        template <std::size_t N>
-        struct is_examples<examples_t<N>> : std::true_type
+        template <std::size_t N, std::size_t L>
+        struct is_examples<examples_t<N, L>> : std::true_type
         {
         };
+        // The type of the setting A that the library tells settings apart by, where every form of a setting of
+        // a string, which `setting_string` tells, is the one that points to it: `pattern<>` for `pattern<N>`.
+        template <typename A>
+        struct setting_type
+        {
+            using type = A;
+        };
+        template <std::size_t N>
+        struct setting_type<pattern<N>>
+        {
+            using type = pattern<>;
+        };
+        template <std::size_t N>
+        struct setting_type<format<N>>
+        {
+            using type = format<>;
+        };
+        template <std::size_t N>
+        struct setting_type<title<N>>
+        {
+            using type = title<>;
+        };
+        template <std::size_t N>
+        struct setting_type<description<N>>
+        {
+            using type = description<>;
+        };
+        template <typename A>
+        using setting_type_t = typename setting_type<A>::type;
+        // Whether A is a form of the setting B.
+        template <typename A, typename B>
+        concept setting_of = std::same_as<setting_type_t<A>, B>;
+
         // The settings that only describe a field or a type in the JSON Schema, and their bits in
         // `field_key_builder::described`.
         template <typename A>
-        concept metadata_setting = std::same_as<A, title> || std::same_as<A, description> ||
+        concept metadata_setting = setting_of<A, title<>> || setting_of<A, description<>> ||
                                    std::same_as<A, deprecated_t> || is_examples<A>::value || std::same_as<A, schema>;
         template <typename A>
-        inline constexpr std::uint8_t metadata_bit = std::same_as<A, title>          ? 1
-                                                     : std::same_as<A, description>  ? 2
+        inline constexpr std::uint8_t metadata_bit = setting_of<A, title<>>         ? 1
+                                                     : setting_of<A, description<>> ? 2
                                                      : std::same_as<A, deprecated_t> ? 4
                                                      : std::same_as<A, schema>       ? 16
                                                                                      : 8;
@@ -1467,8 +1629,7 @@ namespace yyjson
             };
             kind_t kind = kind_t::number;
             bound_number number;
-            const char* string_data = nullptr;
-            std::size_t string_size = 0;
+            tree_string text;
             bool boolean = false;
 
             constexpr json_scalar() = default;
@@ -1491,12 +1652,24 @@ namespace yyjson
                 {
                     const auto s = std::string_view(v);
                     kind = kind_t::string;
-                    string_data = static_string(s);
-                    string_size = s.size();
+                    text = {static_string(s), s.size()};
                 }
             }
+            // A string literal that `pool` holds, as `setting_string` tells.
+            template <typename V, std::size_t L>
+            consteval json_scalar(const V& v, char_pool<L>& pool)
+            {
+                if constexpr (literal_size<V> != 0)
+                {
+                    kind = kind_t::string;
+                    text = pool.add(setting_string(v).view());
+                }
+                else
+                    *this = json_scalar(v);
+            }
 
-            [[nodiscard]] constexpr std::string_view string() const noexcept { return {string_data, string_size}; }
+            // The string, unless the setting or the tree that holds the value holds it, as `tree_string` tells.
+            [[nodiscard]] constexpr std::string_view string() const noexcept { return text.view(); }
         };
     }  // namespace detail
 
@@ -1506,32 +1679,57 @@ namespace yyjson
     // when it holds `0.1f`.  `nullptr` is JSON null, which a type that holds a value or nothing, such as
     // `std::variant<std::monostate, U>`, equals when it holds nothing; such a type holding nothing equals no other
     // value.
+    // Before C++26 it holds a string literal, the L characters of it, as `detail::setting_string` tells.
+    template <std::size_t L = 0>
     struct const_
     {
+        // before `value`, which is made into it
+        detail::char_pool<L> chars = {};
         detail::json_scalar value;
 
         template <typename V>
-        consteval explicit const_(const V& v) : value(v)
+        requires (detail::literal_size<V> == L)
+        consteval explicit const_(const V& v) : value(v, chars)
         {
         }
     };
+    template <typename V>
+    const_(const V&) -> const_<detail::literal_size<V>>;
 
     // The values one of which a string, number or boolean field must equal, as JSON Schema's `enum`:
     // `yyjson::field("unit", yyjson::enum_("mm", "cm", "m"))`.  They are compared as `yyjson::const_`.
-    template <std::size_t N>
+    // Before C++26 it holds the strings given as string literals, the L characters of them, as
+    // `detail::setting_string` tells.
+    template <std::size_t N, std::size_t L = 0>
     struct enum_
     {
+        // before `values`, which are made into it
+        detail::char_pool<L> chars = {};
         std::array<detail::json_scalar, N> values;
 
         template <typename... Vs>
-        requires (sizeof...(Vs) == N)
-        consteval explicit enum_(const Vs&... vs) : values{detail::json_scalar(vs)...}
+        requires (sizeof...(Vs) == N && detail::literal_sizes<Vs...> == L)
+        consteval explicit enum_(const Vs&... vs) : values{detail::json_scalar(vs, chars)...}
         {
             static_assert(N != 0, "yyjson::enum_ needs a value");
         }
     };
     template <typename... Vs>
-    enum_(const Vs&...) -> enum_<sizeof...(Vs)>;
+    enum_(const Vs&...) -> enum_<sizeof...(Vs), detail::literal_sizes<Vs...>>;
+
+    namespace detail
+    {
+        template <std::size_t L>
+        struct setting_type<const_<L>>
+        {
+            using type = const_<>;
+        };
+        template <std::size_t N, std::size_t L>
+        struct setting_type<enum_<N, L>>
+        {
+            using type = enum_<0>;
+        };
+    }  // namespace detail
 
     // A check of a field that `yyjson::satisfies<f>` gives, which `f` makes with the value of the field.
     struct satisfies_t
@@ -1778,25 +1976,14 @@ namespace yyjson
         };
         using constraint_types =
             type_list<minimum, maximum, exclusive_minimum, exclusive_maximum, multiple_of, min_length, max_length,
-                      min_items, max_items, pattern, satisfies_t, unique_items_t, min_contains, max_contains,
-                      const_, enum_<0>, format>;
-        // The type of the constraint A in `constraint_types`, where every `yyjson::enum_` is `enum_<0>`.
-        template <typename A>
-        struct constraint_type
-        {
-            using type = A;
-        };
-        template <std::size_t N>
-        struct constraint_type<enum_<N>>
-        {
-            using type = enum_<0>;
-        };
+                      min_items, max_items, pattern<>, satisfies_t, unique_items_t, min_contains, max_contains,
+                      const_<>, enum_<0>, format<>>;
+        // The bit of the constraint A, of any form of it, as `setting_type` tells.
         template <typename A, typename List = constraint_types>
         inline constexpr std::uint32_t constraint_bit = 0;
         template <typename A, typename First, typename... Rest>
         inline constexpr std::uint32_t constraint_bit<A, type_list<First, Rest...>> =
-            std::same_as<typename constraint_type<A>::type, First> ? std::uint32_t{1} << sizeof...(Rest)
-                                                                   : constraint_bit<A, type_list<Rest...>>;
+            setting_of<A, First> ? std::uint32_t{1} << sizeof...(Rest) : constraint_bit<A, type_list<Rest...>>;
         template <typename A>
         concept constraint_setting = constraint_bit<A> != 0;
 
@@ -1895,6 +2082,13 @@ namespace yyjson
         // `yyjson::enum_` in them.
         inline constexpr std::size_t prefix_position_nodes = 8;
         inline constexpr std::size_t prefix_position_values = 16;
+        // The number of the characters of the strings that the settings in a position hold, as
+        // `setting_string` tells.  A position copies them, as it is made of temporary settings.
+#if defined(__cpp_lib_define_static)
+        inline constexpr std::size_t prefix_position_chars = 0;
+#else
+        inline constexpr std::size_t prefix_position_chars = 256;
+#endif
 
         // The numbers of the nodes and of the values of `schema_tree`.
         struct tree_size
@@ -1912,10 +2106,10 @@ namespace yyjson
         // The number of the nodes and of the values of `schema_tree` that the setting A adds at most.
         template <typename A>
         inline constexpr tree_size node_count = {};
-        template <>
-        inline constexpr tree_size node_count<const_> = {0, 1};
-        template <std::size_t N>
-        inline constexpr tree_size node_count<enum_<N>> = {0, N};
+        template <std::size_t L>
+        inline constexpr tree_size node_count<const_<L>> = {0, 1};
+        template <std::size_t N, std::size_t L>
+        inline constexpr tree_size node_count<enum_<N, L>> = {0, N};
         template <typename... As>
         inline constexpr tree_size node_count<items<As...>> = (tree_size{1, 0} + ... + node_count<As>);
         template <typename... As>
@@ -2075,10 +2269,8 @@ namespace yyjson
             std::size_t max_items = 0;
             std::size_t min_contains = 0;
             std::size_t max_contains = 0;
-            const char* pattern_data = nullptr;
-            std::size_t pattern_size = 0;
-            const char* format_data = nullptr;
-            std::size_t format_size = 0;
+            tree_string pattern_text;
+            tree_string format_text;
             std::size_t constant = 0;
             std::size_t enum_first = 0;
             std::size_t enum_count = 0;
@@ -2089,10 +2281,10 @@ namespace yyjson
             {
                 return (set & constraint_bit<A>) != 0;
             }
-            [[nodiscard]] constexpr std::string_view pattern() const noexcept { return {pattern_data, pattern_size}; }
-            [[nodiscard]] constexpr std::string_view format() const noexcept { return {format_data, format_size}; }
-            // Adds the constraint `a`, but not the values of `yyjson::const_` and `yyjson::enum_`, which
-            // `schema_tree::add` adds.
+            [[nodiscard]] constexpr std::string_view pattern() const noexcept { return pattern_text.view(); }
+            [[nodiscard]] constexpr std::string_view format() const noexcept { return format_text.view(); }
+            // Adds the constraint `a`, but not the strings of `yyjson::pattern` and `yyjson::format` nor the values
+            // of `yyjson::const_` and `yyjson::enum_`, which `schema_tree::add` adds.
             template <typename A>
             constexpr void add(const A& a) noexcept
             {
@@ -2119,16 +2311,6 @@ namespace yyjson
                     min_contains = a.value;
                 else if constexpr (std::same_as<A, yyjson::max_contains>)
                     max_contains = a.value;
-                else if constexpr (std::same_as<A, yyjson::pattern>)
-                {
-                    pattern_data = a.regex_data;
-                    pattern_size = a.regex_size;
-                }
-                else if constexpr (std::same_as<A, yyjson::format>)
-                {
-                    format_data = a.name_data;
-                    format_size = a.name_size;
-                }
                 else if constexpr (std::same_as<A, satisfies_t>)
                     predicate = a;
             }
@@ -2161,7 +2343,11 @@ namespace yyjson
         // the settings of the values in a value add nodes after them.  A node is never the child of another one at
         // index 0.  The values of `yyjson::const_` and `yyjson::enum_` are the first `value_size` of
         // the V `values`.  It keeps the first error.
-        template <std::size_t M, std::size_t V = 0>
+        //
+        // Its strings are where the settings hold them, which are in static storage, or, if C is not 0, the
+        // strings that the settings hold, as `setting_string` tells, are copied into the C `chars`.  A tree made
+        // of temporary settings, as that of a position of `yyjson::prefix_items` is, needs the latter.
+        template <std::size_t M, std::size_t V = 0, std::size_t C = 0>
         struct schema_tree
         {
             std::array<schema_node, M> nodes = {};
@@ -2169,6 +2355,7 @@ namespace yyjson
             field_key_error error = field_key_error::none;
             std::array<json_scalar, V> values = {};
             std::size_t value_size = 0;
+            char_pool<C> chars = {};
 
             constexpr void fail(field_key_error e) noexcept
             {
@@ -2193,6 +2380,43 @@ namespace yyjson
                 fail(field_key_error::prefix_position_too_large);
                 return false;
             }
+            // The string `s` that a setting or a tree holds in `pool`, kept as the strings of this tree are.
+            template <std::size_t L>
+            constexpr tree_string keep(const tree_string& s, const char_pool<L>& pool) noexcept
+            {
+                if constexpr (L == 0)
+                    return s;
+                else if (!s.held())
+                    return s;
+                else if constexpr (C == 0)
+                    return {pool.data + s.offset, s.size};
+                else
+                {
+                    if (s.size > C - chars.size)
+                    {
+                        fail(field_key_error::prefix_position_too_large);
+                        return {};
+                    }
+                    return chars.add(pool.view(s));
+                }
+            }
+            template <std::size_t N>
+            constexpr tree_string keep(const setting_string<N>& s) noexcept
+            {
+                if constexpr (N == 0 || C == 0)
+                    return {s.data, s.size};
+                else
+                {
+                    auto pool = char_pool<N>{};
+                    return keep(pool.add(s.view()), pool);
+                }
+            }
+            template <std::size_t L>
+            constexpr json_scalar keep(json_scalar v, const char_pool<L>& pool) noexcept
+            {
+                v.text = keep(v.text, pool);
+                return v;
+            }
             template <typename A>
             constexpr void add(std::size_t node, const A& a)
             {
@@ -2204,18 +2428,22 @@ namespace yyjson
                     {
                         if (!a.value.positive()) return fail(field_key_error::multiple_of_not_positive);
                     }
-                    else if constexpr (std::same_as<A, const_>)
+                    else if constexpr (setting_of<A, pattern<>>)
+                        c.pattern_text = keep(a.regex_string);
+                    else if constexpr (setting_of<A, format<>>)
+                        c.format_text = keep(a.name_string);
+                    else if constexpr (setting_of<A, const_<>>)
                     {
                         if (!has_room_for_values(1)) return;
                         c.constant = value_size;
-                        values[value_size++] = a.value;
+                        values[value_size++] = keep(a.value, a.chars);
                     }
-                    else if constexpr (!std::same_as<typename constraint_type<A>::type, A>)
+                    else if constexpr (setting_of<A, enum_<0>>)
                     {
                         if (!has_room_for_values(a.values.size())) return;
                         c.enum_first = value_size;
                         c.enum_count = a.values.size();
-                        for (const auto& v : a.values) values[value_size++] = v;
+                        for (const auto& v : a.values) values[value_size++] = keep(v, a.chars);
                     }
                     c.add(a);
                 }
@@ -2259,20 +2487,22 @@ namespace yyjson
                 add_list(node, list.rest);
             }
             // Copies the tree `sub` of one root into the node `at`, and the other nodes of `sub` into new nodes.
-            template <std::size_t P, std::size_t Q>
-            constexpr void graft(std::size_t at, const schema_tree<P, Q>& sub)
+            template <std::size_t P, std::size_t Q, std::size_t R>
+            constexpr void graft(std::size_t at, const schema_tree<P, Q, R>& sub)
             {
                 if (sub.error != field_key_error::none) fail(sub.error);
                 const auto base = sub.size > 1 ? allocate(sub.size - 1) : std::size_t{0};
                 if (sub.size > 1 && base == 0) return;
                 if (!has_room_for_values(sub.value_size)) return;
                 const auto value_base = value_size;
-                for (std::size_t k = 0; k < sub.value_size; ++k) values[value_size++] = sub.values[k];
-                const auto moved = [base, value_base](schema_node n) {
+                for (std::size_t k = 0; k < sub.value_size; ++k) values[value_size++] = keep(sub.values[k], sub.chars);
+                const auto moved = [this, &sub, base, value_base](schema_node n) {
                     for (auto* i : {&n.items, &n.values, &n.contains, &n.keys, &n.prefix})
                         if (*i != 0) *i += base - 1;
                     n.constraints.constant += value_base;
                     n.constraints.enum_first += value_base;
+                    n.constraints.pattern_text = keep(n.constraints.pattern_text, sub.chars);
+                    n.constraints.format_text = keep(n.constraints.format_text, sub.chars);
                     return n;
                 };
                 nodes[at] = moved(sub.nodes[0]);
@@ -2295,7 +2525,7 @@ namespace yyjson
         // The settings of a position of `yyjson::prefix_items`: `{}` for none, `{settings...}`, or a setting alone.
         struct prefix_schema
         {
-            schema_tree<prefix_position_nodes, prefix_position_values> tree = {{}, 1};
+            schema_tree<prefix_position_nodes, prefix_position_values, prefix_position_chars> tree = {{}, 1};
 
             constexpr prefix_schema() = default;
             template <typename... As>
@@ -3383,7 +3613,7 @@ namespace yyjson
         // and the value of `yyjson::const_`.
         template <typename T, std::size_t I>
         inline constexpr tree_size annotated_node_count = []<std::size_t... Ks>(std::index_sequence<Ks...>) {
-            return (tree_size{0, field_reflection::field_annotations<T, I, const_>.size()} + ... +
+            return (tree_size{0, field_reflection::field_annotations<T, I, const_<>>.size()} + ... +
                     node_count<element_annotation_type<T, I, Ks>>);
         }(std::make_index_sequence<element_annotations<T, I>.size()>{});
         template <typename T, std::size_t I, typename Builder>
@@ -3519,7 +3749,7 @@ namespace yyjson
                             builder.tag_field(Is);
                         constrain_annotated_field<T, Is>(builder, constraint_types{});
                         constrain_annotated_elements<T, Is>(builder);
-                        describe_annotated_field<T, Is>(builder, type_list<title, description, deprecated_t, schema>{});
+                        describe_annotated_field<T, Is>(builder, type_list<title<>, description<>, deprecated_t, schema>{});
                     }(),
                     ...);
             }(std::make_index_sequence<N>{});
@@ -3675,8 +3905,9 @@ namespace yyjson
                           "a position of yyjson::prefix_items holds the settings of the values in it in up to 8 "
                           "nodes: one for itself and one for each yyjson::items, yyjson::contains, "
                           "yyjson::property_names, yyjson::additional_properties(settings...) and position of "
-                          "yyjson::prefix_items in it, and up to 16 values of yyjson::const_ and "
-                          "yyjson::enum_");
+                          "yyjson::prefix_items in it, up to 16 values of yyjson::const_ and "
+                          "yyjson::enum_, and, before C++26, up to 256 characters of the strings written as "
+                          "string literals; pass a longer string as a std::string_view");
             static_assert(table.error != field_key_error::dependency_skipped,
                           "yyjson::dependent_required, yyjson::one_of_required or yyjson::any_of_required names a "
                           "member annotated with yyjson::skip or yyjson::extra_keys, which has no key");
@@ -5385,7 +5616,7 @@ namespace yyjson
             static constexpr schema_node node = field_table_of<S>::table.schemas.nodes[Node];
             static constexpr field_constraints constraints = node.constraints;
             static constexpr auto values = [] {
-                constexpr std::size_t constants = constraints.has<const_>() ? 1 : 0;
+                constexpr std::size_t constants = constraints.has<const_<>>() ? 1 : 0;
                 auto result = std::array<json_scalar, constants + constraints.enum_count>{};
                 if constexpr (constants != 0)
                     result[0] = field_table_of<S>::table.schemas.values[constraints.constant];
@@ -5491,7 +5722,7 @@ namespace yyjson
                     case constraint_kind::enum_:
                     {
                         auto text = std::string("is not one of ");
-                        const auto listed = values.subspan(c.has<const_>() ? 1 : 0);
+                        const auto listed = values.subspan(c.has<const_<>>() ? 1 : 0);
                         for (std::size_t i = 0; i < listed.size(); ++i)
                             text += (i == 0 ? "" : ", ") + scalar_text(listed[i]);
                         return text;
@@ -6492,7 +6723,7 @@ namespace yyjson
             constexpr const field_constraints& c = Level::constraints;
             constexpr bool numeric = c.has<minimum>() || c.has<maximum>() || c.has<exclusive_minimum>() ||
                                      c.has<exclusive_maximum>() || c.has<multiple_of>();
-            constexpr bool text = c.has<min_length>() || c.has<max_length>() || c.has<pattern>() || c.has<format>();
+            constexpr bool text = c.has<min_length>() || c.has<max_length>() || c.has<pattern<>>() || c.has<format<>>();
             constexpr bool items = c.has<min_items>() || c.has<max_items>();
             static_assert(!numeric || (std::is_arithmetic_v<V> && !std::same_as<V, bool>),
                           "yyjson::minimum, maximum, exclusive_minimum, exclusive_maximum and multiple_of constrain "
@@ -6502,7 +6733,7 @@ namespace yyjson
                           "string");
             static_assert(!items || constraint_items<V>,
                           "yyjson::min_items and max_items constrain a field or an element of a range");
-            constexpr bool listed = c.has<const_>() || c.has<enum_<0>>();
+            constexpr bool listed = c.has<const_<>>() || c.has<enum_<0>>();
             constexpr bool scalar = std::is_arithmetic_v<V> || constraint_string<V>;
             // null, which `level_violation` compares, may stand beside the values of any type
             static_assert(!listed || std::ranges::all_of(Level::values,
@@ -6520,7 +6751,7 @@ namespace yyjson
                     else
                         return false;
                 };
-                constexpr std::size_t constants = c.has<const_>() ? 1 : 0;
+                constexpr std::size_t constants = c.has<const_<>>() ? 1 : 0;
                 if constexpr (constants != 0)
                     if (!equals(Level::values[0])) return constraint_kind::const_;
                 if constexpr (c.has<enum_<0>>())
@@ -6553,9 +6784,9 @@ namespace yyjson
                     if constexpr (c.has<max_length>())
                         if (n > c.max_length) return constraint_kind::max_length;
                 }
-                if constexpr (c.has<pattern>())
+                if constexpr (c.has<pattern<>>())
                     if (!matches_pattern<Level>(s)) return constraint_kind::pattern;
-                if constexpr (c.has<format>())
+                if constexpr (c.has<format<>>())
                     if (!matches_format<Level>(s)) return constraint_kind::format;
             }
             if constexpr (items && constraint_items<V>)
@@ -6579,7 +6810,7 @@ namespace yyjson
         constexpr constraint_kind null_violation() noexcept
         {
             constexpr const field_constraints& c = Level::constraints;
-            constexpr std::size_t constants = c.has<const_>() ? 1 : 0;
+            constexpr std::size_t constants = c.has<const_<>>() ? 1 : 0;
             constexpr auto is_null = [](const json_scalar& s) { return s.kind == json_scalar::kind_t::null; };
             if constexpr (constants != 0)
                 if constexpr (!is_null(Level::values[0])) return constraint_kind::const_;

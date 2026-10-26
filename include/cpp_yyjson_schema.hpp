@@ -181,9 +181,9 @@ namespace yyjson
             template <typename A>
             void add(const A& a)
             {
-                if constexpr (std::same_as<A, yyjson::title>)
+                if constexpr (yyjson::detail::setting_of<A, yyjson::title<>>)
                     title = a.text();
-                else if constexpr (std::same_as<A, yyjson::description>)
+                else if constexpr (yyjson::detail::setting_of<A, yyjson::description<>>)
                     description = a.text();
                 else if constexpr (std::same_as<A, deprecated_t>)
                     deprecated = true;
@@ -216,8 +216,8 @@ namespace yyjson
         template <std::meta::info R>
         void add_annotated_metadata(metadata& m)
         {
-            for (const auto& a : field_reflection::detail::annotations_v<R, yyjson::title>) m.add(a);
-            for (const auto& a : field_reflection::detail::annotations_v<R, yyjson::description>) m.add(a);
+            for (const auto& a : field_reflection::detail::annotations_v<R, yyjson::title<>>) m.add(a);
+            for (const auto& a : field_reflection::detail::annotations_v<R, yyjson::description<>>) m.add(a);
             for (const auto& a : field_reflection::detail::annotations_v<R, deprecated_t>) m.add(a);
             for (const auto& a : field_reflection::detail::annotations_v<R, yyjson::schema>) m.add(a);
             [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
@@ -280,9 +280,9 @@ namespace yyjson
             {
                 // Metadata alone does not build the table of the keys, which checks the settings of a member.
                 constexpr auto member = field_reflection::detail::member_at<S, R>;
-                static_assert(field_reflection::detail::annotations_v<member, yyjson::title>.size() <= 1,
+                static_assert(field_reflection::detail::annotations_v<member, yyjson::title<>>.size() <= 1,
                               "a field is given yyjson::title twice");
-                static_assert(field_reflection::detail::annotations_v<member, yyjson::description>.size() <= 1,
+                static_assert(field_reflection::detail::annotations_v<member, yyjson::description<>>.size() <= 1,
                               "a field is given yyjson::description twice");
                 static_assert(field_reflection::detail::annotations_v<member, deprecated_t>.size() <= 1,
                               "a field is given yyjson::deprecated twice");
@@ -340,7 +340,7 @@ namespace yyjson
         consteval std::size_t type_setting_count()
         {
             auto count = []<typename... As>(std::type_identity<std::tuple<As...>>) {
-                return (std::size_t{0} + ... + std::size_t{std::same_as<As, A>});
+                return (std::size_t{0} + ... + std::size_t{yyjson::detail::setting_of<As, A>});
             }(std::type_identity<yyjson::detail::annotation_values_of<T>>{});
 #if FIELD_RFL_ANNOTATIONS
             if constexpr (std::is_class_v<T> || std::is_enum_v<T>)
@@ -365,8 +365,8 @@ namespace yyjson
         template <typename T>
         metadata type_metadata()
         {
-            static_assert(type_setting_count<T, yyjson::title>() <= 1, "a type is given yyjson::title twice");
-            static_assert(type_setting_count<T, yyjson::description>() <= 1,
+            static_assert(type_setting_count<T, yyjson::title<>>() <= 1, "a type is given yyjson::title twice");
+            static_assert(type_setting_count<T, yyjson::description<>>() <= 1,
                           "a type is given yyjson::description twice");
             static_assert(type_setting_count<T, deprecated_t>() <= 1, "a type is given yyjson::deprecated twice");
             static_assert(type_examples_count<T>() <= 1, "a type is given yyjson::examples twice");
@@ -722,9 +722,9 @@ namespace yyjson
                 if (c.has<yyjson::max_length>()) out.emplace("maxLength", c.max_length);
                 if (c.has<yyjson::min_items>()) out.emplace("minItems", c.min_items);
                 if (c.has<yyjson::max_items>()) out.emplace("maxItems", c.max_items);
-                if (c.has<yyjson::pattern>()) out.emplace("pattern", c.pattern());
-                if (c.has<yyjson::format>()) out.emplace("format", c.format());
-                if (c.has<yyjson::const_>())
+                if (c.has<yyjson::pattern<>>()) out.emplace("pattern", c.pattern());
+                if (c.has<yyjson::format<>>()) out.emplace("format", c.format());
+                if (c.has<yyjson::const_<>>())
                     visit_scalar(values_[c.constant], [&](auto v) { out.emplace("const", v); });
                 if (c.has<yyjson::enum_<0>>())
                 {
@@ -777,7 +777,7 @@ namespace yyjson
                                   yyjson::detail::constraint_bit<yyjson::exclusive_minimum> |
                                   yyjson::detail::constraint_bit<yyjson::maximum> |
                                   yyjson::detail::constraint_bit<yyjson::exclusive_maximum> |
-                                  yyjson::detail::constraint_bit<yyjson::const_> |
+                                  yyjson::detail::constraint_bit<yyjson::const_<>> |
                                   yyjson::detail::constraint_bit<yyjson::enum_<0>>);
                 }
                 // A bound past the largest float leaves no float to read.
@@ -788,7 +788,7 @@ namespace yyjson
                 }
                 else
                     out.emplace("not", empty_object);
-                if (n != nullptr && n->constraints.has<yyjson::const_>())
+                if (n != nullptr && n->constraints.has<yyjson::const_<>>())
                     out.emplace("const", written_real(rounded(values_[n->constraints.constant].number)));
                 if (n != nullptr && n->constraints.has<yyjson::enum_<0>>())
                 {

@@ -319,6 +319,30 @@ inline constexpr auto yyjson::annotations<Prefixed> = yyjson::annotate(
     yyjson::field("arr", yyjson::prefix_items({}, yyjson::minimum(1))),
     yyjson::field("grid", yyjson::prefix_items(yyjson::items(yyjson::minimum(1)), {yyjson::min_items(2)})));
 
+// the string settings written as string literals, which hold their characters before C++26, and a position of
+// prefix_items that is made of them as temporaries
+struct Literals
+{
+    std::tuple<std::string, std::vector<std::string>> pair;
+    std::string unit;
+    std::vector<std::string> days;
+    bool operator==(const Literals&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<Literals> = yyjson::annotate(
+    yyjson::field("pair", yyjson::prefix_items({yyjson::pattern("^[a-z]+$"), yyjson::enum_("ab", "Ab", "abc")},
+                                               yyjson::prefix_items(yyjson::const_("yz")))),
+    yyjson::field("unit", yyjson::enum_("mm", "cm"), yyjson::title("Unit"), yyjson::examples(R"("mm")")),
+    yyjson::field("days", yyjson::items(yyjson::format("date"))));
+// they are template arguments, as of yyjson::alt
+template <auto... Settings>
+struct setting_arguments
+{
+};
+template struct setting_arguments<yyjson::pattern("^a"), yyjson::format("date"), yyjson::title("t"),
+                                  yyjson::description("d"), yyjson::const_("c"), yyjson::enum_("e", 1),
+                                  yyjson::examples("1", "2")>;
+
 bool is_short(const std::string& s) { return s.size() < 3; }
 struct Keyed
 {
@@ -628,6 +652,25 @@ CONSTRAINT_RULE(PositionOf17Values,
                                                     yyjson::enum_(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
                                                                         14, 15, 16))}))
 #undef CONSTRAINT_RULE
+#if !defined(__cpp_lib_define_static)
+// before C++26 a position copies up to 256 characters of the strings written as string literals
+#define STRING_RULE(NAME, ...)        \
+    struct NAME                       \
+    {                                 \
+        std::vector<std::string> v;   \
+    };                                \
+    template <>                       \
+    inline constexpr auto yyjson::annotations<NAME> = yyjson::annotate(yyjson::field("v", __VA_ARGS__));
+#define CHARS_64 "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+STRING_RULE(PositionOf256Chars, yyjson::prefix_items({yyjson::pattern(CHARS_64 CHARS_64),
+                                                      yyjson::enum_(CHARS_64, CHARS_64)}))
+STRING_RULE(PositionOf257Chars, yyjson::prefix_items({yyjson::pattern(CHARS_64 CHARS_64),
+                                                      yyjson::enum_(CHARS_64, CHARS_64 "x")}))
+inline constexpr std::string_view chars_257 = CHARS_64 CHARS_64 CHARS_64 CHARS_64 "x";
+STRING_RULE(PositionOfLongView, yyjson::prefix_items(yyjson::const_(chars_257)))
+#undef CHARS_64
+#undef STRING_RULE
+#endif
 // dependent_required names a member that is read, and once
 struct DependsOnUnknown
 {
@@ -695,6 +738,11 @@ namespace compile_rules
     static_assert(table_error<FormatTwice> == same_setting_twice);
     static_assert(table_error<PositionOf16Values> == none);
     static_assert(table_error<PositionOf17Values> == prefix_position_too_large);
+#if !defined(__cpp_lib_define_static)
+    static_assert(table_error<PositionOf256Chars> == none);
+    static_assert(table_error<PositionOf257Chars> == prefix_position_too_large);
+    static_assert(table_error<PositionOfLongView> == none);
+#endif
     static_assert(table_error<DependsOnUnknown> == unknown_member);
     static_assert(table_error<DependentUnknown> == unknown_member);
     static_assert(table_error<DependsOnSkipped> == dependency_skipped);
@@ -1313,6 +1361,25 @@ TEST(Constraints, PrefixItems)
     expect_rejected<Prefixed>(R"({"grid":[[0]]})", prefix("grid") + "is less than the minimum 1", "/grid/0/0");
     expect_rejected<Prefixed>(R"({"grid":[[1],[0]]})", prefix("grid") + "has fewer items than the minimum 2",
                               "/grid/1");
+}
+
+TEST(Constraints, StringLiterals)
+{
+    expect_accepted<Literals>(R"({"pair":["ab",["yz"]],"unit":"cm","days":["2024-01-31"]})",
+                              {{"ab", {"yz"}}, "cm", {"2024-01-31"}});
+    const auto element = [](std::string_view key) {
+        return std::format(R"(an element of the value of the key "{}" of Literals )", key);
+    };
+    expect_rejected<Literals>(R"({"pair":["Ab",[]]})", element("pair") + R"(does not match the pattern "^[a-z]+$")",
+                              "/pair/0");
+    expect_rejected<Literals>(R"({"pair":["abd",[]]})", element("pair") + R"(is not one of "ab", "Ab", "abc")",
+                              "/pair/0");
+    expect_rejected<Literals>(R"({"pair":["ab",["y"]]})", element("pair") + R"(is not equal to the constant "yz")",
+                              "/pair/1/0");
+    expect_rejected<Literals>(R"({"unit":"m"})", R"(the value of the key "unit" of Literals is not one of "mm", "cm")",
+                              "/unit");
+    expect_rejected<Literals>(R"({"days":["2024-02-30"]})", element("days") + R"(does not have the format "date")",
+                              "/days/0");
 }
 
 TEST(Constraints, PropertyNames)
