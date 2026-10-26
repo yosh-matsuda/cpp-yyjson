@@ -102,7 +102,7 @@ Each row below is a `yyjson::bad_cast` that the same read without `yyjson::stric
 *   The key of an [internal tag](conversions.md#tagged-variants) is a key of the object of the alternative, and the key of an adjacent tag is a key of the struct that holds the variant. Neither is rejected as an unknown key. When the alternative is a struct, the struct checks the key of the tag as one of its own.
 *   A key that `yyjson::additional_properties(true)` lets the object have is ignored as a whole, also when it appears twice.
 *   A key that names no field is accepted when the struct has a field of [`yyjson::extra_keys`](conversions.md#keys-that-name-no-field), which receives it. A key that appears twice is rejected there as in a map.
-*   A field of a struct annotated with [`yyjson::transparent`](conversions.md#a-struct-as-the-value-of-its-field) is checked as a field of the type of its only field, except that `null` in a `std::optional` there keeps the value in `T()`, as described in [`null` in a `std::optional`](#null-in-a-stdoptional).
+*   A field of a struct annotated with [`yyjson::transparent`](conversions.md#a-struct-as-the-value-of-its-field) is checked as a field of the type of its only field. A `std::optional` there reads `null` as a `std::optional` field does, as described in [`null` in a `std::optional`](#null-in-a-stdoptional).
 *   Multimaps, multisets, ranges and the other types that hold what they are given are read as without `yyjson::strict`.
 *   The option holds for every value that the call reads, including what a [user-defined caster](conversions.md#user-defined-casters) reads with `cast` or `yyjson::read` while the call runs on the same thread. A `from_json` that casts without `yyjson::strict` therefore reads strictly when a strict read calls it.
 *   The keys that a `from_json` looks up by itself, such as with `find` or `operator[]` of an object, are not checked. Rejecting an unknown or a missing key of the object that it reads is up to the caster.
@@ -122,6 +122,8 @@ A `std::optional` field may be left out of the object. JSON `null` as its value 
 The value in `T()` is `std::nullopt` unless a default member initializer gives the field another; `null` is read as if the key were left out. To accept `null` as a value of a field under `yyjson::strict`, give the field a type that reads `null` itself, such as `std::variant<std::monostate, V>` or `std::shared_ptr<V>`.
 
 Any other `std::optional<U>`, such as the root or an element of an array, reads `null` as `std::nullopt`, with or without `yyjson::strict`.
+
+A struct annotated with [`yyjson::transparent`](conversions.md#a-struct-as-the-value-of-its-field) whose field is a `std::optional<U>` follows the same rules: as a field of another struct, it reads `null` as the table says, and elsewhere `null` empties it.
 
 ### Annotations of keys
 
