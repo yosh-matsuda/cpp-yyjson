@@ -15,9 +15,22 @@
       "default": {"kind": "square", "a": 2}
     },
     "extra": {"default": {"k": [1, "x"]}},
-    "anchor": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/Point"}], "default": {"x": 5, "y": 6}}
+    "anchor": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/Point"}], "default": {"x": 5, "y": 6}},
+    "tree": {"$ref": "#/$defs/Tree"},
+    "chain": {"$ref": "#/$defs/Chain"}
   },
   "$defs": {
-    "Point": {"type": "object", "properties": {"x": {"type": "number"}, "y": {"type": "number"}}}
+    "Point": {"type": "object", "properties": {"x": {"type": "number"}, "y": {"type": "number"}}},
+    "Tree": {
+      "type": "object",
+      "properties": {
+        "name": {"type": "string"},
+        "children": {"type": "array", "items": {"$ref": "#/$defs/Tree"}, "default": [{"name": "leaf"}]}
+      }
+    },
+    "Chain": {
+      "type": "object",
+      "properties": {"name": {"type": "string"}, "next": {"$ref": "#/$defs/Chain", "default": {"name": "next"}}}
+    }
   }
 }

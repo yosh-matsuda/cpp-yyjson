@@ -639,6 +639,7 @@ namespace cpp_yyjson_codegen
             bool extra = false;          // yyjson::extra_keys: a map of the keys that name no property; no key
             std::string init{};          // " = x" or "{...}"
             std::string default_note{};  // the default of a std::optional field, for a comment
+            std::string default_from{};  // the function of yyjson::default_from that makes the default
             std::optional<json> dflt{};  // the default before render() converts it to `init`
             metadata meta{};
             std::string loc{};
@@ -829,6 +830,12 @@ namespace cpp_yyjson_codegen
             std::set<std::string> type_names_;
             std::vector<int> position_;  // the place of a struct in definition order, -1 for others
             mutable bool partial_init_ = false;  // a designated initializer leaves members out
+            // the functions of yyjson::default_from: name, return type and returned expression
+            struct default_function
+            {
+                std::string name, type, value;
+            };
+            std::vector<default_function> default_functions_;
             bool uses_pattern_ = false;
             std::vector<diagnostic> warnings_;
             std::set<std::pair<std::string, std::string>> warned_;
@@ -1748,6 +1755,14 @@ namespace cpp_yyjson_codegen
                             f.init = std::move(*init);
                             f.omit_default = true;
                         }
+                        else if (auto fn = default_function_of(decls_[i], f, j))
+                        {
+                            // the member initializer cannot construct it: the struct holds itself, or the field is
+                            // held through std::unique_ptr to break a cycle. A function defined after the structs
+                            // makes it when the key is missing, and writing leaves the key out as above
+                            f.default_from = fn->name;
+                            default_functions_.push_back(std::move(*fn));
+                        }
                         else
                         {
                             // std::nullopt is the missing key, which the program reads as the default in the comment
@@ -1757,6 +1772,43 @@ namespace cpp_yyjson_codegen
                             if (f.type.k != tk::optional) f.type = make(tk::optional, {std::move(f.type)});
                         }
                     }
+            }
+
+            // the function of yyjson::default_from for the default `j` of the field `f` of `d`, which returns the
+            // value that the field holds through std::optional, std::unique_ptr and std::variant<std::monostate, T>;
+            // it is defined after all the structs, whose initializers it may construct
+            std::optional<default_function> default_function_of(const decl& d, const field& f, const json& j) const
+            {
+                auto t = &f.type;
+                while (true)
+                {
+                    const auto& r = resolved(*t);
+                    if (r.k == tk::optional || r.k == tk::pointer)
+                        t = &r.args[0];
+                    else if (is_nullable(r))
+                        t = &r.args[1];
+                    else
+                        break;
+                }
+                if (j.is_null()) return std::nullopt;
+                const auto v = initializer(*t, j, static_cast<int>(decls_.size()));
+                if (!v) return std::nullopt;
+                auto taken = [&](const std::string& name) {
+                    return type_names_.contains(name) ||
+                           std::ranges::any_of(default_functions_,
+                                               [&](const default_function& g) { return g.name == name; }) ||
+                           std::ranges::any_of(decls_, [&](const decl& e) {
+                               return e.name == name ||
+                                      std::ranges::any_of(e.fields, [&](const field& g) { return g.member == name; });
+                           });
+                };
+                // one underscore between the parts, since a name with "__" is reserved (`not_` -> `S_not_default`)
+                auto base = d.name + "_" + f.member + "_default";
+                base.erase(std::ranges::unique(base, [](char a, char b) { return a == '_' && b == '_'; }).begin(),
+                           base.end());
+                auto name = base;
+                for (auto n = 2; taken(name); ++n) name = base + std::to_string(n);
+                return default_function{name, spell(*t), typed_init(*t, *v)};
             }
 
             // the initializer of a field: " = x" or "{...}"
@@ -3511,6 +3563,12 @@ namespace cpp_yyjson_codegen
                 if (f.member != f.key) items.push_back("yyjson::rename(" + cpp_string(f.key) + ")");
                 if (f.required) items.emplace_back("yyjson::required");
                 if (f.omit_default) items.emplace_back("yyjson::omit_default");
+                if (!f.default_from.empty())
+                {
+                    // the annotations of C++20 are outside the namespace
+                    const auto q = opts_.cpp26 || opts_.ns.empty() ? std::string() : opts_.ns + "::";
+                    items.push_back("yyjson::default_from<&" + q + f.default_from + ">");
+                }
                 for (auto& s : render_settings(f.set, f.type)) items.push_back(std::move(s));
                 for (auto& s : render_metadata(f.meta)) items.push_back(std::move(s));
                 return items;
@@ -3620,6 +3678,10 @@ namespace cpp_yyjson_codegen
                     body += "using " + d.name + " = " + spell(d.target) + ";\n\n";
                 }
 
+                // the functions of yyjson::default_from, which the annotations of the members name
+                for (const auto& fn : default_functions_) body += fn.type + " " + fn.name + "();\n";
+                if (!default_functions_.empty()) body += "\n";
+
                 for (const auto i : structs)
                 {
                     auto& d = decls_[i];
@@ -3659,6 +3721,9 @@ namespace cpp_yyjson_codegen
                         }
                     }
                 }
+
+                for (const auto& fn : default_functions_)
+                    body += "inline " + fn.type + " " + fn.name + "()\n{\n    return " + fn.value + ";\n}\n\n";
 
                 auto seen = std::map<std::string, const variant_note*>();
                 for (const auto& n : notes_)
@@ -3707,6 +3772,11 @@ namespace cpp_yyjson_codegen
                         "//\n// A field with a default holds it as its initializer and has `yyjson::omit_default`: a "
                         "missing key\n// reads as the default, and writing leaves the key out while the field holds "
                         "it.\n";
+                if (!default_functions_.empty())
+                    out +=
+                        "//\n// A field with `yyjson::default_from` gets the value of the function when the key is "
+                        "missing, and\n// writing leaves the key out while the field holds it: a member initializer "
+                        "cannot construct\n// a struct that holds itself or a field held through std::unique_ptr.\n";
                 if (std::ranges::any_of(decls_, [](const decl& d) { return d.transparent; }))
                     out +=
                         "//\n// A struct with `yyjson::transparent` is read and written as the value of its only "

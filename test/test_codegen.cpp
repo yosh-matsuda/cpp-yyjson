@@ -537,14 +537,16 @@ TEST(Codegen, StructDefaults)
     EXPECT_TRUE(has(r.code, "yyjson::field(\"open\", yyjson::omit_default)"));
     // members left out of a designated initializer would warn
     EXPECT_TRUE(has(r.code, "#pragma GCC diagnostic ignored \"-Wmissing-field-initializers\"\n"));
-    // a key that a closed struct does not have, a pattern that the generator cannot check and a struct that
-    // would construct itself are not converted
+    // a struct that would construct itself gets the default from a function defined after the structs
+    EXPECT_TRUE(has(r.code, "std::vector<T> T_children_default();\n"));
+    EXPECT_TRUE(has(r.code, "    std::vector<T> children;\n"));
+    EXPECT_TRUE(has(r.code, "inline std::vector<T> T_children_default()\n{\n"
+                            "    return std::vector<T>{T{.name = \"x\"}};\n}\n"));
+    EXPECT_TRUE(has(r.code, "yyjson::field(\"children\", yyjson::default_from<&T_children_default>)"));
+    // a key that a closed struct does not have and a pattern that the generator cannot check are not converted
     EXPECT_TRUE(has(r.code, "    // default: {\"z\":1}\n    std::optional<RootClosed> closed;\n"));
     EXPECT_TRUE(has(r.code, "    // default: {\"s\":\"b\"}\n"));
-    EXPECT_TRUE(has(r.code, "    // default: [{\"name\":\"x\"}]\n    std::optional<std::vector<T>> children;\n"));
     EXPECT_EQ(warnings(r),
-              "#/$defs/T/properties/children: the default [{\"name\":\"x\"}] is not converted to the C++ type; the "
-              "field is std::optional\n"
               "#/properties/closed: the default {\"z\":1} is not converted to the C++ type; the field is "
               "std::optional\n"
               "#/properties/pattern: the default {\"s\":\"b\"} is not converted to the C++ type; the field is "
@@ -556,6 +558,33 @@ TEST(Codegen, StructDefaults)
                             {});
     EXPECT_TRUE(has(f.code, "    RootP p{.x = 1.0};\n"));
     EXPECT_FALSE(has(f.code, "#pragma GCC diagnostic"));
+}
+
+TEST(Codegen, DefaultFunctions)
+{
+    const auto r = generate(R"({
+        "type": "object",
+        "properties": {"tree": {"$ref": "#/$defs/T"}},
+        "$defs": {
+            "T": {"type": "object", "properties": {
+                "name": {"type": "string"},
+                "not": {"$ref": "#/$defs/T", "default": {"name": "n"}},
+                "_id": {"$ref": "#/$defs/T", "default": {"name": "i"}},
+                "children": {"type": "array", "items": {"$ref": "#/$defs/T"}, "default": [{"name": "x"}]}}}
+        }
+    })",
+                            {});
+    // a field held through std::unique_ptr gets the held value; the name has no "__", which is reserved
+    EXPECT_TRUE(has(r.code, "    std::optional<std::unique_ptr<T>> not_;\n"));
+    EXPECT_TRUE(has(r.code, "T T_not_default();\n"));
+    EXPECT_TRUE(has(r.code, "inline T T_not_default()\n{\n    return T{.name = \"n\"};\n}\n"));
+    EXPECT_TRUE(has(r.code, "yyjson::field(\"not_\", yyjson::rename(\"not\"), yyjson::default_from<&T_not_default>)"));
+    EXPECT_TRUE(has(r.code, "T T_id_default();\n"));
+    EXPECT_TRUE(has(r.code, "yyjson::field(\"_id\", yyjson::default_from<&T_id_default>)"));
+    // std::initializer_list copies its elements, which a struct that holds a std::unique_ptr does not allow
+    EXPECT_TRUE(has(r.code, "    // default: [{\"name\":\"x\"}]\n    std::optional<std::vector<T>> children;\n"));
+    EXPECT_EQ(warnings(r), "#/$defs/T/properties/children: the default [{\"name\":\"x\"}] is not converted to the C++ "
+                           "type; the field is std::optional\n");
 }
 
 TEST(Codegen, RequiredGroups)

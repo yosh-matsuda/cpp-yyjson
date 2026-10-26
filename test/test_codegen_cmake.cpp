@@ -53,3 +53,25 @@ TEST(CodegenCMake, Defaults)
     EXPECT_EQ(other.anchor.index(), 0U);
     EXPECT_EQ(yyjson::write(other), json);
 }
+
+TEST(CodegenCMake, DefaultFunctions)
+{
+    // a struct that holds itself gets the default of such a field from a function when the key is missing; the
+    // value of the function is not filled further
+    const auto settings = yyjson::read<model::Settings>(R"({"tree":{},"chain":{"next":{"name":"a"}}})", yyjson::strict);
+    ASSERT_TRUE(settings.tree.has_value());
+    ASSERT_EQ(settings.tree->children.size(), 1U);
+    EXPECT_EQ(settings.tree->children[0].name, "leaf");
+    EXPECT_TRUE(settings.tree->children[0].children.empty());
+    ASSERT_TRUE(settings.chain.has_value() && settings.chain->next.has_value());
+    const auto& next = **settings.chain->next;
+    EXPECT_EQ(next.name, "a");
+    ASSERT_TRUE(next.next.has_value());
+    EXPECT_EQ((*next.next)->name, "next");
+    EXPECT_FALSE((*next.next)->next.has_value());
+
+    // writing leaves out the keys whose members hold the value of the function
+    EXPECT_EQ(yyjson::write(settings), R"({"tree":{},"chain":{"next":{"name":"a"}}})");
+    // a member constructed in C++ keeps std::nullopt, since only reading fills it
+    EXPECT_FALSE(model::Chain().next.has_value());
+}
