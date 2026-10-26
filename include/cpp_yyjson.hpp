@@ -3699,8 +3699,8 @@ namespace yyjson
             static_assert(table.error != field_key_error::transparent_field_setting,
                           "the field of a struct annotated with yyjson::transparent has no key: it takes constraints "
                           "and the settings of the values in it, but no key, yyjson::required, yyjson::optional_key, "
-                          "yyjson::omit_default, yyjson::extra_keys, yyjson::adjacent_tag or metadata such as "
-                          "yyjson::description, which the struct takes instead");
+                          "yyjson::omit_default, yyjson::default_from, yyjson::extra_keys, yyjson::adjacent_tag or "
+                          "metadata such as yyjson::description, which the struct takes instead");
             static_assert(table.error != field_key_error::transparent_struct_setting,
                           "a struct annotated with yyjson::transparent is not an object: it takes no "
                           "yyjson::additional_properties, yyjson::dependent_required, yyjson::one_of_required or "
