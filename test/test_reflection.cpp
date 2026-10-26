@@ -1068,15 +1068,15 @@ static_assert(yyjson::readable<std::unique_ptr<int>> && yyjson::writable<std::un
 static_assert(yyjson::readable<yyjson::value> && yyjson::writable<yyjson::value>);
 static_assert(yyjson::writable<yyjson::reader::const_value_ref>);
 
-// A struct with a reference member is not reflected, and its fields are not checked: the check of `children`
-// would depend on itself.
+// The C++20 backend does not reflect a struct with a reference member, and its fields are not checked: the check of
+// `children` would depend on itself. The C++26 backend reflects it and writes it.
 struct RecursiveWithReference
 {
     std::vector<RecursiveWithReference> children;
     const int& ref;
 };
-static_assert(!std::constructible_from<yyjson::object, const RecursiveWithReference&>);
-static_assert(!yyjson::writable<RecursiveWithReference>);
+static_assert(std::constructible_from<yyjson::object, const RecursiveWithReference&> == bool(FIELD_RFL_STD_REFLECTION));
+static_assert(yyjson::writable<RecursiveWithReference> == bool(FIELD_RFL_STD_REFLECTION));
 
 // A range whose elements are of its own type, as a handle of a Python object in nanobind, is not an array, and
 // the check of its elements does not depend on itself
