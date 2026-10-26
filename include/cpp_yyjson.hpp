@@ -8566,8 +8566,8 @@ namespace yyjson
         }
 
         template <copy_string_args... Ts>
-        requires writer::detail::to_json_with_reflection<T> && (!visitable<T>) &&
-                 (!writer::detail::to_json_usr_translator<T>)
+        requires (!visitable<T>) && (!writer::detail::to_json_usr_translator<T>) &&
+                 writer::detail::to_json_with_reflection<T>
         static void to_json(writer::object_ref& obj, const T& t, Ts... ts)
         {
             if constexpr (detail::has_adjacent_fields<T>) detail::check_adjacent_tags(t);
@@ -8580,8 +8580,8 @@ namespace yyjson
             });
         }
         template <copy_string_args... Ts>
-        requires writer::detail::to_json_with_reflection<T> && (!visitable<T>) &&
-                 (!writer::detail::to_json_usr_translator<T>)
+        requires (!visitable<T>) && (!writer::detail::to_json_usr_translator<T>) &&
+                 writer::detail::to_json_with_reflection<T>
         static void to_json(writer::object_ref& obj, T&& t, Ts... ts)
         {
             // The fields are moved one by one out of `t` itself.  `for_each_field` would move them into a

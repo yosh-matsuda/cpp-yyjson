@@ -825,4 +825,31 @@ TEST(Writer, Emitter)
     expect_direct_write(EmittedShape{"\xff", {}, {"\xc3"}, {{"\x80", 1}}});
 }
 
+// The fields of a struct with a translator `to_json` are not checked as the default caster would write them.  The
+// check of `UncheckedTree` would depend on itself.
+struct UncheckedTree : std::map<std::string, UncheckedTree>
+{
+};
+struct TranslatedTree
+{
+    UncheckedTree tree;
+    int size = 0;
+};
+template <>
+struct yyjson::caster<TranslatedTree>
+{
+    template <typename... Ts>
+    static int to_json(const TranslatedTree& t, Ts...)
+    {
+        return t.size;
+    }
+};
+static_assert(yyjson::writable<TranslatedTree>);
+
+TEST(Writer, TranslatorOfUncheckedFields)
+{
+    EXPECT_EQ(std::string(yyjson::value(TranslatedTree{{}, 3}).write()), "3");
+    EXPECT_EQ(std::string(yyjson::write(TranslatedTree{{}, 3})), "3");
+}
+
 // NOLINTEND
