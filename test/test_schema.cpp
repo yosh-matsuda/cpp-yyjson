@@ -1207,19 +1207,30 @@ TEST(Schema, Transparent)
         R"({"id":3,"tags":["long"],"ids":[],"shape":{"t":"p"}})",
         R"({"id":3,"tags":["a"],"ids":[0],"shape":{"t":"p"}})",
         R"({"id":3,"tags":["a"],"ids":[],"limit":11,"shape":{"t":"p"}})",
+        R"({"id":3,"tags":["a"],"ids":[],"limit":null,"shape":{"t":"p"}})",
         R"({"id":"3","tags":["a"],"ids":[],"shape":{"t":"p"}})",
     });
     // a transparent struct is a definition of the schema of its field, with its metadata
     const auto read = to_jsoncons(yyjson::json_schema<TAccount>());
     EXPECT_EQ(read["$defs"]["TId"],
               json::parse(R"({"type":"integer","maximum":2147483647,"minimum":1,"description":"A user"})"));
-    EXPECT_EQ(read["$defs"]["TLimit"],
-              json::parse(R"({"anyOf":[{"type":"integer","minimum":-2147483648,"maximum":10},{"type":"null"}]})"));
+    // a field of an optional value is defined by the value type, and a field of the struct takes no null, as a
+    // `std::optional` field does
+    EXPECT_EQ(read["$defs"]["TLimit"], json::parse(R"({"type":"integer","minimum":-2147483648,"maximum":10})"));
     EXPECT_EQ(read["$defs"]["TAccount"]["properties"]["limit"], json::parse(R"({"$ref":"#/$defs/TLimit","default":7})"));
-    // an element of an empty optional value is null
+    // elsewhere null empties the field
     check<std::vector<TLimit>>({
         R"([null,3])",
         R"([11])",
+    });
+    check<std::map<std::string, TLimit>>({
+        R"({"a":null,"b":3})",
+        R"({"a":11})",
+    });
+    check<TLimit>({
+        R"(null)",
+        R"(10)",
+        R"(11)",
     });
     // a field of an optional value is not required by `yyjson::strict`, nor by the write schema
     for (const auto& s : {to_jsoncons(yyjson::json_schema<TAccount>(yyjson::strict)),

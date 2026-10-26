@@ -1097,6 +1097,14 @@ namespace yyjson
                     emit_variant<T>(out);
                 constraints();
             }
+            else if constexpr (yyjson::detail::transparent_over_optional<T>)
+            {
+                // `$defs` has the value type of the field; null empties it here, as it empties a `std::optional`.
+                auto any = out.emplace("anyOf", empty_array);
+                emit_named<T>(any.emplace_back(empty_object));
+                any.emplace_back(empty_object).emplace("type", "null");
+                constraints();
+            }
             else if constexpr (struct_type<T>)
             {
                 emit_named<T>(out);
@@ -1438,8 +1446,9 @@ namespace yyjson
         }
 
         // A struct annotated with `yyjson::transparent` is the value of its field, with the settings of the field.  An
-        // optional field gives null too, which a struct reads and writes as an element, a value of a map or the
-        // root, and which a field of a struct reads as the default.  A tagged alternative is the object only.
+        // optional field gives its value type, as a `std::optional` field does: the struct takes null beside it as an
+        // element, a value of a map or the root, where null empties the field.  A tagged alternative is the object
+        // only.
         template <typename S>
         void generator::emit_transparent(object_ref out, std::span<const variant_tag> tags)
         {
@@ -1455,7 +1464,7 @@ namespace yyjson
             }
             const auto* const outer_values = std::exchange(values_, values);
             if (tags.empty())
-                emit<F>(out, nodes, node);
+                emit<std::conditional_t<yyjson::detail::transparent_over_optional<S>, V, F>>(out, nodes, node);
             else
                 emit_tagged<V>(out, tags, nodes, node);
             values_ = outer_values;
@@ -1526,8 +1535,7 @@ namespace yyjson
                         else if constexpr (yyjson::detail::is_std_optional<F>::value)
                         {
                             // A field without a value is left out of the object, which is how the type declares
-                            // that it may be absent.  Null is not part of the declaration, although a read without
-                            // `yyjson::strict` takes it, unless the value type reads null itself.
+                            // that it may be absent.  Null is read as the value type reads it.
                             if (const auto* d = m.declared_for(writing()))
                                 rejects = emit_declared(p, d->text(writing()), member_of<S, declared>());
                             else
@@ -1535,6 +1543,13 @@ namespace yyjson
                         }
                         else if (const auto* d = m.declared_for(writing()))
                             rejects = emit_declared(p, d->text(writing()), member_of<S, declared>());
+                        else if constexpr (yyjson::detail::transparent_over_optional<F>)
+                        {
+                            // The same for a struct whose field is such a `std::optional`, which `$defs` defines
+                            // by the value type.
+                            emit_named<F>(p);
+                            if (field_nodes != nullptr) emit_constraints(p, field_nodes[node].constraints);
+                        }
                         else
                             emit<F>(p, field_nodes, node);
 
