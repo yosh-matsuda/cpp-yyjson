@@ -549,6 +549,14 @@ struct Measure
 template <>
 inline constexpr auto yyjson::annotations<Measure> = yyjson::annotate(
     yyjson::one_of_required({"env"}, {"value", "unit"}), yyjson::field("unit", yyjson::rename("u")));
+// a group whose field reads null
+struct NullableMeasure
+{
+    std::optional<std::variant<std::monostate, std::string>> env;
+    std::optional<double> value;
+};
+template <>
+inline constexpr auto yyjson::annotations<NullableMeasure> = yyjson::annotate(yyjson::one_of_required({"env"}, {"value"}));
 // any_of_required and one_of_required together
 struct Reachable
 {
@@ -1732,7 +1740,9 @@ TEST(Constraints, RequiredGroups)
     check(measure, R"({"name":"a","env":"e","value":1,"u":"m"})", measure_many);
     check(measure, R"({"u":"m","env":"e","value":1})", measure_many);
     // a key whose value is null is a key that the object has
-    check(measure, R"({"env":null})", "");
+    check(std::type_identity<NullableMeasure>{}, R"({"env":null})", "");
+    check(std::type_identity<NullableMeasure>{}, R"({"env":null,"value":1})",
+          many_of("NullableMeasure", R"(["env"], ["value"])"));
 
     constexpr auto reachable = std::type_identity<Reachable>{};
     check(reachable, R"({"email":"a","fax":"f"})", "");
