@@ -884,6 +884,29 @@ TEST(Codegen, TransparentRoot)
     EXPECT_TRUE(has(dropped.code, "using Root = std::vector<"));
     EXPECT_FALSE(has(dropped.code, "yyjson::transparent"));
 
+    // before C++26, a position copies up to 256 characters of string literals: longer strings are passed as views
+    const auto pattern = "^" + std::string(300, 'a') + "$";
+    const auto long_strings = generate(R"({"type": "array", "prefixItems": [{"type": "string", "const": ")" + pattern +
+                                           R"("}, {"type": "string", "pattern": "^b"}], "items": {"type": "string"}})",
+                                       {});
+    EXPECT_EQ(warnings(long_strings), "");
+    EXPECT_TRUE(has(long_strings.code, "yyjson::prefix_items(yyjson::const_(std::string_view(\"" + pattern +
+                                           "\")), yyjson::pattern(\"^b\"))"));
+    const auto c26_strings = generate(R"({"type": "array", "prefixItems": [{"type": "string", "pattern": ")" + pattern +
+                                          R"("}], "items": {"type": "string"}})",
+                                      {.cpp26 = true});
+    EXPECT_TRUE(has(c26_strings.code, "yyjson::prefix_items(yyjson::pattern(\"" + pattern + "\"))"));
+
+    // a position holds up to 16 values of `const` and `enum`
+    auto values = std::string();
+    for (auto i = 0; i < 17; ++i) values += (i > 0 ? ", " : "") + std::to_string(i);
+    const auto many = generate(
+        R"({"type": "array", "prefixItems": [{"type": "integer", "enum": [)" + values + R"(]}], "items": {"type": "integer"}})",
+        {});
+    EXPECT_EQ(warnings(many), "#: constraints of a position of `prefixItems` have more than 16 values of `const` and "
+                              "`enum`; they are dropped\n");
+    EXPECT_FALSE(has(many.code, "yyjson::prefix_items"));
+
     // a definition refers to the root struct
     const auto c26 = generate(
         R"({"type": "string", "format": "email", "$defs": {"L": {"type": "array", "items": {"$ref": "#"}}}})",

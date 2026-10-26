@@ -2923,6 +2923,60 @@ namespace cpp_yyjson_codegen
                 return n;
             }
 
+            // The values of `yyjson::const_` / `yyjson::enum_` and the characters of the string literals of
+            // the constraints that a position of `yyjson::prefix_items` holds, at most
+            static std::pair<std::size_t, std::size_t> held_count(const settings& s)
+            {
+                auto values = std::size_t(0);
+                auto chars = std::size_t(0);
+                for (const auto& c : s.constraints)
+                {
+                    if (c.keyword == "const") ++values;
+                    if (c.keyword == "enum" && c.value.is_array()) values += c.value.items.size();
+                    if (c.value.is_string()) chars += c.value.text.size();
+                    if (c.value.is_array())
+                        for (const auto& v : c.value.items)
+                            if (v.is_string()) chars += v.text.size();
+                }
+                for (const auto* v : {&s.items, &s.contains, &s.property_names, &s.additional, &s.prefix})
+                    for (const auto& c : *v)
+                    {
+                        const auto [n, m] = held_count(c);
+                        values += n;
+                        chars += m;
+                    }
+                return {values, chars};
+            }
+
+            // Before C++26, a position of `yyjson::prefix_items` copies the string literals of its settings into 256
+            // characters; a `std::string_view` is not copied.
+            static void view_strings(settings& s)
+            {
+                for (auto& c : s.constraints)
+                {
+                    auto text = std::string();
+                    for (std::size_t i = 0; i < c.text.size(); ++i)
+                    {
+                        if (c.text[i] != '"')
+                        {
+                            text += c.text[i];
+                            continue;
+                        }
+                        auto end = i + 1;
+                        while (c.text[end] != '"') end += c.text[end] == '\\' ? 2 : 1;
+                        const auto literal = std::string_view(c.text).substr(i, end + 1 - i);
+                        if (text.ends_with("std::string_view("))
+                            text += literal;
+                        else
+                            text += "std::string_view(" + std::string(literal) + ")";
+                        i = end;
+                    }
+                    c.text = std::move(text);
+                }
+                for (auto* v : {&s.items, &s.contains, &s.property_names, &s.additional, &s.prefix})
+                    for (auto& c : *v) view_strings(c);
+            }
+
             // prefix_items settings within the limits of the library
             void set_prefix(settings& out, std::vector<settings> prefix, const std::string& loc)
             {
@@ -2939,6 +2993,14 @@ namespace cpp_yyjson_codegen
                         warn(loc, "constraints of a position of `prefixItems` nest too deeply; they are dropped");
                         p = {};
                     }
+                    else if (const auto [values, chars] = held_count(p); values > 16)
+                    {
+                        warn(loc, "constraints of a position of `prefixItems` have more than 16 values of `const` and "
+                                  "`enum`; they are dropped");
+                        p = {};
+                    }
+                    else if (chars > 256 && !opts_.cpp26)
+                        view_strings(p);
                 if (std::ranges::all_of(prefix, [](const auto& p) { return p.empty(); })) return;
                 out.prefix = std::move(prefix);
             }
