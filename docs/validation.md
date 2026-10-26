@@ -233,16 +233,16 @@ yyjson::read<Query>(R"({"text":"a"})", yyjson::strict);     // -> Query{"a", -1}
 yyjson::read<Query>(R"({"text":"a","limit":-1})");          // throws: the value of the key "limit" of Query is less than the minimum 0 at /limit (line 1, column 21, pos 20)
 ```
 
-*   The field is compared by `operator==` with the same field of one `T()`, which is made once per type. The type of the field needs `operator==`, and `T` a default constructor.
+*   The field is compared with the same field of one `T()`, which is made once per type, as the JSON value that it is written as, in the way that [`yyjson::unique_items`](#constraints-of-elements) compares elements: a struct by its fields, and a smart pointer by the value that it points to. `T` needs a default constructor.
 *   The default may break the constraints of the field, as `-1` breaks `minimum(0)` above. Such a value is a sentinel that the program uses for "not given", and the JSON never holds it: writing leaves the key out, and [`yyjson::validate`](#checking-a-c-value) and `write(t, yyjson::strict)` do not check a field that is left out. A JSON object that has the sentinel itself is rejected, as the constraints say.
 *   The JSON Schema of the type, from [`yyjson::json_schema`](json-schema.md), does not require the key in either direction, and the read schema gives the default as `default` unless it breaks the constraints.
-*   It is a compile error together with `yyjson::required` or `yyjson::optional_key`, on a skipped field, on a field tagged by `yyjson::adjacent_tag`, and on a C array field.
+*   It is a compile error together with `yyjson::required` or `yyjson::optional_key`, on a skipped field, and on a field tagged by `yyjson::adjacent_tag`.
 
 Three ways let a key be missing. They differ in what the program sees after reading and in what writing produces:
 
 | Field | Missing key reads as | Written key | Use it when |
 | --- | --- | --- | --- |
-| `T x = d;` with `yyjson::omit_default` | `d` | left out while `x == d` | the program needs a value either way, and `d` stands for "not given" |
+| `T x = d;` with `yyjson::omit_default` | `d` | left out while `x` is written as `d` | the program needs a value either way, and `d` stands for "not given" |
 | `T x = d;` with `yyjson::optional_key` | `d` | always written | the reader accepts a missing key, but the writer always says the value |
 | `std::optional<T> x;` | `std::nullopt` | left out while empty | the program must tell "not given" from every value, for example to merge or to forward the object |
 
