@@ -375,6 +375,17 @@ struct DomMembers
     std::variant<int, yyjson::object, yyjson::array> var;
 };
 
+// a visitable struct with such members, which holds itself
+struct DomMembersVisitable
+{
+    int a = 0;
+    yyjson::value v;
+    yyjson::object o;
+    yyjson::array arr;
+    std::vector<DomMembersVisitable> children;
+};
+VISITABLE_STRUCT(DomMembersVisitable, a, v, o, arr, children);
+
 // a caster that translates from and to a value of the DOM API
 struct DomRaw
 {
@@ -470,6 +481,20 @@ TEST(DomValue, Members)
     // a view gives its members as values
     EXPECT_EQ(read<DomViewed>(R"({"y":0,"x":{"n":[1,2,3]}})").v.write(), R"({"n":[1,2,3]})");
     EXPECT_EQ(read(R"({"x":[5]})").cast<DomViewed>().v.write(), "[5]");
+}
+
+TEST(DomValue, VisitableMembers)
+{
+    using namespace yyjson;
+
+    static_assert(writable<DomMembersVisitable>);
+    const auto json = std::string(R"({"a":1,"v":[true],"o":{"x":1},"arr":[],"children":[)"
+                                  R"({"a":2,"v":null,"o":{},"arr":["s"],"children":[]}]})");
+    const auto t = read<DomMembersVisitable>(json);
+    EXPECT_EQ(write(t), json);
+    EXPECT_EQ(writer::value(t).write(), json);
+    EXPECT_EQ(write(std::vector{t, t}), "[" + json + "," + json + "]");
+    EXPECT_EQ(writer::value(std::vector{t, t}).write(), "[" + json + "," + json + "]");
 }
 
 TEST(DomValue, Translators)
