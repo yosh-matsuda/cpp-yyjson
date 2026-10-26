@@ -94,6 +94,8 @@ if(TARGET cpp_yyjson_codegen)
                         PRIVATE ${PROJECT_NAME} GTest::gtest GTest::gtest_main)
   cpp_yyjson_generate("${PROJECT_NAME}_test_codegen_cmake" codegen/order.schema.json
                       NAMESPACE model)
+  cpp_yyjson_generate("${PROJECT_NAME}_test_codegen_cmake" codegen/defaults.schema.json
+                      NAMESPACE model)
 endif()
 
 # JSONTestSuite, the number tests and generated texts, from the datasets of the benchmark submodule

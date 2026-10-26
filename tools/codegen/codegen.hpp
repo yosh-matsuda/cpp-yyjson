@@ -639,6 +639,7 @@ namespace cpp_yyjson_codegen
             bool extra = false;          // yyjson::extra_keys: a map of the keys that name no property; no key
             std::string init{};          // " = x" or "{...}"
             std::string default_note{};  // the default of a std::optional field, for a comment
+            std::optional<json> dflt{};  // the default before render() converts it to `init`
             metadata meta{};
             std::string loc{};
         };
@@ -826,6 +827,8 @@ namespace cpp_yyjson_codegen
             std::set<const json*> normalizing_;
             std::vector<variant_note> notes_;
             std::set<std::string> type_names_;
+            std::vector<int> position_;  // the place of a struct in definition order, -1 for others
+            mutable bool partial_init_ = false;  // a designated initializer leaves members out
             bool uses_pattern_ = false;
             std::vector<diagnostic> warnings_;
             std::set<std::pair<std::string, std::string>> warned_;
@@ -1594,7 +1597,7 @@ namespace cpp_yyjson_codegen
                         if (is_required(k))
                         {
                             // the default of a required key is never used by reading; it initializes the member
-                            if (dflt != nullptr) f.init = init_for(ft.t, *dflt, floc);
+                            if (dflt != nullptr) f.dflt = *dflt;
                             f.type = std::move(ft.t);
                             f.required = true;
                         }
@@ -1604,23 +1607,18 @@ namespace cpp_yyjson_codegen
                             // missing key is std::nullopt
                             f.type = make(tk::optional, {std::move(ft.t)});
                         }
-                        else if (auto init = opts_.optional_defaults ? std::nullopt : init_value(ft.t, *dflt))
+                        else if (opts_.optional_defaults)
                         {
-                            // a missing key means the default, which the member holds then; writing leaves the key
-                            // out while the member still holds it, so a default outside the constraints, such as
-                            // -1 for "no limit", is never written and read back
-                            f.init = std::move(*init);
-                            f.type = std::move(ft.t);
-                            f.omit_default = true;
+                            // std::nullopt is the missing key, which the program reads as the default in the comment
+                            f.default_note = dump(*dflt);
+                            f.type = make(tk::optional, {std::move(ft.t)});
                         }
                         else
                         {
-                            // std::nullopt is the missing key, which the program reads as the default in the comment
-                            if (!opts_.optional_defaults)
-                                warn(floc, "the default " + dump(*dflt) +
-                                               " is not converted to the C++ type; the field is std::optional");
-                            f.default_note = dump(*dflt);
-                            f.type = make(tk::optional, {std::move(ft.t)});
+                            // convert_defaults() makes it the initializer, once the structs it may construct are
+                            // known, or makes the field std::optional
+                            f.dflt = *dflt;
+                            f.type = std::move(ft.t);
                         }
                         fields.push_back(std::move(f));
                     }
@@ -1717,72 +1715,277 @@ namespace cpp_yyjson_codegen
                 d.filled = true;
             }
 
-            // the initializer of a field from a JSON value: " = x", "{...}", or empty
-            std::string init_for(const ctype& t, const json& j, const std::string& loc)
+            // defaults
+
+            // converts the defaults of the fields to initializers, in the definition order of the structs: an
+            // initializer constructs only structs defined before the struct of the field. A default that C++ does not
+            // express there makes a field that is not required std::optional, with the default in a comment
+            void convert_defaults(const std::vector<int>& order)
             {
-                auto r = init_value(t, j);
-                if (!r) warn(loc, "the default " + dump(j) + " is not converted to the C++ type and is dropped");
-                return r ? *r : std::string();
+                position_.assign(decls_.size(), -1);
+                for (std::size_t n = 0; n < order.size(); ++n) position_[order[n]] = static_cast<int>(n);
+                for (const auto i : order)
+                    for (auto& f : decls_[i].fields)
+                    {
+                        if (!f.dflt) continue;
+                        const auto j = *std::exchange(f.dflt, std::nullopt);
+                        // a field held through std::unique_ptr to break a cycle takes no initializer
+                        auto init = f.type.k == tk::optional || f.type.k == tk::pointer
+                                        ? std::nullopt
+                                        : field_init(f.type, j, position_[i]);
+                        if (f.required)
+                        {
+                            if (init)
+                                f.init = std::move(*init);
+                            else
+                                warn(f.loc, "the default " + dump(j) + " is not converted to the C++ type and is dropped");
+                        }
+                        else if (init)
+                        {
+                            // a missing key means the default, which the member holds then; writing leaves the key
+                            // out while the member still holds it, so a default outside the constraints, such as
+                            // -1 for "no limit", is never written and read back
+                            f.init = std::move(*init);
+                            f.omit_default = true;
+                        }
+                        else
+                        {
+                            // std::nullopt is the missing key, which the program reads as the default in the comment
+                            warn(f.loc, "the default " + dump(j) +
+                                            " is not converted to the C++ type; the field is std::optional");
+                            f.default_note = dump(j);
+                            if (f.type.k != tk::optional) f.type = make(tk::optional, {std::move(f.type)});
+                        }
+                    }
             }
 
-            std::optional<std::string> init_value(const ctype& t, const json& j)
+            // the initializer of a field: " = x" or "{...}"
+            std::optional<std::string> field_init(const ctype& t, const json& j, int before) const
+            {
+                const auto& r = resolved(t);
+                if (r.k == tk::variant)
+                {
+                    // as the initializers of std::variant written by hand
+                    if (holds_null(r) && j.is_null()) return "{}";
+                    const auto i = alternative(r, j);
+                    if (!i) return std::nullopt;
+                    const auto v = initializer(r.args[*i], j, before);
+                    if (!v) return std::nullopt;
+                    return "{std::in_place_index<" + std::to_string(*i) + ">, " + typed_init(r.args[*i], *v) + "}";
+                }
+                auto v = initializer(t, j, before);
+                if (!v) return std::nullopt;
+                return v->starts_with("{") ? *v : " = " + *v;
+            }
+
+            // an expression of the type `t`, from an initializer of it
+            std::string typed_init(const ctype& t, const std::string& v) const
+            {
+                return v.starts_with("{") ? spell(t) + v : v;
+            }
+
+            // the initializer of a value of the type `t`: an expression, or a braced list that copy-list-initializes
+            // it; std::nullopt when C++ does not express the default here
+            std::optional<std::string> initializer(const ctype& t, const json& j, int before) const
             {
                 using namespace std::string_literals;
+                const auto all = [&](const ctype& e, const std::vector<std::string>& keys,
+                                     const std::vector<const json*>& values) -> std::optional<std::string> {
+                    // std::initializer_list copies its elements
+                    auto seen = std::vector<int>();
+                    if (!values.empty() && !copyable(e, seen)) return std::nullopt;
+                    auto out = "{"s;
+                    for (std::size_t n = 0; n < values.size(); ++n)
+                    {
+                        auto v = initializer(e, *values[n], before);
+                        if (!v) return std::nullopt;
+                        if (n > 0) out += ", ";
+                        out += keys.empty() ? typed_init(e, *v)
+                                            : "{" + cpp_string(keys[n], "std::string") + ", " + typed_init(e, *v) + "}";
+                    }
+                    return out + "}";
+                };
                 switch (t.k)
                 {
+                    case tk::any:
+                        // yyjson::value has no literal: it reads the JSON text
+                        return "yyjson::value(yyjson::read(" + cpp_string(dump(j)) + "))";
+                    case tk::object:
+                        if (j.is_object()) return "yyjson::object(yyjson::read(" + cpp_string(dump(j)) + "))";
+                        return std::nullopt;
+                    case tk::null:
+                        if (j.is_null()) return "nullptr"s;
+                        return std::nullopt;
+                    case tk::monostate:
+                        if (j.is_null()) return "std::monostate()"s;
+                        return std::nullopt;
                     case tk::boolean:
-                        if (j.is_bool()) return j.b ? " = true"s : " = false"s;
+                        if (j.is_bool()) return j.b ? "true"s : "false"s;
                         return std::nullopt;
                     case tk::i32:
-                        if (const auto v = as_int64(j); v && *v >= INT32_MIN && *v <= INT32_MAX)
-                            return " = " + int_literal(*v);
+                        if (const auto v = as_int64(j); v && *v >= INT32_MIN && *v <= INT32_MAX) return int_literal(*v);
                         return std::nullopt;
                     case tk::i64:
-                        if (const auto v = as_int64(j)) return " = " + int_literal(*v);
+                        if (const auto v = as_int64(j)) return int_literal(*v);
                         return std::nullopt;
                     case tk::u64:
-                        if (const auto v = as_uint64(j)) return " = " + uint_literal(*v);
+                        if (const auto v = as_uint64(j)) return uint_literal(*v);
                         return std::nullopt;
                     case tk::f32:
                     case tk::f64:
-                        if (j.is_number()) return " = " + float_literal(j, t.k == tk::f32);
+                        if (j.is_number()) return float_literal(j, t.k == tk::f32);
                         return std::nullopt;
                     case tk::string:
-                        if (j.is_string()) return " = " + cpp_string(j.text, "std::string");
+                        if (j.is_string()) return cpp_string(j.text, "std::string");
                         return std::nullopt;
                     case tk::named:
                     {
                         const auto& d = decls_[t.decl];
-                        if (d.kind == decl::kind_t::alias) return init_value(d.target, j);
-                        if (d.kind == decl::kind_t::enumeration && j.is_string())
+                        if (d.kind == decl::kind_t::alias) return initializer(d.target, j, before);
+                        if (d.kind == decl::kind_t::structure) return struct_init(t.decl, j, before);
+                        if (j.is_string())
                             for (const auto& [m, n] : d.enumerators)
-                                if (n == j.text) return " = " + d.name + "::" + m;
+                                if (n == j.text) return d.name + "::" + m;
                         return std::nullopt;
                     }
-                    case tk::variant:
-                        if (holds_null(t) && j.is_null()) return "{}"s;
-                        if (is_nullable(t))
-                        {
-                            if (const auto v = init_value(t.args[1], j); v && v->starts_with(" = "))
-                                return "{std::in_place_index<1>, " + v->substr(3) + "}";
-                        }
-                        return std::nullopt;
                     case tk::vector:
                     {
                         if (!j.is_array()) return std::nullopt;
-                        auto out = std::string("{");
-                        for (auto first = true; const auto& e : j.items)
+                        auto values = std::vector<const json*>();
+                        for (const auto& e : j.items) values.push_back(&e);
+                        return all(t.args[0], {}, values);
+                    }
+                    case tk::map:
+                    {
+                        if (!j.is_object()) return std::nullopt;
+                        auto keys = std::vector<std::string>();
+                        auto values = std::vector<const json*>();
+                        for (const auto& [k, v] : j.members)
                         {
-                            const auto v = init_value(t.args[0], e);
-                            if (!v || !v->starts_with(" = ")) return std::nullopt;
-                            if (!std::exchange(first, false)) out += ", ";
-                            out += v->substr(3);
+                            keys.push_back(k);
+                            values.push_back(&v);
+                        }
+                        return all(t.args[0], keys, values);
+                    }
+                    case tk::tuple:
+                    {
+                        if (!j.is_array() || j.items.size() != t.args.size()) return std::nullopt;
+                        auto out = "{"s;
+                        for (std::size_t n = 0; n < t.args.size(); ++n)
+                        {
+                            const auto v = initializer(t.args[n], j.items[n], before);
+                            if (!v) return std::nullopt;
+                            if (n > 0) out += ", ";
+                            out += typed_init(t.args[n], *v);
                         }
                         return out + "}";
                     }
-                    default:
-                        return std::nullopt;
+                    case tk::variant:
+                    {
+                        // std::in_place_index, since the constructor from a value may choose another alternative
+                        if (holds_null(t) && j.is_null()) return "{}"s;
+                        const auto i = alternative(t, j);
+                        if (!i) return std::nullopt;
+                        const auto v = initializer(t.args[*i], j, before);
+                        if (!v) return std::nullopt;
+                        return spell(t) + "(std::in_place_index<" + std::to_string(*i) + ">, " +
+                               typed_init(t.args[*i], *v) + ")";
+                    }
+                    case tk::optional:
+                    {
+                        if (j.is_null()) return "std::nullopt"s;
+                        const auto v = initializer(t.args[0], j, before);
+                        if (!v) return std::nullopt;
+                        return typed_init(t.args[0], *v);
+                    }
+                    case tk::pointer:
+                    {
+                        if (j.is_null()) return "nullptr"s;
+                        const auto v = initializer(t.args[0], j, before);
+                        if (!v) return std::nullopt;
+                        return "std::make_unique<" + spell(t.args[0]) + ">(" + typed_init(t.args[0], *v) + ")";
+                    }
                 }
+                return std::nullopt;
+            }
+
+            // designated initializers of the members that the object names; the other members keep their initializers
+            std::optional<std::string> struct_init(int idx, const json& j, int before) const
+            {
+                // the definition of the struct comes first; a struct does not construct itself in its initializers
+                if (position_[idx] < 0 || position_[idx] >= before) return std::nullopt;
+                const auto& d = decls_[idx];
+                const auto member = [&](const field& f, const std::string& v) {
+                    return "." + f.member + " = " + v;
+                };
+                if (d.transparent)
+                {
+                    const auto v = initializer(d.fields[0].type, j, before);
+                    if (!v) return std::nullopt;
+                    return "{" + member(d.fields[0], *v) + "}";
+                }
+                if (!j.is_object()) return std::nullopt;
+                auto items = std::vector<std::string>();
+                auto rest = json();
+                rest.k = json::kind::object;
+                for (const auto& [k, v] : j.members)
+                    if (std::ranges::none_of(d.fields, [&](const field& f) { return !f.extra && f.key == k; }))
+                        rest.members.emplace_back(k, v);
+                for (const auto& f : d.fields)
+                {
+                    if (f.extra)
+                    {
+                        if (rest.members.empty()) continue;
+                        const auto v = initializer(f.type, rest, before);
+                        if (!v) return std::nullopt;
+                        items.push_back(member(f, *v));
+                        rest.members.clear();
+                    }
+                    else if (const auto* v = j.find(f.key))
+                    {
+                        const auto x = initializer(f.type, *v, before);
+                        if (!x) return std::nullopt;
+                        items.push_back(member(f, *x));
+                    }
+                }
+                // reading drops the other keys of an open struct
+                if (!rest.members.empty() && !d.additional) return std::nullopt;
+                if (items.size() < d.fields.size()) partial_init_ = true;
+                return "{" + join(items) + "}";
+            }
+
+            // the alternative of a std::variant that reading takes for a JSON value: the alternative that the tag
+            // names, or the first alternative that reads it, when the generator tells that the ones before do not
+            std::optional<std::size_t> alternative(const ctype& t, const json& j) const
+            {
+                if (is_nullable(t)) return j.is_null() ? 0 : 1;
+                auto found = std::optional<std::size_t>();
+                for (std::size_t i = 0; i < t.args.size(); ++i)
+                {
+                    const auto r = fits(j, t.args[i], settings());
+                    if (r == fit::no) continue;
+                    if (r == fit::unknown) return std::nullopt;
+                    // a tagged variant reads the alternative of the tag, whose `const` excludes the others
+                    if (!t.tagged) return i;
+                    if (found) return std::nullopt;
+                    found = i;
+                }
+                return found;
+            }
+
+            // whether std::initializer_list can copy a value of the type
+            bool copyable(const ctype& t, std::vector<int>& seen) const
+            {
+                if (t.k == tk::pointer) return false;
+                if (t.k == tk::named)
+                {
+                    const auto& d = decls_[t.decl];
+                    if (d.kind == decl::kind_t::alias) return copyable(d.target, seen);
+                    if (d.kind != decl::kind_t::structure || std::ranges::find(seen, t.decl) != seen.end()) return true;
+                    seen.push_back(t.decl);
+                    return std::ranges::all_of(d.fields, [&](const field& f) { return copyable(f.type, seen); });
+                }
+                return std::ranges::all_of(t.args, [&](const ctype& a) { return copyable(a, seen); });
             }
 
             // the spelling of a C++ type; `expand` spells aliases by their targets, `q` qualifies generated names
@@ -3375,6 +3578,7 @@ namespace cpp_yyjson_codegen
                 name_members();
                 const auto structs = order_structs();
                 const auto aliases = order_aliases();
+                convert_defaults(structs);
                 check_examples();
                 const auto q = opts_.ns.empty() ? std::string() : opts_.ns + "::";
                 auto body = std::string();
@@ -3541,10 +3745,17 @@ namespace cpp_yyjson_codegen
                     out +=
                         "#if !FIELD_RFL_ANNOTATIONS\n#error \"this header needs C++26 annotations "
                         "(FIELD_RFL_ANNOTATIONS)\"\n#endif\n\n";
+                // the members that a designated initializer leaves out keep their initializers, as intended
+                if (partial_init_)
+                    out +=
+                        "#if defined(__GNUC__) || defined(__clang__)\n#pragma GCC diagnostic push\n"
+                        "#pragma GCC diagnostic ignored \"-Wmissing-field-initializers\"\n#endif\n\n";
                 if (!opts_.ns.empty()) out += "namespace " + opts_.ns + "\n{\n";
                 while (body.ends_with("\n\n")) body.pop_back();
                 out += body;
                 if (!opts_.ns.empty()) out += "}  // namespace " + opts_.ns + "\n";
+                if (partial_init_)
+                    out += "\n#if defined(__GNUC__) || defined(__clang__)\n#pragma GCC diagnostic pop\n#endif\n";
                 out += after;
                 return out;
             }

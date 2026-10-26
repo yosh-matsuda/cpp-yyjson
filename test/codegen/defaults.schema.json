@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Settings",
+  "type": "object",
+  "properties": {
+    "origin": {"$ref": "#/$defs/Point", "default": {"x": 1}},
+    "path": {"type": "array", "items": {"$ref": "#/$defs/Point"}, "default": [{"x": 1, "y": 2}, {"y": 3}]},
+    "limits": {"type": "object", "additionalProperties": {"type": "integer"}, "default": {"a": 1, "b": 2}},
+    "marker": {"anyOf": [{"enum": ["none"]}, {"$ref": "#/$defs/Point"}], "default": "none"},
+    "shape": {
+      "oneOf": [
+        {"type": "object", "properties": {"kind": {"const": "circle"}, "r": {"type": "number"}}, "required": ["kind"]},
+        {"type": "object", "properties": {"kind": {"const": "square"}, "a": {"type": "number"}}, "required": ["kind"]}
+      ],
+      "default": {"kind": "square", "a": 2}
+    },
+    "extra": {"default": {"k": [1, "x"]}},
+    "anchor": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/Point"}], "default": {"x": 5, "y": 6}}
+  },
+  "$defs": {
+    "Point": {"type": "object", "properties": {"x": {"type": "number"}, "y": {"type": "number"}}}
+  }
+}

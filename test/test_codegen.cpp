@@ -456,11 +456,10 @@ TEST(Codegen, Defaults)
     EXPECT_TRUE(has(r.code, "// A field with a default holds it as its initializer and has `yyjson::omit_default`"));
     // null for a type without null means "unset"
     EXPECT_TRUE(has(r.code, "    std::optional<std::string> unset;\n"));
-    // a default that does not convert is a comment of a std::optional field
-    EXPECT_TRUE(has(r.code, "    // default: {\"x\":1}\n    std::optional<RootPoint> point;\n"));
-    EXPECT_EQ(warnings(r),
-              "#/properties/point: the default {\"x\":1} is not converted to the C++ type; the field is "
-              "std::optional\n");
+    // the default of a struct is a designated initializer
+    EXPECT_TRUE(has(r.code, "    RootPoint point{.x = 1.0};\n"));
+    EXPECT_TRUE(has(r.code, "yyjson::field(\"point\", yyjson::omit_default)"));
+    EXPECT_EQ(warnings(r), "");
     // the default of a required key only initializes the member
     EXPECT_TRUE(has(r.code, "    std::int64_t id = 3;\n"));
     EXPECT_TRUE(has(r.code, "yyjson::field(\"id\", yyjson::required)"));
@@ -489,6 +488,74 @@ TEST(Codegen, Defaults)
     EXPECT_TRUE(has(j.code, "yyjson::field(\"list\", yyjson::omit_default, yyjson::unique_items)"));
     EXPECT_FALSE(has(j.code, "operator=="));
     EXPECT_EQ(warnings(j), "");
+}
+
+TEST(Codegen, StructDefaults)
+{
+    const auto r = generate(R"({
+        "type": "object",
+        "properties": {
+            "points": {"type": "array", "items": {"$ref": "#/$defs/P"}, "default": [{"x": 1, "y": 2}]},
+            "counts": {"type": "object", "additionalProperties": {"type": "integer"}, "default": {"a": 1}},
+            "shape": {"anyOf": [{"enum": ["none"]}, {"$ref": "#/$defs/P"}], "default": "none"},
+            "shape2": {"anyOf": [{"enum": ["none"]}, {"$ref": "#/$defs/P"}], "default": {"x": 3}},
+            "tagged": {"oneOf": [
+                {"type": "object", "properties": {"kind": {"const": "a"}}, "required": ["kind"]},
+                {"type": "object", "properties": {"kind": {"const": "b"}, "s": {"type": "string"}},
+                 "required": ["kind"]}], "default": {"kind": "b", "s": "x"}},
+            "maybe": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/P"}], "default": {"x": 5}},
+            "any": {"default": {"k": [1, "x"]}},
+            "obj": {"type": "object", "default": {"k": 1}},
+            "closed": {"type": "object", "properties": {"x": {"type": "number"}}, "additionalProperties": false,
+                       "default": {"z": 1}},
+            "open": {"type": "object", "properties": {"x": {"type": "number"}}, "default": {"x": 1, "z": 1}},
+            "pattern": {"anyOf": [{"type": "object", "properties": {"s": {"type": "string", "pattern": "^a"}}},
+                                  {"type": "object", "properties": {"t": {"type": "integer"}}}],
+                        "default": {"s": "b"}},
+            "tree": {"$ref": "#/$defs/T"}
+        },
+        "$defs": {
+            "P": {"type": "object", "properties": {"x": {"type": "number"}, "y": {"type": "number"}}},
+            "T": {"type": "object", "properties": {"name": {"type": "string"},
+                  "children": {"type": "array", "items": {"$ref": "#/$defs/T"}, "default": [{"name": "x"}]}}}
+        }
+    })",
+                            {});
+    EXPECT_TRUE(has(r.code, "    std::vector<P> points{P{.x = 1.0, .y = 2.0}};\n"));
+    EXPECT_TRUE(has(r.code, "    std::map<std::string, std::int64_t> counts{{\"a\", 1}};\n"));
+    // a variant holds the first alternative that reads the default
+    EXPECT_TRUE(
+        has(r.code, "    std::variant<RootShapeOption1, P> shape{std::in_place_index<0>, RootShapeOption1::none};\n"));
+    EXPECT_TRUE(has(r.code, "    std::variant<RootShape2Option1, P> shape2{std::in_place_index<1>, P{.x = 3.0}};\n"));
+    EXPECT_TRUE(has(r.code, "    std::variant<A, B> tagged{std::in_place_index<1>, B{.kind = \"b\", .s = \"x\"}};\n"));
+    EXPECT_TRUE(has(r.code, "    std::variant<std::monostate, P> maybe{std::in_place_index<1>, P{.x = 5.0}};\n"));
+    // a DOM type reads the default
+    EXPECT_TRUE(has(r.code, "    yyjson::value any = yyjson::value(yyjson::read(R\"({\"k\":[1,\"x\"]})\"));\n"));
+    EXPECT_TRUE(has(r.code, "    yyjson::object obj = yyjson::object(yyjson::read(R\"({\"k\":1})\"));\n"));
+    // an open struct drops the keys that are not members
+    EXPECT_TRUE(has(r.code, "    RootOpen open{.x = 1.0};\n"));
+    EXPECT_TRUE(has(r.code, "yyjson::field(\"open\", yyjson::omit_default)"));
+    // members left out of a designated initializer would warn
+    EXPECT_TRUE(has(r.code, "#pragma GCC diagnostic ignored \"-Wmissing-field-initializers\"\n"));
+    // a key that a closed struct does not have, a pattern that the generator cannot check and a struct that
+    // would construct itself are not converted
+    EXPECT_TRUE(has(r.code, "    // default: {\"z\":1}\n    std::optional<RootClosed> closed;\n"));
+    EXPECT_TRUE(has(r.code, "    // default: {\"s\":\"b\"}\n"));
+    EXPECT_TRUE(has(r.code, "    // default: [{\"name\":\"x\"}]\n    std::optional<std::vector<T>> children;\n"));
+    EXPECT_EQ(warnings(r),
+              "#/$defs/T/properties/children: the default [{\"name\":\"x\"}] is not converted to the C++ type; the "
+              "field is std::optional\n"
+              "#/properties/closed: the default {\"z\":1} is not converted to the C++ type; the field is "
+              "std::optional\n"
+              "#/properties/pattern: the default {\"s\":\"b\"} is not converted to the C++ type; the field is "
+              "std::optional\n");
+
+    // a default that gives every member needs no pragma
+    const auto f = generate(R"({"type": "object", "properties": {"p": {"type": "object",
+                                "properties": {"x": {"type": "number"}}, "default": {"x": 1}}}})",
+                            {});
+    EXPECT_TRUE(has(f.code, "    RootP p{.x = 1.0};\n"));
+    EXPECT_FALSE(has(f.code, "#pragma GCC diagnostic"));
 }
 
 TEST(Codegen, RequiredGroups)
