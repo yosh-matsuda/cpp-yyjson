@@ -611,7 +611,6 @@ namespace cpp_yyjson_codegen
             std::vector<constraint> constraints;
             std::optional<std::uint64_t> min_items, max_items;
             bool unique = false;
-            std::string unique_loc;
             std::vector<settings> items, contains, property_names, additional;  // zero or one
             std::vector<settings> prefix;
             std::optional<std::uint64_t> min_contains, max_contains;
@@ -637,7 +636,6 @@ namespace cpp_yyjson_codegen
             ctype type{};
             settings set{};
             bool required = false, omit_default = false;
-            bool optional_key = false;   // yyjson::optional_key: a missing key keeps the initializer
             bool extra = false;          // yyjson::extra_keys: a map of the keys that name no property; no key
             std::string init{};          // " = x" or "{...}"
             std::string default_note{};  // the default of a std::optional field, for a comment
@@ -673,7 +671,6 @@ namespace cpp_yyjson_codegen
             bool additional = true;
             std::vector<std::pair<std::string, std::vector<std::string>>> dependent{};  // keys
             std::vector<required_groups> groups{};                                      // keys
-            bool eq = false;
             bool filled = false;
             bool transparent = false;  // yyjson::transparent: read and written as the value of its only field
             // enum: member name, JSON name
@@ -2591,10 +2588,7 @@ namespace cpp_yyjson_codegen
                     }
                     if (!array_counts(*n, out, loc)) return std::nullopt;
                     if (n->has("uniqueItems") && n->find("uniqueItems")->is_bool() && n->find("uniqueItems")->b)
-                    {
                         out.unique = true;
-                        out.unique_loc = loc;
-                    }
                     if (n->has("contains") && !add_contains(*n, out, t.args[0], loc)) return std::nullopt;
                 }
                 if ((is_struct(t) || t.k == tk::object) && object_keys) return std::nullopt;
@@ -2690,6 +2684,7 @@ namespace cpp_yyjson_codegen
                         warn(loc, "constraints of a position of `prefixItems` nest too deeply; they are dropped");
                         p = {};
                     }
+                if (std::ranges::all_of(prefix, [](const auto& p) { return p.empty(); })) return;
                 out.prefix = std::move(prefix);
             }
 
@@ -2753,11 +2748,7 @@ namespace cpp_yyjson_codegen
                     if (!e.s.empty()) r.s.items.push_back(std::move(e.s));
                 }
                 array_counts(s, r.s, loc);
-                if (const auto* u = s.find("uniqueItems"); u != nullptr && u->is_bool() && u->b)
-                {
-                    r.s.unique = true;
-                    r.s.unique_loc = loc;
-                }
+                if (const auto* u = s.find("uniqueItems"); u != nullptr && u->is_bool() && u->b) r.s.unique = true;
                 if (!add_contains(s, r.s, r.t.args[0], loc))
                     warn(loc + "/contains",
                          "`contains` with a type other than the element type is not supported and is ignored");
@@ -2865,7 +2856,6 @@ namespace cpp_yyjson_codegen
                 if (!f.required) f.type = make(tk::optional, {std::move(f.type)});
                 f.init.clear();
                 f.omit_default = false;
-                f.optional_key = false;
             }
 
             // breaks cycles of structs held by value with std::unique_ptr: a struct that holds itself by value,
@@ -2898,8 +2888,8 @@ namespace cpp_yyjson_codegen
             {
                 auto state = std::vector<int>(decls_.size(), 0);
 
-                // the elements of containers may be incomplete, but a defaulted operator== instantiates a std::variant
-                // of them, which clang rejects for an incomplete alternative. So every struct that a field names is
+                // std::vector takes an incomplete element, but the standard does not promise it for std::map, and an
+                // initializer that constructs a struct needs its definition. So every struct that a field names is
                 // defined first, except in a cycle, which goes through containers now: the strongly connected
                 // components of all named structs come in dependency order, and the structs of one component in the
                 // order of the structs they hold by value
@@ -2979,46 +2969,6 @@ namespace cpp_yyjson_codegen
                 for (std::size_t i = 0; i < decls_.size(); ++i)
                     if (decls_[i].kind == decl::kind_t::alias && state[i] == 0) visit(visit, static_cast<int>(i));
                 return order;
-            }
-
-            bool equality(const ctype& t) const
-            {
-                switch (t.k)
-                {
-                    case tk::pointer:
-                        return false;
-                    case tk::named:
-                        if (decls_[t.decl].kind == decl::kind_t::alias) return equality(decls_[t.decl].target);
-                        return decls_[t.decl].kind == decl::kind_t::enumeration || decls_[t.decl].eq;
-                    default:
-                        return std::ranges::all_of(t.args, [&](const auto& a) { return equality(a); });
-                }
-            }
-
-            void compute_equality()
-            {
-                for (auto& d : decls_) d.eq = d.kind == decl::kind_t::structure;
-                for (auto changed = true; changed;)
-                {
-                    changed = false;
-                    for (auto& d : decls_)
-                        if (d.eq && std::ranges::any_of(d.fields, [&](const auto& f) { return !equality(f.type); }))
-                        {
-                            d.eq = false;
-                            changed = true;
-                        }
-                }
-                // yyjson::omit_default compares the field with its default by operator==; yyjson::optional_key still
-                // reads a missing key as the default
-                for (auto& d : decls_)
-                    for (auto& f : d.fields)
-                        if (f.omit_default && !equality(f.type))
-                        {
-                            warn(f.loc, "the type " + spell(f.type) +
-                                            " has no operator==; the field is written also when it holds the default");
-                            f.omit_default = false;
-                            f.optional_key = true;
-                        }
             }
 
             // examples
@@ -3286,14 +3236,7 @@ namespace cpp_yyjson_codegen
                 const auto elem = [&]() -> ctype {
                     return v.k == tk::vector || v.k == tk::map ? v.args[0] : make(tk::any);
                 };
-                if (s.unique)
-                {
-                    if (equality(elem()))
-                        out.emplace_back("yyjson::unique_items");
-                    else
-                        warn(s.unique_loc,
-                             "`uniqueItems` needs operator== of the element type " + spell(elem()) + "; it is dropped");
-                }
+                if (s.unique) out.emplace_back("yyjson::unique_items");
                 if (!s.prefix.empty())
                 {
                     auto parts = std::vector<std::string>();
@@ -3365,7 +3308,6 @@ namespace cpp_yyjson_codegen
                 if (f.member != f.key) items.push_back("yyjson::rename(" + cpp_string(f.key) + ")");
                 if (f.required) items.emplace_back("yyjson::required");
                 if (f.omit_default) items.emplace_back("yyjson::omit_default");
-                if (f.optional_key) items.emplace_back("yyjson::optional_key");
                 for (auto& s : render_settings(f.set, f.type)) items.push_back(std::move(s));
                 for (auto& s : render_metadata(f.meta)) items.push_back(std::move(s));
                 return items;
@@ -3427,33 +3369,12 @@ namespace cpp_yyjson_codegen
                 return s + "]]";
             }
 
-            // a transparent root whose constraints are all dropped (uniqueItems of elements without operator==)
-            // becomes an alias, as a root without constraints is
-            void demote_transparent()
-            {
-                compute_equality();
-                for (std::size_t i = 0; i < decls_.size(); ++i)
-                {
-                    auto& d = decls_[i];
-                    if (!d.transparent || !render_settings(d.fields[0].set, d.fields[0].type).empty()) continue;
-                    d.kind = decl::kind_t::alias;
-                    d.transparent = false;
-                    d.target = d.fields[0].type;
-                    d.fields.clear();
-                    if (d.target.k == tk::variant && d.target.tagged)
-                        for (auto& n : notes_)
-                            if (n.alias < 0 && spell(n.type) == spell(d.target)) n.alias = static_cast<int>(i);
-                }
-            }
-
             std::string render()
             {
                 break_cycles();
-                demote_transparent();
                 name_members();
                 const auto structs = order_structs();
                 const auto aliases = order_aliases();
-                compute_equality();
                 check_examples();
                 const auto q = opts_.ns.empty() ? std::string() : opts_.ns + "::";
                 auto body = std::string();
@@ -3519,11 +3440,6 @@ namespace cpp_yyjson_codegen
                             field_specs.push_back("yyjson::field(" + spec + ")");
                         }
                     }
-                    if (d.eq)
-                    {
-                        if (!d.fields.empty()) body += "\n";
-                        body += "    bool operator==(const " + d.name + "&) const = default;\n";
-                    }
                     body += "};\n\n";
                     if (!opts_.cpp26)
                     {
@@ -3587,10 +3503,6 @@ namespace cpp_yyjson_codegen
                         "//\n// A field with a default holds it as its initializer and has `yyjson::omit_default`: a "
                         "missing key\n// reads as the default, and writing leaves the key out while the field holds "
                         "it.\n";
-                if (any_field([](const field& f) { return f.optional_key; }))
-                    out += "//\n// A field with a default and `yyjson::optional_key` holds the default as its "
-                           "initializer: a missing\n// key reads as the default, and writing writes the key also "
-                           "while the field holds it.\n";
                 if (std::ranges::any_of(decls_, [](const decl& d) { return d.transparent; }))
                     out +=
                         "//\n// A struct with `yyjson::transparent` is read and written as the value of its only "

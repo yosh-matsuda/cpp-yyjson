@@ -155,7 +155,6 @@ TEST(Codegen, Recursion)
     EXPECT_TRUE(has(r.code, "    std::optional<std::unique_ptr<std::variant<std::string, Node>>> link;\n"));
     EXPECT_TRUE(has(r.code, "    std::optional<std::unique_ptr<std::variant<Leaf, Node>>> shape;\n"));
     EXPECT_TRUE(has(r.code, "yyjson::field(\"parent\", yyjson::required)"));
-    EXPECT_FALSE(has(r.code, "operator==(const Node&"));
     EXPECT_FALSE(has(r.code, "struct Root"));
 }
 
@@ -208,8 +207,8 @@ TEST(Codegen, RecursionThroughKeywords)
 
 TEST(Codegen, DefinitionOrder)
 {
-    // the structs in a container come first, since a defaulted operator== instantiates a std::variant of them, which
-    // clang rejects for an incomplete alternative; in a cycle through a container, a struct held by value comes first
+    // the structs in a container come first, since only std::vector promises to take an incomplete element; in a
+    // cycle through a container, a struct held by value comes first
     const auto r = generate(R"({
         "type": "object",
         "properties": {"a": {"$ref": "#/$defs/A"}},
@@ -475,24 +474,20 @@ TEST(Codegen, Defaults)
     EXPECT_FALSE(has(o.code, "omit_default"));
     EXPECT_EQ(warnings(o), "");
 
-    // yyjson::omit_default needs operator==, which a struct holding a std::unique_ptr has not; yyjson::optional_key
-    // still reads a missing key as the default
+    // yyjson::omit_default compares as JSON, also a struct that holds a std::unique_ptr
     const auto v = generate(R"({"type": "object", "properties": {"list": {"type": "array", "default": [],
                                 "items": {"$ref": "#/$defs/N"}}},
                                 "$defs": {"N": {"type": "object", "properties": {"next": {"$ref": "#/$defs/N"}}}}})",
                             {});
     EXPECT_TRUE(has(v.code, "    std::vector<N> list{};\n"));
-    EXPECT_FALSE(has(v.code, "omit_default"));
-    EXPECT_TRUE(has(v.code, "yyjson::field(\"list\", yyjson::optional_key)"));
-    EXPECT_EQ(warnings(v), "#/properties/list: the type std::vector<N> has no operator==; the field is "
-                           "written also when it holds the default\n");
+    EXPECT_TRUE(has(v.code, "yyjson::field(\"list\", yyjson::omit_default)"));
+    EXPECT_EQ(warnings(v), "");
 
-    // JSON values compare with operator==
     const auto j = generate(R"({"type": "object", "properties": {"list": {"type": "array", "default": [],
                                 "uniqueItems": true}}})",
                             {});
     EXPECT_TRUE(has(j.code, "yyjson::field(\"list\", yyjson::omit_default, yyjson::unique_items)"));
-    EXPECT_TRUE(has(j.code, "bool operator==(const Root&) const = default;"));
+    EXPECT_FALSE(has(j.code, "operator=="));
     EXPECT_EQ(warnings(j), "");
 }
 
@@ -613,7 +608,7 @@ TEST(Codegen, ExtraKeys)
     EXPECT_TRUE(
         has(k, "struct Open\n{\n    std::optional<std::int64_t> a;\n"
                "    std::map<std::string, yyjson::value> extra;\n"));
-    EXPECT_TRUE(has(k, "struct Closed\n{\n    std::optional<std::int64_t> b;\n\n    bool operator=="));
+    EXPECT_TRUE(has(k, "struct Closed\n{\n    std::optional<std::int64_t> b;\n};\n"));
     EXPECT_TRUE(has(k, "struct Root\n{\n    std::optional<Open> open;\n    std::optional<Closed> closed;\n"
                        "    std::map<std::string, yyjson::value> extra;\n"));
 }
@@ -770,12 +765,27 @@ TEST(Codegen, TransparentRoot)
         generate(R"({"type": "array", "items": {"type": "integer"}, "title": "Ns", "description": "d"})", {});
     EXPECT_TRUE(has(titled.code, "/// Ns\n/// d\nusing Ns = std::vector<std::int64_t>;\n"));
 
-    // uniqueItems dropped for elements without operator== leaves no constraint, and the root an alias
-    const auto dropped =
+    // uniqueItems compares the elements as JSON, also structs that hold a std::unique_ptr
+    const auto unique =
         generate(R"({"type": "array", "uniqueItems": true, "title": "Ns", "items": {"$ref": "#/$defs/N"},
                      "$defs": {"N": {"type": "object", "properties": {"next": {"$ref": "#/$defs/N"}}}}})",
                  {});
-    EXPECT_TRUE(has(dropped.code, "/// Ns\nusing Ns = std::vector<N>;\n"));
+    EXPECT_EQ(warnings(unique), "");
+    EXPECT_TRUE(has(unique.code, "struct Ns\n{\n    std::vector<N> value;\n"));
+    EXPECT_TRUE(has(unique.code, "yyjson::field(\"value\", yyjson::unique_items)"));
+
+    // constraints that are all dropped leave the root an alias
+    auto deep = std::string(R"({"type": "integer", "minimum": 0})");
+    auto plain_deep = std::string(R"({"type": "integer"})");
+    for (auto i = 0; i < 8; ++i)
+    {
+        deep = R"({"type": "array", "items": )" + deep + "}";
+        plain_deep = R"({"type": "array", "items": )" + plain_deep + "}";
+    }
+    const auto dropped =
+        generate(R"({"type": "array", "prefixItems": [)" + deep + R"(], "items": )" + plain_deep + "}", {});
+    EXPECT_EQ(warnings(dropped), "#: constraints of a position of `prefixItems` nest too deeply; they are dropped\n");
+    EXPECT_TRUE(has(dropped.code, "using Root = std::vector<"));
     EXPECT_FALSE(has(dropped.code, "yyjson::transparent"));
 
     // a definition refers to the root struct
