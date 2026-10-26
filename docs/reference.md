@@ -1950,7 +1950,7 @@ Each position is a braced list of settings, `{}` for a position without them, or
 | a `std::tuple`, a `std::pair` or another tuple-like type | `std::get<i>` of the value, of its own type |
 | a range read from a JSON array in its order, such as `std::vector`, `std::array` and `std::list` | the element `i`, when the array has one |
 
-A range may be read from an array with fewer elements than positions. A tuple-like type, `std::array` included, is read only from an array of exactly as many elements as it has. With `yyjson::items` on the same field, `yyjson::items` constrains the elements after the prefix. A field takes up to 16 positions. A position holds up to 8 groups of settings: its own, and one for each `yyjson::items`, `yyjson::contains`, `yyjson::property_names`, `yyjson::additional_properties(settings...)` and position of a `yyjson::prefix_items` in it. More positions than a tuple has elements, more groups, and `yyjson::prefix_items` on a set, a map or a string are compile errors.
+A range may be read from an array with fewer elements than positions. A tuple-like type, `std::array` included, is read only from an array of exactly as many elements as it has. With `yyjson::items` on the same field, `yyjson::items` constrains the elements after the prefix. A field takes up to 16 positions. A position holds up to 8 groups of settings: its own, and one for each `yyjson::items`, `yyjson::contains`, `yyjson::property_names`, `yyjson::additional_properties(settings...)` and position of a `yyjson::prefix_items` in it. Its settings hold up to 16 values of `yyjson::const_` and `yyjson::enum_`, and, before C++26, up to 256 characters of the strings given to `yyjson::const_`, `yyjson::enum_`, `yyjson::pattern` and `yyjson::format` as string literals; a string given as a `std::string_view` does not count. More positions than a tuple has elements, more groups, values or characters, and `yyjson::prefix_items` on a set, a map or a string are compile errors.
 
 ```cpp
 struct Row
@@ -2106,7 +2106,7 @@ consteval explicit title(std::string_view text);
 consteval explicit description(std::string_view text);
 inline constexpr deprecated_t deprecated{};
 template <typename... Ss>
-consteval examples_t<sizeof...(Ss)> examples(const Ss&... json_texts);
+consteval examples_t<sizeof...(Ss), /* unspecified */> examples(const Ss&... json_texts);
 ```
 
 *   Give them to [`yyjson::field`](#yyjsonfield) for a field, and to [`yyjson::annotate`](#yyjsonannotationst-yyjsonannotate) for a type. With C++26 reflection, they can be written on a member or on the declaration of a struct or an enumeration.
