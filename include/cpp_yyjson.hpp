@@ -1365,7 +1365,7 @@ namespace yyjson
     // `yyjson::schema(R"({"type":"string","pattern":"^-?[0-9.]+C$"})")` for both directions, or
     // `yyjson::schema({.read = "...", .write = "..."})`, where a direction left out is derived.  It is for what the
     // library cannot derive, such as a caster that takes `yyjson::json_view`, and for what the schema cannot say,
-    // such as `yyjson::validate`.  It is not checked against how the value is read or written; the constraints of a
+    // such as `yyjson::satisfies`.  It is not checked against how the value is read or written; the constraints of a
     // field are still checked on reading, although the schema has only the text.
     struct schema
     {

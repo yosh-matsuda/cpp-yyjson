@@ -372,7 +372,7 @@ namespace yyjson
             static_assert(type_examples_count<T>() <= 1, "a type is given yyjson::examples twice");
             static_assert(type_setting_count<T, yyjson::schema>() <= 1, "a type is given yyjson::schema twice");
             auto m = metadata();
-            std::apply(
+            yyjson::detail::apply_annotations(
                 [&](const auto&... as) {
                     (
                         [&]<typename A>(const A& a) {
@@ -399,7 +399,7 @@ namespace yyjson
             else
             {
                 auto name = std::string_view();
-                std::apply(
+                yyjson::detail::apply_annotations(
                     [&](const auto&... as) {
                         (
                             [&]<typename A>(const A& a) {
@@ -735,7 +735,7 @@ namespace yyjson
                 if (c.has<yyjson::unique_items_t>()) out.emplace("uniqueItems", true);
                 if (c.has<yyjson::min_contains>()) out.emplace("minContains", c.min_contains);
                 if (c.has<yyjson::max_contains>()) out.emplace("maxContains", c.max_contains);
-                // `validate<f>` has no keyword.
+                // `satisfies<f>` has no keyword.
             }
 
             // The double whose shortest text is what `yyjson::write` writes of f.
