@@ -1068,6 +1068,16 @@ static_assert(yyjson::readable<std::unique_ptr<int>> && yyjson::writable<std::un
 static_assert(yyjson::readable<yyjson::value> && yyjson::writable<yyjson::value>);
 static_assert(yyjson::writable<yyjson::reader::const_value_ref>);
 
+// A struct with a reference member is not reflected, and its fields are not checked: the check of `children`
+// would depend on itself.
+struct RecursiveWithReference
+{
+    std::vector<RecursiveWithReference> children;
+    const int& ref;
+};
+static_assert(!std::constructible_from<yyjson::object, const RecursiveWithReference&>);
+static_assert(!yyjson::writable<RecursiveWithReference>);
+
 // A `VISITABLE_STRUCT` is converted only when each of its members is, as a reflected struct is
 struct VisitableDuration
 {

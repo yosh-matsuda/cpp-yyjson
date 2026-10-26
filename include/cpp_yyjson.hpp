@@ -6320,9 +6320,11 @@ namespace yyjson
             }
 
             // `std::array` is written as a JSON array, as the reader casts it from one.  Other aggregates
-            // are reflected into objects even if they have `begin()` and `end()`.
+            // are reflected into objects even if they have `begin()` and `end()`.  `reflectable` comes first as a
+            // constraint of its own: the `&&` in `to_json_with_reflection_impl` would still check the fields of a
+            // struct that is not reflected, and such a check may depend on itself.
             template <typename T>
-            concept to_json_with_reflection = (!yyjson::detail::std_array<T>) &&
+            concept to_json_with_reflection = (!yyjson::detail::std_array<T>) && yyjson::detail::reflectable<T> &&
                                               to_json_with_reflection_impl<T>(yyjson::detail::reflected_fields<T>());
 
         }  // namespace detail
