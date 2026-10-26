@@ -49,6 +49,7 @@ This page lists the functions, classes and other entities of cpp-yyjson, grouped
     *   [`yyjson::required`](#yyjsonrequired)
     *   [`yyjson::optional_key`](#yyjsonoptional_key)
     *   [`yyjson::omit_default`](#yyjsonomit_default)
+    *   [`yyjson::default_from`](#yyjsondefault_from)
     *   [`yyjson::extra_keys`](#yyjsonextra_keys)
     *   [`yyjson::additional_properties`](#yyjsonadditional_properties)
     *   [`yyjson::dependent_required`](#yyjsondependent_required)
@@ -340,7 +341,7 @@ void validate(const T& t);
 *   a field of an [adjacent tag](#yyjsoninternal_tag-yyjsonadjacent_tag) that does not name the alternative that its variant holds, which `yyjson::write` rejects with `std::invalid_argument`.
 *   a key of the map of a [`yyjson::extra_keys`](#yyjsonextra_keys) field that is also the key of a field or a tag of the struct, which `yyjson::write` rejects with `std::invalid_argument`.
 
-A field that `write` writes as `null`, such as an empty `std::shared_ptr` or a `std::variant` that holds `std::monostate`, is not checked by its constraints, as the read does not check them for `null`. Nor is a field that [`yyjson::omit_default`](#yyjsonomit_default) leaves out, whose key the read does not see. A caster of the program that writes `null` is not detected, and the constraints of its field are checked.
+A field that `write` writes as `null`, such as an empty `std::shared_ptr` or a `std::variant` that holds `std::monostate`, is not checked by its constraints, as the read does not check them for `null`. Nor is a field that [`yyjson::omit_default`](#yyjsonomit_default) or [`yyjson::default_from`](#yyjsondefault_from) leaves out, whose key the read does not see. A caster of the program that writes `null` is not detected, and the constraints of its field are checked.
 
 The message is the one that the read gives, and `path()` is the JSON Pointer to the value in the JSON that `write` writes, such as `/users/3/age`. There is no `position()`. `validate` looks into the fields, the elements and the alternatives that `write` writes, and not into a value that a caster of the program converts.
 
@@ -1613,7 +1614,7 @@ template <typename... As>
 consteval field_annotation<As...> field(std::string_view member, As... values);
 ```
 
-`values` are one or more of [`yyjson::rename`](#yyjsonrename), [`yyjson::skip`](#yyjsonskip), [`yyjson::required`](#yyjsonrequired), [`yyjson::optional_key`](#yyjsonoptional_key), [`yyjson::omit_default`](#yyjsonomit_default), [`yyjson::extra_keys`](#yyjsonextra_keys), [`yyjson::adjacent_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag), the [constraints](#constraints), [`yyjson::items`](#yyjsonitems), [`yyjson::prefix_items`](#yyjsonprefix_items), [`yyjson::contains`, `yyjson::min_contains`, `yyjson::max_contains`](#yyjsoncontains-yyjsonmin_contains-yyjsonmax_contains), [`yyjson::property_names`](#yyjsonproperty_names), [`yyjson::additional_properties(settings...)`](#yyjsonadditional_properties), [`yyjson::title`, `yyjson::description`, `yyjson::deprecated`, `yyjson::examples`](#yyjsontitle-yyjsondescription-yyjsondeprecated-yyjsonexamples) and [`yyjson::schema`](#yyjsonschema). Any other setting is a compile error.
+`values` are one or more of [`yyjson::rename`](#yyjsonrename), [`yyjson::skip`](#yyjsonskip), [`yyjson::required`](#yyjsonrequired), [`yyjson::optional_key`](#yyjsonoptional_key), [`yyjson::omit_default`](#yyjsonomit_default), [`yyjson::default_from`](#yyjsondefault_from), [`yyjson::extra_keys`](#yyjsonextra_keys), [`yyjson::adjacent_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag), the [constraints](#constraints), [`yyjson::items`](#yyjsonitems), [`yyjson::prefix_items`](#yyjsonprefix_items), [`yyjson::contains`, `yyjson::min_contains`, `yyjson::max_contains`](#yyjsoncontains-yyjsonmin_contains-yyjsonmax_contains), [`yyjson::property_names`](#yyjsonproperty_names), [`yyjson::additional_properties(settings...)`](#yyjsonadditional_properties), [`yyjson::title`, `yyjson::description`, `yyjson::deprecated`, `yyjson::examples`](#yyjsontitle-yyjsondescription-yyjsondeprecated-yyjsonexamples) and [`yyjson::schema`](#yyjsonschema). Any other setting is a compile error.
 
 ### `yyjson::rename`
 
@@ -1667,7 +1668,41 @@ A field whose key is left out of the object while the field holds its value in `
 inline constexpr omit_default_t omit_default{};
 ```
 
-Writing compares the field with the same field of one `T()`, made once per type, and leaves out its key when they are written as the same JSON value, which is compared as [`yyjson::unique_items`](#constraints) compares elements. Reading treats the key as [`yyjson::optional_key`](#yyjsonoptional_key) does, so a missing key gives the field its value in `T()` and the object reads back as it was written. [`yyjson::validate`](#yyjsonvalidate) and [`write(t, yyjson::strict)`](#yyjsonwrite) do not check the constraints of a field that is left out. `T` needs a default constructor, and the type of the field `operator==` when the library does not compare it by its parts. It is also a compile error together with `yyjson::required` or `yyjson::optional_key`, on a skipped field and on a field tagged by `yyjson::adjacent_tag`. See [Annotations of keys](validation.md#annotations-of-keys).
+Writing compares the field with the same field of one `T()`, made once per type, and leaves out its key when they are written as the same JSON value, which is compared as [`yyjson::unique_items`](#constraints) compares elements. Reading treats the key as [`yyjson::optional_key`](#yyjsonoptional_key) does, so a missing key gives the field its value in `T()` and the object reads back as it was written. [`yyjson::validate`](#yyjsonvalidate) and [`write(t, yyjson::strict)`](#yyjsonwrite) do not check the constraints of a field that is left out. `T` needs a default constructor, and the type of the field `operator==` when the library does not compare it by its parts. It is also a compile error together with `yyjson::required`, `yyjson::optional_key` or `yyjson::default_from`, on a skipped field and on a field tagged by `yyjson::adjacent_tag`. See [Annotations of keys](validation.md#annotations-of-keys).
+
+### `yyjson::default_from`
+
+A field whose missing key reads as the value that a function makes, and whose key is left out of the object while the field holds that value.
+
+```cpp
+template <auto F>
+inline constexpr default_from_t default_from = /* ... */;
+```
+
+`F` is a function or a lambda without captures that takes no arguments, as in `yyjson::default_from<&f>` and `yyjson::default_from<[] { return 3; }>`. It returns the value that the field holds: `U` for a field of `U`, and also for a field of `std::optional<U>`, `std::unique_ptr<U>`, `std::shared_ptr<U>` or `std::variant<std::monostate, U>`, nested or not, which the library wraps around the value. It is for a default that a member initializer cannot give, such as one that holds the struct itself.
+
+*   Reading an object without the key, by `read`, `read_into` and `cast`, gives the field what `F` makes, also under [`yyjson::strict`](#yyjsonstrict). `F` is called for each such object, and its value is not filled further, so a default that holds the struct is read in finite steps.
+*   `T()` does not call `F`, and [`yyjson::merge_into`](#yyjsonread_into-yyjsonmerge_into) keeps the field when the key is missing.
+*   Writing leaves out the key while the field is written as the same JSON value as the value of `F`, which is made once for the field and compared as `yyjson::omit_default` compares. [`yyjson::validate`](#yyjsonvalidate) and [`write(t, yyjson::strict)`](#yyjsonwrite) do not check the constraints of a field that is left out.
+*   [`yyjson::json_schema`](#yyjsonjson_schemat) does not require the key, and the read schema gives the value of `F` as `default` unless it breaks the constraints of the field.
+
+A type returned by `F` other than the value of the field, the setting given twice, and the setting together with `yyjson::omit_default`, which it already includes, `yyjson::required` or `yyjson::optional_key`, on a skipped field and on a field tagged by `yyjson::adjacent_tag` are compile errors. See [Fields with a default value](validation.md#fields-with-a-default-value).
+
+```cpp
+struct Menu
+{
+    std::string label;
+    std::optional<std::unique_ptr<Menu>> submenu = std::nullopt;
+};
+Menu empty_menu() { return Menu{.label = "(empty)"}; }
+
+template <>
+inline constexpr auto yyjson::annotations<Menu> =
+    yyjson::annotate(yyjson::field("submenu", yyjson::default_from<&empty_menu>));
+
+auto menu = yyjson::read<Menu>(R"({"label":"File"})");  // menu.submenu holds Menu{"(empty)"}, whose submenu is empty
+yyjson::write(menu);                                     // -> {"label":"File"}
+```
 
 ### `yyjson::extra_keys`
 

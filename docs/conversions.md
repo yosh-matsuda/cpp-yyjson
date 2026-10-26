@@ -339,6 +339,7 @@ The annotations of a type change how the type converts, with no caster. Speciali
 | `yyjson::extra_keys` | a map field | reads the keys that name no field into the map, and writes them back | [Keys that name no field](#keys-that-name-no-field) |
 | `yyjson::required`, `yyjson::optional_key` | a field | requires the key, or lets the object leave it out | [Strict reading](validation.md#strict-reading) |
 | `yyjson::omit_default` | a field | lets the object leave the key out, and leaves it out when writing the value in `T()` | [Fields with a default value](validation.md#fields-with-a-default-value) |
+| `yyjson::default_from<f>` | a field | reads a missing key as the value that `f` makes, and leaves the key out when writing that value | [Fields with a default value](validation.md#fields-with-a-default-value) |
 | `yyjson::minimum(m)`, `yyjson::satisfies<f>` and the other constraints | a field | restricts the values that the field reads | [Constraints](validation.md#constraints) |
 | `yyjson::items(s...)`, `yyjson::additional_properties(s...)` | a range field, a map field | restricts the elements, or the values of the map | [Constraints of elements](validation.md#constraints-of-elements) |
 | `yyjson::unique_items`, `yyjson::prefix_items(p...)`, `yyjson::contains(s...)` with `yyjson::min_contains(n)` and `yyjson::max_contains(m)`, `yyjson::property_names(s...)` | a range or tuple field, a map field | rejects equal elements, restricts the elements by position or by their number, or restricts the keys | [Constraints of elements](validation.md#constraints-of-elements) |
@@ -562,12 +563,12 @@ A [translator](#translator) also converts a struct from and to the value of a me
 *   A struct that `VISITABLE_STRUCT` registers takes the annotation too. Define the specialization before the macro, as for the other settings.
 *   The following fail to compile with a `static_assert`:
     *   no field, or more than one field, that is not skipped, and `yyjson::transparent` given twice;
-    *   a setting on the field other than the constraints: `yyjson::rename`, `yyjson::required`, `yyjson::optional_key`, `yyjson::omit_default`, `yyjson::extra_keys`, `yyjson::adjacent_tag` and the annotations of the JSON Schema, which go on the struct;
+    *   a setting on the field other than the constraints: `yyjson::rename`, `yyjson::required`, `yyjson::optional_key`, `yyjson::omit_default`, `yyjson::default_from`, `yyjson::extra_keys`, `yyjson::adjacent_tag` and the annotations of the JSON Schema, which go on the struct;
     *   `yyjson::additional_properties`, `yyjson::dependent_required`, `yyjson::one_of_required` and `yyjson::any_of_required` on the struct, which has no keys.
 
 ### C++26 annotations
 
-With C++26 static reflection, such as GCC 16 with `-std=c++26 -freflection`, the settings of a field can be written on the member itself as an [annotation](https://wg21.link/p3394). Every setting that `yyjson::field` takes is also an annotation: `[[=yyjson::rename("key")]]`, `[[=yyjson::skip]]`, `[[=yyjson::required]]`, `[[=yyjson::optional_key]]`, `[[=yyjson::omit_default]]`, `[[=yyjson::extra_keys]]`, `[[=yyjson::adjacent_tag(key, ids)]]`, the [constraints](validation.md#constraints), such as `[[=yyjson::minimum(0)]]`, and the [constraints of elements](validation.md#constraints-of-elements), such as `[[=yyjson::items(yyjson::minimum(0))]]` and `[[=yyjson::prefix_items({yyjson::minimum(0)}, {})]]`.
+With C++26 static reflection, such as GCC 16 with `-std=c++26 -freflection`, the settings of a field can be written on the member itself as an [annotation](https://wg21.link/p3394). Every setting that `yyjson::field` takes is also an annotation: `[[=yyjson::rename("key")]]`, `[[=yyjson::skip]]`, `[[=yyjson::required]]`, `[[=yyjson::optional_key]]`, `[[=yyjson::omit_default]]`, `[[=yyjson::default_from<f>]]`, `[[=yyjson::extra_keys]]`, `[[=yyjson::adjacent_tag(key, ids)]]`, the [constraints](validation.md#constraints), such as `[[=yyjson::minimum(0)]]`, and the [constraints of elements](validation.md#constraints-of-elements), such as `[[=yyjson::items(yyjson::minimum(0))]]` and `[[=yyjson::prefix_items({yyjson::minimum(0)}, {})]]`.
 
 ```cpp
 struct Project

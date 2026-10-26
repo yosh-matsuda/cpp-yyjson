@@ -123,7 +123,7 @@ JSON Schema treats `1.0` as an integer, as `read<int>` does.
 
 | | read | read with `yyjson::strict` | write |
 | --- | --- | --- | --- |
-| `required` | the fields with [`yyjson::required`](reference.md#yyjsonrequired) | also every field that may not be absent by its type, by [`yyjson::optional_key`](reference.md#yyjsonoptional_key) or by [`yyjson::omit_default`](reference.md#yyjsonomit_default) | the fields that `write` always writes: all but `std::optional`, the other [omittable](conversions.md#omitting-a-field-with-no-value) fields and the fields with `yyjson::omit_default` |
+| `required` | the fields with [`yyjson::required`](reference.md#yyjsonrequired) | also every field that may not be absent by its type, by [`yyjson::optional_key`](reference.md#yyjsonoptional_key), by [`yyjson::omit_default`](reference.md#yyjsonomit_default) or by [`yyjson::default_from`](reference.md#yyjsondefault_from) | the fields that `write` always writes: all but `std::optional`, the other [omittable](conversions.md#omitting-a-field-with-no-value) fields and the fields with `yyjson::omit_default` or `yyjson::default_from` |
 | `additionalProperties: false` | with [`yyjson::additional_properties(false)`](reference.md#yyjsonadditional_properties) | unless `yyjson::additional_properties(true)` | always |
 | `additionalProperties` with a schema | with a field of [`yyjson::extra_keys`](conversions.md#keys-that-name-no-field): the schema of the values of its map | the same | the same |
 | `default` | for each field that is not required | for each field that is not required | none |
@@ -184,7 +184,7 @@ Two kinds of constraints have no keyword:
 
 ## Defaults and descriptions
 
-A field that the read schema does not require gets `default`: the value of the field in `T()`, as `write` writes it. It is left out when `T` is not default-constructible, when `write` leaves the field out, such as an empty `std::optional`, when the value breaks the constraints of the field, or when the read could not read it back. One generation, a call of `json_schema<T>` or of `schema_collection::build()`, constructs `T()` once for each struct, and the write schema has no defaults and constructs none.
+A field that the read schema does not require gets `default`: the value of the field in `T()`, as `write` writes it, or for a field with [`yyjson::default_from`](reference.md#yyjsondefault_from) the value that its function makes. It is left out when `T` is not default-constructible, when `write` leaves the field out, such as an empty `std::optional`, when the value breaks the constraints of the field, or when the read could not read it back. One generation, a call of `json_schema<T>` or of `schema_collection::build()`, constructs `T()` once for each struct, and the write schema has no defaults and constructs none.
 
 These annotations describe a type or a field in the schema, and do not change how it is read or written:
 
