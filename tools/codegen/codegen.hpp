@@ -389,7 +389,8 @@ namespace cpp_yyjson_codegen
         }
 
         // the lines of a text for `//` comments: a compiler ends a line also at a lone CR, and joins a line that ends
-        // with a backslash to the next one, so the lines are split at CR and LF and lose their trailing backslashes
+        // with a backslash, or with the trigraph `??/` of a backslash, to the next one, so the lines are split at CR
+        // and LF and lose their trailing backslashes and the slash of a trailing `??/`
         inline std::vector<std::string_view> comment_lines(std::string_view text)
         {
             auto lines = std::vector<std::string_view>();
@@ -397,7 +398,8 @@ namespace cpp_yyjson_codegen
             {
                 const auto nl = std::min(text.find_first_of("\r\n"), text.size());
                 auto line = text.substr(0, nl);
-                while (!line.empty() && (line.back() == ' ' || line.back() == '\t' || line.back() == '\\'))
+                while (!line.empty() && (line.back() == ' ' || line.back() == '\t' || line.back() == '\\' ||
+                                         line.ends_with("?\?/")))
                     line.remove_suffix(1);
                 lines.push_back(line);
                 text.remove_prefix(nl);
@@ -409,6 +411,8 @@ namespace cpp_yyjson_codegen
             return lines;
         }
 
+        // a string literal; a raw string literal when the text has quotes, backslashes or line feeds. In an ordinary
+        // literal, a `?` after a `?` is escaped, so that no trigraph appears, which -Wtrigraphs warns about
         inline std::string quoted(std::string_view s)
         {
             const auto control = std::ranges::any_of(s, [](char c) {
@@ -432,6 +436,8 @@ namespace cpp_yyjson_codegen
                     out += static_cast<char>('0' + ((u >> 3) & 7));
                     out += static_cast<char>('0' + (u & 7));
                 }
+                else if (c == '?' && out.ends_with('?'))
+                    out += "\\?";
                 else
                     out += c;
             }

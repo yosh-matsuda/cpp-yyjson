@@ -81,6 +81,16 @@ TEST(Codegen, Comments)
     EXPECT_TRUE(has(r.code, "//   #/properties/b\n//     c: `enum` has the empty string;"));
 }
 
+TEST(Codegen, Trigraphs)
+{
+    // -Wtrigraphs warns of a trigraph in a string literal, and of `??/` at the end of a comment
+    const auto r = generate(R"({"type": "object", "properties": {
+        "a": {"type": "string", "default": "a??=b???-c", "description": "x ??/"}}})",
+                            {});
+    EXPECT_TRUE(has(r.code, "    /// x ??\n    std::string a = \"a?\\?=b?\\?\\?-c\";\n"));
+    EXPECT_TRUE(has(r.code, "yyjson::description(\"x ?\\?/\")"));
+}
+
 TEST(Codegen, Examples)
 {
     // an example that does not read as the C++ type would make json_schema<>() throw, so it becomes a comment
