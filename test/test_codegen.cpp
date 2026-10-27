@@ -1092,6 +1092,26 @@ TEST(Codegen, FileReferences)
     EXPECT_TRUE(has(generate(schema, {}).code, "    std::optional<yyjson::value> ship;\n"));
 }
 
+TEST(Codegen, FilePaths)
+{
+    // a drive of Windows is not the scheme of a URI, and a directory may have '#'
+    const auto files = std::map<std::string, std::string>{
+        {"C:/schemas/street.json", R"({"type": "string", "minLength": 1})"},
+        {"a#1/street.json", R"({"$defs": {"S": {"type": "integer"}}})"}};
+    const auto load = [&](const std::string& path) -> std::optional<std::string> {
+        const auto it = files.find(path);
+        return it == files.end() ? std::nullopt : std::optional(it->second);
+    };
+    const auto c = generate(R"({"type": "object", "properties": {"s": {"$ref": "street.json"}}})",
+                            options{.path = "C:/schemas/order.json", .load = load});
+    EXPECT_EQ(warnings(c), "");
+    EXPECT_TRUE(has(c.code, "    std::optional<Street> s;\n"));
+    const auto h = generate(R"({"type": "object", "properties": {"s": {"$ref": "street.json#/$defs/S"}}})",
+                            options{.path = "a#1/order.json", .load = load});
+    EXPECT_EQ(warnings(h), "");
+    EXPECT_TRUE(has(h.code, "using S = std::int64_t;\n"));
+}
+
 TEST(Codegen, Cpp26)
 {
     const auto r = generate(R"({"title": "T", "type": "object", "properties": {"a": {"type": "integer", "maximum": 9}},

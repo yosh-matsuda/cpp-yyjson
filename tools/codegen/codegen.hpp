@@ -911,10 +911,11 @@ namespace cpp_yyjson_codegen
                 return &store_.back();
             }
 
+            // a scheme of one letter is a drive of Windows: "C:/schemas/a.json" is a file
             static bool is_absolute_uri(std::string_view r)
             {
                 const auto colon = r.find(':');
-                if (colon == std::string_view::npos || colon == 0 || !std::isalpha(static_cast<unsigned char>(r[0])))
+                if (colon == std::string_view::npos || colon < 2 || !std::isalpha(static_cast<unsigned char>(r[0])))
                     return false;
                 return std::ranges::all_of(r.substr(0, colon), [](char c) {
                     return std::isalnum(static_cast<unsigned char>(c)) || c == '+' || c == '-' || c == '.';
@@ -946,13 +947,18 @@ namespace cpp_yyjson_codegen
                 warn(loc, "the dialect \"" + dialect + "\" is read as JSON Schema 2020-12");
             }
 
-            // a reference as "key#fragment" or "key": the key is empty for the schema, the path of another file, or a
-            // URI
+            // a reference as "key#fragment": the key is empty for the schema, the path of another file, or a URI;
+            // `resolve` splits at the last '#', since a path may hold one, and the fragment holds none
             std::string canonical_ref(std::string_view r, const std::string& key, const std::string& id) const
             {
                 const auto hash = r.find('#');
                 const auto base = r.substr(0, hash);
-                const auto fragment = hash == std::string_view::npos ? std::string_view() : r.substr(hash);
+                auto fragment = std::string();
+                if (hash != std::string_view::npos)
+                {
+                    for (const auto c : r.substr(hash + 1))
+                        fragment += c == '#' ? std::string_view("%23") : std::string_view(&c, 1);
+                }
                 const auto dir = std::filesystem::path(key.empty() ? root_path_ : key).parent_path().generic_string();
                 auto target = std::string();
                 if (base.empty())
@@ -971,7 +977,7 @@ namespace cpp_yyjson_codegen
                 else
                     target = file_key(dir, base);
                 if (!target.empty() && target == root_path_) target.clear();
-                return target.empty() && fragment.empty() ? std::string("#") : target + std::string(fragment);
+                return target + "#" + fragment;
             }
 
             // rewrites the references of a file to their canonical form, and drops the keywords beside a reference
@@ -1086,13 +1092,15 @@ namespace cpp_yyjson_codegen
                     warn(loc, "`$ref` is not a string");
                     return nullptr;
                 }
-                const auto& r = ref.text;
-                const auto hash = r.find('#');
-                const auto key = r.substr(0, hash);
+                const auto hash = ref.text.rfind('#');
+                const auto key = ref.text.substr(0, hash);
+                // the reference in messages, without the '#' of the canonical form of a whole file
+                const auto r = hash + 1 == ref.text.size() && hash > 0 ? key : ref.text;
                 const auto* doc = document(key, r, loc);
                 if (doc == nullptr) return nullptr;
-                const auto fragment =
-                    hash == std::string::npos ? std::string() : percent_decode(std::string_view(r).substr(hash + 1));
+                const auto fragment = hash == std::string::npos
+                                          ? std::string()
+                                          : percent_decode(std::string_view(ref.text).substr(hash + 1));
                 if (!fragment.empty() && fragment[0] != '/')
                 {
                     if (const auto* a = find_anchor(*doc, fragment))
@@ -1566,7 +1574,7 @@ namespace cpp_yyjson_codegen
                 {
                     const auto* t = resolve(*ref, loc);
                     if (t == nullptr) return {};
-                    return type_of(t, ref->text.find('#') == std::string::npos ? ref->text + "#" : ref->text, hint);
+                    return type_of(t, ref->text, hint);
                 }
                 if ((s->has("anyOf") && !required_groups_of(*s, "anyOf")) ||
                     (s->has("oneOf") && !required_groups_of(*s, "oneOf")))
