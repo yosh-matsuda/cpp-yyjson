@@ -680,6 +680,26 @@ TEST(Codegen, Defaults)
     EXPECT_EQ(warnings(j), "");
 }
 
+TEST(Codegen, DefaultsOfRequiredKeys)
+{
+    // writing would leave out a key that holds its default, while another key or a group requires the key
+    const auto r = generate(R"({
+        "type": "object",
+        "properties": {"a": {"type": "string"}, "b": {"type": "integer", "default": 3},
+                       "c": {"type": "integer", "default": 4}, "d": {"type": "integer", "default": 5}},
+        "dependentRequired": {"a": ["b"]},
+        "oneOf": [{"required": ["c"]}, {"required": ["a"]}]
+    })",
+                            {});
+    EXPECT_EQ(warnings(r), "");
+    EXPECT_TRUE(has(r.code, "    // default: 3\n    std::optional<std::int64_t> b;\n"));
+    EXPECT_TRUE(has(r.code, "    // default: 4\n    std::optional<std::int64_t> c;\n"));
+    EXPECT_TRUE(has(r.code, "    std::int64_t d = 5;\n"));
+    EXPECT_TRUE(has(r.code, "yyjson::field(\"d\", yyjson::omit_default)"));
+    EXPECT_FALSE(has(r.code, "yyjson::field(\"b\""));
+    EXPECT_FALSE(has(r.code, "yyjson::field(\"c\""));
+}
+
 TEST(Codegen, StructDefaults)
 {
     const auto r = generate(R"({

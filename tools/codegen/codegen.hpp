@@ -2016,6 +2016,14 @@ namespace cpp_yyjson_codegen
                             else
                                 warn(f.loc, "the default " + dump(j) + " is not converted to the C++ type and is dropped");
                         }
+                        else if (presence_matters(decls_[i], f.key))
+                        {
+                            // writing would leave the key out when the member holds the default, while another key
+                            // requires it (dependentRequired) or a group of oneOf / anyOf counts it: std::nullopt is
+                            // the missing key, which the program reads as the default in the comment
+                            f.default_note = dump(j);
+                            if (f.type.k != tk::optional) f.type = make(tk::optional, {std::move(f.type)});
+                        }
                         else if (init)
                         {
                             // a missing key means the default, which the member holds then; writing leaves the key
@@ -2041,6 +2049,18 @@ namespace cpp_yyjson_codegen
                             if (f.type.k != tk::optional) f.type = make(tk::optional, {std::move(f.type)});
                         }
                     }
+            }
+
+            // whether the presence of the key is checked: another key requires it, or a group of required keys has it
+            static bool presence_matters(const decl& d, const std::string& key)
+            {
+                const auto has = [&](const std::vector<std::string>& keys) {
+                    return std::ranges::find(keys, key) != keys.end();
+                };
+                return std::ranges::any_of(d.dependent, [&](const auto& e) { return has(e.second); }) ||
+                       std::ranges::any_of(d.groups, [&](const required_groups& g) {
+                           return std::ranges::any_of(g.groups, has);
+                       });
             }
 
             // the function of yyjson::default_from for the default `j` of the field `f` of `d`, which returns the

@@ -296,6 +296,7 @@ yyjson::value any = yyjson::value(yyjson::read(R"({"k":[1,"x"]})"));
 *   `yyjson::value` and `yyjson::object` read the default as JSON when the object is constructed.
 *   A struct that would construct itself, and a member held through `std::unique_ptr`, get [`yyjson::default_from<&f>`](reference.md#yyjsondefault_from) instead, with a function `f` defined after the structs, such as `T_children_default()`.
 *   `null` as the default of a type that does not take `null` means "unset": the member is `std::optional<T>`.
+*   A property that `dependentRequired` requires, or that a group of `oneOf` / `anyOf` of `required` counts, is `std::optional<T>` with a `// default:` comment, without a warning: `write` would leave out a key that holds the default, and the document would lack a key that the schema requires.
 
 A default that the generator cannot convert makes the member `std::optional<T>` with a `// default:` comment and a warning, and the program applies the default. This happens for a default that does not read as the type, such as a key that a closed struct does not have, for the default of a variant whose alternative the generator cannot choose, because an alternative depends on a `pattern`, a `contains` or a `format` that it does not check, and for a `std::vector` of structs that hold a `std::unique_ptr`, which `std::initializer_list` cannot copy.
 
