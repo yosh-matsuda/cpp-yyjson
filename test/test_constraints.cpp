@@ -1851,6 +1851,29 @@ using Alternatives = yyjson::any_of<
                 yyjson::min_contains(1)>,
     std::tuple<int, std::string>>;
 using ExactlyOne = yyjson::one_of<yyjson::alt<std::string, yyjson::pattern("^x")>, double>;
+// one_of whose alternatives may both read a value, which is checked when the value is read
+using SignedOrUnsigned = yyjson::one_of<std::int64_t, std::uint64_t>;
+using LowOrHigh = yyjson::one_of<yyjson::alt<int, yyjson::maximum(10)>, yyjson::alt<int, yyjson::minimum(0)>>;
+struct AlternativePoint
+{
+    int x;
+    bool operator==(const AlternativePoint&) const = default;
+};
+using PointOrMap = yyjson::any_of<AlternativePoint, std::map<std::string, int>>;
+struct AlternativeFields
+{
+    Alternatives a;
+    std::vector<LowOrHigh> l;
+    std::optional<ExactlyOne> e;
+    bool operator==(const AlternativeFields&) const = default;
+};
+struct AlternativeNode;
+using AlternativeTree = yyjson::any_of<yyjson::alt<int, yyjson::minimum(0)>, std::vector<AlternativeNode>>;
+struct AlternativeNode
+{
+    AlternativeTree t;
+    bool operator==(const AlternativeNode&) const = default;
+};
 namespace compile_rules
 {
     template <typename... As>
@@ -1973,6 +1996,82 @@ TEST(Constraints, AlternativeTypes)
     EXPECT_EQ(e.index(), 1);
     e = "x";
     EXPECT_EQ(std::get<std::string>(e), "x");
+}
+
+namespace
+{
+    // the messages of a value that no alternative of V reads, and that the alternatives i and j of V read
+    template <typename V>
+    std::string read_by_none()
+    {
+        return std::format("{} is not constructible from JSON", yyjson::detail::type_name<V>());
+    }
+    template <typename V>
+    std::string read_by_two(int i, int j)
+    {
+        return std::format("the value matches the alternatives {} and {} of {}", i, j, yyjson::detail::type_name<V>());
+    }
+}  // namespace
+
+TEST(Constraints, AlternativeReading)
+{
+    // the first alternative whose type reads the value and whose settings it satisfies
+    expect_accepted<Alternatives>("4", Alternatives(std::in_place_index<0>, 4));
+    expect_accepted<Alternatives>("200", Alternatives(std::in_place_index<1>, 200));
+    expect_accepted<Alternatives>(R"("abc")", Alternatives(std::string("abc")));
+    expect_accepted<Alternatives>("[3,1]", Alternatives(std::vector{3, 1}));
+    expect_accepted<Alternatives>(R"([5,"a"])", Alternatives(std::tuple(5, std::string("a"))));
+    for (const auto json : {"5", "150", R"("ABC")", R"("abcdefghi")", "[5,6]", "1.5", "null"})
+        expect_rejected<Alternatives>(json, read_by_none<Alternatives>(), "");
+
+    expect_accepted<ExactlyOne>(R"("xy")", ExactlyOne(std::string("xy")));
+    expect_accepted<ExactlyOne>("2", ExactlyOne(2.0));
+    expect_rejected<ExactlyOne>(R"("y")", read_by_none<ExactlyOne>(), "");
+
+    // one_of fails for a value that two alternatives read
+    expect_accepted<SignedOrUnsigned>("-1", SignedOrUnsigned(std::int64_t{-1}));
+    expect_accepted<SignedOrUnsigned>("9223372036854775808", SignedOrUnsigned(std::uint64_t{1} << 63));
+    expect_rejected<SignedOrUnsigned>("1", read_by_two<SignedOrUnsigned>(0, 1), "");
+    expect_accepted<LowOrHigh>("-1", LowOrHigh(std::in_place_index<0>, -1));
+    expect_accepted<LowOrHigh>("11", LowOrHigh(std::in_place_index<1>, 11));
+    expect_rejected<LowOrHigh>("10", read_by_two<LowOrHigh>(0, 1), "");
+
+    // in fields and elements
+    expect_accepted<AlternativeFields>(R"({"a":"id","l":[-5,20],"e":"x"})",
+                                       {Alternatives(std::string("id")),
+                                        {LowOrHigh(std::in_place_index<0>, -5), LowOrHigh(std::in_place_index<1>, 20)},
+                                        ExactlyOne(std::string("x"))});
+    expect_rejected<AlternativeFields>(R"({"a":4,"l":[-5,3]})", read_by_two<LowOrHigh>(0, 1), "/l/1");
+    expect_rejected<AlternativeFields>(R"({"a":4,"e":"y"})", read_by_none<ExactlyOne>(), "/e");
+
+    // recursive
+    expect_accepted<AlternativeNode>(
+        R"({"t":[{"t":1},{"t":[{"t":2}]}]})",
+        {AlternativeTree(std::vector{AlternativeNode{AlternativeTree(std::in_place_index<0>, 1)},
+                                     AlternativeNode{AlternativeTree(std::vector{
+                                         AlternativeNode{AlternativeTree(std::in_place_index<0>, 2)}})}})});
+    expect_rejected<AlternativeNode>(R"({"t":[{"t":-1}]})", read_by_none<AlternativeTree>(), "/t");
+
+    // an alternative reads in the mode of the read: strict rejects the unknown key of the struct
+    const auto json = R"({"x":1,"y":2})";
+    EXPECT_EQ(yyjson::read<PointOrMap>(json), PointOrMap(AlternativePoint{1}));
+    EXPECT_EQ(yyjson::read(json).cast<PointOrMap>(), PointOrMap(AlternativePoint{1}));
+    const auto map = PointOrMap(std::map<std::string, int>{{"x", 1}, {"y", 2}});
+    EXPECT_EQ(yyjson::read<PointOrMap>(json, yyjson::strict), map);
+    EXPECT_EQ(yyjson::read(json).cast<PointOrMap>(yyjson::strict), map);
+
+    // merge_into replaces the value
+    auto merged = AlternativeFields{Alternatives(std::vector{1}), {}, {}};
+    yyjson::merge_into(R"({"a":[2]})", merged);
+    EXPECT_EQ(merged.a, Alternatives(std::vector{2}));
+
+    // written as the alternative held, in both writers
+    const auto fields = AlternativeFields{Alternatives(std::in_place_index<1>, 100),
+                                          {LowOrHigh(std::in_place_index<1>, 20)},
+                                          ExactlyOne(std::string("x"))};
+    EXPECT_EQ(yyjson::write(fields), R"({"a":100,"l":[20],"e":"x"})");
+    EXPECT_EQ(yyjson::object(fields).write(), R"({"a":100,"l":[20],"e":"x"})");
+    EXPECT_EQ(yyjson::value(Alternatives(std::string("id"))).write(), R"("id")");
 }
 
 #if FIELD_RFL_ANNOTATIONS

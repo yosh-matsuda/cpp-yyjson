@@ -2812,6 +2812,26 @@ namespace yyjson
         // Whether the alternative I of V has a setting of its value.
         template <typename V, std::size_t I>
         inline constexpr bool constrained_alternative = !combined_alternatives<V>::table::tree.nodes[I].empty();
+        // Whether V is `yyjson::any_of` or `yyjson::one_of` whose alternative I has a setting of its value.
+        template <typename V, std::size_t I>
+        concept constrained_combined_alternative =
+            combined_variant<V> && constrained_alternative<std::remove_cv_t<V>, I>;
+
+        // The `std::variant` of a variant: the variant itself, or the base of `yyjson::any_of` and
+        // `yyjson::one_of`, which `std::visit` takes before P2162.
+        template <typename T>
+        constexpr decltype(auto) as_std_variant(T&& t) noexcept
+        {
+            using U = std::remove_cvref_t<T>;
+            if constexpr (combined_variant<U>)
+            {
+                using B = std::conditional_t<std::is_const_v<std::remove_reference_t<T>>,
+                                             const typename U::variant_type, typename U::variant_type>;
+                return static_cast<std::conditional_t<std::is_lvalue_reference_v<T>, B&, B&&>>(t);
+            }
+            else
+                return std::forward<T>(t);
+        }
     }  // namespace detail
 }  // namespace yyjson
 
@@ -4300,6 +4320,16 @@ namespace yyjson
         struct template_type_args<std::array<T, N>>
         {
             using type = type_list<T>;
+        };
+        template <typename... As>
+        struct template_type_args<any_of<As...>>
+        {
+            using type = type_list<alternative_type_t<As>...>;
+        };
+        template <typename... As>
+        struct template_type_args<one_of<As...>>
+        {
+            using type = type_list<alternative_type_t<As>...>;
         };
 
         // A node of the graph in which a class leads to the types of its fields, or to its template arguments
@@ -15565,6 +15595,25 @@ namespace yyjson
                     return static_cast<std::uint16_t>((0U | ... | accepted_json_kinds<Ts, Json>()));
             }
         };
+        // `yyjson::any_of` and `yyjson::one_of`, which have no tags
+        template <typename... Ts>
+        struct alternatives_json_kinds
+        {
+            static constexpr bool is_variant = true;
+            template <typename Json>
+            static consteval std::uint16_t value()
+            {
+                return static_cast<std::uint16_t>((0U | ... | accepted_json_kinds<Ts, Json>()));
+            }
+        };
+        template <typename... As>
+        struct variant_json_kinds<any_of<As...>> : alternatives_json_kinds<alternative_type_t<As>...>
+        {
+        };
+        template <typename... As>
+        struct variant_json_kinds<one_of<As...>> : alternatives_json_kinds<alternative_type_t<As>...>
+        {
+        };
 
         // The JSON values that an alternative of `yyjson::any_of` or `yyjson::one_of` accepts, bounded at compile
         // time, so that an alternative that is never read, or that is never the only one to read a value, fails to
@@ -16631,17 +16680,17 @@ namespace yyjson
                 return false;
             }
         };
-        template <typename... Ts, typename Json>
-        requires recursive_type<std::variant<Ts...>> && (CPPYYJSON_RECURSION_DEPTH_LIMIT != 0)
-        class variant_reread_guard<std::variant<Ts...>, Json>
+        // The guard of a recursive variant V of the alternatives Ts.
+        template <typename V, typename Json, typename... Ts>
+        class variant_reread_counter
         {
-            static constexpr auto rereading = std::array<bool, sizeof...(Ts)>{type_reaches<std::variant<Ts...>, Ts>...};
+            static constexpr auto rereading = std::array<bool, sizeof...(Ts)>{type_reaches<V, Ts>...};
             static constexpr auto kinds = std::array<std::uint16_t, sizeof...(Ts)>{accepted_json_kinds<Ts, Json>()...};
             // 1 when not counted, 0 when the limit stops it, and the factor in `variant_rereads` otherwise
             std::size_t n_ = 1;
 
         public:
-            explicit variant_reread_guard(std::uint16_t kind) noexcept
+            explicit variant_reread_counter(std::uint16_t kind) noexcept
             {
                 auto n = std::size_t{0};
                 for (std::size_t i = 0; i < sizeof...(Ts); ++i) n += rereading[i] && (kinds[i] & kind) != 0;
@@ -16654,12 +16703,12 @@ namespace yyjson
                 variant_rereads *= n;
                 n_ = n;
             }
-            ~variant_reread_guard()
+            ~variant_reread_counter()
             {
                 if (n_ > 1) variant_rereads /= n_;
             }
-            variant_reread_guard(const variant_reread_guard&) = delete;
-            variant_reread_guard& operator=(const variant_reread_guard&) = delete;
+            variant_reread_counter(const variant_reread_counter&) = delete;
+            variant_reread_counter& operator=(const variant_reread_counter&) = delete;
 
             // Whether the failure of the alternative I fails the variant, instead of trying the next alternative.
             template <std::size_t I>
@@ -16667,6 +16716,30 @@ namespace yyjson
             {
                 return rereading[I] && n_ == 0;
             }
+        };
+        template <typename... Ts, typename Json>
+        requires recursive_type<std::variant<Ts...>> && (CPPYYJSON_RECURSION_DEPTH_LIMIT != 0)
+        class variant_reread_guard<std::variant<Ts...>, Json>
+            : public variant_reread_counter<std::variant<Ts...>, Json, Ts...>
+        {
+        public:
+            using variant_reread_counter<std::variant<Ts...>, Json, Ts...>::variant_reread_counter;
+        };
+        template <typename... As, typename Json>
+        requires recursive_type<any_of<As...>> && (CPPYYJSON_RECURSION_DEPTH_LIMIT != 0)
+        class variant_reread_guard<any_of<As...>, Json>
+            : public variant_reread_counter<any_of<As...>, Json, alternative_type_t<As>...>
+        {
+        public:
+            using variant_reread_counter<any_of<As...>, Json, alternative_type_t<As>...>::variant_reread_counter;
+        };
+        template <typename... As, typename Json>
+        requires recursive_type<one_of<As...>> && (CPPYYJSON_RECURSION_DEPTH_LIMIT != 0)
+        class variant_reread_guard<one_of<As...>, Json>
+            : public variant_reread_counter<one_of<As...>, Json, alternative_type_t<As>...>
+        {
+        public:
+            using variant_reread_counter<one_of<As...>, Json, alternative_type_t<As>...>::variant_reread_counter;
         };
 
         template <typename Variant, typename Alternative>
@@ -17256,6 +17329,210 @@ namespace yyjson
         }
     };
 
+    namespace detail
+    {
+        // Thrown by the cast of an alternative of `yyjson::any_of` or `yyjson::one_of` whose settings the value
+        // does not satisfy, for the next alternative to be tried.
+        struct alternative_rejected
+        {
+        };
+
+        template <typename V>
+        [[noreturn]] CPPYYJSON_COLD void throw_one_of_matches(cast_target at, std::size_t i, std::size_t j)
+        {
+            throw_bad_cast_at(at, "the value matches the alternatives {} and {} of {}", i, j, type_name<V>());
+        }
+
+        // The caster of V, `yyjson::any_of` or `yyjson::one_of` of the alternatives of the types Ts.  An alternative
+        // reads a JSON value if its type is cast from it and the value satisfies its settings, which are checked
+        // as those of a field.  The first alternative that reads the value is taken, and `yyjson::one_of` then
+        // tries those after it that may read the value too, which must not.
+        template <typename V, typename... Ts>
+        struct combined_caster : builtin_caster
+        {
+            static_assert(check_alternative_bounds<V>());
+
+            template <typename Json>
+            requires (castable<Json, Ts> && ...)
+            static V from_json(const Json& json)
+            {
+                const auto kind = json_kind_of(json);
+                const auto rereads = variant_reread_guard<V, Json>(kind);
+                auto v = from_alternative<0>(json, kind, rereads);
+                if constexpr (combined_alternatives<V>::exactly_one) check_only_match(v.index(), json, kind, rereads);
+                return v;
+            }
+
+            template <typename... Args>
+            requires copy_string_args<Args...> && (variant_alternative_writable<Ts, V> && ...)
+            static void to_json(writer::value_ref& val, const V& t, Args...)
+            {
+                constexpr auto copy = (sizeof...(Args) != 0);
+                std::visit(
+                    [&val](const auto& v) {
+                        if constexpr (copy)
+                            val = std::pair<decltype(v), copy_string_t>(v, copy_string);
+                        else
+                            val = v;
+                    },
+                    as_std_variant(t));
+            }
+
+            template <typename... Args>
+            requires copy_string_args<Args...> && (variant_alternative_writable<Ts, V> && ...)
+            static void to_json(writer::value_ref& val, V&& t, Args...)
+            {
+                constexpr auto copy = (sizeof...(Args) != 0);
+                std::visit(
+                    [&val](auto&& v) {
+                        if constexpr (copy)
+                            val = std::pair<decltype(v), copy_string_t>(std::move(v), copy_string);
+                        else
+                            val = std::move(v);
+                    },
+                    as_std_variant(std::move(t)));
+            }
+
+        private:
+            template <typename Json>
+            static constexpr auto alternative_kinds =
+                std::array<std::uint16_t, sizeof...(Ts)>{accepted_json_kinds<Ts, Json>()...};
+            template <typename Json>
+            static consteval auto make_later_kinds()
+            {
+                auto result = std::array<std::uint16_t, sizeof...(Ts)>{};
+                for (auto i = sizeof...(Ts) - 1; i > 0; --i)
+                    result[i - 1] = static_cast<std::uint16_t>(result[i] | alternative_kinds<Json>[i]);
+                return result;
+            }
+            template <typename Json>
+            static constexpr auto later_kinds = make_later_kinds<Json>();
+
+            // as in `caster<std::variant>`
+            template <std::size_t I, typename Json, typename Guard>
+            static bool may_cast(const Json& json, std::uint16_t kind, const Guard& rereads)
+            {
+                using T = std::variant_alternative_t<I, V>;
+                if constexpr (may_reject_nested<std::remove_cvref_t<T>>())
+                {
+                    if (!detail::may_cast<std::remove_cvref_t<T>>(json, kind))
+                    {
+                        if (rereads.template stops_after<I>()) throw_variant_reread_limit<V, T>();
+                        return false;
+                    }
+                }
+                return true;
+            }
+
+            // Constructs V as the alternative I cast from the JSON value, or throws `alternative_rejected` if the
+            // value does not satisfy its settings.
+            template <std::size_t I, typename Json>
+            static V cast_alternative(const Json& json)
+            {
+                using T = std::variant_alternative_t<I, V>;
+                auto v = V(std::in_place_index<I>, cast_nested<T>(json));
+                if constexpr (constrained_alternative<V, I>)
+                {
+                    if (level_violation<alternative_level<V, I>>(*std::get_if<I>(&v)) != constraint_kind::none)
+                        throw alternative_rejected{};
+                }
+                return v;
+            }
+
+            // Whether the alternative I reads the JSON value, as `cast_alternative` tells.
+            template <std::size_t I, typename Json>
+            static bool reads(const Json& json)
+            {
+                using T = std::variant_alternative_t<I, V>;
+                auto limit = std::exception_ptr();
+                try
+                {
+                    const auto value = cast_nested<T>(json);
+                    if constexpr (constrained_alternative<V, I>)
+                        return level_violation<alternative_level<V, I>>(value) == constraint_kind::none;
+                    else
+                        return true;
+                }
+                catch (const recursion_limit_error&)
+                {
+                    limit = std::current_exception();
+                }
+                catch (...)
+                {
+                }
+                if (limit) std::rethrow_exception(limit);
+                return false;
+            }
+
+            // as `caster<std::variant>::from_alternative`, with the settings of each alternative
+            template <std::size_t I, typename Json, typename Guard>
+            static V from_alternative(const Json& json, std::uint16_t kind, const Guard& rereads)
+            {
+                if constexpr (I == sizeof...(Ts))
+                    throw_bad_cast_at(target_of(json), "{} is not constructible from JSON", type_name<V>());
+                else
+                {
+                    using T = std::variant_alternative_t<I, V>;
+                    if ((alternative_kinds<Json>[I] & kind) != 0 &&
+                        ((later_kinds<Json>[I] & kind) == 0 || may_cast<I>(json, kind, rereads)))
+                    {
+                        auto limit = std::exception_ptr();
+                        try
+                        {
+                            return cast_alternative<I>(json);
+                        }
+                        catch (const recursion_limit_error&)
+                        {
+                            limit = std::current_exception();
+                        }
+                        catch (...)
+                        {
+                        }
+                        if (limit) std::rethrow_exception(limit);
+                        if (rereads.template stops_after<I>()) throw_variant_reread_limit<V, T>();
+                    }
+                    return from_alternative<I + 1>(json, kind, rereads);
+                }
+            }
+
+            // Throws `bad_cast` if an alternative after the alternative i, which reads the JSON value, reads it too.
+            // Only the alternatives that may read a value that i reads, as their bounds tell, are tried.
+            template <typename Json, typename Guard>
+            static void check_only_match(std::size_t i, const Json& json, std::uint16_t kind, const Guard& rereads)
+            {
+                [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                    (void)((i == Is && (check_later_matches<Is, Is + 1>(json, kind, rereads), true)) || ...);
+                }(std::make_index_sequence<sizeof...(Ts)>{});
+            }
+            template <std::size_t I, std::size_t J, typename Json, typename Guard>
+            static void check_later_matches(const Json& json, std::uint16_t kind, const Guard& rereads)
+            {
+                if constexpr (J < sizeof...(Ts))
+                {
+                    if constexpr (alternative_relations<V>::overlap[I][J])
+                    {
+                        if ((alternative_kinds<Json>[J] & kind) != 0)
+                        {
+                            if (rereads.template stops_after<J>())
+                                throw_variant_reread_limit<V, std::variant_alternative_t<J, V>>();
+                            if (reads<J>(json)) throw_one_of_matches<V>(target_of(json), I, J);
+                        }
+                    }
+                    check_later_matches<I, J + 1>(json, kind, rereads);
+                }
+            }
+        };
+    }  // namespace detail
+
+    template <typename... As>
+    struct caster<any_of<As...>> : detail::combined_caster<any_of<As...>, detail::alternative_type_t<As>...>
+    {
+    };
+    template <typename... As>
+    struct caster<one_of<As...>> : detail::combined_caster<one_of<As...>, detail::alternative_type_t<As>...>
+    {
+    };
+
     template <template <typename...> typename Tuple, typename... Ts>
     requires detail::tuple_like<Tuple<Ts...>>
     struct caster<Tuple<Ts...>> : detail::builtin_caster
@@ -17678,6 +17955,14 @@ namespace yyjson
         };
         template <typename... Ts>
         struct is_variant<std::variant<Ts...>> : std::true_type
+        {
+        };
+        template <typename... As>
+        struct is_variant<yyjson::any_of<As...>> : std::true_type
+        {
+        };
+        template <typename... As>
+        struct is_variant<yyjson::one_of<As...>> : std::true_type
         {
         };
 
@@ -18552,7 +18837,8 @@ namespace yyjson
                     if constexpr (yyjson::detail::internally_tagged<U>)
                         write_internally_tagged(std::forward<T>(t));
                     else
-                        std::visit([&](auto&& v) { write_value(std::forward<decltype(v)>(v)); }, std::forward<T>(t));
+                        std::visit([&](auto&& v) { write_value(std::forward<decltype(v)>(v)); },
+                                   yyjson::detail::as_std_variant(std::forward<T>(t)));
                 }
                 else if constexpr (std::derived_from<caster<U>, yyjson::detail::builtin_caster> &&
                                    yyjson::detail::transparent_struct<U> && std::same_as<V, value_ref>)
@@ -20252,6 +20538,8 @@ namespace yyjson
                     const auto key = yyjson::detail::internal_tag_key(start, tags::key);
                     read_tagged_alternative<T>(make, index, start);
                 }
+                else if constexpr (yyjson::detail::combined_variant<T>)
+                    read_combined_variant<T>(make);
                 else
                     read_untagged_variant<T>(make);
             }
@@ -20790,6 +21078,91 @@ namespace yyjson
                 return false;
             }
 
+            // Reads the value at `cur_` into T, `yyjson::any_of` or `yyjson::one_of`, as `caster<T>` casts it.
+            template <typename T, typename Make>
+            void read_combined_variant(Make&& make)
+            {
+                const char* const start = cur_;
+                const auto kind = kind_at();
+                const auto rereads = yyjson::detail::variant_reread_guard<std::remove_cv_t<T>, const_value_ref>(kind);
+                auto matched = std::variant_npos;
+                [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                    constexpr auto& kinds = alternative_kinds<T>;
+                    constexpr auto& later = later_alternative_kinds<T>;
+                    (void)(((kinds[Is] & kind) != 0 &&
+                            read_alternative<T, Is>(make, start, (later[Is] & kind) != 0, rereads) &&
+                            (matched = Is, true)) ||
+                           ...);
+                }(std::make_index_sequence<std::variant_size_v<T>>{});
+                if (matched == std::variant_npos) fail();
+                if constexpr (yyjson::detail::combined_alternatives<std::remove_cv_t<T>>::exactly_one)
+                {
+                    const char* const end = cur_;
+                    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                        (void)((matched == Is && (check_later_reads<T, Is, Is + 1>(start, kind, rereads), true)) ||
+                               ...);
+                    }(std::make_index_sequence<std::variant_size_v<T>>{});
+                    cur_ = end;
+                }
+            }
+
+            // Fails if an alternative from J on of `yyjson::one_of` T reads the value at `start`, which the
+            // alternative I has read.  Only the alternatives that may read a value that I reads, as their bounds
+            // tell, are tried.
+            template <typename T, std::size_t I, std::size_t J, typename Guard>
+            void check_later_reads(const char* start, std::uint16_t kind, const Guard& rereads)
+            {
+                using V = std::remove_cv_t<T>;
+                if constexpr (J < std::variant_size_v<V>)
+                {
+                    if constexpr (yyjson::detail::alternative_relations<V>::overlap[I][J])
+                    {
+                        if ((alternative_kinds<T>[J] & kind) != 0)
+                        {
+                            if (rereads.template stops_after<J>())
+                                yyjson::detail::throw_variant_reread_limit<V, std::variant_alternative_t<J, V>>();
+                            cur_ = start;
+                            if (reads_alternative<V, J>())
+                            {
+                                cur_ = start;
+                                fail();
+                            }
+                        }
+                    }
+                    check_later_reads<T, I, J + 1>(start, kind, rereads);
+                }
+            }
+
+            // Whether the alternative J of V, `yyjson::any_of` or `yyjson::one_of`, reads the value at `cur_`.
+            template <typename V, std::size_t J>
+            bool reads_alternative()
+            {
+                using alternative = std::remove_cv_t<std::variant_alternative_t<J, V>>;
+                auto pass_on = std::exception_ptr();
+                try
+                {
+                    const auto value = read_value<alternative>();
+                    if constexpr (yyjson::detail::constrained_alternative<V, J>)
+                        return yyjson::detail::level_violation<yyjson::detail::alternative_level<V, J>>(value) ==
+                               yyjson::detail::constraint_kind::none;
+                    else
+                        return true;
+                }
+                catch (const direct_read_unsupported&)
+                {
+                    pass_on = std::current_exception();
+                }
+                catch (const yyjson::detail::recursion_limit_error&)
+                {
+                    pass_on = std::current_exception();
+                }
+                catch (...)
+                {
+                }
+                if (pass_on) std::rethrow_exception(pass_on);
+                return false;
+            }
+
             // A number read once for the alternatives of a variant, with its precise kind.
             struct variant_number
             {
@@ -20895,8 +21268,16 @@ namespace yyjson
                             }
                         }
                     }
-                    read_alternative_value<T, I>(make);
-                    return true;
+                    if constexpr (yyjson::detail::constrained_combined_alternative<T, I>)
+                    {
+                        // an alternative whose settings the value does not satisfy fails as if it were not read
+                        if (read_constrained_alternative<T, I>(make)) return true;
+                    }
+                    else
+                    {
+                        read_alternative_value<T, I>(make);
+                        return true;
+                    }
                 }
                 catch (const direct_read_unsupported&)
                 {
@@ -20917,6 +21298,18 @@ namespace yyjson
                 if (rereads.template stops_after<I>()) yyjson::detail::throw_variant_reread_limit<T, alternative>();
                 cur_ = start;
                 return false;
+            }
+
+            // Reads the value at `cur_` into the alternative I of T, `yyjson::any_of` or `yyjson::one_of`, and tells
+            // whether the value satisfies its settings.
+            template <typename T, std::size_t I, typename Make>
+            bool read_constrained_alternative(Make& make)
+            {
+                using V = std::remove_cv_t<T>;
+                using alternative = std::remove_cv_t<std::variant_alternative_t<I, T>>;
+                const auto& v = make(std::in_place_index<I>, read_value<alternative>());
+                return yyjson::detail::level_violation<yyjson::detail::alternative_level<V, I>>(std::get<I>(v)) ==
+                       yyjson::detail::constraint_kind::none;
             }
 
             // Reads the value at `cur_` into the alternative I of the variant T.
