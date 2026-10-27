@@ -13829,6 +13829,11 @@ namespace yyjson
         template <typename V>
         void validate_combined(const V& v);
 
+        // Whether `validate_value` on this thread checks only what holds under every read: it leaves out the keys
+        // that only `yyjson::strict` requires and the read-back of a `yyjson::one_of` under `yyjson::strict`.  Set
+        // by `settings_hold`.
+        inline constinit thread_local bool validating_settings_only = false;
+
         // Whether `yyjson::validate` checks something of a value of the type T, beside the values in it.
         template <typename T>
         consteval bool validates_itself()
@@ -14148,7 +14153,8 @@ namespace yyjson
                 (
                     [&] {
                         if constexpr (omittable<struct_field_type<S, Ks>> && strictly_required_field<S, Ks>)
-                            if (!written[Ks]) throw_missing_key(cast_target{}, struct_field_key<S, Ks>, type_name<S>());
+                            if (!written[Ks] && !validating_settings_only)
+                                throw_missing_key(cast_target{}, struct_field_key<S, Ks>, type_name<S>());
                     }(),
                     ...);
             }(std::make_index_sequence<n>{});
@@ -14251,6 +14257,29 @@ namespace yyjson
     {
         detail::validate_value(t);
     }
+
+    namespace detail
+    {
+        // Whether `v` and the values in it keep the settings that `yyjson::validate` checks and that hold under every
+        // read, such as those of the alternative that a `yyjson::one_of` holds, which the text that `write` gives
+        // does not tell.
+        template <typename T>
+        [[nodiscard]] bool settings_hold(const T& v)
+        {
+            const bool outer = std::exchange(validating_settings_only, true);
+            try
+            {
+                validate_value(v);
+            }
+            catch (const std::exception&)
+            {
+                validating_settings_only = outer;
+                return false;
+            }
+            validating_settings_only = outer;
+            return true;
+        }
+    }  // namespace detail
 
     namespace detail
     {
@@ -17711,6 +17740,7 @@ namespace yyjson
             }
             if constexpr (combined_alternatives<V>::exactly_one && overlaps_other_alternative<V, I>())
             {
+                if (validating_settings_only) return;
                 const auto json = yyjson::value(a);
                 const auto scope = strict_scope();
                 const auto kind = json_kind_of(json);

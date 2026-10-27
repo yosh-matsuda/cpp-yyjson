@@ -586,7 +586,8 @@ using Twice = std::variant<Tagged>;
 template <> inline constexpr auto yyjson::annotations<Twice> = yyjson::annotate(yyjson::internal_tag("kind", {"circle"}));
 
 // `yyjson::any_of` and `yyjson::one_of`: the settings and the metadata of each alternative, a one_of whose alternatives
-// overlap, a null alternative, and a named one_of in `$defs`.
+// overlap, a null alternative, and a named one_of in `$defs`.  A value in `T()` that breaks the settings of the
+// alternative that it is held in is no default, also where another alternative reads it back.
 struct AltPoint { int x = 0; };
 using AltCount = yyjson::any_of<
     yyjson::alt<int, yyjson::minimum(0), yyjson::description("a count"), yyjson::examples("1")>,
@@ -595,13 +596,33 @@ using AltShape = yyjson::one_of<yyjson::alt<AltPoint, yyjson::title("point")>,
                                 yyjson::alt<std::vector<int>, yyjson::items(yyjson::enum_(1, 2))>>;
 template <> inline constexpr auto yyjson::annotations<AltShape> =
     yyjson::annotate(yyjson::schema_name("Shape"), yyjson::description("a shape"));
+using AltSentinel = yyjson::one_of<yyjson::alt<int, yyjson::minimum(0)>, yyjson::alt<int, yyjson::maximum(10)>>;
 struct Alternatives
 {
     AltCount a;
     yyjson::one_of<std::int64_t, std::uint64_t> b = std::int64_t{-1};
     std::vector<yyjson::any_of<std::monostate, yyjson::alt<double, yyjson::maximum(1)>>> c;
     AltShape n;
+    AltSentinel s{std::in_place_index<0>, -1};
+    std::vector<AltSentinel> t{AltSentinel{std::in_place_index<0>, -1}};
 };
+
+// A field that its caster leaves out, which only `yyjson::strict` requires: the struct that holds it is a default of
+// the schema without `yyjson::strict`.
+struct MaybeInt
+{
+    bool has = false;
+    int value = 0;
+};
+template <>
+struct yyjson::caster<MaybeInt>
+{
+    static bool should_omit(const MaybeInt& m) { return !m.has; }
+    static int to_json(const MaybeInt& m) { return m.value; }
+    static MaybeInt from_json(const yyjson::json_view& v) { return {true, v.cast<int>()}; }
+};
+struct MaybeInner { MaybeInt m; };
+struct MaybeOuter { MaybeInner in; };
 
 // Written only: a borrowed string is not read.
 struct Borrowed { std::string_view s = "x"; const char* p = "y"; };
@@ -1493,8 +1514,18 @@ TEST(Schema, Alternatives)
     EXPECT_EQ(s["$defs"]["Alternatives"]["properties"]["b"]["oneOf"].size(), 2u);
     EXPECT_EQ(s["$defs"]["Alternatives"]["properties"]["b"]["default"].as<int>(), -1);
     EXPECT_EQ(s["$defs"]["Alternatives"]["properties"]["n"]["$ref"].as_string(), "#/$defs/Shape");
+    EXPECT_FALSE(s["$defs"]["Alternatives"]["properties"]["s"].contains("default"));
+    EXPECT_FALSE(s["$defs"]["Alternatives"]["properties"]["t"].contains("default"));
     EXPECT_EQ(s["$defs"]["Shape"]["description"].as_string(), "a shape");
     EXPECT_EQ(s["$defs"]["Shape"]["oneOf"][0], json::parse(R"({"$ref":"#/$defs/AltPoint","title":"point"})"));
+}
+
+TEST(Schema, DefaultLeavingKeyOut)
+{
+    const auto s = to_jsoncons(yyjson::json_schema<MaybeOuter>());
+    const auto& in = s["$defs"]["MaybeOuter"]["properties"]["in"];
+    ASSERT_TRUE(in.contains("default"));
+    EXPECT_EQ(in["default"], json::parse("{}"));
 }
 
 TEST(Schema, WriteOnly)

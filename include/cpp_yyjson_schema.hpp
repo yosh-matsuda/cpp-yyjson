@@ -555,13 +555,15 @@ namespace yyjson
             }
 
             // Whether the field K of S takes back what `write` gives for its value `d`: a caster may write what it
-            // does not read, and a value in `T()` may not satisfy the constraints, and neither is a default of the
-            // schema that is read.
+            // does not read, and a value in `T()` may not satisfy the constraints, also those of the alternative
+            // of a `yyjson::one_of` that it holds where another alternative reads the text, and neither is a
+            // default of the schema that is read.
             template <typename S, std::size_t K, typename F>
             [[nodiscard]] bool reads_back(const F& d) const
             {
                 if constexpr (readable<F>)
                 {
+                    if (!yyjson::detail::settings_hold(d)) return false;
                     try
                     {
                         const auto text = yyjson::write(d);
