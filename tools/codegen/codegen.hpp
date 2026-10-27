@@ -26,6 +26,8 @@
 
 #include <cpp_yyjson.hpp>
 
+#include "reserved_names.hpp"
+
 // numbers of a schema are compared exactly, and switches over the kinds of a type handle the kinds that matter
 #if defined(__GNUC__)
 #pragma GCC diagnostic push
@@ -487,6 +489,28 @@ namespace cpp_yyjson_codegen
             return words.contains(s);
         }
 
+        inline std::set<std::string_view> split_names(std::string_view text)
+        {
+            auto out = std::set<std::string_view>();
+            for (const auto w : text | std::views::split(' '))
+                if (!w.empty()) out.emplace(w.begin(), w.end());
+            return out;
+        }
+
+        // a keyword, or a macro of the standard libraries that would replace the name
+        inline bool is_reserved(std::string_view s)
+        {
+            static const auto macros = split_names(reserved_macro_names);
+            return is_keyword(s) || macros.contains(s);
+        }
+
+        // a name of the global namespace, which a type defined there cannot take
+        inline bool is_global_name(std::string_view s)
+        {
+            static const auto names = split_names(reserved_global_names);
+            return names.contains(s);
+        }
+
         // `base` with a number, without the `__` that C++ reserves: `a_2`, `a_` -> `a_2`
         inline std::string numbered(std::string_view base, int n)
         {
@@ -503,7 +527,7 @@ namespace cpp_yyjson_codegen
             if (!std::ranges::all_of(s, [](char c) { return is_alnum(c) || c == '_'; })) return false;
             if (s.find("__") != std::string_view::npos) return false;
             if (s.size() >= 2 && s[0] == '_' && s[1] >= 'A' && s[1] <= 'Z') return false;
-            return !is_keyword(s);
+            return !is_reserved(s);
         }
 
         inline std::string sanitize(std::string_view s)
@@ -520,7 +544,7 @@ namespace cpp_yyjson_codegen
             while (!out.empty() && out.back() == '_') out.pop_back();
             if (out.empty()) return "value";
             if (is_digit(out[0])) out.insert(0, "_");
-            if (is_keyword(out)) out += '_';
+            if (is_reserved(out)) out += '_';
             return out;
         }
 
@@ -1391,10 +1415,17 @@ namespace cpp_yyjson_codegen
 
             std::string unique_type_name(std::string_view base)
             {
-                const auto b = sanitize(base.empty() ? "Value" : base);
+                const auto b = global_safe(sanitize(base.empty() ? "Value" : base));
                 auto name = b;
                 for (auto n = 2; type_names_.contains(name); ++n) name = b + std::to_string(n);
                 type_names_.insert(name);
+                return name;
+            }
+
+            // a type of the global namespace cannot share the name of a declaration there
+            std::string global_safe(std::string name) const
+            {
+                if (opts_.ns.empty() && is_global_name(name)) name += '_';
                 return name;
             }
 
@@ -5007,7 +5038,7 @@ namespace cpp_yyjson_codegen
                     const auto* title = root_.find("title");
                     root_name = !opts_.root_name.empty() ? opts_.root_name
                                 : title != nullptr && title->is_string() && !pascal(title->text).empty()
-                                    ? sanitize(pascal(title->text))
+                                    ? global_safe(sanitize(pascal(title->text)))
                                     : std::string("Root");
                 }
                 if (root_typed)

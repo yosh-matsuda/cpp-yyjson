@@ -484,6 +484,27 @@ TEST(Codegen, Enums)
               "#/properties/s: `enum` has the empty string; the value is std::string with yyjson::enum_\n");
 }
 
+TEST(Codegen, ReservedNames)
+{
+    // a name of a macro of the standard libraries, such as `linux` of GNU mode, takes a suffix like a keyword
+    const auto schema = R"({
+        "type": "object",
+        "properties": {"os": {"enum": ["linux", "unix", "EINVAL"]}, "NAN": {"type": "number"},
+                       "file": {"$ref": "#/$defs/FILE"}},
+        "$defs": {"FILE": {"type": "object", "properties": {"time_t": {"type": "integer"}}}}
+    })";
+    const auto r = generate(schema, {});
+    EXPECT_EQ(warnings(r), "");
+    EXPECT_TRUE(has(r.code, "enum class RootOs\n{\n    linux_,\n    unix_,\n    EINVAL_,\n};"));
+    EXPECT_TRUE(has(r.code, "yyjson::enumerator(\"linux_\", yyjson::rename(\"linux\"))"));
+    EXPECT_TRUE(has(r.code, "    std::optional<double> NAN_;\n"));
+    EXPECT_TRUE(has(r.code, "yyjson::field(\"NAN_\", yyjson::rename(\"NAN\"))"));
+    // a type of the global namespace cannot take the name of a declaration there, and a member can
+    EXPECT_TRUE(has(r.code, "struct FILE_\n{\n    std::optional<std::int64_t> time_t;\n};"));
+    EXPECT_TRUE(has(r.code, "yyjson::schema_name(\"FILE\")"));
+    EXPECT_TRUE(has(generate(schema, {.ns = "app"}).code, "struct FILE\n{"));
+}
+
 TEST(Codegen, NameCollisions)
 {
     // a member takes neither the name of a type nor a name with "__", which C++ reserves
