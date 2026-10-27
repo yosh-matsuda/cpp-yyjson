@@ -83,7 +83,9 @@ TEST(Reader, OptionalFieldNull)
     }
     catch (const bad_cast& e)
     {
-        EXPECT_STREQ(e.what(), "std::optional<int> is not constructible from JSON null");
+        // MSVC spells the type `class std::optional<int>`
+        const auto type = std::string(yyjson::detail::type_name<std::optional<int>>());
+        EXPECT_EQ(e.what(), type + " is not constructible from JSON null");
     }
     EXPECT_FALSE(expect_direct_read<NullFields>(R"({"number":null})") && reads_directly);
     EXPECT_FALSE(expect_read_into(NullFields{}, R"({"number":null})") && reads_directly);
