@@ -1952,6 +1952,15 @@ namespace compile_rules
     static_assert(contained<any_of<std::string, alt<std::string, yyjson::pattern("^a")>>> == 1);
     static_assert(contained<any_of<alt<int, yyjson::satisfies<alternative_even>>, int>> == 2);
     static_assert(contained<any_of<alt<int, yyjson::multiple_of(2)>, alt<int, const_(4)>>> == 2);
+    // a float reads the doubles that round to the floats within its settings, which are rounded to floats; a
+    // long double reads the doubles within its settings, but is described in part, as are several float values
+    static_assert(contained<any_of<alt<double, minimum(0)>, alt<float, minimum(1)>>> == 1);
+    static_assert(contained<any_of<alt<float, minimum(0)>, alt<float, minimum(1)>>> == 1);
+    static_assert(contained<any_of<alt<double, minimum(0.1)>, alt<float, minimum(0.1)>>> == 2);
+    static_assert(contained<any_of<alt<float, const_(2)>, alt<float, enum_(2)>>> == 1);
+    static_assert(contained<any_of<alt<float, enum_(1, 2)>, alt<float, const_(2)>>> == 2);
+    static_assert(contained<any_of<alt<double, minimum(0)>, alt<long double, minimum(1)>>> == 1);
+    static_assert(contained<any_of<alt<long double, minimum(0)>, alt<long double, minimum(1)>>> == 2);
     // an alternative whose settings leave no value of its type, also the first one, and also if null is read, as
     // of a field
     static_assert(relations<any_of<alt<int, minimum(0), maximum(-1)>, std::string>>::empty == 0);
@@ -1971,6 +1980,11 @@ namespace compile_rules
     static_assert(reads_nothing<any_of<alt<std::string, const_("x"), enum_("a")>>>);
     static_assert(!reads_nothing<any_of<alt<std::string, const_("abc"), yyjson::max_length(1)>>>);
     static_assert(!reads_nothing<any_of<alt<int, const_("a")>>>);
+    static_assert(reads_nothing<any_of<alt<float, minimum(1), maximum(0)>>>);
+    static_assert(reads_nothing<any_of<alt<float, const_(1), enum_(2, 3)>>>);
+    static_assert(reads_nothing<any_of<alt<float, exclusive_minimum(0), exclusive_maximum(1e-45)>>>);
+    static_assert(!reads_nothing<any_of<alt<float, minimum(0.100000001), maximum(0.1)>>>);
+    static_assert(reads_nothing<any_of<alt<long double, const_(5), maximum(0)>>>);
     // nested alternatives: any_of and std::variant read the union, one_of a part of it
     static_assert(contained<any_of<std::variant<int, std::string>, std::string>> == 1);
     static_assert(contained<any_of<one_of<int, std::string>, std::string>> == 2);

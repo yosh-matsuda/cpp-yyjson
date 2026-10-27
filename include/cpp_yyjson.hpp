@@ -16197,6 +16197,82 @@ namespace yyjson
             return b;
         }
 
+        // The doubles that round to a finite float are below 2^128 - 2^103 in magnitude; that half-way point rounds
+        // to infinity, whose significand is even.
+        inline constexpr double float_rounding_limit = 340282356779733661637539395458142568448.0;
+        // The float that the bound rounds to, as `compare_bound` and `equals_scalar` round it, with infinity beyond
+        // the finite floats.
+        consteval float float_of(const bound_number& b) noexcept
+        {
+            using kind = bound_number::kind_t;
+            if (b.kind == kind::sint) return static_cast<float>(b.sint);
+            if (b.kind == kind::uint) return static_cast<float>(b.uint);
+            if (b.real >= float_rounding_limit) return std::numeric_limits<float>::infinity();
+            if (b.real <= -float_rounding_limit) return -std::numeric_limits<float>::infinity();
+            return static_cast<float>(b.real);
+        }
+        // The next float above x, and infinity above infinity.
+        consteval float float_above(float x) noexcept
+        {
+            if (x == std::numeric_limits<float>::infinity()) return x;
+            if (x == 0.0F) return std::numeric_limits<float>::denorm_min();
+            const auto bits = std::bit_cast<std::uint32_t>(x);
+            return std::bit_cast<float>(x > 0.0F ? bits + 1 : bits - 1);
+        }
+        consteval float float_below(float x) noexcept { return -float_above(-x); }
+        // The doubles that round to the finite floats from `low` to `high`. A double half-way between two floats
+        // rounds to the one whose significand is even.
+        consteval number_bound doubles_of_floats(float low, float high, bound_extent extent) noexcept
+        {
+            const auto even = [](float x) { return (std::bit_cast<std::uint32_t>(x) & 1U) == 0; };
+            auto n = all_numbers(false, extent);
+            constexpr float max = std::numeric_limits<float>::max();
+            n.low = real_number(low == -max ? -float_rounding_limit
+                                            : (static_cast<double>(float_below(low)) + static_cast<double>(low)) / 2);
+            n.low_open = low == -max || !even(low);
+            n.high = real_number(high == max ? float_rounding_limit
+                                             : (static_cast<double>(high) + static_cast<double>(float_above(high))) / 2);
+            n.high_open = high == max || !even(high);
+            return n;
+        }
+        // The numbers that a float reads, with the settings of the level that `number_settings` has: the JSON
+        // number is read as a double and rounded to a float, which is compared with the settings rounded to floats.
+        template <typename Level>
+        consteval number_bound float_bound()
+        {
+            constexpr const field_constraints& c = Level::constraints;
+            float low = -std::numeric_limits<float>::max();
+            float high = std::numeric_limits<float>::max();
+            if constexpr (c.has<minimum>()) low = std::max(low, float_of(c.minimum));
+            if constexpr (c.has<exclusive_minimum>()) low = std::max(low, float_above(float_of(c.exclusive_minimum)));
+            if constexpr (c.has<maximum>()) high = std::min(high, float_of(c.maximum));
+            if constexpr (c.has<exclusive_maximum>()) high = std::min(high, float_below(float_of(c.exclusive_maximum)));
+            if (high < low) return {};
+            if constexpr (c.has<const_<>>() || c.has<enum_<0>>())
+            {
+                // the floats listed within the bounds; one is an interval of doubles, and more are described in part
+                std::size_t count = 0;
+                float first = 0;
+                float last = 0;
+                for_each_listed<Level>(
+                    [](const json_scalar& x, const json_scalar& y) {
+                        return x.kind == json_scalar::kind_t::number && y.kind == x.kind &&
+                               float_of(x.number) == float_of(y.number);
+                    },
+                    [&](const json_scalar& s) {
+                        if (s.kind != json_scalar::kind_t::number) return;
+                        const float f = float_of(s.number);
+                        if (f < low || high < f) return;
+                        if (count == 0 || f < first) first = f;
+                        if (count == 0 || last < f) last = f;
+                        ++count;
+                    });
+                if (count == 0) return {};
+                return doubles_of_floats(first, last, count == 1 ? bound_extent::exact : bound_extent::partial);
+            }
+            return doubles_of_floats(low, high, bound_extent::exact);
+        }
+
         // The numbers that a value of the arithmetic type T, other than `bool`, reads, with the settings of the
         // level that `number_settings` has.
         template <typename T, typename Level>
@@ -16204,6 +16280,16 @@ namespace yyjson
         {
             constexpr const field_constraints& c = Level::constraints;
             constexpr bool integral = std::integral<T>;
+            // a `long double` wider than a double reads the doubles, and compares them with the settings exactly;
+            // the doubles that the settings leave tell whether any is left, and contain those that it reads
+            constexpr bool wide = std::floating_point<T> && !std::same_as<T, double> && sizeof(T) >= sizeof(double);
+            if constexpr (std::same_as<T, float> && std::numeric_limits<float>::is_iec559)
+                return float_bound<Level>();
+            else if constexpr (std::floating_point<T> && !std::same_as<T, double> && !wide)
+            {
+                // other floating-point types round the settings, which are not described
+                return all_numbers(false, bound_extent::partial);
+            }
             auto n = all_numbers(integral, bound_extent::exact);
             if constexpr (integral)
             {
@@ -16211,19 +16297,8 @@ namespace yyjson
                 n.low = std::is_signed_v<T> ? sint_number(limits::min()) : uint_number(limits::min());
                 n.high = std::is_signed_v<T> ? sint_number(limits::max()) : uint_number(limits::max());
             }
-            else if constexpr (!std::same_as<T, double>)
-            {
-                // a float reads the doubles that round to a finite float, below 2^128 - 2^103 in magnitude;
-                // the bounds of other floating-point types are not described
-                if constexpr (std::same_as<T, float> && std::numeric_limits<float>::is_iec559)
-                {
-                    n.low = real_number(-340282356779733661637539395458142568448.0);
-                    n.high = real_number(340282356779733661637539395458142568448.0);
-                }
-                if (c.set != 0 || !std::same_as<T, float> || !std::numeric_limits<float>::is_iec559)
-                    n.extent = bound_extent::partial;
-                return n;
-            }
+            else if constexpr (wide)
+                n.extent = bound_extent::partial;
             bool empty = false;
             const auto bound = [&](const bound_number& b, bool up, bool open) {
                 bound_number& end = up ? n.low : n.high;
@@ -16286,6 +16361,7 @@ namespace yyjson
                             listed.points[listed.count++] = v;
                     });
                 if (listed.count == 0) return {};
+                if constexpr (wide) listed.extent = bound_extent::partial;
                 if (listed.extent == bound_extent::exact) return listed;
                 n.extent = bound_extent::partial;
             }

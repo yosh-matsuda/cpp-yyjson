@@ -541,7 +541,8 @@ struct Owner
     Pet pet;
 };
 
-// Floats, compared with the bounds rounded to a float and written in their shortest text.
+// Floats, compared with the bounds rounded to a float and written in their shortest text; a bound past the largest
+// float leaves the floats up to it.
 struct Floats
 {
     float tenth = 0;
@@ -549,12 +550,12 @@ struct Floats
     float below = 0;
     float large = 3.4028235e38F;
     float pick = 0.1F;
-    std::optional<float> none;
+    std::optional<float> huge;
 };
 template <> inline constexpr auto yyjson::annotations<Floats> = yyjson::annotate(
     yyjson::field("tenth", yyjson::maximum(0.1)), yyjson::field("positive", yyjson::exclusive_minimum(0)),
     yyjson::field("below", yyjson::exclusive_maximum(0.1), yyjson::minimum(-1)),
-    yyjson::field("pick", yyjson::enum_(0.1, 0.2)), yyjson::field("none", yyjson::minimum(1e300)));
+    yyjson::field("pick", yyjson::enum_(0.1, 0.2)), yyjson::field("huge", yyjson::maximum(1e300)));
 
 // A recursive variant tagged by `internal_tag`, whose alternatives are written in place: it needs a name, which puts
 // it in `$defs`.
@@ -1427,7 +1428,8 @@ TEST(Schema, Floats)
         R"({"large":-3.4028235e38})",
         R"({"large":3.4028236e38})",
         R"({"pick":0.3})",
-        R"({"none":0})",
+        R"({"huge":0})",
+        R"({"huge":3.4028236e38})",
     });
 }
 
