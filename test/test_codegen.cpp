@@ -484,6 +484,24 @@ TEST(Codegen, Enums)
               "#/properties/s: `enum` has the empty string; the value is std::string with yyjson::enum_\n");
 }
 
+TEST(Codegen, NameCollisions)
+{
+    // a member takes neither the name of a type nor a name with "__", which C++ reserves
+    const auto r = generate(R"({
+        "type": "object",
+        "properties": {"Item": {"$ref": "#/$defs/Item"}, "Item_": {"type": "integer"},
+                       "e": {"enum": ["class", "class_", "a-b", "a_b"]}},
+        "$defs": {"Item": {"type": "object", "properties": {"x": {"type": "integer"}}}}
+    })",
+                            {});
+    EXPECT_EQ(warnings(r), "");
+    EXPECT_TRUE(has(r.code, "    std::optional<Item> Item_;\n    std::optional<std::int64_t> Item_2;\n"));
+    EXPECT_TRUE(has(r.code, "yyjson::field(\"Item_\", yyjson::rename(\"Item\"))"));
+    EXPECT_TRUE(has(r.code, "yyjson::field(\"Item_2\", yyjson::rename(\"Item_\"))"));
+    EXPECT_TRUE(has(r.code, "enum class RootE\n{\n    class_,\n    class_2,\n    a_b,\n    a_b_2,\n};"));
+    EXPECT_FALSE(has(r.code, "__"));
+}
+
 TEST(Codegen, ManyFields)
 {
     const auto schema = [](int n) {

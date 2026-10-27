@@ -487,6 +487,12 @@ namespace cpp_yyjson_codegen
             return words.contains(s);
         }
 
+        // `base` with a number, without the `__` that C++ reserves: `a_2`, `a_` -> `a_2`
+        inline std::string numbered(std::string_view base, int n)
+        {
+            return std::string(base) + (base.ends_with('_') ? "" : "_") + std::to_string(n);
+        }
+
         inline bool is_alpha(char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); }
         inline bool is_digit(char c) { return c >= '0' && c <= '9'; }
         inline bool is_alnum(char c) { return is_alpha(c) || is_digit(c); }
@@ -3036,7 +3042,7 @@ namespace cpp_yyjson_codegen
                     if (std::ranges::any_of(d.enumerators, [&](const auto& e) { return e.second == v; })) continue;
                     const auto base = sanitize(v);
                     auto m = base;
-                    for (auto n = 2; members.contains(m); ++n) m = base + "_" + std::to_string(n);
+                    for (auto n = 2; members.contains(m); ++n) m = numbered(base, n);
                     members.insert(m);
                     d.enumerators.emplace_back(m, v);
                 }
@@ -4012,9 +4018,10 @@ namespace cpp_yyjson_codegen
                     for (auto& f : d.fields)
                     {
                         const auto base = f.extra ? std::string("extra") : sanitize(f.key);
+                        // a member cannot take the name of a type, which it would hide in the struct
                         auto m = base;
-                        if (type_names_.contains(m)) m += "_";
-                        for (auto n = 2; used.contains(m); ++n) m = base + "_" + std::to_string(n);
+                        if (type_names_.contains(m) && !base.ends_with('_')) m += "_";
+                        for (auto n = 2; type_names_.contains(m) || used.contains(m); ++n) m = numbered(base, n);
                         used.insert(m);
                         f.member = m;
                     }

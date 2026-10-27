@@ -272,7 +272,7 @@ A schema that refers to itself without an object between cannot be a C++ type, s
 | an alternative of a tagged variant | the value of its tag in PascalCase, such as `Circle` |
 | a property | the key, with characters outside an identifier replaced by `_` and a C++ keyword followed by `_`, with `yyjson::rename` to the key |
 
-A name that is taken gets a number: `Street2` for a type, `extra_2` for a member. The names never contain `__`, which C++ reserves. A root that is only a `$ref` is an alias of its target: `using Root = Target;`.
+A name that is taken gets a number: `Street2` for a type, `extra_2` for a member. A member does not take the name of a type, which it would hide inside the struct: the property `Item` beside the type `Item` is the member `Item_`. The names never contain `__`, which C++ reserves. A root that is only a `$ref` is an alias of its target: `using Root = Target;`.
 
 A root whose type is not a struct is an alias, such as `using Root = std::vector<std::int64_t>;`, unless it has constraints, which an alias cannot carry: then it is a struct with [`yyjson::transparent`](reference.md#yyjsontransparent) whose only member `value` holds the constraints. A file of only definitions has no root type.
 
