@@ -1,13 +1,25 @@
 // Types generated at build time by cpp_yyjson_generate() from codegen/order.schema.json, which
-// references codegen/customer.schema.json, from codegen/defaults.schema.json and from
-// codegen/alternatives.schema.json.
+// references codegen/customer.schema.json, from codegen/defaults.schema.json, from
+// codegen/alternatives.schema.json and from codegen/patterns.schema.json.
 #include <gtest/gtest.h>
 
+#include <cpp_yyjson.hpp>
+#include <regex>
 #include <string>
+#include <string_view>
+
+template <>
+struct yyjson::pattern_matcher<>
+{
+    std::regex regex;
+    explicit pattern_matcher(std::string_view p) : regex(p.begin(), p.end()) {}
+    bool operator()(std::string_view s) const { return std::regex_search(s.begin(), s.end(), regex); }
+};
 
 #include "alternatives.hpp"
 #include "defaults.hpp"
 #include "order.hpp"
+#include "patterns.hpp"
 
 TEST(CodegenCMake, ReadWrite)
 {
@@ -128,4 +140,18 @@ TEST(CodegenCMake, Alternatives)
     EXPECT_EQ(yyjson::read<model::Choices>(R"({"size":1,"list":[1]})").list->index(), 0U);
     EXPECT_EQ(yyjson::read<model::Choices>(R"({"size":1,"list":["a","b"]})").list->index(), 1U);
     EXPECT_THROW((void)yyjson::read<model::Choices>(R"({"size":1,"list":[1,2]})"), yyjson::bad_cast);
+}
+
+TEST(CodegenCMake, PatternProperties)
+{
+    // the keys that `patternProperties` names go to the field of yyjson::extra_keys, which checks their names
+    const auto json = R"({"name":"a","headers":{"Accept":"*"},"x-rate":1})";
+    const auto e = yyjson::read<model::Extensions>(json, yyjson::strict);
+    EXPECT_EQ(e.extra.at("x-rate"), 1);
+    ASSERT_TRUE(e.headers.has_value());
+    EXPECT_EQ(e.headers->at("Accept"), "*");
+    EXPECT_EQ(yyjson::write(e), json);
+    EXPECT_THROW((void)yyjson::read<model::Extensions>(R"({"rate":1})"), yyjson::bad_cast);
+    EXPECT_THROW((void)yyjson::read<model::Extensions>(R"({"x-rate":-1})"), yyjson::bad_cast);
+    EXPECT_THROW((void)yyjson::read<model::Extensions>(R"({"headers":{"accept":"*"}})"), yyjson::bad_cast);
 }

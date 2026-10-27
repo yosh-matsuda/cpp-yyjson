@@ -14,6 +14,7 @@
 #include <map>
 #include <optional>
 #include <ranges>
+#include <regex>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -1600,6 +1601,169 @@ namespace cpp_yyjson_codegen
                 return r;
             }
 
+            // The map that `patternProperties` and `additionalProperties` give together where one schema holds for
+            // the values of every key: `values` is that schema, or nullptr for any value, and `pattern` the pattern
+            // that every key matches, or none for any key.  nullopt where a key needs the schema that its name
+            // selects, which C++ does not express.
+            struct pattern_map
+            {
+                const json* values = nullptr;
+                std::string values_loc;
+                std::optional<std::string> pattern;
+            };
+
+            static bool accepts_anything(const json& j)
+            {
+                static const auto meta = std::set<std::string_view>{
+                    "title", "description", "$comment", "examples", "default", "deprecated", "readOnly", "writeOnly"};
+                return (j.is_bool() && j.b) ||
+                       (j.is_object() && std::ranges::all_of(j.members, [](const auto& m) { return meta.contains(m.first); }));
+            }
+
+            // the keys of `patternProperties` that match every key: a pattern that matches an empty part of every
+            // string; "^.*$" is not one, since `.` does not match a line break
+            static bool matches_every_key(std::string_view p)
+            {
+                return p.empty() || p == ".*" || p == "^.*" || p == ".*$" || p == "^" || p == "$";
+            }
+
+            // `s` has `patternProperties` with at least one pattern
+            std::optional<pattern_map> pattern_map_of(const json& s, const std::string& loc)
+            {
+                const auto& pp = *s.find("patternProperties");
+                const auto* ap = s.find("additionalProperties");
+                const auto ap_any = ap == nullptr || accepts_anything(*ap);
+                const auto ap_false = ap != nullptr && ap->is_bool() && !ap->b;
+                const auto& [first_key, first] = pp.members.front();
+                if (std::ranges::any_of(pp.members, [](const auto& m) { return m.second.is_bool() && !m.second.b; }))
+                    return std::nullopt;
+                const auto all_any =
+                    std::ranges::all_of(pp.members, [](const auto& m) { return accepts_anything(m.second); });
+                if (!all_any &&
+                    !std::ranges::all_of(pp.members, [&](const auto& m) { return equal(m.second, first); }))
+                    return std::nullopt;
+                auto r = pattern_map{.values = all_any ? nullptr : &first,
+                                     .values_loc = loc + "/patternProperties/" + pointer_token(first_key),
+                                     .pattern = std::nullopt};
+                if (std::ranges::any_of(pp.members, [](const auto& m) { return matches_every_key(m.first); }))
+                    return r;
+                if (ap_false)
+                {
+                    auto pattern = std::string();
+                    for (const auto& [k, v] : pp.members)
+                        pattern += pp.members.size() == 1 ? k : (pattern.empty() ? "" : "|") + ("(?:" + k + ")");
+                    r.pattern = std::move(pattern);
+                    if (all_any) r.values = &first;
+                    return r;
+                }
+                if (all_any && ap_any) return r;
+                if (!all_any && ap != nullptr && equal(*ap, first))
+                    return r;
+                return std::nullopt;
+            }
+
+            // adds the pattern of the keys that `patternProperties` names to the settings of the keys
+            void add_key_pattern(settings& out, const std::string& pattern, const std::string& loc)
+            {
+                if (!opts_.pattern)
+                {
+                    warn(loc, "the pattern of the keys of `patternProperties` is dropped (--no-pattern)");
+                    return;
+                }
+                if (out.property_names.empty()) out.property_names.emplace_back();
+                auto& names = out.property_names.front();
+                if (std::ranges::any_of(names.constraints, [](const auto& c) { return c.keyword == "pattern"; }))
+                {
+                    warn(loc, "`propertyNames` has a pattern; the keys are not checked against the patterns of "
+                              "`patternProperties`");
+                    return;
+                }
+                names.constraints.push_back(
+                    {"yyjson::pattern(" + cpp_string(pattern) + ")", "pattern", json::string_of(pattern)});
+                uses_pattern_ = true;
+            }
+
+            // warns of the properties whose keys match a pattern of `patternProperties`, whose schema JSON Schema
+            // checks their values against too
+            void warn_matched_properties(const json& s, const std::vector<field>& fields, const std::string& loc)
+            {
+                for (const auto& [p, sub] : s.find("patternProperties")->members)
+                {
+                    if (accepts_anything(sub)) continue;
+                    const auto* props = s.find("properties");
+                    const auto same = [&](const field& f) {
+                        const auto* own = props != nullptr ? props->find(f.key) : nullptr;
+                        return own != nullptr && equal(*own, sub);
+                    };
+                    try
+                    {
+                        const auto re = std::regex(p, std::regex::ECMAScript);
+                        for (const auto& f : fields)
+                            if (!f.extra && !same(f) && std::regex_search(f.key, re))
+                                warn(f.loc, "the key \"" + f.key + "\" matches the pattern \"" + p +
+                                                "\" of `patternProperties`, whose schema is not checked for it");
+                    }
+                    catch (const std::regex_error&)
+                    {
+                        warn(loc + "/patternProperties/" + pointer_token(p),
+                             "the pattern is not checked against the keys of the properties: std::regex does not "
+                             "read it");
+                    }
+                }
+            }
+
+            // The schema of `propertyNames` `pn` for the keys that name no property of `fields`, and whether it
+            // holds for the keys of the properties too, as in `{"anyOf": [{"enum": [the keys of the properties]},
+            // schema]}`, which `yyjson::json_schema` gives
+            static std::pair<const json*, bool> names_of_other_keys(const json& pn, const std::vector<field>& fields)
+            {
+                const auto* any_of = pn.find("anyOf");
+                if (pn.members.size() != 1 || any_of == nullptr || !any_of->is_array() || any_of->items.size() != 2)
+                    return {&pn, fields.empty()};
+                for (const auto n : {0, 1})
+                {
+                    const auto* e = any_of->items[n].find("enum");
+                    if (e == nullptr || any_of->items[n].members.size() != 1 || !e->is_array()) continue;
+                    const auto is_key = [&](const json& v) {
+                        return v.is_string() &&
+                               std::ranges::any_of(fields, [&](const auto& f) { return !f.extra && f.key == v.text; });
+                    };
+                    if (!std::ranges::all_of(e->items, is_key)) continue;
+                    const auto listed = std::ranges::all_of(fields, [&](const auto& f) {
+                        return std::ranges::any_of(e->items, [&](const auto& v) { return v.text == f.key; });
+                    });
+                    return {&any_of->items[1 - n], listed};
+                }
+                return {&pn, fields.empty()};
+            }
+
+            // whether the key `k` satisfies the schema `names` of `propertyNames`, as far as the generator checks
+            // it: `minLength`, `maxLength` and `pattern`; false for another keyword
+            static bool key_satisfies(std::string_view k, const json& names)
+            {
+                if (names.is_bool()) return names.b;
+                const auto length = static_cast<std::uint64_t>(
+                    std::ranges::count_if(k, [](char c) { return (static_cast<unsigned char>(c) & 0xC0) != 0x80; }));
+                const auto matches = [&](const std::string& pattern) {
+                    try
+                    {
+                        return std::regex_search(k.begin(), k.end(), std::regex(pattern, std::regex::ECMAScript));
+                    }
+                    catch (const std::regex_error&)
+                    {
+                        return false;
+                    }
+                };
+                return std::ranges::all_of(names.members, [&](const auto& m) {
+                    const auto& [key, v] = m;
+                    const auto n = as_uint64(v);
+                    return key == "minLength"   ? n && length >= *n
+                           : key == "maxLength" ? n && length <= *n
+                           : key == "pattern"   ? v.is_string() && matches(v.text)
+                                                : key == "title" || key == "description" || key == "$comment";
+                });
+            }
+
             void fill_struct(int idx, const json& s, const std::string& loc)
             {
                 auto required = std::vector<std::string>();
@@ -1664,23 +1828,57 @@ namespace cpp_yyjson_codegen
                 const auto* ap = s.find("additionalProperties");
                 const auto ap_any =
                     ap == nullptr || (ap->is_bool() && ap->b) || (ap->is_object() && ap->members.empty());
-                if (s.has("patternProperties"))
+                auto key_pattern = std::optional<std::string>();
+                const auto* pp = s.find("patternProperties");
+                if (pp != nullptr && pp->is_object() && !pp->members.empty())
                 {
-                    warn(loc + "/patternProperties",
-                         std::string("`patternProperties` is not supported; the keys that name no property are kept in "
-                                     "the field of yyjson::extra_keys as any JSON value") +
-                             (ap_any ? "" : ", and `additionalProperties` is not checked"));
-                    extra = typed{make(tk::any), {}};
+                    if (auto m = pattern_map_of(s, loc))
+                    {
+                        warn_matched_properties(s, fields, loc);
+                        if (m->values != nullptr)
+                            extra = type_of(m->values, m->values_loc, decls_[idx].name + "Extra");
+                        else if (m->pattern)
+                            extra = typed{make(tk::any), {}};
+                        key_pattern = std::move(m->pattern);
+                    }
+                    else
+                    {
+                        warn(loc + "/patternProperties",
+                             std::string("`patternProperties` with a schema that the name of a key selects is not "
+                                         "supported; the keys that name no property are kept in the field of "
+                                         "yyjson::extra_keys as any JSON value") +
+                                 (ap_any ? "" : ", and `additionalProperties` is not checked"));
+                        extra = typed{make(tk::any), {}};
+                    }
                 }
                 else if (ap != nullptr && ap->is_bool())
                     additional = ap->b;
                 else if (!ap_any)
                     extra = type_of(ap, loc + "/additionalProperties", decls_[idx].name + "Extra");
                 if (!extra && additional && opts_.keep_unknown_keys) extra = typed{make(tk::any), {}};
-                for (const auto* k : {"minProperties", "maxProperties", "propertyNames"})
+                for (const auto* k : {"minProperties", "maxProperties"})
                     if (s.has(k))
                         warn(loc,
                              std::string("`") + k + "` of an object with properties is not supported and is ignored");
+                // `propertyNames` checks the keys that the field of yyjson::extra_keys receives
+                auto names = std::optional<settings>();
+                if (const auto* pn = s.find("propertyNames"); pn != nullptr && !extra)
+                    warn(loc + "/propertyNames", "`propertyNames` of an object without a field of yyjson::extra_keys is "
+                                                 "not supported and is ignored");
+                else if (pn != nullptr)
+                {
+                    const auto [other, listed] = names_of_other_keys(*pn, fields);
+                    const auto exact = listed || std::ranges::all_of(fields, [&](const auto& f) {
+                                           return f.extra || key_satisfies(f.key, *other);
+                                       });
+                    names = settings_for(*other, make(tk::string), loc + "/propertyNames");
+                    if (!names)
+                        warn(loc + "/propertyNames", "`propertyNames` is not expressed by string constraints and is "
+                                                     "ignored");
+                    else if (!exact)
+                        warn(loc + "/propertyNames",
+                             "`propertyNames` is checked only for the keys that name no property");
+                }
                 auto dependent = std::vector<std::pair<std::string, std::vector<std::string>>>();
                 if (const auto* dep = s.find("dependentRequired"); dep != nullptr && dep->is_object())
                 {
@@ -1735,6 +1933,8 @@ namespace cpp_yyjson_codegen
                     auto f = field{.type = make(tk::map, {std::move(extra->t)}), .loc = loc + "/additionalProperties"};
                     f.extra = true;
                     if (!extra->s.empty()) f.set.additional.push_back(std::move(extra->s));
+                    if (names && !names->empty()) f.set.property_names.push_back(std::move(*names));
+                    if (key_pattern) add_key_pattern(f.set, *key_pattern, loc + "/patternProperties");
                     fields.push_back(std::move(f));
                 }
                 auto& d = decls_[idx];
@@ -3674,8 +3874,24 @@ namespace cpp_yyjson_codegen
             typed type_map(const json& s, const std::string& loc, const std::string& hint)
             {
                 auto r = typed{make(tk::map, {make(tk::any)}), {}};
-                if (s.has("patternProperties"))
-                    warn(loc, "`patternProperties` is not supported; the values are read as any JSON value");
+                auto key_pattern = std::optional<std::string>();
+                const auto* pp = s.find("patternProperties");
+                if (pp != nullptr && pp->is_object() && !pp->members.empty())
+                {
+                    if (auto m = pattern_map_of(s, loc))
+                    {
+                        if (m->values != nullptr)
+                        {
+                            auto v = type_of(m->values, m->values_loc, hint + "Value");
+                            r.t.args[0] = std::move(v.t);
+                            if (!v.s.empty()) r.s.additional.push_back(std::move(v.s));
+                        }
+                        key_pattern = std::move(m->pattern);
+                    }
+                    else
+                        warn(loc, "`patternProperties` with a schema that the name of a key selects is not supported; "
+                                  "the values are read as any JSON value");
+                }
                 else if (const auto* ap = s.find("additionalProperties"))
                 {
                     if (ap->is_bool() && !ap->b)
@@ -3699,6 +3915,7 @@ namespace cpp_yyjson_codegen
                     else if (!e->empty())
                         r.s.property_names.push_back(std::move(*e));
                 }
+                if (key_pattern) add_key_pattern(r.s, *key_pattern, loc + "/patternProperties");
                 if (r.s.empty() && r.t.args[0].k == tk::any) return {make(tk::object), {}};
                 return r;
             }

@@ -786,21 +786,6 @@ TEST(Codegen, ExtraKeys)
                             "yyjson::additional_properties(yyjson::minimum(0))));"));
     EXPECT_TRUE(has(r.code, "// A field with `yyjson::extra_keys` holds the keys of the object"));
 
-    // `patternProperties`: the other keys as any JSON value, with a warning
-    const auto p = generate(R"({
-        "type": "object",
-        "properties": {"a": {"type": "string"}},
-        "patternProperties": {"^x-": {"type": "string"}},
-        "additionalProperties": false
-    })",
-                            {});
-    EXPECT_EQ(warnings(p),
-              "#/patternProperties: `patternProperties` is not supported; the keys that name no property are kept "
-              "in the field of yyjson::extra_keys as any JSON value, and `additionalProperties` is not checked\n");
-    EXPECT_TRUE(has(p.code, "    std::map<std::string, yyjson::value> extra;\n"));
-    EXPECT_TRUE(
-        has(p.code, "    yyjson::additional_properties(true),\n    yyjson::field(\"extra\", yyjson::extra_keys));"));
-
     // --keep-unknown-keys: every struct that accepts other keys keeps them
     const auto schema = R"({
         "type": "object",
@@ -818,6 +803,129 @@ TEST(Codegen, ExtraKeys)
     EXPECT_TRUE(has(k, "struct Closed\n{\n    std::optional<std::int64_t> b;\n};\n"));
     EXPECT_TRUE(has(k, "struct Root\n{\n    std::optional<Open> open;\n    std::optional<Closed> closed;\n"
                        "    std::map<std::string, yyjson::value> extra;\n"));
+}
+
+TEST(Codegen, PatternProperties)
+{
+    // one schema for every key that `patternProperties` names, and no other key: a map whose keys match the patterns
+    const auto r = generate(R"({
+        "type": "object",
+        "properties": {
+            "a": {"type": "string"},
+            "x-b": {"type": "integer"},
+            "headers": {
+                "type": "object",
+                "patternProperties": {"^[A-Z]": {"type": "string"}, "^x": {"type": "string"}},
+                "additionalProperties": false,
+                "propertyNames": {"maxLength": 8}
+            },
+            "same": {
+                "type": "object",
+                "patternProperties": {"^n": {"type": "boolean"}},
+                "additionalProperties": {"type": "boolean"}
+            },
+            "every": {"type": "object", "patternProperties": {".*": {"type": "number"}}},
+            "named": {"type": "object", "patternProperties": {"^n": {}}, "additionalProperties": false},
+            "loose": {"type": "object", "patternProperties": {"^n": {"type": "boolean"}}}
+        },
+        "patternProperties": {"^x-": {"type": "integer"}},
+        "additionalProperties": false
+    })",
+                            {});
+    EXPECT_EQ(warnings(r), "#/properties/loose: `patternProperties` with a schema that the name of a key selects is "
+                           "not supported; the values are read as any JSON value\n");
+    EXPECT_TRUE(has(r.code, "    std::optional<std::map<std::string, std::string>> headers;\n"
+                            "    std::optional<std::map<std::string, bool>> same;\n"
+                            "    std::optional<std::map<std::string, double>> every;\n"
+                            "    std::optional<std::map<std::string, yyjson::value>> named;\n"
+                            "    std::optional<yyjson::object> loose;\n"
+                            "    std::map<std::string, std::int64_t> extra;\n"));
+    EXPECT_TRUE(has(r.code, "    yyjson::field(\"headers\", yyjson::property_names(yyjson::max_length(8), "
+                            "yyjson::pattern(\"(?:^[A-Z])|(?:^x)\"))),\n"
+                            "    yyjson::field(\"named\", yyjson::property_names(yyjson::pattern(\"^n\"))),\n"
+                            "    yyjson::field(\"extra\", yyjson::extra_keys, "
+                            "yyjson::property_names(yyjson::pattern(\"^x-\"))));"));
+    EXPECT_TRUE(has(r.code, "    yyjson::additional_properties(true),\n"));
+
+    // a property that a pattern names with another schema, a pattern beside the one of `propertyNames`, --no-pattern
+    const auto w = generate(R"({
+        "type": "object",
+        "properties": {"x-a": {"type": "string"}, "m": {
+            "type": "object",
+            "patternProperties": {"^a": {"type": "integer"}},
+            "additionalProperties": false,
+            "propertyNames": {"pattern": "^[a-z]"}
+        }},
+        "patternProperties": {"^x-": {"type": "integer"}},
+        "additionalProperties": false
+    })",
+                            {});
+    EXPECT_EQ(warnings(w), "#/properties/m/patternProperties: `propertyNames` has a pattern; the keys are not checked "
+                           "against the patterns of `patternProperties`\n"
+                           "#/properties/x-a: the key \"x-a\" matches the pattern \"^x-\" of `patternProperties`, whose "
+                           "schema is not checked for it\n");
+    EXPECT_TRUE(has(w.code, "    yyjson::field(\"m\", yyjson::property_names(yyjson::pattern(\"^[a-z]\"))),\n"));
+    const auto n = generate(R"({"type": "object", "patternProperties": {"^x-": {"type": "integer"}},
+                                "additionalProperties": false})",
+                            {.pattern = false});
+    EXPECT_EQ(warnings(n), "#/patternProperties: the pattern of the keys of `patternProperties` is dropped "
+                           "(--no-pattern)\n");
+    EXPECT_TRUE(has(n.code, "using Root = std::map<std::string, std::int64_t>;"));
+
+    // `propertyNames` of a struct checks the keys that the field of yyjson::extra_keys receives; the form that
+    // yyjson::json_schema gives lets the keys of the properties pass
+    const auto names = generate(R"({
+        "type": "object",
+        "properties": {"long_name": {"type": "integer"}},
+        "additionalProperties": {"type": "integer"},
+        "propertyNames": {"anyOf": [{"enum": ["long_name"]}, {"pattern": "^x-"}]}
+    })",
+                                {});
+    EXPECT_EQ(warnings(names), "");
+    EXPECT_TRUE(has(names.code, "    yyjson::field(\"extra\", yyjson::extra_keys, "
+                                "yyjson::property_names(yyjson::pattern(\"^x-\"))));"));
+    const auto checked = generate(R"({
+        "type": "object",
+        "properties": {"long_name": {"type": "integer"}},
+        "additionalProperties": {"type": "integer"},
+        "propertyNames": {"maxLength": 4}
+    })",
+                                  {});
+    EXPECT_EQ(warnings(checked), "#/propertyNames: `propertyNames` is checked only for the keys that name no property\n");
+    EXPECT_TRUE(has(checked.code, "yyjson::property_names(yyjson::max_length(4))"));
+    const auto closed = generate(R"({
+        "type": "object",
+        "properties": {"a": {"type": "integer"}},
+        "additionalProperties": false,
+        "propertyNames": {"maxLength": 4}
+    })",
+                                 {});
+    EXPECT_EQ(warnings(closed), "#/propertyNames: `propertyNames` of an object without a field of yyjson::extra_keys "
+                                "is not supported and is ignored\n");
+
+    // a schema that the name of a key selects: the other keys as any JSON value, with a warning
+    const auto p = generate(R"({
+        "type": "object",
+        "properties": {"a": {"type": "string"}},
+        "patternProperties": {"^x-": {"type": "string"}},
+        "additionalProperties": false
+    })",
+                            {});
+    const auto q = generate(R"({
+        "type": "object",
+        "properties": {"a": {"type": "string"}},
+        "patternProperties": {"^x-": {"type": "string"}, "^y-": {"type": "integer"}},
+        "additionalProperties": false
+    })",
+                            {});
+    EXPECT_EQ(warnings(q),
+              "#/patternProperties: `patternProperties` with a schema that the name of a key selects is not supported; "
+              "the keys that name no property are kept in the field of yyjson::extra_keys as any JSON value, and "
+              "`additionalProperties` is not checked\n");
+    EXPECT_TRUE(has(q.code, "    std::map<std::string, yyjson::value> extra;\n"));
+    EXPECT_TRUE(
+        has(q.code, "    yyjson::additional_properties(true),\n    yyjson::field(\"extra\", yyjson::extra_keys));"));
+    EXPECT_EQ(warnings(p), "");
 }
 
 TEST(Codegen, Draft07)
