@@ -15321,14 +15321,14 @@ namespace yyjson
 
         template <typename... Ts>
         requires copy_string_args<Ts...> && visitable<T> && (!writer::detail::to_json_usr_translator<T>) &&
-                 writer::detail::to_json_with_visitable<T>
+                 (!detail::transparent_struct<T>) && writer::detail::to_json_with_visitable<T>
         static void to_json(writer::object_ref& obj, const T& t, Ts... ts)
         {
             visit_struct<T>::to_json_impl(obj, t, ts...);
         }
         template <typename... Ts>
         requires copy_string_args<Ts...> && visitable<T> && (!writer::detail::to_json_usr_translator<T>) &&
-                 writer::detail::to_json_with_visitable<T>
+                 (!detail::transparent_struct<T>) && writer::detail::to_json_with_visitable<T>
         static void to_json(writer::object_ref& obj, T&& t, Ts... ts)
         {
             visit_struct<T>::to_json_impl(obj, std::move(t), ts...);
@@ -15336,7 +15336,7 @@ namespace yyjson
 
         template <typename... Ts>
         requires copy_string_args<Ts...> && (!visitable<T>) && (!writer::detail::to_json_usr_translator<T>) &&
-                 writer::detail::to_json_with_reflection<T>
+                 (!detail::transparent_struct<T>) && writer::detail::to_json_with_reflection<T>
         static void to_json(writer::object_ref& obj, const T& t, Ts... ts)
         {
             if constexpr (detail::has_adjacent_fields<T>) detail::check_adjacent_tags(t);
@@ -15352,7 +15352,7 @@ namespace yyjson
         }
         template <typename... Ts>
         requires copy_string_args<Ts...> && (!visitable<T>) && (!writer::detail::to_json_usr_translator<T>) &&
-                 writer::detail::to_json_with_reflection<T>
+                 (!detail::transparent_struct<T>) && writer::detail::to_json_with_reflection<T>
         static void to_json(writer::object_ref& obj, T&& t, Ts... ts)
         {
             // The fields are moved one by one out of `t` itself.  `for_each_field` would move them into a
@@ -15562,6 +15562,22 @@ namespace yyjson
                 v = std::pair<field_type&&, copy_string_t>(detail::transparent_field(std::move(t)), copy_string);
             else
                 v = detail::transparent_field(std::move(t));
+        }
+        // `yyjson::object(t)` and the like, when the field is written as an object.
+        template <typename U, typename... Ts>
+        requires std::same_as<std::remove_cvref_t<U>, T> && detail::copy_string_args<Ts...> &&
+                 requires(writer::object_ref& v, U&& t) {
+                     v = detail::transparent_field(std::forward<U>(t));
+                     v = std::pair<decltype(detail::transparent_field(std::forward<U>(t))), copy_string_t>(
+                         detail::transparent_field(std::forward<U>(t)), copy_string);
+                 }
+        static void to_json(writer::object_ref& v, U&& t, Ts...)
+        {
+            if constexpr (sizeof...(Ts) != 0)
+                v = std::pair<decltype(detail::transparent_field(std::forward<U>(t))), copy_string_t>(
+                    detail::transparent_field(std::forward<U>(t)), copy_string);
+            else
+                v = detail::transparent_field(std::forward<U>(t));
         }
     };
 

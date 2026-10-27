@@ -1830,7 +1830,7 @@ A struct of one field that is read and written as the value of that field, with 
 inline constexpr transparent_t transparent{};
 ```
 
-It is a setting of the struct, given to [`yyjson::annotate`](#yyjsonannotationst-yyjsonannotate). The struct has exactly one field that is not skipped, and is that field's value everywhere: as a field, an element, a value of a map, an alternative of a `std::variant` and the root; not yet as the key of a map.
+It is a setting of the struct, given to [`yyjson::annotate`](#yyjsonannotationst-yyjsonannotate). The struct has exactly one field that is not skipped, and is that field's value everywhere: as a field, an element, a value of a map, an alternative of a `std::variant` and the root; not yet as the key of a map. `yyjson::object(t)` takes it when its field is written as an object.
 
 *   The field takes the [constraints](#constraints) and the constraints of elements, which then hold for every use of the struct. A message names the struct, and the path has no segment for the field.
 *   A field of `std::optional<U>` (`U` not a pointer): as a field of another struct, the struct follows the rules of a `std::optional` field (an empty value leaves the key out, [`yyjson::strict`](#yyjsonstrict) does not require the key, `null` keeps the value in `T()`, which `strict` rejects). Elsewhere, `null` empties it and an empty value is written as `null`.

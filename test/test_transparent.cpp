@@ -242,6 +242,11 @@ TEST(Transparent, Values)
     expect_written(Limit{3}, "3");
     expect_read<Cached>(R"("n")", {5, "n"});
     expect_written(Cached{9, "n"}, R"("n")");
+    // `yyjson::object` takes a struct whose field is written as an object
+    EXPECT_EQ(yyjson::object(Wrapped{{2, "q"}}).write(), R"({"a":2,"b":"q"})");
+    EXPECT_EQ(yyjson::object(Wrapped{{2, "q"}}, yyjson::copy_string).write(), R"({"a":2,"b":"q"})");
+    static_assert(!std::is_constructible_v<yyjson::object, UserId>);
+    static_assert(!std::is_constructible_v<yyjson::object, Tags>);
 
     // the field's constraints are the struct's, at the path of the struct, and its type is named in the message
     expect_rejected<UserId>("0", "the value of UserId is less than the minimum 1", "");
