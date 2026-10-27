@@ -129,6 +129,7 @@ namespace yyjson
         {
             return s.data() != nullptr ? s.data() : "";
         }
+        [[nodiscard]] constexpr const char* c_chars(const std::string& s) noexcept { return s.data(); }
 
         // Formats the message out of line, which keeps the casts that may throw small enough to be inlined.
         template <typename... Args>
@@ -9329,6 +9330,14 @@ namespace yyjson
                 {
                     return yyjson_mut_strn(ptrs->self, yyjson::detail::c_chars(v), v.size());
                 }
+                auto create_string(const std::string& v, copy_string_t) noexcept
+                {
+                    return yyjson_mut_strncpy(ptrs->self, v.data(), v.size());
+                }
+                auto create_string(const std::string& v) noexcept
+                {
+                    return yyjson_mut_strn(ptrs->self, v.data(), v.size());
+                }
                 yyjson_mut_val* create_primitive(const std::string& v, copy_string_t) noexcept
                 {
                     return create_string(v, copy_string);
@@ -9687,12 +9696,12 @@ namespace yyjson
                                       (std::same_as<std::string, value_type> && std::is_rvalue_reference_v<T&&>))
                         {
                             dst->uni.str = unsafe_yyjson_mut_strncpy(ptrs->self, yyjson::detail::c_chars(t), t.size());
+                            if (yyjson_unlikely(!dst->uni.str)) return false;
                         }
                         else
                         {
                             dst->uni.str = yyjson::detail::c_chars(t);
                         }
-                        if (yyjson_unlikely(!dst->uni.str)) return false;
                     }
                     else
                     {
@@ -10120,9 +10129,19 @@ namespace yyjson
 
                         auto* key = fields + (count * 2);
                         auto* val = fields + ((count * 2) + 1);
-                        success = doc.set_value(key, field_name, ts...);
-                        if (!success) [[unlikely]]
-                            return;
+                        if constexpr (sizeof...(Ts) == 0)
+                        {
+                            // The name of a field has static storage, so its characters are never a null pointer.
+                            key->tag =
+                                (static_cast<std::uint64_t>(field_name.size()) << YYJSON_TAG_BIT) | YYJSON_TYPE_STR;
+                            key->uni.str = field_name.data();
+                        }
+                        else
+                        {
+                            success = doc.set_value(key, field_name, ts...);
+                            if (!success) [[unlikely]]
+                                return;
+                        }
 #if YYJSON_VERSION_HEX >= 0x000800
                         if constexpr (NoEsc) key->tag |= YYJSON_SUBTYPE_NOESC;
 #endif
