@@ -453,6 +453,22 @@ struct ExtraAny
 };
 template <>
 inline constexpr auto yyjson::annotations<ExtraAny> = yyjson::annotate(yyjson::field("rest", yyjson::extra_keys));
+// values that differ from the default only in their extra keys
+struct ExtraOmitted
+{
+    ExtraOpen e;
+    double d = 0.0;
+};
+template <>
+inline constexpr auto yyjson::annotations<ExtraOmitted> =
+    yyjson::annotate(yyjson::field("e", yyjson::omit_default), yyjson::field("d", yyjson::omit_default));
+struct ExtraUnique
+{
+    std::vector<ExtraOpen> v;
+    bool operator==(const ExtraUnique&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<ExtraUnique> = yyjson::annotate(yyjson::field("v", yyjson::unique_items));
 
 namespace
 {
@@ -1180,6 +1196,17 @@ TEST(Strict, ExtraKeys)
     EXPECT_EQ(message_of(unnamed), R"(the key "xyz" of ExtraShort is longer than the maximum length 2 at /xyz)");
     EXPECT_EQ(unnamed.path(), "/xyz");
     EXPECT_EQ(bad_cast_of([&] { (void)yyjson::write(std::vector{named}, yyjson::strict); }).path(), "/0/xyz");
+
+    // values are compared with the default and with each other together with their extra keys
+    const auto extra = ExtraOmitted{{0, {{"x", 1}}}};
+    EXPECT_EQ(yyjson::write(ExtraOmitted()), "{}");
+    EXPECT_EQ(yyjson::write(extra), R"({"e":{"a":0,"x":1}})");
+    EXPECT_EQ(yyjson::value(extra).write(), R"({"e":{"a":0,"x":1}})");
+    EXPECT_EQ(yyjson::read<ExtraOmitted>(yyjson::write(extra), yyjson::strict).e, extra.e);
+    expect_strict<ExtraUnique>(R"({"v":[{"a":1,"x":1},{"a":1,"x":2}]})", {{{1, {{"x", 1}}}, {1, {{"x", 2}}}}});
+    expect_rejected<ExtraUnique>(R"({"v":[{"a":1,"x":1},{"a":1,"x":1}]})", "", "/v/1");
+    EXPECT_NO_THROW(yyjson::validate(ExtraUnique{{{1, {{"x", 1}}}, {1, {{"x", 2}}}}}));
+    EXPECT_THROW(yyjson::validate(ExtraUnique{{{1, {{"x", 1}}}, {1, {{"x", 1}}}}}), yyjson::bad_cast);
 
     // values of any type
     const auto json = R"({"a":1,"b":[1,{"c":null}],"d":"s"})";

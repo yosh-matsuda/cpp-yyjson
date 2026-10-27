@@ -13586,6 +13586,9 @@ namespace yyjson
             else if constexpr (visitable<U> || reflected_range_aggregate<U> ||
                                (!std::ranges::range<U> && !tuple_like<U> && reflectable<U>))
             {
+                // the keys that `yyjson::extra_keys` keeps are written beside the fields
+                if constexpr (has_extra_keys<U>)
+                    if (!json_equal(extra_keys_field(a), extra_keys_field(b))) return false;
                 if constexpr (struct_field_count<U> <= index_chunk)
                     return [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
                         return (json_equal(struct_field<Ks>(a), struct_field<Ks>(b)) && ...);
