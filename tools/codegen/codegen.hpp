@@ -1907,16 +1907,15 @@ namespace cpp_yyjson_codegen
                     additional = ap->b;
                 else if (!ap_any)
                     extra = type_of(ap, loc + "/additionalProperties", decls_[idx].name + "Extra");
-                // the field of yyjson::extra_keys is where yyjson::property_names checks the keys of `propertyNames`
-                if (!extra && additional && (opts_.keep_unknown_keys || s.has("propertyNames")))
-                    extra = typed{make(tk::any), {}};
+                if (!extra && additional && opts_.keep_unknown_keys) extra = typed{make(tk::any), {}};
                 for (const auto* k : {"minProperties", "maxProperties"})
                     if (s.has(k))
                         warn(loc,
                              std::string("`") + k + "` of an object with properties is not supported and is ignored");
-                // `propertyNames` checks the keys that the field of yyjson::extra_keys receives
+                // `propertyNames` checks the keys that the field of yyjson::extra_keys receives; an open struct gets
+                // the field for it
                 auto names = std::optional<settings>();
-                if (const auto* pn = s.find("propertyNames"); pn != nullptr && !extra)
+                if (const auto* pn = s.find("propertyNames"); pn != nullptr && !extra && !additional)
                     warn(loc + "/propertyNames", "`propertyNames` of an object without a field of yyjson::extra_keys is "
                                                  "not supported and is ignored");
                 else if (pn != nullptr)
@@ -1929,9 +1928,13 @@ namespace cpp_yyjson_codegen
                     if (!names)
                         warn(loc + "/propertyNames", "`propertyNames` is not expressed by string constraints and is "
                                                      "ignored");
-                    else if (!exact)
-                        warn(loc + "/propertyNames",
-                             "`propertyNames` is checked only for the keys that name no property");
+                    else
+                    {
+                        if (!extra) extra = typed{make(tk::any), {}};
+                        if (!exact)
+                            warn(loc + "/propertyNames",
+                                 "`propertyNames` is checked only for the keys that name no property");
+                    }
                 }
                 auto dependent = std::vector<std::pair<std::string, std::vector<std::string>>>();
                 if (const auto* dep = s.find("dependentRequired"); dep != nullptr && dep->is_object())

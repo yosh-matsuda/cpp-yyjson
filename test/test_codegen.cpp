@@ -1048,6 +1048,16 @@ TEST(Codegen, PatternProperties)
     EXPECT_TRUE(has(open.code, "    std::map<std::string, yyjson::value> extra;"));
     EXPECT_TRUE(has(open.code, "    yyjson::field(\"extra\", yyjson::extra_keys, "
                                "yyjson::property_names(yyjson::pattern(\"^x-\"))));"));
+    // but not for a `propertyNames` that string constraints do not express
+    const auto inexpressible = generate(R"({
+        "type": "object",
+        "properties": {"a": {"type": "integer"}},
+        "propertyNames": {"anyOf": [{"const": "a"}, {"enum": ["b"]}]}
+    })",
+                                        {});
+    EXPECT_EQ(warnings(inexpressible),
+              "#/propertyNames: `propertyNames` is not expressed by string constraints and is ignored\n");
+    EXPECT_FALSE(has(inexpressible.code, "extra"));
 
     // a schema that the name of a key selects: the other keys as any JSON value, with a warning
     const auto p = generate(R"({

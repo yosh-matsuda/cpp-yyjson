@@ -308,9 +308,9 @@ A default that the generator cannot convert makes the member `std::optional<T>` 
 An object schema without `additionalProperties`, with `true` or with `{}`, accepts any other key, and the generated struct ignores those keys on read and does not write them back. These cases give the struct a field of [`yyjson::extra_keys`](conversions.md#keys-that-name-no-field) named `extra`, a map that holds the other keys and that `write` puts after the members:
 
 *   `additionalProperties` with a schema: `std::map<std::string, T>`, with the constraints of the schema in `yyjson::additional_properties(...)`;
-*   `--keep-unknown-keys`, for every struct that accepts other keys, and `propertyNames` of a struct that accepts other keys: `std::map<std::string, yyjson::value>`.
+*   `--keep-unknown-keys`, for every struct that accepts other keys, and `propertyNames` that string constraints express, of a struct that accepts other keys: `std::map<std::string, yyjson::value>`.
 
-`propertyNames` of a struct becomes `yyjson::property_names` on the field of `yyjson::extra_keys`, which checks the keys that name no member. The form that `json_schema<T>()` writes, `{"anyOf": [{"enum": [<members>]}, <names>]}`, is taken apart into the second subschema; another `propertyNames` is checked only for the other keys, with a warning. A struct that accepts no other key has no such field and leaves `propertyNames` out with a warning.
+`propertyNames` of a struct becomes `yyjson::property_names` on the field of `yyjson::extra_keys`, which checks the keys that name no member. The form that `json_schema<T>()` writes, `{"anyOf": [{"enum": [<members>]}, <names>]}`, is taken apart into the second subschema; another `propertyNames` is checked only for the other keys, with a warning. A struct that accepts no other key has no such field and leaves `propertyNames` out with a warning, and so does a `propertyNames` that string constraints do not express, such as `anyOf` of `const` and `enum`.
 
 ## `patternProperties`
 
