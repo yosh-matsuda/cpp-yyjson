@@ -111,6 +111,31 @@ namespace yyjson
         {
         };
 
+        // The alternative I of `yyjson::any_of` or `yyjson::one_of`, which is `yyjson::alt<T, settings...>` or T.
+        template <std::size_t I, typename A, typename... As>
+        struct nth_alternative : nth_alternative<I - 1, As...>
+        {
+        };
+        template <typename A, typename... As>
+        struct nth_alternative<0, A, As...>
+        {
+            using type = A;
+        };
+        template <typename V, std::size_t I>
+        struct combined_alternative;
+        template <template <typename...> class C, typename... As, std::size_t I>
+        struct combined_alternative<C<As...>, I>
+        {
+            using type = typename nth_alternative<I, As...>::type;
+        };
+
+        // Whether the alternative A has `yyjson::examples`.
+        template <typename A>
+        inline constexpr bool alternative_has_examples = false;
+        template <typename T, auto... Settings>
+        inline constexpr bool alternative_has_examples<yyjson::alt<T, Settings...>> =
+            (yyjson::detail::is_examples<yyjson::detail::alternative_setting_t<Settings>>::value || ...);
+
         template <typename T>
         inline constexpr char type_identity_tag = 0;
 
@@ -472,6 +497,8 @@ namespace yyjson
                     g.emit_enum<T>(out);
                 else if constexpr (is_variant<T>::value)
                     g.emit_variant<T>(out);
+                else if constexpr (yyjson::detail::combined_variant<T>)
+                    g.emit_combined<T>(out);
                 else if constexpr (yyjson::detail::transparent_struct<T>)
                     g.emit_transparent<T>(out, {});
                 else if constexpr (struct_type<T>)
@@ -661,7 +688,8 @@ namespace yyjson
             {
                 constexpr bool has_name = type_setting_count<T, yyjson::schema_name>() != 0;
                 if (writing() ? user_write<T> : user_read<T>) return has_name;
-                return std::is_enum_v<T> || struct_type<T> || (is_variant<T>::value && has_name);
+                return std::is_enum_v<T> || struct_type<T> ||
+                       ((is_variant<T>::value || yyjson::detail::combined_variant<T>) && has_name);
             }
             // Whether `yyjson::schema` declares the schema of T in this direction.
             template <typename T>
@@ -905,6 +933,10 @@ namespace yyjson
             template <typename V>
             void emit_variant(object_ref out);
             template <typename V>
+            void emit_combined(object_ref out);
+            template <typename V, std::size_t I>
+            void emit_alternative(object_ref out);
+            template <typename V>
             void emit_tagged_variant(object_ref out, std::span<const variant_tag> outer);
             template <typename A>
             void emit_tagged(object_ref out, std::span<const variant_tag> tags, const schema_node* nodes = nullptr,
@@ -1004,8 +1036,9 @@ namespace yyjson
                 emit_builtin<T>(out, nodes, node);
             if constexpr (std::same_as<T, std::remove_cvref_t<T>>)
             {
-                static_assert(std::is_enum_v<T> || struct_type<T> || is_variant<T>::value || user_read<T> ||
-                                  user_write<T> || type_setting_count<T, yyjson::schema_name>() == 0,
+                static_assert(std::is_enum_v<T> || struct_type<T> || is_variant<T>::value ||
+                                  yyjson::detail::combined_variant<T> || user_read<T> || user_write<T> ||
+                                  type_setting_count<T, yyjson::schema_name>() == 0,
                               "yyjson::schema_name names a struct, an enumeration, a variant or a type with a caster");
                 if (!named<T>()) emit_type_metadata<T>(out);
             }
@@ -1070,6 +1103,14 @@ namespace yyjson
                 auto any = out.emplace("anyOf", empty_array);
                 emit<U>(any.emplace_back(empty_object), nodes, node);
                 any.emplace_back(empty_object).emplace("type", "null");
+            }
+            else if constexpr (yyjson::detail::combined_variant<T>)
+            {
+                if (named<T>())
+                    emit_named<T>(out);
+                else
+                    emit_combined<T>(out);
+                constraints();
             }
             else if constexpr (nullable_variant<T>)
             {
@@ -1286,6 +1327,49 @@ namespace yyjson
                     (emit<std::variant_alternative_t<Is, V>>(any.emplace_back(empty_object)), ...);
                 }(std::make_index_sequence<std::variant_size_v<V>>{});
             }
+        }
+
+        // `yyjson::any_of` as `anyOf` and `yyjson::one_of` as `oneOf`: each alternative is the schema of its type
+        // with its settings and its metadata, in both directions.
+        template <typename V>
+        void generator::emit_combined(object_ref out)
+        {
+            using table = typename yyjson::detail::combined_alternatives<V>::table;
+            auto list = out.emplace(yyjson::detail::combined_alternatives<V>::exactly_one ? "oneOf" : "anyOf",
+                                    empty_array);
+            const auto* const outer_values = std::exchange(values_, table::tree.values.data());
+            [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                (emit_alternative<V, Is>(list.emplace_back(empty_object)), ...);
+            }(std::make_index_sequence<std::variant_size_v<V>>{});
+            values_ = outer_values;
+        }
+
+        template <typename V, std::size_t I>
+        void generator::emit_alternative(object_ref out)
+        {
+            using A = typename combined_alternative<V, I>::type;
+            using T = std::variant_alternative_t<I, V>;
+            if constexpr (yyjson::detail::constrained_alternative<V, I>)
+                emit<T>(out, yyjson::detail::combined_alternatives<V>::table::tree.nodes.data(), I);
+            else
+                emit<T>(out);
+            auto m = metadata();
+            yyjson::detail::alternative_traits<A>::for_each([&]<typename S>(const S& setting) {
+                if constexpr (yyjson::detail::metadata_setting<S>) m.add(setting);
+            });
+            if (m.empty()) return;
+            const auto check = [](const std::optional<T>& v) {
+                if constexpr (yyjson::detail::constrained_alternative<V, I>)
+                    return yyjson::detail::level_violation<yyjson::detail::alternative_level<V, I>>(*v) ==
+                           yyjson::detail::constraint_kind::none;
+                else
+                    return v.has_value();
+            };
+            emit_metadata<T, alternative_has_examples<A>>(
+                out, m,
+                std::string("the alternative ").append(std::to_string(I)).append(" of ").append(
+                    yyjson::detail::type_name<V>()),
+                check);
         }
 
         // A variant tagged by `internal_tag`, in an object that the variants in `outer` tag too when it is an

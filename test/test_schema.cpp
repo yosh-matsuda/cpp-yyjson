@@ -584,6 +584,24 @@ template <> inline constexpr auto yyjson::annotations<Nested> =
 using Twice = std::variant<Tagged>;
 template <> inline constexpr auto yyjson::annotations<Twice> = yyjson::annotate(yyjson::internal_tag("kind", {"circle"}));
 
+// `yyjson::any_of` and `yyjson::one_of`: the settings and the metadata of each alternative, a one_of whose alternatives
+// overlap, a null alternative, and a named one_of in `$defs`.
+struct AltPoint { int x = 0; };
+using AltCount = yyjson::any_of<
+    yyjson::alt<int, yyjson::minimum(0), yyjson::description("a count"), yyjson::examples("1")>,
+    yyjson::alt<std::string, yyjson::max_length(3)>>;
+using AltShape = yyjson::one_of<yyjson::alt<AltPoint, yyjson::title("point")>,
+                                yyjson::alt<std::vector<int>, yyjson::items(yyjson::enum_(1, 2))>>;
+template <> inline constexpr auto yyjson::annotations<AltShape> =
+    yyjson::annotate(yyjson::schema_name("Shape"), yyjson::description("a shape"));
+struct Alternatives
+{
+    AltCount a;
+    yyjson::one_of<std::int64_t, std::uint64_t> b = std::int64_t{-1};
+    std::vector<yyjson::any_of<std::monostate, yyjson::alt<double, yyjson::maximum(1)>>> c;
+    AltShape n;
+};
+
 // Written only: a borrowed string is not read.
 struct Borrowed { std::string_view s = "x"; const char* p = "y"; };
 
@@ -1447,6 +1465,34 @@ TEST(Schema, NestedTag)
         R"({"kind":"rect","w":1,"h":2})",
         R"({"r":1})",
     });
+}
+
+TEST(Schema, Alternatives)
+{
+    check<Alternatives>({
+        R"({"a":1,"b":-1,"c":[null,0.5],"n":{"x":1}})",
+        R"({"a":"abc","b":9223372036854775808,"c":[],"n":[1,2]})",
+        R"({"a":-1})",
+        R"({"a":"abcd"})",
+        R"({"a":1.5})",
+        R"({"b":1})",
+        R"({"c":[2]})",
+        R"({"n":[3]})",
+        R"({"n":{"x":"y"}})",
+        R"({"a":0,"b":0,"c":[],"n":{"x":0},"d":1})",
+        "{}",
+    });
+    const auto s = to_jsoncons(yyjson::json_schema<Alternatives>());
+    const auto& a = s["$defs"]["Alternatives"]["properties"]["a"]["anyOf"];
+    ASSERT_EQ(a.size(), 2u);
+    EXPECT_EQ(a[0]["description"].as_string(), "a count");
+    EXPECT_EQ(a[0]["examples"], json::parse("[1]"));
+    EXPECT_EQ(a[1]["maxLength"].as<int>(), 3);
+    EXPECT_EQ(s["$defs"]["Alternatives"]["properties"]["b"]["oneOf"].size(), 2u);
+    EXPECT_EQ(s["$defs"]["Alternatives"]["properties"]["b"]["default"].as<int>(), -1);
+    EXPECT_EQ(s["$defs"]["Alternatives"]["properties"]["n"]["$ref"].as_string(), "#/$defs/Shape");
+    EXPECT_EQ(s["$defs"]["Shape"]["description"].as_string(), "a shape");
+    EXPECT_EQ(s["$defs"]["Shape"]["oneOf"][0], json::parse(R"({"$ref":"#/$defs/AltPoint","title":"point"})"));
 }
 
 TEST(Schema, WriteOnly)
