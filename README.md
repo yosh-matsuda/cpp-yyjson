@@ -72,7 +72,7 @@ for (const auto obj = *rates.as_object(); const auto& [currency, rate] : obj)
 *   **Fast with both APIs.** In the [benchmarks](#performance), the data binding API reads and writes C++ types faster than Glaze and reflect-cpp. The DOM API reads and writes documents at least as fast as yyjson 0.12.0, simdjson, RapidJSON and nlohmann-json.
 *   **One call each way.** `read<T>(json)` and `write(t)` convert structs, containers, `std::optional`, `std::variant`, smart pointers, enumerations and recursive types, nested in any combination. `read_into` and `merge_into` read into an existing object, and `merge_into` applies the JSON as a [JSON Merge Patch](https://www.rfc-editor.org/rfc/rfc7396).
 *   **Tolerant by default, strict when asked.** Unknown keys are ignored, and missing keys keep their defaults. [`yyjson::strict`](docs/validation.md#strict-reading) rejects both, and [constraints](docs/validation.md#constraints) named after the [keywords of JSON Schema](docs/validation.md#json-schema-keywords), such as `yyjson::minimum(0)`, `yyjson::format("email")` or `yyjson::items(yyjson::max_length(32))`, check the values and their elements.
-*   **JSON Schema from the types.** [`yyjson::json_schema<T>()`](docs/json-schema.md) generates the schema of what `read<T>` reads or `write` writes, from the same types and annotations, and `yyjson::schema_collection` the schemas of an OpenAPI document.
+*   **JSON Schema from the types.** [`yyjson::json_schema<T>()`](docs/json-schema.md) generates the schema of what `read<T>` reads or `write` writes, from the same types and annotations, and `yyjson::schema_collection` the schemas of an OpenAPI document. In the other direction, [`cpp-yyjson-codegen`](docs/codegen.md) generates the types and annotations from a schema.
 *   **A DOM that feels like the standard library.** Arrays and objects are ranges, objects yield key-value pairs for structured bindings, values work with `std::format`, and new JSON is built from containers and initializer lists.
 
 ## Installation
@@ -123,6 +123,7 @@ Without CMake, copy `cpp_yyjson.hpp`, `field_reflection.hpp` and `yyjson.h` from
 | `CPPYYJSON_READER_DEPTH_LIMIT`, `CPPYYJSON_WRITER_DEPTH_LIMIT`, `CPPYYJSON_DISABLE_FILE` | Set the yyjson [compile-time options](https://ibireme.github.io/yyjson/doc/doxygen/html/building-and-testing.html#compile-time-options) `YYJSON_READER_DEPTH_LIMIT`, `YYJSON_WRITER_DEPTH_LIMIT` and `YYJSON_DISABLE_FILE`. |
 | `CPPYYJSON_DISABLE_HUGE_PAGES=ON` | Turns off the huge pages of the bundled backend. |
 | `CPPYYJSON_RECURSION_DEPTH_LIMIT` | Limits how deeply values of [recursive types](docs/conversions.md#recursive-types) are read. |
+| `CPPYYJSON_BUILD_CODEGEN=ON` | Builds and installs [`cpp-yyjson-codegen`](docs/codegen.md), which generates C++ types from a JSON Schema and which the CMake function `cpp_yyjson_generate()` runs. |
 
 [Build configuration](docs/reference.md#build-configuration) covers the headers, link-time optimization, the options with an external yyjson and building this repository.
 
@@ -256,7 +257,7 @@ To use the upstream yyjson instead, configure with `-DCPPYYJSON_USE_BUNDLED_YYJS
 
 *   Getting started: [Quick start](docs/quick-start.md)
 *   How-to guides: [Guide](docs/guide.md), [FAQ](docs/faq.md)
-*   Concepts: [Converting C++ types](docs/conversions.md), [Validation and errors](docs/validation.md), [Generating JSON Schema](docs/json-schema.md)
+*   Concepts: [Converting C++ types](docs/conversions.md), [Validation and errors](docs/validation.md), [Generating JSON Schema](docs/json-schema.md), [Generating C++ types](docs/codegen.md)
 *   Reference: [API reference](docs/reference.md)
 *   Performance: [Performance best practices](docs/performance.md), [Benchmarks](docs/benchmark/README.md)
 

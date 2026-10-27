@@ -2756,6 +2756,10 @@ With an external yyjson:
 
 `CPPYYJSON_RECURSION_DEPTH_LIMIT` works with either backend.
 
+### Code generator
+
+`CPPYYJSON_BUILD_CODEGEN=ON` builds and installs `cpp-yyjson-codegen`, which generates C++ types from a JSON Schema, and the CMake function `cpp_yyjson_generate(<target> <schema> ...)` runs it at build time. Both are described in [Generating C++ types](codegen.md).
+
 ### Backend versions
 
 The bundled backend is based on upstream yyjson 0.13.0 and supports every function and flag in this reference. A note such as `for yyjson >= v0.13.0` applies only when cpp-yyjson is built with an external yyjson.

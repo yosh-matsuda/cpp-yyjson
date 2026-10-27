@@ -2,7 +2,7 @@
 
 # Generating JSON Schema
 
-`yyjson::json_schema<T>()` generates the [JSON Schema](https://json-schema.org/draft/2020-12) (2020-12) of a C++ type: the JSON that `yyjson::read<T>` reads, or the JSON that `yyjson::write` writes. The schema comes from the type and its [annotations](conversions.md#annotations), so it stays in step with the code. Use it to document an API, to check JSON in another language, or to publish the types of a service in [OpenAPI 3.1](#several-types-and-openapi).
+`yyjson::json_schema<T>()` generates the [JSON Schema](https://json-schema.org/draft/2020-12) (2020-12) of a C++ type: the JSON that `yyjson::read<T>` reads, or the JSON that `yyjson::write` writes. The schema comes from the type and its [annotations](conversions.md#annotations), so it stays in step with the code. Use it to document an API, to check JSON in another language, or to publish the types of a service in [OpenAPI 3.1](#several-types-and-openapi). For the other direction, C++ types from a schema, see [Generating C++ types](codegen.md).
 
 In short:
 
