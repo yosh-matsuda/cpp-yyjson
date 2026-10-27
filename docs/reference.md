@@ -1817,6 +1817,8 @@ public:
     void emplace_object(Key&& key, Func&& func, Ts... ts);
     template <typename Key, std::invocable<array_emitter&> Func, typename... Ts>
     void emplace_array(Key&& key, Func&& func, Ts... ts);
+    template <typename T, typename... Ts>
+    void emplace_members(T&& t, Ts... ts);
 };
 
 class array_emitter
@@ -1837,6 +1839,7 @@ The library constructs the emitter and passes it to `to_json`.
 
 *   `emplace` and `emplace_back` write one member or element, converted by its own caster. `Key` is a type that converts to `const char*`, `std::string` or `std::string_view`.
 *   `emplace_object`, `emplace_array`, `emplace_back_object` and `emplace_back_array` write a nested object or array, which `func` fills through the emitter that it is given.
+*   `emplace_members` writes the members of the JSON object that `t` is written as, not nested in a member of its own. `T` is a struct that the default caster writes, a type whose caster writes through `object_emitter`, or a range of key-value pairs; any other type does not compile. It does not check for a key that the object already has.
 *   `ts` is the parameter pack that `to_json` receives; pass it on, so that [`yyjson::copy_string`](#yyjsoncopy_string-yyjsonempty_array-yyjsonempty_object) reaches the values.
 
 See [Writing members with an emitter](conversions.md#writing-members-with-an-emitter).
