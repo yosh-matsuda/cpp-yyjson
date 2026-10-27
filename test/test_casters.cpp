@@ -1021,6 +1021,78 @@ TEST(Writer, EmitterMembers)
 #endif
 }
 
+// Fields that v2.2 annotations write or leave out, appended by `object_emitter::emplace_members`.
+struct MemberDefaults
+{
+    int x = 0;
+    int y = 5;
+    std::vector<int> sizes = {1, 2};
+    std::map<std::string, int> more;
+};
+template <>
+inline constexpr auto yyjson::annotations<MemberDefaults> =
+    yyjson::annotate(yyjson::field("y", yyjson::omit_default),
+                     yyjson::field("sizes", yyjson::default_from<[] { return std::vector{1, 2}; }>),
+                     yyjson::field("more", yyjson::extra_keys));
+struct MemberEnvelope
+{
+    std::string kind = "circle";
+    std::variant<MemberCircle, MemberRect> data;
+};
+template <>
+inline constexpr auto yyjson::annotations<MemberEnvelope> =
+    yyjson::annotate(yyjson::field("data", yyjson::adjacent_tag("kind", {"circle", "rect"})));
+struct MemberWrapped
+{
+    MemberCircle circle;
+};
+template <>
+inline constexpr auto yyjson::annotations<MemberWrapped> = yyjson::annotate(yyjson::transparent);
+struct MemberAnnotated
+{
+    MemberDefaults defaults;
+    MemberEnvelope envelope;
+};
+template <>
+struct yyjson::caster<MemberAnnotated>
+{
+    template <typename... Ts>
+    static void to_json(yyjson::object_emitter& out, const MemberAnnotated& a, Ts... ts)
+    {
+        out.emplace_members(a.defaults, ts...);
+        out.emplace_members(a.envelope, ts...);
+        out.emplace("end", 0);
+    }
+};
+
+// a transparent struct is written as its field, as a translator writes another type
+static_assert(!yyjson::writer::detail::members_emplaceable<MemberWrapped>);
+static_assert(!yyjson::writer::detail::members_emplaceable<yyjson::any_of<MemberCircle, MemberRect>>);
+
+TEST(Writer, EmitterMembersAnnotated)
+{
+    const auto plain = MemberAnnotated{};
+    const auto plain_json = std::string(R"({"x":0,"kind":"circle","data":{"r":0.0},"end":0})");
+    EXPECT_EQ(std::string(yyjson::write(plain)), plain_json);
+    EXPECT_EQ(std::string(yyjson::value(plain).write()), plain_json);
+    expect_direct_write(plain);
+
+    const auto full = MemberAnnotated{{1, 6, {3}, {{"k", 7}}}, {"rect", MemberRect{1, 2}}};
+    const auto full_json =
+        std::string(R"({"x":1,"y":6,"sizes":[3],"k":7,"kind":"rect","data":{"w":1,"h":2},"end":0})");
+    EXPECT_EQ(std::string(yyjson::write(full)), full_json);
+    EXPECT_EQ(std::string(yyjson::value(full).write()), full_json);
+    expect_direct_write(full);
+
+    // the checks of a struct apply to its members too
+    const auto clash = MemberAnnotated{{0, 5, {1, 2}, {{"x", 1}}}, {}};
+    EXPECT_THROW((void)yyjson::write(clash), std::invalid_argument);
+    EXPECT_THROW((void)yyjson::value(clash), std::invalid_argument);
+    const auto mismatch = MemberAnnotated{{}, {"rect", MemberCircle{1}}};
+    EXPECT_THROW((void)yyjson::write(mismatch), std::invalid_argument);
+    EXPECT_THROW((void)yyjson::value(mismatch), std::invalid_argument);
+}
+
 // The fields of a struct with a translator `to_json` are not checked as the default caster would write them.  The
 // check of `UncheckedTree` would depend on itself.
 struct UncheckedTree : std::map<std::string, UncheckedTree>
