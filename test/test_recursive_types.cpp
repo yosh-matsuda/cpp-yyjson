@@ -203,6 +203,65 @@ static_assert(yyjson::readable<RecJson> && yyjson::writable<RecJson>);
 static_assert(yyjson::readable<RecExpr> && yyjson::writable<RecExpr>);
 static_assert(yyjson::readable<RecTagged> && yyjson::writable<RecTagged>);
 
+// Recursive types that hold themselves through `yyjson::indirect`, which copies the value that it holds
+struct IndExpr
+{
+    std::string op;
+    std::optional<yyjson::indirect<IndExpr>> lhs;
+    std::variant<std::monostate, yyjson::indirect<IndExpr>> rhs;
+    std::vector<yyjson::indirect<IndExpr>> args;
+    bool operator==(const IndExpr&) const = default;
+};
+struct IndLeaf
+{
+    int v = 0;
+    bool operator==(const IndLeaf&) const = default;
+};
+struct IndBranch;
+using IndTree = std::variant<IndLeaf, yyjson::indirect<IndBranch>>;
+struct IndBranch
+{
+    std::vector<IndTree> kids;
+    bool operator==(const IndBranch&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<IndTree> = yyjson::annotate(yyjson::internal_tag("t", {"leaf", "branch"}));
+// The default constructor of `indirect` is explicit, so a member without an initializer is not initialized from
+// `{}`: the struct is default constructible, but not `std::default_initializable`, as with `std::indirect`
+struct IndBare
+{
+    yyjson::indirect<IndLeaf> leaf;
+    yyjson::indirect<std::vector<int>> list;
+};
+static_assert(std::is_default_constructible_v<IndBare> && !std::default_initializable<IndBare>);
+struct IndSettings
+{
+    yyjson::indirect<int> level{std::in_place, 3};
+    yyjson::indirect<std::vector<int>> scores{std::in_place};
+    std::optional<yyjson::indirect<int>> limit;
+    yyjson::indirect<IndLeaf> leaf{std::in_place};
+};
+template <>
+inline constexpr auto yyjson::annotations<IndSettings> =
+    yyjson::annotate(yyjson::field("level", yyjson::minimum(0), yyjson::omit_default),
+                     yyjson::field("scores", yyjson::items(yyjson::minimum(0)), yyjson::unique_items),
+                     yyjson::field("limit", yyjson::maximum(10)),
+                     yyjson::field("leaf", yyjson::default_from<[] { return IndLeaf{5}; }>));
+static_assert(yyjson::detail::recursive_type<IndExpr>);
+static_assert(yyjson::readable<IndExpr> && yyjson::writable<IndExpr>);
+static_assert(yyjson::readable<IndTree> && yyjson::writable<IndTree>);
+static_assert(yyjson::readable<IndBare> && yyjson::writable<IndBare>);
+static_assert(std::is_copy_constructible_v<IndExpr> && std::is_copy_constructible_v<yyjson::indirect<IndExpr>>);
+static_assert(!std::is_convertible_v<int, yyjson::indirect<int>>);
+static_assert(!std::is_convertible_v<IndExpr, yyjson::indirect<IndExpr>>);
+static_assert([] {
+    auto a = yyjson::indirect<int>(3);
+    auto b = a;
+    *b = 4;
+    auto c = std::move(a);
+    return *b + *c + (a.valueless_after_move() ? 10 : 0);
+}() == 17);
+
 // The fields of a recursive type are checked as those of any other type, through each type on the cycle
 class RecPrivate
 {
@@ -511,6 +570,139 @@ TEST(Reader, RecursiveVariantLimit)
     // and the first alternative is read at any depth
     expect_recursive<RecTagged>(tagged(100, "1"));
     EXPECT_EQ(yyjson::read<RecTagged>(tagged(100, "1")).op.index(), 0);
+}
+
+TEST(Indirect, Class)
+{
+    using E = IndExpr;
+    const auto make = [](std::string op, std::optional<yyjson::indirect<E>> lhs = std::nullopt) {
+        auto x = E();
+        x.op = std::move(op);
+        x.lhs = std::move(lhs);
+        return x;
+    };
+    auto e = make("+", yyjson::indirect<E>(make("a")));
+    e.rhs = yyjson::indirect<E>(make("b"));
+    // a copy is deep
+    auto f = e;
+    EXPECT_EQ(f, e);
+    (*f.lhs)->op = "c";
+    EXPECT_NE(f, e);
+    EXPECT_EQ(e.lhs.value()->op, "a");
+
+    // a move leaves the source without a value, which assignment gives back
+    auto i = yyjson::indirect<E>(std::in_place, make("x"));
+    auto j = std::move(i);
+    EXPECT_TRUE(i.valueless_after_move());
+    EXPECT_EQ(j->op, "x");
+    i = j;
+    EXPECT_FALSE(i.valueless_after_move());
+    EXPECT_EQ(i->op, "x");
+    auto k = yyjson::indirect<E>();
+    EXPECT_EQ(*k, E());
+    k = std::move(i);
+    auto moved = std::move(k);
+    k = moved;
+    EXPECT_EQ(k->op, "x");
+
+    // comparison with another indirect or with a value; one without a value is less than any value
+    auto a = yyjson::indirect<int>(1);
+    auto b = yyjson::indirect<int>(2);
+    EXPECT_TRUE(a < b && a != b && a == 1 && a < 2 && (a <=> 1) == 0);
+    auto c = std::move(a);
+    EXPECT_TRUE(a < b && a != c && !(a == 1));
+    auto d = std::move(b);
+    EXPECT_EQ(a, b);
+    a = 5;
+    EXPECT_EQ(*a, 5);
+    swap(a, c);
+    EXPECT_EQ(*a, 1);
+    EXPECT_EQ(*c, 5);
+
+    auto v = yyjson::indirect<std::vector<int>>(std::in_place, {1, 2, 3});
+    EXPECT_EQ(v->size(), 3);
+    auto w = yyjson::indirect(std::string("x"));
+    static_assert(std::same_as<decltype(w), yyjson::indirect<std::string>>);
+    auto set = std::set<yyjson::indirect<int>>();
+    set.emplace(1);
+    auto hashed = std::unordered_set<yyjson::indirect<int>>();
+    hashed.insert(yyjson::indirect<int>(1));
+    EXPECT_TRUE(hashed.contains(yyjson::indirect<int>(1)));
+
+    // assignment from a part of the value that is held
+    auto g = make("1", yyjson::indirect<E>(make("2", yyjson::indirect<E>(make("3")))));
+    *g.lhs = std::move(*(*g.lhs)->lhs);
+    EXPECT_EQ((*g.lhs)->op, "3");
+}
+
+TEST(Reader, IndirectFields)
+{
+    expect_recursive<IndExpr>(
+        R"({"op":"+","lhs":{"op":"x","rhs":null,"args":[]},"rhs":{"op":"y","rhs":{"op":"z","rhs":null,"args":[]},)"
+        R"("args":[]},"args":[{"op":"a","rhs":null,"args":[]}]})");
+    expect_recursive<IndTree>(R"({"t":"branch","kids":[{"t":"leaf","v":1},{"t":"branch","kids":[]}]})");
+    expect_recursive<std::vector<yyjson::indirect<int>>>("[1,2,3]");
+    EXPECT_FALSE(yyjson::read<std::optional<yyjson::indirect<int>>>("null").has_value());
+    EXPECT_EQ(**yyjson::read<std::optional<yyjson::indirect<int>>>("1"), 1);
+
+    // an indirect holds a value always, so a field of one does not take null
+    EXPECT_THROW((void)yyjson::read<IndBare>(R"({"leaf":null,"list":[]})"), yyjson::bad_cast);
+    EXPECT_THROW((void)yyjson::read(R"({"leaf":null,"list":[]})").cast<IndBare>(), yyjson::bad_cast);
+
+    // reading into a struct reads into the values that its fields hold, and merging merges them
+    auto bare = IndBare();
+    yyjson::read_into(R"({"leaf":{"v":3},"list":[1,2]})", bare);
+    EXPECT_EQ(bare.leaf->v, 3);
+    EXPECT_EQ(*bare.list, (std::vector<int>{1, 2}));
+    yyjson::merge_into(R"({"leaf":{"v":9}})", bare);
+    EXPECT_EQ(bare.leaf->v, 9);
+    EXPECT_EQ(*bare.list, (std::vector<int>{1, 2}));
+    EXPECT_EQ(std::string_view(yyjson::write(bare)), R"({"leaf":{"v":9},"list":[1,2]})");
+
+    // a field without a value after a move is not written, but reported
+    auto taken = std::move(bare.leaf);
+    EXPECT_THROW((void)yyjson::write(bare), yyjson::bad_cast);
+    EXPECT_THROW((void)yyjson::object(bare), yyjson::bad_cast);
+    try
+    {
+        yyjson::validate(bare);
+        ADD_FAILURE();
+    }
+    catch (const yyjson::bad_cast& e)
+    {
+        EXPECT_EQ(e.path(), "/leaf");
+    }
+    // and reading gives it one again
+    yyjson::merge_into(R"({"leaf":{"v":2}})", bare);
+    EXPECT_FALSE(bare.leaf.valueless_after_move());
+    EXPECT_EQ(bare.leaf->v, 2);
+    taken = std::move(bare.leaf);
+    yyjson::read_into(R"({"leaf":{"v":4},"list":[]})", bare);
+    EXPECT_EQ(bare.leaf->v, 4);
+
+    // the settings of a field reach the value that it holds
+    const auto settings = yyjson::read<IndSettings>("{}");
+    EXPECT_EQ(*settings.level, 3);
+    EXPECT_EQ(settings.leaf->v, 5);
+    EXPECT_EQ(std::string_view(yyjson::write(settings)), R"({"scores":[]})");
+    EXPECT_EQ(std::string_view(yyjson::object(settings).write()), R"({"scores":[]})");
+    for (const auto& [json, path] : {std::pair{R"({"level":-1})", "/level"}, std::pair{R"({"scores":[1,-1]})", "/scores/1"},
+                                     std::pair{R"({"scores":[1,1]})", "/scores/1"}, std::pair{R"({"limit":11})", "/limit"}})
+    {
+        for (const auto dom : {false, true})
+            try
+            {
+                (void)(dom ? yyjson::read(json).cast<IndSettings>() : yyjson::read<IndSettings>(json));
+                ADD_FAILURE() << json;
+            }
+            catch (const yyjson::bad_cast& e)
+            {
+                EXPECT_EQ(e.path(), path) << json;
+            }
+    }
+    auto limited = settings;
+    limited.limit.emplace(std::in_place, 12);
+    EXPECT_THROW(yyjson::validate(limited), yyjson::bad_cast);
 }
 
 // NOLINTEND
