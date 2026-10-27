@@ -6025,7 +6025,7 @@ namespace yyjson
 
         // Compares the integer `v` with the number `b` exactly.
         template <std::integral I>
-        std::partial_ordering compare_integer_real(I v, double b) noexcept
+        constexpr std::partial_ordering compare_integer_real(I v, double b) noexcept
         {
             using W = std::conditional_t<std::is_signed_v<I>, std::int64_t, std::uint64_t>;
             constexpr double low = std::is_signed_v<I> ? -9223372036854775808.0 : 0.0;
@@ -15546,6 +15546,855 @@ namespace yyjson
                     return static_cast<std::uint16_t>((0U | ... | accepted_json_kinds<Ts, Json>()));
             }
         };
+
+        // The JSON values that an alternative of `yyjson::any_of` or `yyjson::one_of` accepts, bounded at compile
+        // time, so that an alternative that is never read, or that is never the only one to read a value, fails to
+        // compile.  A bound describes each kind of JSON values: none of them, a part of those that it lists
+        // (`partial`), or exactly those (`exact`).  A part is any subset, so that a bound is safe to compute.
+        enum class bound_extent : std::uint8_t
+        {
+            none,
+            partial,
+            exact
+        };
+
+        // The number of the numbers or the strings that a bound lists; more of them make it list none.
+        inline constexpr std::size_t bound_capacity = 32;
+
+        constexpr bound_number sint_number(std::int64_t v) noexcept
+        {
+            auto n = bound_number{};
+            n.sint = v;
+            return n;
+        }
+        constexpr bound_number uint_number(std::uint64_t v) noexcept
+        {
+            auto n = bound_number{};
+            n.kind = bound_number::kind_t::uint;
+            n.uint = v;
+            return n;
+        }
+        constexpr bound_number real_number(double v) noexcept
+        {
+            auto n = bound_number{};
+            n.kind = bound_number::kind_t::real;
+            n.real = v;
+            return n;
+        }
+        // The number n as a double, rounded to the nearest.
+        constexpr double to_double(const bound_number& n) noexcept
+        {
+            return n.kind == bound_number::kind_t::sint   ? static_cast<double>(n.sint)
+                   : n.kind == bound_number::kind_t::uint ? static_cast<double>(n.uint)
+                                                          : n.real;
+        }
+
+        // Compares the numbers a and b exactly.
+        constexpr std::partial_ordering compare_numbers(const bound_number& a, const bound_number& b) noexcept
+        {
+            using kind = bound_number::kind_t;
+            if (a.kind == kind::real)
+                return b.kind == kind::real ? a.real <=> b.real : 0 <=> compare_numbers(b, a);
+            if (b.kind == kind::real)
+                return a.kind == kind::sint ? compare_integer_real(a.sint, b.real)
+                                            : compare_integer_real(a.uint, b.real);
+            const auto compare = [](auto x, auto y) {
+                return std::cmp_less(x, y)      ? std::partial_ordering::less
+                       : std::cmp_greater(x, y) ? std::partial_ordering::greater
+                                                : std::partial_ordering::equivalent;
+            };
+            if (a.kind == kind::sint) return b.kind == kind::sint ? compare(a.sint, b.sint) : compare(a.sint, b.uint);
+            return b.kind == kind::sint ? compare(a.uint, b.sint) : compare(a.uint, b.uint);
+        }
+        constexpr bool number_less(const bound_number& a, const bound_number& b) noexcept
+        {
+            return std::is_lt(compare_numbers(a, b));
+        }
+        constexpr bool number_equal(const bound_number& a, const bound_number& b) noexcept
+        {
+            return std::is_eq(compare_numbers(a, b));
+        }
+
+        // Steps the integer n to the next one up or down, in [-2^63, 2^64), or returns false if there is none.
+        constexpr bool step_integer(bound_number& n, bool up) noexcept
+        {
+            if (up)
+            {
+                if (n.kind == bound_number::kind_t::uint)
+                {
+                    if (n.uint == std::numeric_limits<std::uint64_t>::max()) return false;
+                    ++n.uint;
+                }
+                else if (n.sint == std::numeric_limits<std::int64_t>::max())
+                    n = uint_number(std::uint64_t{1} << 63U);
+                else
+                    ++n.sint;
+            }
+            else if (n.kind == bound_number::kind_t::sint)
+            {
+                if (n.sint == std::numeric_limits<std::int64_t>::min()) return false;
+                --n.sint;
+            }
+            else if (n.uint == 0)
+                n = sint_number(-1);
+            else
+                --n.uint;
+            return true;
+        }
+
+        // The least integer in [-2^63, 2^64) at least (`up`) or the greatest at most the number b, or, if `open`,
+        // greater or less than it.
+        struct integer_step
+        {
+            bool exists = false;
+            bound_number value;
+        };
+        constexpr integer_step integer_beyond(const bound_number& b, bool up, bool open) noexcept
+        {
+            if (b.kind != bound_number::kind_t::real)
+            {
+                auto n = b;
+                return {!open || step_integer(n, up), n};
+            }
+            const double r = b.real;
+            if (r < -9223372036854775808.0) return {up, sint_number(std::numeric_limits<std::int64_t>::min())};
+            if (r >= 18446744073709551616.0) return {!up, uint_number(std::numeric_limits<std::uint64_t>::max())};
+            // `n` is r rounded toward zero
+            auto n = r < 0 ? sint_number(static_cast<std::int64_t>(r)) : uint_number(static_cast<std::uint64_t>(r));
+            const auto order = compare_numbers(n, b);
+            if (std::is_eq(order) ? open : up == std::is_lt(order)) step_integer(n, up);
+            return {true, n};
+        }
+
+        // Whether the number n is less than 2^53 in magnitude, where a double holds every integer, or infinite.
+        constexpr bool double_exact_range(const bound_number& n) noexcept
+        {
+            if (n.kind == bound_number::kind_t::real && (n.real == std::numeric_limits<double>::infinity() ||
+                                                         n.real == -std::numeric_limits<double>::infinity()))
+                return true;
+            return number_less(n, real_number(9007199254740992.0)) && number_less(real_number(-9007199254740992.0), n);
+        }
+
+        // The numbers of a bound.  The numbers are those that an integer type reads, as integers, which are the
+        // integers and the reals without a fractional part, if `integral`, and otherwise the doubles that the
+        // numbers are read as.  They are the `count` `points` if `listed`, and otherwise the numbers from `low` to
+        // `high`, which are never empty, and in integers are never open.
+        struct number_bound
+        {
+            bound_extent extent = bound_extent::none;
+            bool integral = false;
+            bool listed = false;
+            bool low_open = false;
+            bool high_open = false;
+            bound_number low;
+            bound_number high;
+            std::size_t count = 0;
+            std::array<bound_number, bound_capacity> points = {};
+        };
+        // The strings of a bound: the `count` `strings` if `listed`, and otherwise all of them.
+        struct string_bound
+        {
+            bound_extent extent = bound_extent::none;
+            bool listed = false;
+            std::size_t count = 0;
+            std::array<std::string_view, bound_capacity> strings = {};
+        };
+        // The bound of each kind of JSON values; `booleans` has the bit 0 for false and the bit 1 for true.
+        struct json_bound
+        {
+            bound_extent null = bound_extent::none;
+            bound_extent boolean = bound_extent::none;
+            std::uint8_t booleans = 0;
+            number_bound number;
+            string_bound string;
+            bound_extent array = bound_extent::none;
+            bound_extent object = bound_extent::none;
+        };
+
+        constexpr void make_partial(bound_extent& e) noexcept
+        {
+            if (e == bound_extent::exact) e = bound_extent::partial;
+        }
+        constexpr json_bound partial_bound(json_bound b) noexcept
+        {
+            for (bound_extent* e : {&b.null, &b.boolean, &b.number.extent, &b.string.extent, &b.array, &b.object})
+                make_partial(*e);
+            return b;
+        }
+        // All the integers that a JSON number can be read as, or all the numbers.
+        constexpr number_bound all_numbers(bool integral, bound_extent extent) noexcept
+        {
+            auto n = number_bound{};
+            n.extent = extent;
+            n.integral = integral;
+            if (integral)
+            {
+                n.low = sint_number(std::numeric_limits<std::int64_t>::min());
+                n.high = uint_number(std::numeric_limits<std::uint64_t>::max());
+            }
+            else
+            {
+                n.low = real_number(-std::numeric_limits<double>::infinity());
+                n.high = real_number(std::numeric_limits<double>::infinity());
+                n.low_open = n.high_open = true;
+            }
+            return n;
+        }
+        // Every JSON value, exactly.
+        constexpr json_bound universal_bound() noexcept
+        {
+            constexpr auto exact = bound_extent::exact;
+            return {exact, exact, 3, all_numbers(false, exact), {exact}, exact, exact};
+        }
+        // A part of the JSON values of the kinds, a mask of `json_kind`.
+        constexpr json_bound kinds_bound(std::uint16_t kinds) noexcept
+        {
+            constexpr auto partial = bound_extent::partial;
+            auto b = json_bound{};
+            if ((kinds & json_kind_null) != 0) b.null = partial;
+            if ((kinds & json_kind_bool) != 0)
+            {
+                b.boolean = partial;
+                b.booleans = 3;
+            }
+            if ((kinds & json_kind_number) != 0) b.number = all_numbers((kinds & json_kind_real) == 0, partial);
+            if ((kinds & json_kind_string) != 0) b.string.extent = partial;
+            if ((kinds & json_kind_array) != 0) b.array = partial;
+            if ((kinds & json_kind_object) != 0) b.object = partial;
+            return b;
+        }
+
+        // The numbers of n that are single points: those listed, or the one of an interval from a number to itself.
+        constexpr std::size_t point_count(const number_bound& n) noexcept
+        {
+            if (n.listed) return n.count;
+            return !n.low_open && !n.high_open && number_equal(n.low, n.high) ? 1 : 0;
+        }
+        constexpr const bound_number& point_at(const number_bound& n, std::size_t i) noexcept
+        {
+            return n.listed ? n.points[i] : n.low;
+        }
+        // Whether the numbers n, in the domain of p, have p.
+        constexpr bool has_number(const number_bound& n, const bound_number& p) noexcept
+        {
+            if (n.listed)
+                return std::any_of(n.points.begin(), n.points.begin() + static_cast<std::ptrdiff_t>(n.count),
+                                   [&p](const bound_number& q) { return number_equal(p, q); });
+            const auto low = compare_numbers(p, n.low);
+            const auto high = compare_numbers(p, n.high);
+            return (std::is_gt(low) || (std::is_eq(low) && !n.low_open)) &&
+                   (std::is_lt(high) || (std::is_eq(high) && !n.high_open));
+        }
+        // Whether the interval of the numbers a holds that of b, with endpoints compared exactly.
+        constexpr bool interval_holds(const number_bound& a, const number_bound& b) noexcept
+        {
+            const auto low = compare_numbers(a.low, b.low);
+            const auto high = compare_numbers(a.high, b.high);
+            return (std::is_lt(low) || (std::is_eq(low) && (!a.low_open || b.low_open))) &&
+                   (std::is_gt(high) || (std::is_eq(high) && (!a.high_open || b.high_open)));
+        }
+        // The numbers n, which are integers, as the doubles that they are read as, or more.
+        constexpr number_bound as_reals(number_bound n) noexcept
+        {
+            if (!n.integral) return n;
+            n.integral = false;
+            for (std::size_t i = 0; i < n.count; ++i) n.points[i] = real_number(to_double(n.points[i]));
+            n.low = real_number(to_double(n.low));
+            n.high = real_number(to_double(n.high));
+            return n;
+        }
+        // The least and the greatest of the numbers n, as an interval.
+        constexpr number_bound interval_of(number_bound n) noexcept
+        {
+            if (!n.listed) return n;
+            n.listed = false;
+            n.low_open = n.high_open = false;
+            n.low = n.high = n.points[0];
+            for (std::size_t i = 1; i < n.count; ++i)
+            {
+                if (number_less(n.points[i], n.low)) n.low = n.points[i];
+                if (number_less(n.high, n.points[i])) n.high = n.points[i];
+            }
+            n.count = 0;
+            return n;
+        }
+
+        // Whether every number of b, which `numbers_contain` reads in the domain of b, is a number of a, which has
+        // them exactly.
+        constexpr bool numbers_contain(const number_bound& a, const number_bound& b) noexcept
+        {
+            if (b.extent == bound_extent::none) return true;
+            if (a.extent != bound_extent::exact) return false;
+            const std::size_t points = point_count(b);
+            if (a.integral == b.integral || !a.integral)
+            {
+                // a double reads an integer as the double nearest to it, as `to_double` gives
+                const auto read = [&a, &b](const bound_number& p) {
+                    return a.integral == b.integral ? p : real_number(to_double(p));
+                };
+                if (points != 0)
+                {
+                    for (std::size_t i = 0; i < points; ++i)
+                        if (!has_number(a, read(point_at(b, i)))) return false;
+                    return true;
+                }
+                if (a.listed) return false;
+                // the doubles nearest to the integers between two endpoints of a are between them too if they are
+                // doubles, and an open endpoint is not one of them if the integers about it are doubles
+                if (a.integral != b.integral && (!double_exact_range(a.low) || !double_exact_range(a.high)))
+                    return false;
+                return interval_holds(a, b);
+            }
+            // An integer type reads a JSON number that is read as the double p if p is an integer, and if the
+            // integers that are read as p are p alone.
+            if (points == 0) return false;
+            for (std::size_t i = 0; i < points; ++i)
+            {
+                const auto& p = point_at(b, i);
+                const auto n = integer_beyond(p, true, false);
+                if (!double_exact_range(p) || !n.exists || !number_equal(n.value, p) || !has_number(a, n.value))
+                    return false;
+            }
+            return true;
+        }
+        // Whether no JSON number is read as a number of a and also as one of b.
+        constexpr bool numbers_disjoint(const number_bound& a, const number_bound& b) noexcept
+        {
+            if (a.extent == bound_extent::none || b.extent == bound_extent::none) return true;
+            if (a.integral != b.integral) return numbers_disjoint(as_reals(a), as_reals(b));
+            if (const std::size_t points = point_count(a); points != 0)
+            {
+                for (std::size_t i = 0; i < points; ++i)
+                    if (has_number(b, point_at(a, i))) return false;
+                return true;
+            }
+            if (point_count(b) != 0) return numbers_disjoint(b, a);
+            const auto below = [](const number_bound& x, const number_bound& y) {
+                const auto o = compare_numbers(x.high, y.low);
+                return std::is_lt(o) || (std::is_eq(o) && (x.high_open || y.low_open));
+            };
+            return below(a, b) || below(b, a);
+        }
+        // The numbers of a and of b.
+        constexpr number_bound unite_numbers(const number_bound& a, const number_bound& b) noexcept
+        {
+            if (b.extent == bound_extent::none) return a;
+            if (a.extent == bound_extent::none) return b;
+            if (numbers_contain(a, b)) return a;
+            if (numbers_contain(b, a)) return b;
+            const bool exact = a.extent == bound_extent::exact && b.extent == bound_extent::exact;
+            if (a.integral == b.integral && a.listed && b.listed && a.count + b.count <= bound_capacity)
+            {
+                auto n = a;
+                for (std::size_t i = 0; i < b.count; ++i)
+                    if (!has_number(n, b.points[i])) n.points[n.count++] = b.points[i];
+                n.extent = exact ? bound_extent::exact : bound_extent::partial;
+                return n;
+            }
+            // the least interval that holds both, which is exactly their numbers if the intervals meet
+            auto x = interval_of(as_reals(a));
+            auto y = interval_of(as_reals(b));
+            if (a.integral && b.integral)
+            {
+                x = interval_of(a);
+                y = interval_of(b);
+            }
+            if (number_less(y.low, x.low) || (number_equal(y.low, x.low) && x.low_open)) std::swap(x, y);
+            auto meet = !numbers_disjoint(x, y);
+            if (!meet && x.integral)
+            {
+                auto next = x.high;
+                meet = step_integer(next, true) && number_equal(next, y.low);
+            }
+            else if (!meet)
+                meet = number_equal(x.high, y.low) && (!x.high_open || !y.low_open);
+            auto n = x;
+            if (number_less(x.high, y.high) || (number_equal(x.high, y.high) && x.high_open))
+            {
+                n.high = y.high;
+                n.high_open = y.high_open;
+            }
+            n.extent = exact && meet && !a.listed && !b.listed && a.integral == b.integral ? bound_extent::exact
+                                                                                            : bound_extent::partial;
+            return n;
+        }
+
+        constexpr bool has_string(const string_bound& s, std::string_view v) noexcept
+        {
+            return std::find(s.strings.begin(), s.strings.begin() + static_cast<std::ptrdiff_t>(s.count), v) !=
+                   s.strings.begin() + static_cast<std::ptrdiff_t>(s.count);
+        }
+        constexpr void add_string(string_bound& s, std::string_view v) noexcept
+        {
+            if (has_string(s, v)) return;
+            if (s.count == bound_capacity)
+            {
+                // too many to list
+                s = {bound_extent::partial};
+                return;
+            }
+            s.strings[s.count++] = v;
+        }
+        constexpr string_bound unite_strings(const string_bound& a, const string_bound& b) noexcept
+        {
+            if (b.extent == bound_extent::none) return a;
+            if (a.extent == bound_extent::none) return b;
+            if (!a.listed || !b.listed)
+            {
+                const bool exact = (!a.listed && a.extent == bound_extent::exact) ||
+                                   (!b.listed && b.extent == bound_extent::exact);
+                return {exact ? bound_extent::exact : bound_extent::partial};
+            }
+            auto s = a;
+            for (std::size_t i = 0; i < b.count && s.listed; ++i) add_string(s, b.strings[i]);
+            if (b.extent != bound_extent::exact) make_partial(s.extent);
+            return s;
+        }
+
+        // The JSON values of a and of b.
+        constexpr json_bound unite_bounds(const json_bound& a, const json_bound& b) noexcept
+        {
+            auto u = json_bound{};
+            u.null = std::max(a.null, b.null);
+            if (a.boolean != bound_extent::none || b.boolean != bound_extent::none)
+            {
+                u.booleans = static_cast<std::uint8_t>(a.booleans | b.booleans);
+                const auto exact = static_cast<std::uint8_t>((a.boolean == bound_extent::exact ? a.booleans : 0) |
+                                                             (b.boolean == bound_extent::exact ? b.booleans : 0));
+                u.boolean = exact == u.booleans ? bound_extent::exact : bound_extent::partial;
+            }
+            u.number = unite_numbers(a.number, b.number);
+            u.string = unite_strings(a.string, b.string);
+            u.array = std::max(a.array, b.array);
+            u.object = std::max(a.object, b.object);
+            return u;
+        }
+        // Whether every JSON value of b is one of a, which has them exactly.
+        constexpr bool bound_contains(const json_bound& a, const json_bound& b) noexcept
+        {
+            const auto holds = [](bound_extent x, bound_extent y) {
+                return y == bound_extent::none || x == bound_extent::exact;
+            };
+            if (!holds(a.null, b.null) || !holds(a.array, b.array) || !holds(a.object, b.object)) return false;
+            if (b.boolean != bound_extent::none &&
+                (a.boolean != bound_extent::exact || (b.booleans & ~a.booleans) != 0))
+                return false;
+            if (b.string.extent != bound_extent::none)
+            {
+                if (a.string.extent != bound_extent::exact) return false;
+                if (a.string.listed)
+                {
+                    if (!b.string.listed) return false;
+                    for (std::size_t i = 0; i < b.string.count; ++i)
+                        if (!has_string(a.string, b.string.strings[i])) return false;
+                }
+            }
+            return numbers_contain(a.number, b.number);
+        }
+        // Whether no JSON value is one of a and also one of b.
+        constexpr bool bounds_disjoint(const json_bound& a, const json_bound& b) noexcept
+        {
+            const auto both = [](bound_extent x, bound_extent y) {
+                return x != bound_extent::none && y != bound_extent::none;
+            };
+            if (both(a.null, b.null) || both(a.array, b.array) || both(a.object, b.object)) return false;
+            if (both(a.boolean, b.boolean) && (a.booleans & b.booleans) != 0) return false;
+            if (both(a.string.extent, b.string.extent))
+            {
+                if (!a.string.listed || !b.string.listed) return false;
+                for (std::size_t i = 0; i < a.string.count; ++i)
+                    if (has_string(b.string, a.string.strings[i])) return false;
+            }
+            return numbers_disjoint(a.number, b.number);
+        }
+
+        // The level of a value without settings, as `table_node` has them.
+        struct no_settings_level
+        {
+            static constexpr schema_node node = {};
+            static constexpr field_constraints constraints = {};
+            static constexpr std::array<json_scalar, 0> values = {};
+        };
+        // The settings of the levels that a bound of a scalar describes: the bounds of numbers, and the values of
+        // `yyjson::const_` and `yyjson::enum_`.
+        inline constexpr std::uint32_t listing_settings = constraint_bit<const_<>> | constraint_bit<enum_<0>>;
+        inline constexpr std::uint32_t number_settings = listing_settings | constraint_bit<minimum> |
+                                                         constraint_bit<maximum> | constraint_bit<exclusive_minimum> |
+                                                         constraint_bit<exclusive_maximum>;
+        template <typename Level>
+        consteval bool level_within(std::uint32_t described)
+        {
+            return !Level::node.structured() && (Level::constraints.set & ~described) == 0;
+        }
+
+        // The values of `yyjson::const_` and `yyjson::enum_` of the level that a value equals, as `eq`
+        // compares them: those of `const_` among those of `enum_`.  `f` is called with each of them.
+        template <typename Level, typename Eq, typename F>
+        consteval void for_each_listed(Eq eq, F f)
+        {
+            constexpr const field_constraints& c = Level::constraints;
+            constexpr std::size_t constants = c.has<const_<>>() ? 1 : 0;
+            const auto listed = [&](const json_scalar& s) {
+                if constexpr (!c.has<enum_<0>>())
+                    return true;
+                else
+                    return std::any_of(Level::values.begin() + constants, Level::values.end(),
+                                       [&](const json_scalar& e) { return eq(s, e); });
+            };
+            if constexpr (constants != 0)
+            {
+                if (listed(Level::values[0])) f(Level::values[0]);
+            }
+            else
+                for (const json_scalar& s : Level::values) f(s);
+        }
+
+        // The numbers that a value of the arithmetic type T, other than `bool`, reads, with the settings of the
+        // level that `number_settings` has.
+        template <typename T, typename Level>
+        consteval number_bound arithmetic_bound()
+        {
+            constexpr const field_constraints& c = Level::constraints;
+            constexpr bool integral = std::integral<T>;
+            auto n = all_numbers(integral, bound_extent::exact);
+            if constexpr (integral)
+            {
+                using limits = std::numeric_limits<T>;
+                n.low = std::is_signed_v<T> ? sint_number(limits::min()) : uint_number(limits::min());
+                n.high = std::is_signed_v<T> ? sint_number(limits::max()) : uint_number(limits::max());
+            }
+            else if constexpr (!std::same_as<T, double>)
+            {
+                // a float reads the doubles that round to a finite float, below 2^128 - 2^103 in magnitude;
+                // the bounds of other floating-point types are not described
+                if constexpr (std::same_as<T, float> && std::numeric_limits<float>::is_iec559)
+                {
+                    n.low = real_number(-340282356779733661637539395458142568448.0);
+                    n.high = real_number(340282356779733661637539395458142568448.0);
+                }
+                if (c.set != 0 || !std::same_as<T, float> || !std::numeric_limits<float>::is_iec559)
+                    n.extent = bound_extent::partial;
+                return n;
+            }
+            bool empty = false;
+            const auto bound = [&](const bound_number& b, bool up, bool open) {
+                bound_number& end = up ? n.low : n.high;
+                bool& end_open = up ? n.low_open : n.high_open;
+                if constexpr (integral)
+                {
+                    const auto step = integer_beyond(b, up, open);
+                    if (!step.exists)
+                        empty = true;
+                    else if (up ? number_less(end, step.value) : number_less(step.value, end))
+                        end = step.value;
+                }
+                else
+                {
+                    const auto o = compare_numbers(b, end);
+                    if ((up ? std::is_gt(o) : std::is_lt(o)) || (std::is_eq(o) && open && !end_open))
+                    {
+                        end = b;
+                        end_open = open;
+                    }
+                }
+            };
+            if constexpr (c.has<minimum>()) bound(c.minimum, true, false);
+            if constexpr (c.has<exclusive_minimum>()) bound(c.exclusive_minimum, true, true);
+            if constexpr (c.has<maximum>()) bound(c.maximum, false, false);
+            if constexpr (c.has<exclusive_maximum>()) bound(c.exclusive_maximum, false, true);
+            const auto order = compare_numbers(n.low, n.high);
+            if (empty || std::is_gt(order) || (std::is_eq(order) && (n.low_open || n.high_open))) return {};
+            if constexpr (c.has<const_<>>() || c.has<enum_<0>>())
+            {
+                // An integer type equals a value of its own, and a double the double nearest to it.
+                const auto value_of = [](const json_scalar& s, bound_number& v) {
+                    if (s.kind != json_scalar::kind_t::number) return false;
+                    if constexpr (integral)
+                    {
+                        const auto step = integer_beyond(s.number, true, false);
+                        v = step.value;
+                        return step.exists && number_equal(v, s.number);
+                    }
+                    else
+                    {
+                        v = real_number(to_double(s.number));
+                        return true;
+                    }
+                };
+                auto listed = n;
+                listed.listed = true;
+                for_each_listed<Level>(
+                    [&](const json_scalar& x, const json_scalar& y) {
+                        auto v = bound_number{};
+                        auto w = bound_number{};
+                        return value_of(x, v) && value_of(y, w) && number_equal(v, w);
+                    },
+                    [&](const json_scalar& s) {
+                        auto v = bound_number{};
+                        if (!value_of(s, v) || !has_number(n, v) || has_number(listed, v)) return;
+                        if (listed.count == bound_capacity)
+                            listed.extent = bound_extent::partial;
+                        else
+                            listed.points[listed.count++] = v;
+                    });
+                if (listed.count == 0) return {};
+                if (listed.extent == bound_extent::exact) return listed;
+                n.extent = bound_extent::partial;
+            }
+            return n;
+        }
+
+        template <typename T, typename Level = no_settings_level>
+        consteval json_bound bound_of();
+
+        // The JSON values that the alternatives of V, `yyjson::any_of` or `yyjson::one_of`, read, or the types Ts
+        // without settings, together.
+        template <typename V, std::size_t... Is>
+        consteval json_bound alternatives_bound(std::index_sequence<Is...>)
+        {
+            auto b = json_bound{};
+            ((b = unite_bounds(b, bound_of<std::variant_alternative_t<Is, V>, alternative_level<V, Is>>())), ...);
+            return b;
+        }
+        template <typename... Ts>
+        consteval json_bound types_bound()
+        {
+            auto b = json_bound{};
+            ((b = unite_bounds(b, bound_of<Ts>())), ...);
+            return b;
+        }
+
+        // The JSON values that a value of the type T, with the settings of `Level`, a `table_node`, reads, or more.
+        template <typename T, typename Level>
+        consteval json_bound bound_of()
+        {
+            using U = std::remove_cv_t<T>;
+            constexpr bool settings = !Level::node.empty();
+            const auto bound = [](json_bound b, bool described) { return described ? b : partial_bound(b); };
+            if constexpr (combined_variant<U>)
+                return bound(alternatives_bound<U>(std::make_index_sequence<std::variant_size_v<U>>{}),
+                             !combined_alternatives<U>::exactly_one && !settings);
+            else if constexpr (std::same_as<U, writer::value> || std::same_as<U, json_view>)
+                return bound(universal_bound(), !settings);
+            else if constexpr (std::same_as<U, writer::object> || std::same_as<U, writer::array>)
+            {
+                auto b = json_bound{};
+                (std::same_as<U, writer::object> ? b.object : b.array) =
+                    settings ? bound_extent::partial : bound_extent::exact;
+                return b;
+            }
+            else if constexpr (std::same_as<U, std::monostate> || std::same_as<U, std::nullptr_t>)
+            {
+                auto b = json_bound{};
+                b.null = settings ? bound_extent::partial : bound_extent::exact;
+                return b;
+            }
+            else if constexpr (std::derived_from<caster<U>, builtin_caster> && nullable<U> &&
+                               (!variant_json_kinds<U>::is_variant ||
+                                variant_tags<U>::tagging == variant_tagging::untagged))
+            {
+                // the settings are those of the value that it holds, and null reads none
+                auto b = bound_of<typename nullable_holder<U>::value_type, Level>();
+                b.null = bound_extent::exact;
+                return b;
+            }
+            else if constexpr (variant_json_kinds<U>::is_variant && std::derived_from<caster<U>, builtin_caster>)
+            {
+                if constexpr (variant_tags<U>::tagging == variant_tagging::untagged)
+                    return bound([]<typename... Ts>(std::variant<Ts...>*) { return types_bound<Ts...>(); }(
+                                     static_cast<U*>(nullptr)),
+                                 !settings);
+                else
+                    return kinds_bound(accepted_json_kinds<U, reader::const_value_ref>());
+            }
+            else if constexpr (transparent_struct<U>)
+                return partial_bound(bound_of<struct_field_type<U, 0>>());
+            else if constexpr (requires(const reader::const_value_ref& json) {
+                                   { caster<U>::from_json(json) } -> std::same_as<U>;
+                               })
+                return kinds_bound(accepted_json_kinds<U, reader::const_value_ref>());
+            else if constexpr (from_json_translator<U>::castable)
+                return partial_bound(bound_of<from_json_source<U>>());
+            else if constexpr (std::same_as<U, bool>)
+            {
+                auto b = json_bound{};
+                b.boolean = level_within<Level>(listing_settings) ? bound_extent::exact : bound_extent::partial;
+                b.booleans = 3;
+                if constexpr (Level::constraints.template has<const_<>>() ||
+                              Level::constraints.template has<enum_<0>>())
+                {
+                    b.booleans = 0;
+                    for_each_listed<Level>(
+                        [](const json_scalar& x, const json_scalar& y) {
+                            return x.kind == json_scalar::kind_t::boolean && y.kind == x.kind &&
+                                   x.boolean == y.boolean;
+                        },
+                        [&b](const json_scalar& s) {
+                            if (s.kind == json_scalar::kind_t::boolean)
+                                b.booleans |= static_cast<std::uint8_t>(s.boolean ? 2U : 1U);
+                        });
+                    if (b.booleans == 0) b.boolean = bound_extent::none;
+                }
+                return b;
+            }
+            else if constexpr (std::is_arithmetic_v<U>)
+            {
+                auto b = json_bound{};
+                b.number = arithmetic_bound<U, Level>();
+                return bound(b, level_within<Level>(number_settings));
+            }
+            else if constexpr (std::same_as<U, std::string>)
+            {
+                auto b = json_bound{};
+                b.string.extent = bound_extent::exact;
+                if constexpr (Level::constraints.template has<const_<>>() ||
+                              Level::constraints.template has<enum_<0>>())
+                {
+                    b.string.listed = true;
+                    for_each_listed<Level>(
+                        [](const json_scalar& x, const json_scalar& y) {
+                            return x.kind == json_scalar::kind_t::string && y.kind == x.kind &&
+                                   x.string() == y.string();
+                        },
+                        [&b](const json_scalar& s) {
+                            if (s.kind == json_scalar::kind_t::string) add_string(b.string, s.string());
+                        });
+                    if (b.string.listed && b.string.count == 0) b.string = {};
+                }
+                return bound(b, level_within<Level>(listing_settings));
+            }
+            else if constexpr (std::is_enum_v<U>)
+            {
+                auto b = json_bound{};
+                if constexpr (enum_by_name<U>)
+                {
+                    b.string = {bound_extent::exact, true};
+                    for (const std::string_view name : enum_conversion<U>::names) add_string(b.string, name);
+                }
+                // which integers name a value is not described
+                if constexpr (enum_by_integer<U>)
+                    b.number = arithmetic_bound<std::underlying_type_t<U>, no_settings_level>();
+                make_partial(b.number.extent);
+                return bound(b, !settings);
+            }
+            else if constexpr (back_insertable<U> && !insertable_set<U> && !pair_array_map<U> &&
+                               accepted_json_kinds<U, reader::const_value_ref>() == json_kind_array)
+            {
+                // the array of any JSON values, or a part of the arrays
+                constexpr auto element = bound_of<std::ranges::range_value_t<U>>();
+                auto b = json_bound{};
+                b.array = !settings && bound_contains(element, universal_bound()) ? bound_extent::exact
+                                                                                  : bound_extent::partial;
+                return b;
+            }
+            else
+                return kinds_bound(accepted_json_kinds<U, reader::const_value_ref>());
+        }
+
+        // Of the alternatives of V, `yyjson::any_of` or `yyjson::one_of`: the first one that reads no JSON value at
+        // all, `empty`; the first one that is never read, `contained`, with the one that reads every value that it
+        // reads, `container`; `size` for none; and whether two alternatives may both read a JSON value.  Of
+        // `yyjson::any_of`, an alternative is never read if one before it reads all its values; of `yyjson::one_of`,
+        // an alternative never is the only one to read a value if another one reads all its values.
+        template <typename V>
+        struct alternative_relations
+        {
+            static constexpr std::size_t size = std::variant_size_v<V>;
+            static consteval std::array<json_bound, size> make_bounds()
+            {
+                return [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                    return std::array<json_bound, size>{
+                        bound_of<std::variant_alternative_t<Is, V>, alternative_level<V, Is>>()...};
+                }(std::make_index_sequence<size>{});
+            }
+            static constexpr std::array<json_bound, size> bounds = make_bounds();
+
+            static consteval std::size_t find_empty()
+            {
+                for (std::size_t i = 0; i < size; ++i)
+                    if (bounds_disjoint(bounds[i], bounds[i])) return i;
+                return size;
+            }
+            static constexpr std::size_t empty = find_empty();
+
+            struct alternative_pair
+            {
+                std::size_t contained = size;
+                std::size_t container = size;
+            };
+            static consteval alternative_pair find_contained()
+            {
+                for (std::size_t j = 1; j < size; ++j)
+                    for (std::size_t i = 0; i < j; ++i)
+                    {
+                        if (bound_contains(bounds[i], bounds[j])) return {j, i};
+                        if (combined_alternatives<V>::exactly_one && bound_contains(bounds[j], bounds[i]))
+                            return {i, j};
+                    }
+                return {};
+            }
+            static constexpr alternative_pair pair = find_contained();
+            static constexpr std::size_t contained = pair.contained;
+            static constexpr std::size_t container = pair.container;
+
+            static consteval std::array<std::array<bool, size>, size> make_overlap()
+            {
+                auto overlap = std::array<std::array<bool, size>, size>{};
+                for (std::size_t i = 0; i < size; ++i)
+                    for (std::size_t j = 0; j < size; ++j) overlap[i][j] = !bounds_disjoint(bounds[i], bounds[j]);
+                return overlap;
+            }
+            static constexpr std::array<std::array<bool, size>, size> overlap = make_overlap();
+        };
+
+        // The compile errors of `check_alternative_bounds`, whose template arguments, which the compiler shows,
+        // are the indices of the alternatives.
+        template <std::size_t Index>
+        struct alternative_reads_nothing
+        {
+            static_assert(false_v<std::integral_constant<std::size_t, Index>>,
+                          "an alternative of yyjson::any_of or yyjson::one_of reads no JSON value, as its settings "
+                          "leave no value of its type; the template argument of alternative_reads_nothing is its "
+                          "index");
+        };
+        template <std::size_t Later, std::size_t Earlier>
+        struct any_of_alternative_never_read
+        {
+            static_assert(Later == Earlier,
+                          "an alternative of yyjson::any_of reads no JSON value that an alternative before it does "
+                          "not read, so it is never read; put the narrower one first (the template arguments of "
+                          "any_of_alternative_never_read are the indices of the later alternative and the earlier "
+                          "one)");
+        };
+        template <std::size_t Contained, std::size_t Container>
+        struct one_of_alternative_contained
+        {
+            static_assert(Contained == Container,
+                          "an alternative of yyjson::one_of reads only JSON values that another alternative reads, "
+                          "so it is never the only one to read a value; remove it or narrow the other one (the "
+                          "template arguments of one_of_alternative_contained are the indices of the alternative "
+                          "and the other one)");
+        };
+
+        // Fails to compile if an alternative of V, `yyjson::any_of` or `yyjson::one_of`, is never read, or never
+        // the only one to read a value, as `alternative_relations` tells, and returns true otherwise, for a
+        // `static_assert` that adds no error of its own.  It is checked where V is read, written, validated or
+        // described, and not where V is defined, where the types of its alternatives may be incomplete.
+        template <typename V>
+        consteval bool check_alternative_bounds()
+        {
+            using relations = alternative_relations<V>;
+            if constexpr (relations::empty != relations::size)
+                (void)alternative_reads_nothing<relations::empty>{};
+            else if constexpr (relations::contained != relations::size)
+            {
+                if constexpr (combined_alternatives<V>::exactly_one)
+                    (void)one_of_alternative_contained<relations::contained, relations::container>{};
+                else
+                    (void)any_of_alternative_never_read<relations::contained, relations::container>{};
+            }
+            return true;
+        }
 
         // The values nested in a JSON value that `cast<T>` reads as types of their own, which `may_cast<T>` checks
         // in turn: the value of an optional or a shared pointer that is not null, the source of a translator, the

@@ -1879,6 +1879,64 @@ namespace compile_rules
     static_assert(yyjson::detail::alternative_level<Alternatives, 2>::constraints.pattern_text.view() ==
                   "^[a-z]+$");
     static_assert(yyjson::detail::alternative_level<Alternatives, 3>::node.contains != 0);
+
+    // the JSON values that each alternative reads: `contained` is the first alternative that is never read
+    // (any_of) or never the only one to read a value (one_of), `container` the one that reads them first
+    enum class Shade { light, dark };
+    using yyjson::alt, yyjson::any_of, yyjson::one_of;
+    using yyjson::minimum, yyjson::maximum, yyjson::exclusive_maximum, yyjson::const_, yyjson::enum_;
+    template <typename V>
+    using relations = yyjson::detail::alternative_relations<V>;
+    template <typename V>
+    constexpr auto contained = relations<V>::contained;
+    static_assert(yyjson::detail::check_alternative_bounds<Alternatives>());
+    static_assert(yyjson::detail::check_alternative_bounds<ExactlyOne>());
+    static_assert(contained<any_of<double, int>> == 1 && relations<any_of<double, int>>::container == 0);
+    static_assert(contained<any_of<int, double>> == 2);
+    static_assert(contained<any_of<double, std::uint64_t>> == 1);
+    static_assert(contained<any_of<float, double>> == 2 && contained<any_of<double, float>> == 1);
+    static_assert(contained<any_of<std::string, Shade>> == 1 && contained<any_of<Shade, std::string>> == 2);
+    static_assert(contained<any_of<int, std::optional<int>>> == 2 && contained<any_of<std::optional<int>, int>> == 1);
+    static_assert(contained<any_of<yyjson::value, std::map<std::string, int>>> == 1);
+    static_assert(contained<any_of<std::vector<yyjson::value>, std::vector<int>>> == 1);
+    static_assert(contained<any_of<std::vector<int>, std::vector<yyjson::value>>> == 2);
+    static_assert(contained<any_of<alt<int, minimum(0)>, alt<int, minimum(5)>>> == 1);
+    static_assert(contained<any_of<alt<int, minimum(5)>, alt<int, minimum(0)>>> == 2);
+    static_assert(contained<any_of<std::int8_t, alt<int, minimum(-128.5), exclusive_maximum(127.5)>>> == 1);
+    static_assert(contained<any_of<std::int8_t, alt<int, minimum(-129), maximum(127)>>> == 2);
+    static_assert(contained<any_of<alt<double, exclusive_maximum(1)>, alt<int, maximum(0)>>> == 1);
+    static_assert(contained<any_of<alt<double, exclusive_maximum(1)>, alt<int, maximum(1)>>> == 2);
+    static_assert(contained<any_of<alt<int, enum_(1, 2, 3)>, alt<int, const_(2)>>> == 1);
+    static_assert(contained<any_of<alt<int, const_(2.0)>, alt<double, const_(2)>>> == 1);
+    static_assert(contained<any_of<alt<int, enum_(1, 2)>, alt<double, enum_(2, 2.5)>>> == 2);
+    static_assert(contained<any_of<bool, alt<bool, const_(true)>>> == 1);
+    static_assert(contained<any_of<alt<std::string, enum_("light", "dark")>, Shade>> == 1);
+    static_assert(contained<any_of<alt<std::string, enum_("light")>, Shade>> == 2);
+    static_assert(contained<any_of<alt<std::string, enum_("a", "b")>, alt<std::string, const_("b")>>> ==
+                  1);
+    // pattern, satisfies and the like make a bound partial: such an alternative contains no other one
+    static_assert(contained<any_of<alt<std::string, yyjson::pattern("^a")>, alt<std::string, const_("b")>>> ==
+                  2);
+    static_assert(contained<any_of<std::string, alt<std::string, yyjson::pattern("^a")>>> == 1);
+    static_assert(contained<any_of<alt<int, yyjson::satisfies<alternative_even>>, int>> == 2);
+    static_assert(contained<any_of<alt<int, yyjson::multiple_of(2)>, alt<int, const_(4)>>> == 2);
+    // an alternative that reads no value at all, also the first one
+    static_assert(relations<any_of<alt<int, minimum(0), maximum(-1)>, std::string>>::empty == 0);
+    static_assert(relations<any_of<int, alt<std::uint8_t, maximum(-1)>>>::empty == 1);
+    static_assert(relations<any_of<alt<std::uint8_t, maximum(0)>, std::string>>::empty == 2);
+    // nested alternatives: any_of and std::variant read the union, one_of a part of it
+    static_assert(contained<any_of<std::variant<int, std::string>, std::string>> == 1);
+    static_assert(contained<any_of<one_of<int, std::string>, std::string>> == 2);
+    // one_of: containment either way, and overlap without containment
+    static_assert(contained<one_of<int, alt<int, minimum(0)>>> == 1);
+    static_assert(contained<one_of<alt<int, minimum(0)>, int>> == 0 &&
+                  relations<one_of<alt<int, minimum(0)>, int>>::container == 1);
+    using Signedness = one_of<std::int64_t, std::uint64_t>;
+    static_assert(contained<Signedness> == 2 && relations<Signedness>::overlap[0][1]);
+    using Split = one_of<alt<double, maximum(0.5)>, alt<int, minimum(1)>, std::string>;
+    static_assert(contained<Split> == 3 && !relations<Split>::overlap[0][1] && !relations<Split>::overlap[1][2]);
+    using Touching = one_of<alt<double, maximum(1)>, alt<int, minimum(1)>>;
+    static_assert(contained<Touching> == 2 && relations<Touching>::overlap[1][0]);
 }  // namespace compile_rules
 
 TEST(Constraints, AlternativeTypes)
