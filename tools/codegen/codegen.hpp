@@ -3062,11 +3062,72 @@ namespace cpp_yyjson_codegen
                                   "generated code reads");
             }
 
+            // whether the value `v` is of one of the types `types` of the keyword `type`
+            static bool of_types(const json& v, const std::vector<std::string>& types)
+            {
+                const auto has = [&](std::string_view t) { return std::ranges::find(types, t) != types.end(); };
+                switch (v.k)
+                {
+                    case json::kind::null:
+                        return has("null");
+                    case json::kind::boolean:
+                        return has("boolean");
+                    case json::kind::number:
+                        return has("number") || (has("integer") && v.is_integral());
+                    case json::kind::string:
+                        return has("string");
+                    case json::kind::array:
+                        return has("array");
+                    case json::kind::object:
+                        return has("object");
+                }
+                return false;
+            }
+
+            // the values of `const` or `enum` that the generated code reads beside the types `types` of the keyword
+            // `type`: the values of those types, or all of them when none is, since a value of `const` or `enum` tells
+            // more of what the author meant than `type` does
+            static std::vector<const json*> kept_values(std::span<const json> values,
+                                                        const std::vector<std::string>& types)
+            {
+                auto out = std::vector<const json*>();
+                for (const auto& v : values)
+                    if (types.empty() || of_types(v, types)) out.push_back(&v);
+                if (out.empty())
+                    for (const auto& v : values) out.push_back(&v);
+                return out;
+            }
+
+            // `kept_values()`, warning of the values that `type` rejects
+            std::vector<const json*> typed_values(std::span<const json> values, const std::vector<std::string>& types,
+                                                  const std::string& keyword, const std::string& loc)
+            {
+                auto out = kept_values(values, types);
+                const auto kept =
+                    std::ranges::count_if(values, [&](const json& v) { return types.empty() || of_types(v, types); });
+                if (std::cmp_equal(kept, values.size())) return out;
+                if (kept == 0)
+                    warn(loc, std::string(keyword == "const" ? "the value of `const` is not" : "no value of `enum` is") +
+                                  " of the `type` beside it: the schema accepts no value here, and the generated code "
+                                  "reads the value" + (values.size() == 1 ? "" : "s") + " of `" + keyword +
+                                  "` and ignores `type`");
+                else
+                {
+                    const auto rejected = values.size() - static_cast<std::size_t>(kept);
+                    warn(loc, (rejected == 1 ? std::string("a value of `enum` is")
+                                             : std::to_string(rejected) + " values of `enum` are") +
+                                  " not of the `type` beside it, which the schema rejects and the generated code "
+                                  "leaves out");
+                }
+                return out;
+            }
+
             typed type_const(const json& s, const std::string& loc)
             {
                 const auto& c = *s.find("const");
                 auto r = typed();
                 check_listed_values(s, "const", loc);
+                typed_values(std::span(&c, 1), type_list(s), "const", loc);
                 switch (c.k)
                 {
                     case json::kind::null:
@@ -3136,34 +3197,13 @@ namespace cpp_yyjson_codegen
                     return {};
                 }
                 check_listed_values(s, "enum", loc);
-                const auto types = type_list(s);
-                const auto allowed = [&](const json& v) {
-                    if (types.empty()) return true;
-                    const auto has = [&](std::string_view t) { return std::ranges::find(types, t) != types.end(); };
-                    switch (v.k)
-                    {
-                        case json::kind::null:
-                            return has("null");
-                        case json::kind::boolean:
-                            return has("boolean");
-                        case json::kind::number:
-                            return has("number") || (has("integer") && v.is_integral());
-                        case json::kind::string:
-                            return has("string");
-                        case json::kind::array:
-                            return has("array");
-                        case json::kind::object:
-                            return has("object");
-                    }
-                    return false;
-                };
                 auto nullable = false;
                 auto strings = std::vector<std::string>();
                 auto numbers = std::vector<const json*>();
                 auto bools = std::vector<bool>();
-                for (const auto& v : e.items)
+                for (const auto* p : typed_values(e.items, type_list(s), "enum", loc))
                 {
-                    if (!allowed(v)) continue;
+                    const auto& v = *p;
                     if (v.is_null())
                         nullable = true;
                     else if (v.is_string())
@@ -3431,27 +3471,30 @@ namespace cpp_yyjson_codegen
                                return x.k == v.k && x.text == v.text;
                            });
                 };
+                // a `type` beside keeps the values of its types, or all of them when none is, as `kept_values()`
+                const auto base_types = type_list(base);
                 if (!base.members.empty())
                 {
-                    const auto t = type_list(base);
                     if (std::ranges::any_of(base.members,
                                             [](const auto& m) {
                                                 return m.first != "type" && m.first != "enum" &&
                                                        (is_type_key(m.first) || is_ignored_key(m.first));
                                             }) ||
-                        (base.find("type") != nullptr &&
-                         (t.empty() ||
-                          std::ranges::any_of(t, [](const auto& x) { return x != "string" && x != "null"; }))))
+                        (base.find("type") != nullptr && base_types.empty()))
                         return std::nullopt;
-                    if (base.find("type") != nullptr) base_null = std::ranges::find(t, "null") != t.end();
+                    if (base.find("type") != nullptr)
+                        base_null = std::ranges::find(base_types, "null") != base_types.end();
                 }
                 if (!listed(json())) base_null = false;
                 auto values = std::vector<std::string>();
                 auto metas = std::map<std::string, metadata>();
                 auto nullable = false;
                 auto duplicate = false;
-                for (const auto& b : list.items)
+                // the subschemas whose values `type` rejects, warned of once the enum class is made
+                auto checks = std::vector<std::pair<std::size_t, std::vector<std::string>>>();
+                for (std::size_t i = 0; i < list.items.size(); ++i)
                 {
+                    const auto& b = list.items[i];
                     if (!b.is_object() ||
                         std::ranges::any_of(b.members, [](const auto& m) {
                             return m.first != "const" && m.first != "enum" && m.first != "type" &&
@@ -3474,27 +3517,40 @@ namespace cpp_yyjson_codegen
                         nullable = true;
                         continue;
                     }
-                    const auto own = c != nullptr ? std::vector<json>{*c} : e->is_array() ? e->items : std::vector<json>();
-                    if (own.empty() || std::ranges::any_of(own, [](const json& v) { return !v.is_string(); }))
+                    const auto all = c != nullptr     ? std::span(c, 1)
+                                     : e->is_array() ? std::span<const json>(e->items)
+                                                     : std::span<const json>();
+                    const auto& types = t.empty() ? base_types : t;
+                    const auto own = kept_values(all, types);
+                    if (own.empty() || std::ranges::any_of(own, [](const json* v) { return !v->is_string(); }))
                         return std::nullopt;
+                    if (!types.empty() && !std::ranges::all_of(all, [&](const json& v) { return of_types(v, types); }))
+                        checks.emplace_back(i, types);
                     auto m = meta_of(b);
                     if (!m.description) m.description = m.title;
                     m.title.reset();
                     m.examples.clear();
                     m.deprecated = false;
-                    for (const auto& v : own)
+                    for (const auto* v : own)
                     {
-                        if (!listed(v)) continue;
-                        if (std::ranges::find(values, v.text) != values.end())
+                        if (!listed(*v)) continue;
+                        if (std::ranges::find(values, v->text) != values.end())
                         {
                             duplicate = true;
                             continue;
                         }
-                        values.push_back(v.text);
-                        if (!metadata_empty(m)) metas.emplace(v.text, m);
+                        values.push_back(v->text);
+                        if (!metadata_empty(m)) metas.emplace(v->text, m);
                     }
                 }
                 if (values.empty()) return std::nullopt;
+                for (const auto& [i, types] : checks)
+                {
+                    const auto& b = list.items[i];
+                    const auto* c = b.find("const");
+                    typed_values(c != nullptr ? std::span(c, 1) : std::span(b.find("enum")->items), types,
+                                 c != nullptr ? "const" : "enum", loc + "/" + kw + "/" + std::to_string(i));
+                }
                 if (duplicate && kw == "oneOf")
                     warn(loc, "a string of `oneOf` is in more than one subschema, which never reads it alone; the "
                               "string is read as one enumerator");

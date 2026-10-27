@@ -368,8 +368,12 @@ A schema can contradict itself, so that no value is valid at some place. The gen
 | `minLength` above `maxLength`, `minItems` above `maxItems`, `minProperties` above `maxProperties` of a map, bounds that no number of the C++ type is within, `const` or `enum` outside the bounds | does not compile: the library rejects at compile time settings that leave no value to read |
 | `minContains` above `maxContains` | compiles, and reading an array there always fails |
 | `const` or `enum` beside bounds or lengths that reject some of its values | reads the values of `const` and `enum` as they are, also those that the schema rejects |
+| `const` or `enum` with values outside `type`, such as `{"type": "string", "enum": ["a", []]}` | reads the values of the types of `type`, `"a"` here |
+| `const` or `enum` with no value of the types of `type`, such as `{"type": "object", "enum": ["a", "b"]}` | ignores `type` and reads the values of `const` and `enum`, as `"a"` and `"b"` here |
 
-The last case is the only one where the code reads less strictly without the warning saying so in its group: the C++ type of a `const` or an `enum` does not take the other keywords beside it.
+The `const` or the `enum` decides what is read when `type` and the values contradict each other, because the values say more of what the author meant, and following `type` would leave nothing to read there. The same holds for the `type` of a schema around `oneOf` or `anyOf` of strings, which goes into every subschema: `{"type": "object", "oneOf": [{"const": "a"}, {"const": "b"}, {...}]}` makes the strings an enum class as it does without the `type`.
+
+The third and the last rows are the ones where the code reads less strictly without the warning saying so in its group: the C++ type of a `const` or an `enum` does not take the other keywords beside it.
 
 ## Round trip
 

@@ -1290,6 +1290,45 @@ TEST(Codegen, Contradictions)
     EXPECT_THROW((void)generate(schema, {.strict = true}), cpp_yyjson_codegen::error);
 }
 
+TEST(Codegen, ValuesOutsideType)
+{
+    // the values of `const` and `enum` of the types of `type` are read, or all of them when none is, with a warning
+    const auto schema = R"({
+        "type": "object",
+        "properties": {
+            "some": {"type": "string", "enum": ["always", "never", [], {}]},
+            "none": {"type": "object", "enum": ["a", "b"]},
+            "one": {"type": "integer", "const": "s"},
+            "kept": {"type": ["string", "null"], "enum": ["a", null]},
+            "choices": {"type": "object", "oneOf": [
+                {"oneOf": [{"const": "none"}, {"const": "gzip"}]},
+                {"type": "object", "properties": {"level": {"type": "integer"}}, "required": ["level"]}
+            ]}
+        }
+    })";
+    const auto r = generate(schema, {});
+    EXPECT_EQ(warnings(r),
+              "#/properties/some: 2 values of `enum` are not of the `type` beside it, which the schema rejects and "
+              "the generated code leaves out\n"
+              "#/properties/none: no value of `enum` is of the `type` beside it: the schema accepts no value here, "
+              "and the generated code reads the values of `enum` and ignores `type`\n"
+              "#/properties/one: the value of `const` is not of the `type` beside it: the schema accepts no value "
+              "here, and the generated code reads the value of `const` and ignores `type`\n"
+              "#/properties/choices/oneOf/0/oneOf/0: the value of `const` is not of the `type` beside it: the schema "
+              "accepts no value here, and the generated code reads the value of `const` and ignores `type`\n"
+              "#/properties/choices/oneOf/0/oneOf/1: the value of `const` is not of the `type` beside it: the schema "
+              "accepts no value here, and the generated code reads the value of `const` and ignores `type`\n");
+    EXPECT_TRUE(has(r.code, "enum class RootSome\n{\n    always,\n    never,\n};"));
+    EXPECT_TRUE(has(r.code, "enum class RootNone\n{\n    a,\n    b,\n};"));
+    EXPECT_TRUE(has(r.code, "std::optional<std::string> one;"));
+    EXPECT_TRUE(has(r.code, "yyjson::field(\"one\", yyjson::const_(\"s\"))"));
+    EXPECT_TRUE(has(r.code, "std::optional<std::variant<std::monostate, RootKept>> kept;"));
+    // the strings of the subschemas become an enum class, as they do without the `type` of the parent
+    EXPECT_TRUE(has(r.code, "enum class RootChoicesOption1\n{\n    none,\n    gzip,\n};"));
+    EXPECT_TRUE(has(r.code, "std::optional<yyjson::one_of<RootChoicesOption1, RootChoicesOption2>> choices;"));
+    EXPECT_THROW((void)generate(schema, {.strict = true}), cpp_yyjson_codegen::error);
+}
+
 TEST(Codegen, TransparentRoot)
 {
     const auto r = generate(R"({"type": "array", "items": {"type": "integer"}, "maxItems": 3})", {});
