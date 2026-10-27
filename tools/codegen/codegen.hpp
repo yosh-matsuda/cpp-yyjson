@@ -3305,6 +3305,7 @@ namespace cpp_yyjson_codegen
                 }
                 if (auto r = string_choices(s0, *s, base, *list, kw, loc, hint, named)) return *r;
                 if (auto r = tagged_variant(schemas, locs, loc)) return *r;
+                if (auto r = nullable_tagged_variant(base, *list, kw, locs, loc)) return *r;
                 auto alts = std::vector<typed>();
                 auto metas = std::vector<metadata>();
                 for (std::size_t i = 0; i < schemas.size(); ++i)
@@ -3424,6 +3425,45 @@ namespace cpp_yyjson_codegen
                     return std::ranges::find(allowed, x) != allowed.end() ||
                            (x == "integer" && std::ranges::find(allowed, "number") != allowed.end());
                 });
+            }
+
+            // a tagged variant under a base type that also allows null, as in {"type": ["object", "null"], "anyOf":
+            // [{"properties": {"kind": {"const": "a"}}, ...}, ...]}: null is a subschema of its own, valid when
+            // `anyOf` has a subschema that does not constrain the type, or `oneOf` exactly one
+            std::optional<typed> nullable_tagged_variant(const json& base, const json& list, const std::string& kw,
+                                                         const std::vector<std::string>& locs, const std::string& loc)
+            {
+                auto types = type_list(base);
+                if (types.size() < 2 || std::ranges::find(types, "null") == types.end()) return std::nullopt;
+                auto taking_null = std::size_t();
+                for (const auto& b : list.items)
+                {
+                    if (!b.is_object() || b.has("$ref") || b.has("const") || b.has("enum") || b.has("allOf") ||
+                        b.has("anyOf") || b.has("oneOf") || b.has("not"))
+                        return std::nullopt;
+                    const auto t = type_list(b);
+                    if (t.empty() || std::ranges::find(t, "null") != t.end()) ++taking_null;
+                }
+                std::erase(types, "null");
+                auto stripped = base;
+                stripped.set("type", type_json(types));
+                auto schemas = std::vector<const json*>();
+                auto all_locs = std::vector<std::string>();
+                if (kw == "anyOf" ? taking_null > 0 : taking_null == 1)
+                {
+                    auto n = json::object_of();
+                    n.set("type", json::string_of("null"));
+                    schemas.push_back(store(std::move(n)));
+                    all_locs.push_back(loc);
+                }
+                for (std::size_t i = 0; i < list.items.size(); ++i)
+                {
+                    auto c = stripped;
+                    c.set("allOf", json::array_of({list.items[i]}));
+                    schemas.push_back(store(std::move(c)));
+                    all_locs.push_back(locs[i]);
+                }
+                return tagged_variant(schemas, all_locs, loc);
             }
 
             std::optional<typed> tagged_variant(const std::vector<const json*>& schemas,

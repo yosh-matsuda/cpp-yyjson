@@ -269,6 +269,35 @@ TEST(Codegen, Variants)
                     "    yyjson::internal_tag(\"kind\", {\"circle\", \"square\"}));"));
 }
 
+TEST(Codegen, NullableTaggedVariants)
+{
+    // null of the base type is an alternative when the subschemas let it through: anyOf when one does, oneOf when
+    // exactly one does
+    const auto r = generate(R"({
+        "type": "object",
+        "properties": {
+            "a": {"type": ["object", "null"], "properties": {"name": {"type": "string"}},
+                  "anyOf": [{"properties": {"kind": {"const": "x"}}, "required": ["kind"]},
+                            {"properties": {"kind": {"const": "y"}}, "required": ["kind"]}]},
+            "b": {"type": ["object", "null"],
+                  "oneOf": [{"properties": {"kind": {"const": "x"}}, "required": ["kind"]},
+                            {"properties": {"kind": {"const": "y"}}, "required": ["kind"]}]},
+            "c": {"type": ["object", "null"],
+                  "oneOf": [{"type": "object", "properties": {"kind": {"const": "x"}}, "required": ["kind"]},
+                            {"properties": {"kind": {"const": "y"}}, "required": ["kind"]}]}
+        }
+    })",
+                            {});
+    EXPECT_EQ(warnings(r), "");
+    EXPECT_TRUE(has(r.code, "    std::optional<std::variant<std::monostate, X, Y>> a;\n"));
+    EXPECT_TRUE(has(r.code, "    std::optional<std::variant<X2, Y2>> b;\n"));
+    EXPECT_TRUE(has(r.code, "    std::optional<std::variant<std::monostate, X3, Y3>> c;\n"));
+    EXPECT_TRUE(has(r.code, "struct Y\n{\n    std::optional<std::string> name;\n    std::string kind = \"y\";\n"));
+    EXPECT_TRUE(has(r.code,
+                    "yyjson::annotations<std::variant<std::monostate, X, Y>> = yyjson::annotate(\n"
+                    "    yyjson::internal_tag(\"kind\", {\"x\", \"y\"}));"));
+}
+
 TEST(Codegen, Alternatives)
 {
     const auto schema = R"({

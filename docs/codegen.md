@@ -252,7 +252,7 @@ The generator compares the alternatives as the library does, by their kinds, bou
 *   `yyjson::any_of` reads the first alternative that accepts a value, so an alternative contained in another one comes first.
 *   An alternative of `oneOf` contained in another one never reads a value alone, so it is dropped with a warning, and an alternative whose settings leave no value is dropped too.
 
-`oneOf` of objects that share a required property with a different `const` string in each becomes a `std::variant` with [`yyjson::internal_tag`](conversions.md#internal-tag), which picks the alternative by the key instead of trying each.
+`anyOf` or `oneOf` of objects that share a required property with a different `const` string in each becomes a `std::variant` with [`yyjson::internal_tag`](conversions.md#internal-tag), which picks the alternative by the key instead of trying each. When the type of the schema also allows `null`, as `"type": ["object", "null"]` does, `null` is an alternative of its own, `std::monostate`, if the subschemas let it through: for `anyOf` one of them, for `oneOf` exactly one.
 
 A type array becomes a `std::variant`: its alternatives have different kinds, so the order does not matter. An `integer` beside a `number` is the `number`.
 
