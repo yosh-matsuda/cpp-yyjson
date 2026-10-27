@@ -118,4 +118,14 @@ TEST(CodegenCMake, Alternatives)
     EXPECT_EQ(other.level.index(), 0U);
     EXPECT_EQ(yyjson::write(other), json);
     EXPECT_NO_THROW(yyjson::validate(other));
+
+    // lengths and numbers of items: the alternative of the shorter strings comes first in `anyOf`, and `oneOf`
+    // reads the only alternative within the bounds
+    EXPECT_EQ(yyjson::read<model::Choices>(R"({"size":1,"name":"abc"})").name->index(), 0U);
+    EXPECT_EQ(yyjson::read<model::Choices>(R"({"size":1,"name":"abcd"})").name->index(), 1U);
+    EXPECT_EQ(yyjson::read<model::Choices>(R"({"size":1,"code":"abc"})").code->index(), 0U);
+    EXPECT_EQ(yyjson::read<model::Choices>(R"({"size":1,"code":"abcd"})").code->index(), 1U);
+    EXPECT_EQ(yyjson::read<model::Choices>(R"({"size":1,"list":[1]})").list->index(), 0U);
+    EXPECT_EQ(yyjson::read<model::Choices>(R"({"size":1,"list":["a","b"]})").list->index(), 1U);
+    EXPECT_THROW((void)yyjson::read<model::Choices>(R"({"size":1,"list":[1,2]})"), yyjson::bad_cast);
 }

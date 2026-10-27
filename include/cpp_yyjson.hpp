@@ -6136,7 +6136,7 @@ namespace yyjson
             return std::isfinite(q) && q == std::trunc(q);
         }
         // The number of code points in the UTF-8 string `s`.
-        inline std::size_t code_points(std::string_view s) noexcept
+        constexpr std::size_t code_points(std::string_view s) noexcept
         {
             auto n = std::size_t{0};
             for (const auto c : s) n += (static_cast<unsigned char>(c) & 0xC0) != 0x80;
@@ -6990,7 +6990,8 @@ namespace yyjson
         }
 
         // Whether the settings of the level `Level` leave no value of V, the type that they constrain, to read, as
-        // far as the bounds of numbers and the values of `yyjson::const_` and `yyjson::enum_` tell, and
+        // far as the bounds of numbers, of lengths and of numbers of items, and the values of `yyjson::const_`
+        // and `yyjson::enum_` tell, and
         // false for the settings that do not fit V, which `value_constraint_violation` reports.
         template <typename Level, typename V>
         consteval bool settings_read_nothing();
@@ -7002,8 +7003,9 @@ namespace yyjson
             static_assert(false_v<Level, V>,
                           "the settings of a field, an element, a key or an alternative of yyjson::any_of or "
                           "yyjson::one_of leave no value of its type to read: no number of the type is within the "
-                          "bounds, or no value of yyjson::const_ and yyjson::enum_ is of the type, within "
-                          "the bounds and in both; the settings of a std::optional, a smart pointer or a std::variant "
+                          "bounds, a minimum length or number of items is greater than the maximum, or no value of "
+                          "yyjson::const_ and yyjson::enum_ is of the type, within the bounds and the "
+                          "lengths and in both; the settings of a std::optional, a smart pointer or a std::variant "
                           "of std::monostate are those of the value that it holds, even though null is read");
         };
 
@@ -15823,13 +15825,48 @@ namespace yyjson
             std::size_t count = 0;
             std::array<bound_number, bound_capacity> points = {};
         };
-        // The strings of a bound: the `count` `strings` if `listed`, and otherwise all of them.
+        // The lengths of strings in code points, or the numbers of the elements of arrays or of the members of
+        // objects, from `low` to `high`.
+        struct count_range
+        {
+            std::size_t low = 0;
+            std::size_t high = std::numeric_limits<std::size_t>::max();
+        };
+        constexpr bool counts_hold(const count_range& a, const count_range& b) noexcept
+        {
+            return a.low <= b.low && b.high <= a.high;
+        }
+        constexpr bool counts_meet(const count_range& a, const count_range& b) noexcept
+        {
+            return a.low <= b.high && b.low <= a.high;
+        }
+        // Whether the counts of a and of b are those from the least to the greatest of them.
+        constexpr bool counts_join(const count_range& a, const count_range& b) noexcept
+        {
+            constexpr auto max = std::numeric_limits<std::size_t>::max();
+            return counts_meet(a, b) || (a.high != max && a.high + 1 == b.low) || (b.high != max && b.high + 1 == a.low);
+        }
+        constexpr count_range counts_hull(const count_range& a, const count_range& b) noexcept
+        {
+            return {std::min(a.low, b.low), std::max(a.high, b.high)};
+        }
+        constexpr bool has_count(const count_range& r, std::size_t n) noexcept { return r.low <= n && n <= r.high; }
+
+        // The strings of a bound: the `count` `strings` if `listed`, and otherwise those whose lengths are within
+        // `lengths`, which holds the lengths of the listed ones too.
         struct string_bound
         {
             bound_extent extent = bound_extent::none;
             bool listed = false;
             std::size_t count = 0;
             std::array<std::string_view, bound_capacity> strings = {};
+            count_range lengths;
+        };
+        // A part or all of the arrays, or the objects, whose numbers of elements or members are within `counts`.
+        struct container_bound
+        {
+            bound_extent extent = bound_extent::none;
+            count_range counts;
         };
         // The bound of each kind of JSON values; `booleans` has the bit 0 for false and the bit 1 for true.
         struct json_bound
@@ -15839,8 +15876,8 @@ namespace yyjson
             std::uint8_t booleans = 0;
             number_bound number;
             string_bound string;
-            bound_extent array = bound_extent::none;
-            bound_extent object = bound_extent::none;
+            container_bound array;
+            container_bound object;
         };
 
         constexpr void make_partial(bound_extent& e) noexcept
@@ -15849,7 +15886,8 @@ namespace yyjson
         }
         constexpr json_bound partial_bound(json_bound b) noexcept
         {
-            for (bound_extent* e : {&b.null, &b.boolean, &b.number.extent, &b.string.extent, &b.array, &b.object})
+            for (bound_extent* e :
+                 {&b.null, &b.boolean, &b.number.extent, &b.string.extent, &b.array.extent, &b.object.extent})
                 make_partial(*e);
             return b;
         }
@@ -15876,7 +15914,12 @@ namespace yyjson
         constexpr json_bound universal_bound() noexcept
         {
             constexpr auto exact = bound_extent::exact;
-            return {exact, exact, 3, all_numbers(false, exact), {exact}, exact, exact};
+            auto b = json_bound{};
+            b.null = b.boolean = exact;
+            b.booleans = 3;
+            b.number = all_numbers(false, exact);
+            b.string.extent = b.array.extent = b.object.extent = exact;
+            return b;
         }
         // A part of the JSON values of the kinds, a mask of `json_kind`.
         constexpr json_bound kinds_bound(std::uint16_t kinds) noexcept
@@ -15891,8 +15934,8 @@ namespace yyjson
             }
             if ((kinds & json_kind_number) != 0) b.number = all_numbers((kinds & json_kind_real) == 0, partial);
             if ((kinds & json_kind_string) != 0) b.string.extent = partial;
-            if ((kinds & json_kind_array) != 0) b.array = partial;
-            if ((kinds & json_kind_object) != 0) b.object = partial;
+            if ((kinds & json_kind_array) != 0) b.array.extent = partial;
+            if ((kinds & json_kind_object) != 0) b.object.extent = partial;
             return b;
         }
 
@@ -16056,31 +16099,86 @@ namespace yyjson
             return std::find(s.strings.begin(), s.strings.begin() + static_cast<std::ptrdiff_t>(s.count), v) !=
                    s.strings.begin() + static_cast<std::ptrdiff_t>(s.count);
         }
+        // Adds the string v, whose length is within `s.lengths`, to the listed strings s.
         constexpr void add_string(string_bound& s, std::string_view v) noexcept
         {
             if (has_string(s, v)) return;
             if (s.count == bound_capacity)
             {
                 // too many to list
-                s = {bound_extent::partial};
+                s = {bound_extent::partial, false, 0, {}, s.lengths};
                 return;
             }
             s.strings[s.count++] = v;
+        }
+        // Whether every string of b, in its domain, is a string of a, which has them exactly.
+        constexpr bool strings_contain(const string_bound& a, const string_bound& b) noexcept
+        {
+            if (b.extent == bound_extent::none) return true;
+            if (a.extent != bound_extent::exact) return false;
+            if (a.listed)
+            {
+                if (!b.listed) return false;
+                for (std::size_t i = 0; i < b.count; ++i)
+                    if (!has_string(a, b.strings[i])) return false;
+                return true;
+            }
+            if (!b.listed) return counts_hold(a.lengths, b.lengths);
+            for (std::size_t i = 0; i < b.count; ++i)
+                if (!has_count(a.lengths, code_points(b.strings[i]))) return false;
+            return true;
+        }
+        // Whether no string is one of a and also one of b.
+        constexpr bool strings_disjoint(const string_bound& a, const string_bound& b) noexcept
+        {
+            if (a.extent == bound_extent::none || b.extent == bound_extent::none) return true;
+            if (!counts_meet(a.lengths, b.lengths)) return true;
+            if (!a.listed && !b.listed) return false;
+            const auto& listed = a.listed ? a : b;
+            const auto& other = a.listed ? b : a;
+            for (std::size_t i = 0; i < listed.count; ++i)
+                if (other.listed ? has_string(other, listed.strings[i])
+                                 : has_count(other.lengths, code_points(listed.strings[i])))
+                    return false;
+            return true;
         }
         constexpr string_bound unite_strings(const string_bound& a, const string_bound& b) noexcept
         {
             if (b.extent == bound_extent::none) return a;
             if (a.extent == bound_extent::none) return b;
+            if (strings_contain(a, b)) return a;
+            if (strings_contain(b, a)) return b;
+            const auto lengths = counts_hull(a.lengths, b.lengths);
             if (!a.listed || !b.listed)
             {
-                const bool exact = (!a.listed && a.extent == bound_extent::exact) ||
-                                   (!b.listed && b.extent == bound_extent::exact);
-                return {exact ? bound_extent::exact : bound_extent::partial};
+                const bool exact = !a.listed && !b.listed && a.extent == bound_extent::exact &&
+                                   b.extent == bound_extent::exact && counts_join(a.lengths, b.lengths);
+                return {exact ? bound_extent::exact : bound_extent::partial, false, 0, {}, lengths};
             }
             auto s = a;
+            s.lengths = lengths;
             for (std::size_t i = 0; i < b.count && s.listed; ++i) add_string(s, b.strings[i]);
             if (b.extent != bound_extent::exact) make_partial(s.extent);
             return s;
+        }
+
+        // Whether every array, or object, of b is one of a, which has them exactly.
+        constexpr bool containers_contain(const container_bound& a, const container_bound& b) noexcept
+        {
+            return b.extent == bound_extent::none ||
+                   (a.extent == bound_extent::exact && counts_hold(a.counts, b.counts));
+        }
+        constexpr bool containers_disjoint(const container_bound& a, const container_bound& b) noexcept
+        {
+            return a.extent == bound_extent::none || b.extent == bound_extent::none || !counts_meet(a.counts, b.counts);
+        }
+        constexpr container_bound unite_containers(const container_bound& a, const container_bound& b) noexcept
+        {
+            if (b.extent == bound_extent::none || containers_contain(a, b)) return a;
+            if (a.extent == bound_extent::none || containers_contain(b, a)) return b;
+            const bool exact = a.extent == bound_extent::exact && b.extent == bound_extent::exact &&
+                               counts_join(a.counts, b.counts);
+            return {exact ? bound_extent::exact : bound_extent::partial, counts_hull(a.counts, b.counts)};
         }
 
         // The JSON values of a and of b.
@@ -16097,8 +16195,8 @@ namespace yyjson
             }
             u.number = unite_numbers(a.number, b.number);
             u.string = unite_strings(a.string, b.string);
-            u.array = std::max(a.array, b.array);
-            u.object = std::max(a.object, b.object);
+            u.array = unite_containers(a.array, b.array);
+            u.object = unite_containers(a.object, b.object);
             return u;
         }
         // Whether every JSON value of b is one of a, which has them exactly.
@@ -16107,21 +16205,13 @@ namespace yyjson
             const auto holds = [](bound_extent x, bound_extent y) {
                 return y == bound_extent::none || x == bound_extent::exact;
             };
-            if (!holds(a.null, b.null) || !holds(a.array, b.array) || !holds(a.object, b.object)) return false;
+            if (!holds(a.null, b.null) || !containers_contain(a.array, b.array) ||
+                !containers_contain(a.object, b.object))
+                return false;
             if (b.boolean != bound_extent::none &&
                 (a.boolean != bound_extent::exact || (b.booleans & ~a.booleans) != 0))
                 return false;
-            if (b.string.extent != bound_extent::none)
-            {
-                if (a.string.extent != bound_extent::exact) return false;
-                if (a.string.listed)
-                {
-                    if (!b.string.listed) return false;
-                    for (std::size_t i = 0; i < b.string.count; ++i)
-                        if (!has_string(a.string, b.string.strings[i])) return false;
-                }
-            }
-            return numbers_contain(a.number, b.number);
+            return strings_contain(a.string, b.string) && numbers_contain(a.number, b.number);
         }
         // Whether no JSON value is one of a and also one of b.
         constexpr bool bounds_disjoint(const json_bound& a, const json_bound& b) noexcept
@@ -16129,15 +16219,11 @@ namespace yyjson
             const auto both = [](bound_extent x, bound_extent y) {
                 return x != bound_extent::none && y != bound_extent::none;
             };
-            if (both(a.null, b.null) || both(a.array, b.array) || both(a.object, b.object)) return false;
+            if (both(a.null, b.null) || !containers_disjoint(a.array, b.array) ||
+                !containers_disjoint(a.object, b.object))
+                return false;
             if (both(a.boolean, b.boolean) && (a.booleans & b.booleans) != 0) return false;
-            if (both(a.string.extent, b.string.extent))
-            {
-                if (!a.string.listed || !b.string.listed) return false;
-                for (std::size_t i = 0; i < a.string.count; ++i)
-                    if (has_string(b.string, a.string.strings[i])) return false;
-            }
-            return numbers_disjoint(a.number, b.number);
+            return strings_disjoint(a.string, b.string) && numbers_disjoint(a.number, b.number);
         }
 
         // The level of a value without settings, as `table_node` has them.
@@ -16150,6 +16236,8 @@ namespace yyjson
         // The settings of the levels that a bound of a scalar describes: the bounds of numbers, and the values of
         // `yyjson::const_` and `yyjson::enum_`.
         inline constexpr std::uint32_t listing_settings = constraint_bit<const_<>> | constraint_bit<enum_<0>>;
+        inline constexpr std::uint32_t length_settings = constraint_bit<min_length> | constraint_bit<max_length>;
+        inline constexpr std::uint32_t count_settings = constraint_bit<min_items> | constraint_bit<max_items>;
         inline constexpr std::uint32_t number_settings = listing_settings | constraint_bit<minimum> |
                                                          constraint_bit<maximum> | constraint_bit<exclusive_minimum> |
                                                          constraint_bit<exclusive_maximum>;
@@ -16203,12 +16291,32 @@ namespace yyjson
                 return booleans;
             }
         }
-        // The strings that a string reads with the values of `yyjson::const_` and `yyjson::enum_` of
-        // the level.
+        // The lengths, or the numbers of items, that the settings `Min` and `Max` of the level allow.
+        template <typename Level, typename Min, typename Max>
+        consteval count_range level_counts()
+        {
+            constexpr const field_constraints& c = Level::constraints;
+            auto r = count_range{};
+            if constexpr (std::same_as<Min, min_length>)
+            {
+                if constexpr (c.has<min_length>()) r.low = c.min_length;
+                if constexpr (c.has<max_length>()) r.high = c.max_length;
+            }
+            else
+            {
+                if constexpr (c.has<min_items>()) r.low = c.min_items;
+                if constexpr (c.has<max_items>()) r.high = c.max_items;
+            }
+            return r;
+        }
+        // The strings that a string reads with the values of `yyjson::const_` and `yyjson::enum_`, and
+        // with `yyjson::min_length` and `yyjson::max_length`, of the level.
         template <typename Level>
         consteval string_bound listed_strings()
         {
             auto b = string_bound{};
+            b.lengths = level_counts<Level, min_length, max_length>();
+            if (b.lengths.high < b.lengths.low) return {};
             b.extent = bound_extent::exact;
             if constexpr (Level::constraints.template has<const_<>>() ||
                           Level::constraints.template has<enum_<0>>())
@@ -16219,9 +16327,22 @@ namespace yyjson
                         return x.kind == json_scalar::kind_t::string && y.kind == x.kind && x.string() == y.string();
                     },
                     [&b](const json_scalar& s) {
-                        if (s.kind == json_scalar::kind_t::string) add_string(b, s.string());
+                        if (s.kind == json_scalar::kind_t::string && has_count(b.lengths, code_points(s.string())))
+                            add_string(b, s.string());
                     });
                 if (b.listed && b.count == 0) b = {};
+            }
+            return b;
+        }
+        // The bound b with the numbers of items that the level allows.
+        template <typename Level>
+        consteval json_bound counted_bound(json_bound b)
+        {
+            constexpr auto r = level_counts<Level, min_items, max_items>();
+            for (container_bound* c : {&b.array, &b.object})
+            {
+                c->counts = {std::max(c->counts.low, r.low), std::min(c->counts.high, r.high)};
+                if (c->counts.high < c->counts.low) *c = {};
             }
             return b;
         }
@@ -16406,7 +16527,10 @@ namespace yyjson
         template <typename Level, typename V>
         consteval bool settings_read_nothing()
         {
-            if constexpr ((Level::constraints.set & number_settings) == 0)
+            constexpr auto items = level_counts<Level, min_items, max_items>();
+            if constexpr (constraint_items<V> && items.high < items.low)
+                return true;
+            else if constexpr ((Level::constraints.set & (number_settings | length_settings)) == 0)
                 return false;
             else if constexpr (!scalars_of_kind(Level::values, scalar_kind_of<V>))
                 return false;
@@ -16461,7 +16585,7 @@ namespace yyjson
             else if constexpr (std::same_as<U, writer::object> || std::same_as<U, writer::array>)
             {
                 auto b = json_bound{};
-                (std::same_as<U, writer::object> ? b.object : b.array) =
+                (std::same_as<U, writer::object> ? b.object : b.array).extent =
                     settings ? bound_extent::partial : bound_extent::exact;
                 return b;
             }
@@ -16513,14 +16637,15 @@ namespace yyjson
             {
                 auto b = json_bound{};
                 b.string = listed_strings<Level>();
-                return bound(b, level_within<Level>(listing_settings));
+                return bound(b, level_within<Level>(listing_settings | length_settings));
             }
             else if constexpr (std::is_enum_v<U>)
             {
                 auto b = json_bound{};
                 if constexpr (enum_by_name<U>)
                 {
-                    b.string = {bound_extent::exact, true};
+                    b.string.extent = bound_extent::exact;
+                    b.string.listed = true;
                     for (const std::string_view name : enum_conversion<U>::names) add_string(b.string, name);
                 }
                 // which integers name a value is not described
@@ -16535,9 +16660,10 @@ namespace yyjson
                 // the array of any JSON values, or a part of the arrays
                 constexpr auto element = bound_of<std::ranges::range_value_t<U>>();
                 auto b = json_bound{};
-                b.array = !settings && bound_contains(element, universal_bound()) ? bound_extent::exact
-                                                                                  : bound_extent::partial;
-                return b;
+                b.array.extent = level_within<Level>(count_settings) && bound_contains(element, universal_bound())
+                                     ? bound_extent::exact
+                                     : bound_extent::partial;
+                return counted_bound<Level>(b);
             }
             else
                 return kinds_bound(accepted_json_kinds<U, reader::const_value_ref>());

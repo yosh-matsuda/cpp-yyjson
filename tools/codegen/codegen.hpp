@@ -2304,7 +2304,7 @@ namespace cpp_yyjson_codegen
 
             // whether the settings are only `const` and `enum`, and the bounds of numbers if `numbers`, which a bound
             // describes exactly
-            static bool described(const settings& s, bool numbers)
+            static bool described(const settings& s, bool numbers, bool lengths = false)
             {
                 return !s.min_items && !s.max_items && !s.unique && s.items.empty() && s.contains.empty() &&
                        s.property_names.empty() && s.additional.empty() && s.prefix.empty() &&
@@ -2312,8 +2312,28 @@ namespace cpp_yyjson_codegen
                            const auto& k = c.keyword;
                            return k == "const" || k == "enum" ||
                                   (numbers && (k == "minimum" || k == "maximum" || k == "exclusiveMinimum" ||
-                                               k == "exclusiveMaximum"));
+                                               k == "exclusiveMaximum")) ||
+                                  (lengths && (k == "minLength" || k == "maxLength"));
                        });
+            }
+
+            static std::size_t to_count(std::uint64_t n)
+            {
+                return static_cast<std::size_t>(std::min<std::uint64_t>(n, std::numeric_limits<std::size_t>::max()));
+            }
+
+            // the lengths of strings that the settings `s` allow
+            static yyjson::detail::count_range lengths_of(const settings& s)
+            {
+                auto r = yyjson::detail::count_range{};
+                for (const auto& c : s.constraints)
+                {
+                    const auto n = as_uint64(c.value);
+                    if (!n) continue;
+                    if (c.keyword == "minLength") r.low = std::max(r.low, to_count(*n));
+                    if (c.keyword == "maxLength") r.high = std::min(r.high, to_count(*n));
+                }
+                return r;
             }
 
             // the values of `const` among those of `enum`, or of `enum`, that the generated code lists for a value
@@ -2442,7 +2462,7 @@ namespace cpp_yyjson_codegen
                     case tk::any:
                         return bound(d::universal_bound(), !has);
                     case tk::object:
-                        b.object = extent(!has);
+                        b.object.extent = extent(!has);
                         return b;
                     case tk::null:
                     case tk::monostate:
@@ -2469,14 +2489,18 @@ namespace cpp_yyjson_codegen
                         return bound(b, described(s, true));
                     case tk::string:
                     {
+                        b.string.lengths = lengths_of(s);
+                        if (b.string.lengths.high < b.string.lengths.low) return b;
                         b.string.extent = bound_extent::exact;
                         if (const auto values = listed_values(s, tk::string))
                         {
                             b.string.listed = true;
-                            for (const auto* v : *values) d::add_string(b.string, intern(v->text));
+                            for (const auto* v : *values)
+                                if (d::has_count(b.string.lengths, d::code_points(v->text)))
+                                    d::add_string(b.string, intern(v->text));
                             if (b.string.listed && b.string.count == 0) b.string = {};
                         }
-                        return bound(b, described(s, false));
+                        return bound(b, described(s, false, true));
                     }
                     case tk::named:
                     {
@@ -2484,19 +2508,31 @@ namespace cpp_yyjson_codegen
                         if (x.kind == decl::kind_t::alias) return bound_of(x.target, s);
                         if (x.kind == decl::kind_t::enumeration)
                         {
-                            b.string = {bound_extent::exact, true};
+                            b.string.extent = bound_extent::exact;
+                            b.string.listed = true;
                             for (const auto& e : x.enumerators) d::add_string(b.string, intern(e.second));
                             return bound(b, !has);
                         }
                         if (x.transparent) return d::partial_bound(bound_of(x.fields[0].type, settings()));
-                        b.object = bound_extent::partial;
+                        b.object.extent = bound_extent::partial;
                         return b;
                     }
                     case tk::vector:
-                        b.array = extent(!has && d::bound_contains(bound_of(t.args[0], settings()), d::universal_bound()));
+                    {
+                        // std::vector reads as many elements as the JSON array has, so the numbers of items bound
+                        // the arrays
+                        auto others = s;
+                        others.min_items.reset();
+                        others.max_items.reset();
+                        const auto element = bound_of(t.args[0], settings());
+                        b.array.extent = extent(others.empty() && d::bound_contains(element, d::universal_bound()));
+                        if (s.min_items) b.array.counts.low = to_count(*s.min_items);
+                        if (s.max_items) b.array.counts.high = to_count(*s.max_items);
+                        if (b.array.counts.high < b.array.counts.low) b.array = {};
                         return b;
+                    }
                     case tk::map:
-                        b.object = bound_extent::partial;
+                        b.object.extent = bound_extent::partial;
                         return b;
                     case tk::tuple:
                         return d::kinds_bound(d::json_kind_array | d::json_kind_object);
@@ -2534,7 +2570,7 @@ namespace cpp_yyjson_codegen
                 using yyjson::detail::bound_extent;
                 return b.null == bound_extent::none && b.boolean == bound_extent::none &&
                        b.number.extent == bound_extent::none && b.string.extent == bound_extent::none &&
-                       b.array == bound_extent::none && b.object == bound_extent::none;
+                       b.array.extent == bound_extent::none && b.object.extent == bound_extent::none;
             }
 
             struct alternative_entry

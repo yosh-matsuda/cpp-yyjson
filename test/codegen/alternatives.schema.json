@@ -18,7 +18,15 @@
     },
     "level": {"oneOf": [{"type": "integer", "maximum": 0}, {"type": "integer", "minimum": 1}], "default": 3},
     "band": {"oneOf": [{"type": "integer", "maximum": 5}, {"type": "integer", "minimum": 3}]},
-    "mode": {"oneOf": [{"const": "fast", "description": "Fast mode"}, {"const": "slow"}, {"type": "null"}]}
+    "mode": {"oneOf": [{"const": "fast", "description": "Fast mode"}, {"const": "slow"}, {"type": "null"}]},
+    "name": {"anyOf": [{"type": "string", "maxLength": 5}, {"type": "string", "maxLength": 3}]},
+    "code": {"oneOf": [{"type": "string", "maxLength": 3}, {"type": "string", "minLength": 4}]},
+    "list": {
+      "oneOf": [
+        {"type": "array", "items": {"type": "integer"}, "maxItems": 1},
+        {"type": "array", "items": {"type": "string"}, "minItems": 2}
+      ]
+    }
   },
   "required": ["size"]
 }

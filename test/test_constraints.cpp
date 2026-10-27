@@ -1978,13 +1978,40 @@ namespace compile_rules
     static_assert(reads_nothing<any_of<alt<int, minimum(0), const_(-1)>>>);
     static_assert(reads_nothing<any_of<alt<bool, const_(true), enum_(false)>>>);
     static_assert(reads_nothing<any_of<alt<std::string, const_("x"), enum_("a")>>>);
-    static_assert(!reads_nothing<any_of<alt<std::string, const_("abc"), yyjson::max_length(1)>>>);
+    static_assert(reads_nothing<any_of<alt<std::string, const_("abc"), yyjson::max_length(1)>>>);
+    static_assert(!reads_nothing<any_of<alt<std::string, enum_("a", "abc"), yyjson::min_length(2)>>>);
+    static_assert(reads_nothing<any_of<alt<std::string, yyjson::min_length(5), yyjson::max_length(3)>>>);
+    static_assert(reads_nothing<any_of<alt<std::vector<int>, yyjson::min_items(3), yyjson::max_items(1)>>>);
     static_assert(!reads_nothing<any_of<alt<int, const_("a")>>>);
     static_assert(reads_nothing<any_of<alt<float, minimum(1), maximum(0)>>>);
     static_assert(reads_nothing<any_of<alt<float, const_(1), enum_(2, 3)>>>);
     static_assert(reads_nothing<any_of<alt<float, exclusive_minimum(0), exclusive_maximum(1e-45)>>>);
     static_assert(!reads_nothing<any_of<alt<float, minimum(0.100000001), maximum(0.1)>>>);
     static_assert(reads_nothing<any_of<alt<long double, const_(5), maximum(0)>>>);
+    // the lengths of strings in code points, and the numbers of items of the arrays that a vector reads
+    using yyjson::min_length, yyjson::max_length, yyjson::min_items, yyjson::max_items;
+    static_assert(contained<any_of<alt<std::string, max_length(5)>, alt<std::string, max_length(3)>>> == 1);
+    static_assert(contained<any_of<alt<std::string, max_length(3)>, alt<std::string, max_length(5)>>> == 2);
+    static_assert(contained<any_of<alt<std::string, max_length(3)>, alt<std::string, const_("abc")>>> == 1);
+    static_assert(contained<any_of<alt<std::string, max_length(3)>, alt<std::string, const_("abcd")>>> == 2);
+    static_assert(
+        contained<any_of<alt<std::string, max_length(2)>, alt<std::string, const_("\xC3\xA9\xC3\xA9")>>> == 1);
+    static_assert(
+        contained<any_of<alt<std::string, yyjson::pattern("^a"), max_length(3)>, alt<std::string, max_length(1)>>> ==
+        2);
+    using Lengths = one_of<alt<std::string, max_length(3)>, alt<std::string, min_length(4)>>;
+    static_assert(contained<Lengths> == 2 && !relations<Lengths>::overlap[0][1]);
+    using Values = std::vector<yyjson::value>;
+    static_assert(contained<any_of<alt<Values, max_items(5)>, alt<Values, max_items(2)>>> == 1);
+    static_assert(contained<any_of<alt<std::vector<int>, max_items(5)>, alt<std::vector<int>, max_items(2)>>> == 2);
+    using Counts = one_of<alt<std::vector<int>, max_items(1)>, alt<std::vector<std::string>, min_items(2)>>;
+    static_assert(contained<Counts> == 2 && !relations<Counts>::overlap[0][1]);
+    // a map or a set counts its C++ elements, of which a JSON value may hold more
+    using Maps = std::map<std::string, yyjson::value>;
+    using MapCounts = one_of<alt<Maps, max_items(1)>, alt<Maps, min_items(2)>>;
+    static_assert(contained<MapCounts> == 2 && relations<MapCounts>::overlap[0][1]);
+    using SetCounts = one_of<alt<std::set<int>, max_items(1)>, alt<std::set<int>, min_items(2)>>;
+    static_assert(contained<SetCounts> == 2 && relations<SetCounts>::overlap[0][1]);
     // nested alternatives: any_of and std::variant read the union, one_of a part of it
     static_assert(contained<any_of<std::variant<int, std::string>, std::string>> == 1);
     static_assert(contained<any_of<one_of<int, std::string>, std::string>> == 2);

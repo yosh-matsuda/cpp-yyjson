@@ -320,6 +320,39 @@ TEST(Codegen, Alternatives)
     EXPECT_TRUE(has(c.code, "yyjson::alt<std::string, yyjson::format(\"email\")>"));
 }
 
+TEST(Codegen, AlternativeLengths)
+{
+    // the lengths of strings and the numbers of items of arrays order and drop alternatives as the library does
+    const auto r = generate(R"({
+        "title": "Root",
+        "type": "object",
+        "properties": {
+            "name": {"anyOf": [{"type": "string", "maxLength": 5}, {"type": "string", "maxLength": 3}]},
+            "code": {"oneOf": [{"type": "string", "maxLength": 3}, {"type": "string", "minLength": 4}]},
+            "tag": {"oneOf": [{"type": "string", "maxLength": 5}, {"type": "string", "enum": ["a", "abcdef"]}]},
+            "list": {"oneOf": [{"type": "array", "maxItems": 1}, {"type": "array", "maxItems": 3}]},
+            "none": {"anyOf": [{"type": "string", "minLength": 5, "maxLength": 3}, {"type": "integer"}]}
+        }
+    })",
+                            {});
+    EXPECT_EQ(warnings(r),
+              "#/properties/list: an alternative of `oneOf` reads only values that another alternative reads, so it "
+              "never reads a value alone; it is dropped\n"
+              "#/properties/none: the settings of an alternative leave no value to read; it is dropped\n");
+    EXPECT_TRUE(has(r.code,
+                    "    std::optional<yyjson::any_of<yyjson::alt<std::string, yyjson::max_length(3)>, "
+                    "yyjson::alt<std::string, yyjson::max_length(5)>>> name;\n"));
+    EXPECT_TRUE(has(r.code,
+                    "    std::optional<yyjson::one_of<yyjson::alt<std::string, yyjson::max_length(3)>, "
+                    "yyjson::alt<std::string, yyjson::min_length(4)>>> code;\n"));
+    // "abcdef" is longer than 5 characters, so neither alternative contains the other
+    EXPECT_TRUE(has(r.code,
+                    "    std::optional<yyjson::one_of<RootTagOption2, yyjson::alt<std::string, yyjson::max_length(5)>>> "
+                    "tag;\n"));
+    EXPECT_TRUE(has(r.code, "    std::optional<std::vector<yyjson::value>> list;\n"));
+    EXPECT_TRUE(has(r.code, "    std::optional<std::int64_t> none;\n"));
+}
+
 TEST(Codegen, StringChoices)
 {
     // subschemas of only `const` or `enum` strings are one enumeration, with the metadata of each as comments
