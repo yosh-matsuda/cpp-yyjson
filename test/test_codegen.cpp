@@ -700,6 +700,25 @@ TEST(Codegen, DefaultsOfRequiredKeys)
     EXPECT_FALSE(has(r.code, "yyjson::field(\"c\""));
 }
 
+TEST(Codegen, FloatDefaults)
+{
+    // reading throws on a float that rounds to infinity, and reads a number that rounds to zero as zero
+    const auto r = generate(R"({
+        "type": "object",
+        "properties": {"big": {"type": "number", "format": "float", "default": 1e39},
+                       "max": {"type": "number", "format": "float", "default": 3.4028235e38},
+                       "tiny": {"type": "number", "format": "float", "default": 1e-50},
+                       "minus": {"type": "number", "format": "float", "default": -1e-50},
+                       "sub": {"type": "number", "default": 1e-320}}
+    })",
+                            {});
+    EXPECT_TRUE(has(r.code, "    // default: 1e39\n    std::optional<float> big;\n"));
+    EXPECT_TRUE(has(r.code, "    float max = 3.4028235e38f;\n"));
+    EXPECT_TRUE(has(r.code, "    float tiny = 0.0f;\n    float minus = -0.0f;\n    double sub = 1e-320;\n"));
+    EXPECT_EQ(warnings(r),
+              "#/properties/big: the default 1e39 is not converted to the C++ type; the field is std::optional\n");
+}
+
 TEST(Codegen, StructDefaults)
 {
     const auto r = generate(R"({

@@ -2170,8 +2170,16 @@ namespace cpp_yyjson_codegen
                         return std::nullopt;
                     case tk::f32:
                     case tk::f64:
-                        if (j.is_number()) return float_literal(j, t.k == tk::f32);
-                        return std::nullopt;
+                    {
+                        // reading throws on a number that rounds to infinity, and reads one that rounds to zero as
+                        // zero, which the literal says so that the compiler does not warn of the truncation
+                        if (!j.is_number()) return std::nullopt;
+                        const auto f32 = t.k == tk::f32;
+                        const auto v = f32 ? static_cast<double>(static_cast<float>(j.num)) : j.num;
+                        if (std::isinf(v)) return std::nullopt;
+                        if (v == 0) return std::string(std::signbit(v) ? "-" : "") + (f32 ? "0.0f" : "0.0");
+                        return float_literal(j, f32);
+                    }
                     case tk::string:
                         if (j.is_string()) return cpp_string(j.text, "std::string");
                         return std::nullopt;
