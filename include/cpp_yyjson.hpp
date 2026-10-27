@@ -5374,7 +5374,8 @@ namespace yyjson
         F default_field_value();
 
         // Whether `a` and `b` are written as the same JSON value; defined after the concepts of the writer.
-        template <typename T>
+        // `SignOfZero` tells -0.0 from 0.0, which are equal numbers of JSON but written as different texts.
+        template <typename T, bool SignOfZero = false>
         bool json_equal(const T& a, const T& b);
 
         // The value of S whose fields `yyjson::omit_default` compares with, made once.
@@ -5387,14 +5388,14 @@ namespace yyjson
 
         // Whether `field`, the field R of S by its index among all the fields, is written as the same JSON value as
         // the value that `yyjson::default_from` makes, or else as the field of `S()`, which `json_equal` tells, so
-        // that the key is left out of the object.
+        // that the key is left out of the object.  -0.0 is written, as it would read back as 0.0.
         template <typename S, std::size_t R, typename F>
         bool holds_default(const F& field)
         {
             if constexpr (has_default_from<S, R>)
             {
                 static const F value = default_field_value<S, R, F>();
-                return json_equal<F>(field, value);
+                return json_equal<F, true>(field, value);
             }
             else
             {
@@ -5407,7 +5408,7 @@ namespace yyjson
                     else
                         return field_reflection::get_field<R>(default_struct<S>());
                 }();
-                return json_equal<std::remove_cvref_t<decltype(d)>>(field, d);
+                return json_equal<std::remove_cvref_t<decltype(d)>, true>(field, d);
             }
         }
         template <typename S, std::size_t I>
@@ -13541,20 +13542,23 @@ namespace yyjson
         // alternative and value; a holder by the value that it holds, an empty one being equal only to an empty
         // one.  Others, such as numbers, strings, JSON values and the types that a caster of the user converts, are
         // compared by `operator==`.
-        template <typename T>
+        template <typename T, bool SignOfZero>
         bool json_equal(const T& a, const T& b)
         {
             using U = std::remove_cv_t<T>;
+            const auto equal = []<typename E>(const E& x, const E& y) { return json_equal<E, SignOfZero>(x, y); };
             if constexpr (char_string_array<U>)
                 return std::string_view(a, char_array_size(a)) == std::string_view(b, char_array_size(b));
             else if constexpr (std::is_array_v<U>)
             {
                 for (std::size_t i = 0; i < std::extent_v<U>; ++i)
-                    if (!json_equal(a[i], b[i])) return false;
+                    if (!equal(a[i], b[i])) return false;
                 return true;
             }
             else if constexpr (std::same_as<U, const char*> || std::same_as<U, char*>)
                 return a == nullptr || b == nullptr ? a == b : std::string_view(a) == std::string_view(b);
+            else if constexpr (std::floating_point<U>)
+                return a == b && (!SignOfZero || std::signbit(a) == std::signbit(b));
             else if constexpr (!std::is_class_v<U> || writer::detail::base_of_value<U> ||
                                reader::detail::base_of_value_ref<U> ||
                                (caster_names_to_json<U> && !std::derived_from<caster<U>, builtin_caster>))
@@ -13568,7 +13572,7 @@ namespace yyjson
             {
                 const auto* x = nullable_holder<U>::get(a);
                 const auto* y = nullable_holder<U>::get(b);
-                return x == nullptr || y == nullptr ? x == y : json_equal(*x, *y);
+                return x == nullptr || y == nullptr ? x == y : equal(*x, *y);
             }
             else if constexpr (requires { std::variant_size<U>::value; })
             {
@@ -13576,8 +13580,7 @@ namespace yyjson
                 if (a.valueless_by_exception()) return true;
                 return [&]<std::size_t... Is>(std::index_sequence<Is...>) {
                     auto r = false;
-                    (void)((a.index() == Is && (r = json_equal(*std::get_if<Is>(&a), *std::get_if<Is>(&b)), true)) ||
-                           ...);
+                    (void)((a.index() == Is && (r = equal(*std::get_if<Is>(&a), *std::get_if<Is>(&b)), true)) || ...);
                     return r;
                 }(std::make_index_sequence<std::variant_size_v<U>>{});
             }
@@ -13588,14 +13591,14 @@ namespace yyjson
             {
                 // the keys that `yyjson::extra_keys` keeps are written beside the fields
                 if constexpr (has_extra_keys<U>)
-                    if (!json_equal(extra_keys_field(a), extra_keys_field(b))) return false;
+                    if (!equal(extra_keys_field(a), extra_keys_field(b))) return false;
                 if constexpr (struct_field_count<U> <= index_chunk)
                     return [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
-                        return (json_equal(struct_field<Ks>(a), struct_field<Ks>(b)) && ...);
+                        return (equal(struct_field<Ks>(a), struct_field<Ks>(b)) && ...);
                     }(std::make_index_sequence<struct_field_count<U>>{});
                 else
                     return all_indices<struct_field_count<U>>([&](auto k) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
-                        return json_equal(struct_field<k>(a), struct_field<k>(b));
+                        return equal(struct_field<k>(a), struct_field<k>(b));
                     });
             }
             else if constexpr (std::ranges::range<const U>)
@@ -13603,7 +13606,7 @@ namespace yyjson
                 if constexpr (std::ranges::sized_range<const U>)
                     if (std::ranges::size(a) != std::ranges::size(b)) return false;
                 using E = std::remove_cvref_t<std::ranges::range_reference_t<const U>>;
-                const auto eq = [](const E& x, const E& y) { return json_equal(x, y); };
+                const auto eq = [&](const E& x, const E& y) { return equal(x, y); };
                 // a JSON object does not order its keys
                 if constexpr (requires { typename U::hasher; } ||
                               key_value_like<std::remove_cv_t<std::ranges::range_value_t<const U>>>)
@@ -13613,7 +13616,7 @@ namespace yyjson
             }
             else if constexpr (tuple_like<U>)
                 return [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                    return (json_equal(std::get<Is>(a), std::get<Is>(b)) && ...);
+                    return (equal(std::get<Is>(a), std::get<Is>(b)) && ...);
                 }(std::make_index_sequence<std::tuple_size_v<U>>{});
             else
             {

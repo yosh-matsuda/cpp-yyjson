@@ -453,7 +453,7 @@ struct ExtraAny
 };
 template <>
 inline constexpr auto yyjson::annotations<ExtraAny> = yyjson::annotate(yyjson::field("rest", yyjson::extra_keys));
-// values that differ from the default only in their extra keys
+// values that differ from the default only in their extra keys or in the sign of zero
 struct ExtraOmitted
 {
     ExtraOpen e;
@@ -672,6 +672,11 @@ TEST(Strict, OmitDefault)
     EXPECT_EQ(yyjson::value(parts).write(), R"({"a":0,"p":{"x":2},"u":8,"c":[1,3]})");
     parts.u.reset();
     EXPECT_EQ(yyjson::write(parts), R"({"a":0,"p":{"x":2},"u":null,"c":[1,3]})");
+    // -0.0 is written beside a default of 0.0, as it would read back as 0.0
+    const auto negative_zero = ExtraOmitted{{}, -0.0};
+    EXPECT_EQ(yyjson::write(negative_zero), R"({"d":-0.0})");
+    EXPECT_EQ(yyjson::value(negative_zero).write(), R"({"d":-0.0})");
+    EXPECT_TRUE(std::signbit(yyjson::read<ExtraOmitted>(yyjson::write(negative_zero), yyjson::strict).d));
 
     // `VISITABLE_STRUCT`
     EXPECT_EQ(yyjson::write(StrictOmittedVisitable()), R"({"a":0})");
