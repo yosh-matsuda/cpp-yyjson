@@ -14259,7 +14259,7 @@ namespace yyjson
             static yyjson_val* obj_value(yyjson_val* key) noexcept { return yyjson_obj_iter_get_val(key); }
             static yyjson_val* obj_find(yyjson_obj_iter& it, std::string_view key) noexcept
             {
-                return yyjson_obj_iter_getn(&it, key.data(), key.size());
+                return yyjson_obj_iter_getn(&it, yyjson::detail::c_chars(key), key.size());
             }
         };
         template <>
@@ -14282,7 +14282,7 @@ namespace yyjson
             static yyjson_mut_val* obj_value(yyjson_mut_val* key) noexcept { return yyjson_mut_obj_iter_get_val(key); }
             static yyjson_mut_val* obj_find(yyjson_mut_obj_iter& it, std::string_view key) noexcept
             {
-                return yyjson_mut_obj_iter_getn(&it, key.data(), key.size());
+                return yyjson_mut_obj_iter_getn(&it, yyjson::detail::c_chars(key), key.size());
             }
         };
 
