@@ -16335,6 +16335,12 @@ namespace yyjson
             return b;
         }
 
+        // A nullable type other than a tagged variant. The conjunction of the constraints leaves the tags of a type
+        // that is not nullable alone: they assert on the annotations of a struct.
+        template <typename T>
+        concept untagged_nullable = nullable<T> && (!variant_json_kinds<T>::is_variant ||
+                                                    variant_tags<T>::tagging == variant_tagging::untagged);
+
         // The JSON values that a value of the type T, with the settings of `Level`, a `table_node`, reads, or more.
         template <typename T, typename Level>
         consteval json_bound bound_of()
@@ -16360,9 +16366,7 @@ namespace yyjson
                 b.null = settings ? bound_extent::partial : bound_extent::exact;
                 return b;
             }
-            else if constexpr (std::derived_from<caster<U>, builtin_caster> && nullable<U> &&
-                               (!variant_json_kinds<U>::is_variant ||
-                                variant_tags<U>::tagging == variant_tagging::untagged))
+            else if constexpr (std::derived_from<caster<U>, builtin_caster> && untagged_nullable<U>)
             {
                 // the settings are those of the value that it holds, and null reads none
                 auto b = bound_of<typename nullable_holder<U>::value_type, Level>();

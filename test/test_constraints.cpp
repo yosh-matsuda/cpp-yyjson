@@ -1860,6 +1860,15 @@ struct AlternativePoint
     bool operator==(const AlternativePoint&) const = default;
 };
 using PointOrMap = yyjson::any_of<AlternativePoint, std::map<std::string, int>>;
+// a struct with annotations, which are not those of a variant
+struct AlternativeClosed
+{
+    int x;
+    bool operator==(const AlternativeClosed&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<AlternativeClosed> = yyjson::annotate(yyjson::additional_properties(false));
+using NameOrClosed = yyjson::any_of<std::string, std::optional<AlternativeClosed>>;
 struct AlternativeFields
 {
     Alternatives a;
@@ -2028,6 +2037,10 @@ TEST(Constraints, AlternativeReading)
     expect_accepted<ExactlyOne>(R"("xy")", ExactlyOne(std::string("xy")));
     expect_accepted<ExactlyOne>("2", ExactlyOne(2.0));
     expect_rejected<ExactlyOne>(R"("y")", read_by_none<ExactlyOne>(), "");
+
+    expect_accepted<NameOrClosed>(R"({"x":1})", NameOrClosed(AlternativeClosed{1}));
+    expect_accepted<NameOrClosed>("null", NameOrClosed(std::optional<AlternativeClosed>()));
+    EXPECT_THROW((void)yyjson::read<NameOrClosed>(R"({"x":1,"y":2})"), yyjson::bad_cast);
 
     // one_of fails for a value that two alternatives read
     expect_accepted<SignedOrUnsigned>("-1", SignedOrUnsigned(std::int64_t{-1}));
