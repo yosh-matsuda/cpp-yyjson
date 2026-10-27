@@ -16400,10 +16400,11 @@ namespace yyjson
         }
 
         // Of the alternatives of V, `yyjson::any_of` or `yyjson::one_of`: the first one whose settings leave no
-        // value of its type, as `settings_read_nothing` tells, `empty`; the first one that is never read, `contained`, with the one that reads every value that it
-        // reads, `container`; `size` for none; and whether two alternatives may both read a JSON value.  Of
-        // `yyjson::any_of`, an alternative is never read if one before it reads all its values; of `yyjson::one_of`,
-        // an alternative never is the only one to read a value if another one reads all its values.
+        // value of its type, as `settings_read_nothing` tells, `empty`; the first one that is never read,
+        // `contained`, with the one that reads every value that it reads, `container`; `size` for none; and whether
+        // two alternatives may both read a JSON value.  Of `yyjson::any_of`, an alternative is never read if one
+        // before it reads all its values; of `yyjson::one_of`, an alternative never is the only one to read a value
+        // if another one reads all its values.
         template <typename V>
         struct alternative_relations
         {
