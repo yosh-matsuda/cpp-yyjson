@@ -3416,14 +3416,30 @@ namespace cpp_yyjson_codegen
                                                 bool named)
             {
                 auto base_null = true;
+                // an `enum` beside `oneOf` / `anyOf` keeps the strings (and null) that it lists
+                const auto* base_enum = base.find("enum");
+                if (base_enum != nullptr &&
+                    (!base_enum->is_array() || std::ranges::any_of(base_enum->items, [](const json& v) {
+                        return !v.is_string() && !v.is_null();
+                    })))
+                    return std::nullopt;
+                const auto listed = [&](const json& v) {
+                    return base_enum == nullptr || std::ranges::any_of(base_enum->items, [&](const json& x) {
+                               return x.k == v.k && x.text == v.text;
+                           });
+                };
                 if (!base.members.empty())
                 {
                     const auto t = type_list(base);
-                    if (base.members.size() != 1 || base.members[0].first != "type" || t.empty() ||
-                        std::ranges::any_of(t, [](const auto& x) { return x != "string" && x != "null"; }))
+                    if (std::ranges::any_of(base.members,
+                                            [](const auto& m) { return m.first != "type" && m.first != "enum"; }) ||
+                        (base.find("type") != nullptr &&
+                         (t.empty() ||
+                          std::ranges::any_of(t, [](const auto& x) { return x != "string" && x != "null"; }))))
                         return std::nullopt;
-                    base_null = std::ranges::find(t, "null") != t.end();
+                    if (base.find("type") != nullptr) base_null = std::ranges::find(t, "null") != t.end();
                 }
+                if (!listed(json())) base_null = false;
                 auto values = std::vector<std::string>();
                 auto metas = std::map<std::string, metadata>();
                 auto nullable = false;
@@ -3462,6 +3478,7 @@ namespace cpp_yyjson_codegen
                     m.deprecated = false;
                     for (const auto& v : own)
                     {
+                        if (!listed(v)) continue;
                         if (std::ranges::find(values, v.text) != values.end())
                         {
                             duplicate = true;

@@ -222,7 +222,7 @@ A struct of more than 100 members is registered with [`VISITABLE_STRUCT`](conver
 
 ### Enumerations
 
-An `enum` of strings, or `oneOf` / `anyOf` of subschemas of only `const` or `enum` strings, becomes an `enum class`. A value that is not a C++ identifier gets [`yyjson::rename`](reference.md#yyjsonrename) through `yyjson::enumerator`, and the `title` or `description` of a subschema becomes the comment of its enumerator:
+An `enum` of strings, or `oneOf` / `anyOf` of subschemas of only `const` or `enum` strings, becomes an `enum class`; an `enum` beside such `oneOf` / `anyOf` keeps the strings that it lists. A value that is not a C++ identifier gets [`yyjson::rename`](reference.md#yyjsonrename) through `yyjson::enumerator`, and the `title` or `description` of a subschema becomes the comment of its enumerator:
 
 ```cpp
 enum class RootColor

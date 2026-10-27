@@ -413,7 +413,10 @@ TEST(Codegen, StringChoices)
                                {"enum": ["auto", "fast"]}]},
             "opt": {"anyOf": [{"const": "on"}, {"type": "null"}]},
             "typed": {"type": "string", "anyOf": [{"const": "p"}, {"const": "q"}]},
-            "color": {"anyOf": [{"$ref": "#/$defs/Color"}, {"const": "green"}]}
+            "color": {"anyOf": [{"$ref": "#/$defs/Color"}, {"const": "green"}]},
+            "listed": {"type": "string", "enum": ["sys", "loc"],
+                       "oneOf": [{"const": "sys", "description": "System"}, {"const": "loc"}]},
+            "narrowed": {"enum": ["x", null], "anyOf": [{"const": "x"}, {"const": "y"}, {"type": "null"}]}
         },
         "$defs": {"Color": {"description": "A color", "oneOf": [{"const": "red"}, {"const": "blue"}]}}
     })",
@@ -428,6 +431,10 @@ TEST(Codegen, StringChoices)
     EXPECT_TRUE(has(r.code, "    std::optional<RootTyped> typed;\n"));
     // a reference stays an alternative
     EXPECT_TRUE(has(r.code, "yyjson::any_of<Color, yyjson::alt<std::string, &Root_color_1_const_>>"));
+    // an `enum` beside them keeps the strings it lists
+    EXPECT_TRUE(has(r.code, "enum class RootListed\n{\n    /// System\n    sys,\n    loc,\n};"));
+    EXPECT_TRUE(has(r.code, "enum class RootNarrowed\n{\n    x,\n};"));
+    EXPECT_TRUE(has(r.code, "    std::optional<std::variant<std::monostate, RootNarrowed>> narrowed;\n"));
 }
 
 TEST(Codegen, VariantAlternativeMetadata)
