@@ -574,6 +574,19 @@ using TTree = std::variant<TLeaf, std::shared_ptr<TBranch>>;
 struct TBranch { std::vector<TTree> kids; };
 template <> inline constexpr auto yyjson::annotations<TTree> =
     yyjson::annotate(yyjson::internal_tag("t", {"leaf", "branch"}), yyjson::schema_name("Tree"));
+// Recursive fields through `yyjson::indirect`, which holds a value always, and the nullable form of one
+struct IExpr
+{
+    std::string op;
+    std::optional<yyjson::indirect<IExpr>> lhs;
+    std::variant<std::monostate, yyjson::indirect<IExpr>> rhs;
+    std::vector<yyjson::indirect<IExpr>> args;
+};
+struct IBranch;
+using ITree = std::variant<TLeaf, yyjson::indirect<IBranch>>;
+struct IBranch { std::vector<ITree> kids; };
+template <> inline constexpr auto yyjson::annotations<ITree> =
+    yyjson::annotate(yyjson::internal_tag("t", {"leaf", "branch"}), yyjson::schema_name("ITree"));
 struct UBranch;
 using UTree = std::variant<TLeaf, std::shared_ptr<UBranch>>;
 struct UBranch { std::vector<UTree> kids; };
@@ -1481,6 +1494,29 @@ TEST(Schema, RecursiveTag)
         R"({"t":"branch","kids":[{"v":1}]})",
         R"({"t":"branch"})",
         R"({"t":"branch","kids":[],"v":1})",
+        "null",
+    });
+}
+
+TEST(Schema, Indirect)
+{
+    check<IExpr>({
+        R"({"op":"+","lhs":{"op":"x","rhs":null,"args":[]},"rhs":{"op":"y","rhs":null,"args":[]},"args":[]})",
+        R"({"op":"+","rhs":null,"args":[{"op":"a","rhs":null,"args":[]}]})",
+        R"({"op":"+","lhs":null,"rhs":null,"args":[]})",
+        R"({"op":"+","rhs":null,"args":[null]})",
+        R"({"op":"+","rhs":1,"args":[]})",
+        R"({"op":"+"})",
+    });
+    // the value that an indirect holds has the schema of its type, without null
+    const auto s = to_jsoncons(yyjson::json_schema<IExpr>())["$defs"]["IExpr"]["properties"];
+    EXPECT_EQ(s["lhs"], json::parse(R"({"$ref":"#/$defs/IExpr"})"));
+    EXPECT_EQ(s["args"]["items"], json::parse(R"({"$ref":"#/$defs/IExpr"})"));
+    check<ITree>({
+        R"({"t":"leaf","v":1})",
+        R"({"t":"branch","kids":[{"t":"leaf","v":1},{"t":"branch","kids":[]}]})",
+        R"({"t":"branch","kids":[{"v":1}]})",
+        R"({"t":"branch","kids":null})",
         "null",
     });
 }

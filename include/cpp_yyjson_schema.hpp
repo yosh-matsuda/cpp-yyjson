@@ -1106,6 +1106,9 @@ namespace yyjson
                 emit<U>(any.emplace_back(empty_object), nodes, node);
                 any.emplace_back(empty_object).emplace("type", "null");
             }
+            else if constexpr (yyjson::detail::indirect_value<T> &&
+                               std::derived_from<caster<T>, yyjson::detail::builtin_caster>)
+                emit<typename T::value_type>(out, nodes, node);
             else if constexpr (yyjson::detail::combined_variant<T>)
             {
                 if (named<T>())
@@ -1466,7 +1469,8 @@ namespace yyjson
                         return beside();
                 }
             }
-            if constexpr (yyjson::detail::is_std_optional<T>::value || yyjson::detail::owning_pointer<T>)
+            if constexpr (yyjson::detail::is_std_optional<T>::value || yyjson::detail::owning_pointer<T> ||
+                          yyjson::detail::indirect_value<T>)
                 // Null is not an object, which the tags need.
                 emit_tagged<decltype(*std::declval<T&>())>(out, tags, nodes, node);
             else if constexpr (yyjson::detail::transparent_struct<T>)
