@@ -6959,6 +6959,24 @@ namespace yyjson
                 return static_cast<std::string_view>(v) == s.string();
         }
 
+        // Whether the settings of the level `Level` leave no value of V, the type that they constrain, to read, as
+        // far as the bounds of numbers and the values of `yyjson::const_` and `yyjson::enum_` tell, and
+        // false for the settings that do not fit V, which `value_constraint_violation` reports.
+        template <typename Level, typename V>
+        consteval bool settings_read_nothing();
+        // The compile error of the settings that `settings_read_nothing` tells, of a field, an element, a key or an
+        // alternative, whose `table_node` is `Level`.
+        template <typename Level, typename V>
+        struct settings_leave_no_value
+        {
+            static_assert(false_v<Level, V>,
+                          "the settings of a field, an element, a key or an alternative of yyjson::any_of or "
+                          "yyjson::one_of leave no value of its type to read: no number of the type is within the "
+                          "bounds, or no value of yyjson::const_ and yyjson::enum_ is of the type, within "
+                          "the bounds and in both; the settings of a std::optional, a smart pointer or a std::variant "
+                          "of std::monostate are those of the value that it holds, even though null is read");
+        };
+
         // The constraint of the level `Level` that the value `v` does not satisfy.
         template <typename Level, typename V>
         constraint_kind value_constraint_violation(const V& v)
@@ -6986,6 +7004,7 @@ namespace yyjson
                                                          }),
                           "yyjson::const_ and yyjson::enum_ constrain a field or an element of a string, "
                           "a number or a bool, with values of its kind or nullptr");
+            if constexpr (settings_read_nothing<Level, V>()) (void)settings_leave_no_value<Level, V>{};
             if constexpr (listed)
             {
                 const auto equals = [&v](const json_scalar& s) {
@@ -16049,6 +16068,51 @@ namespace yyjson
                 for (const json_scalar& s : Level::values) f(s);
         }
 
+        // The bools that a `bool` reads with the values of `yyjson::const_` and `yyjson::enum_` of the
+        // level, as the bits of `json_bound::booleans`.
+        template <typename Level>
+        consteval std::uint8_t listed_booleans()
+        {
+            if constexpr (!Level::constraints.template has<const_<>>() &&
+                          !Level::constraints.template has<enum_<0>>())
+                return 3;
+            else
+            {
+                std::uint8_t booleans = 0;
+                for_each_listed<Level>(
+                    [](const json_scalar& x, const json_scalar& y) {
+                        return x.kind == json_scalar::kind_t::boolean && y.kind == x.kind && x.boolean == y.boolean;
+                    },
+                    [&booleans](const json_scalar& s) {
+                        if (s.kind == json_scalar::kind_t::boolean)
+                            booleans |= static_cast<std::uint8_t>(s.boolean ? 2U : 1U);
+                    });
+                return booleans;
+            }
+        }
+        // The strings that a string reads with the values of `yyjson::const_` and `yyjson::enum_` of
+        // the level.
+        template <typename Level>
+        consteval string_bound listed_strings()
+        {
+            auto b = string_bound{};
+            b.extent = bound_extent::exact;
+            if constexpr (Level::constraints.template has<const_<>>() ||
+                          Level::constraints.template has<enum_<0>>())
+            {
+                b.listed = true;
+                for_each_listed<Level>(
+                    [](const json_scalar& x, const json_scalar& y) {
+                        return x.kind == json_scalar::kind_t::string && y.kind == x.kind && x.string() == y.string();
+                    },
+                    [&b](const json_scalar& s) {
+                        if (s.kind == json_scalar::kind_t::string) add_string(b, s.string());
+                    });
+                if (b.listed && b.count == 0) b = {};
+            }
+            return b;
+        }
+
         // The numbers that a value of the arithmetic type T, other than `bool`, reads, with the settings of the
         // level that `number_settings` has.
         template <typename T, typename Level>
@@ -16144,6 +16208,29 @@ namespace yyjson
             return n;
         }
 
+        constexpr bool scalars_of_kind(std::span<const json_scalar> values, json_scalar::kind_t kind) noexcept
+        {
+            for (const json_scalar& s : values)
+                if (s.kind != kind) return false;
+            return true;
+        }
+        template <typename Level, typename V>
+        consteval bool settings_read_nothing()
+        {
+            if constexpr ((Level::constraints.set & number_settings) == 0)
+                return false;
+            else if constexpr (!scalars_of_kind(Level::values, scalar_kind_of<V>))
+                return false;
+            else if constexpr (std::same_as<V, bool>)
+                return listed_booleans<Level>() == 0;
+            else if constexpr (std::is_arithmetic_v<V>)
+                return arithmetic_bound<V, Level>().extent == bound_extent::none;
+            else if constexpr (constraint_string<V>)
+                return listed_strings<Level>().extent == bound_extent::none;
+            else
+                return false;
+        }
+
         template <typename T, typename Level = no_settings_level>
         consteval json_bound bound_of();
 
@@ -16219,22 +16306,8 @@ namespace yyjson
             {
                 auto b = json_bound{};
                 b.boolean = level_within<Level>(listing_settings) ? bound_extent::exact : bound_extent::partial;
-                b.booleans = 3;
-                if constexpr (Level::constraints.template has<const_<>>() ||
-                              Level::constraints.template has<enum_<0>>())
-                {
-                    b.booleans = 0;
-                    for_each_listed<Level>(
-                        [](const json_scalar& x, const json_scalar& y) {
-                            return x.kind == json_scalar::kind_t::boolean && y.kind == x.kind &&
-                                   x.boolean == y.boolean;
-                        },
-                        [&b](const json_scalar& s) {
-                            if (s.kind == json_scalar::kind_t::boolean)
-                                b.booleans |= static_cast<std::uint8_t>(s.boolean ? 2U : 1U);
-                        });
-                    if (b.booleans == 0) b.boolean = bound_extent::none;
-                }
+                b.booleans = listed_booleans<Level>();
+                if (b.booleans == 0) b.boolean = bound_extent::none;
                 return b;
             }
             else if constexpr (std::is_arithmetic_v<U>)
@@ -16246,21 +16319,7 @@ namespace yyjson
             else if constexpr (std::same_as<U, std::string>)
             {
                 auto b = json_bound{};
-                b.string.extent = bound_extent::exact;
-                if constexpr (Level::constraints.template has<const_<>>() ||
-                              Level::constraints.template has<enum_<0>>())
-                {
-                    b.string.listed = true;
-                    for_each_listed<Level>(
-                        [](const json_scalar& x, const json_scalar& y) {
-                            return x.kind == json_scalar::kind_t::string && y.kind == x.kind &&
-                                   x.string() == y.string();
-                        },
-                        [&b](const json_scalar& s) {
-                            if (s.kind == json_scalar::kind_t::string) add_string(b.string, s.string());
-                        });
-                    if (b.string.listed && b.string.count == 0) b.string = {};
-                }
+                b.string = listed_strings<Level>();
                 return bound(b, level_within<Level>(listing_settings));
             }
             else if constexpr (std::is_enum_v<U>)
@@ -16291,8 +16350,8 @@ namespace yyjson
                 return kinds_bound(accepted_json_kinds<U, reader::const_value_ref>());
         }
 
-        // Of the alternatives of V, `yyjson::any_of` or `yyjson::one_of`: the first one that reads no JSON value at
-        // all, `empty`; the first one that is never read, `contained`, with the one that reads every value that it
+        // Of the alternatives of V, `yyjson::any_of` or `yyjson::one_of`: the first one whose settings leave no
+        // value of its type, as `settings_read_nothing` tells, `empty`; the first one that is never read, `contained`, with the one that reads every value that it
         // reads, `container`; `size` for none; and whether two alternatives may both read a JSON value.  Of
         // `yyjson::any_of`, an alternative is never read if one before it reads all its values; of `yyjson::one_of`,
         // an alternative never is the only one to read a value if another one reads all its values.
@@ -16311,9 +16370,15 @@ namespace yyjson
 
             static consteval std::size_t find_empty()
             {
-                for (std::size_t i = 0; i < size; ++i)
-                    if (bounds_disjoint(bounds[i], bounds[i])) return i;
-                return size;
+                return [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                    std::size_t i = size;
+                    ((i == size && settings_read_nothing<alternative_level<V, Is>,
+                                                         constrained_value_t<std::variant_alternative_t<Is, V>>>()
+                          ? (void)(i = Is)
+                          : void()),
+                     ...);
+                    return i;
+                }(std::make_index_sequence<size>{});
             }
             static constexpr std::size_t empty = find_empty();
 
@@ -16349,14 +16414,6 @@ namespace yyjson
 
         // The compile errors of `check_alternative_bounds`, whose template arguments, which the compiler shows,
         // are the indices of the alternatives.
-        template <std::size_t Index>
-        struct alternative_reads_nothing
-        {
-            static_assert(false_v<std::integral_constant<std::size_t, Index>>,
-                          "an alternative of yyjson::any_of or yyjson::one_of reads no JSON value, as its settings "
-                          "leave no value of its type; the template argument of alternative_reads_nothing is its "
-                          "index");
-        };
         template <std::size_t Later, std::size_t Earlier>
         struct any_of_alternative_never_read
         {
@@ -16385,7 +16442,9 @@ namespace yyjson
         {
             using relations = alternative_relations<V>;
             if constexpr (relations::empty != relations::size)
-                (void)alternative_reads_nothing<relations::empty>{};
+                (void)settings_leave_no_value<
+                    alternative_level<V, relations::empty>,
+                    constrained_value_t<std::variant_alternative_t<relations::empty, V>>>{};
             else if constexpr (relations::contained != relations::size)
             {
                 if constexpr (combined_alternatives<V>::exactly_one)

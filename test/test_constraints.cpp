@@ -518,7 +518,7 @@ inline constexpr auto yyjson::annotations<Listed> = yyjson::annotate(
     yyjson::field("ratio", yyjson::enum_(0.1, 0.5)), yyjson::field("flag", yyjson::const_(true)),
     yyjson::field("big", yyjson::enum_(-1, 0, 18446744073709551615ULL)),
     yyjson::field("level", yyjson::enum_(1, 2, 3)),
-    yyjson::field("odd", yyjson::const_(1), yyjson::enum_(2, 3)),
+    yyjson::field("odd", yyjson::const_(1), yyjson::enum_(1, 3)),
     yyjson::field("tags", yyjson::items(yyjson::enum_("a", "b"))),
     yyjson::field("named", yyjson::property_names(yyjson::enum_("x", "y"))),
     yyjson::field("pair", yyjson::prefix_items({yyjson::const_(1)}, {yyjson::enum_("x", "y")})));
@@ -1645,9 +1645,9 @@ TEST(Constraints, ConstAndEnum)
     expect_rejected<Listed>(R"({"big":18446744073709551614})",
                             value("big") + "is not one of -1, 0, 18446744073709551615", "/big");
     expect_rejected<Listed>(R"({"level":4})", value("level") + "is not one of 1, 2, 3", "/level");
-    // the constant is checked first, and the values of enum_ are listed without it
-    expect_rejected<Listed>(R"({"odd":2})", value("odd") + "is not equal to the constant 1", "/odd");
-    expect_rejected<Listed>(R"({"odd":1})", value("odd") + "is not one of 2, 3", "/odd");
+    // the constant is checked first; settings that leave no value, as with enum_(2, 3), do not compile
+    expect_rejected<Listed>(R"({"odd":3})", value("odd") + "is not equal to the constant 1", "/odd");
+    expect_accepted<Listed>(R"({"odd":1})", {});
     expect_rejected<Listed>(R"({"tags":["a","c"]})", element("tags") + R"(is not one of "a", "b")", "/tags/1");
     expect_rejected<Listed>(R"({"named":{"x":1,"z":2}})",
                             R"(a key of the value of the key "named" of Listed is not one of "x", "y")", "/named/z");
@@ -1884,7 +1884,7 @@ namespace compile_rules
     // (any_of) or never the only one to read a value (one_of), `container` the one that reads them first
     enum class Shade { light, dark };
     using yyjson::alt, yyjson::any_of, yyjson::one_of;
-    using yyjson::minimum, yyjson::maximum, yyjson::exclusive_maximum, yyjson::const_, yyjson::enum_;
+    using yyjson::minimum, yyjson::maximum, yyjson::exclusive_minimum, yyjson::exclusive_maximum, yyjson::const_, yyjson::enum_;
     template <typename V>
     using relations = yyjson::detail::alternative_relations<V>;
     template <typename V>
@@ -1920,10 +1920,25 @@ namespace compile_rules
     static_assert(contained<any_of<std::string, alt<std::string, yyjson::pattern("^a")>>> == 1);
     static_assert(contained<any_of<alt<int, yyjson::satisfies<alternative_even>>, int>> == 2);
     static_assert(contained<any_of<alt<int, yyjson::multiple_of(2)>, alt<int, const_(4)>>> == 2);
-    // an alternative that reads no value at all, also the first one
+    // an alternative whose settings leave no value of its type, also the first one, and also if null is read, as
+    // of a field
     static_assert(relations<any_of<alt<int, minimum(0), maximum(-1)>, std::string>>::empty == 0);
     static_assert(relations<any_of<int, alt<std::uint8_t, maximum(-1)>>>::empty == 1);
+    static_assert(relations<any_of<alt<std::optional<int>, minimum(1), maximum(0)>, std::string>>::empty == 0);
     static_assert(relations<any_of<alt<std::uint8_t, maximum(0)>, std::string>>::empty == 2);
+    template <typename V>
+    constexpr bool reads_nothing =
+        yyjson::detail::settings_read_nothing<yyjson::detail::alternative_level<V, 0>,
+                                              yyjson::detail::constrained_value_t<std::variant_alternative_t<0, V>>>();
+    static_assert(reads_nothing<any_of<alt<int, exclusive_minimum(0), exclusive_maximum(1)>>>);
+    static_assert(!reads_nothing<any_of<alt<double, exclusive_minimum(0), exclusive_maximum(1)>>>);
+    static_assert(reads_nothing<any_of<alt<std::int8_t, minimum(200)>>>);
+    static_assert(reads_nothing<any_of<alt<int, const_(1.5)>>>);
+    static_assert(reads_nothing<any_of<alt<int, minimum(0), const_(-1)>>>);
+    static_assert(reads_nothing<any_of<alt<bool, const_(true), enum_(false)>>>);
+    static_assert(reads_nothing<any_of<alt<std::string, const_("x"), enum_("a")>>>);
+    static_assert(!reads_nothing<any_of<alt<std::string, const_("abc"), yyjson::max_length(1)>>>);
+    static_assert(!reads_nothing<any_of<alt<int, const_("a")>>>);
     // nested alternatives: any_of and std::variant read the union, one_of a part of it
     static_assert(contained<any_of<std::variant<int, std::string>, std::string>> == 1);
     static_assert(contained<any_of<one_of<int, std::string>, std::string>> == 2);
