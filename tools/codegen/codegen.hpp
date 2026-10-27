@@ -3432,7 +3432,10 @@ namespace cpp_yyjson_codegen
                 {
                     const auto t = type_list(base);
                     if (std::ranges::any_of(base.members,
-                                            [](const auto& m) { return m.first != "type" && m.first != "enum"; }) ||
+                                            [](const auto& m) {
+                                                return m.first != "type" && m.first != "enum" &&
+                                                       (is_type_key(m.first) || is_ignored_key(m.first));
+                                            }) ||
                         (base.find("type") != nullptr &&
                          (t.empty() ||
                           std::ranges::any_of(t, [](const auto& x) { return x != "string" && x != "null"; }))))
@@ -3449,7 +3452,7 @@ namespace cpp_yyjson_codegen
                     if (!b.is_object() ||
                         std::ranges::any_of(b.members, [](const auto& m) {
                             return m.first != "const" && m.first != "enum" && m.first != "type" &&
-                                   !is_metadata_key(m.first);
+                                   (is_type_key(m.first) || is_ignored_key(m.first));
                         }))
                         return std::nullopt;
                     const auto t = type_list(b);

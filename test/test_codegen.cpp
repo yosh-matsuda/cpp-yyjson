@@ -414,8 +414,8 @@ TEST(Codegen, StringChoices)
             "opt": {"anyOf": [{"const": "on"}, {"type": "null"}]},
             "typed": {"type": "string", "anyOf": [{"const": "p"}, {"const": "q"}]},
             "color": {"anyOf": [{"$ref": "#/$defs/Color"}, {"const": "green"}]},
-            "listed": {"type": "string", "enum": ["sys", "loc"],
-                       "oneOf": [{"const": "sys", "description": "System"}, {"const": "loc"}]},
+            "listed": {"type": "string", "enum": ["sys", "loc"], "x-vendor": {"sys": {}},
+                       "oneOf": [{"const": "sys", "description": "System"}, {"const": "loc", "x-vendor": 1}]},
             "narrowed": {"enum": ["x", null], "anyOf": [{"const": "x"}, {"const": "y"}, {"type": "null"}]}
         },
         "$defs": {"Color": {"description": "A color", "oneOf": [{"const": "red"}, {"const": "blue"}]}}
