@@ -165,6 +165,18 @@ inline constexpr auto yyjson::annotations<ValidateNullables> =
                      yyjson::field("tags", yyjson::items(yyjson::max_length(3))),
                      yyjson::field("ids", yyjson::unique_items));
 
+using ValidateSignedOrUnsigned = yyjson::one_of<std::int64_t, std::uint64_t>;
+using ValidateLowOrShort =
+    yyjson::any_of<yyjson::alt<int, yyjson::minimum(0)>, yyjson::alt<std::string, yyjson::max_length(3)>>;
+using ValidateItemsOrText =
+    yyjson::any_of<yyjson::alt<std::vector<int>, yyjson::items(yyjson::minimum(0))>, std::string>;
+struct ValidateAlternatives
+{
+    ValidateLowOrShort a = 0;
+    std::vector<ValidateSignedOrUnsigned> b;
+    ValidateItemsOrText c = std::string();
+};
+
 namespace
 {
     // a value of T that `set` changes
@@ -205,6 +217,28 @@ namespace
         EXPECT_EQ(r.path(), path) << json;
         const auto w = validate_error([&] { (void)yyjson::write(t, yyjson::strict); });
         EXPECT_EQ(std::string_view(w.what()), std::string_view(e.what()));
+    }
+
+    // `yyjson::validate(t)` throws `message` at `path`, and so does `write(t, strict)`; the strict read of what `t` is
+    // written as throws at `read_path`
+    template <typename T>
+    void expect_invalid_alternative(const T& t, std::string_view message, std::string_view path,
+                                    std::string_view read_path)
+    {
+        const auto e = validate_error([&] { yyjson::validate(t); });
+        EXPECT_EQ(message_of(e), std::string(message) + " at " + std::string(path));
+        EXPECT_EQ(e.path(), path);
+        const auto json = std::string(yyjson::write(t));
+        const auto r = validate_error([&] { (void)yyjson::read<T>(json, yyjson::strict); });
+        EXPECT_EQ(r.path(), read_path) << json;
+        const auto w = validate_error([&] { (void)yyjson::write(t, yyjson::strict); });
+        EXPECT_EQ(std::string_view(w.what()), std::string_view(e.what()));
+    }
+
+    template <typename V>
+    std::string type_of()
+    {
+        return without_type_keywords(std::string(yyjson::detail::type_name<V>()));
     }
 
     template <typename T>
@@ -404,6 +438,47 @@ TEST(Validate, WriteStrict)
     EXPECT_TRUE(out.empty());
     // the adjacent tag that `write` rejects with `std::invalid_argument` is a `yyjson::bad_cast` here
     EXPECT_THROW((void)yyjson::write(ValidateEnvelope{"rect", ValidateCircle{}}, yyjson::strict), yyjson::bad_cast);
+}
+
+TEST(Validate, Alternatives)
+{
+    static_assert(!yyjson::detail::needs_validation<yyjson::any_of<int, std::string>>);
+    static_assert(!yyjson::detail::needs_validation<yyjson::one_of<int, std::string>>);
+    static_assert(yyjson::detail::needs_validation<ValidateSignedOrUnsigned>);
+    static_assert(yyjson::detail::needs_validation<ValidateLowOrShort>);
+
+    expect_valid(ValidateAlternatives{});
+    expect_valid(with<ValidateAlternatives>([](auto& t) {
+        t.a = std::string("abc");
+        t.b = {ValidateSignedOrUnsigned(std::int64_t{-5}), ValidateSignedOrUnsigned(std::uint64_t{1} << 63)};
+        t.c = std::vector<int>{0, 1};
+    }));
+
+    // the settings of the alternative that the value holds, named in the message
+    const auto low = type_of<ValidateLowOrShort>();
+    expect_invalid_alternative(with<ValidateAlternatives>([](auto& t) { t.a = -1; }),
+                               "the value of the alternative 0 of " + low + " is less than the minimum 0", "/a",
+                               "/a");
+    expect_invalid_alternative(with<ValidateAlternatives>([](auto& t) { t.a = std::string("abcd"); }),
+                               "the value of the alternative 1 of " + low + " is longer than the maximum length 3",
+                               "/a", "/a");
+    // an element inside the alternative is located, while the read reports the alternatives at the value
+    expect_invalid_alternative(with<ValidateAlternatives>([](auto& t) { t.c = std::vector<int>{1, -2}; }),
+                               "an element of the value of the alternative 0 of " + type_of<ValidateItemsOrText>() +
+                                   " is less than the minimum 0",
+                               "/c/1", "/c");
+
+    // a value of one_of that another alternative reads too
+    expect_invalid(with<ValidateAlternatives>([](auto& t) {
+                       t.b = {ValidateSignedOrUnsigned(std::int64_t{-5}), ValidateSignedOrUnsigned(std::uint64_t{5})};
+                   }),
+                   "the value matches the alternatives 0 and 1 of " + type_of<ValidateSignedOrUnsigned>(), "/b/1");
+    expect_invalid(ValidateSignedOrUnsigned(std::int64_t{5}),
+                   "the value matches the alternatives 0 and 1 of " + type_of<ValidateSignedOrUnsigned>(), "");
+
+    // the plain write does not check
+    EXPECT_EQ(std::string(yyjson::write(with<ValidateAlternatives>([](auto& t) { t.a = -1; }))),
+              R"({"a":-1,"b":[],"c":""})");
 }
 
 TEST(Validate, Unchecked)

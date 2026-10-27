@@ -13824,12 +13824,19 @@ namespace yyjson
         inline constexpr bool strictly_required_field =
             struct_key_rules<S>::required[K] || !struct_key_rules<S>::optional[K];
 
+        template <typename V>
+        consteval bool combined_validates_itself();
+        template <typename V>
+        void validate_combined(const V& v);
+
         // Whether `yyjson::validate` checks something of a value of the type T, beside the values in it.
         template <typename T>
         consteval bool validates_itself()
         {
             if constexpr (!std::is_class_v<T> || write_conversion::opaque<T>)
                 return false;
+            else if constexpr (combined_variant<T>)
+                return combined_validates_itself<T>();
             else if constexpr (transparent_struct<T>)
                 return constrained_field<T, 0>;
             else if constexpr (validated_struct<T>)
@@ -13905,6 +13912,31 @@ namespace yyjson
             }
         }
 
+        // The alternative I of V, `yyjson::any_of` or `yyjson::one_of`, as the subject of a violation of its
+        // settings.
+        template <typename V, std::size_t I>
+        struct alternative_subject
+        {
+            static std::string name() { return std::format("the alternative {} of {}", I, type_name<V>()); }
+        };
+        template <typename S>
+        struct is_alternative_subject : std::false_type
+        {
+        };
+        template <typename V, std::size_t I>
+        struct is_alternative_subject<alternative_subject<V, I>> : std::true_type
+        {
+        };
+        // The name of the type whose value or whose field violates a constraint, in the message.
+        template <typename S>
+        auto violated_type_name()
+        {
+            if constexpr (is_alternative_subject<S>::value)
+                return S::name();
+            else
+                return type_name<S>();
+        }
+
         template <typename S, typename Level, typename V>
         void throw_value_located_violation(const V& v, constraint_kind k, std::string_view key);
 
@@ -13918,7 +13950,7 @@ namespace yyjson
             validate_within(prefix, [&] {
                 if (const auto* value = held_value(e); value != nullptr)
                     throw_value_located_violation<S, Level>(*value, k, key);
-                throw_constraint_violation(cast_target{}, key, type_name<S>(), k, Level::constraints, Level::values,
+                throw_constraint_violation(cast_target{}, key, violated_type_name<S>(), k, Level::constraints, Level::values,
                                            constraint_subject::element);
             });
         }
@@ -13998,7 +14030,7 @@ namespace yyjson
                         if (const auto violated = level_violation<next>(std::get<0>(e));
                             violated != constraint_kind::none)
                             validate_within([&e] { return key_token(written_key(std::get<0>(e))); }, [&] {
-                                throw_constraint_violation(cast_target{}, key, type_name<S>(),
+                                throw_constraint_violation(cast_target{}, key, violated_type_name<S>(),
                                                            violated, next::constraints, next::values,
                                                            constraint_subject::key);
                             });
@@ -14011,7 +14043,7 @@ namespace yyjson
                 if (k == constraint_kind::unique_items)
                     if (const auto j = first_duplicate(v); j != no_duplicate)
                         validate_within([j] { return index_token(j); }, [&] {
-                            throw_constraint_violation(cast_target{}, key, type_name<S>(),
+                            throw_constraint_violation(cast_target{}, key, violated_type_name<S>(),
                                                        constraint_kind::duplicate_item, Level::constraints,
                                                        Level::values, constraint_subject::element);
                         });
@@ -14042,7 +14074,8 @@ namespace yyjson
             else if constexpr (owning_pointer<T>)
                 return !v;
             else if constexpr (requires { std::variant_size<T>::value; })
-                return !v.valueless_by_exception() && std::visit([](const auto& a) { return written_as_null(a); }, v);
+                return !v.valueless_by_exception() &&
+                       std::visit([](const auto& a) { return written_as_null(a); }, as_std_variant(v));
             else
                 return false;
         }
@@ -14154,6 +14187,8 @@ namespace yyjson
             {
                 if (v) validate_value(*v);
             }
+            else if constexpr (combined_variant<U>)
+                validate_combined(v);
             else if constexpr (requires { std::variant_size<U>::value; })
             {
                 if (!v.valueless_by_exception())
@@ -17344,6 +17379,32 @@ namespace yyjson
             throw_bad_cast_at(at, "the value matches the alternatives {} and {} of {}", i, j, type_name<V>());
         }
 
+        // Whether the alternative I of V, `yyjson::any_of` or `yyjson::one_of`, reads the JSON value: whether its
+        // type is cast from it and the value satisfies its settings.
+        template <typename V, std::size_t I, typename Json>
+        bool alternative_reads(const Json& json)
+        {
+            using T = std::variant_alternative_t<I, V>;
+            auto limit = std::exception_ptr();
+            try
+            {
+                const auto value = cast_nested<T>(json);
+                if constexpr (constrained_alternative<V, I>)
+                    return level_violation<alternative_level<V, I>>(value) == constraint_kind::none;
+                else
+                    return true;
+            }
+            catch (const recursion_limit_error&)
+            {
+                limit = std::current_exception();
+            }
+            catch (...)
+            {
+            }
+            if (limit) std::rethrow_exception(limit);
+            return false;
+        }
+
         // The caster of V, `yyjson::any_of` or `yyjson::one_of` of the alternatives of the types Ts.  An alternative
         // reads a JSON value if its type is cast from it and the value satisfies its settings, which are checked
         // as those of a field.  The first alternative that reads the value is taken, and `yyjson::one_of` then
@@ -17440,31 +17501,6 @@ namespace yyjson
                 return v;
             }
 
-            // Whether the alternative I reads the JSON value, as `cast_alternative` tells.
-            template <std::size_t I, typename Json>
-            static bool reads(const Json& json)
-            {
-                using T = std::variant_alternative_t<I, V>;
-                auto limit = std::exception_ptr();
-                try
-                {
-                    const auto value = cast_nested<T>(json);
-                    if constexpr (constrained_alternative<V, I>)
-                        return level_violation<alternative_level<V, I>>(value) == constraint_kind::none;
-                    else
-                        return true;
-                }
-                catch (const recursion_limit_error&)
-                {
-                    limit = std::current_exception();
-                }
-                catch (...)
-                {
-                }
-                if (limit) std::rethrow_exception(limit);
-                return false;
-            }
-
             // as `caster<std::variant>::from_alternative`, with the settings of each alternative
             template <std::size_t I, typename Json, typename Guard>
             static V from_alternative(const Json& json, std::uint16_t kind, const Guard& rereads)
@@ -17516,7 +17552,7 @@ namespace yyjson
                         {
                             if (rereads.template stops_after<J>())
                                 throw_variant_reread_limit<V, std::variant_alternative_t<J, V>>();
-                            if (reads<J>(json)) throw_one_of_matches<V>(target_of(json), I, J);
+                            if (alternative_reads<V, J>(json)) throw_one_of_matches<V>(target_of(json), I, J);
                         }
                     }
                     check_later_matches<I, J + 1>(json, kind, rereads);
@@ -17533,6 +17569,86 @@ namespace yyjson
     struct caster<one_of<As...>> : detail::combined_caster<one_of<As...>, detail::alternative_type_t<As>...>
     {
     };
+
+    namespace detail
+    {
+        // Whether the alternative I of V, `yyjson::one_of`, may read a value that another alternative reads.
+        template <typename V, std::size_t I>
+        consteval bool overlaps_other_alternative()
+        {
+            for (std::size_t j = 0; j < std::variant_size_v<V>; ++j)
+                if (j != I && alternative_relations<V>::overlap[I][j]) return true;
+            return false;
+        }
+
+        template <typename V>
+        consteval bool combined_validates_itself()
+        {
+            for (std::size_t i = 0; i < std::variant_size_v<V>; ++i)
+                if (!combined_alternatives<V>::table::tree.nodes[i].empty()) return true;
+            if constexpr (combined_alternatives<V>::exactly_one)
+                for (std::size_t i = 0; i < std::variant_size_v<V>; ++i)
+                    for (std::size_t j = 0; j < std::variant_size_v<V>; ++j)
+                        if (i != j && alternative_relations<V>::overlap[i][j]) return true;
+            return false;
+        }
+
+        // Throws `bad_cast` at the value `a` of the alternative I of V, or at a value in it, which violates the
+        // constraint `k` of its settings.
+        template <typename V, std::size_t I, typename A>
+        [[noreturn]] CPPYYJSON_COLD void throw_alternative_violation(const A& a, constraint_kind k)
+        {
+            using level = alternative_level<V, I>;
+            if (const auto* value = held_value(a); value != nullptr)
+                throw_value_located_violation<alternative_subject<V, I>, level>(*value, k, std::string_view());
+            throw_constraint_violation(cast_target{}, std::string_view(), violated_type_name<alternative_subject<V, I>>(),
+                                       k, level::constraints, level::values);
+        }
+
+        template <typename V, std::size_t I, std::size_t J, typename Json>
+        void check_other_alternative(const Json& json, std::uint16_t kind)
+        {
+            if constexpr (I != J && alternative_relations<V>::overlap[I][J])
+            {
+                using T = std::variant_alternative_t<J, V>;
+                if ((accepted_json_kinds<T, Json>() & kind) != 0 && alternative_reads<V, J>(json))
+                    throw_one_of_matches<V>(cast_target{}, std::min(I, J), std::max(I, J));
+            }
+        }
+
+        // Checks the value `a` of the alternative I of V as the read checks it: the values in it, its settings,
+        // and of `yyjson::one_of`, that no other alternative reads the JSON value that the writer writes of it,
+        // under `yyjson::strict`.
+        template <typename V, std::size_t I, typename A>
+        void validate_alternative(const A& a)
+        {
+            if constexpr (needs_validation<A>) validate_value(a);
+            if constexpr (constrained_alternative<V, I>)
+            {
+                if (const auto k = level_violation<alternative_level<V, I>>(a); k != constraint_kind::none)
+                    [[unlikely]]
+                    if (!written_as_null(a)) throw_alternative_violation<V, I>(a, k);
+            }
+            if constexpr (combined_alternatives<V>::exactly_one && overlaps_other_alternative<V, I>())
+            {
+                const auto json = yyjson::value(a);
+                const auto scope = strict_scope();
+                const auto kind = json_kind_of(json);
+                [&]<std::size_t... Js>(std::index_sequence<Js...>) {
+                    (check_other_alternative<V, I, Js>(json, kind), ...);
+                }(std::make_index_sequence<std::variant_size_v<V>>{});
+            }
+        }
+
+        template <typename V>
+        void validate_combined(const V& v)
+        {
+            if (v.valueless_by_exception()) return;
+            [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                (void)((v.index() == Is && (validate_alternative<V, Is>(*std::get_if<Is>(&v)), true)) || ...);
+            }(std::make_index_sequence<std::variant_size_v<V>>{});
+        }
+    }  // namespace detail
 
     template <template <typename...> typename Tuple, typename... Ts>
     requires detail::tuple_like<Tuple<Ts...>>
