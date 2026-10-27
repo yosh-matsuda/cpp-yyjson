@@ -1907,7 +1907,9 @@ namespace cpp_yyjson_codegen
                     additional = ap->b;
                 else if (!ap_any)
                     extra = type_of(ap, loc + "/additionalProperties", decls_[idx].name + "Extra");
-                if (!extra && additional && opts_.keep_unknown_keys) extra = typed{make(tk::any), {}};
+                // the field of yyjson::extra_keys is where yyjson::property_names checks the keys of `propertyNames`
+                if (!extra && additional && (opts_.keep_unknown_keys || s.has("propertyNames")))
+                    extra = typed{make(tk::any), {}};
                 for (const auto* k : {"minProperties", "maxProperties"})
                     if (s.has(k))
                         warn(loc,

@@ -1030,6 +1030,17 @@ TEST(Codegen, PatternProperties)
                                  {});
     EXPECT_EQ(warnings(closed), "#/propertyNames: `propertyNames` of an object without a field of yyjson::extra_keys "
                                 "is not supported and is ignored\n");
+    // a struct that accepts other keys gets a field of yyjson::extra_keys of any JSON value for `propertyNames`
+    const auto open = generate(R"({
+        "type": "object",
+        "properties": {"long_name": {"type": "integer"}},
+        "propertyNames": {"anyOf": [{"enum": ["long_name"]}, {"pattern": "^x-"}]}
+    })",
+                               {});
+    EXPECT_EQ(warnings(open), "");
+    EXPECT_TRUE(has(open.code, "    std::map<std::string, yyjson::value> extra;"));
+    EXPECT_TRUE(has(open.code, "    yyjson::field(\"extra\", yyjson::extra_keys, "
+                               "yyjson::property_names(yyjson::pattern(\"^x-\"))));"));
 
     // a schema that the name of a key selects: the other keys as any JSON value, with a warning
     const auto p = generate(R"({
