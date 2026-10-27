@@ -377,8 +377,11 @@ The last case is the only one where the code reads less strictly without the war
 
 *   a single-value `enum` and `const`;
 *   nested `anyOf` and the flattened form;
+*   `oneOf` and `anyOf` of `{"type": "null"}` and a subschema that does not take `null`;
 *   `additionalProperties: {}`, `true` and an absent keyword;
 *   `patternProperties` and the `propertyNames` with `additionalProperties` of the map.
+
+The `title` and `description` of the subschema beside `{"type": "null"}` are lost: the variant whose first alternative is `std::monostate` has no place for them, and the description of the property stays.
 
 ## Limits
 
