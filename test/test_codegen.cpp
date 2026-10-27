@@ -1061,6 +1061,59 @@ TEST(Codegen, Warnings)
 
 }
 
+TEST(Codegen, Contradictions)
+{
+    // settings that leave no value to read are written as they are, with a warning: the library rejects them at
+    // compile time, as the schema accepts no value there; `--strict` makes the warning an error
+    const auto schema = R"({
+        "type": "object",
+        "properties": {
+            "s": {"type": "string", "minLength": 3, "maxLength": 2},
+            "n": {"type": "integer", "allOf": [{"minimum": 5}, {"maximum": 4}]},
+            "x": {"type": "number", "exclusiveMinimum": 1, "exclusiveMaximum": 1},
+            "a": {"type": "array", "items": {"type": "string", "minLength": 2, "maxLength": 1}, "minItems": 1},
+            "m": {"type": "object", "additionalProperties": {"type": "integer"}, "minProperties": 2,
+                  "maxProperties": 1},
+            "k": {"type": "array", "items": {"type": "integer"}, "contains": {"minimum": 0}, "minContains": 3, "maxContains": 2},
+            "v": {"anyOf": [{"type": "array", "items": {"type": "integer", "minimum": 2, "maximum": 1}},
+                            {"type": "string"}]},
+            "e": {"enum": [1, 2, 3], "minimum": 2},
+            "f": {"enum": [1, 2], "minimum": 3},
+            "c": {"const": "abcd", "maxLength": 2},
+            "b": {"const": true, "enum": [false]},
+            "ok": {"type": "integer", "minimum": 1, "maximum": 1, "enum": [1]}
+        }
+    })";
+    const auto r = generate(schema, {});
+    EXPECT_EQ(warnings(r),
+              "#/properties/e: a value of `enum` does not satisfy the other keywords beside it, which the schema "
+              "rejects and the generated code reads\n"
+              "#/properties/f: no value of `enum` satisfies the other keywords beside it: the schema accepts no value "
+              "here, and the generated code reads the values of `enum`\n"
+              "#/properties/c: no value of `const` satisfies the other keywords beside it: the schema accepts no "
+              "value here, and the generated code reads the value of `const`\n"
+              "#/properties/b: no value of `const` satisfies the other keywords beside it: the schema accepts no "
+              "value here, and the generated code reads the value of `const`\n"
+              "#/properties/s: `minLength` is greater than `maxLength`: the schema accepts no value here, and the "
+              "generated code does not compile\n"
+              "#/properties/n: no number of the C++ type std::int64_t is within the bounds: the schema accepts no "
+              "value here, and the generated code does not compile\n"
+              "#/properties/x: no number of the C++ type double is within the bounds: the schema accepts no value "
+              "here, and the generated code does not compile\n"
+              "#/properties/a/items: `minLength` is greater than `maxLength`: the schema accepts no value here, and "
+              "the generated code does not compile\n"
+              "#/properties/m: `minProperties` is greater than `maxProperties`: the schema accepts no value here, "
+              "and the generated code does not compile\n"
+              "#/properties/k: `minContains` is greater than `maxContains`: the schema accepts no array here, and "
+              "reading one always fails\n"
+              "#/properties/v/items: no number of the C++ type std::int64_t is within the bounds: the schema "
+              "accepts no value here, and the generated code does not compile\n");
+    EXPECT_TRUE(has(r.code, "yyjson::field(\"s\", yyjson::min_length(3), yyjson::max_length(2))"));
+    EXPECT_TRUE(has(r.code, "yyjson::field(\"n\", yyjson::minimum(5), yyjson::maximum(4))"));
+    EXPECT_TRUE(has(r.code, "yyjson::field(\"m\", yyjson::min_items(2), yyjson::max_items(1)"));
+    EXPECT_THROW((void)generate(schema, {.strict = true}), cpp_yyjson_codegen::error);
+}
+
 TEST(Codegen, TransparentRoot)
 {
     const auto r = generate(R"({"type": "array", "items": {"type": "integer"}, "maxItems": 3})", {});

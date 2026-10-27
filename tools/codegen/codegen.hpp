@@ -16,6 +16,7 @@
 #include <ranges>
 #include <regex>
 #include <set>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -2939,10 +2940,49 @@ namespace cpp_yyjson_codegen
                 return {std::move(r), {}};
             }
 
+            // warns of the values of `const` or `enum` of the schema `s` that the other keywords beside them reject:
+            // the bounds and the lengths, and `enum` beside `const`, which the generated code leaves out, since it
+            // lists the values
+            void check_listed_values(const json& s, const std::string& keyword, const std::string& loc)
+            {
+                const auto& listed = *s.find(keyword);
+                const auto values = keyword == "const" ? std::span(&listed, 1) : std::span(listed.items);
+                auto numbers = settings();
+                auto strings = settings();
+                for (const auto* k : {"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf"})
+                    if (const auto* v = s.find(k); v != nullptr && v->is_number())
+                        numbers.constraints.push_back({"", k, *v});
+                for (const auto* k : {"minLength", "maxLength"})
+                    if (const auto* v = s.find(k); v != nullptr && as_uint64(*v))
+                        strings.constraints.push_back({"", k, *v});
+                const auto* e = keyword == "const" ? s.find("enum") : nullptr;
+                const auto rejected = std::ranges::count_if(values, [&](const json& v) {
+                    if (e != nullptr && e->is_array() && std::ranges::none_of(e->items, [&](const json& x) {
+                            return equal(x, v);
+                        }))
+                        return true;
+                    if (v.is_number()) return fits_constraints(v, numbers) == fit::no;
+                    if (v.is_string()) return fits_constraints(v, strings) == fit::no;
+                    return false;
+                });
+                if (rejected == 0) return;
+                if (std::cmp_equal(rejected, values.size()))
+                    warn(loc, "no value of `" + keyword +
+                                  "` satisfies the other keywords beside it: the schema accepts no value here, and "
+                                  "the generated code reads the value" + (values.size() == 1 ? "" : "s") + " of `" +
+                                  keyword + "`");
+                else
+                    warn(loc, (rejected == 1 ? std::string("a value of `enum` does")
+                                             : std::to_string(rejected) + " values of `enum` do") +
+                                  " not satisfy the other keywords beside it, which the schema rejects and the "
+                                  "generated code reads");
+            }
+
             typed type_const(const json& s, const std::string& loc)
             {
                 const auto& c = *s.find("const");
                 auto r = typed();
+                check_listed_values(s, "const", loc);
                 switch (c.k)
                 {
                     case json::kind::null:
@@ -3011,6 +3051,7 @@ namespace cpp_yyjson_codegen
                     warn(loc, "`enum` is not an array of values; the value is read as any JSON value");
                     return {};
                 }
+                check_listed_values(s, "enum", loc);
                 const auto types = type_list(s);
                 const auto allowed = [&](const json& v) {
                     if (types.empty()) return true;
@@ -4383,6 +4424,75 @@ namespace cpp_yyjson_codegen
                 }
             }
 
+            // The settings `s` of a value of the type `t` that leave no value to read, as the library tells them at
+            // compile time (`yyjson::detail::settings_read_nothing<>()`): the reason, or nothing
+            std::optional<std::string> contradiction(const ctype& t, const settings& s) const
+            {
+                const auto& v = value_type(t);
+                const auto items = v.k == tk::map ? std::pair("`minProperties`", "`maxProperties`")
+                                                  : std::pair("`minItems`", "`maxItems`");
+                if (s.min_items && s.max_items && *s.min_items > *s.max_items)
+                    return std::string(items.first) + " is greater than " + items.second;
+                const auto number = is_integer_kind(v.k) || is_float_kind(v.k);
+                if (!number && v.k != tk::string && v.k != tk::boolean) return std::nullopt;
+                if (v.k == tk::string)
+                {
+                    const auto lengths = lengths_of(s);
+                    if (lengths.high < lengths.low) return "`minLength` is greater than `maxLength`";
+                }
+                if (!reads_nothing(bound_of(v, s))) return std::nullopt;
+                if (listed_values(s, v.k)) return "no value of `const` and `enum` is within the other constraints";
+                return "no number of the C++ type " + spell(v) + " is within the bounds";
+            }
+
+            // warns of the settings of a field, an element or an alternative that leave no value to read, which the
+            // schema has, as in `{"minLength": 3, "maxLength": 2}`; the generated code has them as they are, which the
+            // library rejects at compile time
+            void check_level(const ctype& t, const settings& s, const std::string& loc)
+            {
+                if (s.empty()) return;
+                if (const auto r = contradiction(t, s))
+                    warn(loc, *r + ": the schema accepts no value here, and the generated code does not compile");
+                if (s.min_contains && s.max_contains && *s.min_contains > *s.max_contains && !s.contains.empty())
+                    warn(loc, "`minContains` is greater than `maxContains`: the schema accepts no array here, and "
+                              "reading one always fails");
+                const auto& v = value_type(t);
+                const auto elem = [&]() -> ctype {
+                    return v.k == tk::vector || v.k == tk::map ? v.args[0] : make(tk::any);
+                };
+                for (std::size_t i = 0; i < s.prefix.size(); ++i)
+                    check_level(v.k == tk::tuple ? v.args[i] : elem(), s.prefix[i],
+                                loc + "/prefixItems/" + std::to_string(i));
+                if (!s.items.empty()) check_level(elem(), s.items[0], loc + "/items");
+                if (!s.contains.empty()) check_level(elem(), s.contains[0], loc + "/contains");
+                if (!s.property_names.empty())
+                    check_level(make(tk::string), s.property_names[0], loc + "/propertyNames");
+                if (!s.additional.empty()) check_level(elem(), s.additional[0], loc + "/additionalProperties");
+            }
+
+            // the settings of the alternatives of yyjson::any_of and yyjson::one_of within the type `t`
+            void check_alternative_levels(const ctype& t, const std::string& loc)
+            {
+                for (std::size_t i = 0; i < t.args.size(); ++i)
+                {
+                    if (t.k == tk::variant && i < t.sets.size()) check_level(t.args[i], t.sets[i], loc);
+                    check_alternative_levels(t.args[i], loc);
+                }
+            }
+
+            void check_levels()
+            {
+                for (const auto& d : decls_)
+                {
+                    if (d.kind == decl::kind_t::alias) check_alternative_levels(d.target, d.loc);
+                    for (const auto& f : d.fields)
+                    {
+                        check_level(f.type, f.set, f.loc);
+                        check_alternative_levels(f.type, f.loc);
+                    }
+                }
+            }
+
             // rendering
 
             static std::string join(const std::vector<std::string>& v, std::string_view sep = ", ")
@@ -4573,6 +4683,7 @@ namespace cpp_yyjson_codegen
                 ctx_.clear();
                 convert_defaults(structs);
                 check_examples();
+                check_levels();
                 const auto q = opts_.ns.empty() ? std::string() : opts_.ns + "::";
                 auto body = std::string();
                 auto after = std::string();
