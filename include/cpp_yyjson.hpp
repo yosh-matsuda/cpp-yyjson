@@ -109,6 +109,13 @@ namespace yyjson
 
     namespace detail
     {
+        // The characters of s for the C API, which rejects a null pointer even with a length of 0, as an empty
+        // `std::string_view` has.
+        [[nodiscard]] constexpr const char* c_chars(std::string_view s) noexcept
+        {
+            return s.data() != nullptr ? s.data() : "";
+        }
+
         // Formats the message out of line, which keeps the casts that may throw small enough to be inlined.
         template <typename... Args>
         [[noreturn]] CPPYYJSON_COLD void throw_bad_cast(std::format_string<Args...> fmt, Args&&... args)
@@ -3578,11 +3585,11 @@ namespace yyjson
                 }
                 auto create_string(std::string_view v, copy_string_t) noexcept
                 {
-                    return yyjson_mut_strncpy(ptrs->self, v.data(), v.size());
+                    return yyjson_mut_strncpy(ptrs->self, yyjson::detail::c_chars(v), v.size());
                 }
                 auto create_string(std::string_view v) noexcept
                 {
-                    return yyjson_mut_strn(ptrs->self, v.data(), v.size());
+                    return yyjson_mut_strn(ptrs->self, yyjson::detail::c_chars(v), v.size());
                 }
                 yyjson_mut_val* create_primitive(const std::string& v, copy_string_t) noexcept
                 {
@@ -3934,11 +3941,11 @@ namespace yyjson
                         if constexpr (copy ||
                                       (std::same_as<std::string, value_type> && std::is_rvalue_reference_v<T&&>))
                         {
-                            dst->uni.str = unsafe_yyjson_mut_strncpy(ptrs->self, t.data(), t.size());
+                            dst->uni.str = unsafe_yyjson_mut_strncpy(ptrs->self, yyjson::detail::c_chars(t), t.size());
                         }
                         else
                         {
-                            dst->uni.str = t.data();
+                            dst->uni.str = yyjson::detail::c_chars(t);
                         }
                         if (yyjson_unlikely(!dst->uni.str)) return false;
                     }
@@ -5797,14 +5804,14 @@ namespace yyjson
                 [[nodiscard]] auto object_empty() const noexcept { return yyjson_mut_obj_size(base::val_) == 0; }
                 [[nodiscard]] auto object_get(std::string_view key) const
                 {
-                    auto result = yyjson_mut_obj_getn(base::val_, key.data(), key.size());
+                    auto result = yyjson_mut_obj_getn(base::val_, yyjson::detail::c_chars(key), key.size());
                     if (result == nullptr) [[unlikely]]
                         throw std::out_of_range(std::format("JSON object key not found: {}", key));
                     return result;
                 }
                 [[nodiscard]] bool object_contains(std::string_view key) const noexcept
                 {
-                    return yyjson_mut_obj_getn(base::val_, key.data(), key.size()) != nullptr;
+                    return yyjson_mut_obj_getn(base::val_, yyjson::detail::c_chars(key), key.size()) != nullptr;
                 }
 
                 template <typename D>
@@ -6021,7 +6028,7 @@ namespace yyjson
                 void object_erase(std::string_view key) noexcept
                 {
                     // remove all key-value pairs
-                    yyjson_mut_obj_remove_strn(base::val_, key.data(), key.size());
+                    yyjson_mut_obj_remove_strn(base::val_, yyjson::detail::c_chars(key), key.size());
                 }
                 void object_clear() noexcept
                 {
@@ -6739,14 +6746,14 @@ namespace yyjson
             [[nodiscard]] auto object_empty() const noexcept { return yyjson_obj_size(base::val_) == 0; }
             [[nodiscard]] auto object_get(std::string_view key) const
             {
-                auto result = yyjson_obj_getn(base::val_, key.data(), key.size());
+                auto result = yyjson_obj_getn(base::val_, yyjson::detail::c_chars(key), key.size());
                 if (result == nullptr) [[unlikely]]
                     throw std::out_of_range(std::format("JSON object key not found: {}", key));
                 return result;
             }
             [[nodiscard]] bool object_contains(std::string_view key) const noexcept
             {
-                return yyjson_obj_getn(base::val_, key.data(), key.size()) != nullptr;
+                return yyjson_obj_getn(base::val_, yyjson::detail::c_chars(key), key.size()) != nullptr;
             }
 
             explicit const_object_ref(yyjson_val* val) : base(val) {}
@@ -9461,16 +9468,16 @@ namespace yyjson
                 throw std::invalid_argument(std::format(
                     "the alternative \"{}\" of {}, which yyjson::internal_tag tags, is not written as a JSON object",
                     id, type));
-            if (auto* const tag = yyjson_mut_obj_getn(obj, key.data(), key.size()); tag != nullptr)
+            if (auto* const tag = yyjson_mut_obj_getn(obj, yyjson::detail::c_chars(key), key.size()); tag != nullptr)
             {
-                if (!yyjson_mut_equals_strn(tag, id.data(), id.size()))
+                if (!yyjson_mut_equals_strn(tag, yyjson::detail::c_chars(id), id.size()))
                     throw std::invalid_argument(
                         std::format("the alternative \"{}\" of {} is written with another \"{}\"", id, type, key));
                 return;
             }
             auto* const doc = access::document(val);
-            auto* const k = yyjson_mut_strn(doc, key.data(), key.size());
-            auto* const v = yyjson_mut_strn(doc, id.data(), id.size());
+            auto* const k = yyjson_mut_strn(doc, yyjson::detail::c_chars(key), key.size());
+            auto* const v = yyjson_mut_strn(doc, yyjson::detail::c_chars(id), id.size());
             if (k == nullptr || v == nullptr || !yyjson_mut_obj_insert(obj, k, v, 0)) [[unlikely]]
                 throw std::bad_alloc();
         }
@@ -17036,14 +17043,14 @@ namespace yyjson
         }
         [[nodiscard]] bool contains(std::string_view key) const
         {
-            if (rd_ == nullptr) return yyjson_obj_getn(val_, key.data(), key.size()) != nullptr;
+            if (rd_ == nullptr) return yyjson_obj_getn(val_, yyjson::detail::c_chars(key), key.size()) != nullptr;
             return rd_->view_find(pos_, key) != nullptr;
         }
         [[nodiscard]] json_view operator[](std::string_view key) const
         {
             if (rd_ == nullptr)
             {
-                auto* const v = yyjson_obj_getn(val_, key.data(), key.size());
+                auto* const v = yyjson_obj_getn(val_, yyjson::detail::c_chars(key), key.size());
                 if (v == nullptr) [[unlikely]]
                     throw std::out_of_range(std::format("JSON object key not found: {}", key));
                 return json_view(v);

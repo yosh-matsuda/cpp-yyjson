@@ -2585,4 +2585,32 @@ TEST(Writer, PredefinedCaster)
     EXPECT_EQ(z_vec1, z_vec2);
 }
 
+TEST(Writer, EmptyStringViewWithoutData)
+{
+    using namespace yyjson;
+
+    // a default-constructed std::string_view has no data, and is the empty string
+    const auto e = std::string_view();
+    EXPECT_EQ(value(e).write(), R"("")");
+    EXPECT_EQ(value(e, copy_string).write(), R"("")");
+    EXPECT_EQ(value(std::vector{e, e}).write(), R"(["",""])");
+    EXPECT_EQ(value(std::vector{e}, copy_string).write(), R"([""])");
+    auto arr = array();
+    arr.emplace_back(e);
+    arr.emplace_back(e, copy_string);
+    EXPECT_EQ(arr.write(), R"(["",""])");
+    auto obj = object();
+    obj.emplace(e, e);
+    obj.emplace("k", e, copy_string);
+    EXPECT_EQ(obj.write(), R"({"":"","k":""})");
+    EXPECT_TRUE(obj.contains(e));
+    EXPECT_EQ(obj[e].write(), R"("")");
+    obj.erase(e);
+    EXPECT_EQ(obj.write(), R"({"k":""})");
+
+    const auto doc = read(R"({"":1})");
+    EXPECT_TRUE(doc.as_object()->contains(e));
+    EXPECT_EQ((*doc.as_object())[e].write(), "1");
+}
+
 // NOLINTEND

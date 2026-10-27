@@ -76,7 +76,9 @@ namespace
                 if (!it->first.starts_with("d")) describe(it->second, out, strings, depth + 1);
                 if (it->first.starts_with("n")) out += it->second.cast<DescribedFrom<3>>().text;
             }
-            out += std::format("{}{}}}", o.contains("absent"), o.find("absent") == o.end());
+            // a default-constructed std::string_view, which has no data, is the empty key
+            out += std::format("{}{}{}}}", o.contains("absent"), o.find("absent") == o.end(),
+                               o.contains(std::string_view()));
         }
     }
 }  // namespace
@@ -209,7 +211,7 @@ TEST(JsonView, TextAndDocument)
           R"(9223372036854775808)", R"(1.5e300)", R"(-2.5E-3)", R"("")", R"("a\"b\\c\u00e9\ud83d\ude00\n")", R"([])",
           R"({})", R"([ 1 , -2 , 3.5 , "x" , null , true , false , [ ] , { } ])",
           R"({"a":1,"b":[1,2,{"c":"d"}],"e\n\u00e9":{"f":null},"a":2,"n1":{"x":[1,2]},"d1":[3,4],"g":"h"})",
-          R"( { "z" : { "y" : { "x" : [ [ [ ] ] , { } ] } } , "w" : "v" } )"})
+          R"( { "z" : { "y" : { "x" : [ [ [ ] ] , { } ] } } , "w" : "v" } )", R"({"":1,"a":{"":[]}})"})
         check(std::type_identity<Described>{}, json);
 
     // texts longer than the chunk of the documents that lookups read
