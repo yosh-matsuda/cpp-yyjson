@@ -435,6 +435,17 @@ using ExtraShape = std::variant<ExtraCircle, StrictRect>;
 template <>
 inline constexpr auto yyjson::annotations<ExtraShape> =
     yyjson::annotate(yyjson::internal_tag("type", {"circle", "rect"}));
+// keys of no field whose names are constrained, while the keys of the fields are not
+struct ExtraShort
+{
+    int long_name = 0;
+    std::map<std::string, int> more;
+    bool operator==(const ExtraShort&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<ExtraShort> = yyjson::annotate(
+    yyjson::field("more", yyjson::extra_keys, yyjson::property_names(yyjson::max_length(2)),
+                  yyjson::additional_properties(yyjson::minimum(0))));
 struct ExtraAny
 {
     int a = 0;
@@ -1153,6 +1164,23 @@ TEST(Strict, ExtraKeys)
     EXPECT_THROW(yyjson::validate(tagged), yyjson::bad_cast);
     EXPECT_EQ(yyjson::write(ExtraCircle{1, {{"type", 2}}}), R"({"r":1,"type":2})");
 
+    // `yyjson::property_names` checks the keys that the map receives, before their values
+    expect_strict<ExtraShort>(R"({"long_name":1,"xy":2})", {1, {{"xy", 2}}});
+    expect_rejected<ExtraShort>(R"({"long_name":1,"xyz":2})",
+                                R"(the key "xyz" of ExtraShort is longer than the maximum length 2)", "/xyz");
+    expect_rejected<ExtraShort>(R"({"long_name":1,"xyz":-1})",
+                                R"(the key "xyz" of ExtraShort is longer than the maximum length 2)", "/xyz");
+    auto shortened = ExtraShort{1, {{"x", 1}}};
+    EXPECT_THROW(yyjson::merge_into(R"({"xyz":1})", shortened), yyjson::bad_cast);
+    yyjson::merge_into(R"({"xyz":null,"y":2})", shortened);
+    EXPECT_EQ(shortened, (ExtraShort{1, {{"x", 1}, {"y", 2}}}));
+    const auto named = ExtraShort{1, {{"xyz", 1}}};
+    EXPECT_EQ(yyjson::write(named), R"({"long_name":1,"xyz":1})");
+    const auto unnamed = bad_cast_of([&] { yyjson::validate(named); });
+    EXPECT_EQ(message_of(unnamed), R"(the key "xyz" of ExtraShort is longer than the maximum length 2 at /xyz)");
+    EXPECT_EQ(unnamed.path(), "/xyz");
+    EXPECT_EQ(bad_cast_of([&] { (void)yyjson::write(std::vector{named}, yyjson::strict); }).path(), "/0/xyz");
+
     // values of any type
     const auto json = R"({"a":1,"b":[1,{"c":null}],"d":"s"})";
     const auto any = yyjson::read<ExtraAny>(json, yyjson::strict);
@@ -1266,7 +1294,7 @@ namespace extra_keys_rules
     static_assert(table_error<ExtraRequired> == extra_keys_with_setting);
     static_assert(table_error<ExtraCounted> == extra_keys_with_setting);
     static_assert(table_error<ExtraDescribed> == extra_keys_with_setting);
-    static_assert(table_error<ExtraNamed> == extra_keys_with_setting);
+    static_assert(table_error<ExtraNamed> == none);
     static_assert(table_error<ExtraDenied> == extra_keys_denied);
     static_assert(table_error<ExtraDependency> == dependency_skipped);
     static_assert(table_error<ExtraAllowed> == none);

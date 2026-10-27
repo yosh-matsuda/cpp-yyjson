@@ -1012,7 +1012,8 @@ namespace yyjson
     // `yyjson::field("member", yyjson::extra_keys)` or `[[=yyjson::extra_keys]]` gives it.  The field has no key of
     // its own: its keys and values are written after the other fields, and `yyjson::strict` lets the object have
     // such keys.  Its type is a map with keys constructible from `std::string_view`, such as
-    // `std::map<std::string, yyjson::value>`, and `yyjson::additional_properties(settings...)` constrains its values.
+    // `std::map<std::string, yyjson::value>`; `yyjson::additional_properties(settings...)` constrains its values and
+    // `yyjson::property_names(settings...)` its keys.
     struct extra_keys_t
     {
     };
@@ -3761,11 +3762,11 @@ namespace yyjson
                 }
                 if (const auto e = result.extra; e != N && result.error == field_key_error::none)
                 {
-                    // the field takes only the settings of its values, and the struct has no key to deny
+                    // the field takes only the settings of its keys and values, and the struct has no key to deny
                     const auto& node = result.schemas.nodes[e];
                     if (renamed[e] || tagged[e] || result.required[e] || result.optional_key[e] ||
                         result.omit_default[e] || described[e] != 0 || node.constraints.set != 0 || node.items != 0 ||
-                        node.contains != 0 || node.keys != 0 || node.prefix_count != 0)
+                        node.contains != 0 || node.prefix_count != 0)
                         result.error = field_key_error::extra_keys_with_setting;
                     else if (result.additional == additional_keys::denied)
                         result.error = field_key_error::extra_keys_denied;
@@ -4178,7 +4179,8 @@ namespace yyjson
                           "only one field of a struct may be annotated with yyjson::extra_keys");
             static_assert(table.error != field_key_error::extra_keys_with_setting,
                           "a field annotated with yyjson::extra_keys has no key of its own and takes only "
-                          "yyjson::additional_properties(settings...), which constrains its values");
+                          "yyjson::additional_properties(settings...) and yyjson::property_names(settings...), "
+                          "which constrain its values and keys");
             static_assert(table.error != field_key_error::extra_keys_visitable,
                           "yyjson::extra_keys needs a struct that the compile-time reflection converts, not a "
                           "VISITABLE_STRUCT");
@@ -5916,6 +5918,19 @@ namespace yyjson
         using extra_values_level =
             constraint_node<S, no_extra_keys, field_table_of<S>::table.schemas.nodes[extra_keys_index<S>].values>;
 
+        // The settings of the keys of the field of S annotated with `yyjson::extra_keys`, which
+        // `yyjson::property_names(settings...)` gives, and whether it has any.
+        template <typename S>
+        inline constexpr bool constrained_extra_keys = [] {
+            if constexpr (has_extra_keys<S>)
+                return field_table_of<S>::table.schemas.nodes[extra_keys_index<S>].keys != 0;
+            else
+                return false;
+        }();
+        template <typename S>
+        using extra_keys_level =
+            constraint_node<S, no_extra_keys, field_table_of<S>::table.schemas.nodes[extra_keys_index<S>].keys>;
+
         // The constraint that a field does not satisfy.
         enum class constraint_kind : std::uint8_t
         {
@@ -5981,71 +5996,76 @@ namespace yyjson
             }
         }
 
-        // `values` are the `values` of the `constraint_node` of `c`.
+        // What the subject of the constraint `kind` of `c` does, such as "is less than the minimum 0".  `values` are
+        // the `values` of the `constraint_node` of `c`.
+        CPPYYJSON_COLD inline std::string constraint_what(constraint_kind kind, const field_constraints& c,
+                                                          std::span<const json_scalar> values)
+        {
+            switch (kind)
+            {
+                case constraint_kind::const_:
+                    return "is not equal to the constant " + scalar_text(values[0]);
+                case constraint_kind::enum_:
+                {
+                    auto text = std::string("is not one of ");
+                    const auto listed = values.subspan(c.has<const_<>>() ? 1 : 0);
+                    for (std::size_t i = 0; i < listed.size(); ++i)
+                        text += (i == 0 ? "" : ", ") + scalar_text(listed[i]);
+                    return text;
+                }
+                case constraint_kind::format:
+                    return std::format("does not have the format \"{}\"", c.format());
+                case constraint_kind::minimum:
+                    return "is less than the minimum " + bound_text(c.minimum);
+                case constraint_kind::maximum:
+                    return "is greater than the maximum " + bound_text(c.maximum);
+                case constraint_kind::exclusive_minimum:
+                    return "is not greater than the exclusive minimum " + bound_text(c.exclusive_minimum);
+                case constraint_kind::exclusive_maximum:
+                    return "is not less than the exclusive maximum " + bound_text(c.exclusive_maximum);
+                case constraint_kind::multiple_of:
+                    return "is not a multiple of " + bound_text(c.multiple_of);
+                case constraint_kind::min_length:
+                    return std::format("is shorter than the minimum length {}", c.min_length);
+                case constraint_kind::max_length:
+                    return std::format("is longer than the maximum length {}", c.max_length);
+                case constraint_kind::min_items:
+                    return std::format("has fewer items than the minimum {}", c.min_items);
+                case constraint_kind::max_items:
+                    return std::format("has more items than the maximum {}", c.max_items);
+                case constraint_kind::pattern:
+                    return std::format("does not match the pattern \"{}\"", c.pattern());
+                case constraint_kind::items:
+                    return "has an element that does not satisfy the constraints of yyjson::items";
+                case constraint_kind::values:
+                    return "has a value that does not satisfy the constraints of yyjson::additional_properties";
+                case constraint_kind::unique_items:
+                    return "has duplicate items";
+                case constraint_kind::duplicate_item:
+                    return "is equal to an earlier element";
+                case constraint_kind::prefix_items:
+                    return "has an element that does not satisfy the constraints of yyjson::prefix_items";
+                case constraint_kind::property_names:
+                    return "has a key that does not satisfy the constraints of yyjson::property_names";
+                case constraint_kind::contains:
+                    return "has no item that satisfies the constraints of yyjson::contains";
+                case constraint_kind::min_contains:
+                    return std::format("has fewer than {} {} the constraints of yyjson::contains", c.min_contains,
+                                       c.min_contains == 1 ? "item that satisfies" : "items that satisfy");
+                case constraint_kind::max_contains:
+                    return std::format("has more than {} {} the constraints of yyjson::contains", c.max_contains,
+                                       c.max_contains == 1 ? "item that satisfies" : "items that satisfy");
+                default:
+                    return "is rejected by yyjson::satisfies";
+            }
+        }
+
         [[noreturn]] CPPYYJSON_COLD inline void throw_constraint_violation(
             cast_target at, std::string_view key, std::string_view type, constraint_kind kind,
             const field_constraints& c, std::span<const json_scalar> values,
             constraint_subject subject = constraint_subject::value)
         {
-            const auto what = [&]() -> std::string {
-                switch (kind)
-                {
-                    case constraint_kind::const_:
-                        return "is not equal to the constant " + scalar_text(values[0]);
-                    case constraint_kind::enum_:
-                    {
-                        auto text = std::string("is not one of ");
-                        const auto listed = values.subspan(c.has<const_<>>() ? 1 : 0);
-                        for (std::size_t i = 0; i < listed.size(); ++i)
-                            text += (i == 0 ? "" : ", ") + scalar_text(listed[i]);
-                        return text;
-                    }
-                    case constraint_kind::format:
-                        return std::format("does not have the format \"{}\"", c.format());
-                    case constraint_kind::minimum:
-                        return "is less than the minimum " + bound_text(c.minimum);
-                    case constraint_kind::maximum:
-                        return "is greater than the maximum " + bound_text(c.maximum);
-                    case constraint_kind::exclusive_minimum:
-                        return "is not greater than the exclusive minimum " + bound_text(c.exclusive_minimum);
-                    case constraint_kind::exclusive_maximum:
-                        return "is not less than the exclusive maximum " + bound_text(c.exclusive_maximum);
-                    case constraint_kind::multiple_of:
-                        return "is not a multiple of " + bound_text(c.multiple_of);
-                    case constraint_kind::min_length:
-                        return std::format("is shorter than the minimum length {}", c.min_length);
-                    case constraint_kind::max_length:
-                        return std::format("is longer than the maximum length {}", c.max_length);
-                    case constraint_kind::min_items:
-                        return std::format("has fewer items than the minimum {}", c.min_items);
-                    case constraint_kind::max_items:
-                        return std::format("has more items than the maximum {}", c.max_items);
-                    case constraint_kind::pattern:
-                        return std::format("does not match the pattern \"{}\"", c.pattern());
-                    case constraint_kind::items:
-                        return "has an element that does not satisfy the constraints of yyjson::items";
-                    case constraint_kind::values:
-                        return "has a value that does not satisfy the constraints of yyjson::additional_properties";
-                    case constraint_kind::unique_items:
-                        return "has duplicate items";
-                    case constraint_kind::duplicate_item:
-                        return "is equal to an earlier element";
-                    case constraint_kind::prefix_items:
-                        return "has an element that does not satisfy the constraints of yyjson::prefix_items";
-                    case constraint_kind::property_names:
-                        return "has a key that does not satisfy the constraints of yyjson::property_names";
-                    case constraint_kind::contains:
-                        return "has no item that satisfies the constraints of yyjson::contains";
-                    case constraint_kind::min_contains:
-                        return std::format("has fewer than {} {} the constraints of yyjson::contains", c.min_contains,
-                                           c.min_contains == 1 ? "item that satisfies" : "items that satisfy");
-                    case constraint_kind::max_contains:
-                        return std::format("has more than {} {} the constraints of yyjson::contains", c.max_contains,
-                                           c.max_contains == 1 ? "item that satisfies" : "items that satisfy");
-                    default:
-                        return "is rejected by yyjson::satisfies";
-                }
-            }();
+            const auto what = constraint_what(kind, c, values);
             const auto subject_text = subject == constraint_subject::element ? "an element of the value"
                                       : subject == constraint_subject::key   ? "a key of the value"
                                                                              : "the value";
@@ -8127,6 +8147,38 @@ namespace yyjson
                     throw_extra_violation<S, V>(key, json, k);
         }
 
+        // The constraint of `yyjson::property_names(settings...)` of the field of S annotated with
+        // `yyjson::extra_keys` that the key `key` does not satisfy, read as a key of the map of the field.
+        template <typename S>
+        constraint_kind extra_key_violation(std::string_view key)
+        {
+            if constexpr (constrained_extra_keys<S>)
+            {
+                using M = std::remove_cvref_t<decltype(extra_keys_field(std::declval<S&>()))>;
+                return level_violation<extra_keys_level<S>>(typename M::key_type(key));
+            }
+            else
+                return constraint_kind::none;
+        }
+        template <typename S>
+        [[noreturn]] CPPYYJSON_NOINLINE CPPYYJSON_COLD void throw_extra_key_violation(cast_target at,
+                                                                                      std::string_view key,
+                                                                                      constraint_kind k)
+        {
+            using level = extra_keys_level<S>;
+            throw_bad_cast_at(at, "the key \"{}\" of {} {}", key, type_name<S>(),
+                              constraint_what(k, level::constraints, level::values));
+        }
+        // Throws `bad_cast` at the value `json` of the key `key`, which the field of S annotated with
+        // `yyjson::extra_keys` receives, unless the key satisfies the settings of its keys.
+        template <typename S, typename Json>
+        void check_extra_key(std::string_view key, const Json& json)
+        {
+            if constexpr (constrained_extra_keys<S>)
+                if (const auto k = extra_key_violation<S>(key); k != constraint_kind::none) [[unlikely]]
+                    throw_extra_key_violation<S>(target_of(json), key, k);
+        }
+
         // Calls `f(key, value)` for each member of the object `obj` read into the struct T whose key names no field
         // of T nor a tag, which the field annotated with `yyjson::extra_keys` receives.  Under `yyjson::strict`, it
         // throws for such a key that the object has twice.
@@ -8160,6 +8212,7 @@ namespace yyjson
             using M = std::remove_cvref_t<decltype(extra)>;
             using V = typename M::mapped_type;
             for_each_extra_member<T, Matcher>(obj, [&](std::string_view key, const auto& value) {
+                check_extra_key<T>(key, value);
                 auto v = cast_nested<V>(value);
                 check_extra_value<T>(key, v, value);
                 if (auto [it, added] = extra.try_emplace(typename M::key_type(key), std::move(v)); !added)
@@ -14122,6 +14175,10 @@ namespace yyjson
                 const auto key = std::string_view(k);
                 validate_within([key] { return key_token(key); },
                                 [&] {
+                                    if constexpr (constrained_extra_keys<S>)
+                                        if (const auto c = extra_key_violation<S>(key); c != constraint_kind::none)
+                                            [[unlikely]]
+                                            throw_extra_key_violation<S>(cast_target{}, key, c);
                                     validate_value(v);
                                     if constexpr (constrained_extra_values<S>)
                                     {
@@ -19639,6 +19696,7 @@ namespace yyjson
                         if (const auto it = extra.find(k); it != extra.end()) extra.erase(it);
                         return;
                     }
+                    yyjson::detail::check_extra_key<T>(key, value);
                     auto& v = extra.try_emplace(std::move(k)).first->second;
                     merge_from(v, value);
                     yyjson::detail::check_extra_value<T>(key, v, value);
@@ -23392,9 +23450,9 @@ namespace yyjson
             // Reads the member at `at` of the object at `open` of the struct T, whose key names no field, into the
             // field annotated with `yyjson::extra_keys` that `extra_` points to, unless the key is a tag, whose value
             // is skipped.  With `Merge`, null erases the key and any other value is merged into its value.  Fails
-            // where the document throws: for a value that does not satisfy the settings of the values of the field,
-            // and under `yyjson::strict` for a key that the map already has, which the document tells apart from a
-            // key in `T()`, and for a merge, whose keys the document checks.
+            // where the document throws: for a key or a value that does not satisfy the settings of the keys or the
+            // values of the field, and under `yyjson::strict` for a key that the map already has, which the document
+            // tells apart from a key in `T()`, and for a merge, whose keys the document checks.
             template <typename T, bool Merge>
             CPPYYJSON_NOINLINE void read_extra_member(const char* open, const char* at)
             {
@@ -23419,12 +23477,14 @@ namespace yyjson
                         if (const auto it = extra.find(key); it != extra.end()) extra.erase(it);
                         return;
                     }
+                    check_extra_key<T>(key);
                     auto& v = extra.try_emplace(key).first->second;
                     merge_value(v);
                     check_extra_value<T>(v);
                 }
                 else
                 {
+                    check_extra_key<T>(key);
                     auto v = read_value<typename M::mapped_type>();
                     check_extra_value<T>(v);
                     if (auto [it, added] = extra.try_emplace(key, std::move(v)); !added)
@@ -23433,6 +23493,15 @@ namespace yyjson
                         it->second = std::move(v);
                     }
                 }
+            }
+
+            template <typename T, typename K>
+            CPPYYJSON_ALWAYS_INLINE void check_extra_key(const K& key)
+            {
+                if constexpr (yyjson::detail::constrained_extra_keys<T>)
+                    if (yyjson::detail::level_violation<yyjson::detail::extra_keys_level<T>>(key) !=
+                        yyjson::detail::constraint_kind::none) [[unlikely]]
+                        fail();
             }
 
             template <typename T, typename V>

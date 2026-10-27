@@ -1720,11 +1720,11 @@ The field has no key of its own. Its type is a map whose `key_type` is construct
 
 *   Reading starts from the map in `T()`; [`yyjson::merge_into`](#yyjsonread_into-yyjsonmerge_into) merges into the map that the field has, and erases a key whose value is `null`.
 *   [`yyjson::strict`](#yyjsonstrict) accepts the keys, and rejects a key that appears twice.
-*   [`yyjson::additional_properties(settings...)`](#yyjsonadditional_properties) on the field gives the constraints of the values; the path of an error is `/key`.
+*   [`yyjson::additional_properties(settings...)`](#yyjsonadditional_properties) on the field gives the constraints of the values, and [`yyjson::property_names(settings...)`](#yyjsonproperty_names) those of the keys, which are checked before the value; the path of an error is `/key`. The keys of the fields are not checked.
 *   Writing a map that has the key of a field or a tag of the struct throws `std::invalid_argument` from `yyjson::write`, `object(t)` and `value(t)`, and `yyjson::bad_cast` from [`yyjson::validate`](#yyjsonvalidate) and `write(t, yyjson::strict)`.
-*   [`yyjson::json_schema`](#yyjsonjson_schemat) gives the struct `additionalProperties` with the schema of the values.
+*   [`yyjson::json_schema`](#yyjsonjson_schemat) gives the struct `additionalProperties` with the schema of the values, and `propertyNames` with the constraints of the keys, which lets the keys of the fields pass by `anyOf` with their `enum`.
 
-A second such field in the struct, `yyjson::additional_properties(false)` on the struct, a type that is not such a map, any other setting on the field, a field named by `yyjson::dependent_required`, `yyjson::one_of_required` or `yyjson::any_of_required`, and a struct that `VISITABLE_STRUCT` registers are compile errors. See [Keys that name no field](conversions.md#keys-that-name-no-field).
+A second such field in the struct, `yyjson::additional_properties(false)` on the struct, a type that is not such a map, any other setting on the field than these two, a field named by `yyjson::dependent_required`, `yyjson::one_of_required` or `yyjson::any_of_required`, and a struct that `VISITABLE_STRUCT` registers are compile errors. See [Keys that name no field](conversions.md#keys-that-name-no-field).
 
 ```cpp
 struct Package
@@ -1763,7 +1763,7 @@ As in JSON Schema, where `"additionalProperties": false` is the schema that reje
 *   With `true`, the struct accepts such keys under `yyjson::strict` too, and ignores them.
 *   Without it, such keys are ignored, and `yyjson::strict` rejects them.
 
-A field with [`yyjson::extra_keys`](#yyjsonextra_keys) receives such keys instead, and takes `additional_properties(settings...)` for their values; `additional_properties(false)` on its struct is a compile error.
+A field with [`yyjson::extra_keys`](#yyjsonextra_keys) receives such keys instead, and takes `additional_properties(settings...)` for their values and [`yyjson::property_names(settings...)`](#yyjsonproperty_names) for their keys; `additional_properties(false)` on its struct is a compile error.
 
 See [Annotations of keys](validation.md#annotations-of-keys).
 
@@ -2022,7 +2022,7 @@ struct property_names
 };
 ```
 
-`settings` are one or more of the [constraints](#constraints) that apply to the key type of the map, such as `yyjson::max_length`, `yyjson::pattern` and `yyjson::satisfies<f>`, whose `f` takes the key type. The field must be a map or another [range of key-value pairs](conversions.md#conversion-rules), such as `std::vector<std::pair<std::string, int>>`, which are read from JSON objects; a map whose keys are neither strings nor enumerations, which is read from an array of pairs, is a compile error. A sequence of pairs that is read from an array of `[key, value]` pairs is checked too, and its error is reported at the field.
+`settings` are one or more of the [constraints](#constraints) that apply to the key type of the map, such as `yyjson::max_length`, `yyjson::pattern` and `yyjson::satisfies<f>`, whose `f` takes the key type. The field must be a map or another [range of key-value pairs](conversions.md#conversion-rules), such as `std::vector<std::pair<std::string, int>>`, which are read from JSON objects; a map whose keys are neither strings nor enumerations, which is read from an array of pairs, is a compile error. A sequence of pairs that is read from an array of `[key, value]` pairs is checked too, and its error is reported at the field. On a field of [`yyjson::extra_keys`](#yyjsonextra_keys), it checks the keys that the field receives, not the keys of the other fields, and the error is reported at the key.
 
 ```cpp
 struct Labels

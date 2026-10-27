@@ -165,6 +165,15 @@ struct ExtraCircle
 template <>
 inline constexpr auto yyjson::annotations<ExtraCircle> = yyjson::annotate(yyjson::field("more", yyjson::extra_keys));
 using ExtraShape = std::variant<ExtraCircle, Groups>;
+// keys of no field whose names are constrained; `propertyNames` lets the keys of the fields pass
+struct ExtraNamed
+{
+    int long_name = 0;
+    std::map<std::string, int> more;
+};
+template <>
+inline constexpr auto yyjson::annotations<ExtraNamed> = yyjson::annotate(
+    yyjson::field("more", yyjson::extra_keys, yyjson::property_names(yyjson::pattern("^x-"))));
 template <>
 inline constexpr auto yyjson::annotations<ExtraShape> = yyjson::annotate(yyjson::internal_tag("type", {"c", "g"}));
 
@@ -1233,6 +1242,14 @@ TEST(Schema, ExtraKeys)
         R"({"type":"c","x":1})",
         R"({"type":"g","env":"e","email":"a"})",
     });
+    check<ExtraNamed>({
+        R"({"long_name":1})",
+        R"({"long_name":1,"x-a":2})",
+        R"({"x-a":2,"y":3})",
+        R"({"long_name":"s"})",
+    });
+    EXPECT_EQ(to_jsoncons(yyjson::json_schema<ExtraNamed>())["$defs"]["ExtraNamed"]["propertyNames"],
+              json::parse(R"({"anyOf":[{"enum":["long_name"]},{"pattern":"^x-"}]})"));
 }
 
 TEST(Schema, Transparent)

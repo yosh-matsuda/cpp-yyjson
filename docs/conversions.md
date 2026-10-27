@@ -470,11 +470,12 @@ Without the annotation, a field of type `yyjson::object` keeps a whole object, a
 *   [`yyjson::strict`](validation.md#strict-reading) accepts the keys that the map receives. It still rejects a key that appears twice, which the read without it gives the map once, with the last value.
 *   `yyjson::read<T>`, `cast<T>` and `read_into` start from the map in `T()` and add the keys to it. `merge_into` merges the keys into the map that the field has, as into any map: it adds a new key, merges the value of a key that the map has into the value there, and erases a key whose value is `null`.
 *   Writing puts the keys in the order of the map. A key of the map that is also the key of a field or of a tag of the struct would make the object have the key twice: `yyjson::write`, `object(t)` and `value(t)` throw `std::invalid_argument`, and [`yyjson::validate`](validation.md#checking-a-c-value) and `write(t, yyjson::strict)` throw `yyjson::bad_cast`, with the message `the field of yyjson::extra_keys of Quota has the key "fallback", which Quota writes for a field or a tag`.
-*   The path of an error in a value of the map is the key of the value, such as `/bob` above.
+*   `yyjson::property_names(settings...)` on the field gives the constraints of the keys that the map receives, such as `yyjson::pattern("^x-")` for the extensions of OpenAPI; the keys of the fields are not checked. A key is checked before its value, and `merge_into` does not check a key whose value is `null`. The message names the key, as in `the key "xyz" of T is longer than the maximum length 2`.
+*   The path of an error in a key or a value of the map is the key, such as `/bob` above.
 *   The following fail to compile with a `static_assert`:
     *   two fields with `yyjson::extra_keys` in one struct, or a struct with `yyjson::additional_properties(false)`, which rejects the keys that the field would receive;
     *   a field of a type that is not such a map;
-    *   another setting on the field than `yyjson::additional_properties(settings...)`, such as `yyjson::rename`, `yyjson::required` or `yyjson::min_items`, and a field named by `yyjson::dependent_required`, `yyjson::one_of_required` or `yyjson::any_of_required`;
+    *   another setting on the field than `yyjson::additional_properties(settings...)` and `yyjson::property_names(settings...)`, such as `yyjson::rename`, `yyjson::required` or `yyjson::min_items`, and a field named by `yyjson::dependent_required`, `yyjson::one_of_required` or `yyjson::any_of_required`;
     *   `yyjson::extra_keys` on a struct that `VISITABLE_STRUCT` registers.
 
 ### A struct as the value of its field

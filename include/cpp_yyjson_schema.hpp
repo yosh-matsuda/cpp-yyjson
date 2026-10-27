@@ -1730,6 +1730,20 @@ namespace yyjson
                 constexpr auto e = yyjson::detail::extra_keys_index<S>;
                 using M = std::remove_cvref_t<decltype(yyjson::detail::extra_keys_field(std::declval<S&>()))>;
                 const auto v = nodes != nullptr ? nodes[e].values : 0;
+                if (const auto k = nodes != nullptr ? nodes[e].keys : 0; k != 0)
+                {
+                    // `propertyNames` checks every key, so the keys of the fields and the tags pass it as they are.
+                    auto names = out.emplace("propertyNames", empty_object);
+                    if (properties.size() == 0)
+                        emit_constraints(names, nodes[k].constraints);
+                    else
+                    {
+                        auto branches = names.emplace("anyOf", empty_array);
+                        auto known = branches.emplace_back(empty_object).emplace("enum", empty_array);
+                        for (const auto& [key, _] : properties) known.emplace_back(std::string_view(key));
+                        emit_constraints(branches.emplace_back(empty_object), nodes[k].constraints);
+                    }
+                }
                 emit<typename M::mapped_type>(out.emplace("additionalProperties", empty_object),
                                               v != 0 ? nodes : nullptr, v);
                 values_ = outer_values;
