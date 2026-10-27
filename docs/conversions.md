@@ -36,9 +36,10 @@ The sections of this document:
 4.  [Annotations](#annotations): JSON keys other than the field names, and skipped fields.
 5.  [Enumerations](#enumerations), by the names of their enumerators or by their integers.
 6.  [Tagged variants](#tagged-variants): a `std::variant` whose alternative a member of the object names.
-7.  [JSON values as fields](#json-values-as-fields): a part of the JSON kept as it is.
-8.  [User-defined casters](#user-defined-casters) for any other type or any other format.
-9.  [Recursive types](#recursive-types) and the limit of their depth.
+7.  [Alternatives with constraints](#alternatives-with-constraints): `yyjson::any_of` and `yyjson::one_of`, whose alternatives have constraints of their own.
+8.  [JSON values as fields](#json-values-as-fields): a part of the JSON kept as it is.
+9.  [User-defined casters](#user-defined-casters) for any other type or any other format.
+10. [Recursive types](#recursive-types) and the limit of their depth.
 
 When more than one of these could convert a type, the first of the following wins:
 
@@ -79,6 +80,7 @@ Booleans and numbers do not mix, although C++ converts between them:
 Some conversions succeed where one might expect them to fail, or give JSON that their types do not suggest:
 
 *   A `std::variant` takes the first alternative that accepts the value, after the structs whose keys a JSON object [has](#untagged-variants), and an integer accepts a real number without a fractional part. `std::variant<int, double>` therefore reads `1.5` as `double` but `2.0` as the `int` `2`. With `double` first, every number is read as `double`.
+*   An alternative of a `std::variant` that reads only values that an earlier alternative reads too is never read, and a value written from it is read back as the earlier one, except a struct, which a JSON object that has its keys [tries first](#untagged-variants). `std::variant<double, std::int64_t>` reads every number as `double`, `std::variant<std::int64_t, int>` every integer as `std::int64_t`, `std::variant<std::string, Color>` the names of the enumerators as `std::string`, and `std::variant<yyjson::value, int>` every value as `yyjson::value`. The library accepts such a `std::variant`; [`yyjson::any_of`](#alternatives-with-constraints) rejects the same order at compile time.
 *   A class that is constructible from a number, such as `struct Count { Count(int); };`, reads every JSON number that C++ converts to the parameter of its constructor, so `1.5` gives `Count(1)`. Only the integer and enumeration types themselves reject a real number with a fractional part.
 *   `char`, `signed char`, `unsigned char`, `std::int8_t` and `std::uint8_t` are numbers, and `std::u8string`, `std::u16string`, `std::u32string` and `std::wstring` are arrays of numbers. Only ranges of `char` are JSON strings.
 *   A struct that is read ignores a key that it does not have, and a field whose key is missing keeps its value in `T()`. [Unknown and missing keys](validation.md#unknown-and-missing-keys) and [Repeated keys](validation.md#repeated-keys) give the full rules, and how to reject such keys.
@@ -212,7 +214,7 @@ A JSON array or object with more or fewer elements than the tuple throws `yyjson
 
 A `std::variant` is read by trying its alternatives, unless a member of the JSON object names the alternative, as in a [tagged variant](#tagged-variants).
 
-A JSON value is read as the first of the alternatives, in the order of the template arguments, that it converts to. An alternative that never converts from the kind of the JSON value, such as `std::vector<double>` from a number, is skipped without trying it, while an alternative with a user-defined `from_json` is always tried. A `std::bad_alloc` thrown while an alternative is tried propagates out of the read, rather than passing the value to the next alternative.
+A JSON value is read as the first of the alternatives, in the order of the template arguments, that it converts to. An alternative that never converts from the kind of the JSON value, such as `std::vector<double>` from a number, is skipped without trying it, while an alternative with a user-defined `from_json` is always tried. A `std::bad_alloc` thrown while an alternative is tried propagates out of the read, rather than passing the value to the next alternative. [`yyjson::any_of` and `yyjson::one_of`](#alternatives-with-constraints) are variants whose alternatives have constraints of their own.
 
 A JSON object is read in three steps when the variant has a struct read by the [compile-time reflection](#reflection) or `VISITABLE_STRUCT` and another alternative that reads objects:
 
@@ -815,6 +817,81 @@ auto typed = yyjson::read<TypedEvent>(R"({"kind":"rect","data":{"w":1,"h":2}})")
 *   JSON null gives the field its value in `T()`, as for any field.
 
 A variant that is not tagged is replaced as a whole, as any other value is.
+
+## Alternatives with constraints
+
+A `std::variant` tells its alternatives apart only by their types and their order. `yyjson::any_of<...>` and `yyjson::one_of<...>` hold one of their alternatives as a `std::variant` does, and give each alternative the settings that the value of a field takes, as the keywords `anyOf` and `oneOf` of JSON Schema do. An alternative is `yyjson::alt<T, settings...>`, a value of `T` with the settings, or a type `T` without settings:
+
+```cpp
+// a port number, or the name of a service
+using Port = yyjson::any_of<yyjson::alt<int, yyjson::minimum(1), yyjson::maximum(65535)>,
+                            yyjson::alt<std::string, yyjson::min_length(1)>>;
+// a width in pixels, or a share of the width of the parent
+using Width = yyjson::one_of<yyjson::alt<int, yyjson::minimum(1)>,
+                             yyjson::alt<double, yyjson::minimum(0), yyjson::maximum(1)>>;
+
+struct Server
+{
+    std::string host;
+    Port port;
+    std::vector<Width> columns;
+};
+
+auto server = yyjson::read<Server>(R"({"host":"db","port":5432,"columns":[120,0.5]})");
+// -> port holds the int 5432; columns hold the int 120 and the double 0.5
+auto service = yyjson::read<Server>(R"({"host":"db","port":"postgres"})");
+// -> port holds the std::string "postgres"
+
+yyjson::read<Server>(R"({"host":"db","port":0})");
+// throws yyjson::bad_cast: yyjson::any_of<...> is not constructible from JSON at /port ...
+yyjson::read<Server>(R"({"host":"db","port":80,"columns":[1]})");
+// throws yyjson::bad_cast: the value matches the alternatives 0 and 1 of yyjson::one_of<...> at /columns/0 ...
+```
+
+The value is a `std::variant` of the types of the alternatives. `yyjson::any_of` and `yyjson::one_of` derive from it and take its constructors and assignments, so `std::get`, `std::visit`, `std::holds_alternative`, `index()`, `std::variant_size` and `std::variant_alternative` work on them. Two alternatives of the same type, such as `yyjson::alt<int, yyjson::maximum(-1)>` and `yyjson::alt<int, yyjson::minimum(1)>`, are told apart by `index()`: construct one with `std::in_place_index<I>` or `emplace<I>`, and get it with `std::get<I>`.
+
+The settings of an alternative are those of the value of a field:
+
+*   the [constraints](validation.md#constraints), `yyjson::satisfies<f>` among them, which takes the type of the alternative;
+*   the [constraints of elements](validation.md#constraints-of-elements), such as `yyjson::items`, `yyjson::prefix_items`, `yyjson::contains` and `yyjson::additional_properties(settings...)`;
+*   [`yyjson::title`, `yyjson::description`, `yyjson::examples` and `yyjson::deprecated`](json-schema.md#defaults-and-descriptions), which describe the alternative in the JSON Schema.
+
+A setting is a template argument, given as a value, or as a pointer to a `constexpr` variable that holds it. A setting of a string literal, such as `yyjson::pattern("^[a-z]+$")`, is a value, and its text becomes part of the name of the type, which compilers show in errors and keep in symbols. A setting made from a `std::string_view` cannot be a template argument, so it has to be a variable:
+
+```cpp
+constexpr std::string_view id_regex = "^[a-z]+$";
+constexpr auto id_pattern = yyjson::pattern(id_regex);
+
+using Key = yyjson::any_of<yyjson::alt<std::string, &id_pattern>, std::int64_t>;
+```
+
+With C++26 reflection, a setting made from a `std::string_view` is a value too.
+
+Reading and writing:
+
+*   `yyjson::any_of` reads the first alternative, in the order of the template arguments, whose type reads the JSON value and whose settings the value satisfies. A value that the settings of an alternative reject goes on to the next alternative.
+*   `yyjson::one_of` reads the same alternative, and then tries the later alternatives that may read the same value. When one of them reads it too, `yyjson::bad_cast` is thrown with the message `the value matches the alternatives i and j of V`.
+*   When no alternative reads the value, the message is `V is not constructible from JSON`, at the path of the value. It does not tell why each alternative rejected it.
+*   An alternative reads in the mode of the read. With [`yyjson::strict`](validation.md#strict-reading), a struct rejects an unknown key, so a later alternative may read the object instead: `yyjson::any_of<Point, std::map<std::string, int>>` reads `{"x":1,"y":2}` as `Point` without `yyjson::strict` and as the map with it.
+*   `merge_into` replaces the value as a whole, as for an untagged `std::variant`.
+*   `yyjson::write` writes the alternative that the value holds, without checking its settings. [`yyjson::validate`](validation.md#checking-a-c-value) and `yyjson::write(t, yyjson::strict)` check them, and for `yyjson::one_of` also that no other alternative reads the JSON that is written.
+*   `yyjson::any_of` and `yyjson::one_of` take no tag. Use a [tagged variant](#tagged-variants) when a member of the object names the alternative.
+
+Where a `yyjson::any_of` or a `yyjson::one_of` is read, written, validated or described by a schema, the library compares at compile time the JSON values that its alternatives read, and rejects an alternative that would never be read:
+
+*   In `yyjson::any_of`, a later alternative that reads only values that an earlier one reads too, such as the `int` of `yyjson::any_of<double, int>`, or the enumeration of `yyjson::any_of<std::string, Color>`. The error names `any_of_alternative_never_read<Later, Earlier>` with the indices of the two. Put the narrower one first: `yyjson::any_of<int, double>` reads `1` as `int` and `1.5` as `double`.
+*   In `yyjson::one_of`, an alternative that reads only values that another one reads too, in either order, such as `yyjson::one_of<int, yyjson::alt<int, yyjson::minimum(0)>>`. The error names `one_of_alternative_contained<Contained, Container>`. Alternatives that share some values without one containing the other, such as `yyjson::one_of<std::int64_t, std::uint64_t>`, which both read `0` to `9223372036854775807`, compile, and the read rejects a value in the shared part.
+*   An alternative whose settings leave no value of its type to read, such as `yyjson::alt<int, yyjson::minimum(1), yyjson::maximum(0)>`, as for a field.
+
+The comparison knows the kind of JSON value that a type reads, the range of an integer type, the bounds, `yyjson::const_`, `yyjson::enum_` and the names of an enumeration. A setting that it does not know, such as `yyjson::pattern`, `yyjson::multiple_of`, a length or `yyjson::satisfies<f>`, leaves an unknown part of the values that the other settings allow: such an alternative contains no other alternative, and is contained only by one that reads all of those values. `yyjson::alt<int, yyjson::minimum(0)>` contains `yyjson::alt<int, yyjson::minimum(5), yyjson::multiple_of(2)>`, and the second does not contain the first. The following fail to compile as well:
+
+*   `yyjson::any_of<>` and `yyjson::one_of<>` without an alternative;
+*   `yyjson::alt` anywhere other than a template argument of `yyjson::any_of` and `yyjson::one_of`, and a `yyjson::alt` of a `yyjson::alt`;
+*   a setting of a key, such as `yyjson::rename` or `yyjson::required`, and `yyjson::schema`, in `yyjson::alt`;
+*   a setting given twice to one alternative;
+*   `yyjson::internal_tag` or `yyjson::adjacent_tag` on a `yyjson::any_of` or a `yyjson::one_of`.
+
+`yyjson::json_schema<T>()` writes `yyjson::any_of` as `anyOf` and `yyjson::one_of` as `oneOf`, with the settings of each alternative beside its schema; see [C++ types](json-schema.md#c-types).
 
 ## JSON values as fields
 

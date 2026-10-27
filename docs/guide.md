@@ -310,7 +310,7 @@ auto shapes = yyjson::read<std::vector<Shape>>(R"([{"type":"circle","r":1.5},{"t
 // -> {Circle{1.5}, Rect{2, 3}}
 ```
 
-When the tag is a sibling of the variant field, as in `{"kind":"circle","data":{"r":1.5}}`, annotate the field with `yyjson::adjacent_tag`. Without a tag, a variant takes the first alternative that accepts the value. Details: [Tagged variants](conversions.md#tagged-variants).
+When the tag is a sibling of the variant field, as in `{"kind":"circle","data":{"r":1.5}}`, annotate the field with `yyjson::adjacent_tag`. Without a tag, a variant takes the first alternative that accepts the value; `yyjson::any_of` and `yyjson::one_of` give each alternative constraints of its own ([Alternatives with constraints](conversions.md#alternatives-with-constraints)). Details: [Tagged variants](conversions.md#tagged-variants).
 
 ### Read a struct from an array or a string
 

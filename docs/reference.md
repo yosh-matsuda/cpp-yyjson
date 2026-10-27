@@ -63,6 +63,7 @@ This page lists the functions, classes and other entities of cpp-yyjson, grouped
     *   [`yyjson::pattern_matcher<>`](#yyjsonpattern_matcher)
     *   [`yyjson::format_checker<>`](#yyjsonformat_checker)
     *   [`yyjson::internal_tag`, `yyjson::adjacent_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag)
+    *   [`yyjson::any_of`, `yyjson::one_of`, `yyjson::alt`](#yyjsonany_of-yyjsonone_of-yyjsonalt)
     *   [`yyjson::enum_format`, `yyjson::enumerator`](#yyjsonenum_format-yyjsonenumerator)
     *   [`yyjson::title`, `yyjson::description`, `yyjson::deprecated`, `yyjson::examples`](#yyjsontitle-yyjsondescription-yyjsondeprecated-yyjsonexamples)
     *   [`yyjson::schema`](#yyjsonschema)
@@ -339,13 +340,15 @@ void validate(const T& t);
 *   a field that [`yyjson::dependent_required`](#yyjsondependent_required) requires, left out while the field that requires it is written;
 *   groups of [`yyjson::one_of_required` or `yyjson::any_of_required`](#yyjsonone_of_required-yyjsonany_of_required) of which none, or under `one_of_required` more than one, have all their fields written;
 *   a field of an [adjacent tag](#yyjsoninternal_tag-yyjsonadjacent_tag) that does not name the alternative that its variant holds, which `yyjson::write` rejects with `std::invalid_argument`.
-*   a key of the map of a [`yyjson::extra_keys`](#yyjsonextra_keys) field that is also the key of a field or a tag of the struct, which `yyjson::write` rejects with `std::invalid_argument`.
+*   a key of the map of a [`yyjson::extra_keys`](#yyjsonextra_keys) field that is also the key of a field or a tag of the struct, which `yyjson::write` rejects with `std::invalid_argument`;
+*   a value of a [`yyjson::any_of` or `yyjson::one_of`](#yyjsonany_of-yyjsonone_of-yyjsonalt) that does not satisfy the settings of the alternative that it holds, with the message `the value of the alternative I of V ...`, where the read gives `V is not constructible from JSON`;
+*   a value of a `yyjson::one_of` that another alternative reads too, when it is written and read back with `yyjson::strict`. A `yyjson::any_of` is not read back, as a `std::variant` is not.
 
 A field that `write` writes as `null`, such as an empty `std::shared_ptr` or a `std::variant` that holds `std::monostate`, is not checked by its constraints, as the read does not check them for `null`. Nor is a field that [`yyjson::omit_default`](#yyjsonomit_default) or [`yyjson::default_from`](#yyjsondefault_from) leaves out, whose key the read does not see. A caster of the program that writes `null` is not detected, and the constraints of its field are checked.
 
 The message is the one that the read gives, and `path()` is the JSON Pointer to the value in the JSON that `write` writes, such as `/users/3/age`. There is no `position()`. `validate` looks into the fields, the elements and the alternatives that `write` writes, and not into a value that a caster of the program converts.
 
-`validate` checks what the C++ object decides. A strict read of the written JSON can still fail where the read itself adds a check: a `std::variant` without a tag reads the first alternative that accepts the value, which may not be the one that it holds, and a caster of the program reads the text that its `to_json` wrote by its own rules. Keys that a `std::multimap` or a range of pairs writes twice are not an error, since the strict read reads them back.
+`validate` checks what the C++ object decides. A strict read of the written JSON can still fail where the read itself adds a check: a `std::variant` without a tag, or a `yyjson::any_of`, reads the first alternative that accepts the value, which may not be the one that it holds, and a caster of the program reads the text that its `to_json` wrote by its own rules. Keys that a `std::multimap` or a range of pairs writes twice are not an error, since the strict read reads them back.
 
 ```cpp
 struct User
@@ -1583,6 +1586,7 @@ Specialize `annotations<T>` before the first use of `T`. `annotate` takes these 
 | --- | --- |
 | a struct | [`yyjson::field`](#yyjsonfield), [`yyjson::transparent`](#yyjsontransparent), [`yyjson::additional_properties`](#yyjsonadditional_properties), [`yyjson::dependent_required`](#yyjsondependent_required), [`yyjson::one_of_required`, `yyjson::any_of_required`](#yyjsonone_of_required-yyjsonany_of_required) and [`yyjson::schema_name`](#yyjsonschema_name) |
 | a `std::variant` | [`yyjson::internal_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag) and [`yyjson::schema_name`](#yyjsonschema_name) |
+| a [`yyjson::any_of` or `yyjson::one_of`](#yyjsonany_of-yyjsonone_of-yyjsonalt) | [`yyjson::schema_name`](#yyjsonschema_name) |
 | an enumeration | [`yyjson::enumerator` and `yyjson::enum_format`](#yyjsonenum_format-yyjsonenumerator), and [`yyjson::schema_name`](#yyjsonschema_name) |
 | a type with a [caster](#yyjsoncastert) | [`yyjson::schema_name`](#yyjsonschema_name) |
 | any type | [`yyjson::title`, `yyjson::description`, `yyjson::deprecated`, `yyjson::examples`](#yyjsontitle-yyjsondescription-yyjsondeprecated-yyjsonexamples) and [`yyjson::schema`](#yyjsonschema) |
@@ -1892,7 +1896,7 @@ inline constexpr satisfies_t satisfies;
 | `yyjson::unique_items` | a range whose elements may be equal | with an element that is written as the same JSON value as an earlier one |
 | `yyjson::satisfies<f>` | any | for which `f(value)` returns `false` |
 
-The constraints are settings of [`yyjson::field`](#yyjsonfield), and of [`yyjson::items`](#yyjsonitems) and the other settings of the elements. `yyjson::unique_items` on a string, on a range of elements that contain a value that has no `operator==` and that is not compared by its parts, and on a set or a map, whose elements are unique by construction, is a compile error; [`yyjson::strict`](#yyjsonstrict) rejects the JSON that repeats an element or a key of them. The constraints apply to the value that a `std::optional`, a `std::unique_ptr`, a `std::shared_ptr` or a `std::variant` of `std::monostate` and one other type holds, nested or not, and not to an empty one, except `yyjson::const_` and `yyjson::enum_`, which an empty one satisfies only when they list `nullptr`. Reading a value that a constraint rejects throws `yyjson::bad_cast`; writing checks them only with `yyjson::strict`. `yyjson::const_` and `yyjson::enum_` take strings, numbers or booleans of the kind of the field, and `nullptr` for JSON `null` on those types that can be empty, and not arrays or objects; `yyjson::enum_` takes at least one. They compare them with the value of the field in its type. Bounds and values that leave no value of the type of the field, or of the value that a `std::optional` and the like hold, to read are compile errors. `yyjson::pattern` needs a [`yyjson::pattern_matcher<>`](#yyjsonpattern_matcher). `yyjson::format` checks the [formats of JSON Schema](validation.md#formats) other than `idn-email`, `idn-hostname`, `iri`, `iri-reference` and `regex`, and the others with a [`yyjson::format_checker<>`](#yyjsonformat_checker). See [Constraints](validation.md#constraints).
+The constraints are settings of [`yyjson::field`](#yyjsonfield), of [`yyjson::items`](#yyjsonitems) and the other settings of the elements, and of the alternatives of [`yyjson::any_of` and `yyjson::one_of`](#yyjsonany_of-yyjsonone_of-yyjsonalt). `yyjson::unique_items` on a string, on a range of elements that contain a value that has no `operator==` and that is not compared by its parts, and on a set or a map, whose elements are unique by construction, is a compile error; [`yyjson::strict`](#yyjsonstrict) rejects the JSON that repeats an element or a key of them. The constraints apply to the value that a `std::optional`, a `std::unique_ptr`, a `std::shared_ptr` or a `std::variant` of `std::monostate` and one other type holds, nested or not, and not to an empty one, except `yyjson::const_` and `yyjson::enum_`, which an empty one satisfies only when they list `nullptr`. Reading a value that a constraint rejects throws `yyjson::bad_cast`; writing checks them only with `yyjson::strict`. `yyjson::const_` and `yyjson::enum_` take strings, numbers or booleans of the kind of the field, and `nullptr` for JSON `null` on those types that can be empty, and not arrays or objects; `yyjson::enum_` takes at least one. They compare them with the value of the field in its type. Bounds and values that leave no value of the type of the field, or of the value that a `std::optional` and the like hold, to read are compile errors. `yyjson::pattern` needs a [`yyjson::pattern_matcher<>`](#yyjsonpattern_matcher). `yyjson::format` checks the [formats of JSON Schema](validation.md#formats) other than `idn-email`, `idn-hostname`, `iri`, `iri-reference` and `regex`, and the others with a [`yyjson::format_checker<>`](#yyjsonformat_checker). See [Constraints](validation.md#constraints).
 
 ### `yyjson::items`
 
@@ -2075,6 +2079,50 @@ consteval auto adjacent_tag(std::string_view key, const std::string_view (&ids)[
 *   `adjacent_tag` puts the tag in the object of the struct that holds the variant, next to its field, as in `{"type":"circle","shape":{"radius":1}}`. It is a setting of that field, given to [`yyjson::field`](#yyjsonfield).
 
 See [Tagged variants](conversions.md#tagged-variants).
+
+### `yyjson::any_of`, `yyjson::one_of`, `yyjson::alt`
+
+Variants whose alternatives have settings of their own, as the keywords `anyOf` and `oneOf` of JSON Schema.
+
+```cpp
+template <typename T, auto... Settings>
+struct alt;  // declared only
+
+template <typename... As>
+struct any_of : std::variant</* the type T of each alternative */>
+{
+    using variant_type = std::variant</* ... */>;
+    using variant_type::variant_type;
+    using variant_type::operator=;
+};
+
+template <typename... As>
+struct one_of : std::variant</* the type T of each alternative */>
+{
+    using variant_type = std::variant</* ... */>;
+    using variant_type::variant_type;
+    using variant_type::operator=;
+};
+```
+
+*   Each of `As...` is `yyjson::alt<T, settings...>`, an alternative of type `T` with the settings, or a type `T`, an alternative without settings. `yyjson::alt` is only a template argument of `any_of` and `one_of`.
+*   The settings are the [constraints](#constraints), the settings of elements such as [`yyjson::items`](#yyjsonitems), and [`yyjson::title`, `yyjson::description`, `yyjson::deprecated`, `yyjson::examples`](#yyjsontitle-yyjsondescription-yyjsondeprecated-yyjsonexamples). Each is a value, or a pointer to a `constexpr` variable that holds it, which a setting made from a `std::string_view` needs before C++26.
+*   The value is the `std::variant` of the types `T`, from which `any_of` and `one_of` derive; `std::variant_size`, `std::variant_alternative`, `std::get`, `std::visit` and `index()` work on them. Alternatives of the same type are told apart by `index()`.
+*   `any_of` reads the first alternative whose type reads the JSON value and whose settings the value satisfies. `one_of` reads the same one, and throws `yyjson::bad_cast` when another alternative reads the value too. Both throw `yyjson::bad_cast` when no alternative reads the value. An alternative reads with or without [`yyjson::strict`](#yyjsonstrict), as the read does.
+*   `merge_into` replaces the value. `write` writes the alternative that the value holds without checking its settings; [`yyjson::validate`](#yyjsonvalidate) and `write(t, yyjson::strict)` check them.
+*   [`yyjson::json_schema<T>`](#yyjsonjson_schemat) writes `anyOf` and `oneOf` of the schemas of the alternatives with their settings, in place, or in `$defs` under a [`yyjson::schema_name`](#yyjsonschema_name).
+
+Where the variant is read, written, validated or described, an alternative of `any_of` that reads only values that an earlier alternative reads too, an alternative of `one_of` that reads only values that another alternative reads too, and an alternative whose settings leave no value to read are compile errors. So are an empty list of alternatives, a setting of a key or `yyjson::schema` in `alt`, a setting given twice to one alternative, `alt` of `alt`, and a tag. See [Alternatives with constraints](conversions.md#alternatives-with-constraints).
+
+```cpp
+using Port = yyjson::any_of<yyjson::alt<int, yyjson::minimum(1), yyjson::maximum(65535)>,
+                            yyjson::alt<std::string, yyjson::min_length(1)>>;
+
+auto port = yyjson::read<Port>("5432");  // -> holds the int 5432
+auto name = yyjson::read<Port>(R"("postgres")");  // -> holds the std::string "postgres"
+yyjson::read<Port>("0");
+// throws yyjson::bad_cast: yyjson::any_of<...> is not constructible from JSON ...
+```
 
 ### `yyjson::enum_format`, `yyjson::enumerator`
 

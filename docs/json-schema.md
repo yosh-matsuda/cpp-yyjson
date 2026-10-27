@@ -114,6 +114,7 @@ The guarantee has exceptions, where valid JSON is not read:
 *   The depth limit of [recursive types](conversions.md#recursive-types).
 *   A tuple of key-value pairs whose values differ in type, such as `std::tuple<std::pair<std::string, int>, std::pair<std::string, double>>`. No value has all the types, so the read schema checks every value by the schemas of any of the positions (`anyOf`), while the read checks the value of each key by the type of its position: `{"a": 2.5, "b": 1}` is valid and is not read.
 *   The keys of a map whose key type is an enumeration: the schema allows the names of the enumerators and any integer, while the read rejects an integer out of the range of the underlying type.
+*   A `yyjson::one_of` whose alternative reads one of the lenient forms above. With `yyjson::one_of<std::vector<std::pair<std::string, int>>, std::vector<yyjson::value>>`, `[["a", 1]]` is valid against the second subschema only, while the read reads it by both alternatives and rejects it.
 
 JSON Schema treats `1.0` as an integer, as `read<int>` does.
 
@@ -159,6 +160,7 @@ The [constraints](validation.md#constraints) are in both schemas. A plain `write
 | `std::optional<T>` as a field | the schema of `T`, and the key is not required |
 | `std::optional<T>` elsewhere, `std::unique_ptr<T>`, `std::shared_ptr<T>` | `{"anyOf": [T, {"type": "null"}]}` |
 | `std::variant` | `anyOf` of the alternatives |
+| [`yyjson::any_of`, `yyjson::one_of`](conversions.md#alternatives-with-constraints) | `anyOf` and `oneOf` of the alternatives, each the schema of its type with the constraints, the settings of the elements and the metadata of its `yyjson::alt`. In place unless [`yyjson::schema_name`](#names-of-types) puts it in `$defs`. A default value that two alternatives of a `yyjson::one_of` read is not written |
 | a variant with [`yyjson::internal_tag`](reference.md#yyjsoninternal_tag-yyjsonadjacent_tag) | `oneOf` of the alternatives, each an object with `{"const": id}` for the tag key, which is required. A struct alternative is written in place with the tag among its properties, also through a pointer, a `std::optional`, a translator or another variant tagged in the same object; any other alternative has the tag in `allOf` beside its schema |
 | a field with [`yyjson::adjacent_tag`](reference.md#yyjsoninternal_tag-yyjsonadjacent_tag) | the tag key has `enum` of the ids, and the struct has `allOf` of `oneOf` branches, one for each alternative, that tie the id to the schema of the field |
 | structs | in `$defs`: `{"type": "object", "properties": {...}}`, with `required` and `additionalProperties` as [above](#read-and-write-schemas). A field of [`yyjson::extra_keys`](conversions.md#keys-that-name-no-field) is not a property; its values give `additionalProperties` |

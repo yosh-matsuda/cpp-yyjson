@@ -190,7 +190,7 @@ Both APIs share the same conversions. They cover the following types, nested in 
 *   [enumerations](docs/conversions.md#enumerations), by name or by integer
 *   standard containers and maps
 *   `std::optional` and smart pointers
-*   `std::variant`, also [tagged](docs/conversions.md#tagged-variants) by a member, and tuples
+*   `std::variant`, also [tagged](docs/conversions.md#tagged-variants) by a member or [constrained per alternative](docs/conversions.md#alternatives-with-constraints), and tuples
 *   aggregate structs, by [compile-time reflection](docs/conversions.md#reflection) or [`VISITABLE_STRUCT`](docs/conversions.md#visitable_struct)
 *   [DOM values as fields](docs/conversions.md#json-values-as-fields)
 *   any type with a [user-defined caster](docs/conversions.md#user-defined-casters)
