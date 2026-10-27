@@ -2004,12 +2004,13 @@ namespace
     template <typename V>
     std::string read_by_none()
     {
-        return std::format("{} is not constructible from JSON", yyjson::detail::type_name<V>());
+        return without_type_keywords(std::format("{} is not constructible from JSON", yyjson::detail::type_name<V>()));
     }
     template <typename V>
     std::string read_by_two(int i, int j)
     {
-        return std::format("the value matches the alternatives {} and {} of {}", i, j, yyjson::detail::type_name<V>());
+        return without_type_keywords(
+            std::format("the value matches the alternatives {} and {} of {}", i, j, yyjson::detail::type_name<V>()));
     }
 }  // namespace
 
