@@ -590,14 +590,6 @@ namespace cpp_yyjson_codegen
             pointer  // std::unique_ptr
         };
 
-        struct ctype
-        {
-            tk k = tk::any;
-            int decl = -1;
-            bool tagged = false;  // a variant with internal_tag
-            std::vector<ctype> args{};
-        };
-
         // the settings of a field or of an element level: constraints and element trees
         struct settings
         {
@@ -628,6 +620,26 @@ namespace cpp_yyjson_codegen
             bool deprecated = false;
             std::vector<json> examples;
             std::vector<json> noted_examples;  // examples that are not known to read as the C++ type: comments
+        };
+
+        // a variant of the kind `combined` other than std::variant has settings and metadata for each alternative,
+        // which make it `yyjson::alt<T, ...>`
+        enum class combination : std::uint8_t
+        {
+            none,    // std::variant
+            any_of,  // yyjson::any_of
+            one_of   // yyjson::one_of
+        };
+
+        struct ctype
+        {
+            tk k = tk::any;
+            int decl = -1;
+            bool tagged = false;  // a variant with internal_tag
+            combination combined = combination::none;
+            std::vector<ctype> args{};
+            std::vector<settings> sets{};   // yyjson::any_of / one_of: the settings of each alternative
+            std::vector<metadata> metas{};  // yyjson::any_of / one_of: the metadata of each alternative
         };
 
         struct field
@@ -677,6 +689,7 @@ namespace cpp_yyjson_codegen
             bool transparent = false;  // yyjson::transparent: read and written as the value of its only field
             // enum: member name, JSON name
             std::vector<std::pair<std::string, std::string>> enumerators{};
+            std::map<std::string, metadata> enumerator_meta{};  // by JSON name: comments of the enumerators
             // alias
             ctype target{};
             settings set{};
@@ -703,7 +716,8 @@ namespace cpp_yyjson_codegen
 
         inline bool is_nullable(const ctype& t)
         {
-            return t.k == tk::variant && !t.tagged && t.args.size() == 2 && t.args[0].k == tk::monostate;
+            return t.k == tk::variant && !t.tagged && t.combined == combination::none && t.args.size() == 2 &&
+                   t.args[0].k == tk::monostate;
         }
 
         // a variant that reads null as its first alternative, std::monostate
@@ -836,6 +850,15 @@ namespace cpp_yyjson_codegen
                 std::string name, type, value;
             };
             std::vector<default_function> default_functions_;
+            // the settings of alternatives that C++20 takes through pointers to variables: on in render(), where
+            // spell() names a variable after the place of the type (`ctx_`, the indices of the alternatives in
+            // `path_`) and the kind of the setting, and the same setting text reuses it
+            bool naming_ = false;
+            mutable std::string ctx_;
+            mutable std::vector<std::size_t> path_;
+            mutable std::map<std::string, std::string, std::less<>> setting_vars_;  // setting text -> variable
+            mutable std::vector<std::pair<std::string, std::string>> var_defs_;     // name, setting text
+            mutable std::set<std::string, std::less<>> interned_;  // the strings of bounds of alternatives
             bool uses_pattern_ = false;
             std::vector<diagnostic> warnings_;
             std::set<std::pair<std::string, std::string>> warned_;
@@ -1794,12 +1817,8 @@ namespace cpp_yyjson_codegen
                 const auto v = initializer(*t, j, static_cast<int>(decls_.size()));
                 if (!v) return std::nullopt;
                 auto taken = [&](const std::string& name) {
-                    return type_names_.contains(name) ||
-                           std::ranges::any_of(default_functions_,
-                                               [&](const default_function& g) { return g.name == name; }) ||
-                           std::ranges::any_of(decls_, [&](const decl& e) {
-                               return e.name == name ||
-                                      std::ranges::any_of(e.fields, [&](const field& g) { return g.member == name; });
+                    return name_taken(name) || std::ranges::any_of(decls_, [&](const decl& e) {
+                               return std::ranges::any_of(e.fields, [&](const field& g) { return g.member == name; });
                            });
                 };
                 // one underscore between the parts, since a name with "__" is reserved (`not_` -> `S_not_default`)
@@ -2006,19 +2025,21 @@ namespace cpp_yyjson_codegen
                 return "{" + join(items) + "}";
             }
 
-            // the alternative of a std::variant that reading takes for a JSON value: the alternative that the tag
-            // names, or the first alternative that reads it, when the generator tells that the ones before do not
+            // the alternative of a variant that reading takes for a JSON value: the alternative that the tag names,
+            // the only one that reads it in yyjson::one_of, or the first alternative that reads it, when the generator
+            // tells that the ones before do not
             std::optional<std::size_t> alternative(const ctype& t, const json& j) const
             {
                 if (is_nullable(t)) return j.is_null() ? 0 : 1;
+                const auto one = t.combined == combination::one_of;
                 auto found = std::optional<std::size_t>();
                 for (std::size_t i = 0; i < t.args.size(); ++i)
                 {
-                    const auto r = fits(j, t.args[i], settings());
+                    const auto r = fits(j, t.args[i], i < t.sets.size() ? t.sets[i] : settings());
                     if (r == fit::no) continue;
                     if (r == fit::unknown) return std::nullopt;
                     // a tagged variant reads the alternative of the tag, whose `const` excludes the others
-                    if (!t.tagged) return i;
+                    if (!t.tagged && !one) return i;
                     if (found) return std::nullopt;
                     found = i;
                 }
@@ -2087,13 +2108,84 @@ namespace cpp_yyjson_codegen
                     case tk::tuple:
                         return list("std::tuple");
                     case tk::variant:
-                        return list("std::variant");
+                        return t.combined == combination::none ? list("std::variant") : spell_combined(t, expand, q);
                     case tk::optional:
                         return list("std::optional");
                     case tk::pointer:
                         return list("std::unique_ptr");
                 }
                 return {};
+            }
+
+            // yyjson::any_of or yyjson::one_of, whose alternatives with settings or metadata are yyjson::alt
+            std::string spell_combined(const ctype& t, bool expand, std::string_view q) const
+            {
+                auto s = std::string(t.combined == combination::any_of ? "yyjson::any_of<" : "yyjson::one_of<");
+                for (std::size_t i = 0; i < t.args.size(); ++i)
+                {
+                    if (i > 0) s += ", ";
+                    path_.push_back(i);
+                    auto items = render_settings(t.sets[i], t.args[i]);
+                    for (auto& m : render_metadata(t.metas[i])) items.push_back(std::move(m));
+                    const auto a = spell(t.args[i], expand, q);
+                    if (items.empty())
+                        s += a;
+                    else
+                    {
+                        s += "yyjson::alt<" + a;
+                        for (const auto& x : items) s += ", " + setting_argument(x, q);
+                        s += ">";
+                    }
+                    path_.pop_back();
+                }
+                return s + ">";
+            }
+
+            // a setting as a template argument of yyjson::alt: before C++26, a setting with a string is a constexpr
+            // variable, which the argument points to, so that the text is not a part of the type
+            std::string setting_argument(const std::string& text, std::string_view q) const
+            {
+                if (!naming_ || text.find('"') == std::string::npos) return text;
+                auto it = setting_vars_.find(text);
+                if (it == setting_vars_.end())
+                {
+                    const auto open = text.find('(');
+                    const auto kind = text.starts_with("yyjson::") && open != std::string::npos
+                                          ? text.substr(8, open - 8)
+                                          : std::string("setting");
+                    auto base = ctx_.empty() ? std::string("alternative") : ctx_;
+                    for (const auto i : path_) base += "_" + std::to_string(i);
+                    base += "_" + kind;
+                    // one underscore between the parts, since a name with "__" is reserved
+                    base.erase(std::ranges::unique(base, [](char a, char b) { return a == '_' && b == '_'; }).begin(),
+                               base.end());
+                    auto name = base;
+                    for (auto n = 2; name_taken(name); ++n) name = base + "_" + std::to_string(n);
+                    var_defs_.emplace_back(name, text);
+                    it = setting_vars_.emplace(text, name).first;
+                }
+                return "&" + std::string(q) + it->second;
+            }
+
+            // whether a name at namespace scope is taken by a type, a function or a variable of the generated code
+            bool name_taken(const std::string& name) const
+            {
+                return type_names_.contains(name) ||
+                       std::ranges::any_of(decls_, [&](const decl& e) { return e.name == name; }) ||
+                       std::ranges::any_of(default_functions_,
+                                           [&](const default_function& g) { return g.name == name; }) ||
+                       std::ranges::any_of(var_defs_, [&](const auto& v) { return v.first == name; });
+            }
+
+            // whether the alternatives of a yyjson::any_of or yyjson::one_of in `t` share a C++ type, which index()
+            // tells apart
+            bool shares_type(const ctype& t) const
+            {
+                if (t.combined != combination::none)
+                    for (std::size_t i = 0; i < t.args.size(); ++i)
+                        for (auto j = i + 1; j < t.args.size(); ++j)
+                            if (spell(t.args[i], true) == spell(t.args[j], true)) return true;
+                return std::ranges::any_of(t.args, [&](const ctype& a) { return shares_type(a); });
             }
 
             // the type behind aliases
@@ -2166,66 +2258,449 @@ namespace cpp_yyjson_codegen
                 if (r.t.k == tk::any || r.t.k == tk::null) return r;
                 if (r.t.k == tk::variant && !r.t.tagged)
                 {
-                    if (r.t.args[0].k != tk::monostate) r.t.args.insert(r.t.args.begin(), make(tk::monostate));
+                    if (r.t.args[0].k != tk::monostate)
+                    {
+                        r.t.args.insert(r.t.args.begin(), make(tk::monostate));
+                        if (r.t.combined != combination::none)
+                        {
+                            r.t.sets.insert(r.t.sets.begin(), settings());
+                            r.t.metas.insert(r.t.metas.begin(), metadata());
+                        }
+                    }
                     return {std::move(r.t), {}};
                 }
                 return {make(tk::variant, {make(tk::monostate), std::move(r.t)}), std::move(r.s)};
             }
 
-            typed make_variant(std::vector<typed> alts, const std::string& loc)
+            static bool metadata_empty(const metadata& m)
             {
-                auto flat = std::vector<typed>();
-                for (auto& a : alts)
+                return !m.title && !m.description && !m.deprecated && m.examples.empty() && m.noted_examples.empty();
+            }
+
+            static bool same_metadata(const metadata& a, const metadata& b)
+            {
+                return a.title == b.title && a.description == b.description && a.deprecated == b.deprecated &&
+                       std::ranges::equal(a.examples, b.examples, equal);
+            }
+
+            // the bounds of the JSON values that the alternatives of yyjson::any_of and yyjson::one_of read, as
+            // `yyjson::detail::bound_of<>()` computes them, by which the library rejects an alternative that is never
+            // read: the generator orders the alternatives and drops those that the library rejects
+
+            using json_bound = yyjson::detail::json_bound;
+
+            std::string_view intern(std::string_view v) const { return *interned_.emplace(v).first; }
+
+            // a number of the generated code: a literal of the integer types or a floating literal
+            static yyjson::detail::bound_number bound_value(const json& j, tk k)
+            {
+                if (is_integer_kind(k) && j.is_integral())
                 {
-                    if (a.t.k == tk::variant && !a.t.tagged)
+                    if (const auto v = as_int64(j)) return yyjson::detail::sint_number(*v);
+                    if (const auto v = as_uint64(j)) return yyjson::detail::uint_number(*v);
+                }
+                return yyjson::detail::real_number(j.num);
+            }
+
+            // whether the settings are only `const` and `enum`, and the bounds of numbers if `numbers`, which a bound
+            // describes exactly
+            static bool described(const settings& s, bool numbers)
+            {
+                return !s.min_items && !s.max_items && !s.unique && s.items.empty() && s.contains.empty() &&
+                       s.property_names.empty() && s.additional.empty() && s.prefix.empty() &&
+                       std::ranges::all_of(s.constraints, [&](const settings::constraint& c) {
+                           const auto& k = c.keyword;
+                           return k == "const" || k == "enum" ||
+                                  (numbers && (k == "minimum" || k == "maximum" || k == "exclusiveMinimum" ||
+                                               k == "exclusiveMaximum"));
+                       });
+            }
+
+            // the values of `const` among those of `enum`, or of `enum`, that the generated code lists for a value
+            // of the kind `k`, as `value_constraints()` writes them; std::nullopt when it lists none
+            static std::optional<std::vector<const json*>> listed_values(const settings& s, tk k)
+            {
+                const auto of_kind = [&](const json& v) {
+                    if (k == tk::string) return v.is_string();
+                    if (k == tk::boolean) return v.is_bool();
+                    if (is_float_kind(k)) return v.is_number();
+                    if (is_integer_kind(k))
+                        return v.is_integral() && (k == tk::u64 ? as_uint64(v).has_value() : as_int64(v).has_value());
+                    return false;
+                };
+                const json* constant = nullptr;
+                const json* values = nullptr;
+                for (const auto& c : s.constraints)
+                    if (c.keyword == "const")
+                        constant = &c.value;
+                    else if (c.keyword == "enum")
+                        values = &c.value;
+                if (constant == nullptr && values == nullptr) return std::nullopt;
+                auto out = std::vector<const json*>();
+                if (values != nullptr && values->is_array())
+                    for (const auto& v : values->items)
+                        if (of_kind(v)) out.push_back(&v);
+                // a constraint of the kind `enum` with one bool is yyjson::const_ of it
+                if (constant == nullptr) return out;
+                if (values != nullptr && std::ranges::none_of(out, [&](const json* v) { return equal(*v, *constant); }))
+                    return std::vector<const json*>();
+                return std::vector<const json*>{constant};
+            }
+
+            static yyjson::detail::number_bound number_bound_of(tk k, const settings& s)
+            {
+                namespace d = yyjson::detail;
+                const auto integral = is_integer_kind(k);
+                auto n = d::all_numbers(integral, d::bound_extent::exact);
+                if (k == tk::i32)
+                {
+                    n.low = d::sint_number(std::numeric_limits<std::int32_t>::min());
+                    n.high = d::sint_number(std::numeric_limits<std::int32_t>::max());
+                }
+                else if (k == tk::i64)
+                {
+                    n.low = d::sint_number(std::numeric_limits<std::int64_t>::min());
+                    n.high = d::sint_number(std::numeric_limits<std::int64_t>::max());
+                }
+                else if (k == tk::u64)
+                {
+                    n.low = d::uint_number(0);
+                    n.high = d::uint_number(std::numeric_limits<std::uint64_t>::max());
+                }
+                else if (k == tk::f32)
+                {
+                    // the doubles that round to a finite float
+                    n.low = d::real_number(-340282356779733661637539395458142568448.0);
+                    n.high = d::real_number(340282356779733661637539395458142568448.0);
+                    if (!s.empty()) n.extent = d::bound_extent::partial;
+                    return n;
+                }
+                auto empty = false;
+                const auto bound = [&](const d::bound_number& b, bool up, bool open) {
+                    auto& end = up ? n.low : n.high;
+                    auto& end_open = up ? n.low_open : n.high_open;
+                    if (integral)
                     {
-                        if (is_nullable(a.t))
-                        {
-                            flat.push_back({make(tk::monostate), {}});
-                            flat.push_back({a.t.args[1], std::move(a.s)});
-                        }
-                        else
-                            for (auto& x : a.t.args) flat.push_back({x, {}});
+                        const auto step = d::integer_beyond(b, up, open);
+                        if (!step.exists)
+                            empty = true;
+                        else if (up ? d::number_less(end, step.value) : d::number_less(step.value, end))
+                            end = step.value;
                     }
-                    else if (a.t.k == tk::null)
-                        flat.push_back({make(tk::monostate), {}});
                     else
-                        flat.push_back(std::move(a));
+                    {
+                        const auto o = d::compare_numbers(b, end);
+                        if ((up ? std::is_gt(o) : std::is_lt(o)) || (std::is_eq(o) && open && !end_open))
+                        {
+                            end = b;
+                            end_open = open;
+                        }
+                    }
+                };
+                for (const auto& c : s.constraints)
+                {
+                    if (!c.value.is_number()) continue;
+                    if (c.keyword == "minimum") bound(bound_value(c.value, k), true, false);
+                    if (c.keyword == "exclusiveMinimum") bound(bound_value(c.value, k), true, true);
+                    if (c.keyword == "maximum") bound(bound_value(c.value, k), false, false);
+                    if (c.keyword == "exclusiveMaximum") bound(bound_value(c.value, k), false, true);
+                }
+                const auto order = d::compare_numbers(n.low, n.high);
+                if (empty || std::is_gt(order) || (std::is_eq(order) && (n.low_open || n.high_open))) return {};
+                if (const auto values = listed_values(s, k))
+                {
+                    auto listed = n;
+                    listed.listed = true;
+                    for (const auto* v : *values)
+                    {
+                        auto p = bound_value(*v, k);
+                        if (!integral) p = d::real_number(d::to_double(p));
+                        if (!d::has_number(n, p) || d::has_number(listed, p)) continue;
+                        if (listed.count == d::bound_capacity)
+                            listed.extent = d::bound_extent::partial;
+                        else
+                            listed.points[listed.count++] = p;
+                    }
+                    if (listed.count == 0) return {};
+                    if (listed.extent == d::bound_extent::exact) return listed;
+                    n.extent = d::bound_extent::partial;
+                }
+                return n;
+            }
+
+            // the JSON values that a value of the type `t` with the settings `s` reads, or more
+            json_bound bound_of(const ctype& t, const settings& s) const
+            {
+                namespace d = yyjson::detail;
+                using d::bound_extent;
+                const auto has = !s.empty();
+                const auto bound = [](json_bound b, bool exact) { return exact ? b : d::partial_bound(b); };
+                const auto extent = [&](bool exact) { return exact ? bound_extent::exact : bound_extent::partial; };
+                auto b = json_bound{};
+                switch (t.k)
+                {
+                    case tk::any:
+                        return bound(d::universal_bound(), !has);
+                    case tk::object:
+                        b.object = extent(!has);
+                        return b;
+                    case tk::null:
+                    case tk::monostate:
+                        b.null = extent(!has);
+                        return b;
+                    case tk::boolean:
+                    {
+                        b.boolean = extent(described(s, false));
+                        b.booleans = 3;
+                        if (const auto values = listed_values(s, tk::boolean))
+                        {
+                            b.booleans = 0;
+                            for (const auto* v : *values) b.booleans |= static_cast<std::uint8_t>(v->b ? 2U : 1U);
+                        }
+                        if (b.booleans == 0) b.boolean = bound_extent::none;
+                        return b;
+                    }
+                    case tk::i32:
+                    case tk::i64:
+                    case tk::u64:
+                    case tk::f32:
+                    case tk::f64:
+                        b.number = number_bound_of(t.k, s);
+                        return bound(b, described(s, true));
+                    case tk::string:
+                    {
+                        b.string.extent = bound_extent::exact;
+                        if (const auto values = listed_values(s, tk::string))
+                        {
+                            b.string.listed = true;
+                            for (const auto* v : *values) d::add_string(b.string, intern(v->text));
+                            if (b.string.listed && b.string.count == 0) b.string = {};
+                        }
+                        return bound(b, described(s, false));
+                    }
+                    case tk::named:
+                    {
+                        const auto& x = decls_[t.decl];
+                        if (x.kind == decl::kind_t::alias) return bound_of(x.target, s);
+                        if (x.kind == decl::kind_t::enumeration)
+                        {
+                            b.string = {bound_extent::exact, true};
+                            for (const auto& e : x.enumerators) d::add_string(b.string, intern(e.second));
+                            return bound(b, !has);
+                        }
+                        if (x.transparent) return d::partial_bound(bound_of(x.fields[0].type, settings()));
+                        b.object = bound_extent::partial;
+                        return b;
+                    }
+                    case tk::vector:
+                        b.array = extent(!has && d::bound_contains(bound_of(t.args[0], settings()), d::universal_bound()));
+                        return b;
+                    case tk::map:
+                        b.object = bound_extent::partial;
+                        return b;
+                    case tk::tuple:
+                        return d::kinds_bound(d::json_kind_array | d::json_kind_object);
+                    case tk::optional:
+                    case tk::pointer:
+                        b = bound_of(t.args[0], s);
+                        b.null = bound_extent::exact;
+                        return b;
+                    case tk::variant:
+                    {
+                        if (t.combined != combination::none)
+                        {
+                            for (std::size_t i = 0; i < t.args.size(); ++i)
+                                b = d::unite_bounds(b, bound_of(t.args[i], i < t.sets.size() ? t.sets[i] : settings()));
+                            return bound(b, t.combined == combination::any_of && !has);
+                        }
+                        if (t.tagged)
+                            return d::kinds_bound(t.args[0].k == tk::monostate ? d::json_kind_object | d::json_kind_null
+                                                                               : d::json_kind_object);
+                        if (is_nullable(t))
+                        {
+                            b = bound_of(t.args[1], s);
+                            b.null = bound_extent::exact;
+                            return b;
+                        }
+                        for (const auto& a : t.args) b = d::unite_bounds(b, bound_of(a, settings()));
+                        return bound(b, !has);
+                    }
+                }
+                return d::universal_bound();
+            }
+
+            static bool reads_nothing(const json_bound& b)
+            {
+                using yyjson::detail::bound_extent;
+                return b.null == bound_extent::none && b.boolean == bound_extent::none &&
+                       b.number.extent == bound_extent::none && b.string.extent == bound_extent::none &&
+                       b.array == bound_extent::none && b.object == bound_extent::none;
+            }
+
+            struct alternative_entry
+            {
+                ctype t;
+                settings s;
+                metadata m;
+            };
+
+            // a variant of the alternatives: std::variant (`mode` none), yyjson::any_of or yyjson::one_of, with the
+            // metadata of each alternative in `metas`. std::variant becomes yyjson::any_of when an alternative has
+            // settings or metadata, which only yyjson::alt carries
+            typed make_variant(std::vector<typed> alts, const std::string& loc, combination mode = combination::none,
+                               std::vector<metadata> metas = {})
+            {
+                namespace d = yyjson::detail;
+                metas.resize(alts.size());
+                auto flat = std::vector<alternative_entry>();
+                const auto push = [&](ctype t, settings s, metadata m) {
+                    if (t.k == tk::null) t = make(tk::monostate);
+                    flat.push_back({std::move(t), std::move(s), std::move(m)});
+                };
+                const auto disjoint = [&](const ctype& v) {
+                    for (std::size_t i = 0; i < v.args.size(); ++i)
+                        for (auto j = i + 1; j < v.args.size(); ++j)
+                            if (!d::bounds_disjoint(bound_of(v.args[i], settings()), bound_of(v.args[j], settings())))
+                                return false;
+                    return true;
+                };
+                for (std::size_t n = 0; n < alts.size(); ++n)
+                {
+                    auto& a = alts[n];
+                    auto& m = metas[n];
+                    if (a.t.k == tk::variant && is_nullable(a.t))
+                    {
+                        push(make(tk::monostate), {}, {});
+                        push(std::move(a.t.args[1]), std::move(a.s), std::move(m));
+                    }
+                    else if (a.t.k == tk::variant && !a.t.tagged && a.t.combined == combination::none &&
+                             metadata_empty(m) && (mode != combination::one_of || disjoint(a.t)))
+                    {
+                        // the values of each alternative are those of the variant, which no other alternative reads
+                        // in yyjson::one_of
+                        for (auto& x : a.t.args) push(std::move(x), {}, {});
+                    }
+                    else if (a.t.k == tk::variant && a.t.combined == combination::any_of && mode != combination::one_of &&
+                             metadata_empty(m))
+                    {
+                        for (std::size_t i = 0; i < a.t.args.size(); ++i)
+                            push(std::move(a.t.args[i]), std::move(a.t.sets[i]), std::move(a.t.metas[i]));
+                    }
+                    else
+                        push(std::move(a.t), std::move(a.s), std::move(m));
                 }
                 if (std::ranges::any_of(flat, [](const auto& a) { return a.t.k == tk::any; })) return {};
-                auto uniq = std::vector<typed>();
-                auto mono = false;
+
+                // the same type with the same settings: the first one, with its metadata
+                const auto key = [&](const alternative_entry& a) {
+                    return spell(a.t, true) + "\n" + join(render_settings(a.s, a.t));
+                };
+                auto uniq = std::vector<alternative_entry>();
                 for (auto& a : flat)
                 {
-                    if (a.t.k == tk::monostate)
-                    {
-                        mono = true;
-                        continue;
-                    }
-                    const auto s = spell(a.t, true);
-                    const auto it = std::ranges::find_if(uniq, [&](const auto& u) { return spell(u.t, true) == s; });
-                    if (it == uniq.end())
+                    const auto k = key(a);
+                    if (std::ranges::none_of(uniq, [&](const auto& u) { return key(u) == k; }))
                         uniq.push_back(std::move(a));
-                    else if (!it->s.empty() || !a.s.empty())
+                    else if (mode == combination::one_of && a.t.k != tk::monostate)
+                        warn(loc, "an alternative of `oneOf` is the same as another one, which never reads a value "
+                                  "alone; it is dropped");
+                }
+                std::ranges::stable_sort(uniq, {}, [&](const auto& u) { return rank(u.t); });
+
+                auto bounds = std::vector<json_bound>();
+                for (const auto& u : uniq) bounds.push_back(bound_of(u.t, u.s));
+                for (std::size_t i = 0; i < uniq.size();)
+                    if (reads_nothing(bounds[i]))
                     {
-                        warn(loc, "alternatives of the same C++ type " + s + " have constraints; they are dropped");
-                        it->s = {};
+                        warn(loc, "the settings of an alternative leave no value to read; it is dropped");
+                        uniq.erase(uniq.begin() + static_cast<std::ptrdiff_t>(i));
+                        bounds.erase(bounds.begin() + static_cast<std::ptrdiff_t>(i));
+                    }
+                    else
+                        ++i;
+
+                const auto combined = mode != combination::none ||
+                                      std::ranges::any_of(uniq, [](const auto& u) {
+                                          return !u.s.empty() || !metadata_empty(u.m);
+                                      });
+                const auto kind = mode != combination::none ? mode : combined ? combination::any_of : combination::none;
+                auto order = std::vector<std::size_t>();
+                const auto drop = [&](std::size_t p, const char* why) {
+                    warn(loc, why);
+                    order.erase(order.begin() + static_cast<std::ptrdiff_t>(p));
+                };
+                if (kind != combination::one_of)
+                {
+                    // an alternative goes before the first one that reads all its values; the same values twice are
+                    // read by the first one only
+                    for (std::size_t j = 0; j < uniq.size(); ++j)
+                    {
+                        auto pos = order.size();
+                        auto same = false;
+                        for (std::size_t p = 0; p < order.size(); ++p)
+                            if (d::bound_contains(bounds[order[p]], bounds[j]))
+                            {
+                                same = d::bound_contains(bounds[j], bounds[order[p]]);
+                                pos = p;
+                                break;
+                            }
+                        if (!same) order.insert(order.begin() + static_cast<std::ptrdiff_t>(pos), j);
+                    }
+                    // yyjson::any_of rejects an alternative that is never read; std::variant reads it never
+                    for (std::size_t q = 1; kind == combination::any_of && q < order.size();)
+                    {
+                        const auto never = std::ranges::any_of(order.begin(), order.begin() + static_cast<std::ptrdiff_t>(q),
+                                                               [&](std::size_t p) {
+                                                                   return d::bound_contains(bounds[p], bounds[order[q]]);
+                                                               });
+                        if (never)
+                            drop(q, "an alternative of `anyOf` reads only values that an alternative before it reads; "
+                                    "it is dropped");
+                        else
+                            ++q;
                     }
                 }
-                if (uniq.empty()) return {make(mono ? tk::null : tk::any), {}};
-                if (uniq.size() == 1) return mono ? make_nullable(std::move(uniq[0])) : std::move(uniq[0]);
-                for (auto& u : uniq)
-                    if (!u.s.empty())
+                else
+                {
+                    for (std::size_t i = 0; i < uniq.size(); ++i) order.push_back(i);
+                    // yyjson::one_of rejects an alternative of which another one reads every value, in the order of
+                    // the library
+                    for (auto found = true; found;)
                     {
-                        warn(loc,
-                             "constraints of one alternative of a std::variant are not supported; they are dropped");
-                        u.s = {};
+                        found = false;
+                        for (std::size_t j = 1; j < order.size() && !found; ++j)
+                            for (std::size_t i = 0; i < j && !found; ++i)
+                            {
+                                const auto contained = d::bound_contains(bounds[order[i]], bounds[order[j]]) ? j
+                                                       : d::bound_contains(bounds[order[j]], bounds[order[i]])
+                                                           ? i
+                                                           : order.size();
+                                if (contained == order.size()) continue;
+                                drop(contained, "an alternative of `oneOf` reads only values that another alternative "
+                                                "reads, so it never reads a value alone; it is dropped");
+                                found = true;
+                            }
                     }
-                std::ranges::stable_sort(uniq, {}, [&](const auto& u) { return rank(u.t); });
-                auto args = std::vector<ctype>();
-                if (mono) args.push_back(make(tk::monostate));
-                for (auto& u : uniq) args.push_back(std::move(u.t));
-                return {make(tk::variant, std::move(args)), {}};
+                }
+
+                auto out = std::vector<alternative_entry>();
+                for (const auto i : order) out.push_back(std::move(uniq[i]));
+                const auto mono = !out.empty() && out[0].t.k == tk::monostate;
+                if (out.empty()) return {};
+                if (out.size() == 1) return mono ? typed{make(tk::null), {}} : typed{std::move(out[0].t), std::move(out[0].s)};
+                if (out.size() == 2 && mono) return make_nullable({std::move(out[1].t), std::move(out[1].s)});
+                auto r = make(tk::variant);
+                r.combined = kind;
+                for (auto& a : out)
+                {
+                    r.args.push_back(std::move(a.t));
+                    if (kind == combination::none) continue;
+                    if (a.t.k == tk::monostate) a.m = metadata();
+                    a.m.comment.reset();
+                    r.sets.push_back(std::move(a.s));
+                    r.metas.push_back(std::move(a.m));
+                }
+                return {std::move(r), {}};
             }
 
             typed type_const(const json& s, const std::string& loc)
@@ -2551,8 +3026,10 @@ namespace cpp_yyjson_codegen
                         schemas.push_back(store(std::move(c)));
                     }
                 }
+                if (auto r = string_choices(s0, *s, base, *list, kw, loc, hint, named)) return *r;
                 if (auto r = tagged_variant(schemas, locs, loc)) return *r;
                 auto alts = std::vector<typed>();
+                auto metas = std::vector<metadata>();
                 for (std::size_t i = 0; i < schemas.size(); ++i)
                 {
                     const auto* n = normalize(schemas[i], locs[i]);
@@ -2562,10 +3039,96 @@ namespace cpp_yyjson_codegen
                                        : hint + "Option" + std::to_string(i + 1);
                     alts.push_back(type_of(schemas[i], locs[i], h));
                     adopt_metadata(alts.back().t, *n);
+                    // the metadata of the alternative, unless its named type has the same
+                    auto m = meta_of(*n);
+                    m.comment.reset();
+                    const auto& t = alts.back().t;
+                    if (t.k == tk::named && same_metadata(decls_[t.decl].meta, m)) m = metadata();
+                    metas.push_back(std::move(m));
                 }
-                (void)s0;
-                (void)named;
-                return make_variant(std::move(alts), loc);
+                return make_variant(std::move(alts), loc, any != nullptr ? combination::any_of : combination::one_of,
+                                    std::move(metas));
+            }
+
+            // `anyOf` / `oneOf` whose subschemas are only strings by `const` or `enum` (and null) become one enum class,
+            // with the metadata of each subschema as comments of its enumerators; a reference stays an alternative
+            std::optional<typed> string_choices(const json* s0, const json& s, const json& base, const json& list,
+                                                const std::string& kw, const std::string& loc, const std::string& hint,
+                                                bool named)
+            {
+                auto base_null = true;
+                if (!base.members.empty())
+                {
+                    const auto t = type_list(base);
+                    if (base.members.size() != 1 || base.members[0].first != "type" || t.empty() ||
+                        std::ranges::any_of(t, [](const auto& x) { return x != "string" && x != "null"; }))
+                        return std::nullopt;
+                    base_null = std::ranges::find(t, "null") != t.end();
+                }
+                auto values = std::vector<std::string>();
+                auto metas = std::map<std::string, metadata>();
+                auto nullable = false;
+                auto duplicate = false;
+                for (const auto& b : list.items)
+                {
+                    if (!b.is_object() ||
+                        std::ranges::any_of(b.members, [](const auto& m) {
+                            return m.first != "const" && m.first != "enum" && m.first != "type" &&
+                                   !is_metadata_key(m.first);
+                        }))
+                        return std::nullopt;
+                    const auto t = type_list(b);
+                    const auto* c = b.find("const");
+                    const auto* e = b.find("enum");
+                    if (c == nullptr && e == nullptr)
+                    {
+                        if (t.size() != 1 || t[0] != "null" || !base_null) return std::nullopt;
+                        nullable = true;
+                        continue;
+                    }
+                    if ((c != nullptr && e != nullptr) || (!t.empty() && (t.size() != 1 || t[0] != "string")))
+                        return std::nullopt;
+                    if (c != nullptr && c->is_null() && t.empty() && base_null)
+                    {
+                        nullable = true;
+                        continue;
+                    }
+                    const auto own = c != nullptr ? std::vector<json>{*c} : e->is_array() ? e->items : std::vector<json>();
+                    if (own.empty() || std::ranges::any_of(own, [](const json& v) { return !v.is_string(); }))
+                        return std::nullopt;
+                    auto m = meta_of(b);
+                    if (!m.description) m.description = m.title;
+                    m.title.reset();
+                    m.examples.clear();
+                    m.deprecated = false;
+                    for (const auto& v : own)
+                    {
+                        if (std::ranges::find(values, v.text) != values.end())
+                        {
+                            duplicate = true;
+                            continue;
+                        }
+                        values.push_back(v.text);
+                        if (!metadata_empty(m)) metas.emplace(v.text, m);
+                    }
+                }
+                if (values.empty()) return std::nullopt;
+                if (duplicate && kw == "oneOf")
+                    warn(loc, "a string of `oneOf` is in more than one subschema, which never reads it alone; the "
+                              "string is read as one enumerator");
+                auto e = json::object_of();
+                for (const auto& [k, v] : s.members)
+                    if (k == "title" || k == "description" || k == "$comment" || k == "deprecated" || k == "examples")
+                        e.members.emplace_back(k, v);
+                auto items = std::vector<json>();
+                for (const auto& v : values) items.push_back(json::string_of(v));
+                if (nullable) items.emplace_back();
+                e.set("enum", json::array_of(std::move(items)));
+                const auto before = decls_.size();
+                auto r = type_enum(s0, *store(std::move(e)), loc, hint, named);
+                for (auto i = before; i < decls_.size(); ++i)
+                    if (decls_[i].kind == decl::kind_t::enumeration) decls_[i].enumerator_meta = metas;
+                return r;
             }
 
             // whether an alternative that only refers to a schema already meets the `type` that is the only keyword
@@ -3148,12 +3711,18 @@ namespace cpp_yyjson_codegen
             void wrap(field& f)
             {
                 auto t = f.type;
-                if (t.k == tk::optional) t = t.args[0];
+                if (t.k == tk::optional) t = ctype(t.args[0]);
                 // an empty std::unique_ptr reads and writes null, so a variant does not need std::monostate for it
                 if (t.k == tk::variant && !t.args.empty() && t.args[0].k == tk::monostate)
                 {
                     auto v = t;
                     v.args.erase(v.args.begin());
+                    if (v.combined != combination::none)
+                    {
+                        v.sets.erase(v.sets.begin());
+                        v.metas.erase(v.metas.begin());
+                        if (v.args.size() == 1 && f.set.empty()) f.set = std::move(v.sets[0]);
+                    }
                     if (v.tagged)
                     {
                         const auto it =
@@ -3474,10 +4043,25 @@ namespace cpp_yyjson_codegen
                     }
                     case tk::variant:
                     {
-                        // the settings of a nullable variant are those of its value; the alternatives of the others
-                        // have none
+                        if (t.combined == combination::one_of)
+                        {
+                            // exactly one alternative reads the value
+                            auto yes = 0;
+                            auto unknown = false;
+                            for (std::size_t i = 0; i < t.args.size(); ++i)
+                            {
+                                const auto r = fits(j, t.args[i], at(t.sets, i));
+                                yes += r == fit::yes ? 1 : 0;
+                                unknown = unknown || r == fit::unknown;
+                            }
+                            if (yes > 1 || (yes == 0 && !unknown)) return fit::no;
+                            return yes == 1 && !unknown ? fit::yes : fit::unknown;
+                        }
+                        // the settings of a nullable variant are those of its value; the alternatives of yyjson::any_of
+                        // have their own, and those of the others none
                         auto r = fit::no;
-                        for (const auto& a : t.args) r = std::max(r, fits(j, a, is_nullable(t) ? s : settings()));
+                        for (std::size_t i = 0; i < t.args.size(); ++i)
+                            r = std::max(r, fits(j, t.args[i], is_nullable(t) ? s : at(t.sets, i)));
                         return r;
                     }
                     case tk::optional:
@@ -3518,6 +4102,22 @@ namespace cpp_yyjson_codegen
                                   (unknown == 1 ? "it" : "them"));
             }
 
+            // the examples of the alternatives of yyjson::any_of and yyjson::one_of, which have no place for a
+            // comment: those that the generator does not know to read are dropped
+            void check_alternative_examples(ctype& t, const std::string& loc)
+            {
+                for (std::size_t i = 0; i < t.args.size(); ++i)
+                {
+                    check_alternative_examples(t.args[i], loc);
+                    if (i >= t.metas.size()) continue;
+                    auto& m = t.metas[i];
+                    const auto n = m.examples.size();
+                    std::erase_if(m.examples, [&](const json& e) { return fits(e, t.args[i], t.sets[i]) != fit::yes; });
+                    if (m.examples.size() < n)
+                        warn(loc, "an example of an alternative may not read as its C++ type and is dropped");
+                }
+            }
+
             void check_examples()
             {
                 for (std::size_t i = 0; i < decls_.size(); ++i)
@@ -3543,7 +4143,7 @@ namespace cpp_yyjson_codegen
                 return s;
             }
 
-            std::vector<std::string> render_settings(const settings& s, const ctype& target)
+            std::vector<std::string> render_settings(const settings& s, const ctype& target) const
             {
                 auto out = std::vector<std::string>();
                 for (const auto& c : s.constraints) out.push_back(c.text);
@@ -3698,6 +4298,26 @@ namespace cpp_yyjson_codegen
                 name_members();
                 const auto structs = order_structs();
                 const auto aliases = order_aliases();
+                for (auto& d : decls_)
+                {
+                    if (d.kind == decl::kind_t::alias) check_alternative_examples(d.target, d.loc);
+                    for (auto& f : d.fields) check_alternative_examples(f.type, f.loc);
+                }
+                // the variables of the settings of yyjson::alt, named after the alias or the field that first has them;
+                // the types of the functions of yyjson::default_from spell them too
+                naming_ = !opts_.cpp26;
+                for (const auto i : aliases)
+                {
+                    ctx_ = decls_[i].name;
+                    (void)spell(decls_[i].target);
+                }
+                for (const auto i : structs)
+                    for (const auto& f : decls_[i].fields)
+                    {
+                        ctx_ = decls_[i].name + "_" + f.member;
+                        (void)spell(f.type);
+                    }
+                ctx_.clear();
                 convert_defaults(structs);
                 check_examples();
                 const auto q = opts_.ns.empty() ? std::string() : opts_.ns + "::";
@@ -3713,7 +4333,12 @@ namespace cpp_yyjson_codegen
                     if (d.kind != decl::kind_t::enumeration) continue;
                     render_comment(body, d.meta, "");
                     body += "enum class " + d.name + "\n{\n";
-                    for (const auto& [m, n] : d.enumerators) body += "    " + m + ",\n";
+                    for (const auto& [m, n] : d.enumerators)
+                    {
+                        if (const auto it = d.enumerator_meta.find(n); it != d.enumerator_meta.end())
+                            render_comment(body, it->second, "    ");
+                        body += "    " + m + ",\n";
+                    }
                     body += "};\n\n";
                     auto items = std::vector<std::string>();
                     if (!d.schema_name.empty())
@@ -3729,6 +4354,8 @@ namespace cpp_yyjson_codegen
                                  ">\n{\n    static constexpr int min = 0;\n    static constexpr int max = " +
                                  std::to_string(d.enumerators.size() - 1) + ";\n};\n";
                 }
+                // the variables of the settings of yyjson::alt go here, when every type is spelled
+                const auto vars_at = body.size();
 
                 for (const auto i : aliases)
                 {
@@ -3737,6 +4364,7 @@ namespace cpp_yyjson_codegen
                         for (const auto line : comment_lines(*d.meta.title))
                             body += line.empty() ? "///\n" : "/// " + std::string(line) + "\n";
                     render_comment(body, d.meta, "");
+                    if (shares_type(d.target)) body += "// alternatives share a type; use index()\n";
                     body += "using " + d.name + " = " + spell(d.target) + ";\n\n";
                 }
 
@@ -3757,6 +4385,7 @@ namespace cpp_yyjson_codegen
                     {
                         render_comment(body, f.meta, "    ");
                         if (!f.default_note.empty()) body += "    // default: " + f.default_note + "\n";
+                        if (shares_type(f.type)) body += "    // alternatives share a type; use index()\n";
                         const auto fi = field_items(f);
                         body += "    ";
                         if (opts_.cpp26 && !fi.empty()) body += attributes(fi) + " ";
@@ -3812,6 +4441,22 @@ namespace cpp_yyjson_codegen
                     after += "\n" + annotation_spec(key, items);
                 }
 
+                if (!var_defs_.empty())
+                {
+                    auto vars = std::string();
+                    for (const auto& [name, text] : var_defs_)
+                        vars += "inline constexpr auto " + name + " = " + text + ";\n";
+                    body.insert(vars_at, vars + "\n");
+                }
+                const auto alternatives = [&](const auto& self, const ctype& t) -> bool {
+                    return t.combined != combination::none ||
+                           std::ranges::any_of(t.args, [&](const ctype& a) { return self(self, a); });
+                };
+                const auto has_alternatives = std::ranges::any_of(decls_, [&](const decl& d) {
+                    return alternatives(alternatives, d.target) ||
+                           std::ranges::any_of(d.fields, [&](const field& f) { return alternatives(alternatives, f.type); });
+                });
+
                 auto out = std::string("// Generated by cpp-yyjson-codegen");
                 if (!opts_.source.empty()) out += " from " + opts_.source;
                 out += ". Do not edit.\n";
@@ -3864,6 +4509,17 @@ namespace cpp_yyjson_codegen
                     out += "//\n// A struct of more than " + std::to_string(max_reflected_fields) +
                            " fields is registered with VISITABLE_STRUCT: the reflection of C++20\n// takes no "
                            "more.\n";
+                if (has_alternatives)
+                {
+                    out +=
+                        "//\n// `yyjson::any_of` reads the first alternative that accepts the value, and "
+                        "`yyjson::one_of` the only\n// one; `yyjson::alt` gives an alternative its constraints and "
+                        "metadata.";
+                    if (!var_defs_.empty())
+                        out += " A setting with a string is a\n// constexpr variable, to which the argument of "
+                               "`yyjson::alt` points.";
+                    out += "\n";
+                }
                 if (uses_pattern_)
                     out +=
                         "//\n// `yyjson::pattern` needs a specialization of `yyjson::pattern_matcher<>` in the "

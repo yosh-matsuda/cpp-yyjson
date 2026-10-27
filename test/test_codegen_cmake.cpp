@@ -1,7 +1,11 @@
 // Types generated at build time by cpp_yyjson_generate() from codegen/order.schema.json, which
-// references codegen/customer.schema.json, and from codegen/defaults.schema.json.
+// references codegen/customer.schema.json, from codegen/defaults.schema.json and from
+// codegen/alternatives.schema.json.
 #include <gtest/gtest.h>
 
+#include <string>
+
+#include "alternatives.hpp"
 #include "defaults.hpp"
 #include "order.hpp"
 
@@ -74,4 +78,44 @@ TEST(CodegenCMake, DefaultFunctions)
     EXPECT_EQ(yyjson::write(settings), R"({"tree":{},"chain":{"next":{"name":"a"}}})");
     // a member constructed in C++ keeps std::nullopt, since only reading fills it
     EXPECT_FALSE(model::Chain().next.has_value());
+}
+
+TEST(CodegenCMake, Alternatives)
+{
+    // `anyOf` reads the first alternative that accepts the value; the alternative with a maximum comes first
+    EXPECT_EQ(yyjson::read<model::Choices>(R"({"size":5})", yyjson::strict).size.index(), 0U);
+    EXPECT_EQ(yyjson::read<model::Choices>(R"({"size":10})", yyjson::strict).size.index(), 1U);
+    EXPECT_EQ(std::get<2>(yyjson::read<model::Choices>(R"({"size":"m"})", yyjson::strict).size), "m");
+    EXPECT_THROW((void)yyjson::read<model::Choices>(R"({"size":""})"), yyjson::bad_cast);
+
+    // `oneOf` reads the only alternative that accepts the value
+    const auto id = yyjson::read<model::Choices>(R"({"size":1,"id":"a"})", yyjson::strict).id;
+    ASSERT_TRUE(id.has_value());
+    EXPECT_EQ(id->index(), 1U);
+    EXPECT_THROW((void)yyjson::read<model::Choices>(R"({"size":1,"id":-1})"), yyjson::bad_cast);
+    EXPECT_EQ(yyjson::read<model::Choices>(R"({"size":1,"band":1})").band->index(), 0U);
+    EXPECT_EQ(yyjson::read<model::Choices>(R"({"size":1,"band":7})").band->index(), 1U);
+    try
+    {
+        (void)yyjson::read<model::Choices>(R"({"size":1,"band":4})");
+        ADD_FAILURE() << "4 matches both alternatives of band";
+    }
+    catch (const yyjson::bad_cast& e)
+    {
+        EXPECT_NE(std::string(e.what()).find("matches the alternatives 0 and 1"), std::string::npos) << e.what();
+    }
+
+    // the default of a `oneOf` is the initializer of its alternative, and writing leaves it out
+    const auto c = yyjson::read<model::Choices>(R"({"size":1,"mode":"fast"})", yyjson::strict);
+    ASSERT_EQ(c.level.index(), 1U);
+    EXPECT_EQ(std::get<1>(c.level), 3);
+    ASSERT_TRUE(c.mode.has_value());
+    EXPECT_EQ(std::get<1>(*c.mode), model::ChoicesMode::fast);
+    EXPECT_EQ(yyjson::write(c), R"({"size":1,"mode":"fast"})");
+
+    const auto json = R"({"size":"m","id":0,"level":-1,"band":2,"mode":null})";
+    const auto other = yyjson::read<model::Choices>(json, yyjson::strict);
+    EXPECT_EQ(other.level.index(), 0U);
+    EXPECT_EQ(yyjson::write(other), json);
+    EXPECT_NO_THROW(yyjson::validate(other));
 }

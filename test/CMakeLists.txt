@@ -96,6 +96,8 @@ if(TARGET cpp_yyjson_codegen)
                       NAMESPACE model)
   cpp_yyjson_generate("${PROJECT_NAME}_test_codegen_cmake" codegen/defaults.schema.json
                       NAMESPACE model)
+  cpp_yyjson_generate("${PROJECT_NAME}_test_codegen_cmake" codegen/alternatives.schema.json
+                      NAMESPACE model)
 endif()
 
 # JSONTestSuite, the number tests and generated texts, from the datasets of the benchmark submodule

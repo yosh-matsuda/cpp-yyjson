@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Choices",
+  "type": "object",
+  "properties": {
+    "size": {
+      "anyOf": [
+        {"type": "integer"},
+        {"type": "integer", "maximum": 9, "description": "A digit"},
+        {"type": "string", "minLength": 1}
+      ]
+    },
+    "id": {
+      "oneOf": [
+        {"type": "integer", "minimum": 0, "title": "Number"},
+        {"type": "string", "description": "Name \"quoted\""}
+      ]
+    },
+    "level": {"oneOf": [{"type": "integer", "maximum": 0}, {"type": "integer", "minimum": 1}], "default": 3},
+    "band": {"oneOf": [{"type": "integer", "maximum": 5}, {"type": "integer", "minimum": 3}]},
+    "mode": {"oneOf": [{"const": "fast", "description": "Fast mode"}, {"const": "slow"}, {"type": "null"}]}
+  },
+  "required": ["size"]
+}

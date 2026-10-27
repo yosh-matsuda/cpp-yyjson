@@ -152,8 +152,8 @@ TEST(Codegen, Recursion)
     EXPECT_TRUE(has(r.code, "    std::optional<std::unique_ptr<Node>> next;\n"));
     EXPECT_TRUE(has(r.code, "    std::unique_ptr<Node> parent;\n"));
     // an empty std::unique_ptr is null, so the variant inside it has no std::monostate
-    EXPECT_TRUE(has(r.code, "    std::optional<std::unique_ptr<std::variant<std::string, Node>>> link;\n"));
-    EXPECT_TRUE(has(r.code, "    std::optional<std::unique_ptr<std::variant<Leaf, Node>>> shape;\n"));
+    EXPECT_TRUE(has(r.code, "    std::optional<std::unique_ptr<yyjson::any_of<std::string, Node>>> link;\n"));
+    EXPECT_TRUE(has(r.code, "    std::optional<std::unique_ptr<yyjson::one_of<Leaf, Node>>> shape;\n"));
     EXPECT_TRUE(has(r.code, "yyjson::field(\"parent\", yyjson::required)"));
     EXPECT_FALSE(has(r.code, "struct Root"));
 }
@@ -199,7 +199,7 @@ TEST(Codegen, RecursionThroughKeywords)
                             {});
     EXPECT_EQ(warnings(r), "#/properties/b/allOf/1: `if` is not supported and is ignored\n"
                            "#/properties/b/allOf/1: `then` is not supported and is ignored\n");
-    EXPECT_TRUE(has(r.code, "std::optional<std::vector<std::variant<RootItemsItemOption1, Root>>> items;\n"));
+    EXPECT_TRUE(has(r.code, "std::optional<std::vector<yyjson::any_of<RootItemsItemOption1, Root>>> items;\n"));
     EXPECT_TRUE(has(r.code, "    std::optional<T> a;\n"));
     EXPECT_TRUE(has(r.code, "    std::optional<T> b;\n"));
     EXPECT_TRUE(has(r.code, "    std::optional<std::unique_ptr<T>> self;\n"));
@@ -256,7 +256,7 @@ TEST(Codegen, Variants)
     EXPECT_TRUE(has(r.code, "using Shape = std::variant<Circle, Square>;\n"));
     EXPECT_TRUE(has(r.code, "    std::optional<std::variant<std::monostate, Circle, Square>> maybe;\n"));
     // alternatives in the order null, bool, integer, number, string
-    EXPECT_TRUE(has(r.code, "    std::optional<std::variant<bool, std::int64_t, std::string>> mixed;\n"));
+    EXPECT_TRUE(has(r.code, "    std::optional<yyjson::any_of<bool, std::int64_t, std::string>> mixed;\n"));
     EXPECT_TRUE(has(r.code, "    std::optional<std::variant<std::monostate, std::int64_t>> nullable;\n"));
     EXPECT_TRUE(has(r.code, "yyjson::field(\"nullable\", yyjson::minimum(0))"));
     EXPECT_TRUE(has(r.code, "    std::string kind = \"circle\";\n"));
@@ -267,6 +267,84 @@ TEST(Codegen, Variants)
     EXPECT_TRUE(has(r.code,
                     "yyjson::annotations<std::variant<std::monostate, Circle, Square>> = yyjson::annotate(\n"
                     "    yyjson::internal_tag(\"kind\", {\"circle\", \"square\"}));"));
+}
+
+TEST(Codegen, Alternatives)
+{
+    const auto schema = R"({
+        "title": "Root",
+        "type": "object",
+        "properties": {
+            "size": {"anyOf": [
+                {"type": "integer"},
+                {"type": "integer", "maximum": 9, "description": "A digit"},
+                {"type": "string", "minLength": 1}
+            ]},
+            "id": {"oneOf": [{"type": "integer", "minimum": 0}, {"type": "string", "format": "email"}]},
+            "level": {"oneOf": [{"type": "integer", "maximum": 0}, {"type": "integer", "minimum": 1}], "default": 3},
+            "wide": {"oneOf": [{"type": "number"}, {"type": "integer", "minimum": 0}]},
+            "order": {"anyOf": [{"type": "number"}, {"type": "integer"}, {"type": "integer", "maximum": 5}]}
+        },
+        "$defs": {"Root_id_1_format": {"type": "object"}}
+    })";
+    const auto r = generate(schema, {});
+    EXPECT_EQ(warnings(r),
+              "#/properties/wide: an alternative of `oneOf` reads only values that another alternative reads, so it "
+              "never reads a value alone; it is dropped\n");
+    // an alternative with settings or metadata is yyjson::alt; one contained in another comes first in any_of
+    EXPECT_TRUE(has(r.code,
+                    "    // alternatives share a type; use index()\n"
+                    "    std::optional<yyjson::any_of<yyjson::alt<std::int64_t, yyjson::maximum(9), "
+                    "&Root_size_0_description>, std::int64_t, yyjson::alt<std::string, yyjson::min_length(1)>>> "
+                    "size;\n"));
+    // a setting with a string is a variable; its name does not take the name of a type
+    EXPECT_TRUE(has(r.code, "inline constexpr auto Root_size_0_description = yyjson::description(\"A digit\");\n"));
+    EXPECT_TRUE(has(r.code, "inline constexpr auto Root_id_1_format_2 = yyjson::format(\"email\");\n"));
+    EXPECT_TRUE(has(r.code,
+                    "    std::optional<yyjson::one_of<yyjson::alt<std::int64_t, yyjson::minimum(0)>, "
+                    "yyjson::alt<std::string, &Root_id_1_format_2>>> id;\n"));
+    EXPECT_TRUE(has(r.code,
+                    "    yyjson::one_of<yyjson::alt<std::int64_t, yyjson::maximum(0)>, "
+                    "yyjson::alt<std::int64_t, yyjson::minimum(1)>> level{std::in_place_index<1>, 3};\n"));
+    // one_of drops an alternative contained in another one; any_of reads it first
+    EXPECT_TRUE(has(r.code, "    std::optional<double> wide;\n"));
+    EXPECT_TRUE(has(r.code,
+                    "    std::optional<yyjson::any_of<yyjson::alt<std::int64_t, yyjson::maximum(5)>, std::int64_t, "
+                    "double>> order;\n"));
+    EXPECT_TRUE(has(r.code, "// `yyjson::any_of` reads the first alternative that accepts the value"));
+    EXPECT_THROW((void)generate(schema, {.strict = true}), cpp_yyjson_codegen::error);
+
+    // C++26 takes the settings directly
+    const auto c = generate(schema, {.cpp26 = true});
+    EXPECT_FALSE(has(c.code, "inline constexpr auto Root_"));
+    EXPECT_TRUE(has(c.code, "yyjson::alt<std::string, yyjson::format(\"email\")>"));
+}
+
+TEST(Codegen, StringChoices)
+{
+    // subschemas of only `const` or `enum` strings are one enumeration, with the metadata of each as comments
+    const auto r = generate(R"({
+        "type": "object",
+        "properties": {
+            "mode": {"oneOf": [{"const": "fast", "description": "Fast mode"}, {"const": "slow", "title": "Slow"},
+                               {"enum": ["auto", "fast"]}]},
+            "opt": {"anyOf": [{"const": "on"}, {"type": "null"}]},
+            "typed": {"type": "string", "anyOf": [{"const": "p"}, {"const": "q"}]},
+            "color": {"anyOf": [{"$ref": "#/$defs/Color"}, {"const": "green"}]}
+        },
+        "$defs": {"Color": {"description": "A color", "oneOf": [{"const": "red"}, {"const": "blue"}]}}
+    })",
+                            {});
+    EXPECT_EQ(warnings(r),
+              "#/properties/mode: a string of `oneOf` is in more than one subschema, which never reads it alone; the "
+              "string is read as one enumerator\n");
+    EXPECT_TRUE(has(r.code, "enum class RootMode\n{\n    /// Fast mode\n    fast,\n    /// Slow\n    slow,\n    auto_,\n};"));
+    EXPECT_TRUE(has(r.code, "/// A color\nenum class Color\n{\n    red,\n    blue,\n};"));
+    EXPECT_TRUE(has(r.code, "    std::optional<RootMode> mode;\n"));
+    EXPECT_TRUE(has(r.code, "    std::optional<std::variant<std::monostate, RootOpt>> opt;\n"));
+    EXPECT_TRUE(has(r.code, "    std::optional<RootTyped> typed;\n"));
+    // a reference stays an alternative
+    EXPECT_TRUE(has(r.code, "yyjson::any_of<Color, yyjson::alt<std::string, &Root_color_1_const_>>"));
 }
 
 TEST(Codegen, VariantAlternativeMetadata)
@@ -525,8 +603,8 @@ TEST(Codegen, StructDefaults)
     EXPECT_TRUE(has(r.code, "    std::map<std::string, std::int64_t> counts{{\"a\", 1}};\n"));
     // a variant holds the first alternative that reads the default
     EXPECT_TRUE(
-        has(r.code, "    std::variant<RootShapeOption1, P> shape{std::in_place_index<0>, RootShapeOption1::none};\n"));
-    EXPECT_TRUE(has(r.code, "    std::variant<RootShape2Option1, P> shape2{std::in_place_index<1>, P{.x = 3.0}};\n"));
+        has(r.code, "    yyjson::any_of<RootShapeOption1, P> shape{std::in_place_index<0>, RootShapeOption1::none};\n"));
+    EXPECT_TRUE(has(r.code, "    yyjson::any_of<RootShape2Option1, P> shape2{std::in_place_index<1>, P{.x = 3.0}};\n"));
     EXPECT_TRUE(has(r.code, "    std::variant<A, B> tagged{std::in_place_index<1>, B{.kind = \"b\", .s = \"x\"}};\n"));
     EXPECT_TRUE(has(r.code, "    std::variant<std::monostate, P> maybe{std::in_place_index<1>, P{.x = 5.0}};\n"));
     // a DOM type reads the default
@@ -626,7 +704,7 @@ TEST(Codegen, RequiredGroups)
     EXPECT_TRUE(has(r.code, "    std::optional<yyjson::value> svg;\n"));
     EXPECT_TRUE(has(r.code, "yyjson::any_of_required({\"png\"}, {\"svg\"})"));
     // `not` that does not name the other groups stays a variant of structs
-    EXPECT_TRUE(has(r.code, "std::optional<std::variant<RootPartialOption1, RootPartialOption2>> partial;"));
+    EXPECT_TRUE(has(r.code, "std::optional<yyjson::one_of<RootPartialOption1, RootPartialOption2>> partial;"));
     EXPECT_EQ(warnings(r), "#/properties/partial/oneOf/0: `not` is not supported and is ignored\n");
 
     // subschemas that repeat properties of the struct with the same schemas, here of a recursive type
@@ -656,7 +734,7 @@ TEST(Codegen, RequiredGroups)
         "oneOf": [{"properties": {"a": {"type": "string", "maxLength": 3}}, "required": ["a"]}, {"required": ["b"]}]
     })",
                                    {});
-    EXPECT_TRUE(has(narrowed.code, "using Root = std::variant<RootOption1, RootOption2>;"));
+    EXPECT_TRUE(has(narrowed.code, "using Root = yyjson::one_of<RootOption1, RootOption2>;"));
 }
 
 TEST(Codegen, ExtraKeys)
