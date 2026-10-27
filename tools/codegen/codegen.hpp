@@ -3538,13 +3538,15 @@ namespace cpp_yyjson_codegen
                            std::ranges::any_of(req->items, [&](const auto& e) { return e.is_string() && e.text == k; });
                 };
                 const auto* first = norm[objs[0]]->find("properties");
+                // yyjson::internal_tag takes neither an empty key nor an empty name of an alternative
                 for (const auto& [key, unused] : first->members)
                 {
+                    if (key.empty()) continue;
                     auto ids = std::vector<std::string>();
                     for (const auto i : objs)
                     {
                         const auto* v = required(*norm[i], key) ? tag_value(*norm[i], key, locs[i]) : nullptr;
-                        if (v == nullptr || std::ranges::find(ids, v->text) != ids.end()) break;
+                        if (v == nullptr || v->text.empty() || std::ranges::find(ids, v->text) != ids.end()) break;
                         ids.push_back(v->text);
                     }
                     if (ids.size() != objs.size()) continue;

@@ -298,6 +298,17 @@ TEST(Codegen, NullableTaggedVariants)
                     "    yyjson::internal_tag(\"kind\", {\"x\", \"y\"}));"));
 }
 
+TEST(Codegen, EmptyTags)
+{
+    // yyjson::internal_tag takes neither an empty key nor an empty name of an alternative
+    const auto r = generate(R"({"oneOf": [
+        {"type": "object", "properties": {"": {"const": "p"}, "k": {"const": ""}}, "required": ["", "k"]},
+        {"type": "object", "properties": {"": {"const": "q"}, "k": {"const": "z"}}, "required": ["", "k"]}]})",
+                            {});
+    EXPECT_FALSE(has(r.code, "internal_tag"));
+    EXPECT_TRUE(has(r.code, "using Root = yyjson::one_of<RootOption1, RootOption2>;\n"));
+}
+
 TEST(Codegen, Alternatives)
 {
     const auto schema = R"({
