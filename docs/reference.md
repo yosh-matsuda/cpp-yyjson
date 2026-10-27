@@ -1925,10 +1925,43 @@ auto json = write(Shape{"circle", 1.5, {"a", "b"}});
 | `emplace(key, value, ts...)` | `emplace_back(value, ts...)` |
 | `emplace_object(key, [](object_emitter&) {...}, ts...)` | `emplace_back_object([](object_emitter&) {...})` |
 | `emplace_array(key, [](array_emitter&) {...}, ts...)` | `emplace_back_array([](array_emitter&) {...})` |
+| `emplace_members(value, ts...)` | |
 
 The value is anything that `yyjson::value` can be constructed from, so the casters apply to it recursively, and the function given to `emplace_object` or `emplace_array` fills the nested object or array. The emitter is used with [`yyjson::write`](#writing-a-c-object-to-a-json-string-directly), where it writes the members straight to the string, and with `yyjson::value`, `yyjson::object` and the other ways to build a document, where it adds them to the document. `copy_string` in `ts...` makes the document copy the strings it is given; `yyjson::write` copies them anyway.
 
-A member is written when it is emplaced, so an emitter cannot remove, replace or read what it wrote, and it does not check for a duplicate key; decide what to write before emplacing it. For the same reason, the function given to `emplace_object` or `emplace_array` appends through the emitter that it is given, not through the one that it was given to: `yyjson::write` throws `std::logic_error` when the outer emitter is used before the function returns. A value whose JSON kind depends on the value, such as a string or an object, is written by a translator that returns a `std::variant` instead.
+`emplace_members` appends the members of the JSON object that its value is written as, instead of one member whose value it is. The value is a struct that the [compile-time reflection](#automatic-casting-with-compile-time-reflection) or the `VISITABLE_STRUCT` macro writes, a type whose caster writes through `object_emitter`, or a range of key-value pairs such as `std::map`. The fields of a struct are written as in any other object of it: a field that holds no value is [omitted](#omitting-a-field-with-no-value), and `yyjson::field` renames, skips and tags them. Any other type, such as a number, an array, a type whose caster takes `yyjson::writer::object_ref&` or a translator, does not compile:
+
+```cpp
+struct Params
+{
+    int timeout = 1000;
+    std::optional<int> num_gpus;
+};
+
+struct Request
+{
+    Params params;
+    std::vector<std::vector<double>> terms;
+};
+
+template <>
+struct yyjson::caster<Request>
+{
+    template <typename... Ts>
+    static void to_json(yyjson::object_emitter& out, const Request& r, Ts... ts)
+    {
+        out.emplace_members(r.params, ts...);
+        out.emplace_array("sparse_objective", [&](yyjson::array_emitter& a) {
+            for (const auto& t : r.terms) a.emplace_back(t, ts...);
+        });
+    }
+};
+
+auto json = write(Request{{.timeout = 500}, {{1.5, 0, 1}, {2.0, 1}}});
+// -> {"timeout":500,"sparse_objective":[[1.5,0.0,1.0],[2.0,1.0]]}
+```
+
+A member is written when it is emplaced, so an emitter cannot remove, replace or read what it wrote, and it does not check for a duplicate key, also between the members that `emplace_members` appends and the others; decide what to write before emplacing it. For the same reason, the function given to `emplace_object` or `emplace_array` appends through the emitter that it is given, not through the one that it was given to: `yyjson::write` throws `std::logic_error` when the outer emitter is used before the function returns. A value whose JSON kind depends on the value, such as a string or an object, is written by a translator that returns a `std::variant` instead.
 
 An emitter only writes. A caster with an emitter reads the type with a translator `from_json`, or with no `from_json` as the compile-time reflection reads it.
 
