@@ -826,6 +826,194 @@ TEST(Writer, Emitter)
     expect_direct_write(EmittedShape{"\xff", {}, {"\xc3"}, {{"\x80", 1}}});
 }
 
+// The members of other values appended to an object by `object_emitter::emplace_members`.
+struct MemberMaybe
+{
+    std::optional<int> v;
+};
+template <>
+struct yyjson::caster<MemberMaybe>
+{
+    static bool should_omit(const MemberMaybe& m) { return !m.v; }
+    static int to_json(const MemberMaybe& m) { return *m.v; }
+};
+struct MemberParams
+{
+    int timeout = 1000;
+    std::optional<int> num_gpus;
+    MemberMaybe threads;
+    int internal = 0;
+    std::string name;
+};
+template <>
+inline constexpr auto yyjson::annotations<MemberParams> =
+    yyjson::annotate(yyjson::field("num_gpus", yyjson::rename("gpus")));
+VISITABLE_STRUCT(MemberParams, timeout, num_gpus, threads, name);
+struct MemberCircle
+{
+    double r;
+};
+struct MemberRect
+{
+    int w;
+    int h;
+};
+struct MemberSolver
+{
+    std::string solver;
+    std::optional<int> version;
+    std::variant<MemberCircle, MemberRect> shape;
+    int internal = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<MemberSolver> =
+    yyjson::annotate(yyjson::field("shape", yyjson::adjacent_tag("kind", {"circle", "rect"})),
+                     yyjson::field("internal", yyjson::skip));
+struct MemberRequest
+{
+    MemberParams params;
+    MemberSolver solver;
+    EmittedShape shape;
+    std::map<std::string, int> extra;
+    std::vector<std::vector<double>> terms;
+};
+template <>
+struct yyjson::caster<MemberRequest>
+{
+    template <typename... Ts>
+    static void to_json(yyjson::object_emitter& out, const MemberRequest& r, Ts... ts)
+    {
+        out.emplace_members(r.params, ts...);
+        out.emplace_array("terms", [&](yyjson::array_emitter& a) {
+            for (const auto& t : r.terms) a.emplace_back(t);
+        });
+        out.emplace_object("meta", [&](yyjson::object_emitter& m) {
+            m.emplace_members(r.solver, ts...);
+            m.emplace_members(r.extra, ts...);
+        });
+        out.emplace_members(r.shape, ts...);
+        out.emplace("last", r.terms.size());
+    }
+};
+// `emplace_members` on an emitter while a nested object is open.
+struct MisusedMembers
+{
+    MemberParams params;
+};
+template <>
+struct yyjson::caster<MisusedMembers>
+{
+    static void to_json(yyjson::object_emitter& out, const MisusedMembers& m)
+    {
+        out.emplace_object("o", [&](yyjson::object_emitter&) { out.emplace_members(m.params); });
+    }
+};
+enum class MemberColor
+{
+    red,
+    blue
+};
+struct MemberOnlyFirst
+{
+    MemberCircle circle;
+};
+template <>
+struct yyjson::caster<MemberOnlyFirst>
+{
+    static void to_json(yyjson::object_emitter& out, const MemberOnlyFirst& m) { out.emplace_members(m.circle); }
+};
+
+struct MemberKeys
+{
+    std::map<MemberColor, int> colors;
+    std::vector<std::pair<std::string, double>> pairs;
+    std::map<std::string, yyjson::value> values;
+};
+template <>
+struct yyjson::caster<MemberKeys>
+{
+    static void to_json(yyjson::object_emitter& out, const MemberKeys& k)
+    {
+        out.emplace("x", 0);
+        out.emplace_members(k.colors);
+        out.emplace_members(k.pairs);
+        out.emplace_members(k.values);
+    }
+};
+
+// types written as something else than a JSON object, or only through a document
+static_assert(yyjson::writer::detail::members_emplaceable<MemberParams>);
+static_assert(yyjson::writer::detail::members_emplaceable<const MemberSolver&>);
+static_assert(yyjson::writer::detail::members_emplaceable<EmittedShape>);
+static_assert(yyjson::writer::detail::members_emplaceable<std::map<std::string, int>>);
+static_assert(yyjson::writer::detail::members_emplaceable<std::vector<std::pair<std::string, int>>>);
+static_assert(yyjson::writer::detail::members_emplaceable<std::unordered_map<MemberColor, int>>);
+static_assert(!yyjson::writer::detail::members_emplaceable<int>);
+static_assert(!yyjson::writer::detail::members_emplaceable<std::string>);
+static_assert(!yyjson::writer::detail::members_emplaceable<std::vector<int>>);
+static_assert(!yyjson::writer::detail::members_emplaceable<std::tuple<int, double>>);
+static_assert(!yyjson::writer::detail::members_emplaceable<std::optional<MemberParams>>);
+static_assert(!yyjson::writer::detail::members_emplaceable<EmittedPair>);
+static_assert(!yyjson::writer::detail::members_emplaceable<AnyRefCaster>);
+static_assert(!yyjson::writer::detail::members_emplaceable<yyjson::object>);
+static_assert(!yyjson::writer::detail::members_emplaceable<std::variant<MemberCircle, MemberRect>>);
+
+TEST(Writer, EmitterMembers)
+{
+    const auto shape = EmittedShape{"sq", std::nullopt, {"t"}, {{"x", 1}}};
+    const auto request =
+        MemberRequest{{500, std::nullopt, {}, 7, "n"},  {"cbc", 2, MemberRect{1, 2}, 9}, shape, {{"a", 1}, {"b", 2}},
+                      {{1.5, 2.5}, {0.5}}};
+    const auto json = std::string(
+        R"({"timeout":500,"name":"n","terms":[[1.5,2.5],[0.5]],)"
+        R"("meta":{"solver":"cbc","version":2,"kind":"rect","shape":{"w":1,"h":2},"a":1,"b":2},)"
+        R"("kind":"sq","tags":["t"],"counts":{"x":1},"a/b\"c)" "\u00e9" R"(":"v/)" "\u00e9" R"(",)"
+        R"("runtime sq":1,"nested":[{"k":"sq"},[null,["t"]],{},[]],"last":2})");
+    EXPECT_EQ(std::string(yyjson::write(request)), json);
+    EXPECT_EQ(std::string(yyjson::value(request).write()), json);
+    EXPECT_EQ(std::string(yyjson::object(request).write()), json);
+    expect_direct_write(request);
+
+    // omitted and renamed fields, members that the emitter and the document both take in any order
+    const auto full = MemberRequest{{1, 4, {8}, 7, ""}, {"s", std::nullopt, MemberCircle{0.5}}, {}, {}, {}};
+    const auto full_json = std::string(yyjson::write(full));
+    EXPECT_EQ(full_json.substr(0, full_json.find(R"(,"meta")")),
+              R"({"timeout":1,"gpus":4,"threads":8,"name":"","terms":[])");
+    EXPECT_NE(full_json.find(R"("meta":{"solver":"s","kind":"circle","shape":{"r":0.5}})"), std::string::npos);
+    expect_direct_write(full);
+    expect_direct_write(std::vector<MemberRequest>{request, full, {}});
+    expect_direct_write(std::map<std::string, MemberRequest>{{"x", request}, {"y", {}}});
+
+    // the first members of an object, and an object with no members
+    EXPECT_EQ(std::string(yyjson::write(MemberOnlyFirst{{1.5}})), R"({"r":1.5})");
+    EXPECT_EQ(std::string(yyjson::value(MemberOnlyFirst{{1.5}}).write()), R"({"r":1.5})");
+    auto empty = MemberRequest{};
+    empty.params.timeout = 3;
+    expect_direct_write(empty);
+
+    // `copy_string` reaches the members, so that the document outlives the strings it was given
+    auto copied = yyjson::value(
+        MemberRequest{{1, {}, {}, 0, std::string(40, 'n')}, {std::string(40, 's'), {}, {}}, {}, {{std::string(40, 'k'), 1}}, {}},
+        yyjson::copy_string);
+    const auto copied_json = std::string(copied.write());
+    EXPECT_NE(copied_json.find(R"("name":")" + std::string(40, 'n') + '"'), std::string::npos);
+    EXPECT_NE(copied_json.find(R"("solver":")" + std::string(40, 's') + '"'), std::string::npos);
+    EXPECT_NE(copied_json.find('"' + std::string(40, 'k') + R"(":1)"), std::string::npos);
+
+    // keys of enums, pairs that a range holds, and values of a document
+    const auto keys = MemberKeys{{{MemberColor::blue, 2}}, {{"p", 0.5}, {"p", 1.5}}, {{"k", yyjson::value(1)}}};
+    const auto keys_json = std::string(R"({"x":0,"blue":2,"p":0.5,"p":1.5,"k":1})");
+    EXPECT_EQ(std::string(yyjson::write(keys)), keys_json);
+    EXPECT_EQ(std::string(yyjson::value(keys).write()), keys_json);
+    expect_direct_write(keys);
+
+    // a nested object open while the outer emitter writes
+    EXPECT_EQ(std::string(yyjson::value(MisusedMembers{}).write()), R"({"o":{},"timeout":1000,"name":""})");
+#if YYJSON_VERSION_HEX >= 0x000C00
+    EXPECT_THROW((void)yyjson::write(MisusedMembers{}), std::logic_error);
+#endif
+}
+
 // The fields of a struct with a translator `to_json` are not checked as the default caster would write them.  The
 // check of `UncheckedTree` would depend on itself.
 struct UncheckedTree : std::map<std::string, UncheckedTree>
@@ -846,6 +1034,7 @@ struct yyjson::caster<TranslatedTree>
     }
 };
 static_assert(yyjson::writable<TranslatedTree>);
+static_assert(!yyjson::writer::detail::members_emplaceable<TranslatedTree>);
 
 TEST(Writer, TranslatorOfUncheckedFields)
 {

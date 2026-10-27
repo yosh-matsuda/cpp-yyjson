@@ -3493,6 +3493,19 @@ namespace yyjson
                 reader::detail::base_of_value_ref<std::tuple_element_t<1, std::ranges::range_value_t<Range>>> &&
                 (!reader::detail::base_of_value_ref<Range>);
 
+            // The types whose members `object_emitter::emplace_members` appends: those written as a JSON object
+            // without a document, which are structs written by the default caster, types whose caster writes
+            // through `object_emitter`, and ranges of key-value pairs.
+            template <typename T>
+            concept members_by_default_caster =
+                to_json_obj_def<T> && (!to_json_usr<T>) && (!to_json_inp_usr_defined<T>);
+            template <typename T>
+            concept members_emplaceable =
+                to_json_obj_emit<T> || members_by_default_caster<T> ||
+                ((!create_primitive_callable<T>) && create_object_callable<T> &&
+                 (create_value_key_value_range<T> || mutable_value_key_value_range<T> ||
+                  reader_value_ref_key_value_range<T>));
+
             struct json_value_access;
 
             struct mutable_document_ptrs
@@ -9456,6 +9469,12 @@ namespace yyjson
             {
                 return v.doc_.ptrs->self;
             }
+            // The document that builds the values added to `v`.
+            template <typename DocType>
+            static mutable_document& builder(const mutable_object_base<DocType&>& v) noexcept
+            {
+                return v.doc_;
+            }
         };
     }  // namespace writer::detail
 
@@ -11569,6 +11588,25 @@ namespace yyjson
                 }
                 close('}', first);
             }
+            // The loop of `write_object`, which keeps its own copy: calling this from it changes what LTO
+            // inlines elsewhere in a program.
+            template <std::ranges::input_range Range>
+            void write_key_value_members(bool& first, Range&& range)
+            {
+                for (auto&& v : std::forward<Range>(range))
+                {
+                    next_element(first);
+                    auto&& key = forward_key<Range&&>(std::get<0>(std::forward<decltype(v)>(v)));
+                    if constexpr (yyjson::detail::enum_key<std::remove_cvref_t<decltype(key)>>)
+                        write_enum_key(key);
+                    else if constexpr (create_value_key_value_range<Range>)
+                        write_value(std::forward<decltype(key)>(key));
+                    else
+                        write_primitive(std::forward<decltype(key)>(key));
+                    end_key();
+                    write_value(forward_element<Range&&>(std::get<1>(std::forward<decltype(v)>(v))));
+                }
+            }
 
             // A key that `mutable_document::set_key` stores, written without the check for escapes if no name
             // needs one.
@@ -11670,6 +11708,20 @@ namespace yyjson
                 if constexpr (yyjson::detail::has_adjacent_fields<U>) yyjson::detail::check_adjacent_tags(t);
                 (write_field<U, Is, reflected_key<U, Is>>(first, yyjson::detail::forward_field<Is>(std::forward<T>(t))),
                  ...);
+            }
+            // The members of the object that T is written as, for `object_emitter::emplace_members`, after those
+            // already written to the object.
+            template <typename T>
+            void write_members(bool& first, T&& t)
+            {
+                using U = std::remove_cvref_t<T>;
+                if constexpr (members_by_default_caster<T> && visitable<U>)
+                    write_visitable_fields(first, std::forward<T>(t),
+                                           std::make_index_sequence<visit_struct<U>::field_count>{});
+                else if constexpr (members_by_default_caster<T>)
+                    write_reflected_fields(first, std::forward<T>(t), yyjson::detail::reflected_fields<U>{});
+                else
+                    write_key_value_members(first, std::forward<T>(t));
             }
 
             // Whether the writer checks a key of type K for `next_plain_key`.
@@ -17407,6 +17459,31 @@ namespace yyjson
         {
             document_object().emplace_no_iter(std::forward<Key>(key), std::forward<T>(t), ts...);
         }
+        // Builds T in the document, as `emplace` does, and moves its members to the end of the object.
+        template <typename T, typename... Ts>
+        void emplace_members_in_document(T&& t, Ts... ts)
+        {
+            using access = writer::detail::json_value_access;
+            auto& obj = document_object();
+            auto* const dst = const_cast<yyjson_mut_val*>(access::get(obj));
+            auto* const src = access::builder(obj).create_value(std::forward<T>(t), ts...);
+            if (src == nullptr) [[unlikely]]
+                throw std::bad_alloc();
+            const auto n = yyjson_mut_obj_size(src);
+            if (n == 0) return;
+            const auto m = yyjson_mut_obj_size(dst);
+            // the members of an object are a ring, whose last value is followed by the first key
+            auto* const last = static_cast<yyjson_mut_val*>(src->uni.ptr);
+            if (m != 0)
+            {
+                auto* const dst_last = static_cast<yyjson_mut_val*>(dst->uni.ptr);
+                auto* const first = last->next->next;
+                last->next->next = dst_last->next->next;
+                dst_last->next->next = first;
+            }
+            dst->tag = (dst->tag & YYJSON_TAG_MASK) | (static_cast<std::uint64_t>(m + n) << YYJSON_TAG_BIT);
+            dst->uni.ptr = last;
+        }
 
     public:
         object_emitter(const object_emitter&) = delete;
@@ -17427,6 +17504,34 @@ namespace yyjson
             }
 #endif
             emplace_in_document(std::forward<Key>(key), std::forward<T>(t), ts...);
+        }
+        // Appends the members of the JSON object that `t` is written as, `yyjson::object(t, ts...)`, instead of
+        // one member whose value it is: the fields of a struct, omitted and renamed as in any other object, the
+        // members that the caster of T appends through `object_emitter`, or the elements of a map.
+        template <typename T, detail::copy_string_args... Ts>
+        requires writer::detail::members_emplaceable<T>
+        void emplace_members(T&& t, Ts... ts)
+        {
+            if constexpr (writer::detail::to_json_obj_emit<T>)
+            {
+#if YYJSON_VERSION_HEX >= 0x000C00
+                if (direct_ == nullptr)
+#endif
+                    // rejects the use of this emitter while a function given to it writes
+                    static_cast<void>(document_object());
+                writer::detail::to_json_wrapper(*this, std::forward<T>(t), ts...);
+            }
+            else
+            {
+#if YYJSON_VERSION_HEX >= 0x000C00
+                if (direct_ != nullptr)
+                {
+                    direct_->write_members(first_, std::forward<T>(t));
+                    return;
+                }
+#endif
+                emplace_members_in_document(std::forward<T>(t), ts...);
+            }
         }
         // Appends the member of `key` and an object, whose members `func(object_emitter&)` appends.
         template <typename Key, std::invocable<object_emitter&> Func, detail::copy_string_args... Ts>
