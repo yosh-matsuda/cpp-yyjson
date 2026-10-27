@@ -3039,8 +3039,10 @@ namespace yyjson
             template <typename T>
             concept from_json_def_arr_defined = default_caster_from_json<T, const_array_ref>;
 
+            // Derived from it, not only convertible to it: `field_reflection` counts the fields of a struct with a
+            // type that converts to any reference, which is no value.
             template <class Derived>
-            concept base_of_value_ref = requires(Derived d) { [](const abstract_value_ref&) {}(d); };
+            concept base_of_value_ref = std::derived_from<std::remove_cvref_t<Derived>, abstract_value_ref>;
         }  // namespace detail
     }  // namespace reader
 

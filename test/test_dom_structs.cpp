@@ -103,6 +103,25 @@ TEST(Reader, OptionalFieldNull)
     EXPECT_EQ(merged, NullFields{});
 }
 
+struct OptionalDomFields
+{
+    int id = 0;
+    std::optional<yyjson::object> object;
+    std::optional<yyjson::array> array;
+    std::optional<yyjson::value> value;
+};
+
+TEST(Reader, OptionalDomFields)
+{
+    using namespace yyjson;
+
+    // a std::optional of a DOM value is a field, which clang rejected while the fields of the struct were counted
+    const auto* const json = R"({"id":1,"object":{"a":1},"array":[1],"value":"x"})";
+    EXPECT_EQ(write(read<OptionalDomFields>(json)), json);
+    EXPECT_EQ(write(read(json).cast<OptionalDomFields>()), json);
+    EXPECT_EQ(write(read<OptionalDomFields>(R"({"id":2})")), R"({"id":2})");
+}
+
 TEST(Reader, PairRangeNeedsKeyToReadObject)
 {
     using namespace yyjson;
