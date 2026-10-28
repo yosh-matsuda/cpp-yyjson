@@ -123,6 +123,7 @@ cpp-yyjson-codegen <schema.json> [options]
 | `--no-pattern` | Leaves out `pattern`, and the patterns of `patternProperties`, instead of writing `yyjson::pattern`. |
 | `--optional-defaults` | Makes a field with a default `std::optional<T>`, empty for a missing key, instead of a `T` that holds the default. See [Defaults](#defaults). |
 | `--keep-unknown-keys` | Gives every struct that accepts other keys a field of [`yyjson::extra_keys`](conversions.md#keys-that-name-no-field), which keeps them and writes them back. See [Keys that name no property](#keys-that-name-no-property). |
+| `--max-alternatives <n>` | Makes a variant of more than `<n>` alternatives `yyjson::value`, with a warning. The default, `0`, sets no limit. See [Large variants](#large-variants). |
 | `--strict` | Treats the warnings as errors. |
 
 The warnings go to the standard error as `<schema>: <location>: warning: <message>`, where the location is a JSON Pointer into the schema, such as `#/$defs/Item/properties/name`. The program exits with 0 when it wrote the header, 1 on an error of the schema (or a warning under `--strict`), and 2 on a wrong argument or a file that cannot be read or written.
@@ -143,7 +144,7 @@ cpp_yyjson_generate(my_app schemas/order.schema.json NAMESPACE shop)
 ```text
 cpp_yyjson_generate(<target> <schema>
                     [OUTPUT <header>] [PUBLIC | PRIVATE | INTERFACE]
-                    [NAMESPACE <ns>] [ROOT_NAME <name>]
+                    [NAMESPACE <ns>] [ROOT_NAME <name>] [MAX_ALTERNATIVES <n>]
                     [CPP26] [NO_PATTERN] [OPTIONAL_DEFAULTS] [KEEP_UNKNOWN_KEYS] [STRICT]
                     [DEPENDS <file>...])
 ```
@@ -255,6 +256,12 @@ The generator compares the alternatives as the library does, by their kinds, bou
 `anyOf` or `oneOf` of objects that share a required property with a different `const` string in each becomes a `std::variant` with [`yyjson::internal_tag`](conversions.md#internal-tag), which picks the alternative by the key instead of trying each. When the type of the schema also allows `null`, as `"type": ["object", "null"]` does, `null` is an alternative of its own, `std::monostate`, if the subschemas let it through: for `anyOf` one of them, for `oneOf` exactly one.
 
 A type array becomes a `std::variant`: its alternatives have different kinds, so the order does not matter. An `integer` beside a `number` is the `number`.
+
+#### Large variants
+
+The compiler takes time and memory for a `std::variant` that grow faster than the square of the number of its alternatives: libstdc++ instantiates its copy, move and assignment once per pair of alternatives, and each of these names spells the remaining alternatives again. A schema that lists every kind of a plugin in one `oneOf` gives a variant of hundreds of structs. In the schema of [Kestra](https://kestra.io/) 0.18, the tasks are a `oneOf` of 447 objects, used at 32 places; a translation unit that reads the root type ran out of 60 GB with Clang 22 at `-O0`, and took 58 minutes and 53 GB with GCC 15.
+
+`--max-alternatives <n>` makes a variant of more than `<n>` alternatives, counting `std::monostate` for `null`, a `yyjson::value`, with a warning. The structs of its alternatives are still generated, so the program reads one of them from the value with `cast<T>()` once it knows which; the value itself reads any JSON without the checks of the alternatives, as the [rule](#what-the-generated-code-guarantees) allows. With `--max-alternatives 64`, the translation unit of Kestra above takes 23 seconds and 2.1 GB with Clang 22 at `-O0`, and 25 seconds and 3.2 GB with GCC 15.
 
 ### Recursion and order
 
@@ -388,6 +395,7 @@ A warning names the location in the schema and what the generated code does inst
 | a keyword that is not supported | `if`, `then`, `else`, `not`, `dependentSchemas`, `unevaluatedProperties`, `unevaluatedItems` | reads more than the schema accepts |
 | a form that is not supported | `contains` of a type other than the element type, positions of `prefixItems` of different types, `minProperties` of a struct | reads more than the schema accepts |
 | a type inferred from keywords | "the schema has no `type`; it is read as string from its keywords" | reads only that type |
+| a variant of more alternatives than `--max-alternatives` | "a variant of 447 alternatives is more than 64 (--max-alternatives) ..." | reads any JSON value there |
 | a reference that cannot be followed | a missing file, a URI elsewhere | reads any JSON value there |
 | a schema that refers to itself with no array or object between | `{"anyOf": [{"$ref": "#/$defs/D"}, {"type": "string"}]}` | reads any JSON value there |
 | a default or an example that does not convert | "the default ... is not converted to the C++ type; the field is std::optional" | keeps it in a comment |

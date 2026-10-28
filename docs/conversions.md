@@ -838,6 +838,10 @@ auto typed = yyjson::read<TypedEvent>(R"({"kind":"rect","data":{"w":1,"h":2}})")
 
 A variant that is not tagged is replaced as a whole, as any other value is.
 
+### Variants of many alternatives
+
+The compiler takes time and memory for a `std::variant` that grow faster than the square of the number of its alternatives, whether it is tagged or not: the standard library instantiates its copy and move once per pair of alternatives. A variant of a few dozen alternatives compiles as any other type. One of hundreds needs tens of gigabytes: with libstdc++, a translation unit that copies, moves, assigns and visits a vector of a variant of 447 structs takes 59 GB with Clang 22 at `-O0`, and 26 GB at `-O2`, without cpp-yyjson. For such a set of kinds, read the member as `yyjson::value` and `cast<T>()` it to the struct that its tag names, or group the alternatives into nested variants. The [code generator](codegen.md#large-variants) does the former with `--max-alternatives`.
+
 ## Alternatives with constraints
 
 A `std::variant` tells its alternatives apart only by their types and their order. `yyjson::any_of<...>` and `yyjson::one_of<...>` hold one of their alternatives as a `std::variant` does, and give each alternative the settings that the value of a field takes, as the keywords `anyOf` and `oneOf` of JSON Schema do. An alternative is `yyjson::alt<T, settings...>`, a value of `T` with the settings, or a type `T` without settings:
