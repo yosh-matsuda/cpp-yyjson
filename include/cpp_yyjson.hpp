@@ -2081,43 +2081,65 @@ namespace yyjson
         }
 
         // Whether the walk from the node `from` reaches `target` along one edge or more, or a marked node along none
-        // or more.
+        // or more.  A constant expression may take only so many steps, about a million under clang, which counts
+        // every statement and every turn of a loop, including those of the standard library with its checks: the
+        // walk keeps its table and its stack in plain arrays and looks for a slot in place, in about twelve steps
+        // an edge, where a `std::vector` took more than a hundred.
         constexpr bool graph_search(graph_node_fn from, graph_node_fn target)
         {
-            // open addressing, at most half full
-            auto visited = std::vector<graph_edge>(16);
-            auto count = std::size_t{0};
-            const auto insert = [&](const graph_edge& e) {
-                const auto mask = visited.size() - 1;
-                for (auto k = static_cast<std::size_t>(e.hash) & mask;; k = (k + 1) & mask)
-                {
-                    if (visited[k].node == e.node) return false;
-                    if (visited[k].node == nullptr)
-                    {
-                        visited[k] = e;
-                        ++count;
-                        return true;
-                    }
-                }
-            };
-            auto stack = std::vector<graph_node_fn>{from};
-            while (!stack.empty())
+            // An open addressing table of the visited nodes, at most half full, and a stack of the nodes to visit,
+            // which holds each of them once and `from`, and so never more than half the slots and one.
+            struct walk
             {
-                const auto node = stack.back()();
-                stack.pop_back();
-                if (node.marked) return true;
-                for (std::size_t i = 0; i < node.size; ++i)
+                std::size_t mask = 15;
+                graph_edge* slots = new graph_edge[16]{};
+                graph_node_fn* stack = new graph_node_fn[9]{};
+                constexpr walk() = default;
+                walk(const walk&) = delete;
+                walk& operator=(const walk&) = delete;
+                constexpr ~walk()
                 {
-                    const auto& next = node.edges[i];
-                    if (next.node == target) return true;
-                    if (2 * (count + 1) > visited.size())
+                    delete[] slots;
+                    delete[] stack;
+                }
+                constexpr void grow(std::size_t top)
+                {
+                    const auto old_slots = slots;
+                    const auto old_stack = stack;
+                    const auto old_end = old_slots + mask + 1;
+                    mask = 2 * mask + 1;
+                    slots = new graph_edge[mask + 1]{};
+                    stack = new graph_node_fn[(mask + 1) / 2 + 1]{};
+                    for (auto e = old_slots; e != old_end; ++e)
                     {
-                        auto old = std::exchange(visited, std::vector<graph_edge>(2 * visited.size()));
-                        count = 0;
-                        for (const auto& e : old)
-                            if (e.node != nullptr) insert(e);
+                        if (e->node == nullptr) continue;
+                        auto k = static_cast<std::size_t>(e->hash) & mask;
+                        while (slots[k].node != nullptr) k = (k + 1) & mask;
+                        slots[k] = *e;
                     }
-                    if (insert(next)) stack.push_back(next.node);
+                    for (auto i = std::size_t{0}; i != top; ++i) stack[i] = old_stack[i];
+                    delete[] old_slots;
+                    delete[] old_stack;
+                }
+            } w;
+            auto count = std::size_t{0};
+            auto top = std::size_t{1};
+            w.stack[0] = from;
+            while (top != 0)
+            {
+                const auto node = w.stack[--top]();
+                if (node.marked) return true;
+                for (auto e = node.edges, end = node.edges + node.size; e != end; ++e)
+                {
+                    if (e->node == target) return true;
+                    auto k = static_cast<std::size_t>(e->hash) & w.mask;
+                    while (w.slots[k].node != nullptr && w.slots[k].node != e->node) k = (k + 1) & w.mask;
+                    if (w.slots[k].node == nullptr)
+                    {
+                        w.slots[k] = *e;
+                        w.stack[top++] = e->node;
+                        if (2 * ++count > w.mask) w.grow(top);
+                    }
                 }
             }
             return false;
