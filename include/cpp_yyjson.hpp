@@ -1090,6 +1090,29 @@ namespace yyjson
         template <typename T>
         using annotation_values_of = std::remove_cvref_t<decltype(annotations<T>.values)>;
 
+        // Whether the names at the indices that `use` selects differ from each other.  A constant expression may
+        // take only so many steps, and comparing every pair of a few hundred names that share a long prefix, one
+        // character at a time, took millions: a table of their hashes takes steps about as many as their characters.
+        template <std::size_t N, typename Use>
+        constexpr bool distinct_names(const std::array<std::string_view, N>& names, Use use)
+        {
+            constexpr auto size = std::bit_ceil(2 * N + 1);
+            std::uint64_t hashes[size]{};
+            std::size_t slots[size]{};  // the index of a name and one, or zero
+            for (std::size_t i = 0; i < N; ++i)
+            {
+                if (!use(i)) continue;
+                auto hash = std::uint64_t{14695981039346656037ULL};
+                for (const char c : names[i]) hash = (hash ^ static_cast<unsigned char>(c)) * 1099511628211ULL;
+                auto k = static_cast<std::size_t>(hash) & (size - 1);
+                for (; slots[k] != 0; k = (k + 1) & (size - 1))
+                    if (hashes[k] == hash && names[slots[k] - 1] == names[i]) return false;
+                hashes[k] = hash;
+                slots[k] = i + 1;
+            }
+            return true;
+        }
+
         enum class field_key_error
         {
             none,
@@ -1179,14 +1202,8 @@ namespace yyjson
                 auto result = table;
                 if (result.error != field_key_error::none || std::ranges::find(renamed, true) == renamed.end())
                     return result;
-                for (std::size_t i = 0; i < N; ++i)
-                {
-                    for (std::size_t j = i + 1; j < N; ++j)
-                    {
-                        if (!result.skipped[i] && !result.skipped[j] && result.keys[i] == result.keys[j])
-                            result.error = field_key_error::duplicate_key;
-                    }
-                }
+                if (!distinct_names(result.keys, [&](std::size_t i) { return !result.skipped[i]; }))
+                    result.error = field_key_error::duplicate_key;
                 return result;
             }
         };
@@ -1583,16 +1600,6 @@ namespace yyjson
             }
         }
 
-        // Whether the first `n` of `names` differ from each other.
-        template <std::size_t N>
-        consteval bool distinct_names(const std::array<std::string_view, N>& names, std::size_t n)
-        {
-            for (std::size_t i = 0; i < n; ++i)
-                for (std::size_t j = 0; j < i; ++j)
-                    if (names[i] == names[j]) return false;
-            return true;
-        }
-
         enum class enum_annotation_error
         {
             none,
@@ -1676,9 +1683,9 @@ namespace yyjson
                     if (result.format == enum_format::name_or_integer && !digits.empty() &&
                         std::ranges::all_of(digits, [](char c) { return c >= '0' && c <= '9'; }))
                         result.error = enum_annotation_error::integer_name;
-                    for (std::size_t j = 0; j < i; ++j)
-                        if (name == result.names[j]) result.error = enum_annotation_error::duplicate_name;
                 }
+                if (!distinct_names(result.names, [](std::size_t) { return true; }))
+                    result.error = enum_annotation_error::duplicate_name;
                 return result;
             }
         };
@@ -1864,13 +1871,8 @@ namespace yyjson
                 [] {
                     if (spec.size() + (monostate != std::variant_npos) != sizeof...(Ts)) return true;
                     for (std::size_t i = 0; i < sizeof...(Ts); ++i)
-                    {
-                        if (i == monostate) continue;
-                        if (ids[i].empty()) return false;
-                        for (std::size_t j = 0; j < i; ++j)
-                            if (j != monostate && ids[i] == ids[j]) return false;
-                    }
-                    return true;
+                        if (i != monostate && ids[i].empty()) return false;
+                    return distinct_names(ids, [](std::size_t i) { return i != monostate; });
                 }(),
                 "the names of the alternatives in yyjson::internal_tag and yyjson::adjacent_tag must be distinct and "
                 "not empty");
@@ -2226,7 +2228,7 @@ namespace yyjson
                             ...);
                         return std::pair(result, n);
                     }();
-                    static_assert(distinct_names(keys.first, keys.second),
+                    static_assert(distinct_names(keys.first, [n = keys.second](std::size_t i) { return i < n; }),
                                   "two fields tagged by yyjson::adjacent_tag with the same key need a field of that "
                                   "key");
                     return sizeof...(Ks) + keys.second;

@@ -588,6 +588,14 @@ namespace
     // a `VISITABLE_STRUCT` listing a member twice compiles as before, unless it names keys
     static_assert(annotated_keys(key_array{"a", "a"}, key_array{"a", "a"}, true).error == none);
     static_assert(rename("k").key() == "k");
+
+    // names found equal through a table of their hashes, among those selected
+    constexpr auto all_names = [](std::size_t) { return true; };
+    constexpr auto names = std::array<std::string_view, 5>{"x.y.Name1", "x.y.Name2", "", "x.y.Name10", "x.y.Name1"};
+    static_assert(!yyjson::detail::distinct_names(names, all_names));
+    static_assert(yyjson::detail::distinct_names(names, [](std::size_t i) { return i != 4; }));
+    static_assert(!yyjson::detail::distinct_names(std::array<std::string_view, 2>{"", ""}, all_names));
+    static_assert(yyjson::detail::distinct_names(std::array<std::string_view, 0>{}, all_names));
 }  // namespace
 
 TEST(Reader, FieldRename)
