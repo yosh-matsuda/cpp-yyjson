@@ -16989,26 +16989,23 @@ namespace yyjson
                 return false;
         }
 
-        // `Seen` is a `type_list` of the structs with `yyjson::transparent` whose field is being bounded, as in
-        // `accepted_json_kinds`.
-        template <typename T, typename Level = no_settings_level, typename Seen = type_list<>>
+        template <typename T, typename Level = no_settings_level>
         consteval json_bound bound_of();
 
         // The JSON values that the alternatives of V, `yyjson::any_of` or `yyjson::one_of`, read, or the types Ts
         // without settings, together.
-        template <typename V, typename Seen = type_list<>, std::size_t... Is>
+        template <typename V, std::size_t... Is>
         consteval json_bound alternatives_bound(std::index_sequence<Is...>)
         {
             auto b = json_bound{};
-            ((b = unite_bounds(b, bound_of<std::variant_alternative_t<Is, V>, alternative_level<V, Is>, Seen>())),
-             ...);
+            ((b = unite_bounds(b, bound_of<std::variant_alternative_t<Is, V>, alternative_level<V, Is>>())), ...);
             return b;
         }
-        template <typename Seen, typename... Ts>
+        template <typename... Ts>
         consteval json_bound types_bound()
         {
             auto b = json_bound{};
-            ((b = unite_bounds(b, bound_of<Ts, no_settings_level, Seen>())), ...);
+            ((b = unite_bounds(b, bound_of<Ts>())), ...);
             return b;
         }
 
@@ -17020,14 +17017,14 @@ namespace yyjson
                                      variant_tags<T>::tagging == variant_tagging::untagged);
 
         // The JSON values that a value of the type T, with the settings of `Level`, a `table_node`, reads, or more.
-        template <typename T, typename Level, typename Seen>
+        template <typename T, typename Level>
         consteval json_bound bound_of()
         {
             using U = std::remove_cv_t<T>;
             constexpr bool settings = !Level::node.empty();
             const auto bound = [](json_bound b, bool described) { return described ? b : partial_bound(b); };
             if constexpr (combined_variant<U>)
-                return bound(alternatives_bound<U, Seen>(std::make_index_sequence<std::variant_size_v<U>>{}),
+                return bound(alternatives_bound<U>(std::make_index_sequence<std::variant_size_v<U>>{}),
                              !combined_alternatives<U>::exactly_one && !settings);
             else if constexpr (std::same_as<U, writer::value> || std::same_as<U, json_view>)
                 return bound(universal_bound(), !settings);
@@ -17047,16 +17044,16 @@ namespace yyjson
             else if constexpr (std::derived_from<caster<U>, builtin_caster> && untagged_nullable<U>)
             {
                 // the settings are those of the value that it holds, and null reads none
-                auto b = bound_of<typename nullable_holder<U>::value_type, Level, Seen>();
+                auto b = bound_of<typename nullable_holder<U>::value_type, Level>();
                 b.null = bound_extent::exact;
                 return b;
             }
             else if constexpr (std::derived_from<caster<U>, builtin_caster> && indirect_value<U>)
-                return bound_of<typename U::value_type, Level, Seen>();
+                return bound_of<typename U::value_type, Level>();
             else if constexpr (variant_json_kinds<U>::is_variant && std::derived_from<caster<U>, builtin_caster>)
             {
                 if constexpr (variant_tags<U>::tagging == variant_tagging::untagged)
-                    return bound([]<typename... Ts>(std::variant<Ts...>*) { return types_bound<Seen, Ts...>(); }(
+                    return bound([]<typename... Ts>(std::variant<Ts...>*) { return types_bound<Ts...>(); }(
                                      static_cast<U*>(nullptr)),
                                  !settings);
                 else
@@ -17064,22 +17061,20 @@ namespace yyjson
             }
             else if constexpr (transparent_struct<U>)
             {
-                // a struct that holds itself again adds no values there, as in `accepted_json_kinds`
-                if constexpr ([]<typename... Ss>(type_list<Ss...>*) {
-                                  return (std::same_as<U, Ss> || ...);
-                              }(static_cast<Seen*>(nullptr)))
-                    return json_bound{};
+                // The field of a struct that holds itself is not looked into, as that of any other recursive struct
+                // is not: the struct may be held by an alternative of the `yyjson::any_of` or `yyjson::one_of` whose
+                // caster asks for these bounds, which could not be cast from JSON before that caster is complete.
+                if constexpr (recursive_type<U>)
+                    return partial_bound(universal_bound());
                 else
-                    return partial_bound([]<typename... Ss>(type_list<Ss...>*) {
-                        return bound_of<struct_field_type<U, 0>, no_settings_level, type_list<Ss..., U>>();
-                    }(static_cast<Seen*>(nullptr)));
+                    return partial_bound(bound_of<struct_field_type<U, 0>>());
             }
             else if constexpr (requires(const reader::const_value_ref& json) {
                                    { caster<U>::from_json(json) } -> std::same_as<U>;
                                })
                 return kinds_bound(accepted_json_kinds<U, reader::const_value_ref>());
             else if constexpr (from_json_translator<U>::castable)
-                return partial_bound(bound_of<from_json_source<U>, no_settings_level, Seen>());
+                return partial_bound(bound_of<from_json_source<U>>());
             else if constexpr (std::same_as<U, bool>)
             {
                 auto b = json_bound{};
@@ -17119,7 +17114,7 @@ namespace yyjson
                                accepted_json_kinds<U, reader::const_value_ref>() == json_kind_array)
             {
                 // the array of any JSON values, or a part of the arrays
-                constexpr auto element = bound_of<std::ranges::range_value_t<U>, no_settings_level, Seen>();
+                constexpr auto element = bound_of<std::ranges::range_value_t<U>>();
                 auto b = json_bound{};
                 b.array.extent = level_within<Level>(count_settings) && bound_contains(element, universal_bound())
                                      ? bound_extent::exact

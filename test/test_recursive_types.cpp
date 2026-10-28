@@ -354,7 +354,28 @@ struct TrPtr
 };
 template <>
 inline constexpr auto yyjson::annotations<TrPtr> = yyjson::annotate(yyjson::transparent);
+// the alternatives of `yyjson::any_of` and `yyjson::one_of` hold the struct again
+struct TrAnyMap;
+using TrAnyMapValue = yyjson::any_of<std::monostate, std::string, TrAnyMap>;
+struct TrAnyMap
+{
+    std::map<std::string, TrAnyMapValue> value;
+    bool operator==(const TrAnyMap&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<TrAnyMap> = yyjson::annotate(yyjson::transparent);
+struct TrOneVec;
+using TrOneVecValue = yyjson::one_of<yyjson::alt<std::int64_t, yyjson::minimum(0)>, std::string, TrOneVec>;
+struct TrOneVec
+{
+    std::vector<TrOneVecValue> value;
+    bool operator==(const TrOneVec&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<TrOneVec> = yyjson::annotate(yyjson::transparent);
 static_assert(yyjson::readable<TrNest> && yyjson::writable<TrNest>);
+static_assert(yyjson::readable<TrAnyMap> && yyjson::writable<TrAnyMap>);
+static_assert(yyjson::readable<TrOneVec> && yyjson::writable<TrOneVec>);
 static_assert(yyjson::readable<TrHolder> && yyjson::writable<TrHolder>);
 static_assert(yyjson::readable<TrPtr> && yyjson::writable<TrPtr>);
 static_assert(std::is_constructible_v<yyjson::object, const TrMap&>);
@@ -612,6 +633,12 @@ TEST(Reader, RecursiveTransparent)
     expect_recursive<TrMap>(R"({"a":{"b":{}},"c":{}})");
     expect_recursive<TrVisitable>("[[],[[]]]");
     expect_recursive<TrHolder>(R"({"nest":[["x"]],"ind":"y","maps":[{"a":{}}]})");
+    expect_recursive<TrAnyMap>(R"({"a":"x","b":{"c":null,"d":{}}})");
+    expect_recursive<TrOneVec>(R"([1,"a",[2,[]],[]])");
+    EXPECT_EQ(std::string_view(yyjson::write(yyjson::read<TrOneVec>(R"([1,["a"]])"), yyjson::strict)),
+              R"([1,["a"]])");
+    EXPECT_THROW((void)yyjson::read<TrOneVec>("[[-1]]"), yyjson::bad_cast);
+    EXPECT_THROW((void)yyjson::read("[[-1]]").cast<TrOneVec>(), yyjson::bad_cast);
     EXPECT_EQ(std::string_view(yyjson::write(yyjson::read<TrNest>(R"(["a",["b",[]]])"), yyjson::strict)),
               R"(["a",["b",[]]])");
     EXPECT_EQ(yyjson::read<TrHolder>(R"({"nest":[],"maps":[]})", yyjson::strict).ind, std::nullopt);
