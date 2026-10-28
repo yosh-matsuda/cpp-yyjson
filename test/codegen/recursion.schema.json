@@ -4,7 +4,8 @@
   "type": "object",
   "properties": {
     "body": {"$ref": "#/$defs/Expr"},
-    "tree": {"$ref": "#/$defs/Node"}
+    "tree": {"$ref": "#/$defs/Node"},
+    "tags": {"$ref": "#/$defs/Tags"}
   },
   "required": ["body"],
   "$defs": {
@@ -33,6 +34,13 @@
         "first": {"$ref": "#/$defs/Node", "default": {"name": "root"}}
       },
       "required": ["name"]
+    },
+    "Tags": {
+      "description": "a tag, or a list of tags that are not empty",
+      "oneOf": [
+        {"type": "string"},
+        {"type": "array", "items": {"$ref": "#/$defs/Tags"}, "minItems": 1}
+      ]
     }
   }
 }

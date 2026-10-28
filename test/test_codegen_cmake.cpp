@@ -192,4 +192,18 @@ TEST(CodegenCMake, Recursion)
     // Literal and Expr are closed, so one_of reads each object as one of them
     EXPECT_THROW((void)yyjson::read<model::Program>(R"({"body":{"op":"+","lhs":{},"rhs":{"value":1}}})"),
                  yyjson::bad_cast);
+
+    // Tags holds itself with no object between: a transparent struct read and written as its field
+    const auto tagged = R"({"body":{"op":"+","lhs":{"value":1.0},"rhs":{"value":2.0}},"tags":["a",["b","c"]]})";
+    const auto with_tags = yyjson::read<model::Program>(tagged, yyjson::strict);
+    ASSERT_TRUE(with_tags.tags.has_value());
+    ASSERT_EQ(with_tags.tags->value.index(), 1U);
+    const auto& tags = std::get<1>(with_tags.tags->value);
+    ASSERT_EQ(tags.size(), 2U);
+    EXPECT_EQ(std::get<0>(tags[0].value), "a");
+    EXPECT_EQ(std::get<1>(tags[1].value).size(), 2U);
+    EXPECT_EQ(yyjson::write(with_tags), tagged);
+    EXPECT_THROW(
+        (void)yyjson::read<model::Program>(R"({"body":{"op":"+","lhs":{"value":1},"rhs":{"value":2}},"tags":["a",[]]})"),
+        yyjson::bad_cast);
 }

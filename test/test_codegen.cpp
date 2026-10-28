@@ -217,6 +217,63 @@ TEST(Codegen, RecursionThroughKeywords)
     EXPECT_TRUE(has(r.code, "    std::optional<yyjson::indirect<T>> self;\n"));
 }
 
+TEST(Codegen, RecursiveAliases)
+{
+    // a schema that holds itself with no object between is a struct with yyjson::transparent
+    const auto root = generate(R"({"anyOf": [{"type": "string"}, {"type": "array", "items": {"$ref": "#"}}]})", {});
+    EXPECT_EQ(warnings(root), "");
+    EXPECT_TRUE(has(root.code, "struct Root\n{\n    yyjson::any_of<std::string, std::vector<Root>> value;\n};\n"));
+    EXPECT_TRUE(has(root.code, "yyjson::annotations<Root> = yyjson::annotate(\n    yyjson::transparent);"));
+
+    const auto r = generate(R"({"type": "object", "properties": {"e": {"$ref": "#/$defs/Expr"}},
+        "$defs": {
+            "Expr": {"description": "an expression",
+                     "oneOf": [{"type": "integer"}, {"type": "array", "items": {"$ref": "#/$defs/Expr"}, "minItems": 1}]},
+            "Json": {"type": ["null", "boolean", "number", "string", "array", "object"],
+                     "items": {"$ref": "#/$defs/Json"}, "additionalProperties": {"$ref": "#/$defs/Json"}},
+            "A": {"anyOf": [{"type": "string"}, {"$ref": "#/$defs/B"}]},
+            "B": {"type": "array", "items": {"$ref": "#/$defs/A"}},
+            "N": {"anyOf": [{"type": "null"}, {"type": "object", "properties": {"next": {"$ref": "#/$defs/N"}}}]},
+            "P": {"$ref": "#/$defs/Q"},
+            "Q": {"type": "object", "properties": {"p": {"$ref": "#/$defs/P"}}}
+        }})",
+                            {});
+    EXPECT_EQ(warnings(r), "");
+    EXPECT_TRUE(has(r.code, "struct Expr\n{\n    yyjson::one_of<std::int64_t, "
+                            "yyjson::alt<std::vector<Expr>, yyjson::min_items(1)>> value;\n};\n"));
+    EXPECT_TRUE(has(r.code, "yyjson::annotations<Expr> = yyjson::annotate(\n    yyjson::schema_name(\"Expr\"),\n"
+                            "    yyjson::description(\"an expression\"),\n    yyjson::transparent);"));
+    EXPECT_TRUE(has(r.code, "struct Json\n{\n    std::variant<std::monostate, bool, double, std::string, "
+                            "std::vector<Json>, std::map<std::string, Json>> value;\n};\n"));
+    // of aliases that refer to each other, the first one reached is the struct
+    EXPECT_TRUE(has(r.code, "using B = std::vector<A>;\n"));
+    EXPECT_TRUE(has(r.code, "struct A\n{\n    yyjson::any_of<std::string, B> value;\n};\n"));
+    // the field is held by yyjson::indirect where the cycle passes through no range
+    EXPECT_TRUE(has(r.code, "struct N\n{\n    std::variant<std::monostate, yyjson::indirect<NOption2>> value;\n};\n"));
+    EXPECT_TRUE(has(r.code, "struct P\n{\n    yyjson::indirect<Q> value;\n};\n"));
+    EXPECT_TRUE(has(r.code, "struct Q\n{\n    std::optional<P> p;\n};\n"));
+
+    // a reference to a schema inside another one names the struct after its place
+    const auto inline_ref = generate(R"({"type": "object", "properties": {"overrides": {"type": "array",
+        "items": {"type": "object", "properties": {"overrides": {"$ref": "#/properties/overrides"}}}}}})",
+                                     {});
+    EXPECT_EQ(warnings(inline_ref), "");
+    EXPECT_TRUE(has(inline_ref.code, "struct RootOverrides\n{\n    std::vector<RootOverridesItem> value;\n};\n"));
+    EXPECT_TRUE(has(inline_ref.code, "    std::optional<RootOverrides> overrides;\n"));
+
+    // a schema that reaches itself through no array or object reads no value that ends
+    const auto degenerate = generate(R"({"type": "object", "properties": {"d": {"$ref": "#/$defs/D"}},
+        "$defs": {"D": {"anyOf": [{"$ref": "#/$defs/D"}, {"type": "string"}]}}})",
+                                     {});
+    EXPECT_EQ(warnings(degenerate), "#/$defs/D: the schema refers to itself with no array or object between, which "
+                                    "no value ends; it is read as any JSON value\n");
+    EXPECT_TRUE(has(degenerate.code, "struct D\n{\n    yyjson::value value;\n};\n"));
+    EXPECT_THROW((void)generate(R"({"type": "object", "properties": {"d": {"$ref": "#/$defs/D"}},
+        "$defs": {"D": {"anyOf": [{"$ref": "#/$defs/D"}, {"type": "string"}]}}})",
+                                {.strict = true}),
+                 cpp_yyjson_codegen::error);
+}
+
 TEST(Codegen, RequiredRecursion)
 {
     const auto r = generate(R"({

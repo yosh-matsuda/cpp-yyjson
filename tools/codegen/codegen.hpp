@@ -882,7 +882,11 @@ namespace cpp_yyjson_codegen
             std::map<const json*, std::string> def_names_;  // $defs entries -> type name
             std::map<const json*, std::string> def_keys_;   // $defs entries -> schema_name
             std::map<const json*, typed> cache_;
-            std::set<const json*> busy_;
+            std::map<const json*, std::string> busy_;  // schemas whose types are being made -> the names they take
+            // schemas that hold themselves without an object between -> their transparent structs, which are filled
+            // once the schema has its type
+            std::map<const json*, int> self_structs_;
+            mutable std::vector<int> bound_seen_;  // transparent structs that bound_of is in
             std::map<const json*, const json*> normalized_;
             std::set<const json*> normalizing_;
             std::vector<variant_note> notes_;
@@ -1510,15 +1514,18 @@ namespace cpp_yyjson_codegen
                     warn(loc, "a schema is not an object or a boolean; it is read as any JSON value");
                     return {};
                 }
-                if (busy_.contains(s0))
-                {
-                    warn(loc, "the schema refers to itself without an object between; it is read as any JSON value");
-                    return {};
-                }
+                // a schema that its own type holds becomes a struct of one field with yyjson::transparent, which can
+                // hold itself as other structs do
+                if (busy_.contains(s0)) return typed{named_type(self_struct(s0, loc)), {}};
                 if (def_names_.contains(s0)) return type_named(s0, loc);
-                busy_.insert(s0);
+                busy_.emplace(s0, hint);
                 auto r = type_content(s0, loc, hint, false);
                 busy_.erase(s0);
+                if (const auto it = self_structs_.find(s0); it != self_structs_.end())
+                {
+                    fill_transparent(it->second, s0, std::move(r), loc, false);
+                    return cache_[s0] = typed{named_type(it->second), {}};
+                }
                 return cache_[s0] = r;
             }
 
@@ -1533,29 +1540,22 @@ namespace cpp_yyjson_codegen
             typed type_named(const json* s0, const std::string& loc)
             {
                 const auto name = def_names_.at(s0);
-                busy_.insert(s0);
+                busy_.emplace(s0, name);
                 auto r = type_content(s0, loc, name, true);
                 busy_.erase(s0);
+                if (const auto it = self_structs_.find(s0); it != self_structs_.end())
+                {
+                    fill_transparent(it->second, s0, std::move(r), loc, true);
+                    return cache_[s0] = typed{named_type(it->second), {}};
+                }
                 if (find_decl(name) >= 0) return cache_[s0] = r;
                 if (s0 == &root_ && !r.s.empty())
                 {
                     // the constraints of a root that is not an object have no field to go on: a struct of one field
                     // with yyjson::transparent, which is read and written as the value of the field, takes them
-                    auto d = decl{.kind = decl::kind_t::structure, .name = name, .meta = meta_of(*s0), .loc = loc};
-                    // a root that refers to an alias takes the metadata of the alias, which has no place for it
-                    if (const auto* t = is_pure_ref(*s0) ? resolve(*s0->find("$ref"), loc) : nullptr; t != nullptr)
-                    {
-                        auto m = meta_of(*t);
-                        if (!d.meta.title) d.meta.title = std::move(m.title);
-                        if (!d.meta.description) d.meta.description = std::move(m.description);
-                        if (!d.meta.comment) d.meta.comment = std::move(m.comment);
-                        d.meta.deprecated = d.meta.deprecated || m.deprecated;
-                        if (d.meta.examples.empty()) d.meta.examples = std::move(m.examples);
-                    }
-                    d.transparent = true;
-                    d.fields.push_back(field{.member = "value", .key = "value", .type = r.t, .set = r.s, .loc = loc});
-                    d.filled = true;
-                    return cache_[s0] = typed{named_type(add_decl(std::move(d))), {}};
+                    const auto idx = add_decl(decl{.kind = decl::kind_t::structure, .name = name, .loc = loc});
+                    fill_transparent(idx, s0, std::move(r), loc, true);
+                    return cache_[s0] = typed{named_type(idx), {}};
                 }
                 // the metadata of an alias goes only to a comment: a `using` declaration takes no annotations
                 auto d = decl{.kind = decl::kind_t::alias,
@@ -1570,6 +1570,72 @@ namespace cpp_yyjson_codegen
                     for (auto& n : notes_)
                         if (n.alias < 0 && spell(n.type) == spell(r.t)) n.alias = idx;
                 return cache_[s0] = typed{named_type(idx), r.s};
+            }
+
+            // the struct of a schema that its own type holds, made at the first such reference; the schema of $defs
+            // or the root keeps its name
+            int self_struct(const json* s0, const std::string& loc)
+            {
+                if (const auto it = self_structs_.find(s0); it != self_structs_.end()) return it->second;
+                const auto it = def_names_.find(s0);
+                const auto name = it != def_names_.end() ? it->second : unique_type_name(busy_.at(s0));
+                const auto idx =
+                    add_decl(decl{.kind = decl::kind_t::structure, .name = name, .loc = loc, .transparent = true});
+                return self_structs_[s0] = idx;
+            }
+
+            // whether the type holds the struct `idx` with no array or object between, through which reading it
+            // never ends
+            bool holds_unguarded(const ctype& t, int idx, std::vector<int>& seen) const
+            {
+                switch (t.k)
+                {
+                    case tk::named:
+                    {
+                        if (t.decl == idx) return true;
+                        if (std::ranges::find(seen, t.decl) != seen.end()) return false;
+                        seen.push_back(t.decl);
+                        const auto& d = decls_[t.decl];
+                        if (d.kind == decl::kind_t::alias) return holds_unguarded(d.target, idx, seen);
+                        return d.transparent && d.filled && holds_unguarded(d.fields[0].type, idx, seen);
+                    }
+                    case tk::optional:
+                    case tk::indirect:
+                    case tk::variant:
+                        return std::ranges::any_of(t.args, [&](const ctype& a) { return holds_unguarded(a, idx, seen); });
+                    default:
+                        return false;
+                }
+            }
+
+            // a struct of one field with yyjson::transparent, which is read and written as the value of the field.
+            // The metadata of a schema that is not named stays with the fields that hold it
+            void fill_transparent(int idx, const json* s0, typed r, const std::string& loc, bool named)
+            {
+                auto& d = decls_[idx];
+                if (named) d.meta = meta_of(*s0);
+                // a schema that refers to an alias takes the metadata of the alias, which has no place for it
+                if (const auto* t = named && is_pure_ref(*s0) ? resolve(*s0->find("$ref"), loc) : nullptr; t != nullptr)
+                {
+                    auto m = meta_of(*t);
+                    if (!d.meta.title) d.meta.title = std::move(m.title);
+                    if (!d.meta.description) d.meta.description = std::move(m.description);
+                    if (!d.meta.comment) d.meta.comment = std::move(m.comment);
+                    d.meta.deprecated = d.meta.deprecated || m.deprecated;
+                    if (d.meta.examples.empty()) d.meta.examples = std::move(m.examples);
+                }
+                if (const auto it = def_keys_.find(s0); it != def_keys_.end()) d.schema_name = it->second;
+                d.transparent = true;
+                auto seen = std::vector<int>();
+                if (holds_unguarded(r.t, idx, seen))
+                {
+                    warn(loc,
+                         "the schema refers to itself with no array or object between, which no value ends; it is "
+                         "read as any JSON value");
+                    r = {};
+                }
+                d.fields.push_back(field{.member = "value", .key = "value", .type = r.t, .set = r.s, .loc = loc});
+                d.filled = true;
             }
 
             void warn_unsupported(const json& s, const std::string& loc)
@@ -2824,7 +2890,17 @@ namespace cpp_yyjson_codegen
                             for (const auto& e : x.enumerators) d::add_string(b.string, intern(e.second));
                             return bound(b, !has);
                         }
-                        if (x.transparent) return d::partial_bound(bound_of(x.fields[0].type, settings()));
+                        if (x.transparent)
+                        {
+                            // a struct still being built may read anything; one that holds itself again adds no
+                            // values there, as in the library
+                            if (!x.filled) return d::partial_bound(d::universal_bound());
+                            if (std::ranges::find(bound_seen_, t.decl) != bound_seen_.end()) return json_bound{};
+                            bound_seen_.push_back(t.decl);
+                            b = d::partial_bound(bound_of(x.fields[0].type, settings()));
+                            bound_seen_.pop_back();
+                            return b;
+                        }
                         b.object.extent = bound_extent::partial;
                         return b;
                     }
@@ -4233,8 +4309,9 @@ namespace cpp_yyjson_codegen
             }
 
             // holds the field through indirect. A nullable field stays std::variant<std::monostate, indirect<T>>:
-            // indirect has no empty state, and the default constructor makes the variant hold null
-            void wrap(field& f)
+            // indirect has no empty state, and the default constructor makes the variant hold null. The field of a
+            // transparent struct is the value itself, which std::optional would let be null
+            void wrap(field& f, bool bare)
             {
                 auto t = f.type;
                 if (t.k == tk::optional) t = ctype(t.args[0]);
@@ -4265,7 +4342,7 @@ namespace cpp_yyjson_codegen
                 }
                 else
                     t = make(tk::indirect, {std::move(t)});
-                f.type = f.required ? std::move(t) : make(tk::optional, {std::move(t)});
+                f.type = f.required || bare ? std::move(t) : make(tk::optional, {std::move(t)});
                 f.init.clear();
                 f.omit_default = false;
             }
@@ -4283,7 +4360,7 @@ namespace cpp_yyjson_codegen
                         by_value(f.type, deps);
                         if (std::ranges::any_of(deps, [&](int j) { return state[j] == 1; }))
                         {
-                            wrap(f);
+                            wrap(f, decls_[i].transparent);
                             continue;
                         }
                         for (const auto j : deps)
@@ -5285,7 +5362,7 @@ namespace cpp_yyjson_codegen
                 if (std::ranges::any_of(decls_, [](const decl& d) { return d.transparent; }))
                     out +=
                         "//\n// A struct with `yyjson::transparent` is read and written as the value of its only "
-                        "field, whose\n// constraints are those of the root.\n";
+                        "field, whose\n// constraints are those of the schema of the struct.\n";
                 if (any_field([](const field& f) { return f.extra; }))
                     out +=
                         "//\n// A field with `yyjson::extra_keys` holds the keys of the object that name no other "
