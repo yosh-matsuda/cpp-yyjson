@@ -1854,6 +1854,10 @@ using ExactlyOne = yyjson::one_of<yyjson::alt<std::string, yyjson::pattern("^x")
 // one_of whose alternatives may both read a value, which is checked when the value is read
 using SignedOrUnsigned = yyjson::one_of<std::int64_t, std::uint64_t>;
 using LowOrHigh = yyjson::one_of<yyjson::alt<int, yyjson::maximum(10)>, yyjson::alt<int, yyjson::minimum(0)>>;
+// some alternatives before the last one may read its values and some may not
+using PartlyOverlapping = yyjson::one_of<yyjson::alt<double, yyjson::maximum(0.5)>, std::string,
+                                         yyjson::alt<std::int64_t, yyjson::minimum(-100), yyjson::maximum(10)>,
+                                         std::uint64_t>;
 struct AlternativePoint
 {
     int x;
@@ -2000,18 +2004,18 @@ namespace compile_rules
         contained<any_of<alt<std::string, yyjson::pattern("^a"), max_length(3)>, alt<std::string, max_length(1)>>> ==
         2);
     using Lengths = one_of<alt<std::string, max_length(3)>, alt<std::string, min_length(4)>>;
-    static_assert(contained<Lengths> == 2 && !relations<Lengths>::overlap[0][1]);
+    static_assert(contained<Lengths> == 2 && !relations<Lengths>::overlaps<0, 1>);
     using Values = std::vector<yyjson::value>;
     static_assert(contained<any_of<alt<Values, max_items(5)>, alt<Values, max_items(2)>>> == 1);
     static_assert(contained<any_of<alt<std::vector<int>, max_items(5)>, alt<std::vector<int>, max_items(2)>>> == 2);
     using Counts = one_of<alt<std::vector<int>, max_items(1)>, alt<std::vector<std::string>, min_items(2)>>;
-    static_assert(contained<Counts> == 2 && !relations<Counts>::overlap[0][1]);
+    static_assert(contained<Counts> == 2 && !relations<Counts>::overlaps<0, 1>);
     // a map or a set counts its C++ elements, of which a JSON value may hold more
     using Maps = std::map<std::string, yyjson::value>;
     using MapCounts = one_of<alt<Maps, max_items(1)>, alt<Maps, min_items(2)>>;
-    static_assert(contained<MapCounts> == 2 && relations<MapCounts>::overlap[0][1]);
+    static_assert(contained<MapCounts> == 2 && relations<MapCounts>::overlaps<0, 1>);
     using SetCounts = one_of<alt<std::set<int>, max_items(1)>, alt<std::set<int>, min_items(2)>>;
-    static_assert(contained<SetCounts> == 2 && relations<SetCounts>::overlap[0][1]);
+    static_assert(contained<SetCounts> == 2 && relations<SetCounts>::overlaps<0, 1>);
     // nested alternatives: any_of and std::variant read the union, one_of a part of it
     static_assert(contained<any_of<std::variant<int, std::string>, std::string>> == 1);
     static_assert(contained<any_of<one_of<int, std::string>, std::string>> == 2);
@@ -2020,11 +2024,11 @@ namespace compile_rules
     static_assert(contained<one_of<alt<int, minimum(0)>, int>> == 0 &&
                   relations<one_of<alt<int, minimum(0)>, int>>::container == 1);
     using Signedness = one_of<std::int64_t, std::uint64_t>;
-    static_assert(contained<Signedness> == 2 && relations<Signedness>::overlap[0][1]);
+    static_assert(contained<Signedness> == 2 && relations<Signedness>::overlaps<0, 1>);
     using Split = one_of<alt<double, maximum(0.5)>, alt<int, minimum(1)>, std::string>;
-    static_assert(contained<Split> == 3 && !relations<Split>::overlap[0][1] && !relations<Split>::overlap[1][2]);
+    static_assert(contained<Split> == 3 && !relations<Split>::overlaps<0, 1> && !relations<Split>::overlaps<1, 2>);
     using Touching = one_of<alt<double, maximum(1)>, alt<int, minimum(1)>>;
-    static_assert(contained<Touching> == 2 && relations<Touching>::overlap[1][0]);
+    static_assert(contained<Touching> == 2 && relations<Touching>::overlaps<1, 0>);
 }  // namespace compile_rules
 
 TEST(Constraints, AlternativeTypes)
@@ -2090,6 +2094,11 @@ TEST(Constraints, AlternativeReading)
     expect_accepted<LowOrHigh>("-1", LowOrHigh(std::in_place_index<0>, -1));
     expect_accepted<LowOrHigh>("11", LowOrHigh(std::in_place_index<1>, 11));
     expect_rejected<LowOrHigh>("10", read_by_two<LowOrHigh>(0, 1), "");
+    expect_accepted<PartlyOverlapping>("-300", PartlyOverlapping(-300.0));
+    expect_accepted<PartlyOverlapping>(R"("x")", PartlyOverlapping(std::string("x")));
+    expect_accepted<PartlyOverlapping>("20", PartlyOverlapping(std::uint64_t{20}));
+    expect_rejected<PartlyOverlapping>("0", read_by_two<PartlyOverlapping>(0, 2), "");
+    expect_rejected<PartlyOverlapping>("5", read_by_two<PartlyOverlapping>(2, 3), "");
 
     // in fields and elements
     expect_accepted<AlternativeFields>(R"({"a":"id","l":[-5,20],"e":"x"})",

@@ -166,6 +166,10 @@ inline constexpr auto yyjson::annotations<ValidateNullables> =
                      yyjson::field("ids", yyjson::unique_items));
 
 using ValidateSignedOrUnsigned = yyjson::one_of<std::int64_t, std::uint64_t>;
+// some alternatives other than the last one may read its values and some may not
+using ValidatePartlyOverlapping =
+    yyjson::one_of<yyjson::alt<double, yyjson::maximum(0.5)>, std::string,
+                   yyjson::alt<std::int64_t, yyjson::minimum(-100), yyjson::maximum(10)>, std::uint64_t>;
 using ValidateLowOrShort =
     yyjson::any_of<yyjson::alt<int, yyjson::minimum(0)>, yyjson::alt<std::string, yyjson::max_length(3)>>;
 using ValidateItemsOrText =
@@ -475,6 +479,13 @@ TEST(Validate, Alternatives)
                    "the value matches the alternatives 0 and 1 of " + type_of<ValidateSignedOrUnsigned>(), "/b/1");
     expect_invalid(ValidateSignedOrUnsigned(std::int64_t{5}),
                    "the value matches the alternatives 0 and 1 of " + type_of<ValidateSignedOrUnsigned>(), "");
+    expect_valid(ValidatePartlyOverlapping(-300.0));
+    expect_valid(ValidatePartlyOverlapping(std::uint64_t{20}));
+    const auto partly = type_of<ValidatePartlyOverlapping>();
+    expect_invalid(ValidatePartlyOverlapping(std::int64_t{0}),
+                   "the value matches the alternatives 0 and 2 of " + partly, "");
+    expect_invalid(ValidatePartlyOverlapping(std::uint64_t{5}),
+                   "the value matches the alternatives 2 and 3 of " + partly, "");
 
     // the plain write does not check
     EXPECT_EQ(std::string(yyjson::write(with<ValidateAlternatives>([](auto& t) { t.a = -1; }))),

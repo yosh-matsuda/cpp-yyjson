@@ -17163,30 +17163,80 @@ namespace yyjson
                 std::size_t contained = size;
                 std::size_t container = size;
             };
+            // Each alternative J, and each table below, is a constant evaluation of its own: of a variant of hundreds
+            // of alternatives, one evaluation of all the pairs would exceed the operation limit of a compiler.
+            template <std::size_t J>
+            static consteval alternative_pair find_contained_by_earlier()
+            {
+                for (std::size_t i = 0; i < J; ++i)
+                {
+                    if (bound_contains(bounds[i], bounds[J])) return {J, i};
+                    if (combined_alternatives<V>::exactly_one && bound_contains(bounds[J], bounds[i])) return {i, J};
+                }
+                return {};
+            }
+            template <std::size_t J>
+            static constexpr alternative_pair contained_by_earlier = find_contained_by_earlier<J>();
             static consteval alternative_pair find_contained()
             {
-                for (std::size_t j = 1; j < size; ++j)
-                    for (std::size_t i = 0; i < j; ++i)
-                    {
-                        if (bound_contains(bounds[i], bounds[j])) return {j, i};
-                        if (combined_alternatives<V>::exactly_one && bound_contains(bounds[j], bounds[i]))
-                            return {i, j};
-                    }
-                return {};
+                return [&]<std::size_t... Js>(std::index_sequence<Js...>) {
+                    auto pair = alternative_pair{};
+                    ((pair.contained == size ? (void)(pair = contained_by_earlier<Js>) : void()), ...);
+                    return pair;
+                }(std::make_index_sequence<size>{});
             }
             static constexpr alternative_pair pair = find_contained();
             static constexpr std::size_t contained = pair.contained;
             static constexpr std::size_t container = pair.container;
 
-            static consteval std::array<std::array<bool, size>, size> make_overlap()
-            {
-                auto overlap = std::array<std::array<bool, size>, size>{};
-                for (std::size_t i = 0; i < size; ++i)
-                    for (std::size_t j = 0; j < size; ++j) overlap[i][j] = !bounds_disjoint(bounds[i], bounds[j]);
-                return overlap;
-            }
-            static constexpr std::array<std::array<bool, size>, size> overlap = make_overlap();
+            // `overlapping<J>[i]`: whether the alternatives i and J may both read a JSON value
+            template <std::size_t J>
+            static constexpr std::array<bool, size> overlapping = [] {
+                auto column = std::array<bool, size>{};
+                for (std::size_t i = 0; i < size; ++i) column[i] = !bounds_disjoint(bounds[i], bounds[J]);
+                return column;
+            }();
+            template <std::size_t I, std::size_t J>
+            static constexpr bool overlaps = overlapping<J>[I];
+
+            // How many alternatives before J, and how many other than J, may read a value that J reads
+            template <std::size_t J>
+            static constexpr std::size_t overlapping_earlier = [] {
+                std::size_t n = 0;
+                for (std::size_t i = 0; i < J; ++i) n += overlapping<J>[i];
+                return n;
+            }();
+            template <std::size_t J>
+            static constexpr std::size_t overlapping_others = [] {
+                std::size_t n = 0;
+                for (std::size_t i = 0; i < size; ++i) n += i != J && overlapping<J>[i];
+                return n;
+            }();
+            static constexpr bool any_overlap = []<std::size_t... Js>(std::index_sequence<Js...>) {
+                return ((overlapping_others<Js> != 0) || ...);
+            }(std::make_index_sequence<size>{});
         };
+
+        // Whether the alternative i of V may read a value that the alternative J reads, for an i before J, or for an
+        // i other than J; looked up at run time only when some of those alternatives may and others may not.
+        template <typename V, std::size_t J>
+        constexpr bool overlaps_earlier(std::size_t i) noexcept
+        {
+            using relations = alternative_relations<V>;
+            if constexpr (relations::template overlapping_earlier<J> == J)
+                return true;
+            else
+                return relations::template overlapping<J>[i];
+        }
+        template <typename V, std::size_t J>
+        constexpr bool overlaps_other(std::size_t i) noexcept
+        {
+            using relations = alternative_relations<V>;
+            if constexpr (relations::template overlapping_others<J> + 1 == relations::size)
+                return true;
+            else
+                return relations::template overlapping<J>[i];
+        }
 
         // The compile errors of `check_alternative_bounds`, whose template arguments, which the compiler shows,
         // are the indices of the alternatives.
@@ -18224,29 +18274,26 @@ namespace yyjson
             }
 
             // Throws `bad_cast` if an alternative after the alternative i, which reads the JSON value, reads it too.
-            // Only the alternatives that may read a value that i reads, as their bounds tell, are tried.
+            // Only the alternatives that may read a value that i reads, as their bounds tell, are tried.  The
+            // alternatives are looped over once for every i, which keeps the instantiations linear in their number.
             template <typename Json, typename Guard>
             static void check_only_match(std::size_t i, const Json& json, std::uint16_t kind, const Guard& rereads)
             {
-                [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                    (void)((i == Is && (check_later_matches<Is, Is + 1>(json, kind, rereads), true)) || ...);
+                [&]<std::size_t... Js>(std::index_sequence<Js...>) {
+                    (check_later_match<Js>(i, json, kind, rereads), ...);
                 }(std::make_index_sequence<sizeof...(Ts)>{});
             }
-            template <std::size_t I, std::size_t J, typename Json, typename Guard>
-            static void check_later_matches(const Json& json, std::uint16_t kind, const Guard& rereads)
+            template <std::size_t J, typename Json, typename Guard>
+            static void check_later_match(std::size_t i, const Json& json, std::uint16_t kind, const Guard& rereads)
             {
-                if constexpr (J < sizeof...(Ts))
+                if constexpr (alternative_relations<V>::template overlapping_earlier<J> != 0)
                 {
-                    if constexpr (alternative_relations<V>::overlap[I][J])
+                    if (i < J && overlaps_earlier<V, J>(i) && (alternative_kinds<Json>[J] & kind) != 0)
                     {
-                        if ((alternative_kinds<Json>[J] & kind) != 0)
-                        {
-                            if (rereads.template stops_after<J>())
-                                throw_variant_reread_limit<V, std::variant_alternative_t<J, V>>();
-                            if (alternative_reads<V, J>(json)) throw_one_of_matches<V>(target_of(json), I, J);
-                        }
+                        if (rereads.template stops_after<J>())
+                            throw_variant_reread_limit<V, std::variant_alternative_t<J, V>>();
+                        if (alternative_reads<V, J>(json)) throw_one_of_matches<V>(target_of(json), i, J);
                     }
-                    check_later_matches<I, J + 1>(json, kind, rereads);
                 }
             }
         };
@@ -18263,24 +18310,12 @@ namespace yyjson
 
     namespace detail
     {
-        // Whether the alternative I of V, `yyjson::one_of`, may read a value that another alternative reads.
-        template <typename V, std::size_t I>
-        consteval bool overlaps_other_alternative()
-        {
-            for (std::size_t j = 0; j < std::variant_size_v<V>; ++j)
-                if (j != I && alternative_relations<V>::overlap[I][j]) return true;
-            return false;
-        }
-
         template <typename V>
         consteval bool combined_validates_itself()
         {
             for (std::size_t i = 0; i < std::variant_size_v<V>; ++i)
                 if (!combined_alternatives<V>::table::tree.nodes[i].empty()) return true;
-            if constexpr (combined_alternatives<V>::exactly_one)
-                for (std::size_t i = 0; i < std::variant_size_v<V>; ++i)
-                    for (std::size_t j = 0; j < std::variant_size_v<V>; ++j)
-                        if (i != j && alternative_relations<V>::overlap[i][j]) return true;
+            if constexpr (combined_alternatives<V>::exactly_one) return alternative_relations<V>::any_overlap;
             return false;
         }
 
@@ -18296,15 +18331,26 @@ namespace yyjson
                                        k, level::constraints, level::values);
         }
 
-        template <typename V, std::size_t I, std::size_t J, typename Json>
-        void check_other_alternative(const Json& json, std::uint16_t kind)
+        // Throws `bad_cast` if the alternative J of V, other than i, reads `json`.
+        template <typename V, std::size_t J, typename Json>
+        void check_other_alternative(std::size_t i, const Json& json, std::uint16_t kind)
         {
-            if constexpr (I != J && alternative_relations<V>::overlap[I][J])
+            if constexpr (alternative_relations<V>::template overlapping_others<J> != 0)
             {
                 using T = std::variant_alternative_t<J, V>;
-                if ((accepted_json_kinds<T, Json>() & kind) != 0 && alternative_reads<V, J>(json))
-                    throw_one_of_matches<V>(cast_target{}, std::min(I, J), std::max(I, J));
+                if (i != J && overlaps_other<V, J>(i) && (accepted_json_kinds<T, Json>() & kind) != 0 &&
+                    alternative_reads<V, J>(json))
+                    throw_one_of_matches<V>(cast_target{}, std::min(i, J), std::max(i, J));
             }
+        }
+        // Throws `bad_cast` if an alternative of V other than i reads `json`.  As in `combined_caster`, the
+        // alternatives are looped over once for every i.
+        template <typename V, typename Json>
+        void check_other_alternatives(std::size_t i, const Json& json, std::uint16_t kind)
+        {
+            [&]<std::size_t... Js>(std::index_sequence<Js...>) {
+                (check_other_alternative<V, Js>(i, json, kind), ...);
+            }(std::make_index_sequence<std::variant_size_v<V>>{});
         }
 
         // Checks the value `a` of the alternative I of V as the read checks it: the values in it, its settings,
@@ -18320,15 +18366,13 @@ namespace yyjson
                     [[unlikely]]
                     if (!written_as_null(a)) throw_alternative_violation<V, I>(a, k);
             }
-            if constexpr (combined_alternatives<V>::exactly_one && overlaps_other_alternative<V, I>())
+            if constexpr (combined_alternatives<V>::exactly_one &&
+                          alternative_relations<V>::template overlapping_others<I> != 0)
             {
                 if (validating_settings_only) return;
                 const auto json = yyjson::value(a);
                 const auto scope = strict_scope();
-                const auto kind = json_kind_of(json);
-                [&]<std::size_t... Js>(std::index_sequence<Js...>) {
-                    (check_other_alternative<V, I, Js>(json, kind), ...);
-                }(std::make_index_sequence<std::variant_size_v<V>>{});
+                check_other_alternatives<V>(I, json, json_kind_of(json));
             }
         }
 
@@ -21925,38 +21969,34 @@ namespace yyjson
                 if constexpr (yyjson::detail::combined_alternatives<std::remove_cv_t<T>>::exactly_one)
                 {
                     const char* const end = cur_;
-                    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                        (void)((matched == Is && (check_later_reads<T, Is, Is + 1>(start, kind, rereads), true)) ||
-                               ...);
+                    [&]<std::size_t... Js>(std::index_sequence<Js...>) {
+                        (check_later_read<T, Js>(matched, start, kind, rereads), ...);
                     }(std::make_index_sequence<std::variant_size_v<T>>{});
                     cur_ = end;
                 }
             }
 
-            // Fails if an alternative from J on of `yyjson::one_of` T reads the value at `start`, which the
-            // alternative I has read.  Only the alternatives that may read a value that I reads, as their bounds
-            // tell, are tried.
-            template <typename T, std::size_t I, std::size_t J, typename Guard>
-            void check_later_reads(const char* start, std::uint16_t kind, const Guard& rereads)
+            // Fails if the alternative J of `yyjson::one_of` T, after the alternative i, reads the value at `start`,
+            // which i has read.  Only the alternatives that may read a value that i reads, as their bounds tell, are
+            // tried.  The alternatives are looped over once for every i, which keeps the instantiations linear in
+            // their number.
+            template <typename T, std::size_t J, typename Guard>
+            void check_later_read(std::size_t i, const char* start, std::uint16_t kind, const Guard& rereads)
             {
                 using V = std::remove_cv_t<T>;
-                if constexpr (J < std::variant_size_v<V>)
+                if constexpr (yyjson::detail::alternative_relations<V>::template overlapping_earlier<J> != 0)
                 {
-                    if constexpr (yyjson::detail::alternative_relations<V>::overlap[I][J])
+                    if (i < J && yyjson::detail::overlaps_earlier<V, J>(i) && (alternative_kinds<T>[J] & kind) != 0)
                     {
-                        if ((alternative_kinds<T>[J] & kind) != 0)
+                        if (rereads.template stops_after<J>())
+                            yyjson::detail::throw_variant_reread_limit<V, std::variant_alternative_t<J, V>>();
+                        cur_ = start;
+                        if (reads_alternative<V, J>())
                         {
-                            if (rereads.template stops_after<J>())
-                                yyjson::detail::throw_variant_reread_limit<V, std::variant_alternative_t<J, V>>();
                             cur_ = start;
-                            if (reads_alternative<V, J>())
-                            {
-                                cur_ = start;
-                                fail();
-                            }
+                            fail();
                         }
                     }
-                    check_later_reads<T, I, J + 1>(start, kind, rereads);
                 }
             }
 
