@@ -625,7 +625,7 @@ namespace cpp_yyjson_codegen
             tuple,
             variant,
             optional,
-            pointer  // std::unique_ptr
+            indirect  // yyjson::indirect, or std::indirect with --cpp26
         };
 
         // the settings of a field or of an element level: constraints and element trees
@@ -673,7 +673,8 @@ namespace cpp_yyjson_codegen
         {
             tk k = tk::any;
             int decl = -1;
-            bool tagged = false;  // a variant with internal_tag
+            bool tagged = false;     // a variant with internal_tag
+            bool reordered = false;  // a variant whose first alternative is not the first of the schema
             combination combined = combination::none;
             std::vector<ctype> args{};
             std::vector<settings> sets{};   // yyjson::any_of / one_of: the settings of each alternative
@@ -756,6 +757,12 @@ namespace cpp_yyjson_codegen
         {
             return t.k == tk::variant && !t.tagged && t.combined == combination::none && t.args.size() == 2 &&
                    t.args[0].k == tk::monostate;
+        }
+
+        // whether the type names indirect, outside the types it names
+        inline bool holds_indirect(const ctype& t)
+        {
+            return t.k == tk::indirect || std::ranges::any_of(t.args, [](const ctype& a) { return holds_indirect(a); });
         }
 
         // a variant that reads null as its first alternative, std::monostate
@@ -2016,10 +2023,22 @@ namespace cpp_yyjson_codegen
                     {
                         if (!f.dflt) continue;
                         const auto j = *std::exchange(f.dflt, std::nullopt);
-                        // a field held through std::unique_ptr to break a cycle takes no initializer
-                        auto init = f.type.k == tk::optional || f.type.k == tk::pointer
-                                        ? std::nullopt
-                                        : field_init(f.type, j, position_[i]);
+                        // a member that names indirect takes no initializer: clang instantiates the constructors of
+                        // indirect there while the struct it holds is incomplete. std::variant<std::monostate, ...>
+                        // holds null without one
+                        const auto wrapped = holds_indirect(f.type);
+                        if (const auto& t = f.type.k == tk::optional ? f.type.args[0] : f.type;
+                            wrapped && j.is_null() && holds_null(t) && (f.required || !presence_matters(decls_[i], f.key)))
+                        {
+                            if (!f.required)
+                            {
+                                f.type = ctype(t);
+                                f.omit_default = true;
+                            }
+                            continue;
+                        }
+                        auto init = f.type.k == tk::optional || wrapped ? std::nullopt
+                                                                        : field_init(f.type, j, position_[i]);
                         if (f.required)
                         {
                             if (init)
@@ -2046,7 +2065,7 @@ namespace cpp_yyjson_codegen
                         else if (auto fn = default_function_of(decls_[i], f, j))
                         {
                             // the member initializer cannot construct it: the struct holds itself, or the field is
-                            // held through std::unique_ptr to break a cycle. A function defined after the structs
+                            // held through indirect to break a cycle. A function defined after the structs
                             // makes it when the key is missing, and writing leaves the key out as above
                             f.default_from = fn->name;
                             default_functions_.push_back(std::move(*fn));
@@ -2075,7 +2094,7 @@ namespace cpp_yyjson_codegen
             }
 
             // the function of yyjson::default_from for the default `j` of the field `f` of `d`, which returns the
-            // value that the field holds through std::optional, std::unique_ptr and std::variant<std::monostate, T>;
+            // value that the field holds through std::optional, indirect and std::variant<std::monostate, T>;
             // it is defined after all the structs, whose initializers it may construct
             std::optional<default_function> default_function_of(const decl& d, const field& f, const json& j) const
             {
@@ -2083,7 +2102,7 @@ namespace cpp_yyjson_codegen
                 while (true)
                 {
                     const auto& r = resolved(*t);
-                    if (r.k == tk::optional || r.k == tk::pointer)
+                    if (r.k == tk::optional || r.k == tk::indirect)
                         t = &r.args[0];
                     else if (is_nullable(r))
                         t = &r.args[1];
@@ -2139,9 +2158,6 @@ namespace cpp_yyjson_codegen
                 using namespace std::string_literals;
                 const auto all = [&](const ctype& e, const std::vector<std::string>& keys,
                                      const std::vector<const json*>& values) -> std::optional<std::string> {
-                    // std::initializer_list copies its elements
-                    auto seen = std::vector<int>();
-                    if (!values.empty() && !copyable(e, seen)) return std::nullopt;
                     auto out = "{"s;
                     for (std::size_t n = 0; n < values.size(); ++n)
                     {
@@ -2254,12 +2270,12 @@ namespace cpp_yyjson_codegen
                         if (!v) return std::nullopt;
                         return typed_init(t.args[0], *v);
                     }
-                    case tk::pointer:
+                    case tk::indirect:
                     {
-                        if (j.is_null()) return "nullptr"s;
+                        // the constructor from a value is explicit
                         const auto v = initializer(t.args[0], j, before);
                         if (!v) return std::nullopt;
-                        return "std::make_unique<" + spell(t.args[0]) + ">(" + typed_init(t.args[0], *v) + ")";
+                        return spell(t) + "(" + typed_init(t.args[0], *v) + ")";
                     }
                 }
                 return std::nullopt;
@@ -2303,11 +2319,36 @@ namespace cpp_yyjson_codegen
                         if (!x) return std::nullopt;
                         items.push_back(member(f, *x));
                     }
+                    else if (f.init.empty() && needs_initializer(f.type))
+                        return std::nullopt;
                 }
                 // reading drops the other keys of an open struct
                 if (!rest.members.empty() && !d.additional) return std::nullopt;
                 if (items.size() < d.fields.size()) partial_init_ = true;
                 return "{" + join(items) + "}";
+            }
+
+            // whether a member of the type fails to compile when a braced initializer leaves it out: the member is
+            // copy-initialized from `{}`, and the default constructor of indirect is explicit
+            bool needs_initializer(const ctype& t) const
+            {
+                switch (t.k)
+                {
+                    case tk::indirect:
+                        return true;
+                    case tk::tuple:
+                        return std::ranges::any_of(t.args, [&](const ctype& a) { return needs_initializer(a); });
+                    case tk::named:
+                    {
+                        const auto& d = decls_[t.decl];
+                        if (d.kind == decl::kind_t::alias) return needs_initializer(d.target);
+                        return d.kind == decl::kind_t::structure && std::ranges::any_of(d.fields, [&](const field& f) {
+                                   return f.init.empty() && needs_initializer(f.type);
+                               });
+                    }
+                    default:
+                        return false;
+                }
             }
 
             // the alternative of a variant that reading takes for a JSON value: the alternative that the tag names,
@@ -2329,21 +2370,6 @@ namespace cpp_yyjson_codegen
                     found = i;
                 }
                 return found;
-            }
-
-            // whether std::initializer_list can copy a value of the type
-            bool copyable(const ctype& t, std::vector<int>& seen) const
-            {
-                if (t.k == tk::pointer) return false;
-                if (t.k == tk::named)
-                {
-                    const auto& d = decls_[t.decl];
-                    if (d.kind == decl::kind_t::alias) return copyable(d.target, seen);
-                    if (d.kind != decl::kind_t::structure || std::ranges::find(seen, t.decl) != seen.end()) return true;
-                    seen.push_back(t.decl);
-                    return std::ranges::all_of(d.fields, [&](const field& f) { return copyable(f.type, seen); });
-                }
-                return std::ranges::all_of(t.args, [&](const ctype& a) { return copyable(a, seen); });
             }
 
             // the spelling of a C++ type; `expand` spells aliases by their targets, `q` qualifies generated names
@@ -2396,8 +2422,8 @@ namespace cpp_yyjson_codegen
                         return t.combined == combination::none ? list("std::variant") : spell_combined(t, expand, q);
                     case tk::optional:
                         return list("std::optional");
-                    case tk::pointer:
-                        return list("std::unique_ptr");
+                    case tk::indirect:
+                        return list(opts_.cpp26 ? "std::indirect" : "yyjson::indirect");
                 }
                 return {};
             }
@@ -2530,7 +2556,7 @@ namespace cpp_yyjson_codegen
                     case tk::variant:
                         return 9;
                     case tk::optional:
-                    case tk::pointer:
+                    case tk::indirect:
                         return rank(r.args[0]);
                     case tk::any:
                         return 10;
@@ -2822,10 +2848,11 @@ namespace cpp_yyjson_codegen
                     case tk::tuple:
                         return d::kinds_bound(d::json_kind_array | d::json_kind_object);
                     case tk::optional:
-                    case tk::pointer:
                         b = bound_of(t.args[0], s);
                         b.null = bound_extent::exact;
                         return b;
+                    case tk::indirect:
+                        return bound_of(t.args[0], s);
                     case tk::variant:
                     {
                         if (t.combined != combination::none)
@@ -3815,11 +3842,11 @@ namespace cpp_yyjson_codegen
                 return out;
             }
 
-            // the type of a value: behind aliases, std::optional, std::unique_ptr and nullable variants
+            // the type of a value: behind aliases, std::optional, indirect and nullable variants
             const ctype& value_type(const ctype& t) const
             {
                 const auto& r = resolved(t);
-                if (r.k == tk::optional || r.k == tk::pointer) return value_type(r.args[0]);
+                if (r.k == tk::optional || r.k == tk::indirect) return value_type(r.args[0]);
                 if (is_nullable(r)) return value_type(r.args[1]);
                 return r;
             }
@@ -4205,11 +4232,12 @@ namespace cpp_yyjson_codegen
                 }
             }
 
+            // holds the field through indirect. A nullable field stays std::variant<std::monostate, indirect<T>>:
+            // indirect has no empty state, and the default constructor makes the variant hold null
             void wrap(field& f)
             {
                 auto t = f.type;
                 if (t.k == tk::optional) t = ctype(t.args[0]);
-                // an empty std::unique_ptr reads and writes null, so a variant does not need std::monostate for it
                 if (t.k == tk::variant && !t.args.empty() && t.args[0].k == tk::monostate)
                 {
                     auto v = t;
@@ -4232,17 +4260,18 @@ namespace cpp_yyjson_codegen
                             notes_.push_back(std::move(n));
                         }
                     }
-                    t = v.args.size() == 1 && !v.tagged ? v.args[0] : std::move(v);
+                    t = make(tk::variant, {make(tk::monostate),
+                                           make(tk::indirect, {v.args.size() == 1 && !v.tagged ? v.args[0] : v})});
                 }
-                // only std::optional is left out when empty: an empty std::unique_ptr is written as null
-                f.type = make(tk::pointer, {std::move(t)});
-                if (!f.required) f.type = make(tk::optional, {std::move(f.type)});
+                else
+                    t = make(tk::indirect, {std::move(t)});
+                f.type = f.required ? std::move(t) : make(tk::optional, {std::move(t)});
                 f.init.clear();
                 f.omit_default = false;
             }
 
-            // breaks cycles of structs held by value with std::unique_ptr: a struct that holds itself by value,
-            // directly or through others, holds the field that closes the cycle through a pointer
+            // breaks cycles of structs held by value with indirect: a struct that holds itself by value, directly
+            // or through others, holds the field that closes the cycle through indirect
             void break_cycles()
             {
                 auto state = std::vector<int>(decls_.size(), 0);
@@ -4264,6 +4293,199 @@ namespace cpp_yyjson_codegen
                 };
                 for (std::size_t i = 0; i < decls_.size(); ++i)
                     if (decls_[i].kind == decl::kind_t::structure && state[i] == 0) visit(visit, static_cast<int>(i));
+            }
+
+            static constexpr int unending = std::numeric_limits<int>::max();
+
+            // the depth in structs of the value that `T()` makes, `unending` when the struct holds itself through
+            // indirect again. `lv` gives the depth of each struct; with `l1`, the depths of the structs with the
+            // variants as they are, a variant whose first alternative does not end takes its best alternative that
+            // can come first
+            int level_of(const ctype& t, const std::vector<int>& lv, const std::vector<int>* l1) const
+            {
+                switch (t.k)
+                {
+                    case tk::named:
+                    {
+                        const auto& d = decls_[t.decl];
+                        if (d.kind == decl::kind_t::alias) return level_of(d.target, lv, l1);
+                        return d.kind == decl::kind_t::structure ? lv[t.decl] : 0;
+                    }
+                    case tk::indirect:
+                        return level_of(t.args[0], lv, l1);
+                    case tk::tuple:
+                    {
+                        auto r = 0;
+                        for (const auto& a : t.args) r = std::max(r, level_of(a, lv, l1));
+                        return r;
+                    }
+                    case tk::variant:
+                    {
+                        if (t.args.empty()) return 0;
+                        if (l1 == nullptr || level_of(t.args[0], *l1, nullptr) != unending)
+                            return level_of(t.args[0], lv, l1);
+                        auto r = unending;
+                        for (std::size_t k = 0; k < t.args.size(); ++k)
+                            if (can_come_first(t, k)) r = std::min(r, level_of(t.args[k], lv, l1));
+                        return r;
+                    }
+                    default:
+                        return 0;
+                }
+            }
+
+            // the depths of the structs, by rounds: a struct ends once all its fields do
+            std::vector<int> struct_levels(const std::vector<int>* l1) const
+            {
+                auto lv = std::vector<int>(decls_.size(), unending);
+                for (auto changed = true; changed;)
+                {
+                    changed = false;
+                    const auto prev = lv;
+                    for (std::size_t i = 0; i < decls_.size(); ++i)
+                    {
+                        if (decls_[i].kind != decl::kind_t::structure || prev[i] != unending) continue;
+                        auto r = 0;
+                        for (const auto& f : decls_[i].fields) r = std::max(r, level_of(f.type, prev, l1));
+                        if (r == unending) continue;
+                        lv[i] = r + 1;
+                        changed = true;
+                    }
+                }
+                return lv;
+            }
+
+            // whether the alternative `k` of the variant can come first without changing what reading takes: the
+            // tag or yyjson::one_of picks the alternative, otherwise the alternatives before it read none of its values
+            bool can_come_first(const ctype& t, std::size_t k) const
+            {
+                if (k == 0 || t.tagged || t.combined == combination::one_of) return true;
+                const auto set = [&](std::size_t i) { return i < t.sets.size() ? t.sets[i] : settings(); };
+                const auto b = bound_of(t.args[k], set(k));
+                for (std::size_t i = 0; i < k; ++i)
+                    if (!yyjson::detail::bounds_disjoint(bound_of(t.args[i], set(i)), b) &&
+                        !structs_disjoint(t.args[i], t.args[k]))
+                        return false;
+                return true;
+            }
+
+            // whether no object reads as both structs: one has no other keys and the other requires a key that it
+            // does not have, or a key that both require has values that the two fields do not share
+            bool structs_disjoint(const ctype& a, const ctype& b) const
+            {
+                if (!is_struct(a) || !is_struct(b)) return false;
+                const auto& x = decls_[resolved(a).decl];
+                const auto& y = decls_[resolved(b).decl];
+                if (x.transparent || y.transparent) return false;
+                const auto find = [](const decl& d, const std::string& key) -> const field* {
+                    for (const auto& f : d.fields)
+                        if (!f.extra && f.key == key) return &f;
+                    return nullptr;
+                };
+                const auto excludes = [&](const decl& closed, const decl& other) {
+                    return !closed.additional && std::ranges::any_of(other.fields, [&](const field& f) {
+                               return f.required && !f.extra && find(closed, f.key) == nullptr;
+                           });
+                };
+                if (excludes(x, y) || excludes(y, x)) return true;
+                return std::ranges::any_of(x.fields, [&](const field& f) {
+                    const auto* g = f.required && !f.extra ? find(y, f.key) : nullptr;
+                    return g != nullptr && g->required &&
+                           yyjson::detail::bounds_disjoint(bound_of(f.type, f.set), bound_of(g->type, g->set));
+                });
+            }
+
+            // makes `T()` end for every struct: a variant whose first alternative holds the variant again takes an
+            // alternative that ends first, and a field held through indirect that no value ends holds null too
+            void end_defaults()
+            {
+                for (;;)
+                {
+                    const auto l1 = struct_levels(nullptr);
+                    const auto l2 = struct_levels(&l1);
+                    field* found = nullptr;
+                    for (std::size_t i = 0; i < decls_.size() && found == nullptr; ++i)
+                        if (decls_[i].kind == decl::kind_t::structure && l2[i] == unending)
+                            for (auto& f : decls_[i].fields)
+                                if (f.type.k == tk::indirect && level_of(f.type.args[0], l2, &l1) == unending)
+                                {
+                                    found = &f;
+                                    break;
+                                }
+                    if (found == nullptr)
+                    {
+                        reorder_alternatives(l1, l2);
+                        return;
+                    }
+                    const auto& held = resolved(found->type.args[0]);
+                    warn(found->loc,
+                         "a default-constructed " + spell(found->type.args[0]) + " holds this field again without end" +
+                             (held.k == tk::variant ? " (no alternative that ends can come first: an alternative "
+                                                      "before it would read its values)"
+                                                    : "") +
+                             "; the field is std::variant<std::monostate, ...> and reads null too");
+                    found->type = make(tk::variant, {make(tk::monostate), std::move(found->type)});
+                }
+            }
+
+            void reorder_alternatives(const std::vector<int>& l1, const std::vector<int>& l2)
+            {
+                // before the alternatives inside, which the depths of the structs saw as they were
+                const auto visit = [&](const auto& self, ctype& t, std::vector<std::string>* ids) -> void {
+                    if (t.k == tk::named) return;
+                    if (t.k == tk::variant && !t.args.empty() && level_of(t.args[0], l1, nullptr) == unending)
+                    {
+                        auto best = std::size_t{0};
+                        auto level = unending;
+                        for (std::size_t k = 0; k < t.args.size(); ++k)
+                            if (const auto n = can_come_first(t, k) ? level_of(t.args[k], l2, &l1) : unending;
+                                n < level)
+                            {
+                                best = k;
+                                level = n;
+                            }
+                        if (best != 0)
+                        {
+                            const auto rotate = [&](auto& v) {
+                                if (v.size() == t.args.size())
+                                    std::rotate(v.begin(), v.begin() + static_cast<std::ptrdiff_t>(best),
+                                                v.begin() + static_cast<std::ptrdiff_t>(best) + 1);
+                            };
+                            rotate(t.args);
+                            rotate(t.sets);
+                            rotate(t.metas);
+                            if (ids != nullptr) rotate(*ids);
+                            t.reordered = true;
+                        }
+                    }
+                    for (auto& a : t.args) self(self, a, nullptr);
+                };
+                for (auto& d : decls_)
+                {
+                    if (d.kind == decl::kind_t::alias) visit(visit, d.target, nullptr);
+                    for (auto& f : d.fields) visit(visit, f.type, nullptr);
+                }
+                // internal_tag lists the tags in the order of the alternatives
+                for (auto& n : notes_) visit(visit, n.type, &n.ids);
+            }
+
+            // the first alternative of a variant in `t` that reorder_alternatives() moved
+            static const ctype* moved_first(const ctype& t)
+            {
+                if (t.k == tk::named) return nullptr;
+                if (t.reordered) return &t.args[0];
+                for (const auto& a : t.args)
+                    if (const auto* m = moved_first(a)) return m;
+                return nullptr;
+            }
+
+            std::string moved_note(const ctype& t, std::string_view indent) const
+            {
+                const auto* m = moved_first(t);
+                if (m == nullptr) return {};
+                return std::string(indent) + "// " + spell(*m) +
+                       " comes first among the alternatives: a default-constructed value holds it,\n" +
+                       std::string(indent) + "// and the alternatives before it in the schema hold the type again\n";
             }
 
             // returns the structs in definition order
@@ -4562,8 +4784,9 @@ namespace cpp_yyjson_codegen
                         return r;
                     }
                     case tk::optional:
-                    case tk::pointer:
                         return j.is_null() ? fit::yes : fits(j, t.args[0], s);
+                    case tk::indirect:
+                        return fits(j, t.args[0], s);
                 }
                 return fit::unknown;
             }
@@ -4861,6 +5084,7 @@ namespace cpp_yyjson_codegen
             std::string render()
             {
                 break_cycles();
+                end_defaults();
                 name_members();
                 const auto structs = order_structs();
                 const auto aliases = order_aliases();
@@ -4932,6 +5156,7 @@ namespace cpp_yyjson_codegen
                             body += line.empty() ? "///\n" : "/// " + std::string(line) + "\n";
                     render_comment(body, d.meta, "");
                     if (shares_type(d.target)) body += "// alternatives share a type; use index()\n";
+                    body += moved_note(d.target, "");
                     body += "using " + d.name + " = " + spell(d.target) + ";\n\n";
                 }
 
@@ -4953,6 +5178,7 @@ namespace cpp_yyjson_codegen
                         render_comment(body, f.meta, "    ");
                         if (!f.default_note.empty()) body += "    // default: " + f.default_note + "\n";
                         if (shares_type(f.type)) body += "    // alternatives share a type; use index()\n";
+                        body += moved_note(f.type, "    ");
                         const auto fi = field_items(f);
                         body += "    ";
                         if (opts_.cpp26 && !fi.empty()) body += attributes(fi) + " ";
@@ -5050,7 +5276,12 @@ namespace cpp_yyjson_codegen
                     out +=
                         "//\n// A field with `yyjson::default_from` gets the value of the function when the key is "
                         "missing, and\n// writing leaves the key out while the field holds it: a member initializer "
-                        "cannot construct\n// a struct that holds itself or a field held through std::unique_ptr.\n";
+                        "cannot construct\n// a struct that holds itself or a field held through indirect.\n";
+                if (any_field([](const field& f) { return holds_indirect(f.type); }))
+                    out += std::string("//\n// A field that closes a cycle of structs is held through ") +
+                           (opts_.cpp26 ? "std::indirect" : "yyjson::indirect") +
+                           ", which copies the value it\n// holds. Its default constructor is explicit: a struct that "
+                           "has such a field, directly or\n// in a member, is value-initialized as `T()`, not `T{}`.\n";
                 if (std::ranges::any_of(decls_, [](const decl& d) { return d.transparent; }))
                     out +=
                         "//\n// A struct with `yyjson::transparent` is read and written as the value of its only "

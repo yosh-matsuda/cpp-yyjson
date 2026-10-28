@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Program",
+  "type": "object",
+  "properties": {
+    "body": {"$ref": "#/$defs/Expr"},
+    "tree": {"$ref": "#/$defs/Node"}
+  },
+  "required": ["body"],
+  "$defs": {
+    "Expr": {
+      "type": "object",
+      "properties": {
+        "op": {"type": "string", "default": "+"},
+        "lhs": {"oneOf": [{"$ref": "#/$defs/Expr"}, {"$ref": "#/$defs/Literal"}]},
+        "rhs": {"oneOf": [{"$ref": "#/$defs/Expr"}, {"$ref": "#/$defs/Literal"}]}
+      },
+      "required": ["op", "lhs", "rhs"],
+      "additionalProperties": false
+    },
+    "Literal": {
+      "type": "object",
+      "properties": {"value": {"type": "number"}},
+      "required": ["value"],
+      "additionalProperties": false
+    },
+    "Node": {
+      "type": "object",
+      "properties": {
+        "name": {"type": "string"},
+        "children": {"type": "array", "items": {"$ref": "#/$defs/Node"}},
+        "parent": {"anyOf": [{"$ref": "#/$defs/Node"}, {"type": "null"}], "default": null},
+        "first": {"$ref": "#/$defs/Node", "default": {"name": "root"}}
+      },
+      "required": ["name"]
+    }
+  }
+}

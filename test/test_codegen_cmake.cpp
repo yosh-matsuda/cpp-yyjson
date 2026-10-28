@@ -1,6 +1,7 @@
 // Types generated at build time by cpp_yyjson_generate() from codegen/order.schema.json, which
 // references codegen/customer.schema.json, from codegen/defaults.schema.json, from
-// codegen/alternatives.schema.json and from codegen/patterns.schema.json.
+// codegen/alternatives.schema.json, from codegen/patterns.schema.json and from
+// codegen/recursion.schema.json.
 #include <gtest/gtest.h>
 
 #include <cpp_yyjson.hpp>
@@ -20,6 +21,7 @@ struct yyjson::pattern_matcher<>
 #include "defaults.hpp"
 #include "order.hpp"
 #include "patterns.hpp"
+#include "recursion.hpp"
 
 TEST(CodegenCMake, ReadWrite)
 {
@@ -154,4 +156,40 @@ TEST(CodegenCMake, PatternProperties)
     EXPECT_THROW((void)yyjson::read<model::Extensions>(R"({"rate":1})"), yyjson::bad_cast);
     EXPECT_THROW((void)yyjson::read<model::Extensions>(R"({"x-rate":-1})"), yyjson::bad_cast);
     EXPECT_THROW((void)yyjson::read<model::Extensions>(R"({"headers":{"accept":"*"}})"), yyjson::bad_cast);
+}
+
+TEST(CodegenCMake, Recursion)
+{
+    // a default-constructed value ends: Literal comes first among the alternatives
+    const auto empty = model::Program();
+    EXPECT_EQ(yyjson::write(empty), R"({"body":{"op":"+","lhs":{"value":0.0},"rhs":{"value":0.0}}})");
+
+    const auto json = R"({"body":{"op":"*","lhs":{"op":"+","lhs":{"value":1.0},"rhs":{"value":2.0}},)"
+                      R"("rhs":{"value":3.0}},"tree":{"name":"a","children":[{"name":"b","parent":{"name":"a"}}]}})";
+    const auto program = yyjson::read<model::Program>(json, yyjson::strict);
+    ASSERT_EQ(program.body.lhs->index(), 1U);
+    EXPECT_EQ(std::get<1>(*program.body.lhs).op, "+");
+    EXPECT_EQ(std::get<0>(*program.body.rhs).value, 3.0);
+
+    // a missing key of a field held through indirect reads the default; writing leaves it out again
+    ASSERT_TRUE(program.tree.has_value());
+    ASSERT_TRUE(program.tree->first.has_value());
+    EXPECT_EQ((*program.tree->first)->name, "root");
+    EXPECT_EQ(program.tree->parent.index(), 0U);
+    const auto& child = program.tree->children->at(0);
+    ASSERT_EQ(child.parent.index(), 1U);
+    EXPECT_EQ(std::get<1>(child.parent)->name, "a");
+    EXPECT_EQ(yyjson::write(program), json);
+    EXPECT_EQ(yyjson::value(program).write(), json);
+    EXPECT_NO_THROW(yyjson::validate(program));
+
+    // indirect copies what it holds
+    auto copy = program;
+    std::get<1>(*copy.body.lhs).op = "-";
+    EXPECT_EQ(std::get<1>(*program.body.lhs).op, "+");
+    EXPECT_NE(yyjson::write(copy), json);
+
+    // Literal and Expr are closed, so one_of reads each object as one of them
+    EXPECT_THROW((void)yyjson::read<model::Program>(R"({"body":{"op":"+","lhs":{},"rhs":{"value":1}}})"),
+                 yyjson::bad_cast);
 }

@@ -158,12 +158,13 @@ TEST(Codegen, Recursion)
     EXPECT_EQ(warnings(r), "");
     EXPECT_TRUE(has(r.code, "struct Node;\n"));
     EXPECT_TRUE(has(r.code, "    std::optional<std::vector<Node>> children;\n"));
-    // only std::optional is left out when empty, so a field that may be absent keeps it
-    EXPECT_TRUE(has(r.code, "    std::optional<std::unique_ptr<Node>> next;\n"));
-    EXPECT_TRUE(has(r.code, "    std::unique_ptr<Node> parent;\n"));
-    // an empty std::unique_ptr is null, so the variant inside it has no std::monostate
-    EXPECT_TRUE(has(r.code, "    std::optional<std::unique_ptr<yyjson::any_of<std::string, Node>>> link;\n"));
-    EXPECT_TRUE(has(r.code, "    std::optional<std::unique_ptr<yyjson::one_of<Leaf, Node>>> shape;\n"));
+    EXPECT_TRUE(has(r.code, "    std::optional<yyjson::indirect<Node>> next;\n"));
+    // yyjson::indirect always holds a value, so null stays std::monostate outside it
+    EXPECT_TRUE(has(r.code, "    std::variant<std::monostate, yyjson::indirect<Node>> parent;\n"));
+    EXPECT_TRUE(has(r.code, "    std::optional<std::variant<std::monostate, "
+                            "yyjson::indirect<yyjson::any_of<std::string, Node>>>> link;\n"));
+    EXPECT_TRUE(has(r.code, "    std::optional<std::variant<std::monostate, "
+                            "yyjson::indirect<yyjson::one_of<Leaf, Node>>>> shape;\n"));
     EXPECT_TRUE(has(r.code, "yyjson::field(\"parent\", yyjson::required)"));
     EXPECT_FALSE(has(r.code, "struct Root"));
 }
@@ -177,7 +178,8 @@ TEST(Codegen, RecursionThroughTaggedVariant)
     }})",
                             {});
     EXPECT_EQ(warnings(r), "");
-    EXPECT_TRUE(has(r.code, "    std::optional<std::unique_ptr<std::variant<Leaf, Node>>> shape;\n"));
+    EXPECT_TRUE(has(r.code, "    std::optional<std::variant<std::monostate, "
+                            "yyjson::indirect<std::variant<Leaf, Node>>>> shape;\n"));
     EXPECT_TRUE(has(r.code,
                     "yyjson::annotations<std::variant<Leaf, Node>> = yyjson::annotate(\n"
                     "    yyjson::internal_tag(\"kind\", {\"leaf\", \"node\"}));"));
@@ -212,7 +214,82 @@ TEST(Codegen, RecursionThroughKeywords)
     EXPECT_TRUE(has(r.code, "std::optional<std::vector<yyjson::any_of<RootItemsItemOption1, Root>>> items;\n"));
     EXPECT_TRUE(has(r.code, "    std::optional<T> a;\n"));
     EXPECT_TRUE(has(r.code, "    std::optional<T> b;\n"));
-    EXPECT_TRUE(has(r.code, "    std::optional<std::unique_ptr<T>> self;\n"));
+    EXPECT_TRUE(has(r.code, "    std::optional<yyjson::indirect<T>> self;\n"));
+}
+
+TEST(Codegen, RequiredRecursion)
+{
+    const auto r = generate(R"({
+        "type": "object",
+        "properties": {"b": {"$ref": "#/$defs/Binary"}, "t": {"$ref": "#/$defs/Tagged"},
+                       "a": {"$ref": "#/$defs/Open"}, "n": {"$ref": "#/$defs/Node"}},
+        "required": ["b", "t", "a", "n"],
+        "$defs": {
+            "Binary": {"type": "object", "properties": {
+                "lhs": {"oneOf": [{"$ref": "#/$defs/Binary"}, {"$ref": "#/$defs/Literal"}]},
+                "rhs": {"anyOf": [{"$ref": "#/$defs/Binary"}, {"$ref": "#/$defs/Literal"}, {"type": "null"}]}},
+                "required": ["lhs", "rhs"], "additionalProperties": false},
+            "Literal": {"type": "object", "properties": {"value": {"type": "number"}}, "required": ["value"],
+                        "additionalProperties": false},
+            "Tagged": {"type": "object", "properties": {"kind": {"const": "t"},
+                "e": {"oneOf": [{"$ref": "#/$defs/Tagged"}, {"type": "object", "title": "Leaf",
+                      "properties": {"kind": {"const": "leaf"}}, "required": ["kind"]}]}},
+                "required": ["kind", "e"]},
+            "Open": {"type": "object", "properties": {"x": {"type": "integer"},
+                "e": {"anyOf": [{"$ref": "#/$defs/Open"}, {"type": "object", "title": "Leaf2",
+                      "properties": {"y": {"type": "string"}}, "required": ["y"]}]}},
+                "required": ["x", "e"]},
+            "Node": {"type": "object", "properties": {"next": {"$ref": "#/$defs/Node"}}, "required": ["next"]}
+        }
+    })",
+                            {});
+    // a default-constructed value must end, so an alternative that ends comes first
+    const std::string moved = "    // Literal comes first among the alternatives: a default-constructed value holds it,\n"
+                              "    // and the alternatives before it in the schema hold the type again\n";
+    EXPECT_TRUE(has(r.code, moved + "    yyjson::indirect<yyjson::one_of<Literal, Binary>> lhs;\n"));
+    // the closed structs read disjoint objects, so any_of may read Literal first too
+    EXPECT_TRUE(has(r.code, moved + "    std::variant<std::monostate, "
+                                    "yyjson::indirect<yyjson::any_of<Literal, Binary>>> rhs;\n"));
+    // the tag values follow the alternatives
+    EXPECT_TRUE(has(r.code, "    yyjson::indirect<std::variant<Leaf, Tagged>> e;\n"));
+    EXPECT_TRUE(has(r.code, "yyjson::annotations<std::variant<Leaf, Tagged>> = yyjson::annotate(\n"
+                            "    yyjson::internal_tag(\"kind\", {\"leaf\", \"t\"}));\n"));
+    // an open Open reads every Leaf2, so Leaf2 cannot come first; null ends the value instead
+    EXPECT_TRUE(has(r.code, "    std::variant<std::monostate, yyjson::indirect<yyjson::any_of<Open, Leaf2>>> e;\n"));
+    EXPECT_TRUE(has(r.code, "    std::variant<std::monostate, yyjson::indirect<Node>> next;\n"));
+    EXPECT_EQ(warnings(r),
+              "#/$defs/Open/properties/e: a default-constructed yyjson::any_of<Open, Leaf2> holds this field again "
+              "without end (no alternative that ends can come first: an alternative before it would read its "
+              "values); the field is std::variant<std::monostate, ...> and reads null too\n"
+              "#/$defs/Node/properties/next: a default-constructed Node holds this field again without end; the "
+              "field is std::variant<std::monostate, ...> and reads null too\n");
+    // the field that holds indirect has no member initializer, and T() constructs the struct
+    EXPECT_TRUE(has(r.code, "is value-initialized as `T()`, not `T{}`"));
+}
+
+TEST(Codegen, RecursionDefaults)
+{
+    const auto r = generate(R"({
+        "$ref": "#/$defs/Node",
+        "$defs": {
+            "Node": {"type": "object", "properties": {
+                "next": {"$ref": "#/$defs/Node", "default": {"v": 5}},
+                "prev": {"anyOf": [{"$ref": "#/$defs/Node"}, {"type": "null"}], "default": null},
+                "req": {"anyOf": [{"$ref": "#/$defs/Node"}, {"type": "null"}], "default": null},
+                "v": {"type": "integer"}
+            }, "required": ["req"]}
+        }
+    })",
+                            {});
+    EXPECT_EQ(warnings(r), "");
+    EXPECT_TRUE(has(r.code, "    std::optional<yyjson::indirect<Node>> next;\n"));
+    EXPECT_TRUE(has(r.code, "inline Node Node_next_default()\n{\n    return Node{.v = 5};\n}\n"));
+    EXPECT_TRUE(has(r.code, "yyjson::field(\"next\", yyjson::default_from<&Node_next_default>)"));
+    // a null default is the default-constructed variant
+    EXPECT_TRUE(has(r.code, "    std::variant<std::monostate, yyjson::indirect<Node>> prev;\n"));
+    EXPECT_TRUE(has(r.code, "yyjson::field(\"prev\", yyjson::omit_default)"));
+    EXPECT_TRUE(has(r.code, "    std::variant<std::monostate, yyjson::indirect<Node>> req;\n"));
+    EXPECT_TRUE(has(r.code, "yyjson::field(\"req\", yyjson::required)"));
 }
 
 TEST(Codegen, DefinitionOrder)
@@ -241,7 +318,7 @@ TEST(Codegen, DefinitionOrder)
     EXPECT_LT(at("A"), at("Root"));
     EXPECT_LT(at("J"), at("I"));
     EXPECT_TRUE(has(r.code, "    std::optional<J> j;\n"));
-    EXPECT_FALSE(has(r.code, "unique_ptr"));
+    EXPECT_FALSE(has(r.code, "indirect"));
 }
 
 TEST(Codegen, Variants)
@@ -680,7 +757,7 @@ TEST(Codegen, Defaults)
     EXPECT_FALSE(has(o.code, "omit_default"));
     EXPECT_EQ(warnings(o), "");
 
-    // yyjson::omit_default compares as JSON, also a struct that holds a std::unique_ptr
+    // yyjson::omit_default compares as JSON, also a struct that holds a yyjson::indirect
     const auto v = generate(R"({"type": "object", "properties": {"list": {"type": "array", "default": [],
                                 "items": {"$ref": "#/$defs/N"}}},
                                 "$defs": {"N": {"type": "object", "properties": {"next": {"$ref": "#/$defs/N"}}}}})",
@@ -820,17 +897,19 @@ TEST(Codegen, DefaultFunctions)
         }
     })",
                             {});
-    // a field held through std::unique_ptr gets the held value; the name has no "__", which is reserved
-    EXPECT_TRUE(has(r.code, "    std::optional<std::unique_ptr<T>> not_;\n"));
+    // a field held through yyjson::indirect gets the held value; the name has no "__", which is reserved
+    EXPECT_TRUE(has(r.code, "    std::optional<yyjson::indirect<T>> not_;\n"));
     EXPECT_TRUE(has(r.code, "T T_not_default();\n"));
     EXPECT_TRUE(has(r.code, "inline T T_not_default()\n{\n    return T{.name = \"n\"};\n}\n"));
     EXPECT_TRUE(has(r.code, "yyjson::field(\"not_\", yyjson::rename(\"not\"), yyjson::default_from<&T_not_default>)"));
     EXPECT_TRUE(has(r.code, "T T_id_default();\n"));
     EXPECT_TRUE(has(r.code, "yyjson::field(\"_id\", yyjson::default_from<&T_id_default>)"));
-    // std::initializer_list copies its elements, which a struct that holds a std::unique_ptr does not allow
-    EXPECT_TRUE(has(r.code, "    // default: [{\"name\":\"x\"}]\n    std::optional<std::vector<T>> children;\n"));
-    EXPECT_EQ(warnings(r), "#/$defs/T/properties/children: the default [{\"name\":\"x\"}] is not converted to the C++ "
-                           "type; the field is std::optional\n");
+    // std::initializer_list copies its elements, which yyjson::indirect allows
+    EXPECT_TRUE(has(r.code, "    std::vector<T> children;\n"));
+    EXPECT_TRUE(
+        has(r.code, "inline std::vector<T> T_children_default()\n{\n    return std::vector<T>{T{.name = \"x\"}};\n}\n"));
+    EXPECT_TRUE(has(r.code, "yyjson::field(\"children\", yyjson::default_from<&T_children_default>)"));
+    EXPECT_EQ(warnings(r), "");
 }
 
 TEST(Codegen, RequiredGroups)
@@ -1348,7 +1427,7 @@ TEST(Codegen, TransparentRoot)
         generate(R"({"type": "array", "items": {"type": "integer"}, "title": "Ns", "description": "d"})", {});
     EXPECT_TRUE(has(titled.code, "/// Ns\n/// d\nusing Ns = std::vector<std::int64_t>;\n"));
 
-    // uniqueItems compares the elements as JSON, also structs that hold a std::unique_ptr
+    // uniqueItems compares the elements as JSON, also structs that hold a yyjson::indirect
     const auto unique =
         generate(R"({"type": "array", "uniqueItems": true, "title": "Ns", "items": {"$ref": "#/$defs/N"},
                      "$defs": {"N": {"type": "object", "properties": {"next": {"$ref": "#/$defs/N"}}}}})",
