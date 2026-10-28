@@ -258,7 +258,28 @@ A type array becomes a `std::variant`: its alternatives have different kinds, so
 
 ### Recursion and order
 
-A type that holds itself through a container, such as `std::vector<Node>` or `std::map<std::string, Node>`, holds it as it is. A type that holds itself directly holds a `std::unique_ptr`: `std::unique_ptr<Node>` for a required property, `std::optional<std::unique_ptr<Node>>` for an optional one. The types are defined in the order of their dependencies, after forward declarations of the structs.
+A type that holds itself through a container, such as `std::vector<Node>` or `std::map<std::string, Node>`, holds it as it is. A struct that would hold itself by value, directly or through other structs, holds the field that closes the cycle through [`yyjson::indirect`](conversions.md#fields-of-the-type-that-holds-them), which copies the value it holds, so the structs stay copyable. `--cpp26` gives `std::indirect` instead.
+
+| Property | Member |
+| --- | --- |
+| required | `yyjson::indirect<Node>` |
+| not required | `std::optional<yyjson::indirect<Node>>` |
+| nullable, such as `{"anyOf": [{"$ref": "#/$defs/Node"}, {"type": "null"}]}` | `std::variant<std::monostate, yyjson::indirect<Node>>` |
+
+The default constructor of `indirect` is `explicit` and makes the value it holds, so a generated struct with such a member, directly or in a member, is value-initialized as `T()`, not `T{}`, and the member has no initializer. `T()` has to end: a required member that holds its struct again through the alternatives of a variant has an alternative that ends at index 0, with a comment that names it. For `oneOf` and a tagged variant, any alternative can come first. For `anyOf` and an untagged `std::variant`, which read the first alternative that accepts the value, an alternative moves ahead only of those that read none of its values. When no alternative can come first, the member is `std::variant<std::monostate, yyjson::indirect<...>>` with a warning and reads `null` too; `--strict` makes it an error:
+
+```cpp
+struct Expr
+{
+    std::string op = "+";
+    // Literal comes first among the alternatives: a default-constructed value holds it,
+    // and the alternatives before it in the schema hold the type again
+    yyjson::indirect<yyjson::one_of<Literal, Expr>> lhs;
+    // ...
+};
+```
+
+The types are defined in the order of their dependencies, after forward declarations of the structs.
 
 A schema that refers to itself without an object between cannot be a C++ type, since an alias cannot name itself. The reference becomes `yyjson::value` with a warning: the root `{"anyOf": [{"type": "string"}, {"type": "array", "items": {"$ref": "#"}}]}` is `yyjson::any_of<std::string, std::vector<yyjson::value>>`.
 
@@ -294,12 +315,12 @@ yyjson::value any = yyjson::value(yyjson::read(R"({"k":[1,"x"]})"));
 *   A variant holds the first alternative that reads the default; a tagged variant the alternative of its tag.
 *   A designated initializer that leaves members out comes with `#pragma GCC diagnostic ignored "-Wmissing-field-initializers"`, as the members left out keep their own initializers. The keys of the default that name no member go to the field of `yyjson::extra_keys` of an open struct, or are left out when it has none.
 *   `yyjson::value` and `yyjson::object` read the default as JSON when the object is constructed.
-*   A struct that would construct itself, and a member held through `std::unique_ptr`, get [`yyjson::default_from<&f>`](reference.md#yyjsondefault_from) instead, with a function `f` defined after the structs, such as `T_children_default()`.
+*   A struct that would construct itself, and a member held through `yyjson::indirect`, get [`yyjson::default_from<&f>`](reference.md#yyjsondefault_from) instead, with a function `f` defined after the structs, such as `T_children_default()`.
 *   `null` as the default of a type that does not take `null` means "unset": the member is `std::optional<T>`.
 *   A default of `float` that rounds to infinity is not converted, as reading throws on it; one that rounds to zero is `0.0f`, the value that reading gives.
 *   A property that `dependentRequired` requires, or that a group of `oneOf` / `anyOf` of `required` counts, is `std::optional<T>` with a `// default:` comment, without a warning: `write` would leave out a key that holds the default, and the document would lack a key that the schema requires.
 
-A default that the generator cannot convert makes the member `std::optional<T>` with a `// default:` comment and a warning, and the program applies the default. This happens for a default that does not read as the type, such as a key that a closed struct does not have, for the default of a variant whose alternative the generator cannot choose, because an alternative depends on a `pattern`, a `contains` or a `format` that it does not check, and for a `std::vector` of structs that hold a `std::unique_ptr`, which `std::initializer_list` cannot copy.
+A default that the generator cannot convert makes the member `std::optional<T>` with a `// default:` comment and a warning, and the program applies the default. This happens for a default that does not read as the type, such as a key that a closed struct does not have, for the default of a variant whose alternative the generator cannot choose, because an alternative depends on a `pattern`, a `contains` or a `format` that it does not check.
 
 `--optional-defaults` makes every member with a default `std::optional<T>` with a `// default:` comment: a missing key reads as `std::nullopt`, which tells it apart from a key that holds the default.
 

@@ -91,6 +91,7 @@ This page lists the functions, classes and other entities of cpp-yyjson, grouped
     *   [Strings that a mutable document is built from](#strings-that-a-mutable-document-is-built-from)
     *   [Written strings and allocators](#written-strings-and-allocators)
 *   [Utilities](#utilities)
+    *   [`yyjson::indirect`](#yyjsonindirect)
     *   [`yyjson::overloaded`](#yyjsonoverloaded)
 *   [Build configuration](#build-configuration)
     *   [Headers](#headers)
@@ -1683,7 +1684,7 @@ template <auto F>
 inline constexpr default_from_t default_from = /* ... */;
 ```
 
-`F` is a function or a lambda without captures that takes no arguments, as in `yyjson::default_from<&f>` and `yyjson::default_from<[] { return 3; }>`. It returns the value that the field holds: `U` for a field of `U`, and also for a field of `std::optional<U>`, `std::unique_ptr<U>`, `std::shared_ptr<U>` or `std::variant<std::monostate, U>`, nested or not, which the library wraps around the value. It is for a default that a member initializer cannot give, such as one that holds the struct itself.
+`F` is a function or a lambda without captures that takes no arguments, as in `yyjson::default_from<&f>` and `yyjson::default_from<[] { return 3; }>`. It returns the value that the field holds: `U` for a field of `U`, and also for a field of `std::optional<U>`, `std::unique_ptr<U>`, `std::shared_ptr<U>`, `yyjson::indirect<U>` or `std::variant<std::monostate, U>`, nested or not, which the library wraps around the value. It is for a default that a member initializer cannot give, such as one that holds the struct itself.
 
 *   Reading an object without the key, by `read`, `read_into` and `cast`, gives the field what `F` makes, also under [`yyjson::strict`](#yyjsonstrict). `F` is called for each such object, and its value is not filled further, so a default that holds the struct is read in finite steps.
 *   `T()` does not call `F`, and [`yyjson::merge_into`](#yyjsonread_into-yyjsonmerge_into) keeps the field when the key is missing.
@@ -2654,6 +2655,72 @@ A [`yyjson::json_string`](#yyjsonjson_string-yyjsonkey_string) owns its buffer a
 | `stack_pool_allocator`, a `yyjson_alc` | No: the program must keep the allocator alive and unchanged while they are in use |
 
 ## Utilities
+
+### `yyjson::indirect`
+
+A value of `T` on the heap, for a struct that holds a value of its own type. It is read and written as the value of `T`. See [Fields of the type that holds them](conversions.md#fields-of-the-type-that-holds-them).
+
+```cpp
+template <typename T>
+class indirect
+{
+public:
+    using value_type = T;
+    using pointer = T*;
+    using const_pointer = const T*;
+
+    constexpr explicit indirect();                    // holds T()
+    constexpr indirect(const indirect& other);        // copies the value
+    constexpr indirect(indirect&& other) noexcept;    // other holds no value afterwards
+    template <typename U = T>
+    constexpr explicit indirect(U&& u);               // T(std::forward<U>(u)); a class T from T or a class derived from T only
+    template <typename... Us>
+    constexpr explicit indirect(std::in_place_t, Us&&... us);
+    template <typename I, typename... Us>
+    constexpr explicit indirect(std::in_place_t, std::initializer_list<I> il, Us&&... us);
+    constexpr ~indirect();
+
+    constexpr indirect& operator=(const indirect& other);
+    constexpr indirect& operator=(indirect&& other) noexcept;
+    template <typename U = T>
+    constexpr indirect& operator=(U&& u);             // a class T from T or a class derived from T only
+
+    constexpr const T& operator*() const& noexcept;   // and the overloads for T&, const T&& and T&&
+    constexpr const_pointer operator->() const noexcept;
+    constexpr pointer operator->() noexcept;
+    constexpr bool valueless_after_move() const noexcept;
+
+    constexpr void swap(indirect& other) noexcept;
+    friend constexpr void swap(indirect& lhs, indirect& rhs) noexcept;
+};
+template <typename T>
+indirect(T) -> indirect<T>;
+
+// ==, <=> of two indirects and of an indirect and a value, by the values they hold;
+// one that holds no value compares equal to another that holds none and less than any other
+template <typename T>
+struct std::hash<yyjson::indirect<T>>;  // when std::hash<T> is enabled
+```
+
+The interface is that of `std::indirect` of C++26 without the allocator, so that a program can change to `std::indirect` by the name. It differs in one place: a class `T` is constructed and assigned directly only from a `T` or a class derived from `T`, and other arguments go after `std::in_place`. `std::indirect` takes any argument that `T` is constructible from, and asking whether a struct is constructible from an argument then asks the same of the struct again through its member, which fails to compile.
+
+*   `T` may be incomplete where `indirect<T>` is the type of a member.
+*   Dereferencing an `indirect` that has been moved from is undefined; writing it throws `yyjson::bad_cast`, and reading into it gives it a new value.
+*   The default constructor is `explicit`. A struct with a member of `indirect<U>` is value-initialized as `S()`, not `S{}`.
+*   `std::indirect` is read and written in the same way; `yyjson::indirect` is not an alias of it under C++26.
+
+```cpp
+struct Expr
+{
+    std::string op;
+    std::optional<yyjson::indirect<Expr>> lhs;
+};
+
+auto expr = Expr{.op = "-", .lhs = yyjson::indirect<Expr>(Expr{.op = "1", .lhs = std::nullopt})};
+yyjson::write(expr);  // -> {"op":"-","lhs":{"op":"1"}}
+
+auto text = yyjson::indirect<std::string>(std::in_place, "text");  // not from "text" alone: std::string is a class
+```
 
 ### `yyjson::overloaded`
 

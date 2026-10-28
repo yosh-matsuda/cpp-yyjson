@@ -159,6 +159,7 @@ The [constraints](validation.md#constraints) are in both schemas. A plain `write
 | `std::tuple<>` | `{"type": "object", "maxProperties": 0}`, as it is written |
 | `std::optional<T>` as a field | the schema of `T`, and the key is not required |
 | `std::optional<T>` elsewhere, `std::unique_ptr<T>`, `std::shared_ptr<T>` | `{"anyOf": [T, {"type": "null"}]}` |
+| [`yyjson::indirect<T>`](conversions.md#fields-of-the-type-that-holds-them), `std::indirect<T>` | the schema of `T` |
 | `std::variant` | `anyOf` of the alternatives |
 | [`yyjson::any_of`, `yyjson::one_of`](conversions.md#alternatives-with-constraints) | `anyOf` and `oneOf` of the alternatives, each the schema of its type with the constraints, the settings of the elements and the metadata of its `yyjson::alt`. In place unless [`yyjson::schema_name`](#names-of-types) puts it in `$defs`. A default value that two alternatives of a `yyjson::one_of` read, or that breaks the settings of the alternative that holds it, is not written |
 | a variant with [`yyjson::internal_tag`](reference.md#yyjsoninternal_tag-yyjsonadjacent_tag) | `oneOf` of the alternatives, each an object with `{"const": id}` for the tag key, which is required. A struct alternative is written in place with the tag among its properties, also through a pointer, a `std::optional`, a translator or another variant tagged in the same object; any other alternative has the tag in `allOf` beside its schema |
