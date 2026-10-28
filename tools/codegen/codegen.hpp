@@ -3738,6 +3738,8 @@ namespace cpp_yyjson_codegen
                 for (std::size_t i = 0; i < schemas.size(); ++i)
                 {
                     const auto* n = normalize_full(schemas[i], locs[i]);
+                    // {"allOf": [{"$ref": ...}]} beside metadata, which normalizing keeps as the reference
+                    if (is_pure_ref(*n)) n = normalize_full(n, locs[i]);
                     norm.push_back(n);
                     if (is_null_schema(*n))
                         ++nulls;

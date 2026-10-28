@@ -413,6 +413,31 @@ TEST(Codegen, Variants)
                     "    yyjson::internal_tag(\"kind\", {\"circle\", \"square\"}));"));
 }
 
+TEST(Codegen, TaggedVariantsThroughAllOf)
+{
+    // an alternative that refers to its struct inside `allOf`, beside metadata, is told by the tag too
+    const auto r = generate(R"({
+        "type": "object",
+        "properties": {
+            "shape": {"oneOf": [
+                {"allOf": [{"$ref": "#/$defs/Circle"}, {"description": "a circle"}]},
+                {"allOf": [{"$ref": "#/$defs/Square"}]}
+            ]}
+        },
+        "$defs": {
+            "Circle": {"type": "object", "properties": {"kind": {"const": "circle"}, "r": {"type": "number"}},
+                       "required": ["kind"]},
+            "Square": {"type": "object", "properties": {"kind": {"const": "square"}}, "required": ["kind"]}
+        }
+    })",
+                            {});
+    EXPECT_EQ(warnings(r), "");
+    EXPECT_TRUE(has(r.code, "    std::optional<std::variant<Circle, Square>> shape;\n"));
+    EXPECT_TRUE(has(r.code,
+                    "yyjson::annotations<std::variant<Circle, Square>> = yyjson::annotate(\n"
+                    "    yyjson::internal_tag(\"kind\", {\"circle\", \"square\"}));"));
+}
+
 TEST(Codegen, NullableTaggedVariants)
 {
     // null of the base type is an alternative when the subschemas let it through: anyOf when one does, oneOf when
