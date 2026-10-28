@@ -123,6 +123,7 @@ cpp-yyjson-codegen <schema.json> [options]
 | `--no-pattern` | Leaves out `pattern`, and the patterns of `patternProperties`, instead of writing `yyjson::pattern`. |
 | `--optional-defaults` | Makes a field with a default `std::optional<T>`, empty for a missing key, instead of a `T` that holds the default. See [Defaults](#defaults). |
 | `--keep-unknown-keys` | Gives every struct that accepts other keys a field of [`yyjson::extra_keys`](conversions.md#keys-that-name-no-field), which keeps them and writes them back. See [Keys that name no property](#keys-that-name-no-property). |
+| `--infer-types` | Reads a schema without `type` as the one type that its keywords constrain, with a warning, instead of as every kind of value. See [Schemas without `type`](#schemas-without-type). |
 | `--max-alternatives <n>` | Makes a variant of more than `<n>` alternatives `yyjson::value`, with a warning. The default, `0`, sets no limit. See [Large variants](#large-variants). |
 | `--strict` | Treats the warnings as errors. |
 
@@ -145,7 +146,8 @@ cpp_yyjson_generate(my_app schemas/order.schema.json NAMESPACE shop)
 cpp_yyjson_generate(<target> <schema>
                     [OUTPUT <header>] [PUBLIC | PRIVATE | INTERFACE]
                     [NAMESPACE <ns>] [ROOT_NAME <name>] [MAX_ALTERNATIVES <n>]
-                    [CPP26] [NO_PATTERN] [OPTIONAL_DEFAULTS] [KEEP_UNKNOWN_KEYS] [STRICT]
+                    [CPP26] [NO_PATTERN] [OPTIONAL_DEFAULTS] [KEEP_UNKNOWN_KEYS] [INFER_TYPES]
+                    [STRICT]
                     [DEPENDS <file>...])
 ```
 
@@ -168,12 +170,12 @@ Where C++ or the library cannot express a keyword, the generator leaves it out a
 The rule has exceptions, where valid JSON is not read:
 
 *   An integer outside the range of the C++ type. An `integer` is `std::int64_t`, or `std::uint64_t` when its bounds reach above the range of `std::int64_t`.
-*   A schema without `type` whose keywords belong to one type: `{"maxLength": 3}` is read as a string, while JSON Schema accepts any value that is not a string. The generator warns: "the schema has no `type`; it is read as string from its keywords".
-*   A `format` or a `pattern` that the library checks differently from a validator. JSON Schema 2020-12 treats `format` as an annotation by default, so a validator may accept a string that `yyjson::format` rejects; see [Formats and validators](json-schema.md#formats-and-validators).
+*   With `--infer-types`, a schema without `type` whose keywords belong to one type: `{"maxLength": 3}` is read as a string, while JSON Schema accepts any value that is not a string. The generator warns: "the schema has no `type`; it is read as string from its keywords". Without the option, such a schema reads every kind of value; see [Schemas without `type`](#schemas-without-type).
+*   A `format` or a `pattern` that the library checks differently from a validator. JSON Schema 2020-12 treats `format` as an annotation by default, so a validator may accept a string that `yyjson::format` rejects; see [Formats and validators](json-schema.md#formats-and-validators). The generator writes `yyjson::format` without a warning, as the optional format tests of the JSON-Schema-Test-Suite expect.
 *   The exceptions of the library itself, such as a key repeated in an object under `yyjson::strict`; see [What the schema guarantees](json-schema.md#what-the-schema-guarantees).
 *   The settings that the [warnings of contradictory settings](#contradictory-settings) name.
 
-`test/test_codegen.cpp` checks the mapping, and the generator was run over the [JSON-Schema-Test-Suite](https://github.com/json-schema-org/JSON-Schema-Test-Suite) and the schemas of [SchemaStore](https://www.schemastore.org/): in the test suite, no valid document is rejected without a warning.
+`test/test_codegen.cpp` checks the mapping, and the generator was run over the [JSON-Schema-Test-Suite](https://github.com/json-schema-org/JSON-Schema-Test-Suite) and the schemas of [SchemaStore](https://www.schemastore.org/): in the test suite, no valid document is rejected without a warning, except the strings of `format.json` that 2020-12 accepts because `format` only annotates there.
 
 ## Mapping
 
@@ -198,6 +200,7 @@ Each schema maps to one C++ type:
 | `anyOf`, `oneOf` | [`yyjson::any_of`, `yyjson::one_of`](conversions.md#alternatives-with-constraints), or a `std::variant` with an internal tag; see [Variants](#variants) |
 | `allOf` | the subschemas merged into one |
 | `$ref` | the named type of the target |
+| no `type`, with keywords that constrain some types, such as `maxLength` or `properties` | a variant of every kind; see [Schemas without `type`](#schemas-without-type) |
 | `{}`, `true`, no keyword of a type | [`yyjson::value`](reference.md#yyjsonvalue) |
 
 The keywords that constrain a value become the [constraints](validation.md#constraints) of the same name: `minimum` becomes `yyjson::minimum`, `items` with constraints becomes `yyjson::items(...)`, `propertyNames` becomes `yyjson::property_names(...)`, and so on. The `format`s that the library checks become `yyjson::format`; the others are left out, with a warning for `idn-email`, `idn-hostname`, `iri`, `iri-reference` and `regex`.
@@ -262,6 +265,29 @@ A type array becomes a `std::variant`: its alternatives have different kinds, so
 The compiler takes time and memory for a `std::variant` that grow faster than the square of the number of its alternatives: libstdc++ instantiates its copy, move and assignment once per pair of alternatives, and each of these names spells the remaining alternatives again. A schema that lists every kind of a plugin in one `oneOf` gives a variant of hundreds of structs. In the schema of [Kestra](https://kestra.io/) 0.18, the tasks are a `oneOf` of 447 objects, used at 32 places; a translation unit that reads the root type ran out of 60 GB with Clang 22 at `-O0`, and took 58 minutes and 53 GB with GCC 15.
 
 `--max-alternatives <n>` makes a variant of more than `<n>` alternatives, counting `std::monostate` for `null`, a `yyjson::value`, with a warning. The structs of its alternatives are still generated, so the program reads one of them from the value with `cast<T>()` once it knows which; the value itself reads any JSON without the checks of the alternatives, as the [rule](#what-the-generated-code-guarantees) allows. With `--max-alternatives 64`, the translation unit of Kestra above takes 23 seconds and 2.1 GB with Clang 22 at `-O0`, and 25 seconds and 3.2 GB with GCC 15.
+
+### Schemas without `type`
+
+A keyword that constrains one type, such as `maxLength`, applies only to the values of that type, and JSON Schema accepts a value of any other type there. A schema without `type` whose keywords constrain some types therefore becomes a variant of the six kinds, null, boolean, number, string, array and object, in which each keyword constrains its own kind:
+
+```json
+{"maxLength": 3}
+```
+
+```cpp
+yyjson::any_of<std::monostate, bool, double, yyjson::alt<std::string, yyjson::max_length(3)>,
+               std::vector<yyjson::value>, yyjson::object>
+```
+
+*   A kind without keywords has the type of `{"type": ...}` alone: the number is `double`, as for `"type": "number"`, the array `std::vector<yyjson::value>` and the object `yyjson::object`.
+*   `properties` or `required` make the object a struct, named after its place with `Object` at the end, such as `RootOptionsObject` for the property `options` of `Root`.
+*   The variant is a `std::variant` when no alternative has settings, and a `yyjson::any_of` otherwise.
+*   A definition in `$defs` is an alias of the variant, or a [transparent struct](#recursion-and-order) that holds it when its object refers to the definition again.
+*   `contains` cannot constrain the alternatives of an element that is such a variant, and is left out with a warning.
+
+A schema without any of these keywords, such as `{"description": "..."}`, is `yyjson::value`.
+
+Many schemas leave out `type` where they mean one: `{"properties": {...}}` usually means an object. `--infer-types` reads such a schema as the one type that its keywords constrain, `std::string` for `{"maxLength": 3}` and a struct for `properties`, and gives smaller types. The code then rejects the values of the other types, which the schema accepts, so each such schema gives the warning "the schema has no `type`; it is read as string from its keywords", and `--strict` makes it an error. A schema whose keywords constrain several types is read as `yyjson::value` under the option, with a warning.
 
 ### Recursion and order
 
@@ -394,7 +420,7 @@ A warning names the location in the schema and what the generated code does inst
 | --- | --- | --- |
 | a keyword that is not supported | `if`, `then`, `else`, `not`, `dependentSchemas`, `unevaluatedProperties`, `unevaluatedItems` | reads more than the schema accepts |
 | a form that is not supported | `contains` of a type other than the element type, positions of `prefixItems` of different types, `minProperties` of a struct | reads more than the schema accepts |
-| a type inferred from keywords | "the schema has no `type`; it is read as string from its keywords" | reads only that type |
+| a type inferred from keywords, with `--infer-types` | "the schema has no `type`; it is read as string from its keywords" | reads only that type |
 | a variant of more alternatives than `--max-alternatives` | "a variant of 447 alternatives is more than 64 (--max-alternatives) ..." | reads any JSON value there |
 | a reference that cannot be followed | a missing file, a URI elsewhere | reads any JSON value there |
 | a schema that refers to itself with no array or object between | `{"anyOf": [{"$ref": "#/$defs/D"}, {"type": "string"}]}` | reads any JSON value there |
