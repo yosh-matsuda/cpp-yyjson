@@ -4773,13 +4773,14 @@ namespace yyjson
         // nested than `CPPYYJSON_RECURSION_DEPTH_LIMIT`, which could overflow the stack.  The values of other
         // types cannot be nested deeper than their definitions, and are not counted.  Nor are the standard
         // types that this library casts, such as `std::shared_ptr<T>` of a recursive `T`: every cycle of
-        // types passes through a type of the user, so counting those counts each level once.
+        // types passes through a type of the user, so counting those counts each level once.  A struct annotated
+        // with `yyjson::transparent` is a type of the user too, although this library casts it.
         template <typename T>
         class recursion_guard
         {
         };
         template <typename T>
-        requires recursive_type<T> && (!std::derived_from<caster<T>, builtin_caster>) &&
+        requires recursive_type<T> && (!std::derived_from<caster<T>, builtin_caster> || transparent_struct<T>) &&
                  (CPPYYJSON_RECURSION_DEPTH_LIMIT != 0)
         class recursion_guard<T>
         {
@@ -8545,6 +8546,7 @@ namespace yyjson
         template <typename T, typename Json>
         void assign_transparent(T& t, const Json& json, bool replaceable)
         {
+            [[maybe_unused]] const auto guard = recursion_guard<T>();
             auto& field = struct_field<0>(t);
             if constexpr (visitable<T>)
                 replaceable = false;
@@ -14636,7 +14638,8 @@ namespace yyjson
         template <typename T, typename Json>
         T user_from_json(const Json& json)
         {
-            [[maybe_unused]] const auto guard = recursion_guard<T>();
+            // `assign_transparent` counts a struct annotated with `yyjson::transparent`, wherever it is read
+            [[maybe_unused]] const auto guard = recursion_guard<std::conditional_t<transparent_struct<T>, void, T>>();
             if constexpr (!from_json_translator<T>::castable)
                 return caster<T>::from_json(json);
             else if constexpr (views_copy<from_json_source<T>, Json>)
@@ -15839,6 +15842,12 @@ namespace yyjson
         }
     };
 
+    namespace detail
+    {
+        template <typename T>
+        consteval bool transparent_field_may_be_object();
+    }
+
     // A struct annotated with `yyjson::transparent`, which is read and written as the value of its only field.
     // The field is read in place as a field of a struct is, and its constraints are checked.  Null empties a
     // `std::optional` field, as it does a `std::optional` value, unless `T` is a field of a struct.
@@ -15857,7 +15866,7 @@ namespace yyjson
         // `t` is a value of its own, unless it is a field of a struct, which `detail::assign_transparent` reads
         // into instead with what the struct allows.
         template <typename Json>
-        requires field_assignable<Json, field_type>
+        requires(detail::recursive_type<T> || field_assignable<Json, field_type>)
         static void from_json(T& t, const Json& json)
         {
             if constexpr (detail::transparent_over_optional<T>)
@@ -15872,7 +15881,7 @@ namespace yyjson
         }
 
         template <typename Json>
-        requires field_assignable<Json, field_type>
+        requires(detail::recursive_type<T> || field_assignable<Json, field_type>)
         static T from_json(const Json& json)
         {
             auto t = T();
@@ -15881,10 +15890,11 @@ namespace yyjson
         }
 
         template <typename... Ts>
-        requires detail::copy_string_args<Ts...> && requires(writer::value_ref& v, const field_type& f) {
-            v = f;
-            v = std::pair<const field_type&, copy_string_t>(f, copy_string);
-        }
+        requires detail::copy_string_args<Ts...> &&
+                 (detail::recursive_type<T> || requires(writer::value_ref& v, const field_type& f) {
+                     v = f;
+                     v = std::pair<const field_type&, copy_string_t>(f, copy_string);
+                 })
         static void to_json(writer::value_ref& v, const T& t, Ts...)
         {
             if constexpr (sizeof...(Ts) != 0)
@@ -15893,10 +15903,11 @@ namespace yyjson
                 v = detail::transparent_field(t);
         }
         template <typename... Ts>
-        requires detail::copy_string_args<Ts...> && requires(writer::value_ref& v, field_type&& f) {
-            v = std::move(f);
-            v = std::pair<field_type&&, copy_string_t>(std::move(f), copy_string);
-        }
+        requires detail::copy_string_args<Ts...> &&
+                 (detail::recursive_type<T> || requires(writer::value_ref& v, field_type&& f) {
+                     v = std::move(f);
+                     v = std::pair<field_type&&, copy_string_t>(std::move(f), copy_string);
+                 })
         static void to_json(writer::value_ref& v, T&& t, Ts...)
         {
             if constexpr (sizeof...(Ts) != 0)
@@ -15907,6 +15918,7 @@ namespace yyjson
         // `yyjson::object(t)` and the like, when the field is written as an object.
         template <typename U, typename... Ts>
         requires std::same_as<std::remove_cvref_t<U>, T> && detail::copy_string_args<Ts...> &&
+                 (!detail::recursive_type<T> || detail::transparent_field_may_be_object<T>()) &&
                  requires(writer::object_ref& v, U&& t) {
                      v = detail::transparent_field(std::forward<U>(t));
                      v = std::pair<decltype(detail::transparent_field(std::forward<U>(t))), copy_string_t>(
@@ -15988,8 +16000,10 @@ namespace yyjson
         };
 
         // The kinds of JSON values from which `cast<T>(json)` may succeed.  Every kind that it does not
-        // reject at compile time is included, so that a kind left out is one that always fails.
-        template <typename T, typename Json>
+        // reject at compile time is included, so that a kind left out is one that always fails.  `Seen` are the
+        // structs with `yyjson::transparent` whose field is being asked about: one that holds itself again adds no
+        // kind there, as the kinds that it reads are those that it reads without doing so.
+        template <typename T, typename Json, typename... Seen>
         consteval std::uint16_t accepted_json_kinds()
         {
             if constexpr (!json_value_of_document<Json>)
@@ -15998,7 +16012,7 @@ namespace yyjson
             }
             else if constexpr (!std::same_as<T, std::remove_cvref_t<T>>)
             {
-                return accepted_json_kinds<std::remove_cvref_t<T>, Json>();
+                return accepted_json_kinds<std::remove_cvref_t<T>, Json, Seen...>();
             }
             else if constexpr (std::same_as<T, json_view>)
             {
@@ -16016,15 +16030,21 @@ namespace yyjson
                 else if constexpr (std::same_as<T, writer::array>)
                     return json_kind_array;
                 else if constexpr (variant_json_kinds<T>::is_variant)
-                    return variant_json_kinds<T>::template value<Json>();
+                    return variant_json_kinds<T>::template value<Json, Seen...>();
                 else if constexpr (transparent_struct<T>)
-                    return accepted_json_kinds<struct_field_type<T, 0>, Json>();
+                {
+                    if constexpr ((std::same_as<T, Seen> || ...))
+                        return 0;
+                    else
+                        return accepted_json_kinds<struct_field_type<T, 0>, Json, Seen..., T>();
+                }
                 else if constexpr (owning_pointer<T>)
-                    return json_kind_null | accepted_json_kinds<typename is_owning_pointer<T>::value_type, Json>();
+                    return json_kind_null |
+                           accepted_json_kinds<typename is_owning_pointer<T>::value_type, Json, Seen...>();
                 else if constexpr (indirect_value<T>)
-                    return accepted_json_kinds<typename T::value_type, Json>();
+                    return accepted_json_kinds<typename T::value_type, Json, Seen...>();
                 else if constexpr (is_std_optional<T>::value)
-                    return json_kind_null | accepted_json_kinds<typename T::value_type, Json>();
+                    return json_kind_null | accepted_json_kinds<typename T::value_type, Json, Seen...>();
                 else if constexpr (tuple_like<T>)
                     return json_kind_array | json_kind_object;
                 else
@@ -16032,7 +16052,7 @@ namespace yyjson
             }
             else if constexpr (from_json_translator<T>::castable)
             {
-                return accepted_json_kinds<from_json_source<T>, Json>();
+                return accepted_json_kinds<from_json_source<T>, Json, Seen...>();
             }
             else
             {
@@ -16063,18 +16083,27 @@ namespace yyjson
             return (accepted_json_kinds<T, reader::const_value_ref>() & json_kind_null) != 0;
         }
 
+        // Whether the field of a transparent struct `T` that holds itself may be an object.  Otherwise, as for a
+        // field that points to `T` again, asking whether it is written as an object would ask that of `T` again.
+        template <typename T>
+        consteval bool transparent_field_may_be_object()
+        {
+            return (accepted_json_kinds<struct_field_type<T, 0>, reader::const_value_ref, T>() & json_kind_object) !=
+                   0;
+        }
+
         template <typename... Ts>
         struct variant_json_kinds<std::variant<Ts...>>
         {
             static constexpr bool is_variant = true;
-            template <typename Json>
+            template <typename Json, typename... Seen>
             static consteval std::uint16_t value()
             {
                 using tags = variant_tags<std::variant<Ts...>>;
                 if constexpr (tags::tagging == variant_tagging::internal)
                     return tags::monostate != std::variant_npos ? json_kind_object | json_kind_null : json_kind_object;
                 else
-                    return static_cast<std::uint16_t>((0U | ... | accepted_json_kinds<Ts, Json>()));
+                    return static_cast<std::uint16_t>((0U | ... | accepted_json_kinds<Ts, Json, Seen...>()));
             }
         };
         // `yyjson::any_of` and `yyjson::one_of`, which have no tags
@@ -16082,10 +16111,10 @@ namespace yyjson
         struct alternatives_json_kinds
         {
             static constexpr bool is_variant = true;
-            template <typename Json>
+            template <typename Json, typename... Seen>
             static consteval std::uint16_t value()
             {
-                return static_cast<std::uint16_t>((0U | ... | accepted_json_kinds<Ts, Json>()));
+                return static_cast<std::uint16_t>((0U | ... | accepted_json_kinds<Ts, Json, Seen...>()));
             }
         };
         template <typename... As>
@@ -16960,23 +16989,26 @@ namespace yyjson
                 return false;
         }
 
-        template <typename T, typename Level = no_settings_level>
+        // `Seen` is a `type_list` of the structs with `yyjson::transparent` whose field is being bounded, as in
+        // `accepted_json_kinds`.
+        template <typename T, typename Level = no_settings_level, typename Seen = type_list<>>
         consteval json_bound bound_of();
 
         // The JSON values that the alternatives of V, `yyjson::any_of` or `yyjson::one_of`, read, or the types Ts
         // without settings, together.
-        template <typename V, std::size_t... Is>
+        template <typename V, typename Seen = type_list<>, std::size_t... Is>
         consteval json_bound alternatives_bound(std::index_sequence<Is...>)
         {
             auto b = json_bound{};
-            ((b = unite_bounds(b, bound_of<std::variant_alternative_t<Is, V>, alternative_level<V, Is>>())), ...);
+            ((b = unite_bounds(b, bound_of<std::variant_alternative_t<Is, V>, alternative_level<V, Is>, Seen>())),
+             ...);
             return b;
         }
-        template <typename... Ts>
+        template <typename Seen, typename... Ts>
         consteval json_bound types_bound()
         {
             auto b = json_bound{};
-            ((b = unite_bounds(b, bound_of<Ts>())), ...);
+            ((b = unite_bounds(b, bound_of<Ts, no_settings_level, Seen>())), ...);
             return b;
         }
 
@@ -16988,14 +17020,14 @@ namespace yyjson
                                      variant_tags<T>::tagging == variant_tagging::untagged);
 
         // The JSON values that a value of the type T, with the settings of `Level`, a `table_node`, reads, or more.
-        template <typename T, typename Level>
+        template <typename T, typename Level, typename Seen>
         consteval json_bound bound_of()
         {
             using U = std::remove_cv_t<T>;
             constexpr bool settings = !Level::node.empty();
             const auto bound = [](json_bound b, bool described) { return described ? b : partial_bound(b); };
             if constexpr (combined_variant<U>)
-                return bound(alternatives_bound<U>(std::make_index_sequence<std::variant_size_v<U>>{}),
+                return bound(alternatives_bound<U, Seen>(std::make_index_sequence<std::variant_size_v<U>>{}),
                              !combined_alternatives<U>::exactly_one && !settings);
             else if constexpr (std::same_as<U, writer::value> || std::same_as<U, json_view>)
                 return bound(universal_bound(), !settings);
@@ -17015,29 +17047,39 @@ namespace yyjson
             else if constexpr (std::derived_from<caster<U>, builtin_caster> && untagged_nullable<U>)
             {
                 // the settings are those of the value that it holds, and null reads none
-                auto b = bound_of<typename nullable_holder<U>::value_type, Level>();
+                auto b = bound_of<typename nullable_holder<U>::value_type, Level, Seen>();
                 b.null = bound_extent::exact;
                 return b;
             }
             else if constexpr (std::derived_from<caster<U>, builtin_caster> && indirect_value<U>)
-                return bound_of<typename U::value_type, Level>();
+                return bound_of<typename U::value_type, Level, Seen>();
             else if constexpr (variant_json_kinds<U>::is_variant && std::derived_from<caster<U>, builtin_caster>)
             {
                 if constexpr (variant_tags<U>::tagging == variant_tagging::untagged)
-                    return bound([]<typename... Ts>(std::variant<Ts...>*) { return types_bound<Ts...>(); }(
+                    return bound([]<typename... Ts>(std::variant<Ts...>*) { return types_bound<Seen, Ts...>(); }(
                                      static_cast<U*>(nullptr)),
                                  !settings);
                 else
                     return kinds_bound(accepted_json_kinds<U, reader::const_value_ref>());
             }
             else if constexpr (transparent_struct<U>)
-                return partial_bound(bound_of<struct_field_type<U, 0>>());
+            {
+                // a struct that holds itself again adds no values there, as in `accepted_json_kinds`
+                if constexpr ([]<typename... Ss>(type_list<Ss...>*) {
+                                  return (std::same_as<U, Ss> || ...);
+                              }(static_cast<Seen*>(nullptr)))
+                    return json_bound{};
+                else
+                    return partial_bound([]<typename... Ss>(type_list<Ss...>*) {
+                        return bound_of<struct_field_type<U, 0>, no_settings_level, type_list<Ss..., U>>();
+                    }(static_cast<Seen*>(nullptr)));
+            }
             else if constexpr (requires(const reader::const_value_ref& json) {
                                    { caster<U>::from_json(json) } -> std::same_as<U>;
                                })
                 return kinds_bound(accepted_json_kinds<U, reader::const_value_ref>());
             else if constexpr (from_json_translator<U>::castable)
-                return partial_bound(bound_of<from_json_source<U>>());
+                return partial_bound(bound_of<from_json_source<U>, no_settings_level, Seen>());
             else if constexpr (std::same_as<U, bool>)
             {
                 auto b = json_bound{};
@@ -17077,7 +17119,7 @@ namespace yyjson
                                accepted_json_kinds<U, reader::const_value_ref>() == json_kind_array)
             {
                 // the array of any JSON values, or a part of the arrays
-                constexpr auto element = bound_of<std::ranges::range_value_t<U>>();
+                constexpr auto element = bound_of<std::ranges::range_value_t<U>, no_settings_level, Seen>();
                 auto b = json_bound{};
                 b.array.extent = level_within<Level>(count_settings) && bound_contains(element, universal_bound())
                                      ? bound_extent::exact
@@ -20130,6 +20172,7 @@ namespace yyjson
                     }
                     else if constexpr (transparent_mergeable<T>)
                     {
+                        [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<T>();
                         auto& field = struct_field<0>(t);
                         merge_from(field, v);
                         if constexpr (yyjson::detail::constrained_field<T, 0>)
@@ -23043,6 +23086,7 @@ namespace yyjson
                             merge_tagged_variant(t);
                         else if constexpr (transparent_mergeable<T>)
                         {
+                            [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<T>();
                             merge_value(struct_field<0>(t));
                             if constexpr (yyjson::detail::constrained_field<T, 0>) check_constraints<T, 0>(t);
                         }
@@ -23632,6 +23676,7 @@ namespace yyjson
             template <typename T>
             void read_transparent_field(T& t, bool replaceable)
             {
+                [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<T>();
                 auto& field = struct_field<0>(t);
                 using field_type = std::remove_cvref_t<decltype(field)>;
                 if constexpr (yyjson::detail::visitable<T>)
