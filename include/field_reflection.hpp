@@ -1,5 +1,5 @@
 /*===================================================*
-|  field-reflection version v1.1.0                   |
+|  field-reflection version v1.1.1                   |
 |  https://github.com/yosh-matsuda/field-reflection  |
 |                                                    |
 |  Copyright (c) 2026 Yoshiki Matsuda @yosh-matsuda  |
@@ -1576,14 +1576,31 @@ namespace field_reflection
             return *std::get<N>(detail::to_ptr_tuple(t));
         }
 
+        namespace detail
+        {
+            template <std::size_t N, reflect_options Opts, typename T, typename U = std::remove_cvref_t<T>>
+            concept nothrow_field_move = std::is_nothrow_constructible_v<
+                std::decay_t<field_reflection::field_type<U, N, Opts>>,
+                decltype(forward_member<U, N>(std::get<N>(to_ptr_tuple(std::declval<T&>()))))>;
+        }  // namespace detail
+
         // An array member of an rvalue cannot be returned by value.
+        // The noexcept specifications are not conditional: GCC compares a dependent one with those of all earlier
+        // calls, so compile time grows with the square of the number of calls.
         template <std::size_t N, reflect_options Opts, typename T, field_referenceable<Opts> U = std::remove_cvref_t<T>>
         requires std::is_rvalue_reference_v<T&&> && (N < field_count<U, Opts>) &&
-                 (!std::is_array_v<std::remove_reference_t<field_type<U, N, Opts>>>)
-        constexpr auto get_field(T&& t) noexcept(
-            std::is_nothrow_constructible_v<
-                std::decay_t<field_type<U, N, Opts>>,
-                decltype(detail::forward_member<U, N>(std::get<N>(detail::to_ptr_tuple(t))))>)
+                 (!std::is_array_v<std::remove_reference_t<field_type<U, N, Opts>>>) &&
+                 detail::nothrow_field_move<N, Opts, T>
+        constexpr auto get_field(T&& t) noexcept
+        {
+            return detail::forward_member<U, N>(std::get<N>(detail::to_ptr_tuple(t)));
+        }
+
+        template <std::size_t N, reflect_options Opts, typename T, field_referenceable<Opts> U = std::remove_cvref_t<T>>
+        requires std::is_rvalue_reference_v<T&&> && (N < field_count<U, Opts>) &&
+                 (!std::is_array_v<std::remove_reference_t<field_type<U, N, Opts>>>) &&
+                 (!detail::nothrow_field_move<N, Opts, T>)
+        constexpr auto get_field(T&& t)
         {
             return detail::forward_member<U, N>(std::get<N>(detail::to_ptr_tuple(t)));
         }
@@ -2029,13 +2046,31 @@ namespace field_reflection
             return detail::get_member<U, N>(t);
         }
 
+        namespace detail
+        {
+            template <std::size_t N, reflect_options Opts, typename T, typename U = std::remove_cvref_t<T>>
+            concept nothrow_field_move =
+                std::is_nothrow_constructible_v<std::decay_t<field_type<U, N, Opts>>,
+                                                decltype(forward_member<U, N>(std::declval<T&&>()))>;
+        }  // namespace detail
+
         // An array member of an rvalue cannot be returned by value.
+        // The noexcept specifications are not conditional: GCC compares a dependent one with those of all earlier
+        // calls, so compile time grows with the square of the number of calls.
         template <std::size_t N, reflect_options Opts, typename T, field_referenceable<Opts> U = std::remove_cvref_t<T>>
         requires std::is_rvalue_reference_v<T&&> && (N < field_count<U, Opts>) &&
-                 (!std::is_array_v<std::remove_reference_t<field_type<U, N, Opts>>>)
-        constexpr auto get_field(T&& t) noexcept(
-            std::is_nothrow_constructible_v<std::decay_t<field_type<U, N, Opts>>,
-                                            decltype(detail::forward_member<U, N>(std::move(t)))>)
+                 (!std::is_array_v<std::remove_reference_t<field_type<U, N, Opts>>>) &&
+                 detail::nothrow_field_move<N, Opts, T>
+        constexpr auto get_field(T&& t) noexcept
+        {
+            return detail::forward_member<U, N>(std::move(t));
+        }
+
+        template <std::size_t N, reflect_options Opts, typename T, field_referenceable<Opts> U = std::remove_cvref_t<T>>
+        requires std::is_rvalue_reference_v<T&&> && (N < field_count<U, Opts>) &&
+                 (!std::is_array_v<std::remove_reference_t<field_type<U, N, Opts>>>) &&
+                 (!detail::nothrow_field_move<N, Opts, T>)
+        constexpr auto get_field(T&& t)
         {
             return detail::forward_member<U, N>(std::move(t));
         }
@@ -2322,8 +2357,18 @@ namespace field_reflection
 
         template <std::size_t N, typename T, field_referenceable U = std::remove_cvref_t<T>>
         requires std::is_rvalue_reference_v<T&&> && (N < field_count<U>) &&
-                 (!std::is_array_v<std::remove_reference_t<field_type<U, N>>>)
-        constexpr auto get_field(T&& t) noexcept(noexcept(get_field<N, reflect_options{}>(std::move(t))))
+                 (!std::is_array_v<std::remove_reference_t<field_type<U, N>>>) &&
+                 detail::nothrow_field_move<N, reflect_options{}, T>
+        constexpr auto get_field(T&& t) noexcept
+        {
+            return get_field<N, reflect_options{}>(std::move(t));
+        }
+
+        template <std::size_t N, typename T, field_referenceable U = std::remove_cvref_t<T>>
+        requires std::is_rvalue_reference_v<T&&> && (N < field_count<U>) &&
+                 (!std::is_array_v<std::remove_reference_t<field_type<U, N>>>) &&
+                 (!detail::nothrow_field_move<N, reflect_options{}, T>)
+        constexpr auto get_field(T&& t)
         {
             return get_field<N, reflect_options{}>(std::move(t));
         }
