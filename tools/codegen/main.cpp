@@ -1,5 +1,7 @@
 // cpp-yyjson-codegen: C++ types with cpp-yyjson annotations from a JSON Schema.
 // This file is part of cpp-yyjson (https://github.com/yosh-matsuda/cpp-yyjson), MIT License.
+#include <charconv>
+#include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -31,6 +33,9 @@ Generates C++ types with cpp-yyjson annotations from a JSON Schema (2020-12, 201
                         of holding the default and leaving it out when writing (yyjson::omit_default)
   --keep-unknown-keys   give every struct that accepts other keys a map `extra` with yyjson::extra_keys,
                         which keeps those keys and writes them back
+  --max-alternatives <n>
+                        make a variant of more than <n> alternatives yyjson::value, with a warning, instead of
+                        a std::variant that takes the compiler much time and memory (default: 0, no limit)
   --strict              treat warnings as errors
   -h, --help            show this help
 )";
@@ -84,6 +89,15 @@ int main(int argc, char** argv)
              : arg == "--root-name" ? opts.root_name
              : arg == "--depfile"   ? depfile
                                     : output) = *v;
+        }
+        else if (arg == "--max-alternatives")
+        {
+            const auto v = value();
+            auto n = std::size_t();
+            const auto end = v ? v->data() + v->size() : nullptr;
+            if (!v || v->empty() || std::from_chars(v->data(), end, n).ptr != end)
+                return fail("--max-alternatives needs a number");
+            opts.max_alternatives = n;
         }
         else if (arg == "--cpp26")
             opts.cpp26 = true;

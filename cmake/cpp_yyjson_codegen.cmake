@@ -3,7 +3,7 @@
 #
 #   cpp_yyjson_generate(<target> <schema>
 #                       [OUTPUT <header>] [PUBLIC | PRIVATE | INTERFACE]
-#                       [NAMESPACE <ns>] [ROOT_NAME <name>]
+#                       [NAMESPACE <ns>] [ROOT_NAME <name>] [MAX_ALTERNATIVES <n>]
 #                       [CPP26] [NO_PATTERN] [OPTIONAL_DEFAULTS] [KEEP_UNKNOWN_KEYS] [STRICT]
 #                       [DEPENDS <file>...])
 #
@@ -38,7 +38,7 @@ function(cpp_yyjson_generate target schema)
   cmake_parse_arguments(
     PARSE_ARGV 2 arg
     "PUBLIC;PRIVATE;INTERFACE;CPP26;NO_PATTERN;OPTIONAL_DEFAULTS;KEEP_UNKNOWN_KEYS;STRICT"
-    "OUTPUT;NAMESPACE;ROOT_NAME" "DEPENDS")
+    "OUTPUT;NAMESPACE;ROOT_NAME;MAX_ALTERNATIVES" "DEPENDS")
   if(arg_UNPARSED_ARGUMENTS)
     message(FATAL_ERROR "cpp_yyjson_generate: unknown arguments: ${arg_UNPARSED_ARGUMENTS}")
   endif()
@@ -90,6 +90,9 @@ function(cpp_yyjson_generate target schema)
   endif()
   if(arg_ROOT_NAME)
     list(APPEND options --root-name "${arg_ROOT_NAME}")
+  endif()
+  if(arg_MAX_ALTERNATIVES)
+    list(APPEND options --max-alternatives "${arg_MAX_ALTERNATIVES}")
   endif()
   foreach(flag CPP26 NO_PATTERN OPTIONAL_DEFAULTS KEEP_UNKNOWN_KEYS STRICT)
     if(arg_${flag})

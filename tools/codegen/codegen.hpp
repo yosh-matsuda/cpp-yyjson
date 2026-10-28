@@ -50,6 +50,10 @@ namespace cpp_yyjson_codegen
         // a struct that accepts any other key gets `std::map<std::string, yyjson::value> extra` with
         // yyjson::extra_keys, which keeps the keys that name no property
         bool keep_unknown_keys = false;
+        // a variant of more alternatives than this, with std::monostate for null, is yyjson::value with a warning; 0 for
+        // no limit. The compiler builds std::variant in time and memory that grow faster than the square of the
+        // number of its alternatives
+        std::size_t max_alternatives = 0;
         std::string root_name{};  // name of the root type; default: the title, or "Root"
         std::string source{};     // name of the schema in the header comment
         // path of the schema; a reference to another file, such as "address.json#/$defs/Street", is resolved against
@@ -909,12 +913,25 @@ namespace cpp_yyjson_codegen
             mutable std::vector<std::pair<std::string, std::string>> var_defs_;     // name, setting text
             mutable std::set<std::string, std::less<>> interned_;  // the strings of bounds of alternatives
             bool uses_pattern_ = false;
+            bool widened_variants_ = false;  // a variant became yyjson::value under options::max_alternatives
             std::vector<diagnostic> warnings_;
             std::set<std::pair<std::string, std::string>> warned_;
 
             void warn(const std::string& loc, std::string msg)
             {
                 if (warned_.emplace(loc, msg).second) warnings_.push_back({loc, std::move(msg)});
+            }
+
+            // whether a variant of `n` alternatives is more than options::max_alternatives, which makes it yyjson::value
+            bool too_many_alternatives(std::size_t n, const std::string& loc)
+            {
+                if (opts_.max_alternatives == 0 || n <= opts_.max_alternatives) return false;
+                warn(loc, "a variant of " + std::to_string(n) + " alternatives is more than " +
+                              std::to_string(opts_.max_alternatives) +
+                              " (--max-alternatives); it is yyjson::value, which reads any JSON value without the "
+                              "checks of the alternatives");
+                widened_variants_ = true;
+                return true;
             }
 
             [[noreturn]] static void fail(std::string loc, std::string msg)
@@ -3113,6 +3130,7 @@ namespace cpp_yyjson_codegen
                 if (out.empty()) return {};
                 if (out.size() == 1) return mono ? typed{make(tk::null), {}} : typed{std::move(out[0].t), std::move(out[0].s)};
                 if (out.size() == 2 && mono) return make_nullable({std::move(out[1].t), std::move(out[1].s)});
+                if (too_many_alternatives(out.size(), loc)) return {};
                 auto r = make(tk::variant);
                 r.combined = kind;
                 for (auto& a : out)
@@ -3783,6 +3801,7 @@ namespace cpp_yyjson_codegen
                             return std::nullopt;
                         args.push_back(std::move(t.t));
                     }
+                    if (too_many_alternatives(args.size(), loc)) return typed{};
                     auto v = ctype{.k = tk::variant, .tagged = true, .args = std::move(args)};
                     notes_.push_back({v, key, std::move(ids), -1, loc});
                     return typed{std::move(v), {}};
@@ -5369,6 +5388,11 @@ namespace cpp_yyjson_codegen
                     out +=
                         "//\n// A field with `yyjson::extra_keys` holds the keys of the object that name no other "
                         "field, and\n// writing puts them after the fields.\n";
+                if (widened_variants_)
+                    out += "//\n// A variant of more than " + std::to_string(opts_.max_alternatives) +
+                           " alternatives (--max-alternatives) is yyjson::value, which reads any JSON\n// value: "
+                           "the structs of its alternatives are still generated, and `cast<T>()` of the value\n// "
+                           "reads one of them.\n";
                 if (any_field([](const field& f) { return !f.default_note.empty(); }))
                     out +=
                         "//\n// A std::optional field with a `default:` comment is std::nullopt when the key is "

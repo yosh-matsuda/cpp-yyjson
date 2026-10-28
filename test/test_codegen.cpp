@@ -1398,6 +1398,52 @@ TEST(Codegen, Warnings)
 
 }
 
+TEST(Codegen, MaxAlternatives)
+{
+    // variants of more alternatives than the limit, counting null, are yyjson::value; their structs stay
+    const auto schema = R"({
+        "type": "object",
+        "properties": {
+            "tagged": {"oneOf": [
+                {"type": "object", "properties": {"kind": {"const": "a"}, "x": {"type": "integer"}},
+                 "required": ["kind"]},
+                {"type": "object", "properties": {"kind": {"const": "b"}, "y": {"type": "integer"}},
+                 "required": ["kind"]},
+                {"type": "object", "properties": {"kind": {"const": "c"}, "z": {"type": "integer"}},
+                 "required": ["kind"]}
+            ]},
+            "plain": {"anyOf": [{"type": "integer"}, {"type": "string"}, {"type": "boolean"}]},
+            "nullable": {"anyOf": [{"type": "integer"}, {"type": "string"}, {"type": "null"}]},
+            "pair": {"anyOf": [{"type": "integer"}, {"type": "string"}]},
+            "named": {"$ref": "#/$defs/Choice"}
+        },
+        "$defs": {"Choice": {"anyOf": [{"type": "integer"}, {"type": "string"}, {"type": "array"}]}}
+    })";
+    const auto all = generate(schema, {});
+    EXPECT_EQ(warnings(all), "");
+    EXPECT_TRUE(has(all.code, "    std::optional<std::variant<A, B, C>> tagged;\n"));
+    EXPECT_TRUE(
+        has(all.code, "using Choice = yyjson::any_of<std::int64_t, std::string, std::vector<yyjson::value>>;"));
+    EXPECT_EQ(generate(schema, {.max_alternatives = 3}).code, all.code);
+
+    const auto r = generate(schema, {.max_alternatives = 2});
+    const auto message = std::string(
+        ": a variant of 3 alternatives is more than 2 (--max-alternatives); it is yyjson::value, which reads any JSON "
+        "value without the checks of the alternatives\n");
+    EXPECT_EQ(warnings(r), "#/$defs/Choice" + message + "#/properties/tagged" + message + "#/properties/plain" +
+                               message + "#/properties/nullable" + message);
+    EXPECT_TRUE(has(r.code, "struct Root\n{\n    std::optional<yyjson::value> tagged;\n"
+                            "    std::optional<yyjson::value> plain;\n    std::optional<yyjson::value> nullable;\n"
+                            "    std::optional<yyjson::any_of<std::int64_t, std::string>> pair;\n"
+                            "    std::optional<Choice> named;\n};\n"));
+    EXPECT_TRUE(has(r.code, "using Choice = yyjson::value;"));
+    EXPECT_TRUE(has(r.code, "struct A\n{\n    std::string kind = \"a\";\n"));
+    EXPECT_FALSE(has(r.code, "internal_tag"));
+    EXPECT_TRUE(has(r.code, "// A variant of more than 2 alternatives (--max-alternatives) is yyjson::value"));
+    EXPECT_FALSE(has(all.code, "--max-alternatives"));
+    EXPECT_THROW(generate(schema, {.strict = true, .max_alternatives = 2}), cpp_yyjson_codegen::error);
+}
+
 TEST(Codegen, Contradictions)
 {
     // settings that leave no value to read are written as they are, with a warning: the library rejects them at
