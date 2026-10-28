@@ -858,6 +858,13 @@ namespace yyjson
         };
         template <typename T, typename U>
         using synth_three_way_result = decltype(synth_three_way(std::declval<T&>(), std::declval<U&>()));
+
+        // Whether `indirect<T>` is constructed from U without `std::in_place`: a class T from T or a class derived
+        // from T only, so that whether T is constructible from U is not asked for other types.
+        template <typename T, typename U>
+        concept indirect_constructible =
+            (std::is_class_v<T> || std::is_union_v<T> ? std::is_base_of_v<T, std::remove_cvref_t<U>> : true) &&
+            std::is_constructible_v<T, U>;
     }  // namespace detail
 
     // A value of the type T on the heap, which a struct can hold a value of its own type in.  Copying it copies the
@@ -877,9 +884,13 @@ namespace yyjson
         constexpr explicit indirect() : p_(new T()) {}
         constexpr indirect(const indirect& other) : p_(other.p_ == nullptr ? nullptr : new T(*other.p_)) {}
         constexpr indirect(indirect&& other) noexcept : p_(std::exchange(other.p_, nullptr)) {}
+        // Unlike std::indirect, a class T is constructed only from T or a class derived from T; other arguments
+        // go after `std::in_place`.  Whether a struct is constructible from a U asks the same of its members, and a
+        // member that holds the struct through indirect, directly or as an alternative of a variant, would ask it
+        // again, which fails to compile, e.g., when the members of the struct are counted.
         template <typename U = T>
         requires (!std::same_as<std::remove_cvref_t<U>, indirect>) &&
-                 (!std::same_as<std::remove_cvref_t<U>, std::in_place_t>) && std::is_constructible_v<T, U>
+                 (!std::same_as<std::remove_cvref_t<U>, std::in_place_t>) && detail::indirect_constructible<T, U>
         constexpr explicit indirect(U&& u) : p_(new T(std::forward<U>(u)))
         {
         }
@@ -922,7 +933,7 @@ namespace yyjson
             return *this;
         }
         template <typename U = T>
-        requires (!std::same_as<std::remove_cvref_t<U>, indirect>) && std::is_constructible_v<T, U> &&
+        requires (!std::same_as<std::remove_cvref_t<U>, indirect>) && detail::indirect_constructible<T, U> &&
                  std::is_assignable_v<T&, U>
         constexpr indirect& operator=(U&& u)
         {

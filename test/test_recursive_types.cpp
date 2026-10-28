@@ -261,6 +261,51 @@ static_assert([] {
     auto c = std::move(a);
     return *b + *c + (a.valueless_after_move() ? 10 : 0);
 }() == 17);
+// A recursive member that comes first: counting the members of an aggregate asks whether it is constructible from a
+// type that converts to anything, which asked the same of the member again, also through a variant
+struct IndFirst
+{
+    std::optional<yyjson::indirect<IndFirst>> next;
+    int n = 0;
+    bool operator==(const IndFirst&) const = default;
+};
+struct IndFirstVariant
+{
+    std::variant<std::monostate, yyjson::indirect<IndFirstVariant>> next;
+    std::vector<IndFirstVariant> list;
+    bool operator==(const IndFirstVariant&) const = default;
+};
+struct IndFirstAlternative
+{
+    std::optional<yyjson::indirect<std::variant<int, IndFirstAlternative>>> next;
+    bool operator==(const IndFirstAlternative&) const = default;
+};
+struct IndOuter
+{
+    std::optional<IndFirst> first;
+    IndFirstVariant variant;
+    IndFirstAlternative alternative;
+    bool operator==(const IndOuter&) const = default;
+};
+static_assert(yyjson::readable<IndOuter> && yyjson::writable<IndOuter>);
+static_assert(std::is_copy_constructible_v<IndOuter>);
+// so a class is constructed only from itself or a derived class, unlike `std::indirect`, which takes the arguments
+// of any constructor; the others go after `std::in_place`
+struct IndBase
+{
+    int a = 0;
+};
+struct IndDerived : IndBase
+{
+    int b = 0;
+};
+static_assert(std::is_constructible_v<yyjson::indirect<IndBase>, IndDerived>);
+static_assert(std::is_assignable_v<yyjson::indirect<IndBase>&, const IndDerived&>);
+static_assert(!std::is_constructible_v<yyjson::indirect<IndBase>, int>);
+static_assert(std::is_constructible_v<yyjson::indirect<IndBase>, std::in_place_t, int>);
+static_assert(!std::is_constructible_v<yyjson::indirect<std::string>, const char*>);
+static_assert(std::is_constructible_v<yyjson::indirect<std::string>, std::in_place_t, const char*>);
+static_assert(std::is_constructible_v<yyjson::indirect<double>, int>);
 
 // The fields of a recursive type are checked as those of any other type, through each type on the cycle
 class RecPrivate
@@ -629,6 +674,12 @@ TEST(Indirect, Class)
     hashed.insert(yyjson::indirect<int>(1));
     EXPECT_TRUE(hashed.contains(yyjson::indirect<int>(1)));
 
+    auto base = yyjson::indirect<IndBase>(IndDerived{{1}, 2});
+    EXPECT_EQ(base->a, 1);
+    base = IndDerived{{3}, 4};
+    EXPECT_EQ(base->a, 3);
+    EXPECT_EQ(yyjson::indirect<IndBase>(std::in_place, 7)->a, 7);
+
     // assignment from a part of the value that is held
     auto g = make("1", yyjson::indirect<E>(make("2", yyjson::indirect<E>(make("3")))));
     *g.lhs = std::move(*(*g.lhs)->lhs);
@@ -642,6 +693,8 @@ TEST(Reader, IndirectFields)
         R"("args":[]},"args":[{"op":"a","rhs":null,"args":[]}]})");
     expect_recursive<IndTree>(R"({"t":"branch","kids":[{"t":"leaf","v":1},{"t":"branch","kids":[]}]})");
     expect_recursive<std::vector<yyjson::indirect<int>>>("[1,2,3]");
+    expect_recursive<IndOuter>(R"({"first":{"next":{"n":2},"n":1},"variant":{"next":{"next":null,"list":[]},)"
+                               R"("list":[{"next":null,"list":[]}]},"alternative":{"next":{"next":1}}})");
     EXPECT_FALSE(yyjson::read<std::optional<yyjson::indirect<int>>>("null").has_value());
     EXPECT_EQ(**yyjson::read<std::optional<yyjson::indirect<int>>>("1"), 1);
 
