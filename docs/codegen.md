@@ -281,7 +281,20 @@ struct Expr
 
 The types are defined in the order of their dependencies, after forward declarations of the structs.
 
-A schema that refers to itself without an object between cannot be a C++ type, since an alias cannot name itself. The reference becomes `yyjson::value` with a warning: the root `{"anyOf": [{"type": "string"}, {"type": "array", "items": {"$ref": "#"}}]}` is `yyjson::any_of<std::string, std::vector<yyjson::value>>`.
+A schema that refers to itself without an object between, such as an array of itself or an alternative of itself, cannot be an alias, since an alias cannot name itself. It becomes a struct of one member `value` with [`yyjson::transparent`](reference.md#yyjsontransparent), which is read and written as that member, so the JSON is the same: the root `{"anyOf": [{"type": "string"}, {"type": "array", "items": {"$ref": "#"}}]}` is
+
+```cpp
+struct Root
+{
+    yyjson::any_of<std::string, std::vector<Root>> value;
+};
+
+template <>
+inline constexpr auto yyjson::annotations<Root> = yyjson::annotate(
+    yyjson::transparent);
+```
+
+An entry of `$defs` takes its key as the name and keeps its metadata and `yyjson::schema_name`; an inline schema is named after its place, as `RootOverrides` for `#/properties/overrides`. Of entries that refer to each other, such as `A` an alternative of `B` and `B` an array of `A`, the first one that the generator reaches is the struct and the others stay aliases. A member that would hold the struct by value is held through `yyjson::indirect`, as for other structs. A schema that reaches itself through no array or object at all, such as `{"anyOf": [{"$ref": "#/$defs/D"}, {"type": "string"}]}` as `D`, has no value that ends; its member is `yyjson::value`, with a warning.
 
 ## Names
 
@@ -375,7 +388,8 @@ A warning names the location in the schema and what the generated code does inst
 | a keyword that is not supported | `if`, `then`, `else`, `not`, `dependentSchemas`, `unevaluatedProperties`, `unevaluatedItems` | reads more than the schema accepts |
 | a form that is not supported | `contains` of a type other than the element type, positions of `prefixItems` of different types, `minProperties` of a struct | reads more than the schema accepts |
 | a type inferred from keywords | "the schema has no `type`; it is read as string from its keywords" | reads only that type |
-| a reference that cannot be followed | a missing file, a URI elsewhere, a schema that refers to itself without an object between | reads any JSON value there |
+| a reference that cannot be followed | a missing file, a URI elsewhere | reads any JSON value there |
+| a schema that refers to itself with no array or object between | `{"anyOf": [{"$ref": "#/$defs/D"}, {"type": "string"}]}` | reads any JSON value there |
 | a default or an example that does not convert | "the default ... is not converted to the C++ type; the field is std::optional" | keeps it in a comment |
 | an alternative dropped | an alternative of `oneOf` contained in another one | reads the same values |
 | contradictory settings | see below | see below |
