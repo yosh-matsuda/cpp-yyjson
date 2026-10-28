@@ -560,6 +560,24 @@ A [translator](#translator) also converts a struct from and to the value of a me
 
 *   The struct has exactly one field that is not [skipped](#skipped-fields). A skipped field keeps its value in `T()`, as in any struct.
 *   The struct is the value of its field everywhere: as a field of another struct, an element, a value of a map, an alternative of a `std::variant`, which is chosen by the JSON value as for the field type, and the root. It cannot be the key of a map yet.
+*   The field may hold the struct itself, in a range, a map, a `yyjson::indirect`, a `std::unique_ptr`, a `std::shared_ptr`, a `std::variant` or an `yyjson::any_of` / `yyjson::one_of`. This gives a name to a JSON value that nests without an object between the levels:
+
+    ```cpp
+    struct Expr
+    {
+        std::variant<std::string, std::vector<Expr>> value;
+    };
+
+    template <>
+    inline constexpr auto yyjson::annotations<Expr> = yyjson::annotate(yyjson::transparent);
+
+    auto expr = yyjson::read<Expr>(R"(["add",["mul","x","y"],"z"])");
+    // -> std::get<1>(expr.value).size() == 3
+    auto json = yyjson::write(expr);
+    // -> ["add",["mul","x","y"],"z"]
+    ```
+
+    Each level counts toward the [limit of depth](#recursive-types) as a level of a struct does, and `yyjson::json_schema` defines the struct in `$defs` and refers to it from inside.
 *   The field takes the [constraints](validation.md#constraints) and the [constraints of elements](validation.md#constraints-of-elements). A message names the struct, as in `the value of UserId`, and the path has no segment for the field: `/watchers/1` above, and none at the root.
 *   A field of `std::optional<U>` (`U` not a pointer) gives the struct the rules of a `std::optional` field where the struct is a field of another struct: an empty value leaves the key out of the object, [`yyjson::strict`](validation.md#strict-reading) does not require the key, `null` keeps the value in `T()`, which `yyjson::strict` rejects as for a [`std::optional` field](validation.md#null-in-a-stdoptional), and `merge_into` resets the value to `T()` for `null`. Elsewhere, as an element, a value of a map, an alternative or the root, the struct is read and written as a `std::optional` there: `null` empties it, and an empty value is written as `null`. An empty value passes the constraints.
 *   `read_into` and `merge_into` read into the field of the struct as into the struct itself: `merge_into` merges an object into a field of a struct or a map type.
@@ -1315,7 +1333,7 @@ auto json = write(tree);
 Each level of a recursive type is read by a call of its own, so a JSON string nested deeply enough would overflow the stack. To prevent that, reading counts the values of recursive types that are nested one inside the other on the current thread. It throws `yyjson::bad_cast` when there are more than `CPPYYJSON_RECURSION_DEPTH_LIMIT`, which is 256 by default. The limit applies to `cast`, `read<T>`, `read_into` and `merge_into` alike. Details of the count:
 
 *   Only values of a recursive type are counted. The nesting of other types is fixed by their definitions.
-*   Each value of a struct counts once. The pre-defined casters that hold it, such as `std::shared_ptr<Tree>`, are not counted. In types that hold each other, such as `A` holding a `B` that holds an `A`, both `A` and `B` count.
+*   Each value of a struct counts once. The pre-defined casters that hold it, such as `std::shared_ptr<Tree>`, are not counted. In types that hold each other, such as `A` holding a `B` that holds an `A`, both `A` and `B` count. A struct read [as the value of its field](#a-struct-as-the-value-of-its-field) counts as well, once per level.
 *   A type is recognized as recursive through the fields that the compile-time reflection or the `VISITABLE_STRUCT` macro finds, and through the template arguments of a class. A class with a user-defined caster whose fields are not visible this way is not counted, even if its caster reads values of its own type, so that caster has to limit the depth itself.
 *   Writing is not limited, because the depth of the output is that of the C++ object. The values must not form a cycle, such as a `std::shared_ptr` that points back to an object that holds it: writing such a value recurses until the stack overflows.
 
