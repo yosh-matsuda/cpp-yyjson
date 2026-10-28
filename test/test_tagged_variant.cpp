@@ -147,6 +147,31 @@ using TagOuter = std::variant<TagHolder, TagRect>;
 template <>
 inline constexpr auto yyjson::annotations<TagOuter> =
     yyjson::annotate(yyjson::internal_tag("kind", {"holder", "rect"}));
+// variants of more than 16 alternatives, which the reader constructs by emplacing into a default-constructed one
+template <int N>
+struct TagMany
+{
+    int v = 0;
+    std::string s;
+    bool operator==(const TagMany&) const = default;
+};
+template <typename... Ts>
+using TagManyOf = std::variant<TagMany<0>, TagMany<1>, TagMany<2>, TagMany<3>, TagMany<4>, TagMany<5>, TagMany<6>,
+                               TagMany<7>, TagMany<8>, TagMany<9>, TagMany<10>, TagMany<11>, TagMany<12>,
+                               TagMany<13>, TagMany<14>, Ts...>;
+using TagManyTagged = TagManyOf<TagMany<15>, TagMany<16>>;
+template <>
+inline constexpr auto yyjson::annotations<TagManyTagged> =
+    yyjson::annotate(yyjson::internal_tag("type", {"m0", "m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8", "m9", "m10",
+                                                   "m11", "m12", "m13", "m14", "m15", "m16"}));
+using TagManyUntagged = TagManyOf<int, std::string>;
+struct TagManyHolder
+{
+    std::vector<TagManyTagged> tagged;
+    std::optional<TagManyTagged> maybe;
+    std::vector<TagManyUntagged> untagged;
+    bool operator==(const TagManyHolder&) const = default;
+};
 
 TEST(TaggedVariant, Internal)
 {
@@ -444,6 +469,30 @@ TEST(TaggedVariant, Adjacent)
     EXPECT_THROW((void)write(TagOuter(TagHolder{})), std::invalid_argument);
     EXPECT_THROW((void)value(TagOuter(TagHolder{})), std::invalid_argument);
     EXPECT_EQ(write(TagOuter(TagRect{1, 2})), R"({"kind":"rect","w":1,"h":2})");
+}
+
+TEST(TaggedVariant, ManyAlternatives)
+{
+    using namespace yyjson;
+
+    EXPECT_EQ(read<TagManyTagged>(R"({"v":1,"type":"m16","s":"a"})"), TagManyTagged(TagMany<16>{1, "a"}));
+    EXPECT_EQ(read<TagManyUntagged>(R"("a\nb")"), TagManyUntagged("a\nb"));
+    EXPECT_EQ(read<TagManyUntagged>(R"("ab")").index(), 16);
+    EXPECT_EQ(read<TagManyUntagged>(R"(1)").index(), 15);
+    const auto holder = TagManyHolder{{TagMany<16>{1, "a"}, TagMany<0>{}, TagMany<9>{2, "b"}},
+                                      TagMany<15>{3, "c"},
+                                      {TagMany<0>{4, "d"}, 5, "e", "f\"g"}};
+    EXPECT_EQ(read<TagManyHolder>(write(holder)), holder);
+    EXPECT_TRUE(expect_direct_read<TagManyHolder>(write(holder)));
+    for (const auto* json : {R"({"tagged":[{"type":"m17"}]})", R"({"maybe":{"type":"m3","v":"x"}})",
+                             R"({"untagged":[null]})"})
+    {
+        EXPECT_THROW((void)read<TagManyHolder>(json), bad_cast) << json;
+        expect_direct_read<TagManyHolder>(json);
+    }
+    expect_read_into(holder, R"({"maybe":{"type":"m1","v":7},"untagged":["x"]})");
+    EXPECT_EQ(expect_merge_into(holder, R"({"maybe":{"v":7}})"),
+              write(TagManyHolder{holder.tagged, TagMany<15>{7, "c"}, holder.untagged}));
 }
 
 // NOLINTEND

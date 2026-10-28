@@ -15389,6 +15389,13 @@ namespace yyjson
                 make(index, read_value<alternative>());
             }
 
+            // Whether the reader default-constructs the variant T and emplaces the alternative into it instead of
+            // constructing T with `std::in_place_index<I>`.  The standard library implements that constructor by
+            // a chain of constructors as long as I for every I and every list of arguments, and their names hold
+            // the alternatives, so a variant of hundreds of alternatives takes tens of gigabytes to compile.
+            template <typename T>
+            static constexpr bool emplaced_variant = std::variant_size_v<T> > 16 && std::is_default_constructible_v<T>;
+
             // Emplaces the alternative I into `v`.
             template <typename T, std::size_t I, typename... Args>
             CPPYYJSON_ALWAYS_INLINE static T& emplace_alternative(T& v, std::in_place_index_t<I>, Args&&... args)
@@ -15537,7 +15544,10 @@ namespace yyjson
                     read_variant<T>([&](auto index, auto&&... args) -> T& {
                         if (result.has_value())
                             return emplace_alternative(*result, index, std::forward<decltype(args)>(args)...);
-                        return result.emplace(index, std::forward<decltype(args)>(args)...);
+                        if constexpr (emplaced_variant<T>)
+                            return emplace_alternative(result.emplace(), index, std::forward<decltype(args)>(args)...);
+                        else
+                            return result.emplace(index, std::forward<decltype(args)>(args)...);
                     });
                     return std::move(*result);
                 }
@@ -15977,7 +15987,11 @@ namespace yyjson
                                     return emplace_alternative(result.back(), index,
                                                                std::forward<decltype(args)>(args)...);
                                 made = true;
-                                return result.emplace_back(index, std::forward<decltype(args)>(args)...);
+                                if constexpr (emplaced_variant<value_type>)
+                                    return emplace_alternative(result.emplace_back(), index,
+                                                               std::forward<decltype(args)>(args)...);
+                                else
+                                    return result.emplace_back(index, std::forward<decltype(args)>(args)...);
                             });
                         }
                         else if constexpr (constructs_from_reader<value_type> && requires {
@@ -16544,7 +16558,11 @@ namespace yyjson
                             read_variant<value_type>([&](auto index, auto&&... args) -> value_type& {
                                 if (field.has_value())
                                     return emplace_alternative(*field, index, std::forward<decltype(args)>(args)...);
-                                return field.emplace(index, std::forward<decltype(args)>(args)...);
+                                if constexpr (emplaced_variant<value_type>)
+                                    return emplace_alternative(field.emplace(), index,
+                                                               std::forward<decltype(args)>(args)...);
+                                else
+                                    return field.emplace(index, std::forward<decltype(args)>(args)...);
                             });
                             return;
                         }
