@@ -50,6 +50,9 @@ namespace cpp_yyjson_codegen
         // a struct that accepts any other key gets `std::map<std::string, yyjson::value> extra` with
         // yyjson::extra_keys, which keeps the keys that name no property
         bool keep_unknown_keys = false;
+        // a schema without `type` whose keywords belong to one type is read as that type, with a warning; otherwise it
+        // reads every JSON value and its keywords constrain only the values of their types, as JSON Schema says
+        bool infer_types = false;
         // a variant of more alternatives than this, with std::monostate for null, is yyjson::value with a warning; 0 for
         // no limit. The compiler builds std::variant in time and memory that grow faster than the square of the
         // number of its alternatives
@@ -1508,13 +1511,15 @@ namespace cpp_yyjson_codegen
                 if (any_of_keys({"minLength", "maxLength", "pattern", "format"})) groups.emplace_back("string");
                 if (any_of_keys({"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf"}))
                     groups.emplace_back("number");
+                if (groups.empty()) return {};
+                // the keywords of a type constrain only the values of that type
+                if (!opts_.infer_types) return {"null", "boolean", "object", "array", "number", "string"};
                 if (groups.size() == 1)
                 {
                     warn(loc, "the schema has no `type`; it is read as " + groups[0] + " from its keywords");
                     return groups;
                 }
-                if (groups.size() > 1)
-                    warn(loc, "the schema has no `type` and keywords of several types; it is read as any JSON value");
+                warn(loc, "the schema has no `type` and keywords of several types; it is read as any JSON value");
                 return {};
             }
 
@@ -1683,17 +1688,20 @@ namespace cpp_yyjson_codegen
                 if (types.size() == 1) return type_kind(types[0], s0, *s, loc, hint, named, nullable);
                 auto alts = std::vector<typed>();
                 if (nullable) alts.push_back({make(tk::monostate), {}});
-                for (const auto& k : types) alts.push_back(type_kind(k, s0, *s, loc, hint + pascal(k), false, false));
+                for (const auto& k : types)
+                    alts.push_back(type_kind(k, s0, *s, loc, hint + pascal(k), false, false, false));
                 return make_variant(std::move(alts), loc);
             }
 
+            // `whole`: the type of the kind is the type of the schema, not one alternative of several kinds
             typed type_kind(const std::string& kind, const json* s0, const json& s, const std::string& loc,
-                            const std::string& hint, bool named, bool nullable)
+                            const std::string& hint, bool named, bool nullable, bool whole = true)
             {
                 auto r = typed();
                 if (kind == "object")
                 {
-                    if (s.has("properties") || s.has("required")) return make_struct(s0, s, loc, hint, named, nullable);
+                    if (s.has("properties") || s.has("required"))
+                        return make_struct(s0, s, loc, hint, named, nullable, whole);
                     r = type_map(s, loc, hint);
                 }
                 else if (kind == "array")
@@ -1726,7 +1734,7 @@ namespace cpp_yyjson_codegen
             }
 
             typed make_struct(const json* s0, const json& s, const std::string& loc, const std::string& hint,
-                              bool named, bool nullable)
+                              bool named, bool nullable, bool whole)
             {
                 auto d =
                     decl{.kind = decl::kind_t::structure, .name = named ? hint : unique_type_name(hint), .loc = loc};
@@ -1738,7 +1746,9 @@ namespace cpp_yyjson_codegen
                 const auto idx = add_decl(std::move(d));
                 auto r = typed{named_type(idx), {}};
                 if (nullable) r = make_nullable(std::move(r));
-                cache_[s0] = r;
+                // a reference to the schema from inside the struct is the struct only when the struct is its type; one
+                // alternative of several leaves it to type_of(), which holds the whole through a transparent struct
+                if (whole) cache_[s0] = r;
                 fill_struct(idx, s, loc);
                 return r;
             }
@@ -3993,7 +4003,9 @@ namespace cpp_yyjson_codegen
                 const auto object_keys =
                     any_key({"properties", "required", "additionalProperties", "patternProperties", "minProperties",
                              "maxProperties", "propertyNames", "dependentRequired"});
-                if (t.k == tk::any && (string_keys || number_keys || array_keys || object_keys)) return std::nullopt;
+                // a value of several kinds: the keywords of one kind would need settings for one alternative
+                if ((t.k == tk::any || t.k == tk::variant) && (string_keys || number_keys || array_keys || object_keys))
+                    return std::nullopt;
                 if (t.k == tk::string || is_integer_kind(t.k) || is_float_kind(t.k))
                     scalar_constraints(*n, t.k, out, loc);
                 if (is_enum && string_keys) return std::nullopt;

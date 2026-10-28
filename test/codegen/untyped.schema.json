@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Loose",
+  "type": "object",
+  "properties": {
+    "name": {"maxLength": 3},
+    "port": {"minimum": 1, "maximum": 65535},
+    "options": {"properties": {"verbose": {"type": "boolean"}}, "required": ["verbose"]},
+    "tree": {"$ref": "#/$defs/Branch"}
+  },
+  "$defs": {
+    "Branch": {"properties": {"child": {"$ref": "#/$defs/Branch"}}, "additionalProperties": false}
+  }
+}

@@ -1,7 +1,7 @@
 // Types generated at build time by cpp_yyjson_generate() from codegen/order.schema.json, which
 // references codegen/customer.schema.json, from codegen/defaults.schema.json, from
-// codegen/alternatives.schema.json, from codegen/patterns.schema.json and from
-// codegen/recursion.schema.json.
+// codegen/alternatives.schema.json, from codegen/patterns.schema.json, from
+// codegen/recursion.schema.json and from codegen/untyped.schema.json (also with INFER_TYPES).
 #include <gtest/gtest.h>
 
 #include <cpp_yyjson.hpp>
@@ -22,6 +22,8 @@ struct yyjson::pattern_matcher<>
 #include "order.hpp"
 #include "patterns.hpp"
 #include "recursion.hpp"
+#include "untyped.hpp"
+#include "untyped_inferred.hpp"
 
 TEST(CodegenCMake, ReadWrite)
 {
@@ -206,4 +208,36 @@ TEST(CodegenCMake, Recursion)
     EXPECT_THROW(
         (void)yyjson::read<model::Program>(R"({"body":{"op":"+","lhs":{"value":1},"rhs":{"value":2}},"tags":["a",[]]})"),
         yyjson::bad_cast);
+}
+
+TEST(CodegenCMake, Untyped)
+{
+    // a schema without `type` reads every kind of JSON value; its keywords constrain only their own kind
+    for (const auto* json : {R"({"name":"abc","port":8080.0,"options":{"verbose":true}})",
+                             R"({"name":5.0,"port":"any","options":[1]})",
+                             R"({"name":null,"port":true,"options":"x"})"})
+    {
+        const auto settings = yyjson::read<model::Loose>(json, yyjson::strict);
+        EXPECT_EQ(yyjson::write(settings), json);
+        EXPECT_NO_THROW(yyjson::validate(settings));
+    }
+    const auto settings = yyjson::read<model::Loose>(R"({"name":"abc","options":{"verbose":true}})");
+    ASSERT_EQ(settings.name->index(), 3U);
+    EXPECT_EQ(std::get<3>(*settings.name), "abc");
+    ASSERT_EQ(settings.options->index(), 5U);
+    EXPECT_TRUE(std::get<5>(*settings.options).verbose);
+    for (const auto* json : {R"({"name":"abcd"})", R"({"port":0})", R"({"options":{}})"})
+        EXPECT_THROW((void)yyjson::read<model::Loose>(json), yyjson::bad_cast) << json;
+
+    // a definition without `type` that refers to itself inside its object alternative
+    const auto tree = R"({"tree":{"child":{"child":7.0}}})";
+    EXPECT_EQ(yyjson::write(yyjson::read<model::Loose>(tree, yyjson::strict)), tree);
+    EXPECT_THROW((void)yyjson::read<model::Loose>(R"({"tree":{"other":1}})"), yyjson::bad_cast);
+
+    // with INFER_TYPES, each schema is read as the one kind that its keywords constrain
+    const auto inferred = yyjson::read<inferred::Loose>(R"({"name":"abc","port":8080,"options":{"verbose":true}})");
+    EXPECT_EQ(*inferred.name, "abc");
+    EXPECT_EQ(*inferred.port, 8080.0);
+    EXPECT_TRUE(inferred.options->verbose);
+    EXPECT_THROW((void)yyjson::read<inferred::Loose>(R"({"name":5})"), yyjson::bad_cast);
 }

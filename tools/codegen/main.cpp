@@ -33,6 +33,8 @@ Generates C++ types with cpp-yyjson annotations from a JSON Schema (2020-12, 201
                         of holding the default and leaving it out when writing (yyjson::omit_default)
   --keep-unknown-keys   give every struct that accepts other keys a map `extra` with yyjson::extra_keys,
                         which keeps those keys and writes them back
+  --infer-types         read a schema without `type` whose keywords belong to one type, such as maxLength,
+                        as that type, with a warning, instead of any JSON value constrained by type
   --max-alternatives <n>
                         make a variant of more than <n> alternatives yyjson::value, with a warning, instead of
                         a std::variant that takes the compiler much time and memory (default: 0, no limit)
@@ -109,6 +111,8 @@ int main(int argc, char** argv)
             opts.optional_defaults = true;
         else if (arg == "--keep-unknown-keys")
             opts.keep_unknown_keys = true;
+        else if (arg == "--infer-types")
+            opts.infer_types = true;
         else if (arg.starts_with("-") && arg != "-")
             return fail("unknown option " + std::string(arg) + "\n" + usage);
         else if (input.empty())

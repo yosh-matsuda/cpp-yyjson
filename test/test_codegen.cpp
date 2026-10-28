@@ -1398,6 +1398,58 @@ TEST(Codegen, Warnings)
 
 }
 
+TEST(Codegen, Untyped)
+{
+    // a schema without `type` reads every kind; its keywords constrain only their own kind
+    const auto schema = R"({
+        "type": "object",
+        "properties": {
+            "name": {"maxLength": 3},
+            "tags": {"items": {"type": "string"}},
+            "plain": {"description": "anything"},
+            "open": {"properties": {"x": {"type": "integer"}}, "required": ["x"]}
+        },
+        "$defs": {"Short": {"maxLength": 3}}
+    })";
+    const auto r = generate(schema, {});
+    EXPECT_EQ(warnings(r), "");
+    EXPECT_TRUE(has(r.code, "using Short = yyjson::any_of<std::monostate, bool, double, yyjson::alt<std::string, "
+                            "yyjson::max_length(3)>, std::vector<yyjson::value>, yyjson::object>;\n"));
+    EXPECT_TRUE(has(r.code, "    std::optional<std::variant<std::monostate, bool, double, std::string, "
+                            "std::vector<std::string>, yyjson::object>> tags;\n"));
+    EXPECT_TRUE(has(r.code, "    std::optional<yyjson::value> plain;\n"));
+    EXPECT_TRUE(has(r.code, "    std::optional<std::variant<std::monostate, bool, double, std::string, "
+                            "std::vector<yyjson::value>, RootOpenObject>> open;\n"));
+    EXPECT_TRUE(has(r.code, "struct RootOpenObject\n{\n    std::int64_t x;\n};\n"));
+
+    // --infer-types reads each schema as the one kind that its keywords constrain, with a warning
+    const auto inferred = generate(schema, {.infer_types = true});
+    EXPECT_EQ(warnings(inferred), "#/$defs/Short: the schema has no `type`; it is read as string from its keywords\n"
+                                  "#/properties/name: the schema has no `type`; it is read as string from its "
+                                  "keywords\n"
+                                  "#/properties/tags: the schema has no `type`; it is read as array from its "
+                                  "keywords\n"
+                                  "#/properties/open: the schema has no `type`; it is read as object from its "
+                                  "keywords\n");
+    EXPECT_TRUE(has(inferred.code, "struct Root\n{\n    std::optional<std::string> name;\n"
+                                   "    std::optional<std::vector<std::string>> tags;\n"));
+    EXPECT_TRUE(has(inferred.code, "    std::optional<RootOpen> open;\n"));
+    EXPECT_THROW(generate(schema, {.strict = true, .infer_types = true}), cpp_yyjson_codegen::error);
+    EXPECT_NO_THROW(generate(schema, {.strict = true}));
+
+    // a root without `type` that refers to itself from its object alternative: a transparent struct holds the whole
+    const auto root = generate(R"({"properties": {"foo": {"$ref": "#"}}, "additionalProperties": false})", {});
+    EXPECT_EQ(warnings(root), "");
+    EXPECT_TRUE(has(root.code, "struct Root\n{\n    std::variant<std::monostate, yyjson::indirect<std::variant<bool, "
+                               "double, std::string, std::vector<yyjson::value>, RootObject>>> value;\n};\n"));
+    EXPECT_TRUE(has(root.code, "struct RootObject\n{\n    std::optional<Root> foo;\n};\n"));
+
+    // `contains` cannot constrain the alternatives of an element that is a variant
+    const auto contains = generate(R"({"type": "array", "contains": {"minimum": 5}})", {});
+    EXPECT_EQ(warnings(contains), "#/contains: `contains` with a type other than the element type is not supported "
+                                  "and is ignored\n");
+}
+
 TEST(Codegen, MaxAlternatives)
 {
     // variants of more alternatives than the limit, counting null, are yyjson::value; their structs stay

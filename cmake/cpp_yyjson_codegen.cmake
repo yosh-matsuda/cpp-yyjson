@@ -4,7 +4,8 @@
 #   cpp_yyjson_generate(<target> <schema>
 #                       [OUTPUT <header>] [PUBLIC | PRIVATE | INTERFACE]
 #                       [NAMESPACE <ns>] [ROOT_NAME <name>] [MAX_ALTERNATIVES <n>]
-#                       [CPP26] [NO_PATTERN] [OPTIONAL_DEFAULTS] [KEEP_UNKNOWN_KEYS] [STRICT]
+#                       [CPP26] [NO_PATTERN] [OPTIONAL_DEFAULTS] [KEEP_UNKNOWN_KEYS] [INFER_TYPES]
+#                       [STRICT]
 #                       [DEPENDS <file>...])
 #
 # Generates <header> from <schema> and adds it to the sources of <target>, so that the target is
@@ -37,7 +38,7 @@ endif()
 function(cpp_yyjson_generate target schema)
   cmake_parse_arguments(
     PARSE_ARGV 2 arg
-    "PUBLIC;PRIVATE;INTERFACE;CPP26;NO_PATTERN;OPTIONAL_DEFAULTS;KEEP_UNKNOWN_KEYS;STRICT"
+    "PUBLIC;PRIVATE;INTERFACE;CPP26;NO_PATTERN;OPTIONAL_DEFAULTS;KEEP_UNKNOWN_KEYS;INFER_TYPES;STRICT"
     "OUTPUT;NAMESPACE;ROOT_NAME;MAX_ALTERNATIVES" "DEPENDS")
   if(arg_UNPARSED_ARGUMENTS)
     message(FATAL_ERROR "cpp_yyjson_generate: unknown arguments: ${arg_UNPARSED_ARGUMENTS}")
@@ -94,7 +95,7 @@ function(cpp_yyjson_generate target schema)
   if(arg_MAX_ALTERNATIVES)
     list(APPEND options --max-alternatives "${arg_MAX_ALTERNATIVES}")
   endif()
-  foreach(flag CPP26 NO_PATTERN OPTIONAL_DEFAULTS KEEP_UNKNOWN_KEYS STRICT)
+  foreach(flag CPP26 NO_PATTERN OPTIONAL_DEFAULTS KEEP_UNKNOWN_KEYS INFER_TYPES STRICT)
     if(arg_${flag})
       string(TOLOWER "--${flag}" option)
       string(REPLACE "_" "-" option "${option}")
