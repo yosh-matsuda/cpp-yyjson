@@ -42,7 +42,8 @@ TEST(Codegen, Fields)
         "additionalProperties": false
     })",
                             options{.ns = "app::model"});
-    EXPECT_EQ(warnings(r), "");
+    EXPECT_EQ(warnings(r), "#/required: the key \"token\" is no property, and `additionalProperties` is false; no "
+                           "object satisfies the schema\n");
     const auto& c = r.code;
     EXPECT_TRUE(has(c, "namespace app::model\n{"));
     EXPECT_TRUE(has(c, "/// A user.\nstruct UserRecord\n{"));
@@ -1073,6 +1074,54 @@ TEST(Codegen, RequiredGroups)
     })",
                                    {});
     EXPECT_TRUE(has(narrowed.code, "using Root = yyjson::one_of<RootOption1, RootOption2>;"));
+}
+
+TEST(Codegen, NamedKeys)
+{
+    // a key that a keyword names without a property is a field, of the type that the object gives such a key
+    const auto r = generate(R"({
+        "type": "object",
+        "properties": {"a": {"type": "string"}},
+        "required": ["a", "r"],
+        "dependentRequired": {"a": ["d"]},
+        "anyOf": [{"required": ["x1"]}, {"required": ["n1"]}],
+        "patternProperties": {"^x": {"type": "integer", "minimum": 0}},
+        "additionalProperties": {"type": "string", "maxLength": 3}
+    })",
+                            {});
+    EXPECT_TRUE(has(r.code, "    std::string r;\n    std::optional<std::string> d;\n"
+                            "    std::optional<std::int64_t> x1;\n    std::optional<std::string> n1;\n"));
+    EXPECT_TRUE(has(r.code, "yyjson::dependent_required(\"a\", {\"d\"})"));
+    EXPECT_TRUE(has(r.code, "yyjson::field(\"r\", yyjson::required, yyjson::max_length(3))"));
+    EXPECT_TRUE(has(r.code, "yyjson::field(\"x1\", yyjson::minimum(0))"));
+    // the field of a pattern holds its schema: no warning that the schema of the pattern is not checked for it
+    EXPECT_FALSE(has(warnings(r), "the key \"x1\""));
+
+    // patterns of different schemas, and a key that `additionalProperties: false` rejects
+    const auto other = generate(R"({
+        "type": "object",
+        "properties": {"a": {"type": "string"}},
+        "dependentRequired": {"a": ["ab"], "b": ["a"]},
+        "patternProperties": {"^a": {"type": "string"}, "b$": {"type": "integer"}},
+        "additionalProperties": false
+    })",
+                                {});
+    EXPECT_TRUE(has(other.code, "    std::optional<yyjson::value> ab;\n    std::optional<std::int64_t> b;\n"));
+    EXPECT_EQ(warnings(other),
+              "#/patternProperties: the key \"ab\" matches patterns with different schemas; it is read as any JSON "
+              "value\n#/patternProperties: `patternProperties` with a schema that the name of a key selects is not "
+              "supported; the keys that name no property are kept in the field of yyjson::extra_keys as any JSON "
+              "value, and `additionalProperties` is not checked\n");
+    const auto closed = generate(R"({
+        "type": "object",
+        "properties": {"a": {"type": "string"}},
+        "dependentRequired": {"a": ["b"]},
+        "additionalProperties": false
+    })",
+                                 {});
+    EXPECT_TRUE(has(closed.code, "    std::optional<yyjson::value> b;\n"));
+    EXPECT_EQ(warnings(closed), "#/dependentRequired/a: the key \"b\" is no property, and `additionalProperties` is "
+                                "false; an object that has the key does not satisfy the schema\n");
 }
 
 TEST(Codegen, ExtraKeys)

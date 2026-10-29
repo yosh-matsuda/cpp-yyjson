@@ -699,6 +699,7 @@ namespace cpp_yyjson_codegen
             std::string default_note{};  // the default of a std::optional field, for a comment
             std::string default_from{};  // the function of yyjson::default_from that makes the default
             std::optional<json> dflt{};  // the default before render() converts it to `init`
+            const json* schema = nullptr;  // a key that no property declares: the schema that gives its type
             metadata meta{};
             std::string loc{};
         };
@@ -2009,6 +2010,7 @@ namespace cpp_yyjson_codegen
                     const auto* props = s.find("properties");
                     const auto same = [&](const field& f) {
                         const auto* own = props != nullptr ? props->find(f.key) : nullptr;
+                        if (own == nullptr) own = f.schema;
                         return own != nullptr && equal(*own, sub);
                     };
                     try
@@ -2080,6 +2082,53 @@ namespace cpp_yyjson_codegen
                 });
             }
 
+            // The type of the key `k`, which no property of the object schema `s` declares but another keyword
+            // names, by what `s` applies to such a key: the schemas of the patterns of `patternProperties` that `k`
+            // matches, else `additionalProperties`; any JSON value where neither says anything, and nullopt where
+            // `additionalProperties` is false, which rejects the key.  `loc` is the location of `s`; `schema` is set
+            // to the schema of the type.
+            std::optional<typed> undeclared_key_type(const json& s, const std::string& k, const std::string& loc,
+                                                     const std::string& hint, const json*& schema)
+            {
+                schema = nullptr;
+                if (const auto* pp = s.find("patternProperties"); pp != nullptr && pp->is_object())
+                {
+                    auto matched = std::vector<std::pair<const std::string*, const json*>>();
+                    for (const auto& [p, sub] : pp->members)
+                    {
+                        try
+                        {
+                            if (std::regex_search(k, std::regex(p, std::regex::ECMAScript)))
+                                matched.emplace_back(&p, &sub);
+                        }
+                        catch (const std::regex_error&)
+                        {
+                            warn(loc + "/patternProperties/" + pointer_token(p),
+                                 "the key \"" + k +
+                                     "\" is read as any JSON value: std::regex does not read the pattern");
+                            return typed{};
+                        }
+                    }
+                    if (!matched.empty())
+                    {
+                        const auto same = [&](const auto& m) { return equal(*m.second, *matched[0].second); };
+                        if (!std::ranges::all_of(matched, same))
+                        {
+                            warn(loc + "/patternProperties", "the key \"" + k + "\" matches patterns with different "
+                                                              "schemas; it is read as any JSON value");
+                            return typed{};
+                        }
+                        schema = matched[0].second;
+                        return type_of(schema, loc + "/patternProperties/" + pointer_token(*matched[0].first), hint);
+                    }
+                }
+                const auto* ap = s.find("additionalProperties");
+                if (ap == nullptr || accepts_anything(*ap)) return typed{};
+                if (ap->is_bool()) return std::nullopt;
+                schema = ap;
+                return type_of(ap, loc + "/additionalProperties", hint);
+            }
+
             void fill_struct(int idx, const json& s, const std::string& loc)
             {
                 auto required = std::vector<std::string>();
@@ -2133,10 +2182,55 @@ namespace cpp_yyjson_codegen
                         fields.push_back(std::move(f));
                     }
                 }
-                for (const auto& k : required)
-                    if (std::ranges::none_of(fields, [&](const auto& f) { return f.key == k; }))
-                        fields.push_back(field{
-                            .member = k, .key = k, .type = make(tk::any), .required = true, .loc = loc + "/required"});
+                // a key that another keyword names is a field, of the type that the object gives a key that no
+                // property declares
+                const auto add_named_key = [&](const std::string& k, bool req, const std::string& kloc) {
+                    if (std::ranges::any_of(fields, [&](const auto& f) { return f.key == k; })) return;
+                    const json* schema = nullptr;
+                    auto t = undeclared_key_type(s, k, loc, decls_[idx].name + pascal(k), schema);
+                    if (!t)
+                    {
+                        warn(kloc, "the key \"" + k + "\" is no property, and `additionalProperties` is false; " +
+                                       (req ? "no object satisfies the schema" : "an object that has the key does not "
+                                                                                 "satisfy the schema"));
+                        t = typed{};
+                    }
+                    auto f = field{.member = k, .key = k, .required = req, .schema = schema, .loc = kloc};
+                    f.type = req ? std::move(t->t) : make(tk::optional, {std::move(t->t)});
+                    f.set = std::move(t->s);
+                    fields.push_back(std::move(f));
+                };
+                for (const auto& k : required) add_named_key(k, true, loc + "/required");
+                auto dependent = std::vector<std::pair<std::string, std::vector<std::string>>>();
+                if (const auto* dep = s.find("dependentRequired"); dep != nullptr && dep->is_object())
+                {
+                    for (const auto& [k, v] : dep->members)
+                    {
+                        const auto dloc = loc + "/dependentRequired/" + pointer_token(k);
+                        if (!v.is_array() || !std::ranges::all_of(v.items, [](const auto& e) { return e.is_string(); }))
+                        {
+                            warn(dloc, "`dependentRequired` whose value is not an array of strings is ignored");
+                            continue;
+                        }
+                        if (v.items.empty()) continue;
+                        auto keys = std::vector<std::string>();
+                        add_named_key(k, false, dloc);
+                        for (const auto& e : v.items)
+                        {
+                            add_named_key(e.text, false, dloc);
+                            keys.push_back(e.text);
+                        }
+                        dependent.emplace_back(k, std::move(keys));
+                    }
+                }
+                auto groups = std::vector<required_groups>();
+                for (const auto* kw : {"oneOf", "anyOf"})
+                    if (auto g = required_groups_of(s, kw))
+                    {
+                        for (const auto& group : g->groups)
+                            for (const auto& k : group) add_named_key(k, false, loc + "/" + kw);
+                        groups.push_back(std::move(*g));
+                    }
                 // the keys that name no property: rejected, accepted and dropped, or kept in a field of
                 // yyjson::extra_keys, whose map holds them by the schema of `additionalProperties`
                 auto additional = true;
@@ -2200,43 +2294,6 @@ namespace cpp_yyjson_codegen
                                  "`propertyNames` is checked only for the keys that name no property");
                     }
                 }
-                auto dependent = std::vector<std::pair<std::string, std::vector<std::string>>>();
-                if (const auto* dep = s.find("dependentRequired"); dep != nullptr && dep->is_object())
-                {
-                    const auto known = [&](std::string_view k) {
-                        return std::ranges::any_of(fields, [&](const auto& f) { return f.key == k; });
-                    };
-                    for (const auto& [k, v] : dep->members)
-                    {
-                        auto keys = std::vector<std::string>();
-                        auto ok = known(k) && v.is_array();
-                        for (const auto& e : v.items)
-                        {
-                            ok = ok && e.is_string() && known(e.text);
-                            if (ok) keys.push_back(e.text);
-                        }
-                        if (!ok)
-                            warn(loc + "/dependentRequired/" + pointer_token(k),
-                                 "`dependentRequired` with a key that is not a property is not supported and is "
-                                 "ignored");
-                        else if (!keys.empty())
-                            dependent.emplace_back(k, std::move(keys));
-                    }
-                }
-                auto groups = std::vector<required_groups>();
-                for (const auto* kw : {"oneOf", "anyOf"})
-                    if (auto g = required_groups_of(s, kw))
-                    {
-                        // a key that is not a property is read as any JSON value, as one of `required`
-                        for (const auto& group : g->groups)
-                            for (const auto& k : group)
-                                if (std::ranges::none_of(fields, [&](const auto& f) { return f.key == k; }))
-                                    fields.push_back(field{.member = k,
-                                                           .key = k,
-                                                           .type = make(tk::optional, {make(tk::any)}),
-                                                           .loc = loc + "/" + kw});
-                        groups.push_back(std::move(*g));
-                    }
                 if (!opts_.cpp26 && fields.size() > max_visitable_fields)
                     fail(loc, "a struct of more than " + std::to_string(max_visitable_fields) +
                                   " properties needs --cpp26: VISITABLE_STRUCT takes no more");
