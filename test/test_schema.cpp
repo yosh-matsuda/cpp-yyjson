@@ -742,6 +742,22 @@ inline constexpr auto yyjson::annotations<TypedContains> = yyjson::annotate(
         yyjson::if_(yyjson::field("kind", yyjson::const_("point"), yyjson::required)),
         yyjson::then(yyjson::field("points", yyjson::required, yyjson::contains(yyjson::is_type<CondPoint>)))));
 
+// `yyjson::contains` in `yyjson::if_` and `yyjson::not_`, with the read schema of `yyjson::is_type<T>` under `not`.
+struct ContainsConditions
+{
+    std::vector<std::string> tags;
+    std::optional<std::string> reason;
+    std::optional<std::vector<yyjson::value>> deps;
+};
+template <>
+inline constexpr auto yyjson::annotations<ContainsConditions> = yyjson::annotate(
+    yyjson::if_then_else(yyjson::if_(yyjson::field("tags", yyjson::required,
+                                                   yyjson::contains(yyjson::const_("deprecated")),
+                                                   yyjson::max_contains(1))),
+                         yyjson::then(yyjson::field("reason", yyjson::required))),
+    yyjson::not_(yyjson::field("deps", yyjson::required, yyjson::contains(yyjson::is_type<CondPoint>),
+                               yyjson::min_contains(2))));
+
 // A field that its caster leaves out, which only `yyjson::strict` requires: the struct that holds it is a default of
 // the schema without `yyjson::strict`.
 struct MaybeInt
@@ -1802,6 +1818,27 @@ TEST(Schema, TypedContains)
     EXPECT_EQ(p["numbers"]["contains"]["type"].as_string(), "integer");
     EXPECT_EQ(p["mixed"]["anyOf"][0]["contains"]["type"].as_string(), "string");
     EXPECT_EQ(p["nest"]["items"]["contains"]["type"].as_string(), "boolean");
+}
+
+TEST(Schema, ContainsConditions)
+{
+    check<ContainsConditions>({
+        R"({"tags":[]})",
+        R"({"tags":["a","deprecated"]})",
+        R"({"tags":["a","deprecated"],"reason":"old"})",
+        R"({"tags":["deprecated","deprecated"]})",
+        R"({"tags":[],"deps":[{"x":1},"a"]})",
+        R"({"tags":[],"deps":[{"x":1},"a",{"x":2}]})",
+        R"({"tags":[],"deps":[{"x":1},{"x":"b"}]})",
+    });
+    const auto s = to_jsoncons(yyjson::json_schema<ContainsConditions>());
+    const auto& all = s["$defs"]["ContainsConditions"]["allOf"];
+    const auto& tags = all[0]["if"]["properties"]["tags"];
+    EXPECT_EQ(tags["contains"], json::parse(R"({"const":"deprecated","type":"string"})"));
+    EXPECT_EQ(tags["maxContains"].as<int>(), 1);
+    const auto& deps = all[1]["not"]["properties"]["deps"];
+    EXPECT_EQ(deps["contains"], json::parse(R"({"$ref":"#/$defs/CondPoint"})"));
+    EXPECT_EQ(deps["minContains"].as<int>(), 2);
 }
 
 TEST(Schema, DefaultLeavingKeyOut)

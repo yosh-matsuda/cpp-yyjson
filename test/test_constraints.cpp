@@ -704,6 +704,22 @@ inline constexpr auto yyjson::annotations<TypedContains> = yyjson::annotate(
     yyjson::field("numbers", yyjson::contains(yyjson::is_type<int>)),
     yyjson::if_then_else(yyjson::if_(yyjson::field("kind", yyjson::const_("point"), yyjson::required)),
                          yyjson::then(yyjson::field("points", yyjson::contains(yyjson::is_type<ConditionPoint>)))));
+// conditions on the elements of arrays: a reason when "deprecated" is among the tags once, and no two integers
+// among the dependencies
+struct ContainsConditions
+{
+    std::vector<std::string> tags;
+    std::optional<std::string> reason;
+    std::optional<std::vector<yyjson::value>> deps;
+};
+template <>
+inline constexpr auto yyjson::annotations<ContainsConditions> = yyjson::annotate(
+    yyjson::if_then_else(yyjson::if_(yyjson::field("tags", yyjson::required,
+                                                   yyjson::contains(yyjson::const_("deprecated")),
+                                                   yyjson::max_contains(1))),
+                         yyjson::then(yyjson::field("reason", yyjson::required))),
+    yyjson::not_(
+        yyjson::field("deps", yyjson::required, yyjson::contains(yyjson::is_type<int>), yyjson::min_contains(2))));
 
 // the nodes of the settings are counted from the types, and a struct without settings of the values in its fields
 // takes none
@@ -941,6 +957,8 @@ namespace compile_rules
     // if_ and not_ test one value or the presence of a key; then and else_ take every setting of the values too
     static_assert(condition_test_setting<yyjson::required_t> && condition_test_setting<yyjson::minimum> &&
                   condition_test_setting<yyjson::pattern<>> && condition_test_setting<yyjson::format<>>);
+    static_assert(condition_test_setting<decltype(yyjson::contains(yyjson::minimum(0)))> &&
+                  condition_test_setting<yyjson::min_contains> && condition_test_setting<yyjson::max_contains>);
     static_assert(!condition_test_setting<yyjson::min_items> && !condition_test_setting<yyjson::unique_items_t> &&
                   !condition_test_setting<yyjson::satisfies_t> &&
                   !condition_test_setting<decltype(yyjson::items(yyjson::minimum(0)))> &&
@@ -2170,6 +2188,54 @@ TEST(Constraints, TypedContains)
     const auto u = yyjson::read<TypedContains>(json(R"([{"x":1},{"x":2}])"), yyjson::strict);
     EXPECT_NO_THROW(yyjson::validate(u));
     EXPECT_EQ(yyjson::read<TypedContains>(yyjson::write(u, yyjson::strict), yyjson::strict).events.size(), 2);
+}
+
+TEST(Constraints, ContainsConditions)
+{
+    const auto check = [](const char* json, std::string_view message) {
+        const auto reads = std::array<std::function<void()>, 3>{
+            [&] { (void)yyjson::read<ContainsConditions>(json); },
+            [&] { (void)yyjson::read(json).cast<ContainsConditions>(); },
+            [&] { (void)yyjson::read<ContainsConditions>(json, yyjson::strict); }};
+        for (const auto& read : reads)
+        {
+            if (message.empty())
+                EXPECT_NO_THROW(read()) << json;
+            else
+            {
+                const auto e = bad_cast_of(read);
+                EXPECT_TRUE(message_of(e).starts_with(message)) << json << "\n" << e.what();
+                EXPECT_EQ(e.path(), "") << json;
+            }
+        }
+#if YYJSON_VERSION_HEX >= 0x000C00
+        EXPECT_EQ(read_directly<ContainsConditions>(json, yyjson::ReadFlag::NoFlag).has_value(), message.empty())
+            << json;
+#endif
+    };
+    const auto missing = R"(ContainsConditions is not constructible from JSON without the key "reason", which )"
+                         R"(yyjson::if_then_else requires)";
+    const auto rejected = "ContainsConditions has the keys and the values that yyjson::not_ rejects";
+    check(R"({"tags":[]})", "");
+    check(R"({"tags":["a","b"]})", "");
+    check(R"({"tags":["a","deprecated"],"reason":"old"})", "");
+    check(R"({"tags":["a","deprecated"]})", missing);
+    // twice is more than max_contains, so the condition does not hold
+    check(R"({"tags":["deprecated","deprecated"]})", "");
+    check(R"({"tags":[],"deps":[1,"a",{"x":1}]})", "");
+    check(R"({"tags":[],"deps":[1,"a",2]})", rejected);
+    check(R"({"tags":[],"deps":[1.5,2]})", "");
+
+    // validate and write(strict) test the values that writing writes
+    auto t = ContainsConditions{{"deprecated"}, {}, {}};
+    auto e = bad_cast_of([&] { yyjson::validate(t); });
+    EXPECT_TRUE(message_of(e).starts_with(missing)) << e.what();
+    EXPECT_THROW((void)yyjson::write(t, yyjson::strict), yyjson::bad_cast);
+    t.reason = "old";
+    EXPECT_NO_THROW(yyjson::validate(t));
+    t.deps = yyjson::read<std::vector<yyjson::value>>("[1,2]");
+    e = bad_cast_of([&] { (void)yyjson::write(t, yyjson::strict); });
+    EXPECT_TRUE(message_of(e).starts_with(rejected)) << e.what();
 }
 
 // alternatives of yyjson::any_of and yyjson::one_of, with settings given as values and through pointers
