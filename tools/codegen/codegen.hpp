@@ -3700,15 +3700,29 @@ namespace cpp_yyjson_codegen
                 return r;
             }
 
-            // whether an alternative that only refers to a schema already meets the `type` that is the only keyword
-            // beside `anyOf` / `oneOf`; it then keeps its reference, since merging the type into a copy of the referred
-            // schema would expand a recursive reference without end:
-            // `{"type": "object", "anyOf": [{...}, {"$ref": "#"}]}`
+            // whether an alternative that only refers to a schema keeps its reference instead of becoming the base
+            // and the referred schema: merging them would expand a recursive reference without end.
+            // - The referred schema is being typed, as in `{"properties": {...}, "oneOf": [{...}, {"$ref": "#"}]}`:
+            //   the alternative reads what the referred schema accepts, which every valid value meets.
+            // - The base is only a `type` that the referred schema already meets:
+            //   `{"type": "object", "anyOf": [{...}, {"$ref": "#"}]}`.
             bool ref_within_base(const json& base, const json& alt, const std::string& loc)
             {
-                if (!is_pure_ref(alt) || base.members.size() != 1 || base.members[0].first != "type") return false;
+                if (!is_pure_ref(alt)) return false;
                 const auto* t = &alt;
-                for (auto n = 0; t != nullptr && is_pure_ref(*t) && n < 64; ++n) t = resolve(*t->find("$ref"), loc);
+                for (auto n = 0; t != nullptr && is_pure_ref(*t) && n < 64; ++n)
+                {
+                    t = resolve(*t->find("$ref"), loc);
+                    if (t == nullptr || !busy_.contains(t)) continue;
+                    if (std::ranges::any_of(base.members, [&](const auto& m) {
+                            const auto* v = t->is_object() ? t->find(m.first) : nullptr;
+                            return v == nullptr || !equal(*v, m.second);
+                        }))
+                        warn(loc, "the alternative refers to a schema that holds it; it is read without the keywords "
+                                  "beside it");
+                    return true;
+                }
+                if (base.members.size() != 1 || base.members[0].first != "type") return false;
                 if (t == nullptr || !t->is_object()) return false;
                 const auto have = type_list(*t);
                 const auto allowed = type_list(base);

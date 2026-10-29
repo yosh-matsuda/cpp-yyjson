@@ -1662,6 +1662,26 @@ TEST(Codegen, TransparentRoot)
                               "    [[=yyjson::format(\"email\")]] std::string value;\n"));
 }
 
+TEST(Codegen, RecursiveAlternatives)
+{
+    // an alternative that refers to a schema being typed keeps its reference instead of expanding it without end
+    const auto root = generate(R"({"type": "object", "properties": {"x": {"type": "string"}},
+                                   "oneOf": [{"properties": {"a": {"type": "integer"}}}, {"$ref": "#"}]})", {});
+    EXPECT_TRUE(has(root.code, "struct RootOption1\n{\n    std::optional<std::string> x;\n"
+                               "    std::optional<std::int64_t> a;\n};\n"));
+
+    // keywords beside the list that the referred schema does not have are dropped from that alternative
+    const auto member = generate(R"({
+        "$defs": {"A": {"type": "object", "properties": {"k": {
+            "type": "object", "properties": {"z": {"type": "integer"}},
+            "oneOf": [{"required": ["z"]}, {"$ref": "#/$defs/A"}]}}}},
+        "$ref": "#/$defs/A"
+    })", {});
+    EXPECT_EQ(warnings(member), "#/$defs/A/properties/k/oneOf/1: the alternative refers to a schema that holds it; it "
+                                "is read without the keywords beside it\n");
+    EXPECT_TRUE(has(member.code, "    std::optional<yyjson::indirect<yyjson::one_of<AKOption1, A>>> k;\n"));
+}
+
 TEST(Codegen, ReferenceRoot)
 {
     // a root of only `$ref` gets the root name as an alias of the target
