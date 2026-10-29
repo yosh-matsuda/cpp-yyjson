@@ -687,6 +687,24 @@ inline constexpr auto yyjson::annotations<ConditionPresence> = yyjson::annotate(
                          yyjson::then(yyjson::field("d", yyjson::required))),
     yyjson::not_(yyjson::field("c", yyjson::required), yyjson::field("e", yyjson::required)));
 
+// contains(is_type<T>) on the elements of DOM values: two events read as ConditionPoint, at most one object that
+// is one, an element of a yyjson::array, and in then
+struct TypedContains
+{
+    std::vector<yyjson::value> events;
+    std::vector<yyjson::object> objects;
+    yyjson::array numbers;
+    std::optional<std::string> kind;
+    std::optional<std::vector<yyjson::value>> points;
+};
+template <>
+inline constexpr auto yyjson::annotations<TypedContains> = yyjson::annotate(
+    yyjson::field("events", yyjson::contains(yyjson::is_type<ConditionPoint>), yyjson::min_contains(2)),
+    yyjson::field("objects", yyjson::contains(yyjson::is_type<ConditionPoint>), yyjson::max_contains(1)),
+    yyjson::field("numbers", yyjson::contains(yyjson::is_type<int>)),
+    yyjson::if_then_else(yyjson::if_(yyjson::field("kind", yyjson::const_("point"), yyjson::required)),
+                         yyjson::then(yyjson::field("points", yyjson::contains(yyjson::is_type<ConditionPoint>)))));
+
 // the nodes of the settings are counted from the types, and a struct without settings of the values in its fields
 // takes none
 static_assert(yyjson::detail::node_count<decltype(yyjson::items(yyjson::items(yyjson::minimum(0))))>.nodes == 2);
@@ -714,6 +732,8 @@ CONSTRAINT_RULE(MinimumTwiceInItems, yyjson::items(yyjson::minimum(0), yyjson::m
 CONSTRAINT_RULE(ContainsTwice, yyjson::contains(yyjson::minimum(0)), yyjson::contains(yyjson::maximum(1)))
 CONSTRAINT_RULE(ItemsTwice, yyjson::items(yyjson::unique_items), yyjson::items(yyjson::minimum(0)))
 CONSTRAINT_RULE(UniqueAtTwoLevels, yyjson::unique_items, yyjson::items(yyjson::unique_items))
+// is_type is a setting of the elements of contains once
+CONSTRAINT_RULE(IsTypeTwiceInContains, yyjson::contains(yyjson::is_type<int>, yyjson::is_type<long>))
 // a position holds up to 8 nodes: one for itself and one for each items, contains, property_names and
 // additional_properties in it, counted here in breadth because MSVC 19.44 limits the depth of the initializers
 #define POSITION_OF_8                                                                      \
@@ -847,6 +867,7 @@ namespace compile_rules
     static_assert(table_error<ContainsTwice> == same_setting_twice);
     static_assert(table_error<ItemsTwice> == same_setting_twice);
     static_assert(table_error<UniqueAtTwoLevels> == none);
+    static_assert(table_error<IsTypeTwiceInContains> == same_setting_twice);
     static_assert(table_error<PositionOf8> == none);
     static_assert(table_error<PositionOf9> == prefix_position_too_large);
     static_assert(table_error<MultipleOfZeroInItems> == multiple_of_not_positive);
@@ -927,6 +948,14 @@ namespace compile_rules
     static_assert(condition_assert_setting<yyjson::min_items> && condition_assert_setting<yyjson::is_type_t<int>> &&
                   condition_assert_setting<decltype(yyjson::items(yyjson::minimum(0)))>);
     static_assert(!condition_assert_setting<yyjson::rename> && !condition_assert_setting<yyjson::skip_t>);
+
+    // contains(is_type<T>) tests the DOM values, which items does not take, and no position of prefix_items holds it at any depth
+    static_assert(dom_kind_of<yyjson::value> == dom_kind::value && dom_kind_of<yyjson::object> == dom_kind::object &&
+                  dom_kind_of<yyjson::writer::const_value_ref> == dom_kind::value_ref &&
+                  dom_kind_of<std::optional<yyjson::value>> == dom_kind::none && dom_kind_of<int> == dom_kind::none);
+    static_assert(!element_setting<yyjson::is_type_t<int>>);
+    static_assert(holds_type_test<decltype(yyjson::items(yyjson::contains(yyjson::is_type<int>)))>::value &&
+                  !holds_type_test<decltype(yyjson::items(yyjson::contains(yyjson::minimum(0))))>::value);
 }  // namespace compile_rules
 
 #if FIELD_RFL_ANNOTATIONS
@@ -946,6 +975,11 @@ struct ElementsAnnotated2
     [[= yyjson::property_names(yyjson::max_length(2))]] std::map<std::string, int> k;
     [[ = yyjson::contains(yyjson::minimum(5)), = yyjson::min_contains(2) ]] std::vector<int> c;
     bool operator==(const ElementsAnnotated2&) const = default;
+};
+
+struct TypedContainsAnnotated
+{
+    [[ = yyjson::contains(yyjson::is_type<ConditionPoint>), = yyjson::min_contains(2) ]] std::vector<yyjson::value> v;
 };
 
 struct [[= yyjson::dependent_required("card", {"address"})]] KeywordsAnnotated
@@ -2102,6 +2136,42 @@ TEST(Constraints, IsTypeFunction)
     EXPECT_FALSE(yyjson::is_type<ConditionPoint>(yyjson::object(obj), yyjson::strict));
 }
 
+TEST(Constraints, TypedContains)
+{
+    const auto json = [](std::string_view events, std::string_view rest = "") {
+        return std::format(R"({{"events":{},"objects":[{{"x":0}},{{"x":"a"}}],"numbers":["a",1]{}}})", events, rest);
+    };
+    const auto points = R"([{"x":1},"a",{"x":2,"y":0}])";
+    EXPECT_NO_THROW((void)yyjson::read<TypedContains>(json(points)));
+    EXPECT_NO_THROW((void)yyjson::read(json(points)).cast<TypedContains>());
+    const auto prefix = std::string(R"(the value of the key "events" of TypedContains )");
+    // under yyjson::strict, {"x":2,"y":0} is not read as ConditionPoint
+    auto e = bad_cast_of([&] { (void)yyjson::read<TypedContains>(json(points), yyjson::strict); });
+    EXPECT_TRUE(message_of(e).starts_with(prefix + "has fewer than 2 items that satisfy")) << e.what();
+    EXPECT_EQ(e.path(), "/events");
+    e = bad_cast_of([&] { (void)yyjson::read<TypedContains>(json(R"([{"x":"1"},{"x":2}])")); });
+    EXPECT_TRUE(message_of(e).starts_with(prefix + "has fewer than 2 items that satisfy")) << e.what();
+    EXPECT_THROW((void)yyjson::read<TypedContains>(R"({"events":[{"x":1},{"x":2}],"objects":[{"x":1},{"x":2}],)"
+                                                   R"("numbers":[1]})"),
+                 yyjson::bad_cast);
+    EXPECT_THROW((void)yyjson::read<TypedContains>(R"({"events":[{"x":1},{"x":2}],"objects":[],"numbers":[1.5]})"),
+                 yyjson::bad_cast);
+    // then checks the elements only when the condition holds
+    EXPECT_NO_THROW((void)yyjson::read<TypedContains>(json(points, R"(,"points":[1])")));
+    e = bad_cast_of([&] { (void)yyjson::read<TypedContains>(json(points, R"(,"kind":"point","points":[1])")); });
+    EXPECT_EQ(e.path(), "/points");
+    EXPECT_NO_THROW((void)yyjson::read<TypedContains>(json(points, R"(,"kind":"point","points":[1,{"x":0}])")));
+
+    // validate and write(strict) read the elements as the strict read does
+    const auto t = yyjson::read<TypedContains>(json(points));
+    e = bad_cast_of([&] { yyjson::validate(t); });
+    EXPECT_EQ(e.path(), "/events");
+    EXPECT_THROW((void)yyjson::write(t, yyjson::strict), yyjson::bad_cast);
+    const auto u = yyjson::read<TypedContains>(json(R"([{"x":1},{"x":2}])"), yyjson::strict);
+    EXPECT_NO_THROW(yyjson::validate(u));
+    EXPECT_EQ(yyjson::read<TypedContains>(yyjson::write(u, yyjson::strict), yyjson::strict).events.size(), 2);
+}
+
 // alternatives of yyjson::any_of and yyjson::one_of, with settings given as values and through pointers
 constexpr std::string_view alternative_id_regex = "^[a-z]+$";
 constexpr auto alternative_id_pattern = yyjson::pattern(alternative_id_regex);
@@ -2438,6 +2508,8 @@ TEST(Constraints, Annotations)
         R"({"c":[5]})",
         R"(the value of the key "c" of ElementsAnnotated2 has fewer than 2 items that satisfy the constraints of yyjson::contains)",
         "/c");
+    EXPECT_NO_THROW((void)yyjson::read<TypedContainsAnnotated>(R"({"v":[{"x":1},1,{"x":2}]})"));
+    EXPECT_THROW((void)yyjson::read<TypedContainsAnnotated>(R"({"v":[{"x":1},{"x":"2"}]})"), yyjson::bad_cast);
 
     expect_accepted<KeywordsAnnotated>(R"({"version":2,"unit":"b","day":"2024-02-29","steps":[2,1.5]})",
                                        {2, "b", "2024-02-29", {2, 1.5}, {}, {}});

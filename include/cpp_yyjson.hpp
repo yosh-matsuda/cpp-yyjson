@@ -2161,6 +2161,36 @@ namespace yyjson
 
     namespace detail
     {
+        // The DOM type of an element that `yyjson::contains(yyjson::is_type<T>)` tests: `yyjson::value`,
+        // `yyjson::array`, `yyjson::object`, or the reference to an element of a `yyjson::array`, which are declared
+        // later and name their kinds there.
+        enum class dom_kind : std::uint8_t
+        {
+            none,
+            value,
+            value_ref,
+            array,
+            object,
+        };
+        template <typename F>
+        inline constexpr dom_kind dom_kind_of = dom_kind::none;
+
+        // Whether the DOM value at `v`, of the kind `kind`, is read as T under the current strictness, which the
+        // node of `yyjson::contains(yyjson::is_type<T>)` keeps as a pointer, since its tree holds no types.  Defined
+        // after the DOM types.
+        template <typename T>
+        bool test_type(const void* v, dom_kind kind);
+        struct type_test_info
+        {
+            bool (*test)(const void*, dom_kind) = nullptr;
+            std::string_view name;
+        };
+        template <typename T>
+        inline constexpr type_test_info type_test_info_of{&test_type<T>, type_name<T>()};
+    }  // namespace detail
+
+    namespace detail
+    {
         // How JSON names the alternative of a `std::variant`: by trying the alternatives in turn, by a member of the
         // object of the alternative (`internal_tag`), or by a member of the object that holds the variant as a field
         // next to it (`adjacent_tag`).
@@ -2474,7 +2504,9 @@ namespace yyjson
     // The settings of the elements of a range field that is read from a JSON array, of which at least one has to
     // satisfy them, as JSON Schema's `contains`: `yyjson::field("roles",
     // yyjson::contains(yyjson::pattern("^admin$")))`. `yyjson::min_contains` and `yyjson::max_contains` bound the
-    // number of such elements.  It takes the same settings as `yyjson::items`.
+    // number of such elements.  It takes the same settings as `yyjson::items`, and, for the elements of
+    // `yyjson::value`, `yyjson::array` or `yyjson::object`, `yyjson::is_type<T>`, which counts an element whose JSON
+    // value is read as T: `yyjson::field("events", yyjson::contains(yyjson::is_type<Login>))`.
     template <typename... As>
     struct contains
     {
@@ -2483,10 +2515,10 @@ namespace yyjson
         consteval explicit contains(As... values) : settings(detail::make_setting_list(values...))
         {
             static_assert(sizeof...(As) != 0, "yyjson::contains needs a setting of the elements");
-            static_assert((detail::element_setting<As> && ...),
+            static_assert(((detail::element_setting<As> || detail::is_type_setting<As>::value) && ...),
                           "yyjson::contains takes the constraints such as yyjson::minimum and yyjson::satisfies<f>, "
-                          "yyjson::items, yyjson::prefix_items, yyjson::contains, yyjson::property_names and "
-                          "yyjson::additional_properties(settings...)");
+                          "yyjson::items, yyjson::prefix_items, yyjson::contains, yyjson::property_names, "
+                          "yyjson::additional_properties(settings...) and yyjson::is_type<T>");
         }
     };
     template <typename... Bs>
@@ -2612,7 +2644,8 @@ namespace yyjson
         // The constraints of a value, and the nodes that hold the settings of the values in it: its elements, the
         // values and the keys of a map, and the elements that `yyjson::contains` counts, by their indices in
         // `schema_tree::nodes`, 0 for none.  The nodes of the positions of `yyjson::prefix_items` are the
-        // `prefix_count` nodes from `prefix`.
+        // `prefix_count` nodes from `prefix`.  `type_test` is that of `yyjson::is_type<T>` in `yyjson::contains`, or
+        // null.
         struct schema_node
         {
             field_constraints constraints;
@@ -2622,6 +2655,7 @@ namespace yyjson
             std::size_t keys = 0;
             std::size_t prefix = 0;
             std::size_t prefix_count = 0;
+            const type_test_info* type_test = nullptr;
 
             // Whether it has a setting of the values in the value, or one that compares its elements.
             [[nodiscard]] constexpr bool structured() const noexcept
@@ -2629,7 +2663,10 @@ namespace yyjson
                 return items != 0 || values != 0 || contains != 0 || keys != 0 || prefix_count != 0 ||
                        constraints.has<unique_items_t>();
             }
-            [[nodiscard]] constexpr bool empty() const noexcept { return constraints.set == 0 && !structured(); }
+            [[nodiscard]] constexpr bool empty() const noexcept
+            {
+                return constraints.set == 0 && !structured() && type_test == nullptr;
+            }
         };
 
         // The settings of values, as a tree in up to M nodes: the first `size` nodes at first are the roots, and
@@ -2749,13 +2786,18 @@ namespace yyjson
                     nodes[node].prefix_count = A::size;
                     for (std::size_t j = 0; j < A::size; ++j) graft(first + j, a.positions[j].tree);
                 }
+                else if constexpr (is_type_setting<A>::value)
+                    fail(field_key_error::is_type_outside_condition);
                 else
                 {
                     if (child_of<A>(nodes[node]) != 0) return fail(field_key_error::same_setting_twice);
                     const auto c = allocate(1);
                     if (c == 0) return;
                     child_of<A>(nodes[node]) = c;
-                    add_list(c, a.settings);
+                    if constexpr (is_contains<A>::value)
+                        add_contains_list(c, a.settings);
+                    else
+                        add_list(c, a.settings);
                 }
             }
             // The index of the node of the settings `A` in `n`.  Not a pointer to a member, which MSVC does not
@@ -2778,6 +2820,20 @@ namespace yyjson
             {
                 add(node, list.first);
                 add_list(node, list.rest);
+            }
+            // Adds the settings of `yyjson::contains`, the only ones that take `yyjson::is_type<T>`.
+            constexpr void add_contains_list(std::size_t, const setting_list<>&) {}
+            template <typename A, typename... Rest>
+            constexpr void add_contains_list(std::size_t node, const setting_list<A, Rest...>& list)
+            {
+                if constexpr (is_type_setting<A>::value)
+                {
+                    if (nodes[node].type_test != nullptr) return fail(field_key_error::same_setting_twice);
+                    nodes[node].type_test = &type_test_info_of<typename is_type_setting<A>::type>;
+                }
+                else
+                    add(node, list.first);
+                add_contains_list(node, list.rest);
             }
             // Copies the tree `sub` of one root into the node `at`, and the other nodes of `sub` into new nodes.
             template <std::size_t P, std::size_t Q, std::size_t R>
@@ -2815,6 +2871,21 @@ namespace yyjson
             }
         };
 
+        // Whether the setting A holds `yyjson::is_type<T>` at any depth, which a position of `yyjson::prefix_items`
+        // does not take: its tree is all that is left of its settings, and the schema needs T.
+        template <typename A>
+        struct holds_type_test : std::false_type
+        {
+        };
+        template <typename T>
+        struct holds_type_test<is_type_t<T>> : std::true_type
+        {
+        };
+        template <template <typename...> class Tmpl, typename... As>
+        struct holds_type_test<Tmpl<As...>> : std::bool_constant<(holds_type_test<As>::value || ...)>
+        {
+        };
+
         // The settings of a position of `yyjson::prefix_items`: `{}` for none, `{settings...}`, or a setting alone.
         struct prefix_schema
         {
@@ -2829,6 +2900,8 @@ namespace yyjson
                               "a position of yyjson::prefix_items takes the constraints such as yyjson::minimum and "
                               "yyjson::satisfies<f>, yyjson::items, yyjson::prefix_items, yyjson::contains, "
                               "yyjson::property_names and yyjson::additional_properties(settings...)");
+                static_assert(!(holds_type_test<As>::value || ...),
+                              "yyjson::contains in a position of yyjson::prefix_items takes no yyjson::is_type<T>");
                 (tree.add(0, settings), ...);
                 tree.check();
             }
@@ -4725,7 +4798,8 @@ namespace yyjson
                           "yyjson::additional_properties, yyjson::dependent_required, yyjson::one_of_required or "
                           "yyjson::any_of_required");
             static_assert(table.error != field_key_error::is_type_outside_condition,
-                          "yyjson::is_type<T> is a setting of a field of yyjson::then or yyjson::else_ only");
+                          "yyjson::is_type<T> is a setting of a field of yyjson::then or yyjson::else_, and of the "
+                          "elements of yyjson::contains, only");
             static_assert(table.error != field_key_error::condition_field_kind,
                           "a field that yyjson::if_then_else or yyjson::not_ names has a key of its own: it has no "
                           "yyjson::skip or yyjson::extra_keys");
@@ -6723,6 +6797,7 @@ namespace yyjson
             const_,
             enum_,
             format,
+            type_test,  // a value that is not read as the type of `yyjson::is_type<T>`
         };
 
         // What does not satisfy a constraint: the value of a field, an element in it, or a key of a map in it.
@@ -6820,6 +6895,8 @@ namespace yyjson
                 case constraint_kind::max_contains:
                     return std::format("has more than {} {} the constraints of yyjson::contains", c.max_contains,
                                        c.max_contains == 1 ? "item that satisfies" : "items that satisfy");
+                case constraint_kind::type_test:
+                    return "is not read as the type of yyjson::is_type<T>";
                 default:
                     return "is rejected by yyjson::satisfies";
             }
@@ -8002,6 +8079,15 @@ namespace yyjson
             }
             if constexpr (validates_field)
                 if (!c.predicate.check(std::addressof(field))) return constraint_kind::satisfies;
+            if constexpr (Level::node.type_test != nullptr)
+            {
+                static_assert(dom_kind_of<F> != dom_kind::none,
+                              "yyjson::is_type<T> in yyjson::contains tests the elements of yyjson::value, "
+                              "yyjson::array or yyjson::object, and of a yyjson::array");
+                if constexpr (dom_kind_of<F> != dom_kind::none)
+                    if (!Level::node.type_test->test(std::addressof(field), dom_kind_of<F>))
+                        return constraint_kind::type_test;
+            }
             if constexpr (Level::node.structured())
                 if (value != nullptr) return structure_violation<Level>(*value);
             return constraint_kind::none;
@@ -14248,6 +14334,49 @@ namespace yyjson
         template <typename T>
         concept dom_value =
             std::same_as<T, writer::value> || std::same_as<T, writer::object> || std::same_as<T, writer::array>;
+
+        template <>
+        inline constexpr dom_kind dom_kind_of<writer::value> = dom_kind::value;
+        template <>
+        inline constexpr dom_kind dom_kind_of<writer::array> = dom_kind::array;
+        template <>
+        inline constexpr dom_kind dom_kind_of<writer::object> = dom_kind::object;
+        template <>
+        inline constexpr dom_kind dom_kind_of<writer::const_value_ref> = dom_kind::value_ref;
+
+        template <typename T>
+        bool test_type(const void* v, dom_kind kind)
+        {
+            static_assert(requires(const writer::value& json) { cast_nested<T>(json); },
+                          "yyjson::is_type<T> in yyjson::contains needs a T that yyjson::value is cast to");
+            const auto test = [](const auto& json) {
+                if constexpr (requires { cast_nested<T>(json); })
+                {
+                    try
+                    {
+                        (void)cast_nested<T>(json);
+                        return true;
+                    }
+                    catch (const bad_cast&)
+                    {
+                        return false;
+                    }
+                }
+                else
+                    return false;
+            };
+            switch (kind)
+            {
+                case dom_kind::array:
+                    return test(*static_cast<const writer::array*>(v));
+                case dom_kind::object:
+                    return test(*static_cast<const writer::object*>(v));
+                case dom_kind::value_ref:
+                    return test(*static_cast<const writer::const_value_ref*>(v));
+                default:
+                    return test(*static_cast<const writer::value*>(v));
+            }
+        }
     }  // namespace detail
 
     template <typename Json, typename T>
@@ -15420,6 +15549,8 @@ namespace yyjson
     template <writable T>
     void validate(const T& t)
     {
+        // `yyjson::is_type<T>` reads the elements as the strict read would.
+        const auto scope = detail::strict_scope();
         detail::validate_value(t);
     }
 
