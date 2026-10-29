@@ -712,13 +712,13 @@ namespace cpp_yyjson_codegen
         };
 
         // a field of yyjson::if_, yyjson::then, yyjson::else_ or yyjson::not_: the key of the field of the struct,
-        // with settings, yyjson::required (presence) and yyjson::reads_as<T>
+        // with settings, yyjson::required (presence) and yyjson::is_type<T>
         struct cond_field
         {
             std::string key{};
             settings set{};
             bool required = false;
-            std::optional<ctype> reads_as{};
+            std::optional<ctype> is_type{};
         };
 
         // yyjson::if_then_else, or yyjson::not_ of the fields of `if_` when `negated`
@@ -2733,7 +2733,7 @@ namespace cpp_yyjson_codegen
             }
 
             // what the subschema of `then` or `else` requires, as the fields of yyjson::then / yyjson::else_; the
-            // parts that C++ does not express are left out with a warning. The type of yyjson::reads_as<T> is named
+            // parts that C++ does not express are left out with a warning. The type of yyjson::is_type<T> is named
             // after `name`, the key and `suffix`. `never` when no object satisfies the subschema: it is false, or
             // requires a key that `additionalProperties` false rejects
             std::vector<cond_field> assert_of(const json& sub, const std::string& sloc, const std::vector<field>& fields,
@@ -2794,8 +2794,8 @@ namespace cpp_yyjson_codegen
                                 if (t.t.k == tk::any) continue;
                                 if (!t.s.empty())
                                     warn(ploc, "the constraints of the value of the key \"" + key +
-                                                   "\" are not checked: yyjson::reads_as<T> checks only the type");
-                                entry(key).reads_as = std::move(t.t);
+                                                   "\" are not checked: yyjson::is_type<T> checks only the type");
+                                entry(key).is_type = std::move(t.t);
                                 continue;
                             }
                             // a reference to the type of the field adds nothing
@@ -6161,7 +6161,7 @@ namespace cpp_yyjson_codegen
                         const auto* f = field_of(d.fields, c.key);
                         if (f != nullptr)
                             for (auto& x : render_settings(c.set, f->type)) spec.push_back(std::move(x));
-                        if (c.reads_as) spec.push_back("yyjson::reads_as<" + spell(*c.reads_as, false, q) + ">");
+                        if (c.is_type) spec.push_back("yyjson::is_type<" + spell(*c.is_type, false, q) + ">");
                         fs.push_back("yyjson::field(" + join(spec) + ")");
                     }
                     return "yyjson::" + std::string(part) + "(" + join(fs) + ")";
@@ -6232,10 +6232,10 @@ namespace cpp_yyjson_codegen
                     for (const auto& c : decls_[i].conditions)
                         for (const auto* part : {&c.then_, &c.else_})
                             for (const auto& f : *part)
-                                if (f.reads_as)
+                                if (f.is_type)
                                 {
                                     ctx_ = decls_[i].name + "_cond";
-                                    (void)spell(*f.reads_as);
+                                    (void)spell(*f.is_type);
                                 }
                 ctx_.clear();
                 convert_defaults(structs);

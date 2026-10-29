@@ -518,7 +518,7 @@ namespace yyjson
             // `yyjson::strict` applies to reading only: what `write` gives has every key that is not left out.
             [[nodiscard]] bool strict() const noexcept { return strict_ && !writing(); }
             [[nodiscard]] bool writing() const noexcept { return writing_; }
-            // Writes the read schema of T in both directions: a value that `yyjson::reads_as<T>` checks is written
+            // Writes the read schema of T in both directions: a value that `yyjson::is_type<T>` checks is written
             // as it is, so the write schema takes whatever the read accepts.
             template <typename T>
             void emit_read(object_ref out)
@@ -1794,7 +1794,7 @@ namespace yyjson
                     using entry = yyjson::detail::condition_entry_of<S, Es>;
                     using F = typename entry::type;
                     using V = typename optional_value<F>::type;
-                    using R = typename entry::reads_as;
+                    using R = typename entry::type_test;
                     constexpr auto key = yyjson::detail::struct_field_key<S, entry::field>;
                     if (entry::entry.required && std::ranges::find(required, key) == required.end())
                         required.push_back(key);

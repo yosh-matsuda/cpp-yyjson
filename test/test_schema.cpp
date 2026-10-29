@@ -164,7 +164,7 @@ template <>
 inline constexpr auto yyjson::annotations<Conditioned> = yyjson::annotate(
     yyjson::if_then_else(yyjson::if_(yyjson::field("kind", yyjson::const_("circle"), yyjson::required)),
                          yyjson::then(yyjson::field("r", yyjson::required, yyjson::minimum(0))),
-                         yyjson::else_(yyjson::field("p", yyjson::reads_as<CondPoint>))),
+                         yyjson::else_(yyjson::field("p", yyjson::is_type<CondPoint>))),
     yyjson::not_(yyjson::field("kind", yyjson::pattern("^x"))), yyjson::field("r", yyjson::rename("radius")));
 struct CondOpen
 {
@@ -178,7 +178,7 @@ struct OpenCondition
 };
 template <>
 inline constexpr auto yyjson::annotations<OpenCondition> = yyjson::annotate(yyjson::if_then_else(
-    yyjson::if_(yyjson::field("p", yyjson::required)), yyjson::then(yyjson::field("p", yyjson::reads_as<CondOpen>))));
+    yyjson::if_(yyjson::field("p", yyjson::required)), yyjson::then(yyjson::field("p", yyjson::is_type<CondOpen>))));
 struct OneCondition
 {
     std::optional<int> a;
@@ -1356,7 +1356,7 @@ TEST(Schema, Conditions)
         R"({"a":9})",
         R"({"b":[0]})",
     });
-    // a value of reads_as is written as it is read, so the write schema takes the read schema of its type, here
+    // a value of is_type is written as it is read, so the write schema takes the read schema of its type, here
     // with a key that CondOpen ignores
     check<OpenCondition>({
         R"({"p":{"x":1,"z":2}})",
@@ -1373,7 +1373,7 @@ TEST(Schema, Conditions)
         R"({"e":0,"d":3,"b":1})",
         R"({"b":1,"d":3})",
     });
-    // validate reads the value of reads_as under strict, as the read of the output does
+    // validate reads the value of is_type under strict, as the read of the output does
     const auto loose = yyjson::read<Conditioned>(R"({"kind":"sq","p":{"x":1,"y":2}})");
     EXPECT_THROW(yyjson::validate(loose), yyjson::bad_cast);
     const auto s = to_jsoncons(yyjson::json_schema<Conditioned>())["$defs"]["Conditioned"];

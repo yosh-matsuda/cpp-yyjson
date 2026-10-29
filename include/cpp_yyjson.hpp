@@ -1210,13 +1210,13 @@ namespace yyjson
     inline constexpr required_t required{};
 
     // A field of `yyjson::value` or `yyjson::object` whose value reads as T, which `yyjson::then` and
-    // `yyjson::else_` of `yyjson::if_then_else` take: `yyjson::field("payload", yyjson::reads_as<Payload>)`.
+    // `yyjson::else_` of `yyjson::if_then_else` take: `yyjson::field("payload", yyjson::is_type<Payload>)`.
     template <typename T>
-    struct reads_as_t
+    struct is_type_t
     {
     };
     template <typename T>
-    inline constexpr reads_as_t<T> reads_as{};
+    inline constexpr is_type_t<T> is_type{};
 
     // A field whose key a JSON object may leave out under `yyjson::strict`, as
     // `yyjson::field("member", yyjson::optional_key)` or `[[=yyjson::optional_key]]` gives it, which a
@@ -1330,12 +1330,12 @@ namespace yyjson
         inline constexpr std::size_t dependency_count<dependent_required_t<N>> = N;
 
         template <typename A>
-        struct is_reads_as : std::false_type
+        struct is_type_setting : std::false_type
         {
             using type = void;
         };
         template <typename T>
-        struct is_reads_as<reads_as_t<T>> : std::true_type
+        struct is_type_setting<is_type_t<T>> : std::true_type
         {
             using type = T;
         };
@@ -2331,7 +2331,7 @@ namespace yyjson
             std::same_as<A, rename> || std::same_as<A, skip_t> || std::same_as<A, required_t> ||
             std::same_as<A, optional_key_t> || std::same_as<A, omit_default_t> || std::same_as<A, default_from_t> ||
             std::same_as<A, extra_keys_t> || adjacent_tag_annotation<A> || constraint_setting<A> ||
-            element_settings<A> || metadata_setting<A> || is_reads_as<A>::value;
+            element_settings<A> || metadata_setting<A> || is_type_setting<A>::value;
 
         // The number of the nodes that a position of `yyjson::prefix_items` has at most: its own and those of the
         // settings of the values in it, and the number of the values of `yyjson::const_` and
@@ -2506,7 +2506,7 @@ namespace yyjson
             transparent_field_count,
             transparent_field_setting,
             transparent_struct_setting,
-            reads_as_outside_condition,
+            is_type_outside_condition,
             condition_field_kind,
             condition_transparent,
         };
@@ -2849,7 +2849,7 @@ namespace yyjson
                       "yyjson::satisfies<f>, yyjson::items and yyjson::additional_properties(settings...), and "
                       "yyjson::title, "
                       "yyjson::description, yyjson::examples, yyjson::deprecated and yyjson::schema, and in "
-                      "yyjson::then and yyjson::else_ yyjson::reads_as<T>");
+                      "yyjson::then and yyjson::else_ yyjson::is_type<T>");
         return {member, {values...}};
     }
 
@@ -3302,7 +3302,7 @@ namespace yyjson
         // The settings that a field of `yyjson::then` and `yyjson::else_` takes.
         template <typename A>
         concept condition_assert_setting =
-            std::same_as<A, required_t> || constraint_setting<A> || element_settings<A> || is_reads_as<A>::value;
+            std::same_as<A, required_t> || constraint_setting<A> || element_settings<A> || is_type_setting<A>::value;
         template <typename A, bool Assert>
         inline constexpr bool condition_settings = false;
         template <typename... As, bool Assert>
@@ -3362,7 +3362,7 @@ namespace yyjson
     // What `yyjson::if_then_else` requires of the fields of an object when its condition holds, or with
     // `yyjson::else_` when it does not, as JSON Schema's `then` and `else` of `properties` and `required`.  A field
     // takes `yyjson::required`, every constraint such as `yyjson::minimum` and `yyjson::satisfies<f>`, the settings
-    // of the values in it such as `yyjson::items`, and `yyjson::reads_as<T>`.
+    // of the values in it such as `yyjson::items`, and `yyjson::is_type<T>`.
     template <typename... As>
     consteval auto then(As... fields)
     {
@@ -3371,7 +3371,7 @@ namespace yyjson
         static_assert((detail::condition_settings<As, true> && ...),
                       "a field of yyjson::then takes yyjson::required, the constraints such as yyjson::minimum and "
                       "yyjson::satisfies<f>, yyjson::items and the other settings of the values in it, and "
-                      "yyjson::reads_as<T>");
+                      "yyjson::is_type<T>");
         if constexpr ((detail::condition_settings<As, true> && ...))
             return then_t<typename detail::condition_field_of<As>::type...>{
                 detail::make_setting_list(detail::make_condition_field(fields)...)};
@@ -3384,7 +3384,7 @@ namespace yyjson
         static_assert((detail::condition_settings<As, true> && ...),
                       "a field of yyjson::else_ takes yyjson::required, the constraints such as yyjson::minimum and "
                       "yyjson::satisfies<f>, yyjson::items and the other settings of the values in it, and "
-                      "yyjson::reads_as<T>");
+                      "yyjson::is_type<T>");
         if constexpr ((detail::condition_settings<As, true> && ...))
             return else_t<typename detail::condition_field_of<As>::type...>{
                 detail::make_setting_list(detail::make_condition_field(fields)...)};
@@ -4169,8 +4169,8 @@ namespace yyjson
                     constrain_field(i, a);
                 else if constexpr (metadata_setting<A>)
                     describe_field(i, metadata_bit<A>);
-                else if constexpr (is_reads_as<A>::value)
-                    fail(field_key_error::reads_as_outside_condition);
+                else if constexpr (is_type_setting<A>::value)
+                    fail(field_key_error::is_type_outside_condition);
                 else
                     tag_field(i);
             }
@@ -4690,8 +4690,8 @@ namespace yyjson
                           "a struct annotated with yyjson::transparent is not an object: it takes no "
                           "yyjson::additional_properties, yyjson::dependent_required, yyjson::one_of_required or "
                           "yyjson::any_of_required");
-            static_assert(table.error != field_key_error::reads_as_outside_condition,
-                          "yyjson::reads_as<T> is a setting of a field of yyjson::then or yyjson::else_ only");
+            static_assert(table.error != field_key_error::is_type_outside_condition,
+                          "yyjson::is_type<T> is a setting of a field of yyjson::then or yyjson::else_ only");
             static_assert(table.error != field_key_error::condition_field_kind,
                           "a field that yyjson::if_then_else or yyjson::not_ names has a key of its own: it has no "
                           "yyjson::skip or yyjson::extra_keys");
@@ -6477,21 +6477,21 @@ namespace yyjson
         template <typename S>
         using condition_field_types = decltype(condition_fields_in(std::type_identity<condition_types<S>>{}));
 
-        // The type T of `yyjson::reads_as<T>` in the settings As, or void.
+        // The type T of `yyjson::is_type<T>` in the settings As, or void.
         template <typename... As>
-        struct reads_as_in
+        struct type_test_in
         {
             using type = void;
         };
         template <typename A, typename... Rest>
-        struct reads_as_in<A, Rest...>
-            : std::conditional_t<is_reads_as<A>::value, is_reads_as<A>, reads_as_in<Rest...>>
+        struct type_test_in<A, Rest...>
+            : std::conditional_t<is_type_setting<A>::value, is_type_setting<A>, type_test_in<Rest...>>
         {
         };
         template <typename F>
-        struct condition_reads_as;
+        struct condition_type_test;
         template <typename... As>
-        struct condition_reads_as<condition_field<As...>> : reads_as_in<As...>
+        struct condition_type_test<condition_field<As...>> : type_test_in<As...>
         {
         };
 
@@ -6504,7 +6504,7 @@ namespace yyjson
         }
 
         // A field that a part of a condition names: its index among all the fields, whether the part requires its
-        // key, and whether it has `yyjson::reads_as<T>`.
+        // key, and whether it has `yyjson::is_type<T>`.
         struct condition_entry
         {
             std::size_t field = 0;
@@ -6545,7 +6545,7 @@ namespace yyjson
                     if (entry.required) tree.fail(field_key_error::same_setting_twice);
                     entry.required = true;
                 }
-                else if constexpr (is_reads_as<A>::value)
+                else if constexpr (is_type_setting<A>::value)
                 {
                     if (entry.reads) tree.fail(field_key_error::same_setting_twice);
                     entry.reads = true;
@@ -6643,7 +6643,7 @@ namespace yyjson
         };
 
         // The field of S that the entry E of its conditions names: its index K among the fields that are read,
-        // its type, the type T of `yyjson::reads_as<T>` or void, and the node of its settings.
+        // its type, the type T of `yyjson::is_type<T>` or void, and the node of its settings.
         template <typename S, std::size_t E>
         struct condition_entry_of
         {
@@ -6657,7 +6657,7 @@ namespace yyjson
             }();
             static_assert(field < struct_field_count<S>);
             using type = struct_field_type<S, field>;
-            using reads_as = typename condition_reads_as<std::tuple_element_t<E, condition_field_types<S>>>::type;
+            using type_test = typename condition_type_test<std::tuple_element_t<E, condition_field_types<S>>>::type;
             using level = table_node<condition_table<S>, E>;
             static constexpr bool constrained = !level::node.empty();
         };
@@ -8306,7 +8306,7 @@ namespace yyjson
 
         // Whether the field that the entry E of the conditions of S names, in `s`, satisfies the settings of the
         // entry: a field whose key the object does not have (`present` is false) does unless the entry requires
-        // the key, and a value does if it satisfies the constraints and, with `yyjson::reads_as<T>`, its JSON value
+        // the key, and a value does if it satisfies the constraints and, with `yyjson::is_type<T>`, its JSON value
         // is read as T.  Reading tells the presence by the keys of the JSON object, and `yyjson::validate` by the
         // keys that writing writes, since the value of the field cannot tell a value read from one that the
         // struct had before.
@@ -8314,7 +8314,7 @@ namespace yyjson
         bool condition_entry_holds(const S& s, bool present)
         {
             using entry = condition_entry_of<S, E>;
-            using R = typename entry::reads_as;
+            using R = typename entry::type_test;
             const auto& field = struct_field<entry::field>(s);
             if (!present) return !entry::entry.required;
             if constexpr (is_std_optional<typename entry::type>::value)
@@ -8324,7 +8324,7 @@ namespace yyjson
             if constexpr (!std::is_void_v<R>)
             {
                 static_assert(requires(const constrained_value_t<typename entry::type>& v) { cast_nested<R>(v); },
-                              "yyjson::reads_as<T> takes a field of yyjson::value or yyjson::object, or a "
+                              "yyjson::is_type<T> takes a field of yyjson::value or yyjson::object, or a "
                               "std::optional of them, whose JSON value is read as T");
                 if (const auto* value = held_value(field); value != nullptr) try
                     {
@@ -8415,7 +8415,7 @@ namespace yyjson
         {
             using entry = condition_entry_of<S, E>;
             using level = typename entry::level;
-            using R = typename entry::reads_as;
+            using R = typename entry::type_test;
             static constexpr auto key = struct_field_key<S, entry::field>;
             const auto& field = struct_field<entry::field>(s);
             if (!present) throw_condition_missing_key(target_of(obj), key, type_name<S>());
@@ -15218,7 +15218,7 @@ namespace yyjson
         {
             using entry = condition_entry_of<S, E>;
             using level = typename entry::level;
-            using R = typename entry::reads_as;
+            using R = typename entry::type_test;
             static constexpr auto key = struct_field_key<S, entry::field>;
             const auto& field = struct_field<entry::field>(s);
             if (!written) throw_condition_missing_key(cast_target{}, key, type_name<S>());
@@ -15239,7 +15239,7 @@ namespace yyjson
         }
 
         // Throws `bad_cast` unless `s` satisfies the conditions of S, where `written[k]` tells whether writing
-        // writes the key of the field k.  A field read as the type of `yyjson::reads_as<T>` is read as
+        // writes the key of the field k.  A field read as the type of `yyjson::is_type<T>` is read as
         // `yyjson::strict` reads it, as the read of the output of `yyjson::write(t, yyjson::strict)`, unless only
         // the settings are checked.
         template <typename S, std::size_t N>

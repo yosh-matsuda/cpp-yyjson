@@ -643,7 +643,7 @@ template <>
 inline constexpr auto yyjson::annotations<ConditionShape> = yyjson::annotate(
     yyjson::if_then_else(yyjson::if_(yyjson::field("kind", yyjson::const_("circle"), yyjson::required)),
                          yyjson::then(yyjson::field("r", yyjson::required, yyjson::minimum(0))),
-                         yyjson::else_(yyjson::field("p", yyjson::reads_as<ConditionPoint>),
+                         yyjson::else_(yyjson::field("p", yyjson::is_type<ConditionPoint>),
                                        yyjson::field("sides", yyjson::items(yyjson::minimum(1)),
                                                      yyjson::min_items(3)))),
     yyjson::not_(yyjson::field("kind", yyjson::pattern("^x"))), yyjson::field("r", yyjson::rename("radius")));
@@ -803,7 +803,7 @@ struct GroupOfSkipped
 template <>
 inline constexpr auto yyjson::annotations<GroupOfSkipped> =
     yyjson::annotate(yyjson::any_of_required({"a"}, {"b"}), yyjson::field("b", yyjson::skip));
-// a field that a condition names has a key of its own, and reads_as is a setting of then and else_
+// a field that a condition names has a key of its own, and is_type is a setting of then and else_
 #define CONDITION_RULE(NAME, SETTING, ...)                                                                        \
     struct NAME                                                                                                   \
     {                                                                                                             \
@@ -818,7 +818,7 @@ inline constexpr auto yyjson::annotations<GroupOfSkipped> =
 CONDITION_RULE(ConditionOnSkipped, yyjson::skip)
 CONDITION_RULE(ConditionOnExtraKeys, yyjson::rename("b"), yyjson::field("m", yyjson::extra_keys),
                yyjson::not_(yyjson::field("m", yyjson::required)))
-CONDITION_RULE(ConditionWithReadsAs, yyjson::reads_as<int>)
+CONDITION_RULE(ConditionWithIsType, yyjson::is_type<int>)
 CONDITION_RULE(ConditionTransparent, yyjson::minimum(0), yyjson::field("m", yyjson::skip), yyjson::transparent)
 #undef CONDITION_RULE
 struct ConditionOnUnknown
@@ -870,7 +870,7 @@ namespace compile_rules
     static_assert(table_error<ConditionOnSkipped> == condition_field_kind);
     static_assert(table_error<ConditionPresence> == none);
     static_assert(table_error<ConditionOnExtraKeys> == condition_field_kind);
-    static_assert(table_error<ConditionWithReadsAs> == reads_as_outside_condition);
+    static_assert(table_error<ConditionWithIsType> == is_type_outside_condition);
     static_assert(table_error<ConditionTransparent> == condition_transparent);
     static_assert(table_error<ConditionOnUnknown> == unknown_member);
     static_assert(table_error<ConditionShape> == none && table_error<Leveled> == none);
@@ -923,8 +923,8 @@ namespace compile_rules
     static_assert(!condition_test_setting<yyjson::min_items> && !condition_test_setting<yyjson::unique_items_t> &&
                   !condition_test_setting<yyjson::satisfies_t> &&
                   !condition_test_setting<decltype(yyjson::items(yyjson::minimum(0)))> &&
-                  !condition_test_setting<yyjson::reads_as_t<int>> && !condition_test_setting<yyjson::rename>);
-    static_assert(condition_assert_setting<yyjson::min_items> && condition_assert_setting<yyjson::reads_as_t<int>> &&
+                  !condition_test_setting<yyjson::is_type_t<int>> && !condition_test_setting<yyjson::rename>);
+    static_assert(condition_assert_setting<yyjson::min_items> && condition_assert_setting<yyjson::is_type_t<int>> &&
                   condition_assert_setting<decltype(yyjson::items(yyjson::minimum(0)))>);
     static_assert(!condition_assert_setting<yyjson::rename> && !condition_assert_setting<yyjson::skip_t>);
 }  // namespace compile_rules
@@ -2046,7 +2046,7 @@ TEST(Constraints, Conditions)
     // not_ holds for an object without the key, as JSON Schema's `not` of `properties`
     check(shape, R"({"kind":"xy"})", rejected);
     check(shape, R"({})", rejected);
-    // under yyjson::strict, reads_as reads strictly too
+    // under yyjson::strict, is_type reads strictly too
     EXPECT_NO_THROW((void)yyjson::read<ConditionShape>(R"({"kind":"square","p":{"x":1}})", yyjson::strict));
     EXPECT_THROW((void)yyjson::read<ConditionShape>(R"({"kind":"square","p":{"x":1,"y":2}})", yyjson::strict),
                  yyjson::bad_cast);

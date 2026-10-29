@@ -90,7 +90,7 @@ template <>
 inline constexpr auto yyjson::annotations<ValidateConditions> = yyjson::annotate(
     yyjson::if_then_else(yyjson::if_(yyjson::field("kind", yyjson::const_("circle"), yyjson::required)),
                          yyjson::then(yyjson::field("r", yyjson::required, yyjson::minimum(0))),
-                         yyjson::else_(yyjson::field("p", yyjson::reads_as<ValidatePoint>))),
+                         yyjson::else_(yyjson::field("p", yyjson::is_type<ValidatePoint>))),
     yyjson::not_(yyjson::field("kind", yyjson::const_("x"))));
 // conditions on fields that writing writes whatever they hold, and one that it leaves out when it holds its default
 struct ValidatePresence
@@ -365,7 +365,7 @@ TEST(Validate, Conditions)
                    "");
     expect_invalid(ValidateConditions{"circle", -1, {}},
                    R"(the value of the key "r" of ValidateConditions is less than the minimum 0)", "/r");
-    // the value of reads_as is read under yyjson::strict
+    // the value of is_type is read under yyjson::strict
     expect_invalid(ValidateConditions{"square", {}, yyjson::value(yyjson::read(R"({"x":"a"})"))},
                    "int is not constructible from JSON string", "/p/x");
     expect_invalid(ValidateConditions{"square", {}, yyjson::value(yyjson::read(R"({})"))},

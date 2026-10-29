@@ -474,7 +474,7 @@ Draft-07 and draft-06 have neither keyword, so the generator ignores them there,
 
 ## Conditions
 
-`if`, `then` and `else`, `not` and `dependentSchemas` of an object schema become settings of its struct, [`yyjson::if_then_else` and `yyjson::not_`](reference.md#yyjsonif_then_else-yyjsonnot_-yyjsonreads_as), which test the members after the object is read:
+`if`, `then` and `else`, `not` and `dependentSchemas` of an object schema become settings of its struct, [`yyjson::if_then_else` and `yyjson::not_`](reference.md#yyjsonif_then_else-yyjsonnot_-yyjsonis_type), which test the members after the object is read:
 
 ```json
 {
@@ -507,7 +507,7 @@ inline constexpr auto yyjson::annotations<Root> = yyjson::annotate(
 | `not` | `yyjson::not_(...)`; `not` of `anyOf` is one `yyjson::not_` for each subschema |
 | `"dependentSchemas": {"k": S}` | `yyjson::if_then_else(yyjson::if_(yyjson::field("k", yyjson::required)), yyjson::then(S))`; `false` is `yyjson::not_(yyjson::field("k", yyjson::required))` |
 
-`if` and `not` test keys and values: `required`, and in `properties`, `const`, `enum`, the bounds of numbers, the lengths and `pattern` of strings, and `format`. `"type": "object"` adds nothing on a struct and is left out. `then`, `else` and the subschemas of `dependentSchemas` take `required` and the constraints that the members take, of values and of elements. A `$ref` in `then` or `else` for a key whose member is `yyjson::value` or `yyjson::object` reads the value as the type of the reference, with `yyjson::reads_as<T>`, which checks the type but not its constraints; the generator warns when the reference has constraints of its own. A `$ref` to the type of the member adds nothing and is left out.
+`if` and `not` test keys and values: `required`, and in `properties`, `const`, `enum`, the bounds of numbers, the lengths and `pattern` of strings, and `format`. `"type": "object"` adds nothing on a struct and is left out. `then`, `else` and the subschemas of `dependentSchemas` take `required` and the constraints that the members take, of values and of elements. A `$ref` in `then` or `else` for a key whose member is `yyjson::value` or `yyjson::object` reads the value as the type of the reference, with `yyjson::is_type<T>`, which checks the type but not its constraints; the generator warns when the reference has constraints of its own. A `$ref` to the type of the member adds nothing and is left out.
 
 JSON Schema has no `else if`. An `else` that holds one more `if`, and so on, is a chain: when every `if` of the chain tests the same key against values that no other `if` lists, and at most one of them lets an absent key through, each link becomes a `yyjson::if_then_else` of its own, and the last `else` one more whose `if_` lists all the values. Another `if`, `not` or `dependentSchemas` inside `then`, `else` or `dependentSchemas` is left out with a warning.
 

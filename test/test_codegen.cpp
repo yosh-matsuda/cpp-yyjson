@@ -1148,7 +1148,7 @@ TEST(Codegen, Conditions)
                             "        yyjson::if_(yyjson::field(\"kind\", yyjson::required, "
                             "yyjson::const_(\"circle\"))),\n"
                             "        yyjson::then(yyjson::field(\"radius\", yyjson::required, yyjson::minimum(0.0)), "
-                            "yyjson::field(\"payload\", yyjson::reads_as<P>)),\n"
+                            "yyjson::field(\"payload\", yyjson::is_type<P>)),\n"
                             "        yyjson::else_(yyjson::field(\"width\", yyjson::required))),\n"));
     // `not` of `anyOf`: one yyjson::not_ for each subschema
     EXPECT_TRUE(has(r.code, "    yyjson::not_(yyjson::field(\"radius\", yyjson::required), "
@@ -1157,7 +1157,7 @@ TEST(Codegen, Conditions)
     EXPECT_TRUE(has(r.code, "    yyjson::if_then_else(\n"
                             "        yyjson::if_(yyjson::field(\"width\", yyjson::required)),\n"
                             "        yyjson::then(yyjson::field(\"height\", yyjson::required, "
-                            "yyjson::reads_as<std::int64_t>))));\n"));
+                            "yyjson::is_type<std::int64_t>))));\n"));
 
     // a chain of `else` and `if` that test one key by values; `then: false`; `dependentSchemas` of `false`; a key
     // that `additionalProperties: false` rejects; tests that the settings of a field do not express
