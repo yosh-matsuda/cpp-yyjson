@@ -1615,11 +1615,87 @@ namespace cpp_yyjson_codegen
                 return j;
             }
 
-            json merge(const json& a, const json& b, const std::string& loc)
+            // the value of `v` that the schema `x` accepts too
+            static json both(const json& v, const json& x)
             {
-                if (a.is_bool()) return a.b ? b : a;
-                if (b.is_bool()) return b.b ? a : b;
-                if (!a.is_object() || !b.is_object()) return a;
+                if (x.is_bool()) return x.b ? v : x;
+                if (v.is_bool()) return v.b ? x : v;
+                return all_of(v, x);
+            }
+
+            // The schema that the schema `s` applies to the key `k`, which its `properties` do not declare: those of
+            // the patterns of `patternProperties` that `k` matches, else `additionalProperties`; nullopt where it
+            // applies none, or where std::regex cannot read a pattern (with a warning)
+            std::optional<json> undeclared_schema(const json& s, const std::string& k, const std::string& loc)
+            {
+                if (const auto* pp = s.find("patternProperties"); pp != nullptr && pp->is_object())
+                {
+                    auto r = std::optional<json>();
+                    for (const auto& [p, sub] : pp->members)
+                    {
+                        try
+                        {
+                            if (!std::regex_search(k, std::regex(p, std::regex::ECMAScript))) continue;
+                        }
+                        catch (const std::regex_error&)
+                        {
+                            warn(loc, "the property \"" + k + "\" is not checked against the pattern \"" + p +
+                                          "\" of the other schema of `allOf`: std::regex does not read the pattern");
+                            return std::nullopt;
+                        }
+                        r = r ? both(*r, sub) : sub;
+                    }
+                    if (r) return r;
+                }
+                if (const auto* ap = s.find("additionalProperties")) return *ap;
+                return std::nullopt;
+            }
+
+            // The schema `s` beside the schema `other` in `allOf`: a property that `other` does not declare also
+            // takes what `other` applies to such a key, the schemas of the patterns of `s` what `other` applies to
+            // any key when it has no patterns, and a position of `prefixItems` beyond those of `other` its `items`.
+            // An `additionalProperties` or `items` that comes from `unevaluatedProperties` or `unevaluatedItems` of a
+            // subschema thereby evaluates that subschema only.
+            json beside(const json& s, const json& other, const std::string& loc)
+            {
+                if (!s.is_object() || !other.is_object()) return s;
+                auto r = s;
+                if (const auto* props = s.find("properties"); props != nullptr && props->is_object())
+                {
+                    const auto* declared = other.find("properties");
+                    auto p = *props;
+                    for (auto& [k, v] : p.members)
+                        if (declared == nullptr || !declared->is_object() || !declared->has(k))
+                            if (auto x = undeclared_schema(other, k, loc)) v = both(v, *x);
+                    r.set("properties", std::move(p));
+                }
+                if (const auto* pp = s.find("patternProperties");
+                    pp != nullptr && pp->is_object() && !other.has("patternProperties"))
+                    if (const auto* ap = other.find("additionalProperties"))
+                    {
+                        auto p = *pp;
+                        for (auto& [k, v] : p.members) v = both(v, *ap);
+                        r.set("patternProperties", std::move(p));
+                    }
+                if (const auto* prefix = s.find("prefixItems"); prefix != nullptr && prefix->is_array())
+                    if (const auto* items = other.find("items"))
+                    {
+                        const auto* theirs = other.find("prefixItems");
+                        const auto n = theirs != nullptr && theirs->is_array() ? theirs->items.size() : 0;
+                        auto p = *prefix;
+                        for (auto i = n; i < p.items.size(); ++i) p.items[i] = both(p.items[i], *items);
+                        r.set("prefixItems", std::move(p));
+                    }
+                return r;
+            }
+
+            json merge(const json& a0, const json& b0, const std::string& loc)
+            {
+                if (a0.is_bool()) return a0.b ? b0 : a0;
+                if (b0.is_bool()) return b0.b ? a0 : b0;
+                if (!a0.is_object() || !b0.is_object()) return a0;
+                const auto a = beside(a0, b0, loc);
+                const auto b = beside(b0, a0, loc);
                 auto r = a;
                 for (const auto& [k, bv] : b.members)
                 {
@@ -1676,6 +1752,16 @@ namespace cpp_yyjson_codegen
                     }
                     else if (k == "items" || k == "contains" || k == "propertyNames")
                         r.set(k, all_of(*av, bv));
+                    else if (k == "prefixItems" && av->is_array() && bv.is_array())
+                    {
+                        auto p = *av;
+                        for (std::size_t i = 0; i < bv.items.size(); ++i)
+                            if (i < p.items.size())
+                                p.items[i] = both(p.items[i], bv.items[i]);
+                            else
+                                p.items.push_back(bv.items[i]);
+                        r.set(k, std::move(p));
+                    }
                     else if (k == "minimum" || k == "exclusiveMinimum" || k == "minLength" || k == "minItems" ||
                              k == "minProperties" || k == "minContains")
                     {
@@ -1727,6 +1813,29 @@ namespace cpp_yyjson_codegen
                     else if (!is_metadata_key(k) && !equal(*av, bv))
                         warn(loc, "`allOf` has different values of `" + k + "`; the first is used");
                 }
+                // a position that accepts no value ends the array before it
+                if (const auto* prefix = r.find("prefixItems"); prefix != nullptr && prefix->is_array())
+                    if (const auto it = std::ranges::find_if(prefix->items,
+                                                             [](const json& e) { return e.is_bool() && !e.b; });
+                        it != prefix->items.end())
+                    {
+                        const auto n = static_cast<std::size_t>(it - prefix->items.begin());
+                        auto p = *prefix;
+                        p.items.resize(n);
+                        if (const auto* m = r.find("maxItems"); m == nullptr || !m->is_number() || m->num > double(n))
+                        {
+                            auto j = json();
+                            j.k = json::kind::number;
+                            j.integer = true;
+                            j.num = static_cast<double>(n);
+                            j.text = std::to_string(n);
+                            r.set("maxItems", std::move(j));
+                        }
+                        if (n == 0)
+                            std::erase_if(r.members, [](const auto& m) { return m.first == "prefixItems"; });
+                        else
+                            r.set("prefixItems", std::move(p));
+                    }
                 return r;
             }
 
@@ -2250,6 +2359,16 @@ namespace cpp_yyjson_codegen
                 uses_pattern_ = true;
             }
 
+            // whether the schema `s` is `x`, or `allOf` with `x` among its schemas, as `beside` gives a property that
+            // another schema of `allOf` declared
+            static bool includes(const json& s, const json& x)
+            {
+                if (equal(s, x)) return true;
+                const auto* all = s.find("allOf");
+                return all != nullptr && all->is_array() &&
+                       std::ranges::any_of(all->items, [&](const json& i) { return includes(i, x); });
+            }
+
             // warns of the properties whose keys match a pattern of `patternProperties`, whose schema JSON Schema
             // checks their values against too
             void warn_matched_properties(const json& s, const std::vector<field>& fields, const std::string& loc)
@@ -2261,7 +2380,7 @@ namespace cpp_yyjson_codegen
                     const auto same = [&](const field& f) {
                         const auto* own = props != nullptr ? props->find(f.key) : nullptr;
                         if (own == nullptr) own = f.schema;
-                        return own != nullptr && equal(*own, sub);
+                        return own != nullptr && includes(*own, sub);
                     };
                     try
                     {

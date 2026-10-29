@@ -1775,6 +1775,42 @@ TEST(Codegen, Unevaluated)
     EXPECT_TRUE(has(draft7.code, "    yyjson::additional_properties(true));\n"));
 }
 
+TEST(Codegen, AllOfScopes)
+{
+    // unevaluatedProperties of a referenced schema sees only its own properties: the sibling property is rejected
+    const auto closed = generate(R"({
+        "$defs": {"Closed": {"type": "object", "properties": {"id": {"type": "integer"}},
+                             "unevaluatedProperties": false}},
+        "type": "object", "$ref": "#/$defs/Closed", "properties": {"name": {"type": "string"}}
+    })", {});
+    EXPECT_EQ(warnings(closed), "#/properties/name: the schema `false` accepts no value; it is read as any JSON value\n");
+    EXPECT_TRUE(has(closed.code, "struct Root\n{\n    std::optional<yyjson::value> name;\n"
+                                 "    std::optional<std::int64_t> id;\n};\n"));
+
+    // a property of one subschema of allOf takes the pattern or additional properties of the others
+    const auto parts = generate(R"({"type": "object", "allOf": [
+        {"properties": {"a": {"type": "integer"}, "x_b": {"type": "integer"}}},
+        {"properties": {"c": {"type": "string"}}, "patternProperties": {"^x_": {"minimum": 0}},
+         "additionalProperties": false}
+    ]})", {});
+    EXPECT_EQ(warnings(parts), "#/properties/a: the schema `false` accepts no value; it is read as any JSON value\n");
+    EXPECT_TRUE(has(parts.code, "    std::optional<yyjson::value> a;\n    std::optional<std::int64_t> x_b;\n"));
+    EXPECT_TRUE(has(parts.code, "    yyjson::field(\"x_b\", yyjson::minimum(0)),\n"));
+
+    // items of one subschema applies to the positions of prefixItems beyond its own; prefixItems merge by position
+    const auto arrays = generate(R"({"type": "object", "properties": {
+        "n": {"type": "array", "prefixItems": [{"type": "string"}], "allOf": [{"items": false}]},
+        "t": {"type": "array", "allOf": [{"prefixItems": [{"type": "integer"}]},
+                                         {"prefixItems": [{"minimum": 0}, {"type": "integer", "maximum": 5}],
+                                          "items": false}]}
+    }})", {});
+    EXPECT_EQ(warnings(arrays), "");
+    EXPECT_TRUE(has(arrays.code, "    yyjson::field(\"n\", yyjson::max_items(0)),\n"));
+    EXPECT_TRUE(has(arrays.code, "    std::optional<std::vector<std::int64_t>> t;\n"));
+    EXPECT_TRUE(has(arrays.code, "    yyjson::field(\"t\", yyjson::max_items(2), "
+                                 "yyjson::prefix_items(yyjson::minimum(0), yyjson::maximum(5))));\n"));
+}
+
 TEST(Codegen, MaxAlternatives)
 {
     // variants of more alternatives than the limit, counting null, are yyjson::value; their structs stay
