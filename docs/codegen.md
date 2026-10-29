@@ -15,7 +15,7 @@ This document describes:
 *   how to [run the generator](#running-the-generator), from the [command line](#command-line) or from [CMake](#cmake);
 *   [what the generated code guarantees](#what-the-generated-code-guarantees);
 *   how the keywords [map to C++](#mapping), and the [names](#names) of the types;
-*   [defaults](#defaults), [keys that name no property](#keys-that-name-no-property) and [`patternProperties`](#patternproperties);
+*   [defaults](#defaults), [keys that keywords name](#keys-that-keywords-name), [keys that name no property](#keys-that-name-no-property) and [`patternProperties`](#patternproperties);
 *   [dialects and references](#dialects-and-references);
 *   the [warnings](#warnings), the [round trip](#round-trip) and the [limits](#limits).
 
@@ -217,7 +217,7 @@ A property becomes a member, in the order of `properties`:
 | in `required` | `T` with `yyjson::required` |
 | with a `default` | `T` initialized to the default, with `yyjson::omit_default`; see [Defaults](#defaults) |
 | otherwise | `std::optional<T>` |
-| a key in `required` that is not in `properties` | `yyjson::value` with `yyjson::required` |
+| a key in `required` that is not in `properties` | `U` with `yyjson::required`; see [Keys that keywords name](#keys-that-keywords-name) |
 
 `additionalProperties` becomes [`yyjson::additional_properties`](reference.md#yyjsonadditional_properties): `false` closes the struct, and an absent keyword or `true` is written as `yyjson::additional_properties(true)`, so that a strict read also accepts the other keys, as the schema does. A schema in `additionalProperties` gives a field of [`yyjson::extra_keys`](#keys-that-name-no-property).
 
@@ -370,6 +370,16 @@ yyjson::value any = yyjson::value(yyjson::read(R"({"k":[1,"x"]})"));
 A default that the generator cannot convert makes the member `std::optional<T>` with a `// default:` comment and a warning, and the program applies the default. This happens for a default that does not read as the type, such as a key that a closed struct does not have, for the default of a variant whose alternative the generator cannot choose, because an alternative depends on a `pattern`, a `contains` or a `format` that it does not check.
 
 `--optional-defaults` makes every member with a default `std::optional<T>` with a `// default:` comment: a missing key reads as `std::nullopt`, which tells it apart from a key that holds the default.
+
+## Keys that keywords name
+
+A key that `required`, `dependentRequired` or a group of `oneOf` / `anyOf` of `required` names, but `properties` does not declare, is a member of its own, `U` when the key is required and `std::optional<U>` otherwise. `U` is the type that the object schema gives a key that no property declares:
+
+1.  the schema of the patterns of `patternProperties` that the key matches;
+2.  else the schema of `additionalProperties`;
+3.  else `yyjson::value`, which reads any JSON value.
+
+The member carries the constraints of that schema. A key that matches patterns of different schemas is `yyjson::value`, with a warning. Under `additionalProperties: false` the schema rejects every object that has the key: the member is `yyjson::value`, with a warning, so that a required key or a group of keys can still be checked. The keys that no keyword names go to the field of `yyjson::extra_keys` below.
 
 ## Keys that name no property
 
