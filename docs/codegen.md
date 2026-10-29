@@ -116,6 +116,8 @@ cpp-yyjson-codegen <schema.json> [options]
 | --- | --- |
 | `<schema.json>` | The schema; `-` reads the standard input. A reference to another file is read from the directory of the schema, and its types go to the same header. |
 | `-o`, `--output <file>` | The header to write. The default is the standard output. |
+| `--schema <file>` | Reads another schema, which a reference finds by its `$id` or by its path. May be given more than once. See [Dialects and references](#dialects-and-references). |
+| `--uri-map <prefix>=<dir>` | Reads a reference to a URI that starts with `<prefix>` from `<dir>`, with the rest of the URI as a relative path: with `https://example.com/schemas/=schemas`, `https://example.com/schemas/types/money.json` is read from `schemas/types/money.json`. May be given more than once; the longest prefix wins. |
 | `--depfile <file>` | Also writes the schema files read, as a Makefile rule for the header, so that a build system generates the header again when one of them changes. Needs `-o`. |
 | `--namespace <ns>` | The namespace of the generated types, such as `app::model`. The default is the global namespace. |
 | `--root-name <name>` | The name of the root type. The default is the `title` of the root, or `Root`. |
@@ -127,7 +129,7 @@ cpp-yyjson-codegen <schema.json> [options]
 | `--max-alternatives <n>` | Makes a variant of more than `<n>` alternatives `yyjson::value`, with a warning. The default, `0`, sets no limit. See [Large variants](#large-variants). |
 | `--strict` | Treats the warnings as errors. |
 
-The warnings go to the standard error as `<schema>: <location>: warning: <message>`, where the location is a JSON Pointer into the schema, such as `#/$defs/Item/properties/name`. The program exits with 0 when it wrote the header, 1 on an error of the schema (or a warning under `--strict`), and 2 on a wrong argument or a file that cannot be read or written.
+The warnings go to the standard error as `<schema>: <location>: warning: <message>`, where the location is a JSON Pointer into the schema, such as `#/$defs/Item/properties/name`. A location in another file starts with its path, such as `types/money.json#/properties/amount`, and one in a schema of its own `$id` inside a file with that `$id`. The program exits with 0 when it wrote the header, 1 on an error of the schema (or a warning under `--strict`), and 2 on a wrong argument or a file that cannot be read or written.
 
 ### CMake
 
@@ -148,13 +150,14 @@ cpp_yyjson_generate(<target> <schema>
                     [NAMESPACE <ns>] [ROOT_NAME <name>] [MAX_ALTERNATIVES <n>]
                     [CPP26] [NO_PATTERN] [OPTIONAL_DEFAULTS] [KEEP_UNKNOWN_KEYS] [INFER_TYPES]
                     [STRICT]
+                    [SCHEMAS <file>...] [URI_MAP <prefix>=<dir>...]
                     [DEPENDS <file>...])
 ```
 
 It generates `<header>` from `<schema>`, adds it to the sources of `<target>`, so that the target is built after it, and adds the directory of the header to the include directories of the target with the given scope, `PRIVATE` by default. With the call above, `main.cpp` includes `"order.hpp"`.
 
 *   A relative `<schema>` is taken from the current source directory, and a relative `<header>` from the current binary directory. The default `<header>` is the file name of the schema up to its first dot, with `.hpp`.
-*   The options are those of the command line.
+*   The options are those of the command line: `SCHEMAS` gives `--schema` for each file, and `URI_MAP` gives `--uri-map` for each entry. Their relative files and directories are taken from the current source directory.
 *   The files that the schema references are tracked through a depfile under Ninja, or with CMake 3.21 or later. With an older CMake and another generator, list them in `DEPENDS`.
 *   Call it in the directory that defines `<target>`: CMake before 3.20 does not see a generated file in the sources of a target of another directory. An `INTERFACE` library needs CMake 3.19 or later.
 *   When cross-compiling, build the generator for the host and set `CPPYYJSON_CODEGEN_EXECUTABLE` to it. The cache variable takes the place of the target `cpp_yyjson::cpp_yyjson_codegen`.
@@ -559,13 +562,14 @@ The dialect comes from `$schema`: 2020-12, 2019-09, draft-07 and draft-06 are re
 *   `$id: "#name"` names a schema, as `$anchor` does;
 *   `unevaluatedProperties` and `unevaluatedItems` are ignored, with a warning.
 
-`$ref` takes a JSON Pointer (`#/$defs/Item`), an anchor (`#name`) and a file:
+`$ref` takes a JSON Pointer (`#/$defs/Item`), an anchor (`#name`), a file and a URI. A reference is resolved against the base URI of the schema that holds it, as JSON Schema does:
 
-*   A relative reference, such as `address.json#/$defs/Street`, is read from the directory of the schema that refers to it; its types go to the same header, and a type of another file whose name is taken gets the next name.
-*   An absolute URI is followed when it is the `$id` of a file read, or names a file beside it under the directory of that `$id`.
-*   A file that cannot be read, a file that is not JSON and a URI elsewhere are read as `yyjson::value`, with a warning.
+*   The base of a file is its `$id`, or else the file itself. A schema with its own `$id` under `$defs`, `properties` or another keyword of subschemas is a resource of its own: the references and the anchors under it take its `$id` as their base, and a reference to its `$id`, also a URN such as `urn:example:item`, finds it. A `$id` under a keyword that is not one of subschemas, such as `x-extra` or `const`, is not one.
+*   A relative reference, such as `address.json#/$defs/Street`, against a file is read from the directory of that file; its types go to the same header, and a type of another file whose name is taken gets the next name.
+*   An absolute URI is the `$id` of a schema read: the root, a file read before, or a file of `--schema`. Otherwise it is read from the directory of the longest prefix of `--uri-map` that it starts with, and then from beside a file read whose `$id` has the same scheme and host, at the place where the URI is relative to that `$id`: under `"$id": "https://example.com/a/root.json"`, `https://example.com/b/c.json` is read from `../b/c.json` of the root's file. The references in a file read so resolve against its own `$id`, or against the URI by which it was read.
+*   A file that cannot be read, a file that is not JSON and a URI that is none of these are read as `yyjson::value`, with a warning. A reference to a meta-schema, such as `https://json-schema.org/draft/2020-12/schema`, is one of them.
 
-`$id` inside a schema does not change the base of the references under it: the generator reads such a reference against the base of the file, and warns that the file cannot be read. Refer to such a schema by its JSON Pointer instead.
+Another file, and a schema of its own `$id` that is not an entry of `$defs` of the root, is named by its `title`, else by the file name of its `$id` or its path up to the first dot; the entries of its `$defs` are named by their keys.
 
 `$dynamicRef` and `$recursiveRef` are not supported: they are ignored with a warning, and a schema of only one of them is read as `yyjson::value`.
 
@@ -579,7 +583,7 @@ A warning names the location in the schema and what the generated code does inst
 | a form that is not supported | `contains` that the elements cannot express, positions of `prefixItems` of different types, `minProperties` of a struct, [`unevaluatedProperties` beside `anyOf`](#unevaluatedproperties-and-unevaluateditems) | reads more than the schema accepts |
 | a type inferred from keywords, with `--infer-types` | "the schema has no `type`; it is read as string from its keywords" | reads only that type |
 | a variant of more alternatives than `--max-alternatives` | "a variant of 447 alternatives is more than 64 (--max-alternatives) ..." | reads any JSON value there |
-| a reference that cannot be followed | a missing file, a URI elsewhere | reads any JSON value there |
+| a reference that cannot be followed | a missing file, a URI that is not the `$id` of a schema read and is not mapped to a file, a file of `--schema` that cannot be read | reads any JSON value there |
 | a schema that refers to itself with no array or object between | `{"anyOf": [{"$ref": "#/$defs/D"}, {"type": "string"}]}` | reads any JSON value there |
 | a schema `false` that is not a property | `"$defs": {"Never": false}`, `"items": {"$ref": "#/$defs/Never"}` | reads any JSON value there |
 | a default or an example that does not convert | "the default ... is not converted to the C++ type; the field is std::optional" | keeps it in a comment |
@@ -621,5 +625,4 @@ The `title` and `description` of the subschema beside `{"type": "null"}` are los
 *   Only the keywords listed above are expressed; the others are left out as described in [Warnings](#warnings).
 *   A struct of more than 1365 members needs `--cpp26`, and a struct of more than 100 members has no field of `yyjson::extra_keys` without it.
 *   A position of `prefixItems` keeps up to 16 values of `const` and `enum`; more are dropped with a warning, as is `contains` of a type there. Under C++20, a position copies up to 256 characters of string literals, and longer strings become `std::string_view` literals.
-*   `$id` inside a schema does not change the base of references.
 *   Formats that the library does not check, and keywords that only annotate, are left out.
