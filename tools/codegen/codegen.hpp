@@ -651,11 +651,15 @@ namespace cpp_yyjson_codegen
             std::vector<settings> items, contains, property_names, additional;  // zero or one
             std::vector<settings> prefix;
             std::optional<std::uint64_t> min_contains, max_contains;
+            // the level of `contains` over elements of yyjson::value or yyjson::object: yyjson::is_type<T>, an index
+            // into the types of the generator, or -1
+            int type_test = -1;
 
             [[nodiscard]] bool empty() const
             {
                 return constraints.empty() && !min_items && !max_items && !unique && items.empty() &&
-                       contains.empty() && property_names.empty() && additional.empty() && prefix.empty();
+                       contains.empty() && property_names.empty() && additional.empty() && prefix.empty() &&
+                       type_test < 0;
             }
         };
 
@@ -958,9 +962,15 @@ namespace cpp_yyjson_codegen
             bool widened_variants_ = false;  // a variant became yyjson::value under options::max_alternatives
             std::vector<diagnostic> warnings_;
             std::set<std::pair<std::string, std::string>> warned_;
+            // the calls of warn(), repeated ones too, by which a caller tells that the type of a schema may read more
+            // than the schema allows; type_of() counts a call again for a schema typed so before (`loose_`)
+            std::size_t warn_calls_ = 0;
+            std::set<const json*> loose_;
+            std::vector<ctype> type_tests_;  // the types of yyjson::is_type<T> in `contains`: settings::type_test
 
             void warn(const std::string& loc, std::string msg)
             {
+                ++warn_calls_;
                 if (warned_.emplace(loc, msg).second) warnings_.push_back({loc, std::move(msg)});
             }
 
@@ -1801,7 +1811,19 @@ namespace cpp_yyjson_codegen
 
             typed type_of(const json* s0, const std::string& loc, const std::string& hint)
             {
-                if (const auto it = cache_.find(s0); it != cache_.end()) return it->second;
+                if (const auto it = cache_.find(s0); it != cache_.end())
+                {
+                    if (loose_.contains(s0)) ++warn_calls_;
+                    return it->second;
+                }
+                const auto calls = warn_calls_;
+                auto r = type_of_new(s0, loc, hint);
+                if (warn_calls_ != calls) loose_.insert(s0);
+                return r;
+            }
+
+            typed type_of_new(const json* s0, const std::string& loc, const std::string& hint)
+            {
                 if (s0->is_bool())
                 {
                     if (!s0->b) warn(loc, "the schema `false` accepts no value; it is read as any JSON value");
@@ -2602,43 +2624,6 @@ namespace cpp_yyjson_codegen
                 return true;
             }
 
-            // The settings of the value of a field that a condition names: those of settings_for(), where `const`
-            // and `enum` of an enumeration give the JSON names of its enumerators
-            std::optional<settings> condition_settings(const json& sub, const ctype& type, const std::string& loc)
-            {
-                const auto* n = normalize_full(&sub, loc);
-                const auto& t = value_type(type);
-                if (!n->is_object() || t.k != tk::named || decls_[t.decl].kind != decl::kind_t::enumeration ||
-                    !(n->has("const") || n->has("enum")))
-                    return settings_for(sub, type, loc);
-                const auto& names = decls_[t.decl].enumerators;
-                const auto known = [&](const json& v) {
-                    return v.is_string() &&
-                           std::ranges::any_of(names, [&](const auto& e) { return e.second == v.text; });
-                };
-                auto out = settings();
-                if (const auto* c = n->find("const"))
-                {
-                    if (!known(*c)) return std::nullopt;
-                    out.constraints.push_back({"yyjson::const_(" + cpp_string(c->text) + ")", "const", *c});
-                }
-                if (const auto* e = n->find("enum"))
-                {
-                    if (!e->is_array()) return std::nullopt;
-                    auto list = std::vector<std::string>();
-                    for (const auto& v : e->items)
-                        if (known(v)) list.push_back(cpp_string(v.text));
-                    if (list.empty()) return std::nullopt;
-                    out.constraints.push_back({"yyjson::enum_(" + join(list) + ")", "enum", *e});
-                }
-                auto rest = *n;
-                std::erase_if(rest.members, [](const auto& m) { return m.first == "const" || m.first == "enum"; });
-                auto more = settings_for(*store(std::move(rest)), type, loc);
-                if (!more) return std::nullopt;
-                for (auto& c : more->constraints) out.constraints.push_back(std::move(c));
-                return out;
-            }
-
             // what the subschema of `if` or `not` tests, as the fields of yyjson::if_ / yyjson::not_: `fields` empty
             // when every object satisfies it, `never` when none does, `ok` false with the reason in `why` when C++
             // does not express it
@@ -2650,8 +2635,9 @@ namespace cpp_yyjson_codegen
                 std::string why{};
             };
 
+            // the types of yyjson::is_type<T> in `contains` are named after `hint` and the key
             cond_test test_of(const json& sub, const std::string& sloc, const std::vector<field>& fields,
-                              const std::vector<std::string>& rejected)
+                              const std::vector<std::string>& rejected, const std::string& hint)
             {
                 auto r = cond_test();
                 const auto fail = [&](std::string why) {
@@ -2710,14 +2696,17 @@ namespace cpp_yyjson_codegen
                                     if (!is_metadata_key(pk) && pk != "type" && pk != "const" && pk != "enum" &&
                                         pk != "minimum" && pk != "maximum" && pk != "exclusiveMinimum" &&
                                         pk != "exclusiveMaximum" && pk != "multipleOf" && pk != "minLength" &&
-                                        pk != "maxLength" && pk != "pattern" && pk != "format")
+                                        pk != "maxLength" && pk != "pattern" && pk != "format" &&
+                                        pk != "contains" && pk != "minContains" && pk != "maxContains")
                                         return fail("`" + pk + "` of the key \"" + key + "\" is not tested by a field");
                             // the settings of a field let null through, which the schema may reject
                             if (may_be_null(f->type) && !accepts_null(*pn))
                                 return fail("the value of the key \"" + key + "\" may be null, which the test of its "
                                             "field lets through");
-                            auto set = condition_settings(ps, f->type, ploc);
-                            if (!set)
+                            // the test must be exact: a looser `contains` would change which branch is taken
+                            const auto calls = warn_calls_;
+                            auto set = settings_for(ps, f->type, ploc, hint + pascal(key));
+                            if (!set || warn_calls_ != calls || set->min_items || set->max_items)
                                 return fail("the schema of the key \"" + key +
                                             "\" is not expressed by the settings of its field");
                             if (!set->empty()) entry(key).set = std::move(*set);
@@ -2781,7 +2770,7 @@ namespace cpp_yyjson_codegen
                                            "ignored");
                                 continue;
                             }
-                            if (auto set = condition_settings(ps, f->type, ploc))
+                            if (auto set = settings_for(ps, f->type, ploc))
                             {
                                 if (!set->empty()) entry(key).set = std::move(*set);
                                 continue;
@@ -2924,7 +2913,7 @@ namespace cpp_yyjson_codegen
                 auto parts = std::vector<condition>();
                 for (const auto& l : links)
                 {
-                    auto t = test_of(*l.entry->find("if"), l.loc + "/if", fields, rejected);
+                    auto t = test_of(*l.entry->find("if"), l.loc + "/if", fields, rejected, name + "If");
                     if (!t.ok || t.never || t.fields.empty()) return false;
                     const auto* tv = l.entry->find("then");
                     if (tv == nullptr) continue;
@@ -2951,7 +2940,7 @@ namespace cpp_yyjson_codegen
                         any.set("properties", std::move(props));
                         if (optional_links == 0)
                             any.set("required", json::array_of({json::string_of(links[0].key)}));
-                        auto t = test_of(*store(std::move(any)), cloc + "/if", fields, rejected);
+                        auto t = test_of(*store(std::move(any)), cloc + "/if", fields, rejected, name + "If");
                         if (!t.ok || t.never || t.fields.empty()) return false;
                         parts.push_back(condition{.if_ = std::move(t.fields), .else_ = std::move(el), .loc = last_loc});
                     }
@@ -2970,7 +2959,7 @@ namespace cpp_yyjson_codegen
                 };
                 if (trivial(tv, cloc + "/then") && trivial(ev, cloc + "/else")) return;
                 if (add_chain(c, cloc, fields, rejected, name, out)) return;
-                auto t = test_of(*c.find("if"), cloc + "/if", fields, rejected);
+                auto t = test_of(*c.find("if"), cloc + "/if", fields, rejected, name + "If");
                 if (!t.ok)
                 {
                     warn(cloc + "/if", "`if` is not supported here: " + t.why + "; `then` and `else` are ignored");
@@ -3000,7 +2989,8 @@ namespace cpp_yyjson_codegen
             }
 
             void add_not(const json& v, const std::string& nloc, const std::vector<field>& fields,
-                         const std::vector<std::string>& rejected, std::vector<condition>& out)
+                         const std::vector<std::string>& rejected, const std::string& name,
+                         std::vector<condition>& out)
             {
                 // `not` of `anyOf` rejects an object that any subschema accepts: one yyjson::not_ for each
                 auto subs = std::vector<std::pair<const json*, std::string>>{{&v, nloc}};
@@ -3016,7 +3006,7 @@ namespace cpp_yyjson_codegen
                 }
                 for (const auto& [sub, sloc] : subs)
                 {
-                    auto t = test_of(*sub, sloc, fields, rejected);
+                    auto t = test_of(*sub, sloc, fields, rejected, name + "Not");
                     if (!t.ok)
                         warn(sloc, "`not` is not supported here: " + t.why + "; it is ignored");
                     else if (t.never)
@@ -3042,7 +3032,7 @@ namespace cpp_yyjson_codegen
                     if (c.has("if"))
                         add_if(c, cloc, fields, rejected, name, out);
                     else if (const auto* nt = c.find("not"))
-                        add_not(*nt, cloc + "/not", fields, rejected, out);
+                        add_not(*nt, cloc + "/not", fields, rejected, name, out);
                     else if (const auto* d = c.find("dependentSchemas"); d != nullptr && d->is_object())
                         for (const auto& [k, v] : d->members)
                         {
@@ -3489,7 +3479,7 @@ namespace cpp_yyjson_codegen
                 {
                     if (i > 0) s += ", ";
                     path_.push_back(i);
-                    auto items = render_settings(t.sets[i], t.args[i]);
+                    auto items = render_settings(t.sets[i], t.args[i], q);
                     for (auto& m : render_metadata(t.metas[i])) items.push_back(std::move(m));
                     const auto a = spell(t.args[i], expand, q);
                     if (items.empty())
@@ -4925,6 +4915,33 @@ namespace cpp_yyjson_codegen
                 return out;
             }
 
+            // `const` and `enum` of an enumeration by the JSON names of its enumerators, which yyjson::const_ and
+            // yyjson::enum_ take; std::nullopt when they name none
+            std::optional<std::vector<settings::constraint>> enumerator_constraints(const json& s, const ctype& t) const
+            {
+                const auto& names = decls_[t.decl].enumerators;
+                const auto known = [&](const json& v) {
+                    return v.is_string() &&
+                           std::ranges::any_of(names, [&](const auto& e) { return e.second == v.text; });
+                };
+                auto out = std::vector<settings::constraint>();
+                if (const auto* c = s.find("const"))
+                {
+                    if (!known(*c)) return std::nullopt;
+                    out.push_back({"yyjson::const_(" + cpp_string(c->text) + ")", "const", *c});
+                }
+                if (const auto* e = s.find("enum"))
+                {
+                    if (!e->is_array()) return std::nullopt;
+                    auto list = std::vector<std::string>();
+                    for (const auto& v : e->items)
+                        if (known(v)) list.push_back(cpp_string(v.text));
+                    if (list.empty()) return std::nullopt;
+                    out.push_back({"yyjson::enum_(" + join(list) + ")", "enum", *e});
+                }
+                return out;
+            }
+
             // the type of a value: behind aliases, std::optional, indirect and nullable variants
             const ctype& value_type(const ctype& t) const
             {
@@ -4935,7 +4952,8 @@ namespace cpp_yyjson_codegen
             }
 
             // the settings of an element level from a schema, or nothing when they cannot be expressed
-            std::optional<settings> settings_for(const json& schema, const ctype& target, const std::string& loc)
+            std::optional<settings> settings_for(const json& schema, const ctype& target, const std::string& loc,
+                                                 const std::string& hint = {})
             {
                 const auto* n = normalize_full(&schema, loc);
                 if (n->is_bool()) return n->b ? std::optional<settings>(settings()) : std::nullopt;
@@ -4963,8 +4981,8 @@ namespace cpp_yyjson_codegen
                     t.k == tk::string || t.k == tk::boolean || is_integer_kind(t.k) || is_float_kind(t.k);
                 if (n->has("const") || n->has("enum"))
                 {
-                    if (!scalar) return std::nullopt;
-                    const auto c = value_constraints(*n, t.k);
+                    if (!scalar && !is_enum) return std::nullopt;
+                    const auto c = is_enum ? enumerator_constraints(*n, t) : value_constraints(*n, t.k);
                     if (!c) return std::nullopt;
                     out.constraints = *c;
                 }
@@ -4991,14 +5009,14 @@ namespace cpp_yyjson_codegen
                     if (n->has("prefixItems")) return std::nullopt;
                     if (const auto* items = n->find("items"))
                     {
-                        auto e = settings_for(*items, t.args[0], loc + "/items");
+                        auto e = settings_for(*items, t.args[0], loc + "/items", hint + "Item");
                         if (!e) return std::nullopt;
                         if (!e->empty()) out.items.push_back(std::move(*e));
                     }
                     if (!array_counts(*n, out, loc)) return std::nullopt;
                     if (n->has("uniqueItems") && n->find("uniqueItems")->is_bool() && n->find("uniqueItems")->b)
                         out.unique = true;
-                    if (n->has("contains") && !add_contains(*n, out, t.args[0], loc)) return std::nullopt;
+                    if (n->has("contains") && !add_contains(*n, out, t.args[0], loc, hint)) return std::nullopt;
                 }
                 if ((is_struct(t) || t.k == tk::object) && object_keys) return std::nullopt;
                 if (t.k == tk::map && object_keys)
@@ -5007,7 +5025,7 @@ namespace cpp_yyjson_codegen
                         return std::nullopt;
                     if (const auto* ap = n->find("additionalProperties"))
                     {
-                        auto e = settings_for(*ap, t.args[0], loc + "/additionalProperties");
+                        auto e = settings_for(*ap, t.args[0], loc + "/additionalProperties", hint + "Value");
                         if (!e) return std::nullopt;
                         if (!e->empty()) out.additional.push_back(std::move(*e));
                     }
@@ -5045,17 +5063,56 @@ namespace cpp_yyjson_codegen
                 return true;
             }
 
-            // contains / minContains / maxContains; false when `contains` cannot be expressed
-            bool add_contains(const json& s, settings& out, const ctype& elem, const std::string& loc)
+            // a type that carries its settings: the type, or yyjson::any_of of one yyjson::alt with the settings
+            static ctype constrained(typed t)
+            {
+                if (t.s.empty()) return std::move(t.t);
+                auto r = make(tk::variant, {std::move(t.t)});
+                r.combined = combination::any_of;
+                r.sets.push_back(std::move(t.s));
+                r.metas.emplace_back();
+                return r;
+            }
+
+            // contains / minContains / maxContains; false when `contains` cannot be expressed. Elements of
+            // yyjson::value or yyjson::object are tested by yyjson::is_type<T> of the type of `contains`, named after
+            // `hint`; when that type reads more than `contains` allows, `maxContains` is left out
+            bool add_contains(const json& s, settings& out, const ctype& elem, const std::string& loc,
+                              const std::string& hint)
             {
                 const auto* c = s.find("contains");
                 if (c == nullptr) return true;
-                auto cs = settings_for(*c, elem, loc + "/contains");
-                if (!cs) return false;
+                const auto cloc = loc + "/contains";
                 const auto* mn = s.find("minContains");
                 const auto* mx = s.find("maxContains");
                 const auto min_c = mn != nullptr && as_uint64(*mn) ? *as_uint64(*mn) : 1;
-                const auto max_c = mx != nullptr ? as_uint64(*mx) : std::nullopt;
+                auto max_c = mx != nullptr ? as_uint64(*mx) : std::nullopt;
+                if (const auto* cn = normalize_full(c, cloc); cn->is_bool() && !cn->b)
+                {
+                    // no element matches: maxContains holds, and minContains of 1 or more fails for every array
+                    if (min_c > 0) warn(cloc, "`contains` false accepts no array and is ignored");
+                    return true;
+                }
+                const auto calls = warn_calls_;
+                auto cs = settings_for(*c, elem, cloc);
+                if (!cs)
+                {
+                    const auto& v = value_type(elem);
+                    if (v.k != tk::any && v.k != tk::object) return false;
+                    auto t = type_of(c, cloc, (hint.empty() ? std::string("Element") : hint) + "Contains");
+                    cs = settings();
+                    if (t.t.k != tk::any || !t.s.empty())
+                    {
+                        cs->type_test = static_cast<int>(type_tests_.size());
+                        type_tests_.push_back(constrained(std::move(t)));
+                    }
+                }
+                if (max_c && warn_calls_ != calls)
+                {
+                    warn(loc + "/maxContains",
+                         "`maxContains` is ignored, since the elements that `contains` matches are not known exactly");
+                    max_c.reset();
+                }
                 if (cs->empty())
                 {
                     // every element matches `contains`
@@ -5067,6 +5124,15 @@ namespace cpp_yyjson_codegen
                 if (mn != nullptr) out.min_contains = min_c;
                 if (max_c) out.max_contains = max_c;
                 return true;
+            }
+
+            static bool has_type_test(const settings& s)
+            {
+                if (s.type_test >= 0) return true;
+                for (const auto* v : {&s.items, &s.contains, &s.property_names, &s.additional, &s.prefix})
+                    for (const auto& c : *v)
+                        if (has_type_test(c)) return true;
+                return false;
             }
 
             static std::size_t node_count(const settings& s)
@@ -5142,7 +5208,13 @@ namespace cpp_yyjson_codegen
                     return;
                 }
                 for (auto& p : prefix)
-                    if (node_count(p) > 8)
+                    if (has_type_test(p))
+                    {
+                        warn(loc, "`contains` with a type in a position of `prefixItems` is not supported; the "
+                                  "constraints of the position are dropped");
+                        p = {};
+                    }
+                    else if (node_count(p) > 8)
                     {
                         warn(loc, "constraints of a position of `prefixItems` nest too deeply; they are dropped");
                         p = {};
@@ -5220,7 +5292,7 @@ namespace cpp_yyjson_codegen
                 }
                 array_counts(s, r.s, loc);
                 if (const auto* u = s.find("uniqueItems"); u != nullptr && u->is_bool() && u->b) r.s.unique = true;
-                if (!add_contains(s, r.s, r.t.args[0], loc))
+                if (!add_contains(s, r.s, r.t.args[0], loc, hint))
                     warn(loc + "/contains",
                          "`contains` with a type other than the element type is not supported and is ignored");
                 return r;
@@ -5644,6 +5716,15 @@ namespace cpp_yyjson_codegen
             {
                 if (t.k == tk::named) out.push_back(t.decl);
                 for (const auto& a : t.args) named_in(a, out);
+                for (const auto& s : t.sets) named_in(s, out);
+            }
+
+            // the types of yyjson::is_type<T> in the settings
+            void named_in(const settings& s, std::vector<int>& out) const
+            {
+                if (s.type_test >= 0) named_in(type_tests_[s.type_test], out);
+                for (const auto* v : {&s.items, &s.contains, &s.property_names, &s.additional, &s.prefix})
+                    for (const auto& e : *v) named_in(e, out);
             }
 
             std::vector<int> order_aliases() const
@@ -5818,9 +5899,23 @@ namespace cpp_yyjson_codegen
                             for (std::size_t a = 0; a < j.items.size(); ++a)
                                 for (auto b = a + 1; b < j.items.size(); ++b)
                                     if (equal(j.items[a], j.items[b])) return fit::no;
-                        auto r = s.contains.empty() ? fit::yes : fit::unknown;
+                        auto r = fit::yes;
                         for (const auto& e : j.items)
                             if ((r = std::min(r, fits(e, t.args[0], at(s.items, 0)))) == fit::no) return r;
+                        if (s.contains.empty()) return r;
+                        if (has_type_test(s.contains[0])) return std::min(r, fit::unknown);
+                        auto matched = std::uint64_t{0};
+                        auto unknown = std::uint64_t{0};
+                        for (const auto& e : j.items)
+                        {
+                            const auto c = fits(e, t.args[0], s.contains[0]);
+                            matched += c == fit::yes ? 1 : 0;
+                            unknown += c == fit::unknown ? 1 : 0;
+                        }
+                        const auto lo = s.min_contains.value_or(1);
+                        const auto hi = s.max_contains.value_or(std::numeric_limits<std::uint64_t>::max());
+                        if (matched + unknown < lo || matched > hi) return fit::no;
+                        if (matched < lo || matched + unknown > hi) return std::min(r, fit::unknown);
                         return r;
                     }
                     case tk::map:
@@ -6020,9 +6115,14 @@ namespace cpp_yyjson_codegen
                 return s;
             }
 
-            std::vector<std::string> render_settings(const settings& s, const ctype& target) const
+            // the settings as the arguments of an annotation; `q` qualifies the types of the generated code, which the
+            // annotations of C++20 name from outside the namespace
+            std::vector<std::string> render_settings(const settings& s, const ctype& target,
+                                                     std::string_view q = {}) const
             {
                 auto out = std::vector<std::string>();
+                if (s.type_test >= 0)
+                    out.push_back("yyjson::is_type<" + spell(type_tests_[s.type_test], false, q) + ">");
                 for (const auto& c : s.constraints) out.push_back(c.text);
                 if (s.min_items) out.push_back("yyjson::min_items(" + std::to_string(*s.min_items) + ")");
                 if (s.max_items) out.push_back("yyjson::max_items(" + std::to_string(*s.max_items) + ")");
@@ -6036,17 +6136,17 @@ namespace cpp_yyjson_codegen
                     auto parts = std::vector<std::string>();
                     for (std::size_t i = 0; i < s.prefix.size(); ++i)
                     {
-                        const auto p = render_settings(s.prefix[i], v.k == tk::tuple ? v.args[i] : elem());
+                        const auto p = render_settings(s.prefix[i], v.k == tk::tuple ? v.args[i] : elem(), q);
                         parts.push_back(p.empty() ? "{}" : p.size() == 1 ? p[0] : "{" + join(p) + "}");
                     }
                     if (std::ranges::any_of(parts, [](const auto& p) { return p != "{}"; }))
                         out.push_back("yyjson::prefix_items(" + join(parts) + ")");
                 }
                 if (!s.items.empty())
-                    if (const auto p = render_settings(s.items[0], elem()); !p.empty())
+                    if (const auto p = render_settings(s.items[0], elem(), q); !p.empty())
                         out.push_back("yyjson::items(" + join(p) + ")");
                 if (!s.contains.empty())
-                    if (const auto p = render_settings(s.contains[0], elem()); !p.empty())
+                    if (const auto p = render_settings(s.contains[0], elem(), q); !p.empty())
                     {
                         out.push_back("yyjson::contains(" + join(p) + ")");
                         if (s.min_contains)
@@ -6055,10 +6155,10 @@ namespace cpp_yyjson_codegen
                             out.push_back("yyjson::max_contains(" + std::to_string(*s.max_contains) + ")");
                     }
                 if (!s.property_names.empty())
-                    if (const auto p = render_settings(s.property_names[0], make(tk::string)); !p.empty())
+                    if (const auto p = render_settings(s.property_names[0], make(tk::string), q); !p.empty())
                         out.push_back("yyjson::property_names(" + join(p) + ")");
                 if (!s.additional.empty())
-                    if (const auto p = render_settings(s.additional[0], elem()); !p.empty())
+                    if (const auto p = render_settings(s.additional[0], elem(), q); !p.empty())
                         out.push_back("yyjson::additional_properties(" + join(p) + ")");
                 return out;
             }
@@ -6092,23 +6192,20 @@ namespace cpp_yyjson_codegen
             std::vector<std::string> field_items(const field& f)
             {
                 auto items = std::vector<std::string>();
+                // the annotations of C++20 are outside the namespace
+                const auto q = opts_.cpp26 || opts_.ns.empty() ? std::string() : opts_.ns + "::";
                 if (f.extra)
                 {
                     // the field has no key, and takes only the settings of its values
                     items.emplace_back("yyjson::extra_keys");
-                    for (auto& s : render_settings(f.set, f.type)) items.push_back(std::move(s));
+                    for (auto& s : render_settings(f.set, f.type, q)) items.push_back(std::move(s));
                     return items;
                 }
                 if (f.member != f.key) items.push_back("yyjson::rename(" + cpp_string(f.key) + ")");
                 if (f.required) items.emplace_back("yyjson::required");
                 if (f.omit_default) items.emplace_back("yyjson::omit_default");
-                if (!f.default_from.empty())
-                {
-                    // the annotations of C++20 are outside the namespace
-                    const auto q = opts_.cpp26 || opts_.ns.empty() ? std::string() : opts_.ns + "::";
-                    items.push_back("yyjson::default_from<&" + q + f.default_from + ">");
-                }
-                for (auto& s : render_settings(f.set, f.type)) items.push_back(std::move(s));
+                if (!f.default_from.empty()) items.push_back("yyjson::default_from<&" + q + f.default_from + ">");
+                for (auto& s : render_settings(f.set, f.type, q)) items.push_back(std::move(s));
                 for (auto& s : render_metadata(f.meta)) items.push_back(std::move(s));
                 return items;
             }
@@ -6160,7 +6257,7 @@ namespace cpp_yyjson_codegen
                         if (c.required) spec.emplace_back("yyjson::required");
                         const auto* f = field_of(d.fields, c.key);
                         if (f != nullptr)
-                            for (auto& x : render_settings(c.set, f->type)) spec.push_back(std::move(x));
+                            for (auto& x : render_settings(c.set, f->type, q)) spec.push_back(std::move(x));
                         if (c.is_type) spec.push_back("yyjson::is_type<" + spell(*c.is_type, false, q) + ">");
                         fs.push_back("yyjson::field(" + join(spec) + ")");
                     }
@@ -6222,21 +6319,28 @@ namespace cpp_yyjson_codegen
                     ctx_ = decls_[i].name;
                     (void)spell(decls_[i].target);
                 }
+                // the types of yyjson::is_type<T> in `contains`
+                const auto spell_tests = [&](const auto& self, const settings& s) -> void {
+                    if (s.type_test >= 0) (void)spell(type_tests_[s.type_test]);
+                    for (const auto* v : {&s.items, &s.contains, &s.property_names, &s.additional, &s.prefix})
+                        for (const auto& e : *v) self(self, e);
+                };
                 for (const auto i : structs)
                     for (const auto& f : decls_[i].fields)
                     {
                         ctx_ = decls_[i].name + "_" + f.member;
                         (void)spell(f.type);
+                        spell_tests(spell_tests, f.set);
                     }
                 for (const auto i : structs)
                     for (const auto& c : decls_[i].conditions)
-                        for (const auto* part : {&c.then_, &c.else_})
+                        for (const auto* part : {&c.if_, &c.then_, &c.else_})
                             for (const auto& f : *part)
-                                if (f.is_type)
-                                {
-                                    ctx_ = decls_[i].name + "_cond";
-                                    (void)spell(*f.is_type);
-                                }
+                            {
+                                ctx_ = decls_[i].name + "_cond";
+                                if (f.is_type) (void)spell(*f.is_type);
+                                spell_tests(spell_tests, f.set);
+                            }
                 ctx_.clear();
                 convert_defaults(structs);
                 check_examples();

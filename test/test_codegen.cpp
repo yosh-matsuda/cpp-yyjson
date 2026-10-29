@@ -802,6 +802,75 @@ TEST(Codegen, Arrays)
     EXPECT_TRUE(has(r.code, "    std::optional<yyjson::value> any;\n"));
 }
 
+TEST(Codegen, Contains)
+{
+    // `contains` of elements of any JSON value: yyjson::is_type<T> of the type of the subschema; of typed elements:
+    // the settings of the elements, also by the JSON names of the enumerators
+    const auto r = generate(R"({
+        "type": "object",
+        "properties": {
+            "refs": {"type": "array", "contains": {"$ref": "#/$defs/P"}, "maxContains": 2},
+            "fives": {"type": "array", "contains": {"const": 5}, "minContains": 2},
+            "big": {"type": "array", "contains": {"minimum": 5}},
+            "colors": {"type": "array", "items": {"enum": ["red", "green"]}, "contains": {"const": "red"}},
+            "all": {"type": "array", "items": {"type": "integer"}, "contains": {}, "minContains": 2, "maxContains": 3},
+            "none": {"type": "array", "contains": false, "minContains": 0}
+        },
+        "$defs": {"P": {"type": "object", "properties": {"x": {"type": "integer"}}, "required": ["x"]}}
+    })",
+                            {.ns = "ns"});
+    EXPECT_EQ(warnings(r), "");
+    EXPECT_TRUE(has(r.code, "yyjson::field(\"refs\", yyjson::contains(yyjson::is_type<ns::P>), "
+                            "yyjson::max_contains(2))"));
+    EXPECT_TRUE(has(r.code, "yyjson::field(\"fives\", yyjson::contains(yyjson::is_type<yyjson::any_of<"
+                            "yyjson::alt<std::int64_t, yyjson::const_(5)>>>), yyjson::min_contains(2))"));
+    EXPECT_TRUE(has(r.code, "yyjson::field(\"big\", yyjson::contains(yyjson::is_type<yyjson::any_of<std::monostate, "
+                            "bool, yyjson::alt<double, yyjson::minimum(5.0)>, std::string, "
+                            "std::vector<yyjson::value>, yyjson::object>>))"));
+    EXPECT_TRUE(has(r.code, "yyjson::field(\"colors\", yyjson::contains(yyjson::const_(\"red\")))"));
+    // every element matches `contains`: the counts of the elements
+    EXPECT_TRUE(has(r.code, "yyjson::field(\"all\", yyjson::min_items(2), yyjson::max_items(3))"));
+    EXPECT_FALSE(has(r.code, "yyjson::field(\"none\""));
+
+    // a type of `contains` that reads more than the subschema: `maxContains` is left out
+    const auto loose = generate(R"({"type": "array", "contains": {"type": "string", "format": "idn-email"},
+                                    "maxContains": 1})",
+                                {});
+    EXPECT_TRUE(has(warnings(loose), "#/maxContains: `maxContains` is ignored, since the elements that `contains` "
+                                     "matches are not known exactly\n"));
+    EXPECT_FALSE(has(loose.code, "max_contains"));
+
+    // `contains` false: an array satisfies it only with `minContains` 0
+    const auto never = generate(R"({"type": "array", "contains": false})", {});
+    EXPECT_EQ(warnings(never), "#/contains: `contains` false accepts no array and is ignored\n");
+
+    // examples are checked against `contains` and its counts
+    const auto examples = generate(R"({"type": "object", "properties": {"codes": {"type": "array",
+        "items": {"type": "integer"}, "contains": {"minimum": 100}, "maxContains": 1,
+        "examples": [[100, 1], [1], [100, 200]]}}})",
+                                   {});
+    EXPECT_TRUE(has(examples.code, "yyjson::max_contains(1), yyjson::examples(R\"([100,1])\"))"));
+    EXPECT_TRUE(has(examples.code, "    // example: [1]\n    // example: [100,200]\n"));
+
+    // `contains` in `if` and `not` must be exact; yyjson::is_type<T> in a position of `prefixItems` is dropped
+    const auto cond = generate(R"({
+        "type": "object",
+        "properties": {"xs": {"type": "array"}, "n": {"type": "integer"},
+                       "pair": {"type": "array", "prefixItems": [{"type": "array", "contains": {"const": 1}}],
+                                "items": {"type": "array"}}},
+        "if": {"properties": {"xs": {"contains": {"const": 3}}}},
+        "then": {"required": ["n"]},
+        "not": {"properties": {"xs": {"contains": {"type": "string", "format": "idn-email"}}}, "required": ["xs"]}
+    })",
+                               {});
+    EXPECT_TRUE(has(cond.code, "yyjson::if_(yyjson::field(\"xs\", yyjson::contains(yyjson::is_type<yyjson::any_of<"
+                               "yyjson::alt<std::int64_t, yyjson::const_(3)>>>)))"));
+    EXPECT_TRUE(has(warnings(cond), "#/not: `not` is not supported here: the schema of the key \"xs\" is not expressed "
+                                    "by the settings of its field; it is ignored\n"));
+    EXPECT_TRUE(has(warnings(cond), "#/properties/pair: `contains` with a type in a position of `prefixItems` is not "
+                                    "supported; the constraints of the position are dropped\n"));
+}
+
 TEST(Codegen, Defaults)
 {
     const auto schema = R"({
@@ -1626,7 +1695,7 @@ TEST(Codegen, Untyped)
     EXPECT_TRUE(has(root.code, "struct RootObject\n{\n    std::optional<Root> foo;\n};\n"));
 
     // `contains` cannot constrain the alternatives of an element that is a variant
-    const auto contains = generate(R"({"type": "array", "contains": {"minimum": 5}})", {});
+    const auto contains = generate(R"({"type": "array", "items": {"minimum": 0}, "contains": {"minimum": 5}})", {});
     EXPECT_EQ(warnings(contains), "#/contains: `contains` with a type other than the element type is not supported "
                                   "and is ignored\n");
 }

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Basket",
+  "type": "object",
+  "properties": {
+    "goods": {"type": "array", "contains": {"$ref": "#/$defs/Fruit"}, "minContains": 1, "maxContains": 2},
+    "counts": {"type": "array", "contains": {"const": 5}, "minContains": 2},
+    "codes": {"type": "array", "items": {"type": "integer"}, "contains": {"minimum": 100}},
+    "colors": {"type": "array", "items": {"enum": ["red", "green", "blue"]}, "contains": {"enum": ["red", "blue"]}},
+    "flag": {"type": "boolean"}
+  },
+  "if": {"properties": {"codes": {"contains": {"const": 0}}}, "required": ["codes"]},
+  "then": {"required": ["flag"]},
+  "$defs": {
+    "Fruit": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}
+  }
+}

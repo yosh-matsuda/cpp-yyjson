@@ -1,8 +1,8 @@
 // Types generated at build time by cpp_yyjson_generate() from codegen/order.schema.json, which
 // references codegen/customer.schema.json, from codegen/defaults.schema.json, from
 // codegen/alternatives.schema.json, from codegen/patterns.schema.json, from
-// codegen/recursion.schema.json, from codegen/untyped.schema.json (also with INFER_TYPES) and from
-// codegen/conditions.schema.json.
+// codegen/recursion.schema.json, from codegen/untyped.schema.json (also with INFER_TYPES), from
+// codegen/conditions.schema.json and from codegen/contains.schema.json.
 #include <gtest/gtest.h>
 
 #include <cpp_yyjson.hpp>
@@ -20,6 +20,7 @@ struct yyjson::pattern_matcher<>
 
 #include "alternatives.hpp"
 #include "conditions.hpp"
+#include "contains.hpp"
 #include "defaults.hpp"
 #include "order.hpp"
 #include "patterns.hpp"
@@ -260,4 +261,19 @@ TEST(CodegenCMake, Conditions)
                              R"({"kind":"poly"})", R"({})", R"({"kind":"circle","radius":1,"width":1,"height":1})",
                              R"({"kind":"rect","width":2})", R"({"kind":"rect","width":2,"height":0})"})
         EXPECT_THROW((void)yyjson::read<model::Shape>(json), yyjson::bad_cast) << json;
+}
+
+TEST(CodegenCMake, Contains)
+{
+    // `contains` on elements of any JSON value tests them by the type of its subschema, also inside `if`
+    for (const auto* json : {R"({"goods":[1,{"name":"apple"}],"counts":[5,"x",5.0]})",
+                             R"({"codes":[1,100],"colors":["green","blue"]})", R"({"codes":[0,100],"flag":true})"})
+    {
+        const auto basket = yyjson::read<model::Basket>(json, yyjson::strict);
+        EXPECT_NO_THROW(yyjson::validate(basket)) << json;
+    }
+    for (const auto* json : {R"({"goods":[1,{"id":1}]})", R"({"goods":[{"name":"a"},{"name":"b"},{"name":"c"}]})",
+                             R"({"counts":[5,4]})", R"({"codes":[1,99]})", R"({"colors":["green"]})",
+                             R"({"codes":[0,100]})"})
+        EXPECT_THROW((void)yyjson::read<model::Basket>(json), yyjson::bad_cast) << json;
 }
