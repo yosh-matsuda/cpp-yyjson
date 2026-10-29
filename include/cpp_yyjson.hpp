@@ -2478,23 +2478,45 @@ namespace yyjson
 
             constexpr explicit field_key_matcher(const std::array<std::string_view, N>& names) : names_(names)
             {
+                // A radix sort on the bytes of the lengths, which keeps the names of the same length in their order.
+                // A constant expression may take only so many steps, and comparing a few thousand names, which an
+                // enumeration can have, in `std::ranges::sort` took more than clang allows.
                 for (std::size_t i = 0; i < N; ++i) order_[i] = i;
-                std::ranges::sort(order_, [this](std::size_t a, std::size_t b) {
-                    return names_[a].size() < names_[b].size() || (names_[a].size() == names_[b].size() && a < b);
-                });
+                auto longest = std::size_t{0};
+                for (const auto name : names_) longest = std::max(longest, name.size());
+                for (std::size_t shift = 0; shift < std::numeric_limits<std::size_t>::digits && (longest >> shift) != 0;
+                     shift += 8)
+                {
+                    std::array<std::size_t, 257> start = {};
+                    for (const auto i : order_) ++start[((names_[i].size() >> shift) & 0xFF) + 1];
+                    for (std::size_t b = 0; b < 256; ++b) start[b + 1] += start[b];
+                    auto sorted = order_;
+                    for (const auto i : order_) sorted[start[(names_[i].size() >> shift) & 0xFF]++] = i;
+                    order_ = sorted;
+                }
                 for (std::size_t i = 0; i < N; ++i) sizes_[i] = names_[order_[i]].size();
                 for (std::size_t i = 0; i < N; ++i)
                 {
-                    plain_[i] = std::ranges::none_of(names_[i], [](char c) {
-                        return c == '"' || c == '\\' || static_cast<unsigned char>(c) < 0x20;
-                    });
-                    if (plain_[i] && names_[i].size() < key_bytes)
+                    // the characters through a pointer and the words through locals, for the same reason
+                    const auto* const p = names_[i].data();
+                    const auto n = names_[i].size();
+                    auto plain = true;
+                    for (std::size_t j = 0; j < n && plain; ++j)
+                        plain = p[j] != '"' && p[j] != '\\' && static_cast<unsigned char>(p[j]) >= 0x20;
+                    plain_[i] = plain;
+                    if (!plain || n >= key_bytes) continue;
+                    auto& key = key_[i];
+                    auto& mask = key_mask_[i];
+                    auto word = std::uint64_t{0};
+                    for (std::size_t j = 0; j <= n; ++j)
                     {
-                        for (std::size_t j = 0; j <= names_[i].size(); ++j)
+                        const auto c = j < n ? p[j] : '"';
+                        word |= std::uint64_t{static_cast<unsigned char>(c)} << (j % 8 * 8);
+                        if (j % 8 == 7 || j == n)
                         {
-                            const auto c = j < names_[i].size() ? names_[i][j] : '"';
-                            key_[i][j / 8] |= std::uint64_t{static_cast<unsigned char>(c)} << (j % 8 * 8);
-                            key_mask_[i][j / 8] |= std::uint64_t{0xFF} << (j % 8 * 8);
+                            key[j / 8] = word;
+                            mask[j / 8] = j % 8 == 7 ? ~std::uint64_t{0} : (std::uint64_t{1} << (j % 8 * 8 + 8)) - 1;
+                            word = 0;
                         }
                     }
                 }

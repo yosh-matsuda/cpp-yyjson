@@ -287,6 +287,46 @@ TEST(Reader, FieldKeyMatcher)
         EXPECT_EQ(matcher.find("a_very_long_name_with_26", hint), 6);
         EXPECT_EQ(matcher.find("long_name_10_", hint), 6);
     }
+
+    // names longer than 255 characters, which are sorted by the second byte of their lengths as well
+    static constexpr auto as = [] {
+        std::array<char, 300> a{};
+        for (auto& c : a) c = 'a';
+        return a;
+    }();
+    constexpr auto a = [](std::size_t n) { return std::string_view(as.data(), n); };
+    constexpr auto lengths =
+        field_key_matcher<6>(std::array{a(300), a(2), a(256), a(1), a(255), std::string_view("b")});
+    static_assert(lengths.find(a(300), 6) == 0);
+    static_assert(lengths.find(a(2), 6) == 1);
+    static_assert(lengths.find(a(256), 6) == 2);
+    static_assert(lengths.find(a(1), 6) == 3);
+    static_assert(lengths.find(a(255), 6) == 4);
+    static_assert(lengths.find("b", 6) == 5);
+    static_assert(lengths.find(a(257), 6) == 6);
+
+    // as many names as an enumeration can have, sorted in fewer steps than a constant expression may take
+    constexpr std::size_t many = 3000;
+    static constexpr auto digits = [] {
+        std::array<char, 4 * many> d{};
+        for (std::size_t i = 0; i < many; ++i)
+            for (std::size_t j = 0, n = i; j < 4; ++j, n /= 10) d[4 * i + 3 - j] = static_cast<char>('0' + n % 10);
+        return d;
+    }();
+    static constexpr auto numbers = field_key_matcher<many>([] {
+        std::array<std::string_view, many> names{};
+        for (std::size_t i = 0; i < many; ++i)
+        {
+            const std::size_t size = i < 10 ? 1 : i < 100 ? 2 : i < 1000 ? 3 : 4;
+            names[i] = std::string_view(digits.data() + 4 * i + 4 - size, size);
+        }
+        return names;
+    }());
+    static_assert(numbers.find("0", many) == 0);
+    static_assert(numbers.find("99", many) == 99);
+    static_assert(numbers.find("100", many) == 100);
+    static_assert(numbers.find("2999", many) == 2999);
+    static_assert(numbers.find("3000", many) == many);
 }
 
 struct KeyOrderRecord
