@@ -200,6 +200,7 @@ Each schema maps to one C++ type:
 | `anyOf`, `oneOf` | [`yyjson::any_of`, `yyjson::one_of`](conversions.md#alternatives-with-constraints), or a `std::variant` with an internal tag; see [Variants](#variants) |
 | `allOf` | the subschemas merged into one |
 | `unevaluatedProperties`, `unevaluatedItems` | `additionalProperties` and `items` of the merged schema; see [`unevaluatedProperties` and `unevaluatedItems`](#unevaluatedproperties-and-unevaluateditems) |
+| `if`, `then`, `else`, `not`, `dependentSchemas` of an object | settings of the struct; see [Conditions](#conditions) |
 | `$ref` | the named type of the target |
 | no `type`, with keywords that constrain some types, such as `maxLength` or `properties` | a variant of every kind; see [Schemas without `type`](#schemas-without-type) |
 | `{}`, `true`, no keyword of a type | [`yyjson::value`](reference.md#yyjsonvalue) |
@@ -221,7 +222,7 @@ A property becomes a member, in the order of `properties`:
 
 `additionalProperties` becomes [`yyjson::additional_properties`](reference.md#yyjsonadditional_properties): `false` closes the struct, and an absent keyword or `true` is written as `yyjson::additional_properties(true)`, so that a strict read also accepts the other keys, as the schema does. A schema in `additionalProperties` gives a field of [`yyjson::extra_keys`](#keys-that-name-no-property).
 
-`dependentRequired` becomes `yyjson::dependent_required`, and `oneOf` or `anyOf` of subschemas that only list `required` keys become [`yyjson::one_of_required` and `yyjson::any_of_required`](reference.md#yyjsonone_of_required-yyjsonany_of_required). `minProperties` and `maxProperties` of a struct are left out with a warning.
+`dependentRequired` becomes `yyjson::dependent_required`, and `oneOf` or `anyOf` of subschemas that only list `required` keys become [`yyjson::one_of_required` and `yyjson::any_of_required`](reference.md#yyjsonone_of_required-yyjsonany_of_required). `if`, `then`, `else`, `not` and `dependentSchemas` become `yyjson::if_then_else` and `yyjson::not_`; see [Conditions](#conditions). `minProperties` and `maxProperties` of a struct are left out with a warning.
 
 A struct of more than 100 members is registered with [`VISITABLE_STRUCT`](conversions.md#visitable_struct) under C++20, as the reflection of C++20 takes no more, and cannot have a field of `yyjson::extra_keys`; a struct of more than 1365 members needs `--cpp26`.
 
@@ -373,13 +374,13 @@ A default that the generator cannot convert makes the member `std::optional<T>` 
 
 ## Keys that keywords name
 
-A key that `required`, `dependentRequired` or a group of `oneOf` / `anyOf` of `required` names, but `properties` does not declare, is a member of its own, `U` when the key is required and `std::optional<U>` otherwise. `U` is the type that the object schema gives a key that no property declares:
+A key that `required`, `dependentRequired`, a group of `oneOf` / `anyOf` of `required` or a [condition](#conditions) names, but `properties` does not declare, is a member of its own, `U` when the key is required and `std::optional<U>` otherwise. `U` is the type that the object schema gives a key that no property declares:
 
 1.  the schema of the patterns of `patternProperties` that the key matches;
 2.  else the schema of `additionalProperties`;
 3.  else `yyjson::value`, which reads any JSON value.
 
-The member carries the constraints of that schema. A key that matches patterns of different schemas is `yyjson::value`, with a warning. Under `additionalProperties: false` the schema rejects every object that has the key: the member is `yyjson::value`, with a warning, so that a required key or a group of keys can still be checked. The keys that no keyword names go to the field of `yyjson::extra_keys` below.
+The member carries the constraints of that schema. A key that matches patterns of different schemas is `yyjson::value`, with a warning. Under `additionalProperties: false` the schema rejects every object that has the key: the member is `yyjson::value`, with a warning, so that a required key or a group of keys can still be checked. A key that only a condition names gets no member there: the condition knows that the key is absent, so a `then` that requires it never holds, and a `dependentSchemas` of it never applies. The keys that no keyword names go to the field of `yyjson::extra_keys` below.
 
 ## Keys that name no property
 
@@ -471,12 +472,66 @@ The keyword is left out with a warning, and the code reads the other keys or ele
 
 Draft-07 and draft-06 have neither keyword, so the generator ignores them there, with a warning.
 
+## Conditions
+
+`if`, `then` and `else`, `not` and `dependentSchemas` of an object schema become settings of its struct, [`yyjson::if_then_else` and `yyjson::not_`](reference.md#yyjsonif_then_else-yyjsonnot_-yyjsonreads_as), which test the members after the object is read:
+
+```json
+{
+  "type": "object",
+  "properties": {"kind": {"enum": ["circle", "rect"]}, "radius": {"type": "number"}, "width": {"type": "number"}},
+  "if": {"properties": {"kind": {"const": "circle"}}, "required": ["kind"]},
+  "then": {"required": ["radius"], "properties": {"radius": {"minimum": 0}}},
+  "else": {"required": ["width"]},
+  "dependentSchemas": {"width": {"properties": {"radius": {"maximum": 0}}}}
+}
+```
+
+```cpp
+template <>
+inline constexpr auto yyjson::annotations<Root> = yyjson::annotate(
+    yyjson::additional_properties(true),
+    yyjson::if_then_else(
+        yyjson::if_(yyjson::field("kind", yyjson::required, yyjson::const_("circle"))),
+        yyjson::then(yyjson::field("radius", yyjson::required, yyjson::minimum(0.0))),
+        yyjson::else_(yyjson::field("width", yyjson::required))),
+    yyjson::if_then_else(
+        yyjson::if_(yyjson::field("width", yyjson::required)),
+        yyjson::then(yyjson::field("radius", yyjson::maximum(0.0)))));
+```
+
+| Schema | Settings |
+| --- | --- |
+| `if`, `then`, `else` | `yyjson::if_then_else(yyjson::if_(...), yyjson::then(...), yyjson::else_(...))`, one for each `if`, also in the subschemas of `allOf` |
+| `then: false` | `yyjson::not_` of the fields of `if` |
+| `not` | `yyjson::not_(...)`; `not` of `anyOf` is one `yyjson::not_` for each subschema |
+| `"dependentSchemas": {"k": S}` | `yyjson::if_then_else(yyjson::if_(yyjson::field("k", yyjson::required)), yyjson::then(S))`; `false` is `yyjson::not_(yyjson::field("k", yyjson::required))` |
+
+`if` and `not` test keys and values: `required`, and in `properties`, `const`, `enum`, the bounds of numbers, the lengths and `pattern` of strings, and `format`. `"type": "object"` adds nothing on a struct and is left out. `then`, `else` and the subschemas of `dependentSchemas` take `required` and the constraints that the members take, of values and of elements. A `$ref` in `then` or `else` for a key whose member is `yyjson::value` or `yyjson::object` reads the value as the type of the reference, with `yyjson::reads_as<T>`, which checks the type but not its constraints; the generator warns when the reference has constraints of its own. A `$ref` to the type of the member adds nothing and is left out.
+
+JSON Schema has no `else if`. An `else` that holds one more `if`, and so on, is a chain: when every `if` of the chain tests the same key against values that no other `if` lists, and at most one of them lets an absent key through, each link becomes a `yyjson::if_then_else` of its own, and the last `else` one more whose `if_` lists all the values. Another `if`, `not` or `dependentSchemas` inside `then`, `else` or `dependentSchemas` is left out with a warning.
+
+A condition that the settings cannot express is left out with a warning, so the code reads more than the schema accepts:
+
+| Condition | Warning |
+| --- | --- |
+| `if` or `not` with another keyword, such as `anyOf`, `minProperties` or a nested `not` | "`if` is not supported here: `anyOf` is not supported in it; `then` and `else` are ignored" |
+| `if` that tests a key whose value may be `null`, which the setting of the member lets through | "`if` is not supported here: the value of the key "k" may be null, ..." |
+| `if` that every object satisfies, such as `{}` or `{"type": "object"}` | "`if` that every object satisfies is not supported; `then` and `else` are ignored" |
+| `else: false` | "`else` that no object satisfies is not supported and is ignored" |
+| a keyword of `then` or `else` that no setting of the member expresses | "the schema of the key "k" is not expressed by the settings of its field and is ignored" |
+| a condition of a value that is not read as a struct, such as `if` with `maxLength` on a string | "`if` is not supported on a value that is not read as a struct and is ignored" |
+
+A condition on a value that is not an object holds for every value when it tests only keys, or when its `if` only objects satisfy, and the generator leaves it out without a warning.
+
+The struct does not write the keys that no member holds, unless it has a field of [`yyjson::extra_keys`](#keys-that-name-no-property). A condition that counts keys, which the generator left out with a warning, may then reject the written object: with `"dependentSchemas": {"k": {"minProperties": 4}}`, an object of `k` and three other keys is read and written as `k` alone. `--keep-unknown-keys` keeps the other keys.
+
 ## Dialects and references
 
 The dialect comes from `$schema`: 2020-12, 2019-09, draft-07 and draft-06 are read without a warning, and another value is read as 2020-12 with a warning. Under draft-07 and draft-06:
 
 *   `items` with an array and `additionalItems` are `prefixItems` and `items`;
-*   `dependencies` with arrays is `dependentRequired`; with schemas it is `dependentSchemas`, which is not supported;
+*   `dependencies` with arrays is `dependentRequired`; with schemas it is [`dependentSchemas`](#conditions);
 *   the keywords beside `$ref` are ignored, with a warning that names them, as the dialect does;
 *   `$id: "#name"` names a schema, as `$anchor` does;
 *   `unevaluatedProperties` and `unevaluatedItems` are ignored, with a warning.
@@ -497,7 +552,7 @@ A warning names the location in the schema and what the generated code does inst
 
 | Group | Example | The generated code |
 | --- | --- | --- |
-| a keyword that is not supported | `if`, `then`, `else`, `not`, `dependentSchemas` | reads more than the schema accepts |
+| a keyword that is not supported | `$dynamicRef`, `$recursiveRef`, `if` of a string | reads more than the schema accepts |
 | a form that is not supported | `contains` of a type other than the element type, positions of `prefixItems` of different types, `minProperties` of a struct, [`unevaluatedProperties` beside `anyOf`](#unevaluatedproperties-and-unevaluateditems) | reads more than the schema accepts |
 | a type inferred from keywords, with `--infer-types` | "the schema has no `type`; it is read as string from its keywords" | reads only that type |
 | a variant of more alternatives than `--max-alternatives` | "a variant of 447 alternatives is more than 64 (--max-alternatives) ..." | reads any JSON value there |
