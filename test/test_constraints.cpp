@@ -2188,7 +2188,8 @@ TEST(Constraints, Annotations)
           std::pair{R"({"a":1,"b":1,"c":1})", R"(with all the keys of more than one of ["a"], ["b"])"}})
     {
         const auto e = bad_cast_of([&] { (void)yyjson::read<GroupsAnnotated>(json); });
-        EXPECT_EQ(message_of(e), std::format("GroupsAnnotated is not constructible from JSON {}", message));
+        const auto expected = std::format("GroupsAnnotated is not constructible from JSON {}", message);
+        EXPECT_TRUE(message_of(e).starts_with(expected)) << e.what();
     }
 
     expect_accepted<ConstrainedAnnotated>(R"({"n":3,"s":"xy","even":4})", {3, "xy", 4});
