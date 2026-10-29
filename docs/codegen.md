@@ -207,6 +207,20 @@ Each schema maps to one C++ type:
 
 The keywords that constrain a value become the [constraints](validation.md#constraints) of the same name: `minimum` becomes `yyjson::minimum`, `items` with constraints becomes `yyjson::items(...)`, `propertyNames` becomes `yyjson::property_names(...)`, and so on. The `format`s that the library checks become `yyjson::format`; the others are left out, with a warning for `idn-email`, `idn-hostname`, `iri`, `iri-reference` and `regex`.
 
+`contains`, `minContains` and `maxContains` become [`yyjson::contains(...)`, `yyjson::min_contains` and `yyjson::max_contains`](reference.md#yyjsoncontains-yyjsonmin_contains-yyjsonmax_contains). The subschema of `contains` becomes the constraints of the elements, as `items` does; on elements of `yyjson::value` or `yyjson::object`, where no constraint expresses it, it becomes the type of the subschema in [`yyjson::is_type<T>`](reference.md#yyjsonis_type), and an element matches when it reads as that type:
+
+| Schema | Settings |
+| --- | --- |
+| `{"type": "array", "items": {"type": "integer"}, "contains": {"minimum": 100}}` | `yyjson::contains(yyjson::minimum(100))` |
+| `{"type": "array", "contains": {"$ref": "#/$defs/P"}}` | `yyjson::contains(yyjson::is_type<P>)` |
+| `{"type": "array", "contains": {"const": 5}, "minContains": 2}` | `yyjson::contains(yyjson::is_type<yyjson::any_of<yyjson::alt<std::int64_t, yyjson::const_(5)>>>), yyjson::min_contains(2)` |
+
+*   When the type of the subschema reads more than the subschema accepts, the generator warns, and also leaves out `maxContains`, which would then count elements that the schema does not count.
+*   A `contains` that every element matches, such as `{}`, becomes `yyjson::min_items` and `yyjson::max_items` of `minContains` and `maxContains`.
+*   `"contains": false` adds nothing with `"minContains": 0`; otherwise no array is valid, and it is left out with a warning.
+*   A position of `prefixItems` takes no `yyjson::is_type<T>`: its constraints are left out with a warning.
+*   On elements of other types that the subschema does not fit, such as integers under `{"type": "string"}`, or a variant of [a schema without `type`](#schemas-without-type), `contains` is left out with a warning.
+
 The metadata go to annotations and comments: `title`, `description`, `deprecated` and `examples` become `yyjson::title`, `yyjson::description`, `yyjson::deprecated` and `yyjson::examples`, `description` also a `///` comment, and `$comment` a `//` comment. An example that does not read as the C++ type, or that the generator cannot check, becomes an `// example:` comment instead, since `json_schema<T>()` throws for an example that does not read.
 
 ### Structs
@@ -507,7 +521,7 @@ inline constexpr auto yyjson::annotations<Root> = yyjson::annotate(
 | `not` | `yyjson::not_(...)`; `not` of `anyOf` is one `yyjson::not_` for each subschema |
 | `"dependentSchemas": {"k": S}` | `yyjson::if_then_else(yyjson::if_(yyjson::field("k", yyjson::required)), yyjson::then(S))`; `false` is `yyjson::not_(yyjson::field("k", yyjson::required))` |
 
-`if` and `not` test keys and values: `required`, and in `properties`, `const`, `enum`, the bounds of numbers, the lengths and `pattern` of strings, and `format`. `"type": "object"` adds nothing on a struct and is left out. `then`, `else` and the subschemas of `dependentSchemas` take `required` and the constraints that the members take, of values and of elements. A `$ref` in `then` or `else` for a key whose member is `yyjson::value` or `yyjson::object` reads the value as the type of the reference, with `yyjson::is_type<T>`, which checks the type but not its constraints; the generator warns when the reference has constraints of its own. A `$ref` to the type of the member adds nothing and is left out.
+`if` and `not` test keys and values: `required`, and in `properties`, `const`, `enum`, the bounds of numbers, the lengths and `pattern` of strings, `format`, and [`contains`](#mapping) with `minContains` and `maxContains`. A test must be exact, so a `contains` that the generator can only loosen leaves the condition out with a warning. `"type": "object"` adds nothing on a struct and is left out. `then`, `else` and the subschemas of `dependentSchemas` take `required` and the constraints that the members take, of values and of elements. A `$ref` in `then` or `else` for a key whose member is `yyjson::value` or `yyjson::object` reads the value as the type of the reference, with `yyjson::is_type<T>`, which checks the type but not its constraints; the generator warns when the reference has constraints of its own. A `$ref` to the type of the member adds nothing and is left out.
 
 JSON Schema has no `else if`. An `else` that holds one more `if`, and so on, is a chain: when every `if` of the chain tests the same key against values that no other `if` lists, and at most one of them lets an absent key through, each link becomes a `yyjson::if_then_else` of its own, and the last `else` one more whose `if_` lists all the values. Another `if`, `not` or `dependentSchemas` inside `then`, `else` or `dependentSchemas` is left out with a warning.
 
@@ -553,7 +567,7 @@ A warning names the location in the schema and what the generated code does inst
 | Group | Example | The generated code |
 | --- | --- | --- |
 | a keyword that is not supported | `$dynamicRef`, `$recursiveRef`, `if` of a string | reads more than the schema accepts |
-| a form that is not supported | `contains` of a type other than the element type, positions of `prefixItems` of different types, `minProperties` of a struct, [`unevaluatedProperties` beside `anyOf`](#unevaluatedproperties-and-unevaluateditems) | reads more than the schema accepts |
+| a form that is not supported | `contains` that the elements cannot express, positions of `prefixItems` of different types, `minProperties` of a struct, [`unevaluatedProperties` beside `anyOf`](#unevaluatedproperties-and-unevaluateditems) | reads more than the schema accepts |
 | a type inferred from keywords, with `--infer-types` | "the schema has no `type`; it is read as string from its keywords" | reads only that type |
 | a variant of more alternatives than `--max-alternatives` | "a variant of 447 alternatives is more than 64 (--max-alternatives) ..." | reads any JSON value there |
 | a reference that cannot be followed | a missing file, a URI elsewhere | reads any JSON value there |
@@ -594,6 +608,6 @@ The `title` and `description` of the subschema beside `{"type": "null"}` are los
 
 *   Only the keywords listed above are expressed; the others are left out as described in [Warnings](#warnings).
 *   A struct of more than 1365 members needs `--cpp26`, and a struct of more than 100 members has no field of `yyjson::extra_keys` without it.
-*   A position of `prefixItems` keeps up to 16 values of `const` and `enum`; more are dropped with a warning. Under C++20, a position copies up to 256 characters of string literals, and longer strings become `std::string_view` literals.
+*   A position of `prefixItems` keeps up to 16 values of `const` and `enum`; more are dropped with a warning, as is `contains` of a type there. Under C++20, a position copies up to 256 characters of string literals, and longer strings become `std::string_view` literals.
 *   `$id` inside a schema does not change the base of references.
 *   Formats that the library does not check, and keywords that only annotate, are left out.
