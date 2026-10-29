@@ -204,6 +204,7 @@ Each schema maps to one C++ type:
 | `allOf` | the subschemas merged into one |
 | `unevaluatedProperties`, `unevaluatedItems` | `additionalProperties` and `items` of the merged schema; see [`unevaluatedProperties` and `unevaluatedItems`](#unevaluatedproperties-and-unevaluateditems) |
 | `if`, `then`, `else`, `not`, `dependentSchemas` of an object | settings of the struct; see [Conditions](#conditions) |
+| `not` of a value that is not read as a struct | `yyjson::not_(...)` among the settings of the value, or the kinds that it rejects left out of the type; see [`not` of a value](#not-of-a-value) |
 | `$ref` | the named type of the target |
 | no `type`, with keywords that constrain some types, such as `maxLength` or `properties` | a variant of every kind; see [Schemas without `type`](#schemas-without-type) |
 | `{}`, `true`, no keyword of a type | [`yyjson::value`](reference.md#yyjsonvalue) |
@@ -244,7 +245,7 @@ A property becomes a member, in the order of `properties`:
 | with a `default` | `T` initialized to the default, with `yyjson::omit_default`; see [Defaults](#defaults) |
 | otherwise | `std::optional<T>` |
 | a key in `required` that is not in `properties` | `U` with `yyjson::required`; see [Keys that keywords name](#keys-that-keywords-name) |
-| with the schema `false` | `std::optional<yyjson::value>` with [`yyjson::not_(yyjson::field("k", yyjson::required))`](reference.md#yyjsonif_then_else-yyjsonnot_) on the struct |
+| with the schema `false`, or `not` of a schema that accepts every value, such as `{"not": {}}` | `std::optional<yyjson::value>` with [`yyjson::not_(yyjson::field("k", yyjson::required))`](reference.md#yyjsonif_then_else-yyjsonnot_) on the struct |
 
 `additionalProperties` becomes [`yyjson::additional_properties`](reference.md#yyjsonadditional_properties): `false` closes the struct, and an absent keyword or `true` is written as `yyjson::additional_properties(true)`, so that a strict read also accepts the other keys, as the schema does. A schema in `additionalProperties` gives a field of [`yyjson::extra_keys`](#keys-that-name-no-property).
 
@@ -541,16 +542,50 @@ A condition that the settings cannot express is left out with a warning, so the 
 
 | Condition | Warning |
 | --- | --- |
-| `if` or `not` with another keyword, such as `anyOf`, `minProperties` or a nested `not` | "`if` is not supported here: `anyOf` is not supported in it; `then` and `else` are ignored" |
+| `if` or `not` with another keyword, such as `oneOf` or `minProperties` | "`if` is not supported here: `anyOf` is not supported in it; `then` and `else` are ignored" |
 | `if` that tests a key whose value may be `null`, which the setting of the member lets through | "`if` is not supported here: the value of the key "k" may be null, ..." |
 | `if` that every object satisfies, such as `{}` or `{"type": "object"}` | "`if` that every object satisfies is not supported; `then` and `else` are ignored" |
 | `else: false` | "`else` that no object satisfies is not supported and is ignored" |
 | a keyword of `then` or `else` that no setting of the member expresses | "the schema of the key "k" is not expressed by the settings of its field and is ignored" |
-| a condition of a value that is not read as a struct, such as `if` with `maxLength` on a string | "`if` is not supported on a value that is not read as a struct and is ignored" |
+| `if` of a value that is not read as a struct, such as `if` with `maxLength` on a string | "`if` is not supported on a value that is not read as a struct and is ignored" |
 
-A condition on a value that is not an object holds for every value when it tests only keys, or when its `if` only objects satisfy, and the generator leaves it out without a warning.
+A condition on a value that is not an object holds for every value when it tests only keys, or when its `if` only objects satisfy, and the generator leaves it out without a warning. `not` of a value is described in [`not` of a value](#not-of-a-value).
 
 The struct does not write the keys that no member holds, unless it has a field of [`yyjson::extra_keys`](#keys-that-name-no-property). A condition that counts keys, which the generator left out with a warning, may then reject the written object: with `"dependentSchemas": {"k": {"minProperties": 4}}`, an object of `k` and three other keys is read and written as `k` alone. `--keep-unknown-keys` keeps the other keys.
+
+## `not` of a value
+
+`not` of a schema that is not read as a struct becomes [`yyjson::not_(settings...)`](validation.md#how-constraints-are-checked) of the value, which rejects a value for which all of its settings hold. The keywords of a kind constrain only values of that kind, so the generator takes the subschema of `not` kind by kind, for each kind of JSON value that the schema around it reads:
+
+*   A kind whose every value the subschema accepts is left out of the type. `{"minimum": 10}` accepts every string and `null`, so `not` of it leaves only numbers.
+*   A kind whose every value the subschema rejects adds nothing.
+*   Otherwise the keywords of the kind become the settings of `yyjson::not_` on the value.
+
+| Schema | Code |
+| --- | --- |
+| `{"type": "string", "not": {"pattern": "^x"}}` | `std::string` with `yyjson::not_(yyjson::pattern("^x"))` |
+| `{"type": ["integer", "null"], "not": {"minimum": 10}}` | `std::int64_t` with `yyjson::not_(yyjson::minimum(10))`; `null` is rejected |
+| `{"not": {"pattern": "^x"}}` | `std::string` with `yyjson::not_(yyjson::pattern("^x"))` |
+| `{"not": {"required": ["x"]}}` | a struct with `yyjson::not_(yyjson::field("x", yyjson::required))` |
+| `{"not": {"type": "null"}}` | `yyjson::value` with `yyjson::not_(yyjson::is_type<std::nullptr_t>)` |
+| `{"not": {"type": ["string", "boolean"]}}` | `yyjson::value` with `yyjson::not_(yyjson::is_type<std::variant<bool, std::string>>)` |
+| `{"enum": ["p", "q", "r"], "not": {"const": "q"}}` | an enum class of `p` and `r` |
+| `{"type": "string", "not": {"anyOf": [A, B]}}` | `yyjson::not_` of `A` and `yyjson::not_` of `B` |
+| `{"not": {"not": X}}` | `X`, as a subschema of `allOf` |
+| `{"not": {}}`, `{"not": true}` | the schema `false`; a property with it is a [property whose schema is `false`](#structs) |
+| `{"not": false}` | nothing |
+
+A schema without `type` reads the kinds that are left; one kind is read as its C++ type, and more than one as `yyjson::value`, with [`yyjson::not_(yyjson::is_type<T>)`](reference.md#yyjsonis_type) of the type of the subschema. `null` that the subschema neither accepts nor rejects whole has no setting to express it. Beside `unevaluatedProperties` and `unevaluatedItems`, `{"not": {"not": X}}` is not merged, since the keywords under `not` evaluate no key or position.
+
+What the settings cannot express is left out with a warning, so the code reads more than the schema accepts:
+
+| Subschema | Warning |
+| --- | --- |
+| keywords of a kind that no setting of `yyjson::not_` takes, such as `items` of an array or `oneOf` | "`not` cannot be expressed on a value of type array; it is ignored" |
+| keywords that accept some `null` and not all, such as `oneOf` of `{"type": "null"}` and `{"minimum": 5}` | "`not` cannot be expressed on null; it is ignored" |
+| a type test that no C++ type expresses exactly | "`not` of a schema that no C++ type expresses exactly is not supported and is ignored" |
+| a value of `enum` that the generator cannot test, under `pattern` or `format` | "whether `not` rejects the value "ab" of `enum` is not known; the value is kept" |
+| keywords that accept every value that the schema around reads, such as `{"type": "integer", "not": {"type": "number"}}` | "`not` rejects every value of the type: the schema accepts no value; it is read as any JSON value" |
 
 ## Dialects and references
 
