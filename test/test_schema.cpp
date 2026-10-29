@@ -717,6 +717,31 @@ inline constexpr auto yyjson::annotations<DomFields> = yyjson::annotate(
     yyjson::field("names", yyjson::min_items(1), yyjson::property_names(yyjson::max_length(2))),
     yyjson::field("list", yyjson::max_items(1), yyjson::unique_items));
 
+// `yyjson::contains(yyjson::is_type<T>)` on DOM elements: `contains` has the read schema of T, beside the other
+// settings of the element, also in `yyjson::then` and in an alternative.
+using TypedMixed =
+    yyjson::any_of<yyjson::alt<std::vector<yyjson::value>, yyjson::contains(yyjson::is_type<std::string>)>, int>;
+struct TypedContains
+{
+    std::optional<std::vector<yyjson::value>> events;
+    std::optional<std::vector<yyjson::object>> objects;
+    std::optional<yyjson::array> numbers;
+    std::optional<std::string> kind;
+    std::optional<std::vector<yyjson::value>> points;
+    TypedMixed mixed = 0;
+    std::optional<std::vector<std::vector<yyjson::value>>> nest;
+};
+template <>
+inline constexpr auto yyjson::annotations<TypedContains> = yyjson::annotate(
+    yyjson::field("events", yyjson::contains(yyjson::is_type<CondPoint>), yyjson::min_contains(2)),
+    yyjson::field("objects", yyjson::contains(yyjson::is_type<CondPoint>, yyjson::min_items(2)),
+                  yyjson::max_contains(1)),
+    yyjson::field("numbers", yyjson::contains(yyjson::is_type<int>), yyjson::min_items(1)),
+    yyjson::field("nest", yyjson::items(yyjson::contains(yyjson::is_type<bool>))),
+    yyjson::if_then_else(
+        yyjson::if_(yyjson::field("kind", yyjson::const_("point"), yyjson::required)),
+        yyjson::then(yyjson::field("points", yyjson::required, yyjson::contains(yyjson::is_type<CondPoint>)))));
+
 // A field that its caster leaves out, which only `yyjson::strict` requires: the struct that holds it is a default of
 // the schema without `yyjson::strict`.
 struct MaybeInt
@@ -1748,6 +1773,35 @@ TEST(Schema, DomFields)
     EXPECT_EQ(p["names"]["propertyNames"]["maxLength"].as<int>(), 2);
     EXPECT_EQ(p["list"]["maxItems"].as<int>(), 1);
     EXPECT_TRUE(p["list"]["uniqueItems"].as<bool>());
+}
+
+TEST(Schema, TypedContains)
+{
+    check<TypedContains>({
+        R"({"events":[{"x":1},{"x":2},3],"objects":[{"x":1,"y":2},{}],"numbers":[1,"a"],)"
+        R"("kind":"point","points":[{"x":0}],"mixed":["s"]})",
+        R"({"events":[{"x":1},3]})",
+        R"({"events":[{"x":1,"z":0},{"x":2}]})",
+        R"({"objects":[{"x":1,"y":0},{"x":2,"y":0}]})",
+        R"({"objects":[{"x":1}]})",
+        R"({"numbers":["a"]})",
+        R"({"numbers":[]})",
+        R"({"kind":"point"})",
+        R"({"kind":"point","points":["a"]})",
+        R"({"kind":"line","points":["a"]})",
+        R"({"mixed":[1]})",
+        R"({"mixed":3})",
+        R"({"nest":[[1,true],[false]]})",
+        R"({"nest":[[1,true],[0]]})",
+    });
+    const auto s = to_jsoncons(yyjson::json_schema<TypedContains>());
+    const auto& p = s["$defs"]["TypedContains"]["properties"];
+    EXPECT_EQ(p["events"]["contains"], json::parse(R"({"$ref":"#/$defs/CondPoint"})"));
+    EXPECT_EQ(p["objects"]["contains"]["minProperties"].as<int>(), 2);
+    EXPECT_EQ(p["objects"]["contains"]["allOf"], json::parse(R"([{"$ref":"#/$defs/CondPoint"}])"));
+    EXPECT_EQ(p["numbers"]["contains"]["type"].as_string(), "integer");
+    EXPECT_EQ(p["mixed"]["anyOf"][0]["contains"]["type"].as_string(), "string");
+    EXPECT_EQ(p["nest"]["items"]["contains"]["type"].as_string(), "boolean");
 }
 
 TEST(Schema, DefaultLeavingKeyOut)

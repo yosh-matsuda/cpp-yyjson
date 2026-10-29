@@ -465,6 +465,84 @@ namespace yyjson
                              (writer::detail::to_json_inp_usr_defined<T> ||
                               writer::detail::to_json_usr_translator<const T&>);
 
+        // The types T of the settings `yyjson::is_type<T>` within the setting A, as a `type_list` that may repeat
+        // them.  A node of `yyjson::contains(yyjson::is_type<T>)` keeps only the test of T, so the generator finds T
+        // here, in the types of the annotations of the type that has the node.
+        template <typename... Ls>
+        struct concat_types
+        {
+            using type = yyjson::detail::type_list<>;
+        };
+        template <typename... As>
+        struct concat_types<yyjson::detail::type_list<As...>>
+        {
+            using type = yyjson::detail::type_list<As...>;
+        };
+        template <typename... As, typename... Bs, typename... Rest>
+        struct concat_types<yyjson::detail::type_list<As...>, yyjson::detail::type_list<Bs...>, Rest...>
+            : concat_types<yyjson::detail::type_list<As..., Bs...>, Rest...>
+        {
+        };
+        template <typename A>
+        struct type_tests_in
+        {
+            using type = yyjson::detail::type_list<>;
+        };
+        template <typename T>
+        struct type_tests_in<yyjson::is_type_t<T>>
+        {
+            using type = yyjson::detail::type_list<T>;
+        };
+        template <template <typename...> class Tmpl, typename... As>
+        struct type_tests_in<Tmpl<As...>> : concat_types<typename type_tests_in<As>::type...>
+        {
+        };
+        // The settings of an alternative are its template arguments, as values or as pointers to them.
+        template <typename T, auto... Ss>
+        struct type_tests_in<yyjson::alt<T, Ss...>>
+            : concat_types<typename type_tests_in<
+                  std::remove_cv_t<std::remove_pointer_t<std::remove_cv_t<decltype(Ss)>>>>::type...>
+        {
+        };
+#if FIELD_RFL_ANNOTATIONS
+        template <typename S, std::size_t I, std::size_t... Ks>
+        auto element_type_tests(std::index_sequence<Ks...>)
+            -> concat_types<typename type_tests_in<yyjson::detail::element_annotation_type<S, I, Ks>>::type...>;
+        template <typename S, std::size_t... Ks>
+        auto condition_type_tests(std::index_sequence<Ks...>)
+            -> concat_types<typename type_tests_in<yyjson::detail::condition_annotation_type<S, Ks>>::type...>;
+        template <typename S, std::size_t... Is>
+        auto annotated_type_tests(std::index_sequence<Is...>) -> concat_types<
+            typename decltype(condition_type_tests<S>(
+                std::make_index_sequence<yyjson::detail::condition_annotations<S>.size()>{}))::type,
+            typename decltype(element_type_tests<S, Is>(
+                std::make_index_sequence<yyjson::detail::element_annotations<S, Is>.size()>{}))::type...>;
+#endif
+        // The types of `yyjson::is_type<T>` in the annotations of T: those of `yyjson::annotations<T>`, and, in
+        // C++26, those of the members and of the struct itself.
+        template <typename T>
+        struct type_tests_of
+        {
+            using type = typename type_tests_in<yyjson::detail::annotation_values_of<T>>::type;
+        };
+        // `yyjson::any_of` and `yyjson::one_of` also hold them in the settings of their alternatives.
+        template <yyjson::detail::combined_variant V>
+        struct type_tests_of<V>
+            : concat_types<typename type_tests_in<yyjson::detail::annotation_values_of<V>>::type,
+                           typename type_tests_in<V>::type>
+        {
+        };
+#if FIELD_RFL_ANNOTATIONS
+        template <typename T>
+        requires yyjson::detail::reflectable<T>
+        struct type_tests_of<T>
+            : concat_types<typename type_tests_in<yyjson::detail::annotation_values_of<T>>::type,
+                           typename decltype(annotated_type_tests<T>(
+                               std::make_index_sequence<field_reflection::field_count<T>>{}))::type>
+        {
+        };
+#endif
+
         class generator
         {
         public:
@@ -514,6 +592,55 @@ namespace yyjson
             const yyjson::detail::json_scalar* values_ = nullptr;
             // The variants tagged by `internal_tag` whose alternatives are being written in place.
             std::vector<const void*> inlined_;
+            // The schemas of the types of `yyjson::is_type<T>` in `yyjson::contains` of the type whose settings are
+            // written, which a node keeps as its test only.
+            struct type_test_schema
+            {
+                const yyjson::detail::type_test_info* test;
+                void (generator::*emit)(object_ref);
+            };
+            std::span<const type_test_schema> type_tests_;
+
+            template <typename... Ts>
+            static std::span<const type_test_schema> type_tests_from(yyjson::detail::type_list<Ts...>)
+            {
+                if constexpr (sizeof...(Ts) == 0)
+                    return {};
+                else
+                {
+                    static constexpr type_test_schema table[] = {
+                        {&yyjson::detail::type_test_info_of<Ts>, &generator::emit_read<Ts>}...};
+                    return table;
+                }
+            }
+            // Makes the types of `yyjson::is_type<T>` in the annotations of T those that the nodes find, until the
+            // returned object is destroyed.
+            template <typename T>
+            [[nodiscard]] auto type_tests_for()
+            {
+                struct restore
+                {
+                    std::span<const type_test_schema>& tests;
+                    std::span<const type_test_schema> value;
+                    ~restore() { tests = value; }
+                };
+                return restore{type_tests_,
+                               std::exchange(type_tests_, type_tests_from(typename type_tests_of<T>::type{}))};
+            }
+            // Writes the read schema of the type of the test into `out`, beside what `out` already has.
+            void emit_type_test(object_ref out, const yyjson::detail::type_test_info& test)
+            {
+                const auto it =
+                    std::ranges::find_if(type_tests_, [&](const type_test_schema& e) { return e.test == &test; });
+                if (it == type_tests_.end())
+                    throw std::logic_error(std::string("yyjson::json_schema found no schema of yyjson::is_type<")
+                                               .append(test.name)
+                                               .append(">"));
+                if (out.size() == 0)
+                    (this->*it->emit)(out);
+                else
+                    (this->*it->emit)(out.emplace("allOf", empty_array).emplace_back(empty_object));
+            }
 
             // `yyjson::strict` applies to reading only: what `write` gives has every key that is not left out.
             [[nodiscard]] bool strict() const noexcept { return strict_ && !writing(); }
@@ -1060,6 +1187,7 @@ namespace yyjson
                 emit_builtin<T>(out, nodes, node);
             if constexpr (std::same_as<T, std::remove_cvref_t<T>>)
             {
+                if (n != nullptr && n->type_test != nullptr) emit_type_test(out, *n->type_test);
                 static_assert(std::is_enum_v<T> || struct_type<T> || is_variant<T>::value ||
                                   yyjson::detail::combined_variant<T> || user_read<T> || user_write<T> ||
                                   type_setting_count<T, yyjson::schema_name>() == 0,
@@ -1365,6 +1493,7 @@ namespace yyjson
             auto list = out.emplace(yyjson::detail::combined_alternatives<V>::exactly_one ? "oneOf" : "anyOf",
                                     empty_array);
             const auto* const outer_values = std::exchange(values_, table::tree.values.data());
+            const auto tests = type_tests_for<V>();
             [&]<std::size_t... Is>(std::index_sequence<Is...>) {
                 (emit_alternative<V, Is>(list.emplace_back(empty_object)), ...);
             }(std::make_index_sequence<std::variant_size_v<V>>{});
@@ -1575,6 +1704,7 @@ namespace yyjson
                 values = yyjson::detail::field_table_of<S>::table.schemas.values.data();
             }
             const auto* const outer_values = std::exchange(values_, values);
+            const auto tests = type_tests_for<S>();
             if (tags.empty())
                 emit<std::conditional_t<yyjson::detail::transparent_over_optional<S>, V, F>>(out, nodes, node);
             else
@@ -1601,6 +1731,7 @@ namespace yyjson
                 else
                     return static_cast<const yyjson::detail::json_scalar*>(nullptr);
             }());
+            const auto tests = type_tests_for<S>();
             out.emplace("type", "object");
             auto properties = out.emplace("properties", empty_object);
             auto required = std::vector<std::string_view>();
