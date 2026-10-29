@@ -658,6 +658,23 @@ namespace yyjson
         {
             return leaf.value;
         }
+        // The number of the values in Bs that are true.  The settings of an `annotate(...)` can be more than 256,
+        // and clang before 22 takes no more operands in a fold expression, so the functions over them expand their
+        // packs in an array.
+        template <bool... Bs>
+        inline constexpr std::size_t count_true = [] {
+            constexpr bool values[] = {false, Bs...};
+            auto n = std::size_t{0};
+            for (const auto value : values) n += value ? 1 : 0;
+            return n;
+        }();
+        // f(setting) for each setting of an `annotate(...)`, in order.
+        template <typename F, std::size_t... Is, typename... As>
+        constexpr void for_each_annotation(F&& f, const annotation_values<std::index_sequence<Is...>, As...>& v)
+        {
+            [[maybe_unused]] const bool done[] = {true,
+                                                  (f(static_cast<const annotation_leaf<Is, As>&>(v).value), true)...};
+        }
         // f(settings...) with the settings of an `annotate(...)`.
         template <typename F, std::size_t... Is, typename... As>
         constexpr decltype(auto) apply_annotations(F&& f, const annotation_values<std::index_sequence<Is...>, As...>& v)
@@ -696,14 +713,17 @@ namespace yyjson
         // The settings that `annotations<E>` of an enumeration takes.
         template <typename A>
         concept enum_annotation = is_enumerator_annotation<A>::value || std::same_as<A, enum_format>;
+
+        template <typename... As>
+        inline constexpr bool annotate_settings =
+            count_true<(is_field_annotation<As>::value || internal_tag_annotation<As> || enum_annotation<As>)...> ==
+            sizeof...(As);
     }  // namespace detail
 
     template <typename... As>
     consteval annotation_list<As...> annotate(As... values)
     {
-        static_assert(((detail::is_field_annotation<As>::value || detail::internal_tag_annotation<As> ||
-                        detail::enum_annotation<As>) &&
-                       ...),
+        static_assert(detail::annotate_settings<As...>,
                       "yyjson::annotate takes yyjson::field(...) for a struct, yyjson::internal_tag for a variant, "
                       "and yyjson::enumerator(...) and yyjson::enum_format for an enumeration");
         return annotation_list<As...>{detail::annotation_values<std::index_sequence_for<As...>, As...>(values...)};
@@ -1248,7 +1268,7 @@ namespace yyjson
         inline constexpr bool adjacent_field_annotation<field_annotation<As...>> = (adjacent_tag_annotation<As> || ...);
         template <typename T>
         inline constexpr bool annotates_adjacent_fields = []<typename... As>(std::type_identity<std::tuple<As...>>) {
-            return (adjacent_field_annotation<As> || ...);
+            return count_true<adjacent_field_annotation<As>...> != 0;
         }(std::type_identity<annotation_values_of<T>>{});
 
 #if FIELD_RFL_ANNOTATIONS
@@ -1326,7 +1346,7 @@ namespace yyjson
                 constexpr auto reflected = std::same_as<Source, reflected_field_names<T>>;
                 auto builder = field_key_builder<n>{Source::members, {Source::keys}, !reflected};
                 for (std::size_t i = 0; i < n; ++i) builder.renamed[i] = Source::keys[i] != Source::members[i];
-                apply_annotations([&](const auto&... a) { (builder.apply_annotation(a), ...); }, annotations<T>.values);
+                for_each_annotation([&](const auto& a) { builder.apply_annotation(a); }, annotations<T>.values);
 #if FIELD_RFL_ANNOTATIONS
                 if constexpr (reflected)
                     annotate_reflected_fields<T>(builder);
@@ -1747,8 +1767,8 @@ namespace yyjson
                 constexpr auto& declared = field_reflection::enum_names<E>;
                 auto builder = enum_name_builder<count>{{declared}};
                 if constexpr (std::same_as<E, std::byte>) builder.table.format = enum_format::integer;
-                apply_annotations([&](const auto&... a) { (builder.apply_annotation(a, declared), ...); },
-                                  annotations<E>.values);
+                for_each_annotation([&](const auto& a) { builder.apply_annotation(a, declared); },
+                                    annotations<E>.values);
 #if FIELD_RFL_ANNOTATIONS
                 for (const enum_format format : field_reflection::type_annotations<E, enum_format>)
                     builder.set_format(format);
@@ -2041,34 +2061,30 @@ namespace yyjson
                 if constexpr (annotates_adjacent_fields<S>)
                 {
                     constexpr auto name = declared_member_name<S, R>;
-                    apply_annotations(
-                        [&](const auto&... entries) {
-                            auto j = std::size_t{0};
-                            (
-                                [&](const auto& entry) {
-                                    using E = std::remove_cvref_t<decltype(entry)>;
-                                    if constexpr (adjacent_field_annotation<E>)
-                                    {
-                                        if (entry.member == name)
-                                        {
-                                            [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
-                                                (
-                                                    [&] {
-                                                        using A = std::tuple_element_t<Ks, decltype(entry.values)>;
-                                                        if constexpr (adjacent_tag_annotation<A>)
-                                                        {
-                                                            result[0] = j;
-                                                            result[1] = Ks;
-                                                            ++result[2];
-                                                        }
-                                                    }(),
-                                                    ...);
-                                            }(std::make_index_sequence<std::tuple_size_v<decltype(entry.values)>>{});
-                                        }
-                                    }
-                                    ++j;
-                                }(entries),
-                                ...);
+                    auto j = std::size_t{0};
+                    for_each_annotation(
+                        [&](const auto& entry) {
+                            using E = std::remove_cvref_t<decltype(entry)>;
+                            if constexpr (adjacent_field_annotation<E>)
+                            {
+                                if (entry.member == name)
+                                {
+                                    [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                                        (
+                                            [&] {
+                                                using A = std::tuple_element_t<Ks, decltype(entry.values)>;
+                                                if constexpr (adjacent_tag_annotation<A>)
+                                                {
+                                                    result[0] = j;
+                                                    result[1] = Ks;
+                                                    ++result[2];
+                                                }
+                                            }(),
+                                            ...);
+                                    }(std::make_index_sequence<std::tuple_size_v<decltype(entry.values)>>{});
+                                }
+                            }
+                            ++j;
                         },
                         annotations<S>.values);
                 }
