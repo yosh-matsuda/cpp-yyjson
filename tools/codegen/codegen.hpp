@@ -2380,7 +2380,10 @@ namespace cpp_yyjson_codegen
                     const auto same = [&](const field& f) {
                         const auto* own = props != nullptr ? props->find(f.key) : nullptr;
                         if (own == nullptr) own = f.schema;
-                        return own != nullptr && includes(*own, sub);
+                        if (own == nullptr) return false;
+                        // an object never has the key of a property whose schema is `false`
+                        if (const auto* n = normalize_full(own, f.loc); n->is_bool() && !n->b) return true;
+                        return includes(*own, sub);
                     };
                     try
                     {
@@ -2509,14 +2512,25 @@ namespace cpp_yyjson_codegen
                     return std::ranges::find(required, k) != required.end();
                 };
                 auto fields = std::vector<field>();
+                // the properties whose schema is `false`: an object must not have the key, which yyjson::not_ says
+                auto absent = std::vector<condition>();
                 if (const auto* props = s.find("properties"); props != nullptr && props->is_object())
                 {
                     for (const auto& [k, sub] : props->members)
                     {
                         const auto floc = loc + "/properties/" + pointer_token(k);
-                        auto ft = type_of(&sub, floc, decls_[idx].name + pascal(k));
-                        const auto* own = is_pure_ref(sub) ? &sub : normalize(&sub, floc);
                         const auto* target = normalize_full(&sub, floc);
+                        const auto never = target->is_bool() && !target->b;
+                        auto ft = never ? typed{} : type_of(&sub, floc, decls_[idx].name + pascal(k));
+                        if (never)
+                        {
+                            if (is_required(k))
+                                warn(floc, "the key \"" + k + "\" is required and its schema is `false`; no object "
+                                                              "satisfies the schema");
+                            absent.push_back(condition{
+                                .negated = true, .if_ = {cond_field{.key = k, .required = true}}, .loc = floc});
+                        }
+                        const auto* own = is_pure_ref(sub) ? &sub : normalize(&sub, floc);
                         const auto* dflt = own->find("default");
                         if (dflt == nullptr && target->is_object()) dflt = target->find("default");
                         if (dflt == nullptr && is_required(k) && target->is_object()) dflt = target->find("const");
@@ -2695,6 +2709,7 @@ namespace cpp_yyjson_codegen
                     fields.push_back(std::move(f));
                 }
                 auto conditions = conditions_of(s, fields, rejected, decls_[idx].name);
+                std::ranges::move(absent, std::back_inserter(conditions));
                 if (s.has("$conditions")) conditions_used_.insert(&s);
                 auto& d = decls_[idx];
                 d.fields = std::move(fields);

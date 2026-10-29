@@ -1783,9 +1783,10 @@ TEST(Codegen, AllOfScopes)
                              "unevaluatedProperties": false}},
         "type": "object", "$ref": "#/$defs/Closed", "properties": {"name": {"type": "string"}}
     })", {});
-    EXPECT_EQ(warnings(closed), "#/properties/name: the schema `false` accepts no value; it is read as any JSON value\n");
+    EXPECT_EQ(warnings(closed), "");
     EXPECT_TRUE(has(closed.code, "struct Root\n{\n    std::optional<yyjson::value> name;\n"
                                  "    std::optional<std::int64_t> id;\n};\n"));
+    EXPECT_TRUE(has(closed.code, "    yyjson::not_(yyjson::field(\"name\", yyjson::required))"));
 
     // a property of one subschema of allOf takes the pattern or additional properties of the others
     const auto parts = generate(R"({"type": "object", "allOf": [
@@ -1793,8 +1794,9 @@ TEST(Codegen, AllOfScopes)
         {"properties": {"c": {"type": "string"}}, "patternProperties": {"^x_": {"minimum": 0}},
          "additionalProperties": false}
     ]})", {});
-    EXPECT_EQ(warnings(parts), "#/properties/a: the schema `false` accepts no value; it is read as any JSON value\n");
+    EXPECT_EQ(warnings(parts), "");
     EXPECT_TRUE(has(parts.code, "    std::optional<yyjson::value> a;\n    std::optional<std::int64_t> x_b;\n"));
+    EXPECT_TRUE(has(parts.code, "    yyjson::not_(yyjson::field(\"a\", yyjson::required))"));
     EXPECT_TRUE(has(parts.code, "    yyjson::field(\"x_b\", yyjson::minimum(0)),\n"));
 
     // items of one subschema applies to the positions of prefixItems beyond its own; prefixItems merge by position
@@ -1809,6 +1811,35 @@ TEST(Codegen, AllOfScopes)
     EXPECT_TRUE(has(arrays.code, "    std::optional<std::vector<std::int64_t>> t;\n"));
     EXPECT_TRUE(has(arrays.code, "    yyjson::field(\"t\", yyjson::max_items(2), "
                                  "yyjson::prefix_items(yyjson::minimum(0), yyjson::maximum(5))));\n"));
+}
+
+TEST(Codegen, FalseProperties)
+{
+    // a property whose schema is `false`, also through a reference or matched by a pattern, is a key that an object
+    // must not have
+    const auto absent = generate(R"({
+        "$defs": {"Never": false},
+        "type": "object",
+        "properties": {"a": false, "b": {"$ref": "#/$defs/Never"}, "x_c": false, "d": {"type": "integer"}},
+        "patternProperties": {"^x_": {"type": "string"}},
+        "additionalProperties": false
+    })", {});
+    // only the alias of the definition reads any JSON value
+    EXPECT_EQ(warnings(absent), "#/$defs/Never: the schema `false` accepts no value; it is read as any JSON value\n");
+    EXPECT_TRUE(has(absent.code, "    std::optional<yyjson::value> a;\n    std::optional<yyjson::value> b;\n"
+                                 "    std::optional<yyjson::value> x_c;\n    std::optional<std::int64_t> d;\n"));
+    EXPECT_TRUE(has(absent.code, "    yyjson::not_(yyjson::field(\"a\", yyjson::required)),\n"
+                                 "    yyjson::not_(yyjson::field(\"b\", yyjson::required)),\n"
+                                 "    yyjson::not_(yyjson::field(\"x_c\", yyjson::required)),\n"));
+
+    // a required key of the schema `false` leaves no object to read
+    const auto required = generate(R"({"type": "object", "properties": {"a": false}, "required": ["a"]})", {});
+    EXPECT_EQ(warnings(required), "#/properties/a: the key \"a\" is required and its schema is `false`; no object "
+                                  "satisfies the schema\n");
+    EXPECT_TRUE(has(required.code, "    yyjson::not_(yyjson::field(\"a\", yyjson::required)),\n"
+                                   "    yyjson::field(\"a\", yyjson::required));\n"));
+    EXPECT_THROW(generate(R"({"type": "object", "properties": {"a": false}, "required": ["a"]})", {.strict = true}),
+                 cpp_yyjson_codegen::error);
 }
 
 TEST(Codegen, MaxAlternatives)
