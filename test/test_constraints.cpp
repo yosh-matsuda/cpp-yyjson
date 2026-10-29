@@ -523,6 +523,30 @@ inline constexpr auto yyjson::annotations<Listed> = yyjson::annotate(
     yyjson::field("named", yyjson::property_names(yyjson::enum_("x", "y"))),
     yyjson::field("pair", yyjson::prefix_items({yyjson::const_(1)}, {yyjson::enum_("x", "y")})));
 
+// const_ and enum_ of an enumeration written by name take the JSON names of its enumerators
+enum class Tone
+{
+    low,
+    mid,
+    high
+};
+template <>
+inline constexpr auto yyjson::annotations<Tone> = yyjson::annotate(yyjson::enumerator("high", yyjson::rename("HIGH")));
+struct ListedEnums
+{
+    Tone first = Tone::low;
+    Tone loud = Tone::high;
+    std::optional<Tone> maybe;
+    std::vector<Tone> tones;
+    bool operator==(const ListedEnums&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<ListedEnums> =
+    yyjson::annotate(yyjson::field("first", yyjson::const_("low")),
+                     yyjson::field("loud", yyjson::enum_("mid", "HIGH")),
+                     yyjson::field("maybe", yyjson::const_("mid")),
+                     yyjson::field("tones", yyjson::items(yyjson::enum_("low", "HIGH"))));
+
 // the formats that the library checks, and one that the program checks
 template <>
 struct yyjson::format_checker<>
@@ -1775,6 +1799,24 @@ TEST(Constraints, ConstAndEnum)
     expect_rejected<Listed>(R"({"pair":[1,"z"]})", element("pair") + R"(is not one of "x", "y")", "/pair/1");
 }
 
+TEST(Constraints, ConstAndEnumNames)
+{
+    expect_accepted<ListedEnums>(R"({"first":"low","loud":"mid","maybe":"mid","tones":["HIGH","low"]})",
+                                 {.loud = Tone::mid, .maybe = Tone::mid, .tones = {Tone::high, Tone::low}});
+    const auto value = [](std::string_view key) {
+        return std::format(R"(the value of the key "{}" of ListedEnums )", key);
+    };
+    expect_rejected<ListedEnums>(R"({"first":"mid"})", value("first") + R"(is not equal to the constant "low")",
+                                 "/first");
+    expect_rejected<ListedEnums>(R"({"loud":"low"})", value("loud") + R"(is not one of "mid", "HIGH")", "/loud");
+    expect_rejected<ListedEnums>(R"({"maybe":"HIGH"})", value("maybe") + R"(is not equal to the constant "mid")",
+                                 "/maybe");
+    expect_rejected<ListedEnums>(R"({"tones":["low","mid"]})",
+                                 R"(an element of the value of the key "tones" of ListedEnums is not one of "low", )"
+                                 R"("HIGH")",
+                                 "/tones/1");
+}
+
 TEST(Constraints, Format)
 {
     expect_accepted<Formatted>(R"({"when":"1985-04-12T23:20:50.52+01:00","mail":"a.b@[IPv6:::1]",)"
@@ -2199,6 +2241,16 @@ namespace compile_rules
     static_assert(reads_nothing<any_of<alt<float, exclusive_minimum(0), exclusive_maximum(1e-45)>>>);
     static_assert(!reads_nothing<any_of<alt<float, minimum(0.100000001), maximum(0.1)>>>);
     static_assert(reads_nothing<any_of<alt<long double, const_(5), maximum(0)>>>);
+    // an enumeration read by name reads the names of const_ and enum_; a name that is not the JSON name
+    // of an enumerator does not compile
+    static_assert(contained<any_of<alt<Shade, enum_("light", "dark")>, alt<Shade, const_("dark")>>> == 1);
+    static_assert(contained<one_of<alt<Shade, const_("light")>, alt<Shade, const_("dark")>>> == 2);
+    static_assert(contained<any_of<alt<std::string, enum_("light")>, alt<Shade, const_("light")>>> == 1);
+    static_assert(reads_nothing<any_of<alt<Shade, const_("light"), enum_("dark")>>>);
+    static_assert(yyjson::detail::listed_enumerators<yyjson::detail::alternative_level<any_of<alt<Tone,
+                      enum_("HIGH", "low")>>, 0>, Tone> == std::array{Tone::high, Tone::low});
+    static_assert(!yyjson::detail::listed_enumerators<
+                  yyjson::detail::alternative_level<any_of<alt<Tone, const_("high")>>, 0>, Tone>);
     // the lengths of strings in code points, and the numbers of items of the arrays that a vector reads
     using yyjson::min_length, yyjson::max_length, yyjson::min_items, yyjson::max_items;
     static_assert(contained<any_of<alt<std::string, max_length(5)>, alt<std::string, max_length(3)>>> == 1);

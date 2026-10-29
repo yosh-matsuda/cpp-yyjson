@@ -313,6 +313,28 @@ template <> inline constexpr auto yyjson::annotations<Kw> = yyjson::annotate(
     yyjson::field("codes", yyjson::items(yyjson::enum_("x", "y"))),
     yyjson::dependent_required("card", {"billing", "zip"}),
     yyjson::dependent_required("billing", {"zip"}));
+// const_ and enum_ of an enumeration take the JSON names of its enumerators
+enum class KwTone
+{
+    low,
+    high
+};
+template <>
+inline constexpr auto yyjson::annotations<KwTone> =
+    yyjson::annotate(yyjson::enumerator("high", yyjson::rename("HIGH")));
+struct KwEnum
+{
+    KwTone tone = KwTone::high;
+    std::vector<KwTone> tones;
+    std::optional<KwTone> mode;
+    std::optional<int> level;
+};
+template <>
+inline constexpr auto yyjson::annotations<KwEnum> = yyjson::annotate(
+    yyjson::field("tone", yyjson::const_("HIGH")),
+    yyjson::field("tones", yyjson::items(yyjson::enum_("low"))),
+    yyjson::if_then_else(yyjson::if_(yyjson::field("mode", yyjson::const_("low"), yyjson::required)),
+                         yyjson::then(yyjson::field("level", yyjson::required))));
 struct Nul
 {
     std::variant<std::monostate, std::string> code;
@@ -954,6 +976,24 @@ TEST(Schema, Kw)
         R"({"billing":"b","zip":"z"})",
         R"({"version":2,"kind":"a","ratio":0.5,"on":true,"when":"2024-01-02T03:04:05Z","codes":[],"card":"1"})",
     });
+}
+
+TEST(Schema, KwEnum)
+{
+    check<KwEnum>({
+        R"({})",
+        R"({"tone":"HIGH","tones":["low"]})",
+        R"({"tone":"high"})",
+        R"({"tone":"low"})",
+        R"({"tones":["HIGH"]})",
+        R"({"mode":"low"})",
+        R"({"mode":"low","level":1})",
+        R"({"mode":"HIGH"})",
+    });
+    const auto s = to_jsoncons(yyjson::json_schema<KwEnum>())["$defs"]["KwEnum"];
+    EXPECT_EQ(s["properties"]["tone"]["const"], json("HIGH"));
+    EXPECT_EQ(s["properties"]["tones"]["items"]["enum"], json::parse(R"(["low"])"));
+    EXPECT_EQ(s["if"]["properties"]["mode"]["const"], json("low"));
 }
 
 // The constraints hold for the value of a pointer or of a variant with std::monostate, and null passes them.

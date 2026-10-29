@@ -7750,6 +7750,38 @@ namespace yyjson
                 return static_cast<std::string_view>(v) == s.string();
         }
 
+        // Whether all the values are of the kind.
+        constexpr bool scalars_of_kind(std::span<const json_scalar> values, json_scalar::kind_t kind) noexcept
+        {
+            for (const json_scalar& s : values)
+                if (s.kind != kind) return false;
+            return true;
+        }
+        // The index in `field_reflection::enum_values<E>` of the enumerator whose JSON name is `name`, or
+        // `enum_count<E>` if none has it.
+        template <typename E>
+        consteval std::size_t enum_index_of_name(std::string_view name)
+        {
+            const auto& names = enum_conversion<E>::names;
+            for (std::size_t i = 0; i < names.size(); ++i)
+                if (!names[i].empty() && names[i] == name) return i;
+            return names.size();
+        }
+        // The enumerators of E that the strings of `yyjson::const_` and `yyjson::enum_` of the level
+        // `Level` name, in their order, with a value-initialized one in place of null; none when a string names none.
+        template <typename Level, typename E>
+        inline constexpr auto listed_enumerators = [] {
+            auto result = std::array<E, Level::values.size()>{};
+            for (std::size_t i = 0; i < result.size(); ++i)
+            {
+                if (Level::values[i].kind == json_scalar::kind_t::null) continue;
+                const auto index = enum_index_of_name<E>(Level::values[i].string());
+                if (index == enum_conversion<E>::names.size()) return std::optional<decltype(result)>();
+                result[i] = field_reflection::enum_values<E>[index];
+            }
+            return std::optional(result);
+        }();
+
         // Whether the settings of the level `Level` leave no value of V, the type that they constrain, to read, as
         // far as the bounds of numbers, of lengths and of numbers of items, and the values of `yyjson::const_`
         // and `yyjson::enum_` tell, and
@@ -7788,17 +7820,38 @@ namespace yyjson
             static_assert(!items || constraint_items<V>,
                           "yyjson::min_items and max_items constrain a field or an element of a range");
             constexpr bool listed = c.has<const_<>>() || c.has<enum_<0>>();
-            constexpr bool scalar = std::is_arithmetic_v<V> || constraint_string<V>;
+            constexpr bool scalar = std::is_arithmetic_v<V> || constraint_string<V> || enum_by_name<V>;
             // null, which `level_violation` compares, may stand beside the values of any type
-            static_assert(!listed || std::ranges::all_of(Level::values,
-                                                         [](const json_scalar& s) {
-                                                             return s.kind == json_scalar::kind_t::null ||
-                                                                    (scalar && s.kind == scalar_kind_of<V>);
-                                                         }),
+            constexpr bool of_kind = std::ranges::all_of(Level::values, [](const json_scalar& s) {
+                return s.kind == json_scalar::kind_t::null || (scalar && s.kind == scalar_kind_of<V>);
+            });
+            static_assert(!listed || of_kind,
                           "yyjson::const_ and yyjson::enum_ constrain a field or an element of a string, "
-                          "a number or a bool, with values of its kind or nullptr");
+                          "a number or a bool, with values of its kind or nullptr, or of an enumeration written by "
+                          "name, with the names of its enumerators or nullptr");
             if constexpr (settings_read_nothing<Level, V>()) (void)settings_leave_no_value<Level, V>{};
-            if constexpr (listed)
+            if constexpr (listed && enum_by_name<V> && of_kind)
+            {
+                constexpr auto& enumerators = listed_enumerators<Level, V>;
+                static_assert(enumerators.has_value(),
+                              "a string of yyjson::const_ or yyjson::enum_ of an enumeration is not the "
+                              "JSON name of an enumerator of it");
+                if constexpr (enumerators.has_value())
+                {
+                    const auto equals = [&v](std::size_t i) {
+                        return Level::values[i].kind != json_scalar::kind_t::null && v == (*enumerators)[i];
+                    };
+                    constexpr std::size_t constants = c.has<const_<>>() ? 1 : 0;
+                    if constexpr (constants != 0)
+                        if (!equals(0)) return constraint_kind::const_;
+                    if constexpr (c.has<enum_<0>>())
+                    {
+                        if (std::ranges::none_of(std::views::iota(constants, Level::values.size()), equals))
+                            return constraint_kind::enum_;
+                    }
+                }
+            }
+            else if constexpr (listed)
             {
                 const auto equals = [&v](const json_scalar& s) {
                     if constexpr (scalar)
@@ -17705,12 +17758,6 @@ namespace yyjson
             return n;
         }
 
-        constexpr bool scalars_of_kind(std::span<const json_scalar> values, json_scalar::kind_t kind) noexcept
-        {
-            for (const json_scalar& s : values)
-                if (s.kind != kind) return false;
-            return true;
-        }
         template <typename Level, typename V>
         consteval bool settings_read_nothing()
         {
@@ -17725,7 +17772,7 @@ namespace yyjson
                 return listed_booleans<Level>() == 0;
             else if constexpr (std::is_arithmetic_v<V>)
                 return arithmetic_bound<V, Level>().extent == bound_extent::none;
-            else if constexpr (constraint_string<V>)
+            else if constexpr (constraint_string<V> || enum_by_name<V>)
                 return listed_strings<Level>().extent == bound_extent::none;
             else
                 return false;
@@ -17840,7 +17887,12 @@ namespace yyjson
             else if constexpr (std::is_enum_v<U>)
             {
                 auto b = json_bound{};
-                if constexpr (enum_by_name<U>)
+                // the names of `yyjson::const_` and `yyjson::enum_`, which are names of enumerators
+                constexpr bool listed = enum_by_name<U> && level_within<Level>(listing_settings) &&
+                                        (Level::constraints.set & listing_settings) != 0;
+                if constexpr (listed)
+                    b.string = listed_strings<Level>();
+                else if constexpr (enum_by_name<U>)
                 {
                     b.string.extent = bound_extent::exact;
                     b.string.listed = true;
@@ -17850,7 +17902,7 @@ namespace yyjson
                 if constexpr (enum_by_integer<U>)
                     b.number = arithmetic_bound<std::underlying_type_t<U>, no_settings_level>();
                 make_partial(b.number.extent);
-                return bound(b, !settings);
+                return bound(b, !settings || listed);
             }
             else if constexpr (back_insertable<U> && !insertable_set<U> && !pair_array_map<U> &&
                                accepted_json_kinds<U, reader::const_value_ref>() == json_kind_array)
