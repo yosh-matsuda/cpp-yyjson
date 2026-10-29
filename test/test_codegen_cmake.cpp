@@ -2,7 +2,9 @@
 // references codegen/customer.schema.json, from codegen/defaults.schema.json, from
 // codegen/alternatives.schema.json, from codegen/patterns.schema.json, from
 // codegen/recursion.schema.json, from codegen/untyped.schema.json (also with INFER_TYPES), from
-// codegen/conditions.schema.json and from codegen/contains.schema.json.
+// codegen/conditions.schema.json, from codegen/contains.schema.json and from
+// codegen/invoice.schema.json, which references codegen/remote/money.schema.json through URI_MAP and
+// codegen/tax.schema.json through SCHEMAS.
 #include <gtest/gtest.h>
 
 #include <cpp_yyjson.hpp>
@@ -22,6 +24,7 @@ struct yyjson::pattern_matcher<>
 #include "conditions.hpp"
 #include "contains.hpp"
 #include "defaults.hpp"
+#include "invoice.hpp"
 #include "order.hpp"
 #include "patterns.hpp"
 #include "recursion.hpp"
@@ -276,4 +279,18 @@ TEST(CodegenCMake, Contains)
                              R"({"counts":[5,4]})", R"({"codes":[1,99]})", R"({"colors":["green"]})",
                              R"({"codes":[0,100]})"})
         EXPECT_THROW((void)yyjson::read<model::Basket>(json), yyjson::bad_cast) << json;
+}
+
+TEST(CodegenCMake, RemoteReferences)
+{
+    const auto json = R"({"total":{"amount":120,"currency":"EUR"},"rate":0.2})";
+    const auto invoice = yyjson::read<model::Invoice>(json, yyjson::strict);
+    EXPECT_EQ(invoice.total.amount, 120);
+    EXPECT_EQ(invoice.total.currency, "EUR");
+    EXPECT_DOUBLE_EQ(invoice.rate, 0.2);
+    EXPECT_EQ(yyjson::write(invoice), json);
+    EXPECT_THROW((void)yyjson::read<model::Invoice>(R"({"total":{"amount":1,"currency":"EURO"},"rate":0.2})"),
+                 yyjson::bad_cast);
+    EXPECT_THROW((void)yyjson::read<model::Invoice>(R"({"total":{"amount":1,"currency":"EUR"},"rate":2})"),
+                 yyjson::bad_cast);
 }

@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.example.com/invoice.schema.json",
+  "title": "Invoice",
+  "type": "object",
+  "properties": {
+    "total": {"$ref": "money.schema.json"},
+    "rate": {"$ref": "urn:example:tax#/$defs/Rate"}
+  },
+  "required": ["total", "rate"]
+}

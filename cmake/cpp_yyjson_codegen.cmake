@@ -6,6 +6,7 @@
 #                       [NAMESPACE <ns>] [ROOT_NAME <name>] [MAX_ALTERNATIVES <n>]
 #                       [CPP26] [NO_PATTERN] [OPTIONAL_DEFAULTS] [KEEP_UNKNOWN_KEYS] [INFER_TYPES]
 #                       [STRICT]
+#                       [SCHEMAS <file>...] [URI_MAP <prefix>=<dir>...]
 #                       [DEPENDS <file>...])
 #
 # Generates <header> from <schema> and adds it to the sources of <target>, so that the target is
@@ -13,8 +14,10 @@
 # target with the given scope (PRIVATE by default). A relative <schema> is taken from the current
 # source directory, a relative <header> from the current binary directory, and the default
 # <header> is the file name of the schema up to its first dot, with `.hpp`. The options match those
-# of the command line. Files that the schema references with `$ref` are tracked through a depfile
-# where the generator supports one (Ninja, or CMake 3.21 and later); elsewhere, list them in DEPENDS.
+# of the command line: SCHEMAS gives --schema for each file and URI_MAP --uri-map for each entry,
+# whose relative files and directories are taken from the current source directory. Files that the
+# schema references with `$ref` are tracked through a depfile where the generator supports one
+# (Ninja, or CMake 3.21 and later); elsewhere, list them in DEPENDS.
 # Call it in the directory that defines <target>: CMake before 3.20 does not see a generated file in
 # the sources of a target of another directory. An INTERFACE library needs CMake 3.19 or later.
 #
@@ -39,7 +42,7 @@ function(cpp_yyjson_generate target schema)
   cmake_parse_arguments(
     PARSE_ARGV 2 arg
     "PUBLIC;PRIVATE;INTERFACE;CPP26;NO_PATTERN;OPTIONAL_DEFAULTS;KEEP_UNKNOWN_KEYS;INFER_TYPES;STRICT"
-    "OUTPUT;NAMESPACE;ROOT_NAME;MAX_ALTERNATIVES" "DEPENDS")
+    "OUTPUT;NAMESPACE;ROOT_NAME;MAX_ALTERNATIVES" "SCHEMAS;URI_MAP;DEPENDS")
   if(arg_UNPARSED_ARGUMENTS)
     message(FATAL_ERROR "cpp_yyjson_generate: unknown arguments: ${arg_UNPARSED_ARGUMENTS}")
   endif()
@@ -95,6 +98,23 @@ function(cpp_yyjson_generate target schema)
   if(arg_MAX_ALTERNATIVES)
     list(APPEND options --max-alternatives "${arg_MAX_ALTERNATIVES}")
   endif()
+  set(schemas "")
+  foreach(file IN LISTS arg_SCHEMAS)
+    get_filename_component(file "${file}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+    list(APPEND schemas "${file}")
+    list(APPEND options --schema "${file}")
+  endforeach()
+  foreach(entry IN LISTS arg_URI_MAP)
+    string(FIND "${entry}" "=" eq)
+    if(eq LESS 1)
+      message(FATAL_ERROR "cpp_yyjson_generate: URI_MAP takes <prefix>=<dir>, not '${entry}'")
+    endif()
+    string(SUBSTRING "${entry}" 0 ${eq} prefix)
+    math(EXPR eq "${eq} + 1")
+    string(SUBSTRING "${entry}" ${eq} -1 dir)
+    get_filename_component(dir "${dir}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+    list(APPEND options --uri-map "${prefix}=${dir}")
+  endforeach()
   foreach(flag CPP26 NO_PATTERN OPTIONAL_DEFAULTS KEEP_UNKNOWN_KEYS INFER_TYPES STRICT)
     if(arg_${flag})
       string(TOLOWER "--${flag}" option)
@@ -115,7 +135,7 @@ function(cpp_yyjson_generate target schema)
     OUTPUT "${output}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${output_dir}"
     COMMAND "${generator}" "${schema}" -o "${output}" ${options}
-    DEPENDS "${schema}" ${generator_target} ${arg_DEPENDS}
+    DEPENDS "${schema}" ${schemas} ${generator_target} ${arg_DEPENDS}
     ${depfile_arguments}
     COMMENT "Generating ${shown} from a JSON Schema"
     VERBATIM)

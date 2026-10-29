@@ -110,6 +110,9 @@ if(TARGET cpp_yyjson_codegen)
                       NAMESPACE model)
   cpp_yyjson_generate("${PROJECT_NAME}_test_codegen_cmake" codegen/untyped.schema.json
                       OUTPUT untyped_inferred.hpp NAMESPACE inferred INFER_TYPES)
+  cpp_yyjson_generate("${PROJECT_NAME}_test_codegen_cmake" codegen/invoice.schema.json
+                      NAMESPACE model SCHEMAS codegen/tax.schema.json
+                      URI_MAP https://schemas.example.com/=codegen/remote)
 endif()
 
 # JSONTestSuite, the number tests and generated texts, from the datasets of the benchmark submodule

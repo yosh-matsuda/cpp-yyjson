@@ -9,6 +9,7 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "codegen.hpp"
@@ -23,6 +24,10 @@ Generates C++ types with cpp-yyjson annotations from a JSON Schema (2020-12, 201
                         "address.json#/$defs/Street", is read from the directory of the schema, and its
                         types go to the same header
   -o, --output <file>   the header to write (default: the standard output)
+  --schema <file>       read another schema, which a reference finds by its `$id` or its path; may repeat
+  --uri-map <prefix>=<dir>
+                        read a reference to a URI that starts with <prefix> from <dir>, with the rest of the
+                        URI as a relative path, such as https://example.com/schemas/=schemas; may repeat
   --depfile <file>      also write the schema files read, in the format of a Makefile rule for the header,
                         for a build system to generate the header again when one of them changes (needs -o)
   --namespace <ns>      the namespace of the generated types, such as "app::model"
@@ -91,6 +96,20 @@ int main(int argc, char** argv)
              : arg == "--root-name" ? opts.root_name
              : arg == "--depfile"   ? depfile
                                     : output) = *v;
+        }
+        else if (arg == "--schema")
+        {
+            const auto v = value();
+            if (!v) return fail("--schema needs a value");
+            if (!std::ifstream(*v, std::ios::binary)) return fail("cannot open " + *v);
+            opts.schemas.push_back(*v);
+        }
+        else if (arg == "--uri-map")
+        {
+            const auto v = value();
+            const auto eq = v ? v->find('=') : std::string::npos;
+            if (eq == std::string::npos || eq == 0) return fail("--uri-map needs <prefix>=<dir>");
+            opts.uri_map.emplace_back(v->substr(0, eq), v->substr(eq + 1));
         }
         else if (arg == "--max-alternatives")
         {
