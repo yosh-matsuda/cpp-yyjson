@@ -205,11 +205,11 @@ Each schema maps to one C++ type:
 | no `type`, with keywords that constrain some types, such as `maxLength` or `properties` | a variant of every kind; see [Schemas without `type`](#schemas-without-type) |
 | `{}`, `true`, no keyword of a type | [`yyjson::value`](reference.md#yyjsonvalue) |
 
-The subschemas of `allOf`, and the keywords beside `$ref`, merge into one schema, and each subschema still constrains the keys and positions that it does not declare. A property of one subschema also takes what another applies to its key: the schemas of the patterns of `patternProperties` that the key matches, else `additionalProperties`. A position of `prefixItems` beyond those of another subschema takes that subschema's `items`. A property that another subschema closes out thus gets the schema `false`, which accepts no value; the generator reads it as `yyjson::value` with a warning, and an `items: false` ends the tuple there:
+The subschemas of `allOf`, and the keywords beside `$ref`, merge into one schema, and each subschema still constrains the keys and positions that it does not declare. A property of one subschema also takes what another applies to its key: the schemas of the patterns of `patternProperties` that the key matches, else `additionalProperties`. A position of `prefixItems` beyond those of another subschema takes that subschema's `items`. A property that another subschema closes out thus gets the schema `false`, which an object satisfies only without the key, as a [property whose schema is `false`](#structs) does; an `items: false` ends the tuple there:
 
 | Schema | Code |
 | --- | --- |
-| `{"allOf": [{"properties": {"a": {"type": "integer"}}}, {"properties": {"c": {"type": "string"}}, "additionalProperties": false}]}` | `a` is `std::optional<yyjson::value>`, with a warning |
+| `{"allOf": [{"properties": {"a": {"type": "integer"}}}, {"properties": {"c": {"type": "string"}}, "additionalProperties": false}]}` | `a` is `std::optional<yyjson::value>`, with `yyjson::not_(yyjson::field("a", yyjson::required))` |
 | `{"allOf": [{"properties": {"x_b": {"type": "integer"}}}, {"patternProperties": {"^x_": {"minimum": 0}}}]}` | `x_b` is `std::optional<std::int64_t>` with `yyjson::minimum(0)` |
 | `{"type": "array", "prefixItems": [{"type": "string"}], "allOf": [{"items": false}]}` | `yyjson::max_items(0)` |
 
@@ -241,6 +241,7 @@ A property becomes a member, in the order of `properties`:
 | with a `default` | `T` initialized to the default, with `yyjson::omit_default`; see [Defaults](#defaults) |
 | otherwise | `std::optional<T>` |
 | a key in `required` that is not in `properties` | `U` with `yyjson::required`; see [Keys that keywords name](#keys-that-keywords-name) |
+| with the schema `false` | `std::optional<yyjson::value>` with [`yyjson::not_(yyjson::field("k", yyjson::required))`](reference.md#yyjsonif_then_else-yyjsonnot_) on the struct |
 
 `additionalProperties` becomes [`yyjson::additional_properties`](reference.md#yyjsonadditional_properties): `false` closes the struct, and an absent keyword or `true` is written as `yyjson::additional_properties(true)`, so that a strict read also accepts the other keys, as the schema does. A schema in `additionalProperties` gives a field of [`yyjson::extra_keys`](#keys-that-name-no-property).
 
@@ -452,7 +453,7 @@ inline constexpr auto yyjson::annotations<Root> = yyjson::annotate(
     yyjson::additional_properties(false));
 ```
 
-`false` closes the struct, and a schema gives a field of [`yyjson::extra_keys`](#keys-that-name-no-property). In the same way, `unevaluatedItems` is the `items` after `prefixItems`, so `false` ends the tuple. The keyword adds nothing, and is left out silently, beside `additionalProperties` or `items`, beside a subschema whose `additionalProperties`, `items` or own unevaluated keyword already evaluates every key or element, and for a type that is not an object or an array. `unevaluatedProperties` in a subschema of `allOf`, or in the target of `$ref`, counts only the keywords of that subschema, so it rejects the properties that only the others declare: they get the schema `false` as under [`allOf`](#mapping), and are read as `yyjson::value` with a warning.
+`false` closes the struct, and a schema gives a field of [`yyjson::extra_keys`](#keys-that-name-no-property). In the same way, `unevaluatedItems` is the `items` after `prefixItems`, so `false` ends the tuple. The keyword adds nothing, and is left out silently, beside `additionalProperties` or `items`, beside a subschema whose `additionalProperties`, `items` or own unevaluated keyword already evaluates every key or element, and for a type that is not an object or an array. `unevaluatedProperties` in a subschema of `allOf`, or in the target of `$ref`, counts only the keywords of that subschema, so it rejects the properties that only the others declare: they get the schema `false` as under [`allOf`](#mapping), and the struct rejects an object that has them.
 
 Beside `oneOf`, the properties that count are those of the base and of the subschema that matches. The keyword goes into each alternative, which is closed over the properties of the base and its own:
 
@@ -580,7 +581,7 @@ A warning names the location in the schema and what the generated code does inst
 | a variant of more alternatives than `--max-alternatives` | "a variant of 447 alternatives is more than 64 (--max-alternatives) ..." | reads any JSON value there |
 | a reference that cannot be followed | a missing file, a URI elsewhere | reads any JSON value there |
 | a schema that refers to itself with no array or object between | `{"anyOf": [{"$ref": "#/$defs/D"}, {"type": "string"}]}` | reads any JSON value there |
-| a property whose schema is `false` | a property that another subschema of [`allOf`](#mapping) closes out | reads any JSON value there |
+| a schema `false` that is not a property | `"$defs": {"Never": false}`, `"items": {"$ref": "#/$defs/Never"}` | reads any JSON value there |
 | a default or an example that does not convert | "the default ... is not converted to the C++ type; the field is std::optional" | keeps it in a comment |
 | an alternative dropped | an alternative of `oneOf` contained in another one | reads the same values |
 | contradictory settings | see below | see below |
@@ -593,13 +594,14 @@ A schema can contradict itself, so that no value is valid at some place. The gen
 | --- | --- |
 | `minLength` above `maxLength`, `minItems` above `maxItems`, `minProperties` above `maxProperties` of a map, bounds that no number of the C++ type is within, `const` or `enum` outside the bounds | does not compile: the library rejects at compile time settings that leave no value to read |
 | `minContains` above `maxContains` | compiles, and reading an array there always fails |
+| a key in `required` whose property has the schema `false` | compiles, and reading an object there always fails |
 | `const` or `enum` beside bounds or lengths that reject some of its values | reads the values of `const` and `enum` as they are, also those that the schema rejects |
 | `const` or `enum` with values outside `type`, such as `{"type": "string", "enum": ["a", []]}` | reads the values of the types of `type`, `"a"` here |
 | `const` or `enum` with no value of the types of `type`, such as `{"type": "object", "enum": ["a", "b"]}` | ignores `type` and reads the values of `const` and `enum`, as `"a"` and `"b"` here |
 
 The `const` or the `enum` decides what is read when `type` and the values contradict each other, because the values say more of what the author meant, and following `type` would leave nothing to read there. The same holds for the `type` of a schema around `oneOf` or `anyOf` of strings, which goes into every subschema: `{"type": "object", "oneOf": [{"const": "a"}, {"const": "b"}, {...}]}` makes the strings an enum class as it does without the `type`.
 
-The third and the last rows are the ones where the code reads less strictly without the warning saying so in its group: the C++ type of a `const` or an `enum` does not take the other keywords beside it.
+The fourth and the last rows are the ones where the code reads less strictly without the warning saying so in its group: the C++ type of a `const` or an `enum` does not take the other keywords beside it.
 
 ## Round trip
 
@@ -609,7 +611,8 @@ The third and the last rows are the ones where the code reads less strictly with
 *   nested `anyOf` and the flattened form;
 *   `oneOf` and `anyOf` of `{"type": "null"}` and a subschema that does not take `null`;
 *   `additionalProperties: {}`, `true` and an absent keyword;
-*   `patternProperties` and the `propertyNames` with `additionalProperties` of the map.
+*   `patternProperties` and the `propertyNames` with `additionalProperties` of the map;
+*   a property whose schema is `false`, and `not` of `required` of its key.
 
 The `title` and `description` of the subschema beside `{"type": "null"}` are lost: the variant whose first alternative is `std::monostate` has no place for them, and the description of the property stays.
 
