@@ -657,7 +657,8 @@ namespace bench_typed
 {
     // Whether `yyjson::annotations<T>` gives a field another key.
     template <typename T>
-    inline constexpr bool renamed = std::tuple_size_v<decltype(yyjson::annotations<T>.values)> != 0;
+    inline constexpr bool renamed =
+        std::tuple_size_v<typename std::remove_cvref_t<decltype(yyjson::annotations<T>)>::types> != 0;
 
     // The key that the annotation `field` gives the member `member`, if it is that member and renames it.
     // A separate function: GCC 15 fails with an internal error when nested generic lambdas capture a pack element.
@@ -676,8 +677,9 @@ namespace bench_typed
     constexpr std::string_view renamed_key(const std::string_view member)
     {
         auto key = member;
-        std::apply([&](const auto&... fields) { (renamed_field_key(fields, member, key), ...); },
-                   yyjson::annotations<T>.values);
+        yyjson::detail::apply_annotations(
+            [&](const auto&... fields) { (renamed_field_key(fields, member, key), ...); },
+            yyjson::annotations<T>.values);
         return key;
     }
 }  // namespace bench_typed

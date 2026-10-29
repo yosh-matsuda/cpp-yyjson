@@ -636,11 +636,43 @@ namespace yyjson
         return {name, {values...}};
     }
 
+    namespace detail
+    {
+        template <std::size_t I, typename A>
+        struct annotation_leaf
+        {
+            A value;
+        };
+        template <typename Is, typename... As>
+        struct annotation_values;
+        // The settings of `annotate(...)`, one base per setting.  `std::tuple` of libstdc++ nests one level per
+        // element, and constructing it in a constant expression exceeds the depth limit of the compiler with a few
+        // hundred settings, which a generated enumeration of time zones has.
+        template <std::size_t... Is, typename... As>
+        struct annotation_values<std::index_sequence<Is...>, As...> : annotation_leaf<Is, As>...
+        {
+            constexpr explicit annotation_values(const As&... values) : annotation_leaf<Is, As>{values}... {}
+        };
+        template <std::size_t I, typename A>
+        constexpr const A& annotation_at(const annotation_leaf<I, A>& leaf) noexcept
+        {
+            return leaf.value;
+        }
+        // f(settings...) with the settings of an `annotate(...)`.
+        template <typename F, std::size_t... Is, typename... As>
+        constexpr decltype(auto) apply_annotations(F&& f, const annotation_values<std::index_sequence<Is...>, As...>& v)
+        {
+            return std::forward<F>(f)(static_cast<const annotation_leaf<Is, As>&>(v).value...);
+        }
+    }  // namespace detail
+
     // The settings of the conversion of a type, which `yyjson::annotations<T>` holds.
     template <typename... As>
     struct annotation_list
     {
-        std::tuple<As...> values;
+        // the types of the settings
+        using types = std::tuple<As...>;
+        detail::annotation_values<std::index_sequence_for<As...>, As...> values;
     };
 
     namespace detail
@@ -674,7 +706,7 @@ namespace yyjson
                        ...),
                       "yyjson::annotate takes yyjson::field(...) for a struct, yyjson::internal_tag for a variant, "
                       "and yyjson::enumerator(...) and yyjson::enum_format for an enumeration");
-        return {{values...}};
+        return annotation_list<As...>{detail::annotation_values<std::index_sequence_for<As...>, As...>(values...)};
     }
 
     // The settings of the conversion of T.  A specialization, which comes before the first use of T, is
@@ -1088,7 +1120,7 @@ namespace yyjson
             ((field_reflection::field_count<T> > 0) || (std::is_empty_v<T> && !library_class<T>()));
 
         template <typename T>
-        using annotation_values_of = std::remove_cvref_t<decltype(annotations<T>.values)>;
+        using annotation_values_of = typename std::remove_cvref_t<decltype(annotations<T>)>::types;
 
         // Whether the names at the indices that `use` selects differ from each other.  A constant expression may
         // take only so many steps, and comparing every pair of a few hundred names that share a long prefix, one
@@ -1294,7 +1326,7 @@ namespace yyjson
                 constexpr auto reflected = std::same_as<Source, reflected_field_names<T>>;
                 auto builder = field_key_builder<n>{Source::members, {Source::keys}, !reflected};
                 for (std::size_t i = 0; i < n; ++i) builder.renamed[i] = Source::keys[i] != Source::members[i];
-                std::apply([&](const auto&... a) { (builder.apply_annotation(a), ...); }, annotations<T>.values);
+                apply_annotations([&](const auto&... a) { (builder.apply_annotation(a), ...); }, annotations<T>.values);
 #if FIELD_RFL_ANNOTATIONS
                 if constexpr (reflected)
                     annotate_reflected_fields<T>(builder);
@@ -1703,8 +1735,8 @@ namespace yyjson
                 constexpr auto& declared = field_reflection::enum_names<E>;
                 auto builder = enum_name_builder<count>{{declared}};
                 if constexpr (std::same_as<E, std::byte>) builder.table.format = enum_format::integer;
-                std::apply([&](const auto&... a) { (builder.apply_annotation(a, declared), ...); },
-                           annotations<E>.values);
+                apply_annotations([&](const auto&... a) { (builder.apply_annotation(a, declared), ...); },
+                                  annotations<E>.values);
 #if FIELD_RFL_ANNOTATIONS
                 for (const enum_format format : field_reflection::type_annotations<E, enum_format>)
                     builder.set_format(format);
@@ -1915,7 +1947,7 @@ namespace yyjson
                 if constexpr (index == std::tuple_size_v<values_type>)
                     return no_variant_tag{};
                 else
-                    return std::get<index>(annotations<V>.values);
+                    return annotation_at<index>(annotations<V>.values);
             }();
         };
 
@@ -1983,7 +2015,7 @@ namespace yyjson
             if constexpr (Count == 0)
                 return no_variant_tag{};
             else
-                return std::get<K>(std::get<I>(annotations<S>.values).values);
+                return std::get<K>(annotation_at<I>(annotations<S>.values).values);
         }
 
         // The `yyjson::adjacent_tag` of the field R of S, in `annotations<S>` or, with C++26, on the member.
@@ -1997,7 +2029,7 @@ namespace yyjson
                 if constexpr (annotates_adjacent_fields<S>)
                 {
                     constexpr auto name = declared_member_name<S, R>;
-                    std::apply(
+                    apply_annotations(
                         [&](const auto&... entries) {
                             auto j = std::size_t{0};
                             (
