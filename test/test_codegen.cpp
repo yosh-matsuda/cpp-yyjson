@@ -1465,6 +1465,81 @@ TEST(Codegen, Untyped)
                                   "and is ignored\n");
 }
 
+TEST(Codegen, Unevaluated)
+{
+    // unevaluatedProperties of one schema closes the struct of the properties that it and its references declare
+    const auto closed = generate(R"({
+        "$defs": {"Base": {"type": "object", "properties": {"id": {"type": "integer"}}}},
+        "$ref": "#/$defs/Base",
+        "properties": {"name": {"type": "string"}},
+        "unevaluatedProperties": false
+    })", {});
+    EXPECT_EQ(warnings(closed), "");
+    EXPECT_TRUE(has(closed.code, "struct Root\n{\n    std::optional<std::string> name;\n"
+                                 "    std::optional<std::int64_t> id;\n};\n"));
+    EXPECT_TRUE(has(closed.code, "yyjson::annotations<Root> = yyjson::annotate(\n"
+                                 "    yyjson::additional_properties(false));\n"));
+    EXPECT_TRUE(has(closed.code, "    yyjson::schema_name(\"Base\"),\n    yyjson::additional_properties(true));\n"));
+
+    // a schema of unevaluated properties is the value of the extra keys; beside additionalProperties it adds nothing
+    const auto extra = generate(R"({"type": "object", "properties": {"id": {"type": "integer"}},
+                                    "unevaluatedProperties": {"type": "string"}})", {});
+    EXPECT_EQ(warnings(extra), "");
+    EXPECT_TRUE(has(extra.code, "    std::map<std::string, std::string> extra;\n"));
+    const auto both = generate(R"({"type": "object", "properties": {"id": {"type": "integer"}},
+                                   "additionalProperties": true, "unevaluatedProperties": false})", {});
+    EXPECT_EQ(warnings(both), "");
+    EXPECT_TRUE(has(both.code, "    yyjson::additional_properties(true));\n"));
+
+    // beside oneOf, each alternative is closed over the properties of the base and its own
+    const auto alternatives = [](std::string_view kw) {
+        return R"({"type": "object", "properties": {"id": {"type": "integer"}}, "unevaluatedProperties": false, ")" +
+               std::string(kw) + R"(": [
+            {"properties": {"a": {"type": "integer"}}, "required": ["a"]},
+            {"properties": {"b": {"type": "string"}}, "required": ["b"]}
+        ]})";
+    };
+    const auto one = generate(alternatives("oneOf"), {});
+    EXPECT_EQ(warnings(one), "");
+    EXPECT_TRUE(has(one.code, "using Root = yyjson::one_of<RootOption1, RootOption2>;\n"));
+    EXPECT_TRUE(has(one.code, "struct RootOption1\n{\n    std::optional<std::int64_t> id;\n    std::int64_t a;\n};\n"));
+    EXPECT_TRUE(has(one.code, "yyjson::annotations<RootOption2> = yyjson::annotate(\n"
+                              "    yyjson::additional_properties(false),\n"));
+
+    // anyOf can match several subschemas, whose properties all count: the keyword is dropped
+    const auto any = generate(alternatives("anyOf"), {});
+    EXPECT_EQ(warnings(any), "#: `unevaluatedProperties` beside `anyOf` whose subschemas evaluate properties is not "
+                             "supported; it is ignored\n");
+    EXPECT_FALSE(has(any.code, "additional_properties(false)"));
+    EXPECT_THROW(generate(alternatives("anyOf"), {.strict = true}), cpp_yyjson_codegen::error);
+
+    // keywords whose evaluation depends on the value, and references that cannot be read
+    const auto conditional = generate(R"({"type": "object", "properties": {"id": {"type": "integer"}},
+                                          "unevaluatedProperties": false,
+                                          "if": {"required": ["id"]}, "then": {"properties": {"x": true}}})", {});
+    EXPECT_TRUE(has(warnings(conditional), "#: `unevaluatedProperties` beside `if`, `then`, `else`, "
+                                           "`dependentSchemas`, `$dynamicRef` or `$recursiveRef` is not supported; "
+                                           "it is ignored\n"));
+    const auto unread = generate(R"({"type": "object", "$ref": "other.json", "unevaluatedProperties": false})", {});
+    EXPECT_TRUE(has(warnings(unread), "#: `unevaluatedProperties` beside a reference that cannot be read is not "
+                                      "supported; it is ignored\n"));
+
+    // unevaluatedItems ends a tuple, or is dropped beside `contains`
+    const auto items = generate(R"({"type": "object", "properties": {
+        "p": {"type": "array", "prefixItems": [{"type": "integer"}, {"type": "integer"}], "unevaluatedItems": false},
+        "c": {"type": "array", "prefixItems": [{"type": "integer"}], "contains": {"type": "integer"},
+              "unevaluatedItems": false}}})", {});
+    EXPECT_TRUE(has(items.code, "    yyjson::field(\"p\", yyjson::max_items(2))"));
+    EXPECT_TRUE(has(warnings(items), "#/properties/c: `unevaluatedItems` beside `contains` is not supported; it is "
+                                     "ignored\n"));
+
+    // draft-07 has no unevaluated keywords
+    const auto draft7 = generate(R"({"$schema": "http://json-schema.org/draft-07/schema#", "type": "object",
+                                     "properties": {"a": {"type": "integer"}}, "unevaluatedProperties": false})", {});
+    EXPECT_EQ(warnings(draft7), "#: draft-07 has no `unevaluatedProperties`; it is ignored\n");
+    EXPECT_TRUE(has(draft7.code, "    yyjson::additional_properties(true));\n"));
+}
+
 TEST(Codegen, MaxAlternatives)
 {
     // variants of more alternatives than the limit, counting null, are yyjson::value; their structs stay

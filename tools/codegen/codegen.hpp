@@ -790,9 +790,8 @@ namespace cpp_yyjson_codegen
         }
 
         // the keywords that the generator does not support and leaves out of the C++ type, with a warning
-        inline constexpr auto ignored_keys = std::array<std::string_view, 9>{
-            "if",          "then", "else", "not", "dependentSchemas", "unevaluatedProperties", "unevaluatedItems",
-            "$dynamicRef", "$recursiveRef"};
+        inline constexpr auto ignored_keys = std::array<std::string_view, 7>{
+            "if", "then", "else", "not", "dependentSchemas", "$dynamicRef", "$recursiveRef"};
         inline bool is_ignored_key(std::string_view k)
         {
             return std::ranges::find(ignored_keys, k) != ignored_keys.end();
@@ -814,7 +813,7 @@ namespace cpp_yyjson_codegen
                 "pattern",        "format",        "minimum",
                 "maximum",        "exclusiveMinimum", "exclusiveMaximum",
                 "multipleOf",     "allOf",         "anyOf",
-                "oneOf"};
+                "oneOf",          "unevaluatedProperties", "unevaluatedItems"};
             return keys.contains(k);
         }
 
@@ -1018,12 +1017,19 @@ namespace cpp_yyjson_codegen
             }
 
             // rewrites the references of a file to their canonical form, and drops the keywords beside a reference
-            // of draft-07, which ignores them; `names` tells that `j` maps names to schemas, as `properties` does
+            // of draft-07, which ignores them, and the keywords that draft-07 does not have; `names` tells that `j`
+            // maps names to schemas, as `properties` does
             void prepare(json& j, const std::string& key, const std::string& id, bool draft07, const std::string& loc,
                          bool names = false)
             {
                 if (j.is_object())
                 {
+                    if (draft07 && !names)
+                        std::erase_if(j.members, [&](const auto& m) {
+                            if (m.first != "unevaluatedProperties" && m.first != "unevaluatedItems") return false;
+                            warn(loc, "draft-07 has no `" + m.first + "`; it is ignored");
+                            return true;
+                        });
                     if (auto* r = const_cast<json*>(j.find("$ref")); !names && r != nullptr && r->is_string())
                     {
                         r->text = canonical_ref(r->text, key, id);
@@ -1217,6 +1223,157 @@ namespace cpp_yyjson_codegen
                 return s;
             }
 
+            // What the in-place applicators of a schema (the schema, `allOf`, `$ref`) evaluate, for
+            // `unevaluatedProperties` (`items` false) or `unevaluatedItems` (`items` true).  The generator merges
+            // these into one schema, so the keyword becomes `additionalProperties` / `items` of the merged schema.
+            struct evaluation_scope
+            {
+                bool all = false;  // `additionalProperties` / `items`, or another unevaluated keyword, evaluates all
+                bool opaque = false;      // `if`, `dependentSchemas`, `$dynamicRef`, ...: not followed by the generator
+                bool unresolved = false;  // a reference that the generator cannot follow
+                bool contains = false;
+                std::vector<const json*> layouts;  // `patternProperties` / `prefixItems`, of which merge keeps one
+                std::size_t lists = 0;             // `anyOf` / `oneOf` whose subschemas evaluate
+                bool any = false;                  // one of them is `anyOf`
+            };
+
+            static bool evaluating_key(std::string_view k, bool items)
+            {
+                if (k == "if" || k == "then" || k == "else" || k == "$dynamicRef" || k == "$recursiveRef") return true;
+                if (items)
+                    return k == "prefixItems" || k == "items" || k == "additionalItems" || k == "contains" ||
+                           k == "unevaluatedItems";
+                return k == "properties" || k == "patternProperties" || k == "additionalProperties" ||
+                       k == "unevaluatedProperties" || k == "dependentSchemas" || k == "dependencies";
+            }
+
+            // whether a schema evaluates properties / items through any applicator
+            bool evaluates(const json& s, bool items, std::set<const json*>& seen, const std::string& loc)
+            {
+                if (!s.is_object() || !seen.insert(&s).second) return false;
+                for (const auto& [k, v] : s.members)
+                {
+                    if (evaluating_key(k, items))
+                    {
+                        if (k != "properties" || (v.is_object() && !v.members.empty())) return true;
+                    }
+                    else if (k == "allOf" || k == "anyOf" || k == "oneOf")
+                    {
+                        if (v.is_array() &&
+                            std::ranges::any_of(v.items, [&](const json& e) { return evaluates(e, items, seen, loc); }))
+                            return true;
+                    }
+                    else if (k == "$ref")
+                    {
+                        const auto* t = resolve(v, loc);
+                        if (t == nullptr || evaluates(*t, items, seen, loc)) return true;
+                    }
+                }
+                return false;
+            }
+
+            void scan_scope(const json& s, bool items, bool top, evaluation_scope& sc, std::set<const json*>& seen,
+                            const std::string& loc)
+            {
+                if (!s.is_object() || !seen.insert(&s).second) return;
+                const auto* own = items ? "unevaluatedItems" : "unevaluatedProperties";
+                for (const auto& [k, v] : s.members)
+                {
+                    if (k == own)
+                    {
+                        if (!top && !(v.is_bool() && !v.b)) sc.all = true;
+                    }
+                    else if (k == "if" || k == "then" || k == "else" || k == "$dynamicRef" || k == "$recursiveRef" ||
+                             (!items && (k == "dependentSchemas" || (k == "dependencies" && v.is_object() &&
+                                                                     std::ranges::any_of(v.members, [](const auto& m) {
+                                                                         return !m.second.is_array();
+                                                                     })))))
+                        sc.opaque = true;
+                    else if (items ? k == "additionalItems" || (k == "items" && !v.is_array())
+                                   : k == "additionalProperties")
+                        sc.all = true;
+                    else if (items ? k == "prefixItems" || (k == "items" && v.is_array()) : k == "patternProperties")
+                    {
+                        if (std::ranges::none_of(sc.layouts, [&](const json* x) { return equal(*x, v); }))
+                            sc.layouts.push_back(&v);
+                    }
+                    else if (items && k == "contains")
+                        sc.contains = true;
+                    else if (k == "allOf" && v.is_array())
+                    {
+                        for (const auto& e : v.items) scan_scope(e, items, false, sc, seen, loc);
+                    }
+                    else if (k == "$ref")
+                    {
+                        if (const auto* t = resolve(v, loc))
+                            scan_scope(*t, items, false, sc, seen, loc);
+                        else
+                            sc.unresolved = true;
+                    }
+                    else if ((k == "anyOf" || k == "oneOf") && v.is_array())
+                    {
+                        if (std::ranges::any_of(v.items, [&](const json& e) {
+                                auto visited = std::set<const json*>();
+                                return evaluates(e, items, visited, loc);
+                            }))
+                        {
+                            ++sc.lists;
+                            sc.any = sc.any || k == "anyOf";
+                        }
+                    }
+                }
+            }
+
+            // `unevaluatedProperties` / `unevaluatedItems` of `s`, whose in-place applicators are merged into `base`:
+            // as `additionalProperties` / `items` of `base` when that reads every valid value, kept for the
+            // alternatives of the one `oneOf` whose subschemas evaluate (each alternative settles it again), else
+            // dropped, which reads more than the schema accepts
+            void settle_unevaluated(const json& s, json& base, bool items, const std::string& loc)
+            {
+                const auto* key = items ? "unevaluatedItems" : "unevaluatedProperties";
+                const auto* u = base.find(key);
+                if (u == nullptr) return;
+                const auto drop = [&](std::string why) {
+                    if (!why.empty()) warn(loc, "`" + std::string(key) + "` " + why + "; it is ignored");
+                    std::erase_if(base.members, [&](const auto& m) { return m.first == key; });
+                };
+                const auto types = type_list(base);
+                if (adds_nothing(*u) || base.has(items ? "items" : "additionalProperties") ||
+                    (!types.empty() && std::ranges::find(types, items ? "array" : "object") == types.end()))
+                    return drop("");
+                auto sc = evaluation_scope();
+                auto seen = std::set<const json*>();
+                scan_scope(s, items, true, sc, seen, loc);
+                if (sc.all) return drop("");
+                if (sc.opaque)
+                    return drop("beside `if`, `then`, `else`, " +
+                                std::string(items ? "" : "`dependentSchemas`, ") +
+                                "`$dynamicRef` or `$recursiveRef` is not supported");
+                if (sc.unresolved) return drop("beside a reference that cannot be read is not supported");
+                if (sc.contains) return drop("beside `contains` is not supported");
+                if (sc.layouts.size() > 1)
+                    return drop(std::string("beside several `") + (items ? "prefixItems" : "patternProperties") +
+                                "` is not supported");
+                if (sc.lists == 0)
+                {
+                    auto v = *u;
+                    drop("");
+                    base.set(items ? "items" : "additionalProperties", std::move(v));
+                    return;
+                }
+                auto seen_one = std::set<const json*>();
+                const auto evaluating = [&](const json& e) { return evaluates(e, items, seen_one, loc); };
+                const auto* one = base.find("oneOf");
+                const auto* any = base.find("anyOf");
+                if (sc.lists == 1 && !sc.any && one != nullptr && one->is_array() &&
+                    std::ranges::any_of(one->items, evaluating) &&
+                    (any == nullptr || required_groups_of(base, "anyOf")))
+                    return;
+                drop(sc.any && sc.lists == 1 ? "beside `anyOf` whose subschemas evaluate " +
+                                                   std::string(items ? "items" : "properties") + " is not supported"
+                                             : "beside several `anyOf` / `oneOf` is not supported");
+            }
+
             const json* normalize_full(const json* s, const std::string& loc) { return normalize(deref(s, loc), loc); }
 
             // merges allOf, and $ref with sibling keywords, into one schema
@@ -1228,7 +1385,8 @@ namespace cpp_yyjson_codegen
                 const auto* items = s->find("items");
                 const auto legacy =
                     (items != nullptr && items->is_array()) || s->has("additionalItems") || s->has("dependencies");
-                if (!has_all && !ref_siblings && !legacy) return s;
+                const auto unevaluated = s->has("unevaluatedProperties") || s->has("unevaluatedItems");
+                if (!has_all && !ref_siblings && !legacy && !unevaluated) return s;
                 if (const auto it = normalized_.find(s); it != normalized_.end()) return it->second;
                 if (!normalizing_.insert(s).second)
                 {
@@ -1293,6 +1451,8 @@ namespace cpp_yyjson_codegen
                     if (const auto* t = resolve(*ref, loc)) base = merge(base, *normalize_full(t, loc), loc);
                 if (all != nullptr && !all->is_array()) warn(loc, "`allOf` is not an array");
                 for (const auto& [e, l] : parts) base = merge(base, *normalize_full(e, l), l);
+                settle_unevaluated(*s, base, false, loc);
+                settle_unevaluated(*s, base, true, loc);
                 const auto* r = store(std::move(base));
                 normalizing_.erase(s);
                 return normalized_[s] = r;
@@ -1394,7 +1554,7 @@ namespace cpp_yyjson_codegen
                                 req.items.push_back(e);
                         r.set(k, std::move(req));
                     }
-                    else if (k == "additionalProperties")
+                    else if (k == "additionalProperties" || k == "unevaluatedProperties" || k == "unevaluatedItems")
                     {
                         if (av->is_bool() || bv.is_bool())
                             r.set(k, merge(*av, bv, loc));
