@@ -661,12 +661,14 @@ namespace cpp_yyjson_codegen
             // the level of `contains` over elements of yyjson::value or yyjson::object: yyjson::is_type<T>, an index
             // into the types of the generator, or -1
             int type_test = -1;
+            // yyjson::not_(...) of the value: the value is rejected when every setting of an entry holds
+            std::vector<settings> negated;
 
             [[nodiscard]] bool empty() const
             {
                 return constraints.empty() && !min_items && !max_items && !unique && items.empty() &&
                        contains.empty() && property_names.empty() && additional.empty() && prefix.empty() &&
-                       type_test < 0;
+                       type_test < 0 && negated.empty();
             }
         };
 
@@ -978,7 +980,8 @@ namespace cpp_yyjson_codegen
             // than the schema allows; type_of() counts a call again for a schema typed so before (`loose_`)
             std::size_t warn_calls_ = 0;
             std::set<const json*> loose_;
-            std::vector<ctype> type_tests_;  // the types of yyjson::is_type<T> in `contains`: settings::type_test
+            std::vector<ctype> type_tests_;       // the types of yyjson::is_type<T>: settings::type_test
+            std::set<const json*> handled_nots_;  // the value-level `not` that type_body() took or warned about
 
             // the key that a warning shows for the URI of a document: "" for the root, the path for a file
             std::map<std::string, std::string> loc_keys_;
@@ -1673,6 +1676,10 @@ namespace cpp_yyjson_codegen
                     s->members, [](const auto& m) { return is_condition_key(m.first) && m.first != "$conditions"; });
                 if (!has_all && !ref_siblings && !legacy && !unevaluated && !conditional) return s;
                 if (const auto it = normalized_.find(s); it != normalized_.end()) return it->second;
+                // `not` of a schema that accepts every value accepts no value
+                if (const auto* nt = s->find("not");
+                    nt != nullptr && (nt->is_bool() || nt->is_object()) && adds_nothing(*nt))
+                    return normalized_[s] = store(json::boolean_of(false));
                 if (!normalizing_.insert(s).second)
                 {
                     warn(loc, "`allOf` refers to itself; the schema is read as any JSON value");
@@ -1682,6 +1689,17 @@ namespace cpp_yyjson_codegen
                 for (const auto& [k, v] : s->members)
                     if (k != "allOf" && k != "$ref") base.members.emplace_back(k, v);
                 upgrade(base);
+                // `not` of `not` is the inner schema, a part of allOf; not beside unevaluated*, for which the keywords
+                // inside `not` evaluate nothing
+                const json* twice = nullptr;
+                if (const auto* nt = s->find("not");
+                    !unevaluated && nt != nullptr && nt->is_object() && nt->has("not") &&
+                    std::ranges::all_of(nt->members,
+                                        [](const auto& m) { return m.first == "not" || is_metadata_key(m.first); }))
+                {
+                    twice = nt->find("not");
+                    base.erase("not");
+                }
                 collect_conditions(base, loc);
                 const auto* all = s->find("allOf");
                 // The elements of allOf that give the type something.  The others give metadata, which the base
@@ -1702,6 +1720,7 @@ namespace cpp_yyjson_codegen
                                 if (is_metadata_key(k) && !base.has(k)) base.set(k, v);
                         }
                     }
+                if (twice != nullptr && !adds_nothing(*twice)) parts.emplace_back(twice, loc + "/not/not");
                 // {"allOf": [{"$ref": ...}]} with metadata only, or with a `const` that the referred schema already
                 // fixes, as an enumeration of one value: keep the reference to the named type
                 const auto keeps_ref = [&] {
@@ -2301,6 +2320,7 @@ namespace cpp_yyjson_codegen
                 };
                 for (const auto& c : list.items)
                 {
+                    if (const auto* nt = c.find("not"); nt != nullptr && handled_nots_.contains(nt)) continue;
                     const auto* l = c.find("$loc");
                     const auto cloc = l != nullptr && l->is_string() ? l->text : std::string();
                     const auto* kw = c.has("if") ? "if" : c.has("not") ? "not" : "dependentSchemas";
@@ -2343,6 +2363,257 @@ namespace cpp_yyjson_codegen
                     default:
                         return false;
                 }
+            }
+
+            // whether reading a JSON value into a C++ type succeeds, as far as the generator tells
+            enum class fit : std::uint8_t
+            {
+                no,
+                unknown,  // it depends on `pattern` or `contains`, which the generator does not check
+                yes
+            };
+
+            // how much of the values of one JSON kind a subschema accepts
+            enum class reach : std::uint8_t
+            {
+                none,
+                some,  // or the generator cannot tell
+                all
+            };
+
+            // How much of the values of the JSON kind `kind` the subschema `sub` accepts: "null", "boolean", "object",
+            // "array", "number", "integer" or "string"; "number" takes integers too
+            reach reach_of(const json* sub, std::string_view kind, const std::string& loc, int depth = 0)
+            {
+                static const auto opaque = std::set<std::string_view>{"oneOf",
+                                                                      "allOf",
+                                                                      "$ref",
+                                                                      "$dynamicRef",
+                                                                      "$recursiveRef",
+                                                                      "unevaluatedProperties",
+                                                                      "unevaluatedItems",
+                                                                      "if",
+                                                                      "then",
+                                                                      "else",
+                                                                      "not",
+                                                                      "dependentSchemas"};
+                static const auto string_keys =
+                    std::set<std::string_view>{"minLength", "maxLength", "pattern", "format"};
+                static const auto number_keys = std::set<std::string_view>{"minimum", "maximum", "exclusiveMinimum",
+                                                                           "exclusiveMaximum", "multipleOf"};
+                static const auto array_keys =
+                    std::set<std::string_view>{"items",    "prefixItems", "additionalItems", "contains",   "minItems",
+                                               "maxItems", "uniqueItems", "minContains",     "maxContains"};
+                static const auto object_keys = std::set<std::string_view>{
+                    "properties",    "required",      "additionalProperties", "patternProperties",
+                    "minProperties", "maxProperties", "propertyNames",        "dependentRequired"};
+                const auto of_kind = [&](std::string_view k) {
+                    if (kind == "string") return string_keys.contains(k);
+                    if (kind == "number" || kind == "integer") return number_keys.contains(k);
+                    if (kind == "array") return array_keys.contains(k);
+                    if (kind == "object") return object_keys.contains(k);
+                    return false;
+                };
+                const auto in_kind = [&](const json& v) {
+                    if (kind == "null") return v.is_null();
+                    if (kind == "boolean") return v.is_bool();
+                    if (kind == "object") return v.is_object();
+                    if (kind == "array") return v.is_array();
+                    if (kind == "string") return v.is_string();
+                    if (kind == "integer") return v.is_number() && v.is_integral();
+                    return v.is_number();
+                };
+                const auto values = [&](std::span<const json> vs) {
+                    const auto n = std::ranges::count_if(vs, in_kind);
+                    if (n == 0) return reach::none;
+                    // the one value of null, both values of boolean
+                    if (kind == "null") return reach::all;
+                    if (kind == "boolean" &&
+                        std::ranges::any_of(vs, [](const json& v) { return v.is_bool() && v.b; }) &&
+                        std::ranges::any_of(vs, [](const json& v) { return v.is_bool() && !v.b; }))
+                        return reach::all;
+                    return reach::some;
+                };
+                const auto* n = normalize_full(sub, loc);
+                if (n->is_bool()) return n->b ? reach::all : reach::none;
+                if (!n->is_object() || depth > 8) return reach::some;
+                auto r = reach::all;
+                for (const auto& [k, v] : n->members)
+                {
+                    if (is_metadata_key(k)) continue;
+                    if (k == "type")
+                    {
+                        const auto types = type_list(*n);
+                        const auto has = [&](std::string_view x) { return std::ranges::find(types, x) != types.end(); };
+                        r = std::min(r, has(kind) || (kind == "integer" && has("number")) ? reach::all
+                                        : kind == "number" && has("integer")              ? reach::some
+                                                                                          : reach::none);
+                    }
+                    else if (k == "const")
+                        r = std::min(r, values(std::span(&v, 1)));
+                    else if (k == "enum")
+                        r = std::min(r, v.is_array() ? values(v.items) : reach::some);
+                    else if (k == "anyOf" && v.is_array())
+                    {
+                        auto any = reach::none;
+                        for (std::size_t i = 0; i < v.items.size(); ++i)
+                            any = std::max(any,
+                                           reach_of(&v.items[i], kind, loc + "/anyOf/" + std::to_string(i), depth + 1));
+                        r = std::min(r, any);
+                    }
+                    else if (k == "$conditions")
+                    {
+                        // `not` of `not`
+                        const auto* c = v.is_array() && v.items.size() == 1 ? &v.items[0] : nullptr;
+                        const auto* inner = c != nullptr ? c->find("not") : nullptr;
+                        if (inner == nullptr || std::ranges::any_of(c->members, [](const auto& m) {
+                                return m.first != "not" && m.first != "$loc";
+                            }))
+                            r = std::min(r, reach::some);
+                        else
+                        {
+                            const auto* l = c->find("$loc");
+                            const auto x = reach_of(inner, kind, (l != nullptr ? l->text : loc) + "/not", depth + 1);
+                            r = std::min(r, x == reach::all    ? reach::none
+                                            : x == reach::none ? reach::all
+                                                               : reach::some);
+                        }
+                    }
+                    else if (opaque.contains(k) || of_kind(k))
+                        r = std::min(r, reach::some);
+                    if (r == reach::none) break;
+                }
+                return r;
+            }
+
+            void expand_not(const json* sub, const std::string& nloc,
+                            std::vector<std::pair<const json*, std::string>>& out, int depth = 0)
+            {
+                const auto* n = normalize_full(sub, nloc);
+                const auto* any = n->is_object() ? n->find("anyOf") : nullptr;
+                if (depth < 8 && any != nullptr && any->is_array() &&
+                    std::ranges::all_of(
+                        n->members, [](const auto& m) { return m.first == "anyOf" || is_metadata_key(m.first); }))
+                {
+                    for (std::size_t i = 0; i < any->items.size(); ++i)
+                        expand_not(&any->items[i], nloc + "/anyOf/" + std::to_string(i), out, depth + 1);
+                    return;
+                }
+                out.emplace_back(sub, nloc);
+            }
+
+            // The value-level `not` of the normalized schema `s`: the subschemas of the entries of "$conditions" that
+            // hold `not`, with their locations.  `not` of anyOf is a `not` of each subschema.  The entries count as
+            // handled (handled_nots_).
+            std::vector<std::pair<const json*, std::string>> value_nots(const json& s)
+            {
+                auto out = std::vector<std::pair<const json*, std::string>>();
+                const auto* list = s.find("$conditions");
+                if (list == nullptr || !list->is_array()) return out;
+                for (const auto& c : list->items)
+                    if (const auto* nt = c.find("not"); nt != nullptr && !c.has("if"))
+                    {
+                        handled_nots_.insert(nt);
+                        const auto* l = c.find("$loc");
+                        expand_not(nt, (l != nullptr && l->is_string() ? l->text : std::string()) + "/not", out);
+                    }
+                return out;
+            }
+
+            // yyjson::not_(yyjson::is_type<T>) on `r`, with T the type of `sub` for values of `kind` (any kind when
+            // empty); left out with a warning when T reads more than `sub` accepts
+            void add_type_test(typed& r, const json* sub, const std::string& nloc, const std::string& hint,
+                               std::string_view kind)
+            {
+                if (!kind.empty())
+                    if (const auto* n = normalize_full(sub, nloc); n->is_object())
+                    {
+                        auto copy = *n;
+                        copy.set("type", json::string_of(kind));
+                        sub = store_merged(std::move(copy));
+                    }
+                const auto calls = warn_calls_;
+                auto t = type_of(sub, nloc, hint + "Not");
+                if (warn_calls_ != calls || (t.t.k == tk::any && t.s.empty()))
+                {
+                    warn(nloc, "`not` of a schema that no C++ type expresses exactly is not supported and is ignored");
+                    return;
+                }
+                auto s = settings();
+                s.type_test = static_cast<int>(type_tests_.size());
+                type_tests_.push_back(constrained(std::move(t)));
+                r.s.negated.push_back(std::move(s));
+            }
+
+            // the value-level `not` of a value read as `r`, of the JSON kind `kind` of the schema
+            void add_nots(typed& r, std::string_view kind, const std::vector<std::pair<const json*, std::string>>& nots,
+                          const std::string& hint)
+            {
+                for (const auto& [sub, nloc] : nots)
+                {
+                    if (reach_of(sub, kind, nloc) != reach::some) continue;
+                    const auto drop = [&]() {
+                        warn(nloc,
+                             "`not` cannot be expressed on a value of type " + std::string(kind) + "; it is ignored");
+                    };
+                    const auto& t = r.t;
+                    if (t.k == tk::object || t.k == tk::any)
+                    {
+                        add_type_test(r, sub, nloc, hint, kind);
+                        continue;
+                    }
+                    // element trees are not settings of yyjson::not_
+                    const auto* n = normalize_full(sub, nloc);
+                    const auto any_key = [&](std::initializer_list<std::string_view> keys) {
+                        return n->is_object() && std::ranges::any_of(keys, [&](auto k) { return n->has(k); });
+                    };
+                    if ((t.k == tk::vector || t.k == tk::tuple) &&
+                        any_key({"items", "prefixItems", "contains", "uniqueItems", "minContains", "maxContains"}))
+                    {
+                        drop();
+                        continue;
+                    }
+                    if (t.k == tk::map && any_key({"additionalProperties", "propertyNames"}))
+                    {
+                        drop();
+                        continue;
+                    }
+                    const auto calls = warn_calls_;
+                    auto set = settings_for(*sub, t, nloc);
+                    if (!set || set->empty() || warn_calls_ != calls)
+                        drop();
+                    else
+                        r.s.negated.push_back(std::move(*set));
+                }
+            }
+
+            // the type of a schema without a type whose `not` tells the values it rejects: yyjson::value with
+            // yyjson::not_(yyjson::is_type<T>)
+            typed type_not_any(const std::vector<std::pair<const json*, std::string>>& nots, const std::string& hint)
+            {
+                static constexpr auto kinds =
+                    std::array<std::string_view, 6>{"null", "boolean", "object", "array", "number", "string"};
+                auto r = typed();
+                for (const auto& [sub, nloc] : nots)
+                {
+                    auto all = true;
+                    auto none = true;
+                    for (const auto k : kinds)
+                    {
+                        const auto x = reach_of(sub, k, nloc);
+                        all = all && x == reach::all;
+                        none = none && x == reach::none;
+                    }
+                    if (none) continue;
+                    if (all)
+                    {
+                        warn(nloc,
+                             "`not` rejects every value: the schema accepts no value; it is read as any JSON value");
+                        return {};
+                    }
+                    add_type_test(r, sub, nloc, hint, {});
+                }
+                return r;
             }
 
             // The keys that the conditions of the normalized object schema `s` name, with the locations that name
@@ -2405,22 +2676,61 @@ namespace cpp_yyjson_codegen
                 if ((s->has("anyOf") && !required_groups_of(*s, "anyOf")) ||
                     (s->has("oneOf") && !required_groups_of(*s, "oneOf")))
                     return type_variant(s0, s, loc, hint, named);
-                if (s->has("const")) return type_const(*s, loc);
-                if (s->has("enum")) return type_enum(s0, *s, loc, hint, named);
+                // `not` of the value: a kind whose every value it rejects is left out, and the others take
+                // yyjson::not_ (a struct takes it from conditions_of())
+                const auto nots = value_nots(*s);
+                if (s->has("const") || s->has("enum"))
+                {
+                    if (!nots.empty()) return type_listed_not(s0, *s, nots, loc, hint, named);
+                    return s->has("const") ? type_const(*s, loc) : type_enum(s0, *s, loc, hint, named);
+                }
                 auto types = types_of(*s, loc);
-                const auto nullable = std::erase(types, "null") > 0;
+                auto nullable = std::erase(types, "null") > 0;
+                if (!nots.empty())
+                {
+                    const auto rejected = [&](std::string_view kind) {
+                        return std::ranges::any_of(
+                            nots, [&](const auto& n) { return reach_of(n.first, kind, n.second) == reach::all; });
+                    };
+                    if (types.empty() && !nullable)
+                    {
+                        // a value of one kind is read as that kind, others as yyjson::value with is_type tests
+                        auto left = std::vector<std::string>();
+                        for (const auto* k : {"null", "boolean", "object", "array", "number", "string"})
+                            if (!rejected(k)) left.emplace_back(k);
+                        if (left.size() != 1) return type_not_any(nots, hint);
+                        if (left[0] == "null") return {make(tk::null), {}};
+                        types = std::move(left);
+                    }
+                    if (nullable && rejected("null"))
+                        nullable = false;
+                    else if (nullable)
+                        for (const auto& [sub, nloc] : nots)
+                            if (reach_of(sub, "null", nloc) == reach::some)
+                                warn(nloc, "`not` cannot be expressed on null; it is ignored");
+                    std::erase_if(types, [&](const std::string& k) { return rejected(k); });
+                    if (types.empty() && !nullable)
+                    {
+                        warn(loc,
+                             "`not` rejects every value of the type: the schema accepts no value; it is read as "
+                             "any JSON value");
+                        return {};
+                    }
+                }
                 if (types.empty()) return nullable ? typed{make(tk::null), {}} : typed{};
-                if (types.size() == 1) return type_kind(types[0], s0, *s, loc, hint, named, nullable);
+                if (types.size() == 1) return type_kind(types[0], s0, *s, loc, hint, named, nullable, true, nots);
                 auto alts = std::vector<typed>();
                 if (nullable) alts.push_back({make(tk::monostate), {}});
                 for (const auto& k : types)
-                    alts.push_back(type_kind(k, s0, *s, loc, hint + pascal(k), false, false, false));
+                    alts.push_back(type_kind(k, s0, *s, loc, hint + pascal(k), false, false, false, nots));
                 return make_variant(std::move(alts), loc);
             }
 
-            // `whole`: the type of the kind is the type of the schema, not one alternative of several kinds
+            // `whole`: the type of the kind is the type of the schema, not one alternative of several kinds. `nots`:
+            // the value-level `not` of the schema
             typed type_kind(const std::string& kind, const json* s0, const json& s, const std::string& loc,
-                            const std::string& hint, bool named, bool nullable, bool whole = true)
+                            const std::string& hint, bool named, bool nullable, bool whole = true,
+                            const std::vector<std::pair<const json*, std::string>>& nots = {})
             {
                 auto r = typed();
                 if (kind == "object")
@@ -2455,6 +2765,7 @@ namespace cpp_yyjson_codegen
                     r = {make(tk::boolean), {}};
                 if (r.t.k != tk::vector && r.t.k != tk::map && r.t.k != tk::object && r.t.k != tk::any)
                     scalar_constraints(s, r.t.k, r.s, loc);
+                if (!nots.empty()) add_nots(r, kind, nots, hint);
                 return nullable ? make_nullable(std::move(r)) : r;
             }
 
@@ -3367,7 +3678,11 @@ namespace cpp_yyjson_codegen
                     if (c.has("if"))
                         add_if(c, cloc, fields, rejected, name, out);
                     else if (const auto* nt = c.find("not"))
-                        add_not(*nt, cloc + "/not", fields, rejected, name, out);
+                    {
+                        // a `not` of values of other kinds holds for every object
+                        if (reach_of(nt, "object", cloc + "/not") != reach::none)
+                            add_not(*nt, cloc + "/not", fields, rejected, name, out);
+                    }
                     else if (const auto* d = c.find("dependentSchemas"); d != nullptr && d->is_object())
                         for (const auto& [k, v] : d->members)
                         {
@@ -3996,7 +4311,7 @@ namespace cpp_yyjson_codegen
             static bool described(const settings& s, bool numbers, bool lengths = false)
             {
                 return !s.min_items && !s.max_items && !s.unique && s.items.empty() && s.contains.empty() &&
-                       s.property_names.empty() && s.additional.empty() && s.prefix.empty() &&
+                       s.property_names.empty() && s.additional.empty() && s.prefix.empty() && s.negated.empty() &&
                        std::ranges::all_of(s.constraints, [&](const settings::constraint& c) {
                            const auto& k = c.keyword;
                            return k == "const" || k == "enum" ||
@@ -4536,6 +4851,73 @@ namespace cpp_yyjson_codegen
                                   "leaves out");
                 }
                 return out;
+            }
+
+            // whether the subschema `sub` of a value-level `not` accepts the value `v`
+            fit accepts_value(const json* sub, const json& v, const std::string& nloc)
+            {
+                const auto kind = v.is_null()       ? "null"
+                                  : v.is_bool()     ? "boolean"
+                                  : v.is_object()   ? "object"
+                                  : v.is_array()    ? "array"
+                                  : v.is_string()   ? "string"
+                                  : v.is_integral() ? "integer"
+                                                    : "number";
+                const auto x = reach_of(sub, kind, nloc);
+                if (x != reach::some) return x == reach::all ? fit::yes : fit::no;
+                if (v.is_null() || v.is_object() || v.is_array()) return fit::unknown;
+                const auto k = v.is_string()      ? tk::string
+                               : v.is_bool()      ? tk::boolean
+                               : !v.is_integral() ? tk::f64
+                               : v.num < 9.2e18   ? tk::i64
+                                                  : tk::u64;
+                const auto calls = warn_calls_;
+                const auto set = settings_for(*sub, make(k), nloc);
+                if (!set || warn_calls_ != calls) return fit::unknown;
+                return fits_constraints(v, *set);
+            }
+
+            // the type of `const` / `enum` beside a value-level `not`: the values that `not` rejects are left out
+            typed type_listed_not(const json* s0, const json& s,
+                                  const std::vector<std::pair<const json*, std::string>>& nots, const std::string& loc,
+                                  const std::string& hint, bool named)
+            {
+                const auto* c = s.find("const");
+                const auto* e = s.find("enum");
+                if (c == nullptr && (!e->is_array() || e->items.empty())) return type_enum(s0, s, loc, hint, named);
+                const auto values = c != nullptr ? std::span(c, 1) : std::span(e->items);
+                const auto* keyword = c != nullptr ? "const" : "enum";
+                auto kept = std::vector<json>();
+                for (const auto& v : values)
+                {
+                    auto rejected = false;
+                    for (const auto& [sub, nloc] : nots)
+                    {
+                        const auto f = accepts_value(sub, v, nloc);
+                        if (f == fit::yes)
+                        {
+                            rejected = true;
+                            break;
+                        }
+                        if (f == fit::unknown)
+                            warn(nloc, "whether `not` rejects the value " + dump(v) + " of `" + keyword +
+                                           "` is not known; the value is kept");
+                    }
+                    if (!rejected) kept.push_back(v);
+                }
+                if (kept.empty())
+                {
+                    warn(loc, std::string("`not` rejects every value of `") + keyword +
+                                  "`: the schema accepts no value; it is read as any JSON value");
+                    return {};
+                }
+                if (kept.size() == values.size())
+                    return c != nullptr ? type_const(s, loc) : type_enum(s0, s, loc, hint, named);
+                auto copy = s;
+                copy.erase("const");
+                copy.set("enum", json::array_of(std::move(kept)));
+                const auto* p = store_merged(std::move(copy));
+                return type_enum(s0, *p, loc, hint, named);
             }
 
             typed type_const(const json& s, const std::string& loc)
@@ -5464,7 +5846,7 @@ namespace cpp_yyjson_codegen
             static bool has_type_test(const settings& s)
             {
                 if (s.type_test >= 0) return true;
-                for (const auto* v : {&s.items, &s.contains, &s.property_names, &s.additional, &s.prefix})
+                for (const auto* v : {&s.items, &s.contains, &s.property_names, &s.additional, &s.prefix, &s.negated})
                     for (const auto& c : *v)
                         if (has_type_test(c)) return true;
                 return false;
@@ -5473,7 +5855,7 @@ namespace cpp_yyjson_codegen
             static std::size_t node_count(const settings& s)
             {
                 auto n = std::size_t(1);
-                for (const auto* v : {&s.items, &s.contains, &s.property_names, &s.additional, &s.prefix})
+                for (const auto* v : {&s.items, &s.contains, &s.property_names, &s.additional, &s.prefix, &s.negated})
                     for (const auto& c : *v) n += node_count(c);
                 return n;
             }
@@ -5493,7 +5875,7 @@ namespace cpp_yyjson_codegen
                         for (const auto& v : c.value.items)
                             if (v.is_string()) chars += v.text.size();
                 }
-                for (const auto* v : {&s.items, &s.contains, &s.property_names, &s.additional, &s.prefix})
+                for (const auto* v : {&s.items, &s.contains, &s.property_names, &s.additional, &s.prefix, &s.negated})
                     for (const auto& c : *v)
                     {
                         const auto [n, m] = held_count(c);
@@ -5528,7 +5910,7 @@ namespace cpp_yyjson_codegen
                     }
                     c.text = std::move(text);
                 }
-                for (auto* v : {&s.items, &s.contains, &s.property_names, &s.additional, &s.prefix})
+                for (auto* v : {&s.items, &s.contains, &s.property_names, &s.additional, &s.prefix, &s.negated})
                     for (auto& c : *v) view_strings(c);
             }
 
@@ -6058,7 +6440,7 @@ namespace cpp_yyjson_codegen
             void named_in(const settings& s, std::vector<int>& out) const
             {
                 if (s.type_test >= 0) named_in(type_tests_[s.type_test], out);
-                for (const auto* v : {&s.items, &s.contains, &s.property_names, &s.additional, &s.prefix})
+                for (const auto* v : {&s.items, &s.contains, &s.property_names, &s.additional, &s.prefix, &s.negated})
                     for (const auto& e : *v) named_in(e, out);
             }
 
@@ -6081,14 +6463,6 @@ namespace cpp_yyjson_codegen
             }
 
             // examples
-
-            // whether reading a JSON value into a C++ type succeeds, as far as the generator tells
-            enum class fit : std::uint8_t
-            {
-                no,
-                unknown,  // it depends on `pattern` or `contains`, which the generator does not check
-                yes
-            };
 
             static fit fits_constraints(const json& j, const settings& s)
             {
@@ -6183,7 +6557,22 @@ namespace cpp_yyjson_codegen
                 return r;
             }
 
+            // whether the value `j` reads as `t` and satisfies `s`, with the `yyjson::not_` of `s`
             fit fits(const json& j, const ctype& t, const settings& s) const
+            {
+                auto r = fits_value(j, t, s);
+                if (s.negated.empty() || r == fit::no) return r;
+                if (j.is_null() && (resolved(t).k == tk::optional || is_nullable(t))) return r;
+                for (const auto& n : s.negated)
+                {
+                    const auto inner = n.type_test >= 0 ? fits(j, type_tests_[n.type_test], settings()) : fits(j, t, n);
+                    if (inner == fit::yes) return fit::no;
+                    if (inner == fit::unknown) r = std::min(r, fit::unknown);
+                }
+                return r;
+            }
+
+            fit fits_value(const json& j, const ctype& t, const settings& s) const
             {
                 const auto scalar = [&](bool kind) { return kind ? fits_constraints(j, s) : fit::no; };
                 const auto at = [](const std::vector<settings>& v, std::size_t i) {
@@ -6495,6 +6884,9 @@ namespace cpp_yyjson_codegen
                 if (!s.additional.empty())
                     if (const auto p = render_settings(s.additional[0], elem(), q); !p.empty())
                         out.push_back("yyjson::additional_properties(" + join(p) + ")");
+                for (const auto& n : s.negated)
+                    if (const auto p = render_settings(n, target, q); !p.empty())
+                        out.push_back("yyjson::not_(" + join(p) + ")");
                 return out;
             }
 
@@ -6657,7 +7049,8 @@ namespace cpp_yyjson_codegen
                 // the types of yyjson::is_type<T> in `contains`
                 const auto spell_tests = [&](const auto& self, const settings& s) -> void {
                     if (s.type_test >= 0) (void)spell(type_tests_[s.type_test]);
-                    for (const auto* v : {&s.items, &s.contains, &s.property_names, &s.additional, &s.prefix})
+                    for (const auto* v :
+                         {&s.items, &s.contains, &s.property_names, &s.additional, &s.prefix, &s.negated})
                         for (const auto& e : *v) self(self, e);
                 };
                 for (const auto i : structs)

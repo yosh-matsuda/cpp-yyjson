@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Listing",
+  "type": "object",
+  "properties": {
+    "name": {"type": "string", "not": {"pattern": "^tmp"}},
+    "port": {"type": "integer", "not": {"enum": [0, 22]}},
+    "level": {"type": ["integer", "null"], "not": {"minimum": 10}},
+    "note": {"not": {"type": "null"}},
+    "status": {"enum": ["draft", "published", "deleted"], "not": {"const": "deleted"}},
+    "id": {"type": ["string", "integer"], "not": {"type": "string"}},
+    "tags": {"type": "array", "items": {"type": "string", "not": {"const": ""}}},
+    "price": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "string", "not": {"pattern": "^-"}}]},
+    "owner": {"not": {"required": ["banned"]}}
+  }
+}

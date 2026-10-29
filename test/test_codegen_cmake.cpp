@@ -25,6 +25,7 @@ struct yyjson::pattern_matcher<>
 #include "contains.hpp"
 #include "defaults.hpp"
 #include "invoice.hpp"
+#include "negations.hpp"
 #include "order.hpp"
 #include "patterns.hpp"
 #include "recursion.hpp"
@@ -264,6 +265,26 @@ TEST(CodegenCMake, Conditions)
                              R"({"kind":"poly"})", R"({})", R"({"kind":"circle","radius":1,"width":1,"height":1})",
                              R"({"kind":"rect","width":2})", R"({"kind":"rect","width":2,"height":0})"})
         EXPECT_THROW((void)yyjson::read<model::Shape>(json), yyjson::bad_cast) << json;
+}
+
+TEST(CodegenCMake, ValueNot)
+{
+    // `not` of a value rejects the values that its subschema accepts, removes the kinds that it rejects entirely and
+    // filters `enum`
+    for (const auto* json : {R"({"name":"main","port":80,"level":9,"note":[1],"status":"draft","id":1})",
+                             R"({"tags":["a"],"price":5,"owner":{}})", R"({"price":"5"})", R"({"note":0})"})
+    {
+        const auto listing = yyjson::read<model::Listing>(json, yyjson::strict);
+        EXPECT_EQ(std::string_view(yyjson::write(listing)), std::string_view(json));
+        EXPECT_NO_THROW(yyjson::validate(listing)) << json;
+    }
+    for (const auto* json : {R"({"name":"tmp1"})", R"({"port":22})", R"({"level":10})", R"({"level":null})",
+                             R"({"note":null})", R"({"status":"deleted"})", R"({"id":"1"})", R"({"tags":["a",""]})",
+                             R"({"price":"-5"})", R"({"price":-5})", R"({"owner":{"banned":false}})", R"({"owner":1})"})
+        EXPECT_THROW((void)yyjson::read<model::Listing>(json), yyjson::bad_cast) << json;
+    auto listing = model::Listing();
+    listing.name = "tmp";
+    EXPECT_THROW(yyjson::validate(listing), yyjson::bad_cast);
 }
 
 TEST(CodegenCMake, Contains)
