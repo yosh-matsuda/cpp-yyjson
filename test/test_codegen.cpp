@@ -253,6 +253,15 @@ TEST(Codegen, RecursiveAliases)
     EXPECT_TRUE(has(r.code, "struct P\n{\n    yyjson::indirect<Q> value;\n};\n"));
     EXPECT_TRUE(has(r.code, "struct Q\n{\n    std::optional<P> p;\n};\n"));
 
+    // the field of a transparent struct has no key to rename when a type takes its name
+    const auto named = generate(R"({"type": "object", "properties": {"v": {"$ref": "#/$defs/value"},
+        "t": {"$ref": "#/$defs/T"}}, "$defs": {"value": {"type": "string"},
+        "T": {"anyOf": [{"type": "string"}, {"type": "array", "items": {"$ref": "#/$defs/T"}}]}}})",
+                                {.ns = "ns"});
+    EXPECT_TRUE(has(named.code, "struct T\n{\n    yyjson::any_of<std::string, std::vector<T>> value_;\n};\n"));
+    EXPECT_TRUE(has(named.code, "yyjson::annotations<ns::T> = yyjson::annotate(\n    yyjson::schema_name(\"T\"),\n"
+                                "    yyjson::transparent);"));
+
     // a reference to a schema inside another one names the struct after its place
     const auto inline_ref = generate(R"({"type": "object", "properties": {"overrides": {"type": "array",
         "items": {"type": "object", "properties": {"overrides": {"$ref": "#/properties/overrides"}}}}}})",

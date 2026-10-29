@@ -4334,6 +4334,8 @@ namespace cpp_yyjson_codegen
                         for (auto n = 2; type_names_.contains(m) || used.contains(m); ++n) m = numbered(base, n);
                         used.insert(m);
                         f.member = m;
+                        // the field of a transparent struct has no key, so yyjson::rename has nothing to rename
+                        if (d.transparent) f.key = m;
                     }
                 }
             }
