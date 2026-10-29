@@ -3,6 +3,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <charconv>
 #include <cmath>
@@ -65,6 +66,12 @@ namespace cpp_yyjson_codegen
         // reads the file of a path made from `path` and a reference, or returns std::nullopt; without it, references
         // to other files are read as any JSON value
         std::function<std::optional<std::string>(const std::string&)> load{};
+        // more schemas, read through `load` before the references: a reference to the `$id` of one of them, or to its
+        // path, is resolved in it
+        std::vector<std::string> schemas{};
+        // (prefix, directory): a reference to a URI that starts with the prefix, and is not the `$id` of a schema
+        // read, is read from the directory, with the rest of the URI as a relative path
+        std::vector<std::pair<std::string, std::string>> uri_map{};
     };
 
     struct diagnostic
@@ -923,9 +930,14 @@ namespace cpp_yyjson_codegen
             std::deque<json> store_;                        // schemas built by the generator
             std::map<std::string, const json*> merged_;     // text without `$loc` -> schema in store_
             std::deque<json> files_;                        // schemas of other files
-            std::map<std::string, const json*> documents_;  // key of a reference ("" or a file path) -> schema
-            std::map<std::string, std::string> ids_;        // absolute $id of a file -> its key
-            std::string root_path_;                         // lexically normal path of the schema
+            // schema resources: the base URI of a `$id`, the path of a file, or "" for the root -> the schema
+            std::map<std::string, const json*> resources_;
+            std::set<const json*> resource_roots_;  // schemas that are resources, except the root
+            std::map<std::pair<const json*, std::string>, const json*> anchors_;  // (resource, name) -> schema
+            std::map<const json*, std::string> def_entries_;  // $defs entries of resources other than the root -> key
+            // files read, the schema included, with an absolute base URI: a URI beside that one names a file beside
+            std::vector<std::pair<std::string, std::string>> uri_files_;  // (path, base URI)
+            std::string root_path_;                                       // lexically normal path of the schema
             std::set<std::string> schema_names_;            // schema_name of $defs entries
             std::deque<decl> decls_;
             std::map<const json*, std::string> def_names_;  // $defs entries -> type name
@@ -968,9 +980,14 @@ namespace cpp_yyjson_codegen
             std::set<const json*> loose_;
             std::vector<ctype> type_tests_;  // the types of yyjson::is_type<T> in `contains`: settings::type_test
 
-            void warn(const std::string& loc, std::string msg)
+            // the key that a warning shows for the URI of a document: "" for the root, the path for a file
+            std::map<std::string, std::string> loc_keys_;
+
+            void warn(std::string loc, std::string msg)
             {
                 ++warn_calls_;
+                if (const auto it = loc_keys_.find(loc.substr(0, loc.find('#'))); it != loc_keys_.end())
+                    loc.replace(0, it->first.size(), it->second);
                 if (warned_.emplace(loc, msg).second) warnings_.push_back({loc, std::move(msg)});
             }
 
@@ -1051,109 +1068,239 @@ namespace cpp_yyjson_codegen
                 warn(loc, "the dialect \"" + dialect + "\" is read as JSON Schema 2020-12");
             }
 
-            // a reference as "key#fragment": the key is empty for the schema, the path of another file, or a URI;
-            // `resolve` splits at the last '#', since a path may hold one, and the fragment holds none
-            std::string canonical_ref(std::string_view r, const std::string& key, const std::string& id) const
+            // the parts of a URI without its fragment (RFC 3986)
+            struct uri_parts
+            {
+                std::string scheme;
+                std::optional<std::string> authority;
+                std::string path;
+                std::optional<std::string> query;
+            };
+
+            static uri_parts parse_uri(std::string_view u)
+            {
+                auto p = uri_parts();
+                if (is_absolute_uri(u))
+                {
+                    const auto colon = u.find(':');
+                    p.scheme = u.substr(0, colon);
+                    u.remove_prefix(colon + 1);
+                }
+                if (u.starts_with("//"))
+                {
+                    u.remove_prefix(2);
+                    const auto end = std::min(u.find_first_of("/?"), u.size());
+                    p.authority = std::string(u.substr(0, end));
+                    u.remove_prefix(end);
+                }
+                if (const auto q = u.find('?'); q != std::string_view::npos)
+                {
+                    p.query = std::string(u.substr(q + 1));
+                    u = u.substr(0, q);
+                }
+                p.path = u;
+                return p;
+            }
+
+            static std::string remove_dot_segments(std::string_view in)
+            {
+                auto out = std::string();
+                const auto pop = [&] {
+                    const auto slash = out.rfind('/');
+                    out.erase(slash == std::string::npos ? 0 : slash);
+                };
+                while (!in.empty())
+                {
+                    if (in.starts_with("../"))
+                        in.remove_prefix(3);
+                    else if (in.starts_with("./") || in.starts_with("/./"))
+                        in.remove_prefix(2);
+                    else if (in == "/.")
+                        in = "/";
+                    else if (in.starts_with("/../"))
+                    {
+                        in.remove_prefix(3);
+                        pop();
+                    }
+                    else if (in == "/..")
+                    {
+                        in = "/";
+                        pop();
+                    }
+                    else if (in == "." || in == "..")
+                        in = {};
+                    else
+                    {
+                        const auto end = std::min(in.find('/', in[0] == '/' ? 1 : 0), in.size());
+                        out += in.substr(0, end);
+                        in.remove_prefix(end);
+                    }
+                }
+                return out;
+            }
+
+            static std::string compose_uri(const uri_parts& p)
+            {
+                auto u = p.scheme.empty() ? std::string() : p.scheme + ":";
+                if (p.authority) u += "//" + *p.authority;
+                u += p.path;
+                if (p.query) u += "?" + *p.query;
+                return u;
+            }
+
+            // a reference without its fragment, resolved against a base URI; a URN has no hierarchy, so only a
+            // reference to its fragment stays in it
+            static std::string resolve_uri(std::string_view base, std::string_view r)
+            {
+                auto t = parse_uri(r);
+                if (!t.scheme.empty() || t.authority)
+                {
+                    if (t.scheme.empty()) t.scheme = parse_uri(base).scheme;
+                    t.path = remove_dot_segments(t.path);
+                    return compose_uri(t);
+                }
+                const auto b = parse_uri(base);
+                t.scheme = b.scheme;
+                t.authority = b.authority;
+                if (t.path.empty())
+                {
+                    t.path = b.path;
+                    if (!t.query) t.query = b.query;
+                }
+                else if (t.path[0] == '/')
+                    t.path = remove_dot_segments(t.path);
+                else
+                {
+                    const auto slash = b.path.rfind('/');
+                    t.path = remove_dot_segments(b.authority && b.path.empty()   ? "/" + t.path
+                                                 : slash == std::string::npos ? t.path
+                                                                              : b.path.substr(0, slash + 1) + t.path);
+                }
+                return compose_uri(t);
+            }
+
+            // the key of a reference without its fragment (not empty) from the base of the schema that holds it: a
+            // URI, or a path when neither is a URI, which is "" for the schema itself
+            std::string resolve_key(const std::string& base, std::string_view r) const
+            {
+                if (is_absolute_uri(r) || is_absolute_uri(base)) return resolve_uri(base, r);
+                const auto dir = std::filesystem::path(base.empty() ? root_path_ : base).parent_path().generic_string();
+                auto target = file_key(dir, r);
+                return target == root_path_ ? std::string() : target;
+            }
+
+            // a reference as "key#fragment", the key a URI, a path or "" (see resolve_key); `resolve` splits at the
+            // last '#', since a path may hold one, and the fragment holds none
+            std::string canonical_ref(std::string_view r, const std::string& base) const
             {
                 const auto hash = r.find('#');
-                const auto base = r.substr(0, hash);
+                const auto part = r.substr(0, hash);
                 auto fragment = std::string();
                 if (hash != std::string_view::npos)
                 {
                     for (const auto c : r.substr(hash + 1))
                         fragment += c == '#' ? std::string_view("%23") : std::string_view(&c, 1);
                 }
-                const auto dir = std::filesystem::path(key.empty() ? root_path_ : key).parent_path().generic_string();
-                auto target = std::string();
-                if (base.empty())
-                    target = key;
-                else if (is_absolute_uri(base))
-                {
-                    // a URI under the directory of the $id of the file names a file beside it
-                    const auto slash = id.rfind('/');
-                    if (base == id)
-                        target = key;
-                    else if (slash != std::string::npos && base.starts_with(std::string_view(id).substr(0, slash + 1)))
-                        target = file_key(dir, base.substr(slash + 1));
-                    else
-                        target = std::string(base);
-                }
-                else
-                    target = file_key(dir, base);
-                if (!target.empty() && target == root_path_) target.clear();
-                return target + "#" + fragment;
+                return (part.empty() ? base : resolve_key(base, part)) + "#" + fragment;
             }
 
-            // rewrites the references of a file to their canonical form, and drops the keywords beside a reference
-            // of draft-07, which ignores them, and the keywords that draft-07 does not have; `names` tells that `j`
-            // maps names to schemas, as `properties` does
-            void prepare(json& j, const std::string& key, const std::string& id, bool draft07, const std::string& loc,
-                         bool names = false)
+            static bool is_subschema_key(std::string_view k)
+            {
+                static constexpr auto keys = std::array<std::string_view, 22>{
+                    "allOf",       "anyOf",           "oneOf",         "not",          "if",
+                    "then",        "else",            "prefixItems",   "items",        "additionalItems",
+                    "contains",    "properties",      "patternProperties", "additionalProperties",
+                    "propertyNames", "unevaluatedItems", "unevaluatedProperties", "dependentSchemas",
+                    "dependencies", "$defs",          "definitions",   "contentSchema"};
+                return std::ranges::find(keys, k) != keys.end();
+            }
+
+            // the base of a schema whose own base is `base`
+            std::string base_of(const json& j, const std::string& base) const
+            {
+                const auto* id = j.find("$id");
+                if (id == nullptr || !id->is_string()) return base;
+                const auto part = std::string_view(id->text).substr(0, id->text.find('#'));
+                return part.empty() ? base : resolve_key(base, part);
+            }
+
+            // registers the resources ($id) and anchors of a file and rewrites its references to their canonical form;
+            // drops the keywords beside a reference of draft-07, which ignores them, and the keywords that draft-07 does
+            // not have. `names` tells that `j` maps names to schemas, as `properties` does; `known` that `j` is a
+            // schema under the keywords of schemas, where an `$id` or an anchor counts
+            void prepare(json& j, std::string base, const json* resource, bool draft07, const std::string& loc,
+                         bool names = false, bool known = true)
             {
                 if (j.is_object())
                 {
-                    if (draft07 && !names)
-                        std::erase_if(j.members, [&](const auto& m) {
-                            if (m.first != "unevaluatedProperties" && m.first != "unevaluatedItems") return false;
-                            warn(loc, "draft-07 has no `" + m.first + "`; it is ignored");
-                            return true;
-                        });
-                    if (auto* r = const_cast<json*>(j.find("$ref")); !names && r != nullptr && r->is_string())
+                    if (!names)
                     {
-                        r->text = canonical_ref(r->text, key, id);
-                        if (draft07 && !is_pure_ref(j))
-                        {
-                            auto dropped = std::string();
+                        if (draft07)
                             std::erase_if(j.members, [&](const auto& m) {
-                                if (m.first == "$ref" || is_metadata_key(m.first)) return false;
-                                dropped += (dropped.empty() ? "`" : ", `") + m.first + "`";
+                                if (m.first != "unevaluatedProperties" && m.first != "unevaluatedItems") return false;
+                                warn(loc, "draft-07 has no `" + m.first + "`; it is ignored");
                                 return true;
                             });
-                            warn(loc, "draft-07 ignores the keywords beside `$ref`: " + dropped);
+                        // 2020-12 takes the `$id` of a schema as the base of its `$ref`; draft-07 ignores an `$id`
+                        // beside `$ref`, and names a schema by the fragment of its `$id`
+                        if (const auto* id = j.find("$id");
+                            known && id != nullptr && id->is_string() && !(draft07 && j.has("$ref")))
+                        {
+                            const auto hash = id->text.find('#');
+                            if (!id->text.empty() && hash != 0)
+                            {
+                                base = base_of(j, base);
+                                resource = &j;
+                                resources_.emplace(base, &j);
+                                if (&j != &root_) resource_roots_.insert(&j);
+                            }
+                            if (hash != std::string::npos && hash + 1 < id->text.size() && id->text[hash + 1] != '/')
+                                anchors_.emplace(std::pair(resource, id->text.substr(hash + 1)), &j);
                         }
+                        if (known)
+                            for (const auto* kw : {"$anchor", "$dynamicAnchor"})
+                                if (const auto* a = j.find(kw); a != nullptr && a->is_string())
+                                    anchors_.emplace(std::pair(resource, a->text), &j);
+                        if (auto* r = const_cast<json*>(j.find("$ref")); r != nullptr && r->is_string())
+                        {
+                            r->text = canonical_ref(r->text, base);
+                            if (draft07 && !is_pure_ref(j))
+                            {
+                                auto dropped = std::string();
+                                std::erase_if(j.members, [&](const auto& m) {
+                                    if (m.first == "$ref" || is_metadata_key(m.first)) return false;
+                                    dropped += (dropped.empty() ? "`" : ", `") + m.first + "`";
+                                    return true;
+                                });
+                                warn(loc, "draft-07 ignores the keywords beside `$ref`: " + dropped);
+                            }
+                        }
+                        if (known && resource == &j && &j != &root_)
+                            for (const auto* kw : {"$defs", "definitions"})
+                                if (const auto* d = j.find(kw); d != nullptr && d->is_object())
+                                    for (const auto& [k, v] : d->members) def_entries_.emplace(&v, k);
                     }
                     for (auto& [k, v] : j.members)
-                        if (names || (k != "enum" && k != "const" && k != "default" && k != "examples"))
-                            prepare(v, key, id, draft07, loc + "/" + pointer_token(k),
-                                    !names && (k == "properties" || k == "patternProperties" || k == "$defs" ||
-                                               k == "definitions" || k == "dependentSchemas" ||
-                                               k == "dependencies"));
+                    {
+                        if (names)
+                            prepare(v, base, resource, draft07, loc + "/" + pointer_token(k), false, known);
+                        else if (k != "enum" && k != "const" && k != "default" && k != "examples")
+                            prepare(v, base, resource, draft07, loc + "/" + pointer_token(k),
+                                    k == "properties" || k == "patternProperties" || k == "$defs" ||
+                                        k == "definitions" || k == "dependentSchemas" || k == "dependencies",
+                                    known && is_subschema_key(k));
+                    }
                 }
                 for (std::size_t i = 0; i < j.items.size(); ++i)
-                    prepare(j.items[i], key, id, draft07, loc + "/" + std::to_string(i));
+                    prepare(j.items[i], base, resource, draft07, loc + "/" + std::to_string(i), false, known);
             }
 
-            static std::string absolute_id(const json& doc)
+            // reads a file, registers it under its path and the URI it is read for, and prepares it; nullptr when it
+            // cannot be read, or with the message of `error` when it is not JSON
+            const json* load_file(const std::string& path, const std::string& uri, std::string& error)
             {
-                const auto* id = doc.find("$id");
-                if (id == nullptr || !id->is_string() || !is_absolute_uri(id->text)) return {};
-                return id->text.substr(0, id->text.find('#'));
-            }
-
-            // the schema of a key, read from its file when it is not read yet; nullptr with a warning
-            const json* document(const std::string& key, const std::string& r, const std::string& loc)
-            {
-                if (key.empty()) return &root_;
-                if (const auto it = documents_.find(key); it != documents_.end()) return it->second;
-                if (const auto it = ids_.find(key); it != ids_.end()) return documents_.at(it->second);
-                if (is_absolute_uri(key))
-                {
-                    warn(loc, "the reference \"" + r +
-                                  "\" is a URI that is not the `$id` of a schema read; it is read as any JSON value");
-                    return nullptr;
-                }
-                if (!opts_.load)
-                {
-                    warn(loc, "the reference \"" + r + "\" is not in this document and is read as any JSON value");
-                    return nullptr;
-                }
-                auto text = opts_.load(key);
-                if (!text)
-                {
-                    warn(loc, "the file \"" + key + "\" of the reference \"" + r +
-                                  "\" cannot be read; it is read as any JSON value");
-                    return nullptr;
-                }
+                auto text = opts_.load(path);
+                if (!text) return nullptr;
                 auto doc = json();
                 try
                 {
@@ -1161,36 +1308,109 @@ namespace cpp_yyjson_codegen
                 }
                 catch (const std::exception& e)
                 {
-                    warn(loc, "the file \"" + key + "\" is not valid JSON (" + e.what() +
-                                  "); the reference is read as any JSON value");
+                    error = e.what();
                     return nullptr;
                 }
                 const auto* d = &files_.emplace_back(std::move(doc));
-                documents_[key] = d;
-                check_dialect(*d, key + "#");
-                const auto id = absolute_id(*d);
-                if (!id.empty()) ids_.emplace(id, key);
-                prepare(files_.back(), key, id, is_draft07(*d), key + "#");
+                resources_.emplace(path, d);
+                if (!uri.empty()) resources_.emplace(uri, d);
+                resource_roots_.insert(d);
+                check_dialect(*d, path + "#");
+                const auto base = uri.empty() ? path : uri;
+                const auto b = base_of(*d, base);
+                if (is_absolute_uri(b)) uri_files_.emplace_back(path, b);
+                for (const auto& k : {uri, b})
+                    if (!k.empty() && k != path) loc_keys_.emplace(k, path);
+                prepare(files_.back(), base, d, is_draft07(*d), path + "#");
                 return d;
             }
 
-            // a type name for a schema of another file: its root, or an entry of its $defs
-            void name_target(const json* doc, const json* t, const std::string& key)
+            // the files that a URI may name: under a prefix of `uri_map` (the longest), or beside a file read whose
+            // base URI has the same scheme and authority
+            std::vector<std::string> uri_paths(const std::string& u) const
             {
-                if (doc == &root_ || def_names_.contains(t)) return;
-                if (t == doc)
+                auto paths = std::vector<std::string>();
+                const auto pu = parse_uri(u);
+                const auto* best = static_cast<const std::pair<std::string, std::string>*>(nullptr);
+                for (const auto& m : opts_.uri_map)
+                    if (u.starts_with(m.first) && (best == nullptr || m.first.size() > best->first.size())) best = &m;
+                if (best != nullptr)
                 {
-                    const auto* title = doc->find("title");
-                    const auto stem = std::filesystem::path(key).filename().string();
-                    const auto titled = title != nullptr && title->is_string() && !pascal(title->text).empty();
-                    def_names_[t] =
-                        unique_type_name(titled ? pascal(title->text) : pascal(stem.substr(0, stem.find('.'))));
+                    const auto rest = std::string_view(u).substr(best->first.size());
+                    const auto path = rest.substr(0, rest.find('?'));
+                    if (!path.empty()) paths.push_back(file_key(best->second, path));
+                }
+                for (const auto& [path, base] : uri_files_)
+                {
+                    const auto pb = parse_uri(base);
+                    if (!pu.authority || pb.scheme != pu.scheme || pb.authority != pu.authority) continue;
+                    const auto rel = std::filesystem::path(remove_dot_segments(pu.path))
+                                         .lexically_relative(std::filesystem::path(pb.path).parent_path());
+                    if (rel.empty() || rel == ".") continue;
+                    auto p = file_key(std::filesystem::path(path).parent_path().generic_string(), rel.generic_string());
+                    if (std::ranges::find(paths, p) == paths.end()) paths.push_back(std::move(p));
+                }
+                return paths;
+            }
+
+            // the schema resource of a key, read from its file when it is not read yet; nullptr with a warning
+            const json* document(const std::string& key, const std::string& r, const std::string& loc)
+            {
+                if (const auto it = resources_.find(key); it != resources_.end()) return it->second;
+                auto error = std::string();
+                const auto unusable = [&](const std::string& path) {
+                    if (!error.empty())
+                        warn(loc, "the file \"" + path + "\" is not valid JSON (" + error +
+                                      "); the reference is read as any JSON value");
+                    else
+                        warn(loc, "the file \"" + path + "\" of the reference \"" + r +
+                                      "\" cannot be read; it is read as any JSON value");
+                    return nullptr;
+                };
+                if (!is_absolute_uri(key))
+                {
+                    if (!opts_.load)
+                    {
+                        warn(loc, "the reference \"" + r + "\" is not in this document and is read as any JSON value");
+                        return nullptr;
+                    }
+                    if (const auto* d = load_file(key, "", error)) return d;
+                    return unusable(key);
+                }
+                const auto paths = opts_.load ? uri_paths(key) : std::vector<std::string>();
+                for (const auto& p : paths)
+                {
+                    if (const auto it = resources_.find(p); it != resources_.end())
+                    {
+                        loc_keys_.emplace(key, it->second == &root_ ? std::string() : p);
+                        return resources_.emplace(key, it->second).first->second;
+                    }
+                    if (const auto* d = load_file(p, key, error)) return d;
+                    if (!error.empty()) return unusable(p);
+                }
+                if (!paths.empty()) return unusable(paths.front());
+                warn(loc, "the reference \"" + r +
+                              "\" is a URI that is not the `$id` of a schema read and is not mapped to a file; it is "
+                              "read as any JSON value");
+                return nullptr;
+            }
+
+            // a type name for a schema referred to: an entry of $defs of another resource, or another resource, by
+            // its title or the name of its file
+            void name_target(const json* t, const std::string& key)
+            {
+                if (t == &root_ || def_names_.contains(t)) return;
+                if (const auto it = def_entries_.find(t); it != def_entries_.end())
+                {
+                    name_def(t, it->second);
                     return;
                 }
-                for (const auto* kw : {"$defs", "definitions"})
-                    if (const auto* d = doc->find(kw); d != nullptr && d->is_object())
-                        for (const auto& [k, v] : d->members)
-                            if (&v == t) name_def(t, k);
+                if (!resource_roots_.contains(t)) return;
+                const auto* title = t->find("title");
+                const auto path = is_absolute_uri(key) ? parse_uri(key).path : key;
+                const auto stem = std::filesystem::path(path).filename().string();
+                const auto titled = title != nullptr && title->is_string() && !pascal(title->text).empty();
+                def_names_[t] = unique_type_name(titled ? pascal(title->text) : pascal(stem.substr(0, stem.find('.'))));
             }
 
             void name_def(const json* t, const std::string& k)
@@ -1218,10 +1438,10 @@ namespace cpp_yyjson_codegen
                                           : percent_decode(std::string_view(ref.text).substr(hash + 1));
                 if (!fragment.empty() && fragment[0] != '/')
                 {
-                    if (const auto* a = find_anchor(*doc, fragment))
+                    if (const auto it = anchors_.find(std::pair(doc, fragment)); it != anchors_.end())
                     {
-                        name_target(doc, a, key);
-                        return a;
+                        name_target(it->second, key);
+                        return it->second;
                     }
                     warn(loc, "the anchor \"" + r + "\" is not found");
                     return nullptr;
@@ -1250,27 +1470,8 @@ namespace cpp_yyjson_codegen
                         return nullptr;
                     }
                 }
-                name_target(doc, cur, key);
+                name_target(cur, key);
                 return cur;
-            }
-
-            static const json* find_anchor(const json& j, std::string_view name)
-            {
-                if (j.is_object())
-                {
-                    if (const auto* a = j.find("$anchor"); a != nullptr && a->is_string() && a->text == name) return &j;
-                    // draft-07 names a schema by a fragment in $id
-                    if (const auto* a = j.find("$id");
-                        a != nullptr && a->is_string() && a->text.size() == name.size() + 1 && a->text[0] == '#' &&
-                        std::string_view(a->text).substr(1) == name)
-                        return &j;
-                    for (const auto& [k, v] : j.members)
-                        if (k != "enum" && k != "const" && k != "default" && k != "examples")
-                            if (const auto* f = find_anchor(v, name)) return f;
-                }
-                for (const auto& e : j.items)
-                    if (const auto* f = find_anchor(e, name)) return f;
-                return nullptr;
             }
 
             // follows a chain of references that have only metadata beside them
@@ -6749,8 +6950,25 @@ namespace cpp_yyjson_codegen
                 check_dialect(root_, "#");
                 if (!opts_.path.empty())
                     root_path_ = std::filesystem::path(opts_.path).lexically_normal().generic_string();
-                if (const auto id = absolute_id(root_); !id.empty()) ids_.emplace(id, "");
-                prepare(root_, "", absolute_id(root_), is_draft07(root_), "#");
+                resources_.emplace("", &root_);
+                if (!root_path_.empty()) resources_.emplace(root_path_, &root_);
+                if (const auto b = base_of(root_, ""); !b.empty())
+                {
+                    if (is_absolute_uri(b)) uri_files_.emplace_back(root_path_, b);
+                    loc_keys_.emplace(b, "");
+                }
+                prepare(root_, "", &root_, is_draft07(root_), "#");
+                for (const auto& path : opts_.schemas)
+                {
+                    const auto key = file_key("", path);
+                    if (resources_.contains(key)) continue;
+                    auto error = std::string();
+                    if (!opts_.load)
+                        warn(key + "#", "the schema is not read without a loader");
+                    else if (load_file(key, "", error) == nullptr)
+                        warn(key + "#", error.empty() ? "the schema cannot be read"
+                                                      : "the schema is not valid JSON (" + error + ")");
+                }
                 // a root of metadata and definitions only is a file of definitions and has no type; without
                 // definitions, it accepts any JSON value
                 const auto root_typed =

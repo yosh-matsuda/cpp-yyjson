@@ -1580,9 +1580,10 @@ TEST(Codegen, FileReferences)
         has(r.code, "yyjson::annotations<Point2> = yyjson::annotate(\n    yyjson::additional_properties(true));"));
     const auto w = warnings(r);
     EXPECT_TRUE(has(w, "#/properties/remote: the reference \"https://other.example/x.json\" is a URI that is not the "
-                       "`$id` of a schema read; it is read as any JSON value\n"));
+                       "`$id` of a schema read and is not mapped to a file; it is read as any JSON value\n"));
+    // a relative reference resolves against the `$id` of the root, and the URI is read beside the root's file
     EXPECT_TRUE(has(w, "#/properties/missing: the file \"schemas/missing.json\" of the reference "
-                       "\"schemas/missing.json\" cannot be read; it is read as any JSON value\n"));
+                       "\"https://example.com/schemas/missing.json\" cannot be read; it is read as any JSON value\n"));
     EXPECT_TRUE(has(w, "#/properties/broken: the file \"schemas/broken.json\" is not valid JSON"));
     EXPECT_FALSE(has(w, "is not found"));
     EXPECT_TRUE(has(r.code, "struct Names\n{\n    std::optional<Count> default_;\n};\n"));
@@ -1609,6 +1610,140 @@ TEST(Codegen, FilePaths)
                             options{.path = "a#1/order.json", .load = load});
     EXPECT_EQ(warnings(h), "");
     EXPECT_TRUE(has(h.code, "using S = std::int64_t;\n"));
+}
+
+TEST(Codegen, Ids)
+{
+    // an embedded `$id` is the base of the references inside it, and its $defs are found by pointers into it
+    const auto nested = generate(R"({
+        "$id": "https://example.com/root.json",
+        "type": "object",
+        "properties": {
+            "a": {"$ref": "https://example.com/nested/item.json"},
+            "b": {"$ref": "nested/item.json#/$defs/Inner"}
+        },
+        "$defs": {
+            "Item": {"$id": "nested/item.json", "type": "object", "properties": {"x": {"$ref": "#/$defs/Inner"}},
+                     "$defs": {"Inner": {"type": "integer", "maximum": 5}}},
+            "Inner": {"type": "string"}
+        }
+    })",
+                                 {});
+    EXPECT_EQ(warnings(nested), "");
+    EXPECT_TRUE(has(nested.code, "struct Item\n{\n    std::optional<Inner2> x;\n"));
+    EXPECT_TRUE(has(nested.code, "using Inner2 = std::int64_t;\n"));
+    EXPECT_TRUE(has(nested.code, "    std::optional<Item> a;\n    std::optional<Inner2> b;\n"));
+
+    // an anchor belongs to the resource of its schema
+    const auto anchors = generate(R"({
+        "$id": "http://example.com/root",
+        "type": "object",
+        "properties": {"a": {"$ref": "#foo"}, "b": {"$ref": "child#foo"}},
+        "$defs": {
+            "A": {"$anchor": "foo", "type": "string"},
+            "child": {"$id": "child", "type": "object", "$defs": {"B": {"$anchor": "foo", "type": "integer"}}}
+        }
+    })",
+                                  {});
+    EXPECT_EQ(warnings(anchors), "");
+    EXPECT_TRUE(has(anchors.code, "    std::optional<A> a;\n    std::optional<B> b;\n"));
+    EXPECT_TRUE(has(anchors.code, "using B = std::int64_t;\n"));
+
+    // a URN has no hierarchy; a reference to it with a pointer is found in its schema
+    const auto urn = generate(R"({
+        "$id": "urn:uuid:deadbeef-1234-ffff-ffff-4321feebdaed",
+        "type": "object",
+        "properties": {"a": {"$ref": "urn:uuid:deadbeef-1234-ffff-ffff-4321feebdaed#/$defs/N"}},
+        "$defs": {"N": {"type": "integer"}}
+    })",
+                              {});
+    EXPECT_EQ(warnings(urn), "");
+    EXPECT_TRUE(has(urn.code, "    std::optional<N> a;\n"));
+
+    // an `$id` under a keyword that does not hold schemas is not a schema
+    const auto unknown = generate(R"({
+        "$id": "https://example.com/root.json",
+        "type": "object",
+        "properties": {"a": {"$ref": "https://example.com/hidden.json"}},
+        "x-extra": {"$id": "https://example.com/hidden.json", "type": "integer"}
+    })",
+                                  {});
+    EXPECT_EQ(warnings(unknown), "#/properties/a: the reference \"https://example.com/hidden.json\" is a URI that is "
+                                 "not the `$id` of a schema read and is not mapped to a file; it is read as any JSON "
+                                 "value\n");
+    EXPECT_TRUE(has(unknown.code, "    std::optional<yyjson::value> a;\n"));
+}
+
+TEST(Codegen, RemoteReferences)
+{
+    const auto files = std::map<std::string, std::string>{
+        {"remote/types/count.json",
+         R"({"title": "count", "type": "integer", "minimum": 0, "$defs": {"Small": {"$ref": "small.json"}}})"},
+        {"remote/types/small.json", R"({"type": "integer", "maximum": 9})"},
+        {"lib/common.json",
+         R"({"$id": "https://common.example/common.json", "$defs": {"Name": {"type": "string", "maxLength": 8}}})"},
+        {"schemas/sub/up.json", R"({"type": "object", "properties": {"x": {"$ref": "../../shared/s.json"}}})"},
+        {"shared/s.json", R"({"type": "boolean"})"}};
+    auto read = std::vector<std::string>();
+    const auto load = [&](const std::string& path) -> std::optional<std::string> {
+        read.push_back(path);
+        const auto it = files.find(path);
+        return it == files.end() ? std::nullopt : std::optional(it->second);
+    };
+
+    // a URI under a prefix of uri_map is read from its directory, and relative references in it resolve against it
+    auto mapped = options{.load = load};
+    mapped.uri_map = {{"https://schemas.example/", "remote"}};
+    const auto m = generate(R"({"type": "object", "properties": {
+                                   "c": {"$ref": "https://schemas.example/types/count.json"},
+                                   "s": {"$ref": "https://schemas.example/types/count.json#/$defs/Small"}}})",
+                            mapped);
+    EXPECT_EQ(warnings(m), "");
+    EXPECT_EQ(read, (std::vector<std::string>{"remote/types/count.json", "remote/types/small.json"}));
+    EXPECT_TRUE(has(m.code, "using Count = std::int64_t;\n"));
+    EXPECT_TRUE(has(m.code, "yyjson::field(\"c\", yyjson::minimum(0))"));
+    EXPECT_TRUE(has(m.code, "yyjson::field(\"s\", yyjson::maximum(9))"));
+
+    // a schema of options::schemas is found by its `$id`; one that cannot be read gives a warning
+    read.clear();
+    auto listed = options{.load = load};
+    listed.schemas = {"lib/common.json", "lib/none.json"};
+    const auto l = generate(R"({"type": "object", "properties": {
+                                   "n": {"$ref": "https://common.example/common.json#/$defs/Name"}}})",
+                            listed);
+    EXPECT_EQ(warnings(l), "lib/none.json#: the schema cannot be read\n");
+    EXPECT_EQ(read, (std::vector<std::string>{"lib/common.json", "lib/none.json"}));
+    EXPECT_TRUE(has(l.code, "using Name = std::string;\n"));
+    EXPECT_TRUE(has(l.code, "    std::optional<Name> n;\n"));
+    EXPECT_TRUE(has(l.code, "yyjson::field(\"n\", yyjson::max_length(8))"));
+
+    // a URI beside the `$id` of the root is read beside the root's file, also above its directory, and so are the
+    // references of that file
+    read.clear();
+    const auto beside = generate(R"({"$id": "https://example.com/a/b/root.json", "type": "object",
+                                     "properties": {"u": {"$ref": "../sub/up.json"}}})",
+                                 options{.path = "schemas/x/root.json", .load = load});
+    EXPECT_EQ(warnings(beside), "");
+    EXPECT_EQ(read, (std::vector<std::string>{"schemas/sub/up.json", "shared/s.json"}));
+    EXPECT_TRUE(has(beside.code, "struct Up\n{\n    std::optional<S> x;\n"));
+    EXPECT_TRUE(has(beside.code, "    std::optional<Up> u;\n"));
+
+    // warnings name the root by "#" and a file by its path, not by their `$id` or the URI that was mapped
+    const auto located = generate(R"({"$id": "https://schemas.example/root.json", "type": "object",
+                                      "x-lib": {"E": {"type": "string", "format": "idn-email"}},
+                                      "properties": {"e": {"$ref": "#/x-lib/E"},
+                                                     "f": {"$ref": "types/fmt.json"}}})",
+                                  options{.load = [&](const std::string& path) -> std::optional<std::string> {
+                                      if (path == "remote/types/fmt.json")
+                                          return R"({"$id": "https://other.example/fmt.json", "$defs": {
+                                                     "F": {"type": "string", "format": "idn-hostname"}},
+                                                     "$ref": "#/$defs/F"})";
+                                      return std::nullopt;
+                                  },
+                                          .uri_map = {{"https://schemas.example/", "remote"}}});
+    EXPECT_EQ(warnings(located),
+              "#/x-lib/E: the format \"idn-email\" is not supported and is ignored\n"
+              "remote/types/fmt.json#/$defs/F: the format \"idn-hostname\" is not supported and is ignored\n");
 }
 
 TEST(Codegen, Cpp26)
