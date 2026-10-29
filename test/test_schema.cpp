@@ -758,6 +758,33 @@ inline constexpr auto yyjson::annotations<ContainsConditions> = yyjson::annotate
     yyjson::not_(yyjson::field("deps", yyjson::required, yyjson::contains(yyjson::is_type<CondPoint>),
                                yyjson::min_contains(2))));
 
+// `yyjson::not_` of values as `not`, of `anyOf` when a value has several.
+struct NegatedValues
+{
+    int n = 0;
+    std::optional<std::string> s;
+    std::vector<int> v;
+    yyjson::value any = 0;
+    std::optional<yyjson::value> point;
+    float f = 0;
+    std::map<std::string, int> mp;
+    std::variant<std::monostate, int> nv;
+    yyjson::any_of<yyjson::alt<int, yyjson::not_(yyjson::const_(7))>, std::string> u = 0;
+    std::optional<int> m;
+};
+template <>
+inline constexpr auto yyjson::annotations<NegatedValues> = yyjson::annotate(
+    yyjson::field("n", yyjson::not_(yyjson::minimum(10), yyjson::maximum(19)), yyjson::not_(yyjson::const_(3))),
+    yyjson::field("s", yyjson::not_(yyjson::pattern("^x"))),
+    yyjson::field("v", yyjson::items(yyjson::not_(yyjson::enum_(1, 2)))),
+    yyjson::field("any", yyjson::not_(yyjson::is_type<std::nullptr_t>)),
+    yyjson::field("point", yyjson::not_(yyjson::is_type<CondPoint>)),
+    yyjson::field("f", yyjson::not_(yyjson::const_(0.1))),
+    yyjson::field("mp", yyjson::not_(yyjson::min_items(2))),
+    yyjson::field("nv", yyjson::not_(yyjson::const_(3))),
+    yyjson::if_then_else(yyjson::if_(yyjson::field("n", yyjson::const_(1))),
+                         yyjson::then(yyjson::field("m", yyjson::not_(yyjson::const_(0))))));
+
 // A field that its caster leaves out, which only `yyjson::strict` requires: the struct that holds it is a default of
 // the schema without `yyjson::strict`.
 struct MaybeInt
@@ -1839,6 +1866,49 @@ TEST(Schema, ContainsConditions)
     const auto& deps = all[1]["not"]["properties"]["deps"];
     EXPECT_EQ(deps["contains"], json::parse(R"({"$ref":"#/$defs/CondPoint"})"));
     EXPECT_EQ(deps["minContains"].as<int>(), 2);
+}
+
+TEST(Schema, NegatedValues)
+{
+    check<NegatedValues>({
+        R"({"n":0,"v":[],"any":0,"f":0,"mp":{},"nv":null,"u":0})",
+        R"({"n":0,"v":[],"any":0,"f":0,"mp":{},"nv":null,"u":0,"point":"a"})",
+        R"({"n":0,"v":[],"any":0,"f":0,"mp":{},"nv":null,"u":0,"point":{"x":1}})",
+        R"({"n":0,"v":[],"any":0,"f":0,"mp":{},"nv":null,"u":0,"point":{"x":"a"}})",
+        R"({"n":0,"v":[],"any":0,"f":0,"mp":{},"nv":null,"u":0,"s":"ab"})",
+        R"({"n":0,"v":[],"any":0,"f":0,"mp":{},"nv":null,"u":0,"s":"xb"})",
+        R"({"n":0,"v":[],"any":0,"f":0,"mp":{},"nv":null,"u":0,"m":0})",
+        R"({"n":0,"v":[],"any":0,"f":0,"mp":{},"nv":null,"u":0,"m":1})",
+        R"({"n":1,"v":[],"any":0,"f":0,"mp":{},"nv":null,"u":0,"m":0})",
+        R"({"n":1,"v":[],"any":0,"f":0,"mp":{},"nv":null,"u":0,"m":2})",
+        R"({"n":3,"v":[],"any":0,"f":0,"mp":{},"nv":null,"u":0})",
+        R"({"n":15,"v":[],"any":0,"f":0,"mp":{},"nv":null,"u":0})",
+        R"({"n":20,"v":[3,0],"any":0,"f":0,"mp":{},"nv":null,"u":0})",
+        R"({"n":0,"v":[3,2],"any":0,"f":0,"mp":{},"nv":null,"u":0})",
+        R"({"n":0,"v":[],"any":null,"f":0,"mp":{},"nv":null,"u":0})",
+        R"({"n":0,"v":[],"any":[null],"f":0,"mp":{},"nv":null,"u":0})",
+        R"({"n":0,"v":[],"any":0,"f":0.1,"mp":{},"nv":null,"u":0})",
+        R"({"n":0,"v":[],"any":0,"f":0.2,"mp":{},"nv":null,"u":0})",
+        R"({"n":0,"v":[],"any":0,"f":0,"mp":{"a":1},"nv":null,"u":0})",
+        R"({"n":0,"v":[],"any":0,"f":0,"mp":{"a":1,"b":2},"nv":null,"u":0})",
+        R"({"n":0,"v":[],"any":0,"f":0,"mp":{},"nv":3,"u":0})",
+        R"({"n":0,"v":[],"any":0,"f":0,"mp":{},"nv":4,"u":0})",
+        R"({"n":0,"v":[],"any":0,"f":0,"mp":{},"nv":null,"u":7})",
+        R"({"n":0,"v":[],"any":0,"f":0,"mp":{},"nv":null,"u":"7"})",
+    });
+    const auto s = to_jsoncons(yyjson::json_schema<NegatedValues>());
+    const auto& p = s["$defs"]["NegatedValues"]["properties"];
+    EXPECT_EQ(p["n"]["not"], json::parse(R"({"anyOf":[{"minimum":10,"maximum":19},{"const":3}]})"));
+    EXPECT_EQ(p["s"]["not"], json::parse(R"({"pattern":"^x"})"));
+    EXPECT_EQ(p["v"]["items"]["not"], json::parse(R"({"enum":[1,2]})"));
+    EXPECT_EQ(p["any"]["not"], json::parse(R"({"type":"null"})"));
+    EXPECT_EQ(p["point"]["not"], json::parse(R"({"$ref":"#/$defs/CondPoint"})"));
+    EXPECT_EQ(p["f"]["not"]["const"].as<double>(), 0.1);
+    EXPECT_EQ(p["mp"]["not"], json::parse(R"({"minProperties":2})"));
+    EXPECT_EQ(p["nv"]["anyOf"][1]["not"], json::parse(R"({"const":3})"));
+    EXPECT_FALSE(p["nv"]["anyOf"][0].contains("not"));
+    EXPECT_EQ(p["u"]["anyOf"][0]["not"], json::parse(R"({"const":7})"));
+    EXPECT_EQ(s["$defs"]["NegatedValues"]["then"]["properties"]["m"]["not"], json::parse(R"({"const":0})"));
 }
 
 TEST(Schema, DefaultLeavingKeyOut)

@@ -642,6 +642,60 @@ namespace yyjson
                     (this->*it->emit)(out.emplace("allOf", empty_array).emplace_back(empty_object));
             }
 
+            // Whether the settings of a node hold for a value of T itself: a `std::optional`, a pointer and a variant
+            // of `std::monostate` and a value pass them to the value that they hold, null has none, and the
+            // settings of a type that a caster of the user converts are not written for the JSON value.
+            template <typename T>
+            [[nodiscard]] bool settles() const noexcept
+            {
+                if constexpr (yyjson::detail::is_std_optional<T>::value || yyjson::detail::owning_pointer<T> ||
+                              nullable_variant<T> || std::same_as<T, std::nullptr_t> ||
+                              std::same_as<T, std::monostate>)
+                    return false;
+                else if constexpr (yyjson::detail::indirect_value<T> &&
+                                   std::derived_from<caster<T>, yyjson::detail::builtin_caster>)
+                    return false;
+                else if constexpr (user_read<T> || user_write<T>)
+                    return writing() ? !user_write<T> : !user_read<T>;
+                else
+                    return true;
+            }
+            // Writes the `yyjson::not_` of a value of T from the node `first` on as `not`: of the schema of the
+            // settings of one, or of `anyOf` those of several.  A value that has `not` already takes it in `allOf`.
+            template <typename T>
+            void emit_negated(object_ref out, const schema_node* nodes, std::size_t first)
+            {
+                const auto settings = [&](object_ref o, const schema_node& k) {
+                    if constexpr (std::floating_point<T> && sizeof(T) < sizeof(double))
+                        emit_float<T>(o, &k);
+                    else if constexpr (object_range<T> || std::same_as<T, writer::object> ||
+                                       std::same_as<T, reader::object>)
+                    {
+                        // min_items and max_items count the properties of an object.
+                        auto rest = k.constraints;
+                        if (rest.has<yyjson::min_items>()) o.emplace("minProperties", rest.min_items);
+                        if (rest.has<yyjson::max_items>()) o.emplace("maxProperties", rest.max_items);
+                        rest.set &= ~(yyjson::detail::constraint_bit<yyjson::min_items> |
+                                      yyjson::detail::constraint_bit<yyjson::max_items>);
+                        emit_constraints(o, rest);
+                    }
+                    else
+                        emit_constraints(o, k.constraints);
+                    if (k.type_test != nullptr) emit_type_test(o, *k.type_test);
+                };
+                auto target = out;
+                if (out.contains("not"))
+                {
+                    auto all = out.contains("allOf") ? *out.find("allOf")->second.as_array()
+                                                     : out.emplace("allOf", empty_array);
+                    target = all.emplace_back(empty_object);
+                }
+                auto negated = target.emplace("not", empty_object);
+                if (nodes[first].next == 0) return settings(negated, nodes[first]);
+                auto any = negated.emplace("anyOf", empty_array);
+                for (auto k = first; k != 0; k = nodes[k].next) settings(any.emplace_back(empty_object), nodes[k]);
+            }
+
             // `yyjson::strict` applies to reading only: what `write` gives has every key that is not left out.
             [[nodiscard]] bool strict() const noexcept { return strict_ && !writing(); }
             [[nodiscard]] bool writing() const noexcept { return writing_; }
@@ -1188,6 +1242,7 @@ namespace yyjson
             if constexpr (std::same_as<T, std::remove_cvref_t<T>>)
             {
                 if (n != nullptr && n->type_test != nullptr) emit_type_test(out, *n->type_test);
+                if (n != nullptr && n->negated != 0 && settles<T>()) emit_negated<T>(out, nodes, n->negated);
                 static_assert(std::is_enum_v<T> || struct_type<T> || is_variant<T>::value ||
                                   yyjson::detail::combined_variant<T> || user_read<T> || user_write<T> ||
                                   type_setting_count<T, yyjson::schema_name>() == 0,
@@ -1791,7 +1846,12 @@ namespace yyjson
                             // The same for a struct whose field is such a `std::optional`, which `$defs` defines
                             // by the value type.
                             emit_named<F>(p);
-                            if (field_nodes != nullptr) emit_constraints(p, field_nodes[node].constraints);
+                            if (field_nodes != nullptr)
+                            {
+                                emit_constraints(p, field_nodes[node].constraints);
+                                if (field_nodes[node].negated != 0)
+                                    emit_negated<F>(p, field_nodes, field_nodes[node].negated);
+                            }
                         }
                         else
                             emit<F>(p, field_nodes, node);
