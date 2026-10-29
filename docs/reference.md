@@ -54,6 +54,7 @@ This page lists the functions, classes and other entities of cpp-yyjson, grouped
     *   [`yyjson::additional_properties`](#yyjsonadditional_properties)
     *   [`yyjson::dependent_required`](#yyjsondependent_required)
     *   [`yyjson::one_of_required`, `yyjson::any_of_required`](#yyjsonone_of_required-yyjsonany_of_required)
+    *   [`yyjson::if_then_else`, `yyjson::not_`, `yyjson::reads_as`](#yyjsonif_then_else-yyjsonnot_-yyjsonreads_as)
     *   [`yyjson::transparent`](#yyjsontransparent)
     *   [Constraints](#constraints)
     *   [`yyjson::items`](#yyjsonitems)
@@ -340,6 +341,7 @@ void validate(const T& t);
 *   a field whose caster leaves it out with [`should_omit`](conversions.md#omitting-a-field-with-no-value), although the read requires the key: under `yyjson::required`, or under `yyjson::strict` without `yyjson::optional_key`;
 *   a field that [`yyjson::dependent_required`](#yyjsondependent_required) requires, left out while the field that requires it is written;
 *   groups of [`yyjson::one_of_required` or `yyjson::any_of_required`](#yyjsonone_of_required-yyjsonany_of_required) of which none, or under `one_of_required` more than one, have all their fields written;
+*   a [`yyjson::if_then_else`](#yyjsonif_then_else-yyjsonnot_-yyjsonreads_as) whose `yyjson::then` or `yyjson::else_` the written fields do not satisfy, or a `yyjson::not_` that they satisfy, where the value of `yyjson::reads_as<T>` is read with `yyjson::strict`;
 *   a field of an [adjacent tag](#yyjsoninternal_tag-yyjsonadjacent_tag) that does not name the alternative that its variant holds, which `yyjson::write` rejects with `std::invalid_argument`.
 *   a key of the map of a [`yyjson::extra_keys`](#yyjsonextra_keys) field that is also the key of a field or a tag of the struct, which `yyjson::write` rejects with `std::invalid_argument`;
 *   a value of a [`yyjson::any_of` or `yyjson::one_of`](#yyjsonany_of-yyjsonone_of-yyjsonalt) that does not satisfy the settings of the alternative that it holds, with the message `the value of the alternative I of V ...`, where the read gives `V is not constructible from JSON`;
@@ -372,7 +374,7 @@ catch (const yyjson::bad_cast& e)
 }
 ```
 
-A type without constraints, `required` fields of omittable types, `dependent_required`, `one_of_required`, `any_of_required` or adjacent tags, and without such types in it, has nothing to check, and `validate` returns without looking at the object.
+A type without constraints, `required` fields of omittable types, `dependent_required`, `one_of_required`, `any_of_required`, `if_then_else`, `not_` or adjacent tags, and without such types in it, has nothing to check, and `validate` returns without looking at the object.
 
 ### `yyjson::read`
 
@@ -1585,7 +1587,7 @@ Specialize `annotations<T>` before the first use of `T`. `annotate` takes these 
 
 | `T` | Settings |
 | --- | --- |
-| a struct | [`yyjson::field`](#yyjsonfield), [`yyjson::transparent`](#yyjsontransparent), [`yyjson::additional_properties`](#yyjsonadditional_properties), [`yyjson::dependent_required`](#yyjsondependent_required), [`yyjson::one_of_required`, `yyjson::any_of_required`](#yyjsonone_of_required-yyjsonany_of_required) and [`yyjson::schema_name`](#yyjsonschema_name) |
+| a struct | [`yyjson::field`](#yyjsonfield), [`yyjson::transparent`](#yyjsontransparent), [`yyjson::additional_properties`](#yyjsonadditional_properties), [`yyjson::dependent_required`](#yyjsondependent_required), [`yyjson::one_of_required`, `yyjson::any_of_required`](#yyjsonone_of_required-yyjsonany_of_required), [`yyjson::if_then_else`, `yyjson::not_`](#yyjsonif_then_else-yyjsonnot_-yyjsonreads_as) and [`yyjson::schema_name`](#yyjsonschema_name) |
 | a `std::variant` | [`yyjson::internal_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag) and [`yyjson::schema_name`](#yyjsonschema_name) |
 | a [`yyjson::any_of` or `yyjson::one_of`](#yyjsonany_of-yyjsonone_of-yyjsonalt) | [`yyjson::schema_name`](#yyjsonschema_name) |
 | an enumeration | [`yyjson::enumerator` and `yyjson::enum_format`](#yyjsonenum_format-yyjsonenumerator), and [`yyjson::schema_name`](#yyjsonschema_name) |
@@ -1725,7 +1727,7 @@ The field has no key of its own. Its type is a map whose `key_type` is construct
 *   Writing a map that has the key of a field or a tag of the struct throws `std::invalid_argument` from `yyjson::write`, `object(t)` and `value(t)`, and `yyjson::bad_cast` from [`yyjson::validate`](#yyjsonvalidate) and `write(t, yyjson::strict)`.
 *   [`yyjson::json_schema`](#yyjsonjson_schemat) gives the struct `additionalProperties` with the schema of the values, and `propertyNames` with the constraints of the keys, which lets the keys of the fields pass by `anyOf` with their `enum`.
 
-A second such field in the struct, `yyjson::additional_properties(false)` on the struct, a type that is not such a map, any other setting on the field than these two, a field named by `yyjson::dependent_required`, `yyjson::one_of_required` or `yyjson::any_of_required`, and a struct that `VISITABLE_STRUCT` registers are compile errors. See [Keys that name no field](conversions.md#keys-that-name-no-field).
+A second such field in the struct, `yyjson::additional_properties(false)` on the struct, a type that is not such a map, any other setting on the field than these two, a field named by `yyjson::dependent_required`, `yyjson::one_of_required`, `yyjson::any_of_required`, `yyjson::if_then_else` or `yyjson::not_`, and a struct that `VISITABLE_STRUCT` registers are compile errors. See [Keys that name no field](conversions.md#keys-that-name-no-field).
 
 ```cpp
 struct Package
@@ -1823,6 +1825,57 @@ yyjson::read<Contact>(R"({})");
 // throws yyjson::bad_cast: Contact is not constructible from JSON without all the keys of one of ["email"], ["phone"] ...
 ```
 
+### `yyjson::if_then_else`, `yyjson::not_`, `yyjson::reads_as`
+
+Conditions between the fields of an object read into a struct, as the keywords `if`, `then`, `else` and `not` of JSON Schema whose subschemas have `properties` and `required`.
+
+```cpp
+template <typename... Fields>
+consteval /* unspecified */ if_(Fields... fields);
+template <typename... Fields>
+consteval /* unspecified */ then(Fields... fields);
+template <typename... Fields>
+consteval /* unspecified */ else_(Fields... fields);
+
+consteval /* unspecified */ if_then_else(/* if_ */ condition, /* then */ then_part);
+consteval /* unspecified */ if_then_else(/* if_ */ condition, /* else_ */ else_part);
+consteval /* unspecified */ if_then_else(/* if_ */ condition, /* then */ then_part, /* else_ */ else_part);
+
+template <typename... Fields>
+consteval /* unspecified */ not_(Fields... fields);
+
+template <typename T>
+inline constexpr /* unspecified */ reads_as{};
+```
+
+`yyjson::if_then_else` and `yyjson::not_` are settings of the struct, given to [`yyjson::annotate`](#yyjsonannotationst-yyjsonannotate). Each of `if_`, `then`, `else_` and `not_` takes one or more [`yyjson::field(member, settings...)`](#yyjsonfield), which name members of the struct:
+
+*   A field of `if_` holds when the object does not have its key, or when the value satisfies its settings; with `yyjson::required`, only in the second case. `if_` holds when all its fields hold. The settings are `yyjson::required`, `yyjson::const_`, `yyjson::enum_`, `yyjson::minimum`, `yyjson::maximum`, `yyjson::exclusive_minimum`, `yyjson::exclusive_maximum`, `yyjson::multiple_of`, `yyjson::min_length`, `yyjson::max_length`, `yyjson::pattern` and `yyjson::format`.
+*   A field of `then` and `else_` holds by the same rule, with `yyjson::required`, the [constraints](#constraints), `yyjson::satisfies<f>`, the settings of the values in it such as [`yyjson::items`](#yyjsonitems), and `yyjson::reads_as<T>`, which holds when the value of a `yyjson::value` or `yyjson::object` field, or a `std::optional` of them, converts to `T`.
+*   `if_then_else` requires `then` when `if_` holds and `else_` when it does not; either may be left out. `not_` takes the settings of `if_` and rejects an object for which all its fields hold.
+
+Reading an object that breaks one of them throws `yyjson::bad_cast`, with or without [`yyjson::strict`](#yyjsonstrict), except in `yyjson::merge_into`; `yyjson::reads_as<T>` converts with `yyjson::strict` when the read has it. A missing key that `then` or `else_` requires gives `S is not constructible from JSON without the key "k", which yyjson::if_then_else requires`, a value that breaks a setting gives the message of that setting at the path of the value, and `not_` gives `S has the keys and the values that yyjson::not_ rejects`. [`yyjson::validate`](#yyjsonvalidate) and `write(t, yyjson::strict)` check them by the keys that are written. A struct may have several of them, which all apply.
+
+Reading tells which fields the object has by its keys, and checks the settings of the fields that it has; the value that a field holds without its key, such as a member initializer, does not count. A name that is not a member of the struct, a skipped field, a field of [`yyjson::extra_keys`](#yyjsonextra_keys), a setting that the part does not take, `yyjson::reads_as<T>` outside `then` and `else_`, and these annotations on a struct with [`yyjson::transparent`](#yyjsontransparent) are compile errors. See [Conditions between fields](validation.md#conditions-between-fields).
+
+```cpp
+struct Shape
+{
+    std::string kind;
+    std::optional<double> radius;
+};
+
+template <>
+inline constexpr auto yyjson::annotations<Shape> = yyjson::annotate(
+    yyjson::field("kind", yyjson::required),
+    yyjson::if_then_else(yyjson::if_(yyjson::field("kind", yyjson::const_("circle"))),
+                         yyjson::then(yyjson::field("radius", yyjson::required, yyjson::exclusive_minimum(0)))));
+
+yyjson::read<Shape>(R"({"kind":"square"})");  // -> Shape{"square", std::nullopt}
+yyjson::read<Shape>(R"({"kind":"circle"})");
+// throws yyjson::bad_cast: Shape is not constructible from JSON without the key "radius", which yyjson::if_then_else requires ...
+```
+
 ### `yyjson::transparent`
 
 A struct of one field that is read and written as the value of that field, with no object around it.
@@ -1839,7 +1892,7 @@ It is a setting of the struct, given to [`yyjson::annotate`](#yyjsonannotationst
 *   [`yyjson::validate`](#yyjsonvalidate) and `write(t, yyjson::strict)` check the constraints. [`yyjson::json_schema`](#yyjsonjson_schemat) defines the struct in `$defs` by the schema of its field with the constraints; for an optional field, by the schema of `U`, beside which an element, a value of a map, an alternative or the root takes `null`.
 *   The struct takes [`yyjson::title`, `yyjson::description`, `yyjson::deprecated`, `yyjson::examples`](#yyjsontitle-yyjsondescription-yyjsondeprecated-yyjsonexamples), [`yyjson::schema`](#yyjsonschema) and [`yyjson::schema_name`](#yyjsonschema_name).
 
-No field or more than one field that is not skipped, the setting given twice, a setting on the field other than the constraints (such as `yyjson::rename`, `yyjson::required`, `yyjson::optional_key`, `yyjson::omit_default`, `yyjson::extra_keys`, `yyjson::adjacent_tag` or the annotations of the JSON Schema), and `yyjson::additional_properties`, `yyjson::dependent_required`, `yyjson::one_of_required` or `yyjson::any_of_required` on the struct are compile errors. See [A struct as the value of its field](conversions.md#a-struct-as-the-value-of-its-field).
+No field or more than one field that is not skipped, the setting given twice, a setting on the field other than the constraints (such as `yyjson::rename`, `yyjson::required`, `yyjson::optional_key`, `yyjson::omit_default`, `yyjson::extra_keys`, `yyjson::adjacent_tag` or the annotations of the JSON Schema), and `yyjson::additional_properties`, `yyjson::dependent_required`, `yyjson::one_of_required`, `yyjson::any_of_required`, `yyjson::if_then_else` or `yyjson::not_` on the struct are compile errors. See [A struct as the value of its field](conversions.md#a-struct-as-the-value-of-its-field).
 
 ```cpp
 struct UserId

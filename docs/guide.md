@@ -496,7 +496,7 @@ catch (const yyjson::bad_cast& e)
 }
 ```
 
-`yyjson::enum_` and `yyjson::const_` allow only the listed values, and `yyjson::format("date-time")` checks a string by the grammar of a format. `yyjson::items`, `yyjson::unique_items` and the other [constraints of elements](validation.md#constraints-of-elements) restrict the elements of a container, `yyjson::dependent_required` of a struct requires keys together, and `yyjson::one_of_required` requires the keys of exactly one of some groups of fields. `yyjson::pattern` matches a regular expression with an engine that the program chooses, and `yyjson::satisfies<f>` calls a function of your own. Details: [Constraints](validation.md#constraints). To write the types of an existing JSON Schema, look up its keywords in [JSON Schema keywords](validation.md#json-schema-keywords).
+`yyjson::enum_` and `yyjson::const_` allow only the listed values, and `yyjson::format("date-time")` checks a string by the grammar of a format. `yyjson::items`, `yyjson::unique_items` and the other [constraints of elements](validation.md#constraints-of-elements) restrict the elements of a container, `yyjson::dependent_required` of a struct requires keys together, `yyjson::one_of_required` requires the keys of exactly one of some groups of fields, and `yyjson::if_then_else` requires keys and values of some fields when others have a given value. `yyjson::pattern` matches a regular expression with an engine that the program chooses, and `yyjson::satisfies<f>` calls a function of your own. Details: [Constraints](validation.md#constraints). To write the types of an existing JSON Schema, look up its keywords in [JSON Schema keywords](validation.md#json-schema-keywords).
 
 ### Restrict the values of a type or of the root
 

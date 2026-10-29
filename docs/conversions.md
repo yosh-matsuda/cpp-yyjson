@@ -350,6 +350,7 @@ The annotations of a type change how the type converts, with no caster. Speciali
 | `yyjson::additional_properties(b)` | a struct | rejects or allows the keys that name no field | [Strict reading](validation.md#strict-reading) |
 | `yyjson::dependent_required("member", {...})` | a struct | requires keys when the object has the key of `member` | [Annotations of keys](validation.md#annotations-of-keys) |
 | `yyjson::one_of_required({...}, ...)`, `yyjson::any_of_required({...}, ...)` | a struct | requires the keys of exactly one, or at least one, of some groups of fields | [Annotations of keys](validation.md#annotations-of-keys) |
+| `yyjson::if_then_else(yyjson::if_(...), yyjson::then(...), yyjson::else_(...))`, `yyjson::not_(...)` | a struct | requires keys and values of fields when other fields have some, or rejects some | [Conditions between fields](validation.md#conditions-between-fields) |
 | `yyjson::internal_tag(key, ids)` | a `std::variant` | tells the alternative by a member of its object | [Tagged variants](#tagged-variants) |
 | `yyjson::transparent` | a struct of one field | reads and writes the struct as the value of its field | [A struct as the value of its field](#a-struct-as-the-value-of-its-field) |
 | `yyjson::enum_format::...`, `yyjson::enumerator("name", s...)` | an enumeration | chooses names or integers, and renames enumerators | [Enumerations](#formats-and-renamed-enumerators) |
@@ -586,7 +587,7 @@ A [translator](#translator) also converts a struct from and to the value of a me
 *   The following fail to compile with a `static_assert`:
     *   no field, or more than one field, that is not skipped, and `yyjson::transparent` given twice;
     *   a setting on the field other than the constraints: `yyjson::rename`, `yyjson::required`, `yyjson::optional_key`, `yyjson::omit_default`, `yyjson::default_from`, `yyjson::extra_keys`, `yyjson::adjacent_tag` and the annotations of the JSON Schema, which go on the struct;
-    *   `yyjson::additional_properties`, `yyjson::dependent_required`, `yyjson::one_of_required` and `yyjson::any_of_required` on the struct, which has no keys.
+    *   `yyjson::additional_properties`, `yyjson::dependent_required`, `yyjson::one_of_required`, `yyjson::any_of_required`, `yyjson::if_then_else` and `yyjson::not_` on the struct, which has no keys.
 
 ### C++26 annotations
 
@@ -607,7 +608,7 @@ auto json = yyjson::write(project);
 ```
 
 *   The annotations of the members and a `yyjson::annotations` specialization can be combined, as long as no field gets the same setting twice; that fails to compile.
-*   Of the annotations on the struct itself, only [`yyjson::transparent`](#a-struct-as-the-value-of-its-field), [`yyjson::additional_properties`](validation.md#strict-reading), [`yyjson::dependent_required`](validation.md#annotations-of-keys), [`yyjson::one_of_required` and `yyjson::any_of_required`](validation.md#annotations-of-keys) and the annotations of the [JSON Schema](json-schema.md#defaults-and-descriptions) (`yyjson::title`, `yyjson::description`, `yyjson::deprecated`, `yyjson::examples`, `yyjson::schema` and `yyjson::schema_name`) are read. A member takes the same annotations of the JSON Schema except `yyjson::schema_name`.
+*   Of the annotations on the struct itself, only [`yyjson::transparent`](#a-struct-as-the-value-of-its-field), [`yyjson::additional_properties`](validation.md#strict-reading), [`yyjson::dependent_required`](validation.md#annotations-of-keys), [`yyjson::one_of_required` and `yyjson::any_of_required`](validation.md#annotations-of-keys), [`yyjson::if_then_else` and `yyjson::not_`](validation.md#conditions-between-fields) and the annotations of the [JSON Schema](json-schema.md#defaults-and-descriptions) (`yyjson::title`, `yyjson::description`, `yyjson::deprecated`, `yyjson::examples`, `yyjson::schema` and `yyjson::schema_name`) are read. A member takes the same annotations of the JSON Schema except `yyjson::schema_name`.
 *   An enumeration takes a [format](#formats-and-renamed-enumerators) on its declaration, as in `enum class [[=yyjson::enum_format::integer]] Permission : unsigned { ... };`. An enumerator takes a new name, as in `in_progress [[=yyjson::rename("in-progress")]],`. These combine with `yyjson::annotations<E>` as the settings of fields do. An annotation on an alias, that is, an enumerator with the value of one declared before it, is not read.
 *   The annotations apply to the structs that the compile-time reflection converts. An annotation of this library on a member of a struct that `VISITABLE_STRUCT` registers fails to compile; use the pairs of the macro or `yyjson::annotations` there.
 *   The annotations are read when the macro `FIELD_RFL_ANNOTATIONS` is `1`. `yyjson::rename`, `yyjson::skip` and the tags are always available for `yyjson::annotations`.

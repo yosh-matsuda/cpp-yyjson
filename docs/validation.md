@@ -17,7 +17,7 @@ The settings of a field and of a struct go into `yyjson::annotations<T>` or on t
 A read checks the JSON at three levels:
 
 *   The text, which has to be JSON as [RFC 8259](https://www.rfc-editor.org/rfc/rfc8259) defines it, or as the `ReadFlag`s relax it. Text that is not throws `yyjson::read_error`. An object may have a key more than once: a document keeps every member in order, and `operator[]`, `find` and `contains` of an object find the first.
-*   The shape, which has to convert to the C++ type by the [conversion rules](conversions.md#conversion-rules). [`yyjson::strict`](#strict-reading), `yyjson::required`, `yyjson::additional_properties(false)`, `yyjson::dependent_required`, `yyjson::one_of_required`, `yyjson::any_of_required` and the [tags](conversions.md#tagged-variants) of variants add rules for the keys of objects. A value that breaks them throws `yyjson::bad_cast`.
+*   The shape, which has to convert to the C++ type by the [conversion rules](conversions.md#conversion-rules). [`yyjson::strict`](#strict-reading), `yyjson::required`, `yyjson::additional_properties(false)`, `yyjson::dependent_required`, `yyjson::one_of_required`, `yyjson::any_of_required`, `yyjson::if_then_else`, `yyjson::not_` and the [tags](conversions.md#tagged-variants) of variants add rules for the keys of objects. A value that breaks them throws `yyjson::bad_cast`.
 *   The value of a field, which has to satisfy the [constraints](#constraints) of the field. They are checked on the C++ value that the field gets, and a value that breaks them throws `yyjson::bad_cast`.
 
 `yyjson::read<T>`, `read_into` and `merge_into` check all three as they read. `cast<T>` checks the last two on a document.
@@ -127,7 +127,7 @@ A struct annotated with [`yyjson::transparent`](conversions.md#a-struct-as-the-v
 
 ### Annotations of keys
 
-Nine annotations change the rules of the keys for one field or one struct:
+Eleven annotations change the rules of the keys for one field or one struct:
 
 *   `yyjson::required` requires the key of a field, with or without `yyjson::strict`.
 *   `yyjson::additional_properties(false)` rejects the keys that name no field of a struct, with or without `yyjson::strict`.
@@ -137,6 +137,7 @@ Nine annotations change the rules of the keys for one field or one struct:
 *   `yyjson::default_from<f>` does what `yyjson::omit_default` does with the value that the function `f` makes in place of the value in `T()`; it is described in the same section.
 *   `yyjson::dependent_required` of a struct requires the keys of some fields when the object has the key of another, with or without `yyjson::strict`; it is described after the first three.
 *   `yyjson::one_of_required` and `yyjson::any_of_required` of a struct require the keys of exactly one, or at least one, of some groups of fields, with or without `yyjson::strict`; they are described after `yyjson::dependent_required`.
+*   `yyjson::if_then_else` and `yyjson::not_` of a struct require keys and values of some fields when other fields have some keys and values, or reject some keys and values, with or without `yyjson::strict`; they are described in [Conditions between fields](#conditions-between-fields).
 
 ```cpp
 struct Request
@@ -215,6 +216,51 @@ yyjson::read<Measure>(R"({"name":"cpu","env":"CPU_LIMIT","value":2,"unit":"core"
 *   Make the fields of the groups `std::optional`, or give them `yyjson::optional_key` or `yyjson::omit_default`. `yyjson::strict` requires the key of any other field, so that a strict read of a `yyjson::one_of_required` with such fields in two groups rejects every object. For the same reason, `yyjson::validate` and `yyjson::write` with `yyjson::strict` check the groups by the fields that are written: a `std::optional` field that holds no value is not written and is not there.
 *   A member that the struct does not have, and a [skipped field](conversions.md#skipped-fields), are compile errors. With [C++26 annotations](conversions.md#c26-annotations), write `struct [[=yyjson::one_of_required({"env"}, {"value", "unit"})]] Measure`.
 *   The check adds no cost to an object that has the keys of all the fields in their order, as an object that `yyjson::write` wrote does, except under `yyjson::one_of_required` of two or more groups, which such an object always breaks: the struct then checks its keys once more.
+
+### Conditions between fields
+
+`yyjson::if_then_else(yyjson::if_(...), yyjson::then(...), yyjson::else_(...))` of a struct requires what `yyjson::then` gives of the fields of an object when the fields satisfy `yyjson::if_`, and what `yyjson::else_` gives when they do not, as the keywords `if`, `then` and `else` of JSON Schema whose subschemas have `properties` and `required` do. `yyjson::not_(...)` rejects an object whose fields satisfy all that it gives, as the keyword `not` does. Each part takes one or more `yyjson::field(member, settings...)`:
+
+```cpp
+struct Point
+{
+    int x = 0;
+    int y = 0;
+};
+struct Shape
+{
+    std::string kind;
+    std::optional<double> radius;
+    std::optional<yyjson::value> center;
+};
+template <>
+inline constexpr auto yyjson::annotations<Shape> = yyjson::annotate(
+    yyjson::field("kind", yyjson::required),
+    yyjson::if_then_else(yyjson::if_(yyjson::field("kind", yyjson::const_("circle"))),
+                         yyjson::then(yyjson::field("radius", yyjson::required, yyjson::exclusive_minimum(0))),
+                         yyjson::else_(yyjson::field("center", yyjson::reads_as<Point>))),
+    yyjson::not_(yyjson::field("kind", yyjson::enum_("", "none"))));
+
+yyjson::read<Shape>(R"({"kind":"circle","radius":1})");         // -> Shape{"circle", 1.0, std::nullopt}
+yyjson::read<Shape>(R"({"kind":"circle"})");
+// throws: Shape is not constructible from JSON without the key "radius", which yyjson::if_then_else requires (line 1, column 1, pos 0)
+yyjson::read<Shape>(R"({"kind":"circle","radius":0})");
+// throws: the value of the key "radius" of Shape is not greater than the exclusive minimum 0 at /radius (line 1, column 27, pos 26)
+yyjson::read<Shape>(R"({"kind":"square","center":{"x":"a"}})");
+// throws: int is not constructible from JSON string at /center/x (line 1, column 32, pos 31)
+yyjson::read<Shape>(R"({"kind":"none"})");
+// throws: Shape has the keys and the values that yyjson::not_ rejects (line 1, column 1, pos 0)
+```
+
+*   A field of `yyjson::if_` and `yyjson::not_` takes `yyjson::required`, `yyjson::const_`, `yyjson::enum_`, the bounds of a number, `yyjson::multiple_of`, the lengths of a string, `yyjson::pattern` and `yyjson::format`: what one value, or the presence of its key, satisfies. Other settings are compile errors.
+*   A field of `yyjson::then` and `yyjson::else_` takes `yyjson::required`, every [constraint](#constraints), `yyjson::satisfies<f>` and the [settings of the elements](#constraints-of-elements) among them, and `yyjson::reads_as<T>`, which requires that the value of a `yyjson::value` or `yyjson::object` field reads as `T`. `yyjson::reads_as<T>` is a compile error elsewhere.
+*   As in JSON Schema, the settings of a field other than `yyjson::required` apply to the value of its key and say nothing when the object does not have the key. `yyjson::if_(yyjson::field("kind", yyjson::const_("circle")))` therefore holds for an object without "kind"; give the field `yyjson::required` too for a condition that holds only with the key. For the same reason, `yyjson::not_` of a field without `yyjson::required` also rejects an object without its key.
+*   A field that a part names has a key of its own: it may be of any type and have any annotation of keys, but a skipped field and a field of `yyjson::extra_keys` are compile errors, as are the annotations on a struct with [`yyjson::transparent`](conversions.md#a-struct-as-the-value-of-its-field). The fields are named by their members, and the messages give their keys, which `yyjson::rename` may change.
+*   `yyjson::then` and `yyjson::else_` may be left out, but not both. A struct may have several of these annotations, which all apply, as an `allOf` of them does. There is no `else if`: give each case its own `yyjson::if_then_else` with conditions that exclude each other.
+*   Reading tells which fields an object has by its keys, as `yyjson::dependent_required` does, and checks the settings on the C++ values of the fields that it has, after the object is read, with or without `yyjson::strict`, except in the objects that `merge_into` merges into. The value that a field holds without its key, such as the member initializer of `std::optional<int> x = 5;` or the default of `yyjson::omit_default`, does not count. `yyjson::reads_as<T>` reads the value with `yyjson::strict` when the object is read with it, as in the example above, where a strict read rejects `{"kind":"square","center":{"x":1}}` because `Point` has no "y".
+*   `yyjson::validate` and `yyjson::write` with `yyjson::strict` check them by the keys that `write` writes, and read the value of `yyjson::reads_as<T>` with `yyjson::strict`. A non-strict read of the object above followed by `yyjson::validate` therefore throws `Point is not constructible from JSON without the key "y" at /center`. The two can also differ when a field holds a value without its key: reading `{}` leaves `std::optional<int> x = 5;` at `5`, which `write` writes, so a condition on "x" that the object did not meet may hold for the written object, as the [member initializer of a `std::optional`](#fields-with-a-default-value) does not read back either. A plain field that a non-strict read leaves at its value in `T()` is written in the same way.
+*   With [C++26 annotations](conversions.md#c26-annotations), write `struct [[=yyjson::if_then_else(...), =yyjson::not_(...)]] Shape`.
+*   A struct with these annotations checks them on every object that it reads, including the objects that `yyjson::write` wrote, and `yyjson::reads_as<T>` converts the value to a `T` that it then discards. A struct without them pays nothing.
 
 ### Fields with a default value
 
@@ -567,7 +613,7 @@ yyjson::validate(Range{{}, 0, std::nullopt});
 // Range is not constructible from JSON with the key "lower" without the key "upper"
 ```
 
-It checks the constraints of the fields and of the elements, values and keys in them, the keys of a field of [`yyjson::extra_keys`](conversions.md#keys-that-name-no-field) against the keys of the fields and the tags, `yyjson::dependent_required`, `yyjson::one_of_required` and `yyjson::any_of_required` by the fields that `write` writes, a field that its caster leaves out although the strict read requires its key, and the field of an [adjacent tag](conversions.md#tagged-variants) against the alternative of its variant. [`yyjson::validate`](reference.md#yyjsonvalidate) lists what it does not check.
+It checks the constraints of the fields and of the elements, values and keys in them, the keys of a field of [`yyjson::extra_keys`](conversions.md#keys-that-name-no-field) against the keys of the fields and the tags, `yyjson::dependent_required`, `yyjson::one_of_required`, `yyjson::any_of_required`, `yyjson::if_then_else` and `yyjson::not_` by the fields that `write` writes, a field that its caster leaves out although the strict read requires its key, and the field of an [adjacent tag](conversions.md#tagged-variants) against the alternative of its variant. [`yyjson::validate`](reference.md#yyjsonvalidate) lists what it does not check.
 
 A [`yyjson::any_of` or `yyjson::one_of`](conversions.md#alternatives-with-constraints) is checked by the settings of the alternative that it holds, and the message names that alternative by its index, such as `the value of the alternative 0 of V is less than the minimum 0`, where the read, which tries every alternative, says that `V` is not constructible. An element that breaks the settings of `yyjson::items` and the like is located inside the alternative, as in `an element of the value of the alternative 0 of V ... at /c/1`. A `yyjson::one_of` is then written and read back as each of the other alternatives that may read it, with `yyjson::strict`, and one that reads it too gives `the value matches the alternatives i and j of V`. A `yyjson::any_of` is not read back: the read may take an earlier alternative than the one that the value holds, as it does for a `std::variant`.
 
@@ -635,7 +681,7 @@ The tables below list the keywords of [JSON Schema 2020-12](https://json-schema.
 | `patternProperties` | none | `yyjson::property_names` and `yyjson::additional_properties(settings...)` constrain all the keys and all the values of a map alike. |
 | `dependentRequired` | `yyjson::dependent_required("member", {"other", ...})` on a struct, described in [Annotations of keys](#annotations-of-keys) | the fields are named by their members. `merge_into` does not check it. |
 | `oneOf`, `anyOf` of subschemas with only `required` | `yyjson::one_of_required({...}, ...)`, `yyjson::any_of_required({...}, ...)` on a struct, described in [Annotations of keys](#annotations-of-keys) | the fields are named by their members. `merge_into` does not check them. |
-| `dependentSchemas` | none | `yyjson::satisfies<f>` on a struct field. |
+| `dependentSchemas` | `yyjson::if_then_else(yyjson::if_(yyjson::field("member", yyjson::required)), yyjson::then(...))` on a struct, described in [Conditions between fields](#conditions-between-fields) | as `if` and `then`. |
 | `unevaluatedProperties` | none | `yyjson::additional_properties(false)` or [`yyjson::strict`](#strict-reading). |
 
 ### Combining schemas
@@ -645,8 +691,8 @@ The tables below list the keywords of [JSON Schema 2020-12](https://json-schema.
 | `allOf` | the constraints of one field, which all apply | a field takes each constraint once. |
 | `anyOf` | [`yyjson::any_of<...>`](conversions.md#alternatives-with-constraints), or `std::variant` for alternatives without constraints | the first alternative that accepts the value by its conversion and its constraints is read, as described in [How constraints are checked](#how-constraints-are-checked). An alternative that an earlier one contains fails to compile with `yyjson::any_of`, and is never read in a `std::variant`. |
 | `oneOf` | [`yyjson::one_of<...>`](conversions.md#alternatives-with-constraints), or a [tagged variant](conversions.md#tagged-variants) | `yyjson::one_of` rejects a value that two alternatives accept, as the keyword does. A tag names the alternative, as a `const` of a member in each alternative of `oneOf` does; an untagged `std::variant` does not check that only one alternative accepts the value. For subschemas with only `required`, see `yyjson::one_of_required` in [Objects](#objects). |
-| `not` | `yyjson::satisfies<f>` | |
-| `if`, `then`, `else` | a [tagged variant](conversions.md#tagged-variants), or `yyjson::satisfies<f>` | |
+| `not` | `yyjson::not_(...)` on a struct, described in [Conditions between fields](#conditions-between-fields), or `yyjson::satisfies<f>` | `yyjson::not_` takes the `properties` and `required` of the fields of a struct, with the settings that test one value, such as `const`, `enum`, the bounds and `pattern`. |
+| `if`, `then`, `else` | `yyjson::if_then_else(...)` on a struct, described in [Conditions between fields](#conditions-between-fields), a [tagged variant](conversions.md#tagged-variants), or `yyjson::satisfies<f>` | `yyjson::if_` takes what `yyjson::not_` takes; `yyjson::then` and `yyjson::else_` take `required` and the constraints of the fields, and `yyjson::reads_as<T>` in place of `$ref`. A condition on the value itself, such as its type, is not supported. |
 | `$ref`, `$defs` | a C++ type, used in more than one place or in itself as a [recursive type](conversions.md#recursive-types) | a definition that is not an object and has constraints is a struct with [`yyjson::transparent`](conversions.md#a-struct-as-the-value-of-its-field) whose field has them. |
 | `default` | the value in `T()`, including a default member initializer | used for a missing key. Writing writes it like any other value. |
 
