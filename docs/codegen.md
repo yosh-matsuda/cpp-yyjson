@@ -199,6 +199,7 @@ Each schema maps to one C++ type:
 | `"type": [T, "null"]`, or `anyOf` / `oneOf` with `{"type": "null"}` | a variant whose first alternative is `std::monostate` |
 | `anyOf`, `oneOf` | [`yyjson::any_of`, `yyjson::one_of`](conversions.md#alternatives-with-constraints), or a `std::variant` with an internal tag; see [Variants](#variants) |
 | `allOf` | the subschemas merged into one |
+| `unevaluatedProperties`, `unevaluatedItems` | `additionalProperties` and `items` of the merged schema; see [`unevaluatedProperties` and `unevaluatedItems`](#unevaluatedproperties-and-unevaluateditems) |
 | `$ref` | the named type of the target |
 | no `type`, with keywords that constrain some types, such as `maxLength` or `properties` | a variant of every kind; see [Schemas without `type`](#schemas-without-type) |
 | `{}`, `true`, no keyword of a type | [`yyjson::value`](reference.md#yyjsonvalue) |
@@ -393,6 +394,73 @@ Several patterns become one, `(?:p1)|(?:p2)`. A property whose key matches a pat
 
 `patternProperties` whose patterns select different schemas is not supported: the values of an object without `properties` are read as `yyjson::value`, and the other keys of a struct go to a field of `yyjson::extra_keys` of `yyjson::value`, with a warning. `--no-pattern` drops the patterns of the keys with a warning, and keeps the map.
 
+## `unevaluatedProperties` and `unevaluatedItems`
+
+`unevaluatedProperties` constrains the keys that no keyword of the schema evaluates, counting the keywords of its `allOf` and of its `$ref`. The generator merges these into one struct, so the keyword is the `additionalProperties` of that struct:
+
+```json
+{
+    "$defs": {"Base": {"type": "object", "properties": {"id": {"type": "integer"}}}},
+    "$ref": "#/$defs/Base",
+    "properties": {"name": {"type": "string"}},
+    "unevaluatedProperties": false
+}
+```
+
+```cpp
+struct Root
+{
+    std::optional<std::string> name;
+    std::optional<std::int64_t> id;
+};
+
+template <>
+inline constexpr auto yyjson::annotations<Root> = yyjson::annotate(
+    yyjson::additional_properties(false));
+```
+
+`false` closes the struct, and a schema gives a field of [`yyjson::extra_keys`](#keys-that-name-no-property). In the same way, `unevaluatedItems` is the `items` after `prefixItems`, so `false` ends the tuple. The keyword adds nothing, and is left out silently, beside `additionalProperties` or `items`, beside a subschema whose `additionalProperties`, `items` or own unevaluated keyword already evaluates every key or element, and for a type that is not an object or an array. `unevaluatedProperties` in a subschema of `allOf` closes the merged struct, which then accepts the properties of the other subschemas too: the code reads more than the schema accepts there.
+
+Beside `oneOf`, the properties that count are those of the base and of the subschema that matches. The keyword goes into each alternative, which is closed over the properties of the base and its own:
+
+```json
+{
+    "type": "object",
+    "properties": {"id": {"type": "integer"}},
+    "unevaluatedProperties": false,
+    "oneOf": [
+        {"properties": {"a": {"type": "integer"}}, "required": ["a"]},
+        {"properties": {"b": {"type": "string"}}, "required": ["b"]}
+    ]
+}
+```
+
+```cpp
+using Root = yyjson::one_of<RootOption1, RootOption2>;
+
+struct RootOption1
+{
+    std::optional<std::int64_t> id;
+    std::int64_t a;
+};
+// RootOption2 holds id and b; both structs have yyjson::additional_properties(false)
+```
+
+A closed alternative rejects the keys of the other alternatives, so a document that matches two subschemas of `oneOf`, which the schema rejects, may match only one alternative and be read.
+
+The keyword is left out with a warning, and the code reads the other keys or elements, where the keys or elements that count depend on the value in a way that the generated types do not follow:
+
+| Beside | Warning |
+| --- | --- |
+| `anyOf` whose subschemas evaluate properties or items, since several of them can match | "`unevaluatedProperties` beside `anyOf` whose subschemas evaluate properties is not supported; it is ignored" |
+| `oneOf` beside an `anyOf` that does more than list `required` keys, or two `oneOf`, one of them in a subschema of `allOf` | "... beside several `anyOf` / `oneOf` is not supported ..." |
+| `if`, `then`, `else`, `dependentSchemas`, `$dynamicRef`, `$recursiveRef` | "... beside `if`, `then`, `else`, `dependentSchemas`, `$dynamicRef` or `$recursiveRef` is not supported ..." |
+| `contains`, for `unevaluatedItems` | "`unevaluatedItems` beside `contains` is not supported; it is ignored" |
+| `patternProperties` or `prefixItems` that differ between the schema and its subschemas | "... beside several `patternProperties` is not supported ..." |
+| a `$ref` that cannot be read | "... beside a reference that cannot be read is not supported ..." |
+
+Draft-07 and draft-06 have neither keyword, so the generator ignores them there, with a warning.
+
 ## Dialects and references
 
 The dialect comes from `$schema`: 2020-12, 2019-09, draft-07 and draft-06 are read without a warning, and another value is read as 2020-12 with a warning. Under draft-07 and draft-06:
@@ -400,7 +468,8 @@ The dialect comes from `$schema`: 2020-12, 2019-09, draft-07 and draft-06 are re
 *   `items` with an array and `additionalItems` are `prefixItems` and `items`;
 *   `dependencies` with arrays is `dependentRequired`; with schemas it is `dependentSchemas`, which is not supported;
 *   the keywords beside `$ref` are ignored, with a warning that names them, as the dialect does;
-*   `$id: "#name"` names a schema, as `$anchor` does.
+*   `$id: "#name"` names a schema, as `$anchor` does;
+*   `unevaluatedProperties` and `unevaluatedItems` are ignored, with a warning.
 
 `$ref` takes a JSON Pointer (`#/$defs/Item`), an anchor (`#name`) and a file:
 
@@ -418,8 +487,8 @@ A warning names the location in the schema and what the generated code does inst
 
 | Group | Example | The generated code |
 | --- | --- | --- |
-| a keyword that is not supported | `if`, `then`, `else`, `not`, `dependentSchemas`, `unevaluatedProperties`, `unevaluatedItems` | reads more than the schema accepts |
-| a form that is not supported | `contains` of a type other than the element type, positions of `prefixItems` of different types, `minProperties` of a struct | reads more than the schema accepts |
+| a keyword that is not supported | `if`, `then`, `else`, `not`, `dependentSchemas` | reads more than the schema accepts |
+| a form that is not supported | `contains` of a type other than the element type, positions of `prefixItems` of different types, `minProperties` of a struct, [`unevaluatedProperties` beside `anyOf`](#unevaluatedproperties-and-unevaluateditems) | reads more than the schema accepts |
 | a type inferred from keywords, with `--infer-types` | "the schema has no `type`; it is read as string from its keywords" | reads only that type |
 | a variant of more alternatives than `--max-alternatives` | "a variant of 447 alternatives is more than 64 (--max-alternatives) ..." | reads any JSON value there |
 | a reference that cannot be followed | a missing file, a URI elsewhere | reads any JSON value there |
