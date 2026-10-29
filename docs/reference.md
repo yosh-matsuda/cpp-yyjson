@@ -338,7 +338,7 @@ void validate(const T& t);
 
 `validate` throws `yyjson::bad_cast` for the first of the following that the read would find, and returns otherwise. In a struct, the read checks the values in a field before the field itself, and the keys that the object misses after all the fields:
 
-*   a value that does not satisfy the [constraints](validation.md#constraints) of its field, including the constraints of the elements, the values and the keys in it;
+*   a value that does not satisfy the [constraints](validation.md#constraints) of its field, including the constraints of the elements, the values and the keys in it, where the elements that `yyjson::contains(yyjson::is_type<T>)` counts are read with `yyjson::strict`;
 *   a field whose caster leaves it out with [`should_omit`](conversions.md#omitting-a-field-with-no-value), although the read requires the key: under `yyjson::required`, or under `yyjson::strict` without `yyjson::optional_key`;
 *   a field that [`yyjson::dependent_required`](#yyjsondependent_required) requires, left out while the field that requires it is written;
 *   groups of [`yyjson::one_of_required` or `yyjson::any_of_required`](#yyjsonone_of_required-yyjsonany_of_required) of which none, or under `one_of_required` more than one, have all their fields written;
@@ -1888,7 +1888,9 @@ bool is_type<T>(const V& v, yyjson::strict_t);
 ```
 
 *   `yyjson::is_type<T>(v)` returns `true` when `v.cast<T>()` returns, and `false` when it throws `yyjson::bad_cast`; `yyjson::is_type<T>(v, yyjson::strict)` does the same with `v.cast<T>(yyjson::strict)`. `v` is a value of the DOM: `yyjson::value`, `yyjson::array`, `yyjson::object` or a reference to a value of them. Other exceptions, such as `std::bad_alloc`, pass through. The converted value is discarded.
-*   As a setting, a field of `yyjson::then` and `yyjson::else_` of [`yyjson::if_then_else`](#yyjsonif_then_else-yyjsonnot_) takes it: `yyjson::field("payload", yyjson::is_type<Payload>)` holds when the value of the field, a `yyjson::value` or `yyjson::object`, or a `std::optional` of them, converts to `Payload`, with `yyjson::strict` when the read has it. [`yyjson::json_schema`](#yyjsonjson_schemat) gives the read schema of `T` in both directions. Elsewhere it is a compile error.
+*   As a setting, a field of `yyjson::then` and `yyjson::else_` of [`yyjson::if_then_else`](#yyjsonif_then_else-yyjsonnot_) takes it: `yyjson::field("payload", yyjson::is_type<Payload>)` holds when the value of the field, a `yyjson::value` or `yyjson::object`, or a `std::optional` of them, converts to `Payload`, with `yyjson::strict` when the read has it.
+*   [`yyjson::contains`](#yyjsoncontains-yyjsonmin_contains-yyjsonmax_contains) takes it too, when the elements of the range are values of the DOM: `yyjson::value`, `yyjson::array`, `yyjson::object`, or the elements of a `yyjson::array`. `yyjson::field("events", yyjson::contains(yyjson::is_type<Event>), yyjson::min_contains(2))` requires at least two elements that convert to `Event`, beside the other settings of `contains`, such as `yyjson::min_items` on elements that are `yyjson::object`.
+*   [`yyjson::json_schema`](#yyjsonjson_schemat) gives the read schema of `T` in both directions, a `$ref` for a struct. Elsewhere, such as in `yyjson::items` or on a field of its own, it is a compile error.
 
 ```cpp
 struct Point
@@ -2090,6 +2092,28 @@ yyjson::read<Team>(R"({"roles":["user"]})");
 ```
 
 The path of the exception points at the field, since no single element breaks the constraint.
+
+The elements of a range of `yyjson::value`, such as `std::vector<yyjson::value>`, and of a `yyjson::array` may be any JSON, so `contains` takes [`yyjson::is_type<T>`](#yyjsonis_type) for them, which counts the elements that convert to `T`, with `yyjson::strict` when the read has it:
+
+```cpp
+struct Event
+{
+    int id = 0;
+};
+
+struct Log
+{
+    std::vector<yyjson::value> entries;
+};
+
+template <>
+inline constexpr auto yyjson::annotations<Log> = yyjson::annotate(
+    yyjson::field("entries", yyjson::contains(yyjson::is_type<Event>), yyjson::min_contains(2)));
+
+yyjson::read<Log>(R"({"entries":[{"id":1},"note",{"id":2}]})");  // two elements are Event
+yyjson::read<Log>(R"({"entries":[{"id":1},"note"]})");
+// throws yyjson::bad_cast: the value of the key "entries" of Log has fewer than 2 items that satisfy the constraints of yyjson::contains at /entries ...
+```
 
 ### `yyjson::property_names`
 
