@@ -54,7 +54,8 @@ This page lists the functions, classes and other entities of cpp-yyjson, grouped
     *   [`yyjson::additional_properties`](#yyjsonadditional_properties)
     *   [`yyjson::dependent_required`](#yyjsondependent_required)
     *   [`yyjson::one_of_required`, `yyjson::any_of_required`](#yyjsonone_of_required-yyjsonany_of_required)
-    *   [`yyjson::if_then_else`, `yyjson::not_`, `yyjson::is_type`](#yyjsonif_then_else-yyjsonnot_-yyjsonis_type)
+    *   [`yyjson::if_then_else`, `yyjson::not_`](#yyjsonif_then_else-yyjsonnot_)
+    *   [`yyjson::is_type`](#yyjsonis_type)
     *   [`yyjson::transparent`](#yyjsontransparent)
     *   [Constraints](#constraints)
     *   [`yyjson::items`](#yyjsonitems)
@@ -341,7 +342,7 @@ void validate(const T& t);
 *   a field whose caster leaves it out with [`should_omit`](conversions.md#omitting-a-field-with-no-value), although the read requires the key: under `yyjson::required`, or under `yyjson::strict` without `yyjson::optional_key`;
 *   a field that [`yyjson::dependent_required`](#yyjsondependent_required) requires, left out while the field that requires it is written;
 *   groups of [`yyjson::one_of_required` or `yyjson::any_of_required`](#yyjsonone_of_required-yyjsonany_of_required) of which none, or under `one_of_required` more than one, have all their fields written;
-*   a [`yyjson::if_then_else`](#yyjsonif_then_else-yyjsonnot_-yyjsonis_type) whose `yyjson::then` or `yyjson::else_` the written fields do not satisfy, or a `yyjson::not_` that they satisfy, where the value of `yyjson::is_type<T>` is read with `yyjson::strict`;
+*   a [`yyjson::if_then_else`](#yyjsonif_then_else-yyjsonnot_) whose `yyjson::then` or `yyjson::else_` the written fields do not satisfy, or a `yyjson::not_` that they satisfy, where the value of `yyjson::is_type<T>` is read with `yyjson::strict`;
 *   a field of an [adjacent tag](#yyjsoninternal_tag-yyjsonadjacent_tag) that does not name the alternative that its variant holds, which `yyjson::write` rejects with `std::invalid_argument`.
 *   a key of the map of a [`yyjson::extra_keys`](#yyjsonextra_keys) field that is also the key of a field or a tag of the struct, which `yyjson::write` rejects with `std::invalid_argument`;
 *   a value of a [`yyjson::any_of` or `yyjson::one_of`](#yyjsonany_of-yyjsonone_of-yyjsonalt) that does not satisfy the settings of the alternative that it holds, with the message `the value of the alternative I of V ...`, where the read gives `V is not constructible from JSON`;
@@ -1587,7 +1588,7 @@ Specialize `annotations<T>` before the first use of `T`. `annotate` takes these 
 
 | `T` | Settings |
 | --- | --- |
-| a struct | [`yyjson::field`](#yyjsonfield), [`yyjson::transparent`](#yyjsontransparent), [`yyjson::additional_properties`](#yyjsonadditional_properties), [`yyjson::dependent_required`](#yyjsondependent_required), [`yyjson::one_of_required`, `yyjson::any_of_required`](#yyjsonone_of_required-yyjsonany_of_required), [`yyjson::if_then_else`, `yyjson::not_`](#yyjsonif_then_else-yyjsonnot_-yyjsonis_type) and [`yyjson::schema_name`](#yyjsonschema_name) |
+| a struct | [`yyjson::field`](#yyjsonfield), [`yyjson::transparent`](#yyjsontransparent), [`yyjson::additional_properties`](#yyjsonadditional_properties), [`yyjson::dependent_required`](#yyjsondependent_required), [`yyjson::one_of_required`, `yyjson::any_of_required`](#yyjsonone_of_required-yyjsonany_of_required), [`yyjson::if_then_else`, `yyjson::not_`](#yyjsonif_then_else-yyjsonnot_) and [`yyjson::schema_name`](#yyjsonschema_name) |
 | a `std::variant` | [`yyjson::internal_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag) and [`yyjson::schema_name`](#yyjsonschema_name) |
 | a [`yyjson::any_of` or `yyjson::one_of`](#yyjsonany_of-yyjsonone_of-yyjsonalt) | [`yyjson::schema_name`](#yyjsonschema_name) |
 | an enumeration | [`yyjson::enumerator` and `yyjson::enum_format`](#yyjsonenum_format-yyjsonenumerator), and [`yyjson::schema_name`](#yyjsonschema_name) |
@@ -1825,7 +1826,7 @@ yyjson::read<Contact>(R"({})");
 // throws yyjson::bad_cast: Contact is not constructible from JSON without all the keys of one of ["email"], ["phone"] ...
 ```
 
-### `yyjson::if_then_else`, `yyjson::not_`, `yyjson::is_type`
+### `yyjson::if_then_else`, `yyjson::not_`
 
 Conditions between the fields of an object read into a struct, as the keywords `if`, `then`, `else` and `not` of JSON Schema whose subschemas have `properties` and `required`.
 
@@ -1843,15 +1844,12 @@ consteval /* unspecified */ if_then_else(/* if_ */ condition, /* then */ then_pa
 
 template <typename... Fields>
 consteval /* unspecified */ not_(Fields... fields);
-
-template <typename T>
-inline constexpr /* unspecified */ is_type{};
 ```
 
 `yyjson::if_then_else` and `yyjson::not_` are settings of the struct, given to [`yyjson::annotate`](#yyjsonannotationst-yyjsonannotate). Each of `if_`, `then`, `else_` and `not_` takes one or more [`yyjson::field(member, settings...)`](#yyjsonfield), which name members of the struct:
 
 *   A field of `if_` holds when the object does not have its key, or when the value satisfies its settings; with `yyjson::required`, only in the second case. `if_` holds when all its fields hold. The settings are `yyjson::required`, `yyjson::const_`, `yyjson::enum_`, `yyjson::minimum`, `yyjson::maximum`, `yyjson::exclusive_minimum`, `yyjson::exclusive_maximum`, `yyjson::multiple_of`, `yyjson::min_length`, `yyjson::max_length`, `yyjson::pattern` and `yyjson::format`.
-*   A field of `then` and `else_` holds by the same rule, with `yyjson::required`, the [constraints](#constraints), `yyjson::satisfies<f>`, the settings of the values in it such as [`yyjson::items`](#yyjsonitems), and `yyjson::is_type<T>`, which holds when the value of a `yyjson::value` or `yyjson::object` field, or a `std::optional` of them, converts to `T`.
+*   A field of `then` and `else_` holds by the same rule, with `yyjson::required`, the [constraints](#constraints), `yyjson::satisfies<f>`, the settings of the values in it such as [`yyjson::items`](#yyjsonitems), and [`yyjson::is_type<T>`](#yyjsonis_type), which holds when the value of a `yyjson::value` or `yyjson::object` field, or a `std::optional` of them, converts to `T`.
 *   `if_then_else` requires `then` when `if_` holds and `else_` when it does not; either may be left out. `not_` takes the settings of `if_` and rejects an object for which all its fields hold.
 
 Reading an object that breaks one of them throws `yyjson::bad_cast`, with or without [`yyjson::strict`](#yyjsonstrict), except in `yyjson::merge_into`; `yyjson::is_type<T>` converts with `yyjson::strict` when the read has it. A missing key that `then` or `else_` requires gives `S is not constructible from JSON without the key "k", which yyjson::if_then_else requires`, a value that breaks a setting gives the message of that setting at the path of the value, and `not_` gives `S has the keys and the values that yyjson::not_ rejects`. [`yyjson::validate`](#yyjsonvalidate) and `write(t, yyjson::strict)` check them by the keys that are written. A struct may have several of them, which all apply.
@@ -1874,6 +1872,34 @@ inline constexpr auto yyjson::annotations<Shape> = yyjson::annotate(
 yyjson::read<Shape>(R"({"kind":"square"})");  // -> Shape{"square", std::nullopt}
 yyjson::read<Shape>(R"({"kind":"circle"})");
 // throws yyjson::bad_cast: Shape is not constructible from JSON without the key "radius", which yyjson::if_then_else requires ...
+```
+
+### `yyjson::is_type`
+
+Whether a JSON value converts to a type, as a function and as a setting.
+
+```cpp
+template <typename T>
+inline constexpr /* unspecified */ is_type{};
+
+// called as
+bool is_type<T>(const V& v);
+bool is_type<T>(const V& v, yyjson::strict_t);
+```
+
+*   `yyjson::is_type<T>(v)` returns `true` when `v.cast<T>()` returns, and `false` when it throws `yyjson::bad_cast`; `yyjson::is_type<T>(v, yyjson::strict)` does the same with `v.cast<T>(yyjson::strict)`. `v` is a value of the DOM: `yyjson::value`, `yyjson::array`, `yyjson::object` or a reference to a value of them. Other exceptions, such as `std::bad_alloc`, pass through. The converted value is discarded.
+*   As a setting, a field of `yyjson::then` and `yyjson::else_` of [`yyjson::if_then_else`](#yyjsonif_then_else-yyjsonnot_) takes it: `yyjson::field("payload", yyjson::is_type<Payload>)` holds when the value of the field, a `yyjson::value` or `yyjson::object`, or a `std::optional` of them, converts to `Payload`, with `yyjson::strict` when the read has it. [`yyjson::json_schema`](#yyjsonjson_schemat) gives the read schema of `T` in both directions. Elsewhere it is a compile error.
+
+```cpp
+struct Point
+{
+    int x = 0;
+};
+
+auto v = yyjson::read(R"({"x":1,"y":2})");
+yyjson::is_type<Point>(v);                  // -> true
+yyjson::is_type<Point>(v, yyjson::strict);  // -> false: Point has no "y"
+yyjson::is_type<int>(v);                    // -> false
 ```
 
 ### `yyjson::transparent`

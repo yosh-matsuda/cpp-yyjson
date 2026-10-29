@@ -474,7 +474,7 @@ Draft-07 and draft-06 have neither keyword, so the generator ignores them there,
 
 ## Conditions
 
-`if`, `then` and `else`, `not` and `dependentSchemas` of an object schema become settings of its struct, [`yyjson::if_then_else` and `yyjson::not_`](reference.md#yyjsonif_then_else-yyjsonnot_-yyjsonis_type), which test the members after the object is read:
+`if`, `then` and `else`, `not` and `dependentSchemas` of an object schema become settings of its struct, [`yyjson::if_then_else` and `yyjson::not_`](reference.md#yyjsonif_then_else-yyjsonnot_), which test the members after the object is read:
 
 ```json
 {

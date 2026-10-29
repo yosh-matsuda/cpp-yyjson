@@ -1209,14 +1209,8 @@ namespace yyjson
     };
     inline constexpr required_t required{};
 
-    // A field of `yyjson::value` or `yyjson::object` whose value reads as T, which `yyjson::then` and
-    // `yyjson::else_` of `yyjson::if_then_else` take: `yyjson::field("payload", yyjson::is_type<Payload>)`.
     template <typename T>
-    struct is_type_t
-    {
-    };
-    template <typename T>
-    inline constexpr is_type_t<T> is_type{};
+    struct is_type_t;
 
     // A field whose key a JSON object may leave out under `yyjson::strict`, as
     // `yyjson::field("member", yyjson::optional_key)` or `[[=yyjson::optional_key]]` gives it, which a
@@ -2124,6 +2118,46 @@ namespace yyjson
         explicit strict_t() = default;
     };
     inline constexpr strict_t strict{};
+
+    // Whether a JSON value converts to T: `yyjson::is_type<Payload>(v)` is true when `v.cast<Payload>()` returns,
+    // and `yyjson::is_type<Payload>(v, yyjson::strict)` when `v.cast<Payload>(yyjson::strict)` does.  As a setting,
+    // a field of `yyjson::value` or `yyjson::object` in `yyjson::then` and `yyjson::else_` of
+    // `yyjson::if_then_else` takes it: `yyjson::field("payload", yyjson::is_type<Payload>)`.
+    template <typename T>
+    struct is_type_t
+    {
+        template <typename V>
+        requires requires(const V& v) { v.template cast<T>(); }
+        bool operator()(const V& v) const
+        {
+            try
+            {
+                (void)v.template cast<T>();
+                return true;
+            }
+            catch (const bad_cast&)
+            {
+                return false;
+            }
+        }
+
+        template <typename V>
+        requires requires(const V& v) { v.template cast<T>(strict); }
+        bool operator()(const V& v, strict_t) const
+        {
+            try
+            {
+                (void)v.template cast<T>(strict);
+                return true;
+            }
+            catch (const bad_cast&)
+            {
+                return false;
+            }
+        }
+    };
+    template <typename T>
+    inline constexpr is_type_t<T> is_type{};
 
     namespace detail
     {

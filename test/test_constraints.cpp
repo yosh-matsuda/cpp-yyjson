@@ -2087,6 +2087,21 @@ TEST(Constraints, Conditions)
     check(presence, R"({"e":0,"c":7})", "ConditionPresence has the keys and the values that yyjson::not_ rejects");
 }
 
+TEST(Constraints, IsTypeFunction)
+{
+    const auto doc = yyjson::read(R"({"p":{"x":1,"y":2},"n":1.5,"s":"a"})");
+    const auto obj = *doc.as_object();
+    EXPECT_TRUE(yyjson::is_type<ConditionPoint>(obj["p"]));
+    EXPECT_FALSE(yyjson::is_type<ConditionPoint>(obj["p"], yyjson::strict));
+    EXPECT_TRUE(yyjson::is_type<double>(obj["n"]));
+    EXPECT_FALSE(yyjson::is_type<int>(obj["n"]));
+    EXPECT_FALSE(yyjson::is_type<int>(obj["s"]));
+    EXPECT_TRUE(yyjson::is_type<std::string>(obj["s"], yyjson::strict));
+    EXPECT_TRUE((yyjson::is_type<std::map<std::string, yyjson::value>>(doc)));
+    EXPECT_TRUE(yyjson::is_type<ConditionPoint>(yyjson::value(doc)));
+    EXPECT_FALSE(yyjson::is_type<ConditionPoint>(yyjson::object(obj), yyjson::strict));
+}
+
 // alternatives of yyjson::any_of and yyjson::one_of, with settings given as values and through pointers
 constexpr std::string_view alternative_id_regex = "^[a-z]+$";
 constexpr auto alternative_id_pattern = yyjson::pattern(alternative_id_regex);
