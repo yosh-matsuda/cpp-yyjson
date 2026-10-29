@@ -148,6 +148,61 @@ inline constexpr auto yyjson::annotations<Groups> =
     yyjson::annotate(yyjson::one_of_required({"env"}, {"value", "unit"}), yyjson::field("unit", yyjson::rename("u")),
                      yyjson::any_of_required({"email"}, {"phone"}), yyjson::any_of_required({"env"}, {"phone"}));
 
+// conditions on the keys: a circle has a radius of at least 0, another kind a point, and no kind starts with "x";
+// a single condition goes into the schema of the struct itself
+struct CondPoint
+{
+    int x = 0;
+};
+struct Conditioned
+{
+    std::optional<std::string> kind;
+    std::optional<double> r;
+    std::optional<yyjson::value> p;
+};
+template <>
+inline constexpr auto yyjson::annotations<Conditioned> = yyjson::annotate(
+    yyjson::if_then_else(yyjson::if_(yyjson::field("kind", yyjson::const_("circle"), yyjson::required)),
+                         yyjson::then(yyjson::field("r", yyjson::required, yyjson::minimum(0))),
+                         yyjson::else_(yyjson::field("p", yyjson::reads_as<CondPoint>))),
+    yyjson::not_(yyjson::field("kind", yyjson::pattern("^x"))), yyjson::field("r", yyjson::rename("radius")));
+struct CondOpen
+{
+    int x = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<CondOpen> = yyjson::annotate(yyjson::additional_properties(true));
+struct OpenCondition
+{
+    std::optional<yyjson::value> p;
+};
+template <>
+inline constexpr auto yyjson::annotations<OpenCondition> = yyjson::annotate(yyjson::if_then_else(
+    yyjson::if_(yyjson::field("p", yyjson::required)), yyjson::then(yyjson::field("p", yyjson::reads_as<CondOpen>))));
+struct OneCondition
+{
+    std::optional<int> a;
+    std::optional<std::vector<int>> b;
+};
+template <>
+inline constexpr auto yyjson::annotations<OneCondition> = yyjson::annotate(
+    yyjson::if_then_else(yyjson::if_(yyjson::field("a", yyjson::required, yyjson::maximum(5))),
+                         yyjson::then(yyjson::field("b", yyjson::required, yyjson::items(yyjson::minimum(1))),
+                                      yyjson::field("b", yyjson::min_items(2)))));
+// conditions on a plain field and a field with yyjson::omit_default, which tell their keys by the object
+struct CondKeys
+{
+    int b = 0;
+    int e = 0;
+    std::optional<int> d;
+};
+template <>
+inline constexpr auto yyjson::annotations<CondKeys> =
+    yyjson::annotate(yyjson::field("e", yyjson::omit_default),
+                     yyjson::if_then_else(yyjson::if_(yyjson::field("e", yyjson::required)),
+                                          yyjson::then(yyjson::field("d", yyjson::required))),
+                     yyjson::not_(yyjson::field("b", yyjson::const_(-1))));
+
 // keys of no field kept in a map, whose values are constrained, also in an alternative of an internally tagged variant
 struct Extra
 {
@@ -1236,6 +1291,59 @@ TEST(Schema, RequiredGroups)
     // the keyword that the struct already has goes into allOf
     EXPECT_EQ(s["anyOf"], json::parse(R"([{"required":["email"]},{"required":["phone"]}])"));
     EXPECT_EQ(s["allOf"], json::parse(R"([{"anyOf":[{"required":["env"]},{"required":["phone"]}]}])"));
+}
+
+TEST(Schema, Conditions)
+{
+    check<Conditioned>({
+        R"({"kind":"circle","radius":1})",
+        R"({"kind":"circle"})",
+        R"({"kind":"circle","radius":-1})",
+        R"({"kind":"sq","p":{"x":1}})",
+        R"({"kind":"sq","p":{"x":"a"}})",
+        R"({"kind":"sq","radius":-1})",
+        R"({"kind":"xx"})",
+        R"({})",
+        R"({"p":3})",
+        R"({"kind":"circle","radius":2,"p":5})",
+    });
+    check<OneCondition>({
+        R"({})",
+        R"({"a":1})",
+        R"({"a":1,"b":[1]})",
+        R"({"a":1,"b":[1,2]})",
+        R"({"a":1,"b":[0,2]})",
+        R"({"a":9})",
+        R"({"b":[0]})",
+    });
+    // a value of reads_as is written as it is read, so the write schema takes the read schema of its type, here
+    // with a key that CondOpen ignores
+    check<OpenCondition>({
+        R"({"p":{"x":1,"z":2}})",
+        R"({"p":{"x":"a"}})",
+        R"({})",
+    });
+    EXPECT_NO_THROW(yyjson::validate(yyjson::read<OpenCondition>(R"({"p":{"x":1,"z":2}})", yyjson::strict)));
+    check<CondKeys>({
+        R"({"b":1})",
+        R"({"b":-1})",
+        R"({"b":1,"e":0})",
+        R"({"b":1,"e":2})",
+        R"({"b":1,"e":2,"d":3})",
+        R"({"e":0,"d":3,"b":1})",
+        R"({"b":1,"d":3})",
+    });
+    // validate reads the value of reads_as under strict, as the read of the output does
+    const auto loose = yyjson::read<Conditioned>(R"({"kind":"sq","p":{"x":1,"y":2}})");
+    EXPECT_THROW(yyjson::validate(loose), yyjson::bad_cast);
+    const auto s = to_jsoncons(yyjson::json_schema<Conditioned>())["$defs"]["Conditioned"];
+    ASSERT_EQ(s["allOf"].size(), 2);
+    EXPECT_EQ(s["allOf"][0]["if"],
+              json::parse(R"({"properties":{"kind":{"type":"string","const":"circle"}},"required":["kind"]})"));
+    EXPECT_EQ(s["allOf"][0]["then"]["required"], json::parse(R"(["radius"])"));
+    EXPECT_EQ(s["allOf"][1], json::parse(R"({"not":{"properties":{"kind":{"type":"string","pattern":"^x"}}}})"));
+    const auto one = to_jsoncons(yyjson::json_schema<OneCondition>())["$defs"]["OneCondition"];
+    EXPECT_TRUE(one.contains("if") && one.contains("then") && !one.contains("else") && !one.contains("allOf"));
 }
 
 TEST(Schema, ExtraKeys)

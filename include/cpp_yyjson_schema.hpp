@@ -518,6 +518,19 @@ namespace yyjson
             // `yyjson::strict` applies to reading only: what `write` gives has every key that is not left out.
             [[nodiscard]] bool strict() const noexcept { return strict_ && !writing(); }
             [[nodiscard]] bool writing() const noexcept { return writing_; }
+            // Writes the read schema of T in both directions: a value that `yyjson::reads_as<T>` checks is written
+            // as it is, so the write schema takes whatever the read accepts.
+            template <typename T>
+            void emit_read(object_ref out)
+            {
+                struct restore
+                {
+                    bool& writing;
+                    bool value;
+                    ~restore() { writing = value; }
+                } const guard{writing_, std::exchange(writing_, false)};
+                emit<T>(out);
+            }
 
             // `S()`, from which the read schema takes the defaults of the fields, or null for the write schema.
             template <typename S>
@@ -926,6 +939,10 @@ namespace yyjson
 
             template <typename S>
             void emit_struct(object_ref out, std::span<const variant_tag> tags = {});
+            template <typename S>
+            void emit_conditions(object_ref out, std::optional<array_ref>& all_of);
+            template <typename S, std::size_t... Es>
+            void emit_condition_part(object_ref out, std::size_t begin, std::size_t end, std::index_sequence<Es...>);
             template <typename S>
             void emit_transparent(object_ref out, std::span<const variant_tag> tags);
             template <typename F, typename Tags, std::size_t... Is>
@@ -1727,6 +1744,7 @@ namespace yyjson
                     }
                 }
             }
+            if constexpr (yyjson::detail::has_conditions<S>) emit_conditions<S>(out, adjacent);
             if constexpr (yyjson::detail::has_extra_keys<S>)
             {
                 // The keys that no field has go to the field of `yyjson::extra_keys`, in both directions and with
@@ -1758,6 +1776,89 @@ namespace yyjson
                                 (strict() && rules::additional != additional::allowed);
             // The keys of the branches of `allOf` are in `properties` too, so `additionalProperties` knows them.
             if (closed) out.emplace("additionalProperties", false);
+        }
+
+        // Writes the fields of the entries from `begin` to `end` of the conditions of S as `properties`, with the
+        // keys that the entries require as `required`.  A field that the part names again goes to `allOf`.
+        template <typename S, std::size_t... Es>
+        void generator::emit_condition_part(object_ref out, std::size_t begin, std::size_t end,
+                                            std::index_sequence<Es...>)
+        {
+            using table = yyjson::detail::condition_table<S>;
+            auto properties = std::optional<object_ref>();
+            auto required = std::vector<std::string_view>();
+            auto again = std::optional<array_ref>();
+            (
+                [&] {
+                    if (Es < begin || Es >= end) return;
+                    using entry = yyjson::detail::condition_entry_of<S, Es>;
+                    using F = typename entry::type;
+                    using V = typename optional_value<F>::type;
+                    using R = typename entry::reads_as;
+                    constexpr auto key = yyjson::detail::struct_field_key<S, entry::field>;
+                    if (entry::entry.required && std::ranges::find(required, key) == required.end())
+                        required.push_back(key);
+                    // A field that only `yyjson::required` names has no schema of its own.
+                    if constexpr (std::is_void_v<R> && !entry::constrained) return;
+                    auto p = [&] {
+                        if (!properties) properties = out.emplace("properties", empty_object);
+                        if (!properties->contains(key)) return properties->emplace(key, empty_object);
+                        if (!again) again = out.emplace("allOf", empty_array);
+                        return again->emplace_back(empty_object)
+                            .emplace("properties", empty_object)
+                            .emplace(key, empty_object);
+                    }();
+                    const auto* const nodes = table::tree.nodes.data();
+                    if constexpr (!std::is_void_v<R>)
+                    {
+                        if constexpr (entry::constrained)
+                        {
+                            auto all = p.emplace("allOf", empty_array);
+                            emit<V>(all.emplace_back(empty_object), nodes, Es);
+                            emit_read<R>(all.emplace_back(empty_object));
+                        }
+                        else
+                            emit_read<R>(p);
+                    }
+                    else
+                        emit<V>(p, nodes, Es);
+                }(),
+                ...);
+            if (!required.empty())
+            {
+                auto r = out.emplace("required", empty_array);
+                for (const auto k : required) r.emplace_back(k);
+            }
+        }
+
+        // Writes the conditions of S, `yyjson::if_then_else` as `if`, `then` and `else`, and `yyjson::not_` as
+        // `not`, each in a branch of `allOf` when S has more than one.
+        template <typename S>
+        void generator::emit_conditions(object_ref out, std::optional<array_ref>& all_of)
+        {
+            using table = yyjson::detail::condition_table<S>;
+            constexpr auto entries = std::make_index_sequence<table::entries.size()>{};
+            const auto* const outer_values = std::exchange(values_, table::tree.values.data());
+            for (const auto& rule : table::rules)
+            {
+                auto target = [&] {
+                    if (table::rules.size() == 1) return out;
+                    if (!all_of) all_of = out.emplace("allOf", empty_array);
+                    return all_of->emplace_back(empty_object);
+                }();
+                if (rule.negated)
+                {
+                    emit_condition_part<S>(target.emplace("not", empty_object), rule.begin, rule.then_begin, entries);
+                    continue;
+                }
+                emit_condition_part<S>(target.emplace("if", empty_object), rule.begin, rule.then_begin, entries);
+                if (rule.then_begin != rule.else_begin)
+                    emit_condition_part<S>(target.emplace("then", empty_object), rule.then_begin, rule.else_begin,
+                                           entries);
+                if (rule.else_begin != rule.end)
+                    emit_condition_part<S>(target.emplace("else", empty_object), rule.else_begin, rule.end, entries);
+            }
+            values_ = outer_values;
         }
     }  // namespace schema_detail
 

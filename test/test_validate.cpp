@@ -75,6 +75,37 @@ struct ValidateGroups
 template <>
 inline constexpr auto yyjson::annotations<ValidateGroups> =
     yyjson::annotate(yyjson::one_of_required({"a"}, {"b"}), yyjson::field("b", yyjson::optional_key));
+// conditions: a circle has a radius of at least 0, another kind a point, and no kind is "x"
+struct ValidatePoint
+{
+    int x = 0;
+};
+struct ValidateConditions
+{
+    std::optional<std::string> kind;
+    std::optional<int> r;
+    std::optional<yyjson::value> p;
+};
+template <>
+inline constexpr auto yyjson::annotations<ValidateConditions> = yyjson::annotate(
+    yyjson::if_then_else(yyjson::if_(yyjson::field("kind", yyjson::const_("circle"), yyjson::required)),
+                         yyjson::then(yyjson::field("r", yyjson::required, yyjson::minimum(0))),
+                         yyjson::else_(yyjson::field("p", yyjson::reads_as<ValidatePoint>))),
+    yyjson::not_(yyjson::field("kind", yyjson::const_("x"))));
+// conditions on fields that writing writes whatever they hold, and one that it leaves out when it holds its default
+struct ValidatePresence
+{
+    std::optional<int> a = 5;
+    int b = 0;
+    int e = 0;
+    std::optional<int> d;
+};
+template <>
+inline constexpr auto yyjson::annotations<ValidatePresence> = yyjson::annotate(
+    yyjson::field("e", yyjson::omit_default),
+    yyjson::if_then_else(yyjson::if_(yyjson::field("a", yyjson::required)),
+                         yyjson::then(yyjson::field("d", yyjson::required))),
+    yyjson::not_(yyjson::field("b", yyjson::required), yyjson::field("e", yyjson::required)));
 struct ValidateRequired
 {
     ValidateMaybe<int> c;
@@ -322,6 +353,38 @@ TEST(Validate, Keys)
     expect_invalid(
         ValidateGroups{1, {true, 1}},
         R"(ValidateGroups is not constructible from JSON with all the keys of more than one of ["a"], ["b"])", "");
+}
+
+TEST(Validate, Conditions)
+{
+    expect_valid(ValidateConditions{"circle", 1, {}});
+    expect_valid(ValidateConditions{"square", -1, yyjson::value(yyjson::read(R"({"x":1})"))});
+    expect_invalid(ValidateConditions{"circle", {}, {}},
+                   R"(ValidateConditions is not constructible from JSON without the key "r", which )"
+                   R"(yyjson::if_then_else requires)",
+                   "");
+    expect_invalid(ValidateConditions{"circle", -1, {}},
+                   R"(the value of the key "r" of ValidateConditions is less than the minimum 0)", "/r");
+    // the value of reads_as is read under yyjson::strict
+    expect_invalid(ValidateConditions{"square", {}, yyjson::value(yyjson::read(R"({"x":"a"})"))},
+                   "int is not constructible from JSON string", "/p/x");
+    expect_invalid(ValidateConditions{"square", {}, yyjson::value(yyjson::read(R"({})"))},
+                   R"(ValidatePoint is not constructible from JSON without the key "x")", "/p");
+    expect_invalid(ValidateConditions{"x", {}, {}},
+                   "ValidateConditions has the keys and the values that yyjson::not_ rejects", "");
+    expect_invalid(std::vector<ValidateConditions>{{"circle", 1, {}}, {}},
+                   "ValidateConditions has the keys and the values that yyjson::not_ rejects", "/1");
+
+    // the keys that writing writes tell which fields the object has: reading {} leaves `a` at 5, which is written
+    const auto read = yyjson::read<ValidatePresence>("{}");
+    expect_invalid(read,
+                   R"(ValidatePresence is not constructible from JSON without the key "d", which )"
+                   R"(yyjson::if_then_else requires)",
+                   "");
+    expect_valid(ValidatePresence{{}, 0, 0, {}});
+    expect_valid(ValidatePresence{5, 0, 0, 1});
+    expect_invalid(ValidatePresence{{}, 0, 1, {}},
+                   "ValidatePresence has the keys and the values that yyjson::not_ rejects", "");
 }
 
 TEST(Validate, AdjacentTag)
