@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Shape",
+  "type": "object",
+  "properties": {
+    "kind": {"enum": ["circle", "rect", "poly"]},
+    "radius": {"type": "number"},
+    "payload": {},
+    "height": {"type": "integer"}
+  },
+  "if": {"properties": {"kind": {"const": "circle"}}, "required": ["kind"]},
+  "then": {"required": ["radius"], "properties": {"radius": {"minimum": 0}, "payload": {"$ref": "#/$defs/Origin"}}},
+  "else": {
+    "if": {"properties": {"kind": {"const": "rect"}}, "required": ["kind"]},
+    "then": {"required": ["width"]},
+    "else": {"required": ["points"]}
+  },
+  "not": {"required": ["radius", "width"]},
+  "dependentSchemas": {"width": {"properties": {"height": {"minimum": 1}}, "required": ["height"]}},
+  "$defs": {
+    "Origin": {"type": "object", "properties": {"x": {"type": "integer"}}, "required": ["x"]}
+  }
+}

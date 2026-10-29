@@ -104,6 +104,8 @@ if(TARGET cpp_yyjson_codegen)
                       NAMESPACE model)
   cpp_yyjson_generate("${PROJECT_NAME}_test_codegen_cmake" codegen/untyped.schema.json
                       NAMESPACE model)
+  cpp_yyjson_generate("${PROJECT_NAME}_test_codegen_cmake" codegen/conditions.schema.json
+                      NAMESPACE model)
   cpp_yyjson_generate("${PROJECT_NAME}_test_codegen_cmake" codegen/untyped.schema.json
                       OUTPUT untyped_inferred.hpp NAMESPACE inferred INFER_TYPES)
 endif()

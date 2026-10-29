@@ -711,6 +711,24 @@ namespace cpp_yyjson_codegen
             std::vector<std::vector<std::string>> groups{};
         };
 
+        // a field of yyjson::if_, yyjson::then, yyjson::else_ or yyjson::not_: the key of the field of the struct,
+        // with settings, yyjson::required (presence) and yyjson::reads_as<T>
+        struct cond_field
+        {
+            std::string key{};
+            settings set{};
+            bool required = false;
+            std::optional<ctype> reads_as{};
+        };
+
+        // yyjson::if_then_else, or yyjson::not_ of the fields of `if_` when `negated`
+        struct condition
+        {
+            bool negated = false;
+            std::vector<cond_field> if_{}, then_{}, else_{};
+            std::string loc{};
+        };
+
         // the fields of a struct that the reflection of C++20 takes, and that VISITABLE_STRUCT takes
         inline constexpr std::size_t max_reflected_fields = 100;
         inline constexpr std::size_t max_visitable_fields = 1365;
@@ -732,6 +750,7 @@ namespace cpp_yyjson_codegen
             bool additional = true;
             std::vector<std::pair<std::string, std::vector<std::string>>> dependent{};  // keys
             std::vector<required_groups> groups{};                                      // keys
+            std::vector<condition> conditions{};
             bool filled = false;
             bool transparent = false;  // yyjson::transparent: read and written as the value of its only field
             // enum: member name, JSON name
@@ -791,11 +810,26 @@ namespace cpp_yyjson_codegen
         }
 
         // the keywords that the generator does not support and leaves out of the C++ type, with a warning
-        inline constexpr auto ignored_keys = std::array<std::string_view, 7>{
-            "if", "then", "else", "not", "dependentSchemas", "$dynamicRef", "$recursiveRef"};
+        inline constexpr auto ignored_keys = std::array<std::string_view, 2>{"$dynamicRef", "$recursiveRef"};
         inline bool is_ignored_key(std::string_view k)
         {
             return std::ranges::find(ignored_keys, k) != ignored_keys.end();
+        }
+
+        // the keywords that condition the keys of an object, which normalize() collects into "$conditions" and a
+        // struct takes as yyjson::if_then_else and yyjson::not_
+        inline bool is_condition_key(std::string_view k)
+        {
+            return k == "if" || k == "then" || k == "else" || k == "not" || k == "dependentSchemas" ||
+                   k == "$conditions";
+        }
+
+        // the keywords that apply only to objects
+        inline bool is_object_key(std::string_view k)
+        {
+            return k == "properties" || k == "required" || k == "additionalProperties" || k == "patternProperties" ||
+                   k == "minProperties" || k == "maxProperties" || k == "propertyNames" || k == "dependentRequired" ||
+                   k == "unevaluatedProperties";
         }
 
         // the keywords from which the generator builds the C++ type; others (vendor keys such as `markdownDescription`)
@@ -822,14 +856,17 @@ namespace cpp_yyjson_codegen
         inline bool adds_nothing(const json& s)
         {
             if (s.is_bool()) return s.b;
-            return s.is_object() && std::ranges::none_of(s.members, [](const auto& m) { return is_type_key(m.first); });
+            return s.is_object() && std::ranges::none_of(s.members, [](const auto& m) {
+                       return is_type_key(m.first) || is_condition_key(m.first);
+                   });
         }
 
         // a reference without keywords beside it that the generator would merge into the referred schema
         inline bool is_pure_ref(const json& s)
         {
             return s.is_object() && s.has("$ref") && std::ranges::all_of(s.members, [](const auto& m) {
-                       return m.first == "$ref" || !(is_type_key(m.first) || is_ignored_key(m.first));
+                       return m.first == "$ref" ||
+                              !(is_type_key(m.first) || is_ignored_key(m.first) || is_condition_key(m.first));
                    });
         }
 
@@ -880,6 +917,7 @@ namespace cpp_yyjson_codegen
             const options& opts_;
             json root_;
             std::deque<json> store_;                        // schemas built by the generator
+            std::map<std::string, const json*> merged_;     // text without `$loc` -> schema in store_
             std::deque<json> files_;                        // schemas of other files
             std::map<std::string, const json*> documents_;  // key of a reference ("" or a file path) -> schema
             std::map<std::string, std::string> ids_;        // absolute $id of a file -> its key
@@ -896,6 +934,7 @@ namespace cpp_yyjson_codegen
             mutable std::vector<int> bound_seen_;  // transparent structs that bound_of is in
             std::map<const json*, const json*> normalized_;
             std::set<const json*> normalizing_;
+            std::set<const json*> conditions_used_;  // normalized schemas whose "$conditions" a struct took
             std::vector<variant_note> notes_;
             std::set<std::string> type_names_;
             std::vector<int> position_;  // the place of a struct in definition order, -1 for others
@@ -946,6 +985,24 @@ namespace cpp_yyjson_codegen
             {
                 store_.push_back(std::move(j));
                 return &store_.back();
+            }
+
+            // a schema built from an alternative and the keywords beside it, the same one each time the same
+            // alternative and keywords meet: a recursive type reached again through them is then seen as busy
+            static void strip_locs(json& x)
+            {
+                std::erase_if(x.members, [](const auto& m) { return m.first == "$loc"; });
+                for (auto& [k, v] : x.members) strip_locs(v);
+                for (auto& v : x.items) strip_locs(v);
+            }
+
+            const json* store_merged(json j)
+            {
+                auto key = j;
+                strip_locs(key);
+                auto text = dump(key);
+                if (const auto it = merged_.find(text); it != merged_.end()) return it->second;
+                return merged_[std::move(text)] = store(std::move(j));
             }
 
             // a scheme of one letter is a drive of Windows: "C:/schemas/a.json" is a file
@@ -1238,6 +1295,15 @@ namespace cpp_yyjson_codegen
                 bool any = false;                  // one of them is `anyOf`
             };
 
+            // "$conditions" of a normalized schema, which evaluates through `if` and `dependentSchemas` (`not` does
+            // not)
+            static bool evaluating_conditions(const json& v, bool items)
+            {
+                return v.is_array() && std::ranges::any_of(v.items, [&](const json& c) {
+                           return c.has("if") || (!items && c.has("dependentSchemas"));
+                       });
+            }
+
             static bool evaluating_key(std::string_view k, bool items)
             {
                 if (k == "if" || k == "then" || k == "else" || k == "$dynamicRef" || k == "$recursiveRef") return true;
@@ -1254,7 +1320,11 @@ namespace cpp_yyjson_codegen
                 if (!s.is_object() || !seen.insert(&s).second) return false;
                 for (const auto& [k, v] : s.members)
                 {
-                    if (evaluating_key(k, items))
+                    if (k == "$conditions")
+                    {
+                        if (evaluating_conditions(v, items)) return true;
+                    }
+                    else if (evaluating_key(k, items))
                     {
                         if (k != "properties" || (v.is_object() && !v.members.empty())) return true;
                     }
@@ -1285,6 +1355,7 @@ namespace cpp_yyjson_codegen
                         if (!top && !(v.is_bool() && !v.b)) sc.all = true;
                     }
                     else if (k == "if" || k == "then" || k == "else" || k == "$dynamicRef" || k == "$recursiveRef" ||
+                             (k == "$conditions" && evaluating_conditions(v, items)) ||
                              (!items && (k == "dependentSchemas" || (k == "dependencies" && v.is_object() &&
                                                                      std::ranges::any_of(v.members, [](const auto& m) {
                                                                          return !m.second.is_array();
@@ -1387,7 +1458,9 @@ namespace cpp_yyjson_codegen
                 const auto legacy =
                     (items != nullptr && items->is_array()) || s->has("additionalItems") || s->has("dependencies");
                 const auto unevaluated = s->has("unevaluatedProperties") || s->has("unevaluatedItems");
-                if (!has_all && !ref_siblings && !legacy && !unevaluated) return s;
+                const auto conditional = std::ranges::any_of(
+                    s->members, [](const auto& m) { return is_condition_key(m.first) && m.first != "$conditions"; });
+                if (!has_all && !ref_siblings && !legacy && !unevaluated && !conditional) return s;
                 if (const auto it = normalized_.find(s); it != normalized_.end()) return it->second;
                 if (!normalizing_.insert(s).second)
                 {
@@ -1398,6 +1471,7 @@ namespace cpp_yyjson_codegen
                 for (const auto& [k, v] : s->members)
                     if (k != "allOf" && k != "$ref") base.members.emplace_back(k, v);
                 upgrade(base);
+                collect_conditions(base, loc);
                 const auto* all = s->find("allOf");
                 // The elements of allOf that give the type something.  The others give metadata, which the base
                 // takes, and keywords that are ignored: merging them would turn a reference to a recursive type
@@ -1491,6 +1565,34 @@ namespace cpp_yyjson_codegen
                     if (!schemas.members.empty()) s.set("dependentSchemas", std::move(schemas));
                 }
                 erase("dependencies");
+            }
+
+            // `if` with `then` and `else`, `not` and `dependentSchemas` as entries of "$conditions", after those that
+            // the schema has, with the location of the schema in "$loc": merging schemas concatenates them
+            static void collect_conditions(json& s, const std::string& loc)
+            {
+                auto list = s.has("$conditions") ? *s.find("$conditions") : json::array_of({});
+                const auto add = [&](std::initializer_list<const char*> keys) {
+                    auto c = json::object_of();
+                    for (const auto* k : keys)
+                        if (const auto* v = s.find(k)) c.set(k, *v);
+                    c.set("$loc", json::string_of(loc));
+                    list.items.push_back(std::move(c));
+                };
+                // `then` and `else` without `if` do nothing
+                if (s.has("if")) add({"if", "then", "else"});
+                if (s.has("not")) add({"not"});
+                if (s.has("dependentSchemas")) add({"dependentSchemas"});
+                std::erase_if(s.members, [](const auto& m) { return is_condition_key(m.first); });
+                if (!list.items.empty()) s.set("$conditions", std::move(list));
+            }
+
+            static bool same_condition(const json& a, const json& b)
+            {
+                auto x = a, y = b;
+                std::erase_if(x.members, [](const auto& m) { return m.first == "$loc"; });
+                std::erase_if(y.members, [](const auto& m) { return m.first == "$loc"; });
+                return equal(x, y);
             }
 
             // both schemas; one of them when they are equal, so that a schema repeated beside a reference to a
@@ -1604,6 +1706,14 @@ namespace cpp_yyjson_codegen
                         }
                         r.set(k, std::move(dep));
                     }
+                    else if (k == "$conditions" && av->is_array() && bv.is_array())
+                    {
+                        auto list = *av;
+                        for (const auto& c : bv.items)
+                            if (std::ranges::none_of(list.items, [&](const json& x) { return same_condition(x, c); }))
+                                list.items.push_back(c);
+                        r.set(k, std::move(list));
+                    }
                     else if (!is_metadata_key(k) && !equal(*av, bv))
                         warn(loc, "`allOf` has different values of `" + k + "`; the first is used");
                 }
@@ -1668,7 +1778,8 @@ namespace cpp_yyjson_codegen
                 };
                 auto groups = std::vector<std::string>();
                 if (any_of_keys({"properties", "required", "additionalProperties", "patternProperties", "minProperties",
-                                 "maxProperties", "propertyNames", "dependentRequired"}))
+                                 "maxProperties", "propertyNames", "dependentRequired"}) ||
+                    !condition_keys(s).empty())
                     groups.emplace_back("object");
                 if (any_of_keys({"items", "prefixItems", "minItems", "maxItems", "uniqueItems", "contains",
                                  "minContains", "maxContains"}))
@@ -1834,6 +1945,123 @@ namespace cpp_yyjson_codegen
             typed type_content(const json* s0, const std::string& loc, const std::string& hint, bool named)
             {
                 const auto* s = normalize(s0, loc);
+                auto r = type_body(s0, loc, hint, named);
+                // a variant passes the conditions to its alternatives, which take them or warn
+                const auto* c = s->is_object() ? s->find("$conditions") : nullptr;
+                if (c != nullptr && !conditions_used_.contains(s) &&
+                    !((s->has("anyOf") && !required_groups_of(*s, "anyOf")) ||
+                      (s->has("oneOf") && !required_groups_of(*s, "oneOf"))))
+                    warn_unused_conditions(*c, r.t);
+                return r;
+            }
+
+            // The conditions of a schema whose type is not a struct, which takes them as yyjson::if_then_else and
+            // yyjson::not_: those that test only the keys of objects hold for the values of the type that are not
+            // objects, and the others are ignored with a warning
+            void warn_unused_conditions(const json& list, const ctype& t)
+            {
+                const auto object_only = [&](const json* sub, const std::string& sloc) {
+                    const auto* n = normalize_full(sub, sloc);
+                    if (n->is_bool()) return n->b;
+                    return n->is_object() && std::ranges::all_of(n->members, [&](const auto& m) {
+                               return is_metadata_key(m.first) || is_object_key(m.first);
+                           });
+                };
+                for (const auto& c : list.items)
+                {
+                    const auto* l = c.find("$loc");
+                    const auto cloc = l != nullptr && l->is_string() ? l->text : std::string();
+                    const auto* kw = c.has("if") ? "if" : c.has("not") ? "not" : "dependentSchemas";
+                    if (!can_be_object(t))
+                    {
+                        if (c.has("dependentSchemas")) continue;
+                        // `if` that only objects satisfy leaves `else` to a value of another kind
+                        const auto* i = c.has("if") ? normalize_full(c.find("if"), cloc + "/if") : nullptr;
+                        const auto types = i != nullptr && i->is_object() ? type_list(*i) : std::vector<std::string>();
+                        const auto objects = !types.empty() && std::ranges::all_of(types, [](const auto& x) {
+                            return x == "object";
+                        });
+                        if (i != nullptr && std::ranges::all_of(std::array{"then", "else"}, [&](const char* k) {
+                                const auto* v = c.find(k);
+                                return v == nullptr || (objects && k[0] == 't') || object_only(v, cloc + "/" + k);
+                            }))
+                            continue;
+                    }
+                    warn(cloc, "`" + std::string(kw) + "` is not supported on a value that is not read as a struct and is "
+                               "ignored");
+                }
+            }
+
+            // whether a value of the type may be a JSON object
+            bool can_be_object(const ctype& t) const
+            {
+                const auto& r = resolved(t);
+                switch (r.k)
+                {
+                    case tk::any:
+                    case tk::object:
+                    case tk::map:
+                        return true;
+                    case tk::named:
+                        return is_struct(r);
+                    case tk::optional:
+                    case tk::indirect:
+                    case tk::variant:
+                        return std::ranges::any_of(r.args, [&](const ctype& a) { return can_be_object(a); });
+                    default:
+                        return false;
+                }
+            }
+
+            // The keys that the conditions of the normalized object schema `s` name, with the locations that name
+            // them: the keys of `properties` and `required` of `if`, `then`, `else` and `not` (and of the
+            // subschemas of `anyOf` of `not`), the keys of `dependentSchemas` and those that their schemas name
+            std::vector<std::pair<std::string, std::string>> condition_keys(const json& s, int depth = 0)
+            {
+                auto out = std::vector<std::pair<std::string, std::string>>();
+                const auto* list = s.find("$conditions");
+                if (list == nullptr || !list->is_array() || depth > 8) return out;
+                const auto add = [&](const std::string& k, const std::string& kloc) {
+                    if (std::ranges::none_of(out, [&](const auto& e) { return e.first == k; })) out.emplace_back(k, kloc);
+                };
+                const auto names = [&](const json* sub, const std::string& sloc) {
+                    const auto* n = normalize_full(sub, sloc);
+                    if (!n->is_object()) return;
+                    if (const auto* p = n->find("properties"); p != nullptr && p->is_object())
+                        for (const auto& [k, v] : p->members) add(k, sloc + "/properties/" + pointer_token(k));
+                    if (const auto* r = n->find("required"); r != nullptr && r->is_array())
+                        for (const auto& e : r->items)
+                            if (e.is_string()) add(e.text, sloc + "/required");
+                    for (const auto& [k, l] : condition_keys(*n, depth + 1)) add(k, l);
+                };
+                for (const auto& c : list->items)
+                {
+                    const auto* l = c.find("$loc");
+                    const auto cloc = l != nullptr && l->is_string() ? l->text : std::string();
+                    for (const auto* k : {"if", "then", "else"})
+                        if (const auto* v = c.find(k)) names(v, cloc + "/" + k);
+                    if (const auto* v = c.find("not"))
+                    {
+                        names(v, cloc + "/not");
+                        const auto* n = normalize_full(v, cloc + "/not");
+                        if (const auto* any = n->is_object() ? n->find("anyOf") : nullptr; any != nullptr && any->is_array())
+                            for (std::size_t i = 0; i < any->items.size(); ++i)
+                                names(&any->items[i], cloc + "/not/anyOf/" + std::to_string(i));
+                    }
+                    if (const auto* d = c.find("dependentSchemas"); d != nullptr && d->is_object())
+                        for (const auto& [k, v] : d->members)
+                        {
+                            const auto dloc = cloc + "/dependentSchemas/" + pointer_token(k);
+                            add(k, dloc);
+                            names(&v, dloc);
+                        }
+                }
+                return out;
+            }
+
+            typed type_body(const json* s0, const std::string& loc, const std::string& hint, bool named)
+            {
+                const auto* s = normalize(s0, loc);
                 if (!s->is_object()) return s->is_bool() && !s->b ? type_of(s, loc, hint) : typed{};
                 warn_unsupported(*s, loc);
                 if (const auto* ref = s->find("$ref"))
@@ -1865,7 +2093,7 @@ namespace cpp_yyjson_codegen
                 auto r = typed();
                 if (kind == "object")
                 {
-                    if (s.has("properties") || s.has("required"))
+                    if (s.has("properties") || s.has("required") || !condition_keys(s).empty())
                         return make_struct(s0, s, loc, hint, named, nullable, whole);
                     r = type_map(s, loc, hint);
                 }
@@ -2183,11 +2411,17 @@ namespace cpp_yyjson_codegen
                     }
                 }
                 // a key that another keyword names is a field, of the type that the object gives a key that no
-                // property declares
-                const auto add_named_key = [&](const std::string& k, bool req, const std::string& kloc) {
+                // property declares; `rejected` takes the keys that `additionalProperties` false rejects instead
+                const auto add_named_key = [&](const std::string& k, bool req, const std::string& kloc,
+                                               std::vector<std::string>* rejected = nullptr) {
                     if (std::ranges::any_of(fields, [&](const auto& f) { return f.key == k; })) return;
                     const json* schema = nullptr;
                     auto t = undeclared_key_type(s, k, loc, decls_[idx].name + pascal(k), schema);
+                    if (!t && rejected != nullptr)
+                    {
+                        if (std::ranges::find(*rejected, k) == rejected->end()) rejected->push_back(k);
+                        return;
+                    }
                     if (!t)
                     {
                         warn(kloc, "the key \"" + k + "\" is no property, and `additionalProperties` is false; " +
@@ -2231,6 +2465,10 @@ namespace cpp_yyjson_codegen
                             for (const auto& k : group) add_named_key(k, false, loc + "/" + kw);
                         groups.push_back(std::move(*g));
                     }
+                // the keys that the conditions name: a key that `additionalProperties` false rejects is never in an
+                // object, and has no field
+                auto rejected = std::vector<std::string>();
+                for (const auto& [k, kloc] : condition_keys(s)) add_named_key(k, false, kloc, &rejected);
                 // the keys that name no property: rejected, accepted and dropped, or kept in a field of
                 // yyjson::extra_keys, whose map holds them by the schema of `additionalProperties`
                 auto additional = true;
@@ -2315,12 +2553,513 @@ namespace cpp_yyjson_codegen
                     if (key_pattern) add_key_pattern(f.set, *key_pattern, loc + "/patternProperties");
                     fields.push_back(std::move(f));
                 }
+                auto conditions = conditions_of(s, fields, rejected, decls_[idx].name);
+                if (s.has("$conditions")) conditions_used_.insert(&s);
                 auto& d = decls_[idx];
                 d.fields = std::move(fields);
                 d.additional = additional;
                 d.dependent = std::move(dependent);
                 d.groups = std::move(groups);
+                d.conditions = std::move(conditions);
                 d.filled = true;
+            }
+
+            // conditions
+
+            static const field* field_of(const std::vector<field>& fields, std::string_view k)
+            {
+                for (const auto& f : fields)
+                    if (!f.extra && f.key == k) return &f;
+                return nullptr;
+            }
+
+            static bool type_has(const json& type, std::string_view kind)
+            {
+                if (type.is_string()) return type.text == kind;
+                return type.is_array() &&
+                       std::ranges::any_of(type.items, [&](const json& t) { return t.is_string() && t.text == kind; });
+            }
+
+            // whether a value of the type may be JSON null, which the settings of a field let through
+            bool may_be_null(const ctype& t) const
+            {
+                const auto& r = resolved(t);
+                if (r.k == tk::optional || r.k == tk::indirect) return may_be_null(r.args[0]);
+                return holds_null(r) || r.k == tk::any || r.k == tk::null || r.k == tk::monostate;
+            }
+
+            // whether the normalized schema accepts null by `const`, `enum` and `type`
+            static bool accepts_null(const json& n)
+            {
+                if (!n.is_object()) return !n.is_bool() || n.b;
+                if (const auto* c = n.find("const"); c != nullptr && !c->is_null()) return false;
+                if (const auto* e = n.find("enum");
+                    e != nullptr && !(e->is_array() && std::ranges::any_of(e->items, [](const json& v) {
+                        return v.is_null();
+                    })))
+                    return false;
+                if (const auto* t = n.find("type"); t != nullptr && !type_has(*t, "null")) return false;
+                return true;
+            }
+
+            // The settings of the value of a field that a condition names: those of settings_for(), where `const`
+            // and `enum` of an enumeration give the JSON names of its enumerators
+            std::optional<settings> condition_settings(const json& sub, const ctype& type, const std::string& loc)
+            {
+                const auto* n = normalize_full(&sub, loc);
+                const auto& t = value_type(type);
+                if (!n->is_object() || t.k != tk::named || decls_[t.decl].kind != decl::kind_t::enumeration ||
+                    !(n->has("const") || n->has("enum")))
+                    return settings_for(sub, type, loc);
+                const auto& names = decls_[t.decl].enumerators;
+                const auto known = [&](const json& v) {
+                    return v.is_string() &&
+                           std::ranges::any_of(names, [&](const auto& e) { return e.second == v.text; });
+                };
+                auto out = settings();
+                if (const auto* c = n->find("const"))
+                {
+                    if (!known(*c)) return std::nullopt;
+                    out.constraints.push_back({"yyjson::const_(" + cpp_string(c->text) + ")", "const", *c});
+                }
+                if (const auto* e = n->find("enum"))
+                {
+                    if (!e->is_array()) return std::nullopt;
+                    auto list = std::vector<std::string>();
+                    for (const auto& v : e->items)
+                        if (known(v)) list.push_back(cpp_string(v.text));
+                    if (list.empty()) return std::nullopt;
+                    out.constraints.push_back({"yyjson::enum_(" + join(list) + ")", "enum", *e});
+                }
+                auto rest = *n;
+                std::erase_if(rest.members, [](const auto& m) { return m.first == "const" || m.first == "enum"; });
+                auto more = settings_for(*store(std::move(rest)), type, loc);
+                if (!more) return std::nullopt;
+                for (auto& c : more->constraints) out.constraints.push_back(std::move(c));
+                return out;
+            }
+
+            // what the subschema of `if` or `not` tests, as the fields of yyjson::if_ / yyjson::not_: `fields` empty
+            // when every object satisfies it, `never` when none does, `ok` false with the reason in `why` when C++
+            // does not express it
+            struct cond_test
+            {
+                bool ok = true;
+                bool never = false;
+                std::vector<cond_field> fields{};
+                std::string why{};
+            };
+
+            cond_test test_of(const json& sub, const std::string& sloc, const std::vector<field>& fields,
+                              const std::vector<std::string>& rejected)
+            {
+                auto r = cond_test();
+                const auto fail = [&](std::string why) {
+                    r.ok = false;
+                    r.why = std::move(why);
+                    return r;
+                };
+                const auto entry = [&](const std::string& k) -> cond_field& {
+                    for (auto& f : r.fields)
+                        if (f.key == k) return f;
+                    return r.fields.emplace_back(cond_field{.key = k});
+                };
+                const auto is_rejected = [&](const std::string& k) {
+                    return std::ranges::find(rejected, k) != rejected.end();
+                };
+                const auto* n = normalize_full(&sub, sloc);
+                if (n->is_bool())
+                {
+                    r.never = !n->b;
+                    return r;
+                }
+                if (!n->is_object()) return fail("it is not a schema");
+                for (const auto& [k, v] : n->members)
+                {
+                    if (is_metadata_key(k)) continue;
+                    if (k == "type")
+                    {
+                        // the value is an object
+                        if (!type_has(v, "object")) r.never = true;
+                    }
+                    else if (k == "required" && v.is_array())
+                    {
+                        for (const auto& e : v.items)
+                        {
+                            if (!e.is_string()) return fail("`required` is not an array of strings");
+                            if (is_rejected(e.text))
+                                r.never = true;
+                            else
+                                entry(e.text).required = true;
+                        }
+                    }
+                    else if (k == "properties" && v.is_object())
+                    {
+                        for (const auto& [key, ps] : v.members)
+                        {
+                            // a key that is never in an object satisfies its schema
+                            if (is_rejected(key)) continue;
+                            const auto ploc = sloc + "/properties/" + pointer_token(key);
+                            const auto* pn = normalize_full(&ps, ploc);
+                            if (accepts_anything(*pn)) continue;
+                            const auto* f = field_of(fields, key);
+                            if (f == nullptr) return fail("the key \"" + key + "\" has no field");
+                            if (pn->is_bool()) return fail("the schema of the key \"" + key + "\" is false");
+                            if (pn->is_object())
+                                for (const auto& [pk, pv] : pn->members)
+                                    if (!is_metadata_key(pk) && pk != "type" && pk != "const" && pk != "enum" &&
+                                        pk != "minimum" && pk != "maximum" && pk != "exclusiveMinimum" &&
+                                        pk != "exclusiveMaximum" && pk != "multipleOf" && pk != "minLength" &&
+                                        pk != "maxLength" && pk != "pattern" && pk != "format")
+                                        return fail("`" + pk + "` of the key \"" + key + "\" is not tested by a field");
+                            // the settings of a field let null through, which the schema may reject
+                            if (may_be_null(f->type) && !accepts_null(*pn))
+                                return fail("the value of the key \"" + key + "\" may be null, which the test of its "
+                                            "field lets through");
+                            auto set = condition_settings(ps, f->type, ploc);
+                            if (!set)
+                                return fail("the schema of the key \"" + key +
+                                            "\" is not expressed by the settings of its field");
+                            if (!set->empty()) entry(key).set = std::move(*set);
+                        }
+                    }
+                    else if (k == "$conditions")
+                        return fail("`if`, `not` and `dependentSchemas` are not supported in it");
+                    else
+                        return fail("`" + k + "` is not supported in it");
+                }
+                std::erase_if(r.fields, [](const cond_field& f) { return !f.required && f.set.empty(); });
+                return r;
+            }
+
+            // what the subschema of `then` or `else` requires, as the fields of yyjson::then / yyjson::else_; the
+            // parts that C++ does not express are left out with a warning. The type of yyjson::reads_as<T> is named
+            // after `name`, the key and `suffix`. `never` when no object satisfies the subschema: it is false, or
+            // requires a key that `additionalProperties` false rejects
+            std::vector<cond_field> assert_of(const json& sub, const std::string& sloc, const std::vector<field>& fields,
+                                              const std::vector<std::string>& rejected, const std::string& name,
+                                              const std::string& suffix, bool& never)
+            {
+                auto out = std::vector<cond_field>();
+                never = false;
+                const auto entry = [&](const std::string& k) -> cond_field& {
+                    for (auto& f : out)
+                        if (f.key == k) return f;
+                    return out.emplace_back(cond_field{.key = k});
+                };
+                const auto* n = normalize_full(&sub, sloc);
+                if (n->is_bool()) never = !n->b;
+                if (!n->is_object()) return out;
+                if (const auto* r = n->find("required"); r != nullptr && r->is_array())
+                    for (const auto& e : r->items)
+                        if (e.is_string() && std::ranges::find(rejected, e.text) != rejected.end())
+                        {
+                            never = true;
+                            return out;
+                        }
+                for (const auto& [k, v] : n->members)
+                {
+                    if (is_metadata_key(k) || (k == "type" && type_has(v, "object"))) continue;
+                    if (k == "required" && v.is_array())
+                    {
+                        for (const auto& e : v.items)
+                            if (e.is_string()) entry(e.text).required = true;
+                    }
+                    else if (k == "properties" && v.is_object())
+                    {
+                        for (const auto& [key, ps] : v.members)
+                        {
+                            if (std::ranges::find(rejected, key) != rejected.end()) continue;
+                            const auto ploc = sloc + "/properties/" + pointer_token(key);
+                            const auto* pn = normalize_full(&ps, ploc);
+                            if (accepts_anything(*pn)) continue;
+                            const auto* f = field_of(fields, key);
+                            if (f == nullptr) continue;
+                            if (pn->is_bool())
+                            {
+                                warn(ploc, "the schema `false` of a key that has a field is not supported here and is "
+                                           "ignored");
+                                continue;
+                            }
+                            if (auto set = condition_settings(ps, f->type, ploc))
+                            {
+                                if (!set->empty()) entry(key).set = std::move(*set);
+                                continue;
+                            }
+                            const auto vt = value_type(f->type);
+                            if (vt.k == tk::any || vt.k == tk::object)
+                            {
+                                // the JSON value of the field is read as the type of the schema
+                                auto t = type_of(&ps, ploc, name + pascal(key) + suffix);
+                                if (t.t.k == tk::any) continue;
+                                if (!t.s.empty())
+                                    warn(ploc, "the constraints of the value of the key \"" + key +
+                                                   "\" are not checked: yyjson::reads_as<T> checks only the type");
+                                entry(key).reads_as = std::move(t.t);
+                                continue;
+                            }
+                            // a reference to the type of the field adds nothing
+                            if (is_pure_ref(ps))
+                                if (const auto* target = resolve(*ps.find("$ref"), ploc); target != nullptr)
+                                    if (const auto t = type_of(target, ploc, name + pascal(key) + suffix);
+                                        t.s.empty() && spell(t.t) == spell(vt))
+                                        continue;
+                            warn(ploc, "the schema of the key \"" + key +
+                                           "\" is not expressed by the settings of its field and is ignored");
+                        }
+                    }
+                    else if (k == "$conditions")
+                        warn(sloc, "`if`, `not` and `dependentSchemas` inside `then` and `else` are not supported and "
+                                   "are ignored");
+                    else
+                        warn(sloc + "/" + k, "`" + k + "` is not supported here and is ignored");
+                }
+                return out;
+            }
+
+            // A link of a chain of `if` and `else`: `if` tests one key by `const` or `enum`
+            struct chain_link
+            {
+                const json* entry = nullptr;
+                std::string loc, key;
+                std::vector<json> values;
+                bool required = false;
+            };
+
+            std::optional<chain_link> chain_link_of(const json& c, const std::string& cloc)
+            {
+                const auto* n = normalize_full(c.find("if"), cloc + "/if");
+                if (!n->is_object()) return std::nullopt;
+                chain_link link;
+                link.entry = &c;
+                link.loc = cloc;
+                const json* props = nullptr;
+                const json* req = nullptr;
+                for (const auto& [k, v] : n->members)
+                {
+                    if (is_metadata_key(k) || (k == "type" && type_has(v, "object"))) continue;
+                    if (k == "properties")
+                        props = &v;
+                    else if (k == "required")
+                        req = &v;
+                    else
+                        return std::nullopt;
+                }
+                if (props == nullptr || !props->is_object() || props->members.size() != 1) return std::nullopt;
+                link.key = props->members[0].first;
+                if (req != nullptr)
+                {
+                    if (!req->is_array() || req->items.size() != 1 || !req->items[0].is_string() ||
+                        req->items[0].text != link.key)
+                        return std::nullopt;
+                    link.required = true;
+                }
+                const auto* p = normalize_full(&props->members[0].second, cloc + "/if/properties");
+                if (!p->is_object()) return std::nullopt;
+                for (const auto& [k, v] : p->members)
+                {
+                    if (is_metadata_key(k)) continue;
+                    if (k == "const")
+                        link.values.push_back(v);
+                    else if (k == "enum" && v.is_array() && link.values.empty())
+                        link.values = v.items;
+                    else
+                        return std::nullopt;
+                }
+                if (link.values.empty()) return std::nullopt;
+                return link;
+            }
+
+            // An `if` whose `else` is another `if`, and so on, each testing the same key by values that no other
+            // tests: the conditions of the links do not depend on each other, and the last `else` applies when
+            // the key has none of the values. Each link is then one yyjson::if_then_else, and the last `else` one
+            // more whose condition is the key having any of the values
+            bool add_chain(const json& c, const std::string& cloc, const std::vector<field>& fields,
+                           const std::vector<std::string>& rejected, const std::string& name,
+                           std::vector<condition>& out)
+            {
+                auto links = std::vector<chain_link>();
+                const auto* entry = &c;
+                auto eloc = cloc;
+                const json* last = nullptr;
+                auto last_loc = std::string();
+                for (auto depth = 0; depth < 64; ++depth)
+                {
+                    auto link = chain_link_of(*entry, eloc);
+                    if (!link) return false;
+                    links.push_back(std::move(*link));
+                    const auto* e = entry->find("else");
+                    if (e == nullptr) break;
+                    const auto* n = normalize_full(e, eloc + "/else");
+                    const auto* list = n->is_object() ? n->find("$conditions") : nullptr;
+                    if (list == nullptr || !list->is_array() || list->items.size() != 1 ||
+                        !list->items[0].has("if") ||
+                        std::ranges::any_of(n->members, [](const auto& m) {
+                            return m.first != "$conditions" && !is_metadata_key(m.first);
+                        }))
+                    {
+                        last = e;
+                        last_loc = eloc + "/else";
+                        break;
+                    }
+                    entry = &list->items[0];
+                    const auto* l = entry->find("$loc");
+                    eloc = l != nullptr && l->is_string() ? l->text : eloc + "/else";
+                }
+                if (links.size() < 2) return false;
+                auto values = std::vector<json>();
+                auto optional_links = 0;
+                for (const auto& l : links)
+                {
+                    if (l.key != links[0].key) return false;
+                    optional_links += l.required ? 0 : 1;
+                    for (const auto& v : l.values)
+                    {
+                        if (std::ranges::any_of(values, [&](const json& x) { return equal(x, v); })) return false;
+                        values.push_back(v);
+                    }
+                }
+                // a missing key satisfies every `if` that does not require it, of which the chain takes the first
+                if (optional_links > 1) return false;
+                auto parts = std::vector<condition>();
+                for (const auto& l : links)
+                {
+                    auto t = test_of(*l.entry->find("if"), l.loc + "/if", fields, rejected);
+                    if (!t.ok || t.never || t.fields.empty()) return false;
+                    const auto* tv = l.entry->find("then");
+                    if (tv == nullptr) continue;
+                    auto never = false;
+                    auto th = assert_of(*tv, l.loc + "/then", fields, rejected, name, "Then", never);
+                    if (never)
+                        parts.push_back(condition{.negated = true, .if_ = std::move(t.fields), .loc = l.loc});
+                    else if (!th.empty())
+                        parts.push_back(condition{.if_ = std::move(t.fields), .then_ = std::move(th), .loc = l.loc});
+                }
+                if (last != nullptr)
+                {
+                    auto never = false;
+                    auto el = assert_of(*last, last_loc, fields, rejected, name, "Else", never);
+                    if (never)
+                        warn(last_loc, "`else` that no object satisfies is not supported and is ignored");
+                    else if (!el.empty())
+                    {
+                        auto any = json::object_of();
+                        auto props = json::object_of();
+                        auto values_schema = json::object_of();
+                        values_schema.set("enum", json::array_of(values));
+                        props.set(links[0].key, std::move(values_schema));
+                        any.set("properties", std::move(props));
+                        if (optional_links == 0)
+                            any.set("required", json::array_of({json::string_of(links[0].key)}));
+                        auto t = test_of(*store(std::move(any)), cloc + "/if", fields, rejected);
+                        if (!t.ok || t.never || t.fields.empty()) return false;
+                        parts.push_back(condition{.if_ = std::move(t.fields), .else_ = std::move(el), .loc = last_loc});
+                    }
+                }
+                for (auto& p : parts) out.push_back(std::move(p));
+                return true;
+            }
+
+            void add_if(const json& c, const std::string& cloc, const std::vector<field>& fields,
+                        const std::vector<std::string>& rejected, const std::string& name, std::vector<condition>& out)
+            {
+                const auto* tv = c.find("then");
+                const auto* ev = c.find("else");
+                const auto trivial = [&](const json* x, const std::string& xloc) {
+                    return x == nullptr || accepts_anything(*normalize_full(x, xloc));
+                };
+                if (trivial(tv, cloc + "/then") && trivial(ev, cloc + "/else")) return;
+                if (add_chain(c, cloc, fields, rejected, name, out)) return;
+                auto t = test_of(*c.find("if"), cloc + "/if", fields, rejected);
+                if (!t.ok)
+                {
+                    warn(cloc + "/if", "`if` is not supported here: " + t.why + "; `then` and `else` are ignored");
+                    return;
+                }
+                if (t.never || t.fields.empty())
+                {
+                    if (trivial(t.never ? ev : tv, cloc + (t.never ? "/else" : "/then"))) return;
+                    warn(cloc + "/if", std::string("`if` that ") + (t.never ? "no object" : "every object") +
+                                           " satisfies is not supported; `then` and `else` are ignored");
+                    return;
+                }
+                auto cond = condition{.if_ = t.fields, .loc = cloc};
+                if (tv != nullptr)
+                {
+                    auto never = false;
+                    cond.then_ = assert_of(*tv, cloc + "/then", fields, rejected, name, "Then", never);
+                    if (never) out.push_back(condition{.negated = true, .if_ = t.fields, .loc = cloc + "/then"});
+                }
+                if (ev != nullptr)
+                {
+                    auto never = false;
+                    cond.else_ = assert_of(*ev, cloc + "/else", fields, rejected, name, "Else", never);
+                    if (never) warn(cloc + "/else", "`else` that no object satisfies is not supported and is ignored");
+                }
+                if (!cond.then_.empty() || !cond.else_.empty()) out.push_back(std::move(cond));
+            }
+
+            void add_not(const json& v, const std::string& nloc, const std::vector<field>& fields,
+                         const std::vector<std::string>& rejected, std::vector<condition>& out)
+            {
+                // `not` of `anyOf` rejects an object that any subschema accepts: one yyjson::not_ for each
+                auto subs = std::vector<std::pair<const json*, std::string>>{{&v, nloc}};
+                const auto* n = normalize_full(&v, nloc);
+                if (const auto* any = n->is_object() ? n->find("anyOf") : nullptr;
+                    any != nullptr && any->is_array() && std::ranges::all_of(n->members, [](const auto& m) {
+                        return m.first == "anyOf" || is_metadata_key(m.first);
+                    }))
+                {
+                    subs.clear();
+                    for (std::size_t i = 0; i < any->items.size(); ++i)
+                        subs.emplace_back(&any->items[i], nloc + "/anyOf/" + std::to_string(i));
+                }
+                for (const auto& [sub, sloc] : subs)
+                {
+                    auto t = test_of(*sub, sloc, fields, rejected);
+                    if (!t.ok)
+                        warn(sloc, "`not` is not supported here: " + t.why + "; it is ignored");
+                    else if (t.never)
+                        continue;
+                    else if (t.fields.empty())
+                        warn(sloc, "`not` of a schema that every object satisfies rejects every object; it is ignored");
+                    else
+                        out.push_back(condition{.negated = true, .if_ = std::move(t.fields), .loc = sloc});
+                }
+            }
+
+            // yyjson::if_then_else and yyjson::not_ of the struct `name` from "$conditions" of its schema `s`
+            std::vector<condition> conditions_of(const json& s, const std::vector<field>& fields,
+                                                 const std::vector<std::string>& rejected, const std::string& name)
+            {
+                auto out = std::vector<condition>();
+                const auto* list = s.find("$conditions");
+                if (list == nullptr || !list->is_array()) return out;
+                for (const auto& c : list->items)
+                {
+                    const auto* l = c.find("$loc");
+                    const auto cloc = l != nullptr && l->is_string() ? l->text : std::string();
+                    if (c.has("if"))
+                        add_if(c, cloc, fields, rejected, name, out);
+                    else if (const auto* nt = c.find("not"))
+                        add_not(*nt, cloc + "/not", fields, rejected, out);
+                    else if (const auto* d = c.find("dependentSchemas"); d != nullptr && d->is_object())
+                        for (const auto& [k, v] : d->members)
+                        {
+                            const auto dloc = cloc + "/dependentSchemas/" + pointer_token(k);
+                            if (std::ranges::find(rejected, k) != rejected.end()) continue;
+                            const auto* n = normalize_full(&v, dloc);
+                            if (accepts_anything(*n)) continue;
+                            const auto key = cond_field{.key = k, .required = true};
+                            auto never = false;
+                            auto th = assert_of(v, dloc, fields, rejected, name, "Dependent", never);
+                            if (never)
+                                out.push_back(condition{.negated = true, .if_ = {key}, .loc = dloc});
+                            else if (!th.empty())
+                                out.push_back(condition{.if_ = {key}, .then_ = std::move(th), .loc = dloc});
+                        }
+                }
+                return out;
             }
 
             // defaults
@@ -3776,7 +4515,7 @@ namespace cpp_yyjson_codegen
                     {
                         auto c = base;
                         c.set("allOf", json::array_of({list->items[i]}));
-                        schemas.push_back(store(std::move(c)));
+                        schemas.push_back(store_merged(std::move(c)));
                     }
                 }
                 if (auto r = string_choices(s0, *s, base, *list, kw, loc, hint, named)) return *r;
@@ -3830,7 +4569,8 @@ namespace cpp_yyjson_codegen
                     if (std::ranges::any_of(base.members,
                                             [](const auto& m) {
                                                 return m.first != "type" && m.first != "enum" &&
-                                                       (is_type_key(m.first) || is_ignored_key(m.first));
+                                                       (is_type_key(m.first) || is_ignored_key(m.first) ||
+                                                        is_condition_key(m.first));
                                             }) ||
                         (base.find("type") != nullptr && base_types.empty()))
                         return std::nullopt;
@@ -3850,7 +4590,8 @@ namespace cpp_yyjson_codegen
                     if (!b.is_object() ||
                         std::ranges::any_of(b.members, [](const auto& m) {
                             return m.first != "const" && m.first != "enum" && m.first != "type" &&
-                                   (is_type_key(m.first) || is_ignored_key(m.first));
+                                   (is_type_key(m.first) || is_ignored_key(m.first) ||
+                                    is_condition_key(m.first));
                         }))
                         return std::nullopt;
                     const auto t = type_list(b);
@@ -4199,7 +4940,7 @@ namespace cpp_yyjson_codegen
                 const auto* n = normalize_full(&schema, loc);
                 if (n->is_bool()) return n->b ? std::optional<settings>(settings()) : std::nullopt;
                 if (!n->is_object()) return std::nullopt;
-                for (const auto* k : {"anyOf", "oneOf", "$ref", "not", "if"})
+                for (const auto* k : {"anyOf", "oneOf", "$ref", "not", "if", "$conditions"})
                     if (n->has(k)) return std::nullopt;
                 const auto& t = value_type(target);
                 const auto is_enum = t.k == tk::named && decls_[t.decl].kind == decl::kind_t::enumeration;
@@ -5409,6 +6150,39 @@ namespace cpp_yyjson_codegen
                         std::string(g.exactly_one ? "yyjson::one_of_required(" : "yyjson::any_of_required(") +
                         join(gs) + ")");
                 }
+                // the annotations of C++20 are outside the namespace
+                const auto q = opts_.cpp26 || opts_.ns.empty() ? std::string() : opts_.ns + "::";
+                const auto fields = [&](std::string_view part, const std::vector<cond_field>& cs) {
+                    auto fs = std::vector<std::string>();
+                    for (const auto& c : cs)
+                    {
+                        auto spec = std::vector<std::string>{cpp_string(member(c.key))};
+                        if (c.required) spec.emplace_back("yyjson::required");
+                        const auto* f = field_of(d.fields, c.key);
+                        if (f != nullptr)
+                            for (auto& x : render_settings(c.set, f->type)) spec.push_back(std::move(x));
+                        if (c.reads_as) spec.push_back("yyjson::reads_as<" + spell(*c.reads_as, false, q) + ">");
+                        fs.push_back("yyjson::field(" + join(spec) + ")");
+                    }
+                    return "yyjson::" + std::string(part) + "(" + join(fs) + ")";
+                };
+                for (const auto& c : d.conditions)
+                {
+                    auto text = std::string();
+                    if (c.negated)
+                    {
+                        const auto t = fields("if_", c.if_);
+                        text = "yyjson::not_" + t.substr(t.find('('));
+                    }
+                    else
+                    {
+                        auto parts = std::vector<std::string>{fields("if_", c.if_)};
+                        if (!c.then_.empty()) parts.push_back(fields("then", c.then_));
+                        if (!c.else_.empty()) parts.push_back(fields("else_", c.else_));
+                        text = "yyjson::if_then_else(\n        " + join(parts, ",\n        ") + ")";
+                    }
+                    if (std::ranges::find(items, text) == items.end()) items.push_back(std::move(text));
+                }
                 return items;
             }
 
@@ -5454,6 +6228,15 @@ namespace cpp_yyjson_codegen
                         ctx_ = decls_[i].name + "_" + f.member;
                         (void)spell(f.type);
                     }
+                for (const auto i : structs)
+                    for (const auto& c : decls_[i].conditions)
+                        for (const auto* part : {&c.then_, &c.else_})
+                            for (const auto& f : *part)
+                                if (f.reads_as)
+                                {
+                                    ctx_ = decls_[i].name + "_cond";
+                                    (void)spell(*f.reads_as);
+                                }
                 ctx_.clear();
                 convert_defaults(structs);
                 check_examples();
@@ -5737,7 +6520,8 @@ namespace cpp_yyjson_codegen
                     (!is_pure_ref(root_) && (std::ranges::any_of(root_.members,
                                                                  [](const auto& m) {
                                                                      return is_type_key(m.first) ||
-                                                                            is_ignored_key(m.first);
+                                                                            is_ignored_key(m.first) ||
+                                                                            is_condition_key(m.first);
                                                                  }) ||
                                              (!root_.has("$defs") && !root_.has("definitions"))));
                 auto root_name = std::string();

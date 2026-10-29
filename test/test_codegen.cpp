@@ -210,11 +210,11 @@ TEST(Codegen, RecursionThroughKeywords)
         }
     })",
                             {});
-    EXPECT_EQ(warnings(r), "#/properties/b/allOf/1: `if` is not supported and is ignored\n"
-                           "#/properties/b/allOf/1: `then` is not supported and is ignored\n");
+    EXPECT_EQ(warnings(r), "");
     EXPECT_TRUE(has(r.code, "std::optional<std::vector<yyjson::any_of<RootItemsItemOption1, Root>>> items;\n"));
     EXPECT_TRUE(has(r.code, "    std::optional<T> a;\n"));
-    EXPECT_TRUE(has(r.code, "    std::optional<T> b;\n"));
+    // `if` adds a condition and the keys that it names, so `b` is a struct of its own
+    EXPECT_TRUE(has(r.code, "    std::optional<RootB> b;\n"));
     EXPECT_TRUE(has(r.code, "    std::optional<yyjson::indirect<T>> self;\n"));
 }
 
@@ -1044,7 +1044,8 @@ TEST(Codegen, RequiredGroups)
     EXPECT_TRUE(has(r.code, "yyjson::any_of_required({\"png\"}, {\"svg\"})"));
     // `not` that does not name the other groups stays a variant of structs
     EXPECT_TRUE(has(r.code, "std::optional<yyjson::one_of<RootPartialOption1, RootPartialOption2>> partial;"));
-    EXPECT_EQ(warnings(r), "#/properties/partial/oneOf/0: `not` is not supported and is ignored\n");
+    EXPECT_TRUE(has(r.code, "yyjson::not_(yyjson::field(\"q\", yyjson::required), yyjson::field(\"r\", yyjson::required))"));
+    EXPECT_EQ(warnings(r), "");
 
     // subschemas that repeat properties of the struct with the same schemas, here of a recursive type
     const auto repeated = generate(R"({
@@ -1122,6 +1123,120 @@ TEST(Codegen, NamedKeys)
     EXPECT_TRUE(has(closed.code, "    std::optional<yyjson::value> b;\n"));
     EXPECT_EQ(warnings(closed), "#/dependentRequired/a: the key \"b\" is no property, and `additionalProperties` is "
                                 "false; an object that has the key does not satisfy the schema\n");
+}
+
+TEST(Codegen, Conditions)
+{
+    // `if`, `then` and `else` of an object as yyjson::if_then_else; the keys that they name are fields; `then` of a
+    // reference on a field of any JSON value reads the value as the type of the reference
+    const auto r = generate(R"({
+        "type": "object",
+        "properties": {"kind": {"enum": ["circle", "rect", "poly"]}, "radius": {"type": "number"}, "payload": {}},
+        "if": {"properties": {"kind": {"const": "circle"}}, "required": ["kind"]},
+        "then": {"required": ["radius"], "properties": {"radius": {"minimum": 0}, "payload": {"$ref": "#/$defs/P"}}},
+        "else": {"required": ["width"]},
+        "not": {"anyOf": [{"required": ["radius", "width"]}, {"properties": {"kind": {"const": "poly"}}}]},
+        "dependentSchemas": {"width": {"properties": {"height": {"type": "integer"}}, "required": ["height"]}},
+        "$defs": {"P": {"type": "object", "properties": {"x": {"type": "integer"}}, "required": ["x"]}}
+    })",
+                            {});
+    EXPECT_EQ(warnings(r), "");
+    EXPECT_TRUE(has(r.code, "    std::optional<RootKind> kind;\n    std::optional<double> radius;\n"
+                            "    std::optional<yyjson::value> payload;\n    std::optional<yyjson::value> width;\n"
+                            "    std::optional<yyjson::value> height;\n"));
+    EXPECT_TRUE(has(r.code, "    yyjson::if_then_else(\n"
+                            "        yyjson::if_(yyjson::field(\"kind\", yyjson::required, "
+                            "yyjson::const_(\"circle\"))),\n"
+                            "        yyjson::then(yyjson::field(\"radius\", yyjson::required, yyjson::minimum(0.0)), "
+                            "yyjson::field(\"payload\", yyjson::reads_as<P>)),\n"
+                            "        yyjson::else_(yyjson::field(\"width\", yyjson::required))),\n"));
+    // `not` of `anyOf`: one yyjson::not_ for each subschema
+    EXPECT_TRUE(has(r.code, "    yyjson::not_(yyjson::field(\"radius\", yyjson::required), "
+                            "yyjson::field(\"width\", yyjson::required)),\n"
+                            "    yyjson::not_(yyjson::field(\"kind\", yyjson::const_(\"poly\"))),\n"));
+    EXPECT_TRUE(has(r.code, "    yyjson::if_then_else(\n"
+                            "        yyjson::if_(yyjson::field(\"width\", yyjson::required)),\n"
+                            "        yyjson::then(yyjson::field(\"height\", yyjson::required, "
+                            "yyjson::reads_as<std::int64_t>))));\n"));
+
+    // a chain of `else` and `if` that test one key by values; `then: false`; `dependentSchemas` of `false`; a key
+    // that `additionalProperties: false` rejects; tests that the settings of a field do not express
+    const auto c = generate(R"({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {"t": {"type": "string"}, "a": {"type": "integer"}, "b": {"type": "boolean"},
+                       "n": {"type": ["string", "null"]}},
+        "if": {"properties": {"t": {"const": "x"}}, "required": ["t"]},
+        "then": {"required": ["a"]},
+        "else": {
+            "if": {"properties": {"t": {"const": "y"}}, "required": ["t"]},
+            "then": {"properties": {"a": {"maximum": 3}}},
+            "else": {"required": ["b"]}
+        },
+        "allOf": [
+            {"if": {"properties": {"a": {"minimum": 10}}, "required": ["a"]}, "then": false},
+            {"if": {"properties": {"n": {"const": "z"}}}, "then": {"required": ["b"]}},
+            {"if": {"required": ["t"]}, "then": {"required": ["zz"]}},
+            {"not": {"minProperties": 2}}
+        ],
+        "dependentSchemas": {"b": false, "zz": {"required": ["a"]}}
+    })",
+                            {});
+    EXPECT_EQ(warnings(c), "#/allOf/1/if: `if` is not supported here: the value of the key \"n\" may be null, which "
+                           "the test of its field lets through; `then` and `else` are ignored\n"
+                           "#/allOf/3/not: `not` is not supported here: `minProperties` is not supported in it; it is "
+                           "ignored\n");
+    EXPECT_FALSE(has(c.code, "zz"));
+    EXPECT_TRUE(has(c.code, "    yyjson::if_then_else(\n"
+                            "        yyjson::if_(yyjson::field(\"t\", yyjson::required, yyjson::const_(\"x\"))),\n"
+                            "        yyjson::then(yyjson::field(\"a\", yyjson::required))),\n"
+                            "    yyjson::if_then_else(\n"
+                            "        yyjson::if_(yyjson::field(\"t\", yyjson::required, yyjson::const_(\"y\"))),\n"
+                            "        yyjson::then(yyjson::field(\"a\", yyjson::maximum(3)))),\n"
+                            "    yyjson::if_then_else(\n"
+                            "        yyjson::if_(yyjson::field(\"t\", yyjson::required, "
+                            "yyjson::enum_(\"x\", \"y\"))),\n"
+                            "        yyjson::else_(yyjson::field(\"b\", yyjson::required))),\n"
+                            "    yyjson::not_(yyjson::field(\"b\", yyjson::required)),\n"
+                            "    yyjson::not_(yyjson::field(\"a\", yyjson::required, yyjson::minimum(10))),\n"
+                            "    yyjson::not_(yyjson::field(\"t\", yyjson::required)));\n"));
+
+    // conditions of values that are not objects: those that test only keys, and those whose `if` only objects
+    // satisfy, hold for them
+    const auto v = generate(R"({"type": "object", "properties": {
+        "s": {"type": "string", "if": {"properties": {"k": {"const": 1}}}, "then": {"required": ["k"]}},
+        "u": {"type": "string", "if": {"maxLength": 3}, "then": {"minLength": 1}},
+        "v": {"type": "integer", "dependentSchemas": {"k": {"required": ["j"]}}},
+        "w": {"if": {"required": ["k"]}, "then": {"required": ["j"]}},
+        "x": {"type": "string", "if": {"type": "object"}, "then": {"type": "object", "minProperties": 1}}
+    }})",
+                            {});
+    EXPECT_EQ(warnings(v),
+              "#/properties/u: `if` is not supported on a value that is not read as a struct and is ignored\n");
+    EXPECT_TRUE(has(v.code, "    std::optional<std::string> s;\n    std::optional<std::string> u;\n"
+                            "    std::optional<std::int64_t> v;\n"));
+    EXPECT_TRUE(has(v.code, "yyjson::annotations<RootWObject> = yyjson::annotate(\n"
+                            "    yyjson::additional_properties(true),\n    yyjson::if_then_else(\n"));
+
+    // conditions beside a reference to a variant that holds the schema again: the alternatives that merge the
+    // conditions are the same schema at every level, so the recursion ends
+    const auto rec = generate(R"({"type": "object", "properties": {"par": {"$ref": "#/$defs/Par"}}, "$defs": {
+        "Task": {"oneOf": [{"type": "string"}, {"$ref": "#/$defs/Seq"}, {"$ref": "#/$defs/Par"}]},
+        "Par": {"type": "object", "properties": {"parallel": {"type": "array", "items": {"allOf": [
+            {"$ref": "#/$defs/Task"}, {"if": {"type": "object"}, "then": {"required": ["x"]}}]}}}},
+        "Seq": {"type": "object", "properties": {"sequence": {"type": "array", "items": {"allOf": [
+            {"$ref": "#/$defs/Task"}, {"if": {"type": "object"}, "then": {"required": ["x"]}}]}}}}
+    }})",
+                              {});
+    EXPECT_TRUE(has(rec.code, "struct Par\n{\n    std::optional<std::vector<yyjson::one_of<std::string, "
+                              "ParParallelItemOption2, Par>>> parallel;\n};\n"));
+
+    // a condition inside `if` is named by its keywords
+    const auto n = generate(R"({"type": "object", "properties": {"a": {"type": "string"}},
+        "if": {"not": {"required": ["a"]}}, "then": {"required": ["a"]}})",
+                            {});
+    EXPECT_EQ(warnings(n), "#/if: `if` is not supported here: `if`, `not` and `dependentSchemas` are not supported in "
+                           "it; `then` and `else` are ignored\n");
 }
 
 TEST(Codegen, ExtraKeys)
@@ -1336,7 +1451,9 @@ TEST(Codegen, Draft07)
         "$defs": {"N": {"type": "integer"}}
     })",
                             {});
-    EXPECT_EQ(warnings(d), "#: `dependentSchemas` is not supported and is ignored\n");
+    EXPECT_EQ(warnings(d), "");
+    EXPECT_TRUE(has(d.code, "yyjson::if_then_else(\n        yyjson::if_(yyjson::field(\"r\", yyjson::required)),\n"
+                            "        yyjson::then(yyjson::field(\"x\", yyjson::required)))"));
     EXPECT_TRUE(has(d.code, "yyjson::field(\"r\", yyjson::minimum(5))"));
 }
 
@@ -1451,7 +1568,7 @@ TEST(Codegen, Warnings)
     const auto r = generate(schema, {.pattern = false});
     EXPECT_EQ(warnings(r),
               "#/properties/a: `pattern` is dropped (--no-pattern)\n"
-              "#/properties/b: `not` is not supported and is ignored\n"
+              "#/properties/b: `not` is not supported on a value that is not read as a struct and is ignored\n"
               "#/properties/c: the reference \"other.json#/x\" is not in this document and is read as "
               "any JSON value\n"
               "#/properties/d: the format \"idn-email\" is not supported and is ignored\n");
@@ -1887,7 +2004,7 @@ TEST(Codegen, Errors)
         return std::string("no error");
     };
     EXPECT_EQ(message(R"({"type": "object", "properties": {"b": {"not": {}}}})", {.strict = true}),
-              "#/properties/b: `not` is not supported and is ignored\n");
+              "#/properties/b: `not` is not supported on a value that is not read as a struct and is ignored\n");
     EXPECT_EQ(message("[1]", {}), "#: the schema is not an object or a boolean\n");
     EXPECT_TRUE(message("{", {}).starts_with(": the schema is not valid JSON"));
     EXPECT_EQ(message("{}", {.ns = "1a"}), ": the namespace \"1a\" is not a C++ namespace name\n");

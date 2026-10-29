@@ -1,7 +1,8 @@
 // Types generated at build time by cpp_yyjson_generate() from codegen/order.schema.json, which
 // references codegen/customer.schema.json, from codegen/defaults.schema.json, from
 // codegen/alternatives.schema.json, from codegen/patterns.schema.json, from
-// codegen/recursion.schema.json and from codegen/untyped.schema.json (also with INFER_TYPES).
+// codegen/recursion.schema.json, from codegen/untyped.schema.json (also with INFER_TYPES) and from
+// codegen/conditions.schema.json.
 #include <gtest/gtest.h>
 
 #include <cpp_yyjson.hpp>
@@ -18,6 +19,7 @@ struct yyjson::pattern_matcher<>
 };
 
 #include "alternatives.hpp"
+#include "conditions.hpp"
 #include "defaults.hpp"
 #include "order.hpp"
 #include "patterns.hpp"
@@ -240,4 +242,22 @@ TEST(CodegenCMake, Untyped)
     EXPECT_EQ(*inferred.port, 8080.0);
     EXPECT_TRUE(inferred.options->verbose);
     EXPECT_THROW((void)yyjson::read<inferred::Loose>(R"({"name":5})"), yyjson::bad_cast);
+}
+
+TEST(CodegenCMake, Conditions)
+{
+    // `if`, `then` and `else`, a chain of them, `not` and `dependentSchemas` as conditions of the struct
+    for (const auto* json : {R"({"kind":"circle","radius":1.0,"payload":{"x":1}})",
+                             R"({"kind":"rect","height":3,"width":2})", R"({"kind":"poly","points":[]})",
+                             R"({"points":1})"})
+    {
+        const auto shape = yyjson::read<model::Shape>(json, yyjson::strict);
+        EXPECT_EQ(yyjson::write(shape), json);
+        EXPECT_NO_THROW(yyjson::validate(shape)) << json;
+    }
+    for (const auto* json : {R"({"kind":"circle"})", R"({"kind":"circle","radius":-1})",
+                             R"({"kind":"circle","radius":1,"payload":{"y":1}})", R"({"kind":"rect"})",
+                             R"({"kind":"poly"})", R"({})", R"({"kind":"circle","radius":1,"width":1,"height":1})",
+                             R"({"kind":"rect","width":2})", R"({"kind":"rect","width":2,"height":0})"})
+        EXPECT_THROW((void)yyjson::read<model::Shape>(json), yyjson::bad_cast) << json;
 }
