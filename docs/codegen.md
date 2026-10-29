@@ -205,6 +205,14 @@ Each schema maps to one C++ type:
 | no `type`, with keywords that constrain some types, such as `maxLength` or `properties` | a variant of every kind; see [Schemas without `type`](#schemas-without-type) |
 | `{}`, `true`, no keyword of a type | [`yyjson::value`](reference.md#yyjsonvalue) |
 
+The subschemas of `allOf`, and the keywords beside `$ref`, merge into one schema, and each subschema still constrains the keys and positions that it does not declare. A property of one subschema also takes what another applies to its key: the schemas of the patterns of `patternProperties` that the key matches, else `additionalProperties`. A position of `prefixItems` beyond those of another subschema takes that subschema's `items`. A property that another subschema closes out thus gets the schema `false`, which accepts no value; the generator reads it as `yyjson::value` with a warning, and an `items: false` ends the tuple there:
+
+| Schema | Code |
+| --- | --- |
+| `{"allOf": [{"properties": {"a": {"type": "integer"}}}, {"properties": {"c": {"type": "string"}}, "additionalProperties": false}]}` | `a` is `std::optional<yyjson::value>`, with a warning |
+| `{"allOf": [{"properties": {"x_b": {"type": "integer"}}}, {"patternProperties": {"^x_": {"minimum": 0}}}]}` | `x_b` is `std::optional<std::int64_t>` with `yyjson::minimum(0)` |
+| `{"type": "array", "prefixItems": [{"type": "string"}], "allOf": [{"items": false}]}` | `yyjson::max_items(0)` |
+
 The keywords that constrain a value become the [constraints](validation.md#constraints) of the same name: `minimum` becomes `yyjson::minimum`, `items` with constraints becomes `yyjson::items(...)`, `propertyNames` becomes `yyjson::property_names(...)`, and so on. The `format`s that the library checks become `yyjson::format`; the others are left out, with a warning for `idn-email`, `idn-hostname`, `iri`, `iri-reference` and `regex`.
 
 `contains`, `minContains` and `maxContains` become [`yyjson::contains(...)`, `yyjson::min_contains` and `yyjson::max_contains`](reference.md#yyjsoncontains-yyjsonmin_contains-yyjsonmax_contains). The subschema of `contains` becomes the constraints of the elements, as `items` does; on elements of `yyjson::value` or `yyjson::object`, where no constraint expresses it, it becomes the type of the subschema in [`yyjson::is_type<T>`](reference.md#yyjsonis_type), and an element matches when it reads as that type:
@@ -444,7 +452,7 @@ inline constexpr auto yyjson::annotations<Root> = yyjson::annotate(
     yyjson::additional_properties(false));
 ```
 
-`false` closes the struct, and a schema gives a field of [`yyjson::extra_keys`](#keys-that-name-no-property). In the same way, `unevaluatedItems` is the `items` after `prefixItems`, so `false` ends the tuple. The keyword adds nothing, and is left out silently, beside `additionalProperties` or `items`, beside a subschema whose `additionalProperties`, `items` or own unevaluated keyword already evaluates every key or element, and for a type that is not an object or an array. `unevaluatedProperties` in a subschema of `allOf` closes the merged struct, which then accepts the properties of the other subschemas too: the code reads more than the schema accepts there.
+`false` closes the struct, and a schema gives a field of [`yyjson::extra_keys`](#keys-that-name-no-property). In the same way, `unevaluatedItems` is the `items` after `prefixItems`, so `false` ends the tuple. The keyword adds nothing, and is left out silently, beside `additionalProperties` or `items`, beside a subschema whose `additionalProperties`, `items` or own unevaluated keyword already evaluates every key or element, and for a type that is not an object or an array. `unevaluatedProperties` in a subschema of `allOf`, or in the target of `$ref`, counts only the keywords of that subschema, so it rejects the properties that only the others declare: they get the schema `false` as under [`allOf`](#mapping), and are read as `yyjson::value` with a warning.
 
 Beside `oneOf`, the properties that count are those of the base and of the subschema that matches. The keyword goes into each alternative, which is closed over the properties of the base and its own:
 
@@ -572,6 +580,7 @@ A warning names the location in the schema and what the generated code does inst
 | a variant of more alternatives than `--max-alternatives` | "a variant of 447 alternatives is more than 64 (--max-alternatives) ..." | reads any JSON value there |
 | a reference that cannot be followed | a missing file, a URI elsewhere | reads any JSON value there |
 | a schema that refers to itself with no array or object between | `{"anyOf": [{"$ref": "#/$defs/D"}, {"type": "string"}]}` | reads any JSON value there |
+| a property whose schema is `false` | a property that another subschema of [`allOf`](#mapping) closes out | reads any JSON value there |
 | a default or an example that does not convert | "the default ... is not converted to the C++ type; the field is std::optional" | keeps it in a comment |
 | an alternative dropped | an alternative of `oneOf` contained in another one | reads the same values |
 | contradictory settings | see below | see below |
