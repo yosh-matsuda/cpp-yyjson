@@ -1291,7 +1291,10 @@ TEST(Codegen, FileReferences)
              "definitions": {"Street": {"type": "string", "maxLength": 40}}})"},
         {"schemas/street.json", R"({"title": "street name", "type": "string", "minLength": 1})"},
         {"schemas/broken.json", "{"},
-        {"schemas/point.json", R"({"$defs": {"Point": {"type": "object", "properties": {"y": {"type": "number"}}}}})"}};
+        {"schemas/point.json", R"({"$defs": {"Point": {"type": "object", "properties": {"y": {"type": "number"}}}}})"},
+        // schemas named as keywords that hold values, whose references are those of the file too
+        {"schemas/names.json", R"({"type": "object", "properties": {"default": {"$ref": "#/$defs/Count"}},
+                                   "$defs": {"examples": {"$ref": "#/$defs/Count"}, "Count": {"type": "integer"}}})"}};
     auto opts = options{.path = "schemas/order.json"};
     opts.load = [&](const std::string& path) -> std::optional<std::string> {
         const auto it = files.find(path);
@@ -1309,7 +1312,8 @@ TEST(Codegen, FileReferences)
             "missing": {"$ref": "missing.json"},
             "broken": {"$ref": "broken.json"},
             "point": {"$ref": "#/$defs/Point"},
-            "point2": {"$ref": "point.json#/$defs/Point"}
+            "point2": {"$ref": "point.json#/$defs/Point"},
+            "names": {"$ref": "names.json"}
         },
         "$defs": {"Code": {"type": "string"}, "Street": {"type": "integer"},
                   "Point": {"type": "object", "properties": {"x": {"type": "number"}}}}
@@ -1336,6 +1340,8 @@ TEST(Codegen, FileReferences)
     EXPECT_TRUE(has(w, "#/properties/missing: the file \"schemas/missing.json\" of the reference "
                        "\"schemas/missing.json\" cannot be read; it is read as any JSON value\n"));
     EXPECT_TRUE(has(w, "#/properties/broken: the file \"schemas/broken.json\" is not valid JSON"));
+    EXPECT_FALSE(has(w, "is not found"));
+    EXPECT_TRUE(has(r.code, "struct Names\n{\n    std::optional<Count> default_;\n};\n"));
 
     // without a loader, a reference to another file is any JSON value
     EXPECT_TRUE(has(generate(schema, {}).code, "    std::optional<yyjson::value> ship;\n"));

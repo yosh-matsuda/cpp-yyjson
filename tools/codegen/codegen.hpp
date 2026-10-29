@@ -1018,12 +1018,13 @@ namespace cpp_yyjson_codegen
             }
 
             // rewrites the references of a file to their canonical form, and drops the keywords beside a reference
-            // of draft-07, which ignores them
-            void prepare(json& j, const std::string& key, const std::string& id, bool draft07, const std::string& loc)
+            // of draft-07, which ignores them; `names` tells that `j` maps names to schemas, as `properties` does
+            void prepare(json& j, const std::string& key, const std::string& id, bool draft07, const std::string& loc,
+                         bool names = false)
             {
                 if (j.is_object())
                 {
-                    if (auto* r = const_cast<json*>(j.find("$ref")); r != nullptr && r->is_string())
+                    if (auto* r = const_cast<json*>(j.find("$ref")); !names && r != nullptr && r->is_string())
                     {
                         r->text = canonical_ref(r->text, key, id);
                         if (draft07 && !is_pure_ref(j))
@@ -1038,8 +1039,11 @@ namespace cpp_yyjson_codegen
                         }
                     }
                     for (auto& [k, v] : j.members)
-                        if (k != "enum" && k != "const" && k != "default" && k != "examples")
-                            prepare(v, key, id, draft07, loc + "/" + pointer_token(k));
+                        if (names || (k != "enum" && k != "const" && k != "default" && k != "examples"))
+                            prepare(v, key, id, draft07, loc + "/" + pointer_token(k),
+                                    !names && (k == "properties" || k == "patternProperties" || k == "$defs" ||
+                                               k == "definitions" || k == "dependentSchemas" ||
+                                               k == "dependencies"));
                 }
                 for (std::size_t i = 0; i < j.items.size(); ++i)
                     prepare(j.items[i], key, id, draft07, loc + "/" + std::to_string(i));
