@@ -706,6 +706,17 @@ struct Alternatives
     std::vector<AltSentinel> t{AltSentinel{std::in_place_index<0>, -1}};
 };
 
+// A DOM object or array takes the settings of a map or a range.
+struct DomFields
+{
+    std::optional<yyjson::object> names;
+    std::optional<yyjson::array> list;
+};
+template <>
+inline constexpr auto yyjson::annotations<DomFields> = yyjson::annotate(
+    yyjson::field("names", yyjson::min_items(1), yyjson::property_names(yyjson::max_length(2))),
+    yyjson::field("list", yyjson::max_items(1), yyjson::unique_items));
+
 // A field that its caster leaves out, which only `yyjson::strict` requires: the struct that holds it is a default of
 // the schema without `yyjson::strict`.
 struct MaybeInt
@@ -1719,6 +1730,24 @@ TEST(Schema, Alternatives)
     EXPECT_FALSE(s["$defs"]["Alternatives"]["properties"]["t"].contains("default"));
     EXPECT_EQ(s["$defs"]["Shape"]["description"].as_string(), "a shape");
     EXPECT_EQ(s["$defs"]["Shape"]["oneOf"][0], json::parse(R"({"$ref":"#/$defs/AltPoint","title":"point"})"));
+}
+
+TEST(Schema, DomFields)
+{
+    check<DomFields>({
+        R"({"names":{"a":1},"list":[1]})",
+        R"({"names":{}})",
+        R"({"names":{"abc":1}})",
+        R"({"list":[1,2]})",
+        R"({"list":[]})",
+    });
+    const auto s = to_jsoncons(yyjson::json_schema<DomFields>());
+    const auto& p = s["$defs"]["DomFields"]["properties"];
+    EXPECT_EQ(p["names"]["minProperties"].as<int>(), 1);
+    EXPECT_FALSE(p["names"].contains("minItems"));
+    EXPECT_EQ(p["names"]["propertyNames"]["maxLength"].as<int>(), 2);
+    EXPECT_EQ(p["list"]["maxItems"].as<int>(), 1);
+    EXPECT_TRUE(p["list"]["uniqueItems"].as<bool>());
 }
 
 TEST(Schema, DefaultLeavingKeyOut)

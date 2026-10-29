@@ -1023,15 +1023,20 @@ namespace yyjson
             else if constexpr (std::same_as<T, json_view> || std::same_as<T, writer::value> ||
                                std::same_as<T, reader::value>)
                 constraints();
+            // The settings of a DOM object or array are those of a map or a range of DOM values.
             else if constexpr (std::same_as<T, writer::object> || std::same_as<T, reader::object>)
             {
-                out.emplace("type", "object");
-                constraints();
+                if (n != nullptr && (n->constraints.set != 0 || n->structured()))
+                    emit_range<std::map<std::string, writer::value>>(out, nodes, node);
+                else
+                    out.emplace("type", "object");
             }
             else if constexpr (std::same_as<T, writer::array> || std::same_as<T, reader::array>)
             {
-                out.emplace("type", "array");
-                constraints();
+                if (n != nullptr && (n->constraints.set != 0 || n->structured()))
+                    emit_range<std::vector<writer::value>>(out, nodes, node);
+                else
+                    out.emplace("type", "array");
             }
             else if constexpr (std::same_as<T, std::nullptr_t> || std::same_as<T, std::monostate>)
                 out.emplace("type", "null");
