@@ -967,6 +967,19 @@ namespace compile_rules
                   condition_assert_setting<decltype(yyjson::items(yyjson::minimum(0)))>);
     static_assert(!condition_assert_setting<yyjson::rename> && !condition_assert_setting<yyjson::skip_t>);
 
+    // not_ of settings holds the settings of one value, without element trees, and stands where they stand except
+    // in the tests of if_ and not_
+    using not_minimum = decltype(yyjson::not_(yyjson::minimum(0)));
+    static_assert(not_setting<yyjson::minimum> && not_setting<decltype(yyjson::const_(3))> &&
+                  not_setting<decltype(yyjson::pattern("^x"))> && not_setting<yyjson::min_items> &&
+                  not_setting<yyjson::is_type_t<int>>);
+    static_assert(!not_setting<yyjson::satisfies_t> && !not_setting<yyjson::unique_items_t> &&
+                  !not_setting<yyjson::min_contains> && !not_setting<not_minimum> &&
+                  !not_setting<decltype(yyjson::items(yyjson::minimum(0)))> && !not_setting<yyjson::rename>);
+    static_assert(element_setting<not_minimum> && condition_assert_setting<not_minimum> &&
+                  !condition_test_setting<not_minimum>);
+    static_assert(holds_type_test<decltype(yyjson::items(yyjson::not_(yyjson::is_type<int>)))>::value);
+
     // contains(is_type<T>) tests the DOM values, which items does not take, and no position of prefix_items holds it at any depth
     static_assert(dom_kind_of<yyjson::value> == dom_kind::value && dom_kind_of<yyjson::object> == dom_kind::object &&
                   dom_kind_of<yyjson::writer::const_value_ref> == dom_kind::value_ref &&
@@ -998,6 +1011,12 @@ struct ElementsAnnotated2
 struct TypedContainsAnnotated
 {
     [[ = yyjson::contains(yyjson::is_type<ConditionPoint>), = yyjson::min_contains(2) ]] std::vector<yyjson::value> v;
+};
+
+struct NotAnnotated
+{
+    [[ = yyjson::not_(yyjson::minimum(10), yyjson::maximum(19)), = yyjson::not_(yyjson::const_(3)) ]] int n = 0;
+    [[= yyjson::items(yyjson::not_(yyjson::is_type<std::nullptr_t>))]] std::vector<yyjson::value> d;
 };
 
 struct [[= yyjson::dependent_required("card", {"address"})]] KeywordsAnnotated
@@ -2238,6 +2257,95 @@ TEST(Constraints, ContainsConditions)
     EXPECT_TRUE(message_of(e).starts_with(rejected)) << e.what();
 }
 
+// not_ of settings rejects a value for which all of them hold
+struct ValueNot
+{
+    int n = 0;
+    std::optional<std::string> s;
+    std::vector<int> v;
+    yyjson::value any = 0;
+    std::optional<int> m;
+    yyjson::any_of<yyjson::alt<int, yyjson::not_(yyjson::const_(7))>, std::string> u = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<ValueNot> = yyjson::annotate(
+    yyjson::field("n", yyjson::not_(yyjson::minimum(10), yyjson::maximum(19)), yyjson::not_(yyjson::const_(3))),
+    yyjson::field("s", yyjson::not_(yyjson::pattern("^x"))),
+    yyjson::field("v", yyjson::items(yyjson::not_(yyjson::enum_(1, 2)))),
+    yyjson::field("any", yyjson::not_(yyjson::is_type<std::nullptr_t>)),
+    yyjson::if_then_else(yyjson::if_(yyjson::field("n", yyjson::const_(1))),
+                         yyjson::then(yyjson::field("m", yyjson::not_(yyjson::const_(0))))));
+
+TEST(Constraints, ValueNot)
+{
+    const auto check = [](const char* json, std::string_view message, std::string_view path) {
+        const auto reads = std::array<std::function<void()>, 3>{
+            [&] { (void)yyjson::read<ValueNot>(json); }, [&] { (void)yyjson::read(json).cast<ValueNot>(); },
+            [&] { (void)yyjson::read<ValueNot>(json, yyjson::strict); }};
+        for (const auto& read : reads)
+        {
+            if (message.empty())
+                EXPECT_NO_THROW(read()) << json;
+            else
+            {
+                const auto e = bad_cast_of(read);
+                EXPECT_TRUE(message_of(e).starts_with(message)) << json << "\n" << e.what();
+                EXPECT_EQ(e.path(), path) << json;
+            }
+        }
+#if YYJSON_VERSION_HEX >= 0x000C00
+        EXPECT_EQ(read_directly<ValueNot>(json, yyjson::ReadFlag::NoFlag).has_value(), message.empty()) << json;
+#endif
+    };
+    const auto field = [](std::string_view key) {
+        return std::format(R"(the value of the key "{}" of ValueNot satisfies the settings of yyjson::not_)", key);
+    };
+    // the keys that strict reading requires, and the members that the documents below change
+    const auto doc = [](std::string_view members) {
+        auto result = std::string("{") + std::string(members);
+        for (const auto [key, value] : {std::pair{"n", "0"}, {"v", "[]"}, {"any", "1"}, {"u", "1"}})
+            if (members.find(std::format(R"("{}":)", key)) == std::string_view::npos)
+                result += std::format(R"({}"{}":{})", result.size() == 1 ? "" : ",", key, value);
+        return result + "}";
+    };
+    const auto check_doc = [&](std::string_view members, std::string_view message, std::string_view path = "") {
+        check(doc(members).c_str(), message, path);
+    };
+    check_doc(R"("n":9,"v":[3])", "");
+    check_doc(R"("n":20,"s":"ab","any":"a","u":"x")", "");
+    // both settings of the first not_ hold, the single setting of the second
+    check_doc(R"("n":15)", field("n"), "/n");
+    check_doc(R"("n":3)", field("n"), "/n");
+    check_doc(R"("s":"xa")", field("s"), "/s");
+    check_doc(R"("v":[3,2])",
+              R"(an element of the value of the key "v" of ValueNot satisfies the settings of yyjson::not_)",
+              "/v/1");
+    // null is a value of a yyjson::value field, which not_ tests
+    check_doc(R"("any":null)", field("any"), "/any");
+    // 7 is the value that the alternative int rejects, and no other alternative reads it
+    check_doc(R"("u":7)", "yyjson::any_of<", "/u");
+    check_doc(R"("n":1,"m":0)", field("m"), "/m");
+    check_doc(R"("n":2,"m":0)", "");
+    check_doc(R"("n":1)", "");
+
+    // validate and write(strict) test the values that writing writes
+    auto t = ValueNot{};
+    EXPECT_NO_THROW(yyjson::validate(t));
+    t.any = yyjson::value(nullptr);
+    auto e = bad_cast_of([&] { yyjson::validate(t); });
+    EXPECT_TRUE(message_of(e).starts_with(field("any"))) << e.what();
+    EXPECT_EQ(e.path(), "/any");
+    t.any = 1;
+    t.v = {3, 1};
+    e = bad_cast_of([&] { (void)yyjson::write(t, yyjson::strict); });
+    EXPECT_EQ(e.path(), "/v/1") << e.what();
+    t.v = {};
+    t.u = 7;
+    e = bad_cast_of([&] { yyjson::validate(t); });
+    EXPECT_TRUE(message_of(e).starts_with("the value of the alternative 0 of ")) << e.what();
+    EXPECT_EQ(e.path(), "/u");
+}
+
 // alternatives of yyjson::any_of and yyjson::one_of, with settings given as values and through pointers
 constexpr std::string_view alternative_id_regex = "^[a-z]+$";
 constexpr auto alternative_id_pattern = yyjson::pattern(alternative_id_regex);
@@ -2576,6 +2684,13 @@ TEST(Constraints, Annotations)
         "/c");
     EXPECT_NO_THROW((void)yyjson::read<TypedContainsAnnotated>(R"({"v":[{"x":1},1,{"x":2}]})"));
     EXPECT_THROW((void)yyjson::read<TypedContainsAnnotated>(R"({"v":[{"x":1},{"x":"2"}]})"), yyjson::bad_cast);
+
+    EXPECT_NO_THROW((void)yyjson::read<NotAnnotated>(R"({"n":20,"d":[1,"a"]})"));
+    for (const auto* json : {R"({"n":15})", R"({"n":3})", R"({"d":[1,null]})"})
+    {
+        const auto e = bad_cast_of([&] { (void)yyjson::read<NotAnnotated>(json); });
+        EXPECT_TRUE(message_of(e).find("satisfies the settings of yyjson::not_") != std::string::npos) << e.what();
+    }
 
     expect_accepted<KeywordsAnnotated>(R"({"version":2,"unit":"b","day":"2024-02-29","steps":[2,1.5]})",
                                        {2, "b", "2024-02-29", {2, 1.5}, {}, {}});

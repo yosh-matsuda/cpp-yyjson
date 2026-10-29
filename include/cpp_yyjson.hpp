@@ -2336,8 +2336,31 @@ namespace yyjson
     template <std::size_t N>
     struct prefix_items_t;
 
+    // The settings of `yyjson::not_` of a value, which `yyjson::not_(settings...)` makes.
+    template <typename... As>
+    struct not_value_t
+    {
+        detail::setting_list<As...> settings;
+    };
+
     namespace detail
     {
+        template <typename A>
+        struct is_not_value : std::false_type
+        {
+        };
+        template <typename... As>
+        struct is_not_value<not_value_t<As...>> : std::true_type
+        {
+        };
+        // The settings that `yyjson::not_` of a value takes: the constraints that test one value, other than
+        // `yyjson::satisfies<f>`, and `yyjson::is_type<T>`.
+        template <typename A>
+        concept not_setting = (constraint_setting<A> && !setting_of<A, satisfies_t> &&
+                               !setting_of<A, unique_items_t> && !setting_of<A, min_contains> &&
+                               !setting_of<A, max_contains>) ||
+                              is_type_setting<A>::value;
+
         template <typename A>
         struct is_items : std::false_type
         {
@@ -2381,10 +2404,11 @@ namespace yyjson
         {
         };
         // The settings of the values in a field: its elements, the values and the keys of a map, and the elements
-        // that `yyjson::contains` counts.
+        // that `yyjson::contains` counts; and `yyjson::not_` of the value, which also has a node of its own.
         template <typename A>
         concept element_settings = is_items<A>::value || is_value_settings<A>::value || is_contains<A>::value ||
-                                   is_property_names<A>::value || is_prefix_items<A>::value;
+                                   is_property_names<A>::value || is_prefix_items<A>::value ||
+                                   is_not_value<A>::value;
         // The settings that `yyjson::items` and the other settings of the values in a field take.
         template <typename A>
         concept element_setting = constraint_setting<A> || element_settings<A>;
@@ -2442,6 +2466,8 @@ namespace yyjson
         template <std::size_t N>
         inline constexpr tree_size node_count<prefix_items_t<N>> = {N * prefix_position_nodes,
                                                                     N * prefix_position_values};
+        template <typename... As>
+        inline constexpr tree_size node_count<not_value_t<As...>> = (tree_size{1, 0} + ... + node_count<As>);
 
         // The settings of the field `member` of a struct, which `yyjson::annotate` takes.
         template <typename... As>
@@ -2467,8 +2493,8 @@ namespace yyjson
             static_assert(sizeof...(As) != 0, "yyjson::items needs a setting of the elements");
             static_assert((detail::element_setting<As> && ...),
                           "yyjson::items takes the constraints such as yyjson::minimum and yyjson::satisfies<f>, "
-                          "yyjson::items, yyjson::prefix_items, yyjson::contains, yyjson::property_names and "
-                          "yyjson::additional_properties(settings...)");
+                          "yyjson::items, yyjson::prefix_items, yyjson::contains, yyjson::property_names, "
+                          "yyjson::additional_properties(settings...) and yyjson::not_(settings...)");
         }
     };
     // `items(items(...))` constrains the elements of the elements, rather than copying the inner `items`.
@@ -2488,7 +2514,8 @@ namespace yyjson
             static_assert((detail::element_setting<As> && ...),
                           "yyjson::additional_properties of a field takes the constraints such as yyjson::minimum "
                           "and yyjson::satisfies<f>, yyjson::items, yyjson::prefix_items, yyjson::contains, "
-                          "yyjson::property_names and yyjson::additional_properties(settings...); "
+                          "yyjson::property_names, yyjson::additional_properties(settings...) and "
+                          "yyjson::not_(settings...); "
                           "yyjson::additional_properties(bool) annotates a struct");
         }
     };
@@ -2518,7 +2545,8 @@ namespace yyjson
             static_assert(((detail::element_setting<As> || detail::is_type_setting<As>::value) && ...),
                           "yyjson::contains takes the constraints such as yyjson::minimum and yyjson::satisfies<f>, "
                           "yyjson::items, yyjson::prefix_items, yyjson::contains, yyjson::property_names, "
-                          "yyjson::additional_properties(settings...) and yyjson::is_type<T>");
+                          "yyjson::additional_properties(settings...), yyjson::not_(settings...) and "
+                          "yyjson::is_type<T>");
         }
     };
     template <typename... Bs>
@@ -2644,8 +2672,9 @@ namespace yyjson
         // The constraints of a value, and the nodes that hold the settings of the values in it: its elements, the
         // values and the keys of a map, and the elements that `yyjson::contains` counts, by their indices in
         // `schema_tree::nodes`, 0 for none.  The nodes of the positions of `yyjson::prefix_items` are the
-        // `prefix_count` nodes from `prefix`.  `type_test` is that of `yyjson::is_type<T>` in `yyjson::contains`, or
-        // null.
+        // `prefix_count` nodes from `prefix`.  `type_test` is that of `yyjson::is_type<T>` in `yyjson::contains` or
+        // `yyjson::not_`, or null.  `negated` is the node of the first `yyjson::not_` of the value, and `next` that
+        // of the `yyjson::not_` after the one of this node.
         struct schema_node
         {
             field_constraints constraints;
@@ -2656,6 +2685,8 @@ namespace yyjson
             std::size_t prefix = 0;
             std::size_t prefix_count = 0;
             const type_test_info* type_test = nullptr;
+            std::size_t negated = 0;
+            std::size_t next = 0;
 
             // Whether it has a setting of the values in the value, or one that compares its elements.
             [[nodiscard]] constexpr bool structured() const noexcept
@@ -2665,7 +2696,7 @@ namespace yyjson
             }
             [[nodiscard]] constexpr bool empty() const noexcept
             {
-                return constraints.set == 0 && !structured() && type_test == nullptr;
+                return constraints.set == 0 && !structured() && type_test == nullptr && negated == 0;
             }
         };
 
@@ -2788,6 +2819,20 @@ namespace yyjson
                 }
                 else if constexpr (is_type_setting<A>::value)
                     fail(field_key_error::is_type_outside_condition);
+                else if constexpr (is_not_value<A>::value)
+                {
+                    const auto c = allocate(1);
+                    if (c == 0) return;
+                    if (nodes[node].negated == 0)
+                        nodes[node].negated = c;
+                    else
+                    {
+                        auto last = nodes[node].negated;
+                        while (nodes[last].next != 0) last = nodes[last].next;
+                        nodes[last].next = c;
+                    }
+                    add_contains_list(c, a.settings);
+                }
                 else
                 {
                     if (child_of<A>(nodes[node]) != 0) return fail(field_key_error::same_setting_twice);
@@ -2821,7 +2866,8 @@ namespace yyjson
                 add(node, list.first);
                 add_list(node, list.rest);
             }
-            // Adds the settings of `yyjson::contains`, the only ones that take `yyjson::is_type<T>`.
+            // Adds the settings of `yyjson::contains` or `yyjson::not_`, the only ones that take
+            // `yyjson::is_type<T>`.
             constexpr void add_contains_list(std::size_t, const setting_list<>&) {}
             template <typename A, typename... Rest>
             constexpr void add_contains_list(std::size_t node, const setting_list<A, Rest...>& list)
@@ -2846,7 +2892,7 @@ namespace yyjson
                 const auto value_base = value_size;
                 for (std::size_t k = 0; k < sub.value_size; ++k) values[value_size++] = keep(sub.values[k], sub.chars);
                 const auto moved = [this, &sub, base, value_base](schema_node n) {
-                    for (auto* i : {&n.items, &n.values, &n.contains, &n.keys, &n.prefix})
+                    for (auto* i : {&n.items, &n.values, &n.contains, &n.keys, &n.prefix, &n.negated, &n.next})
                         if (*i != 0) *i += base - 1;
                     n.constraints.constant += value_base;
                     n.constraints.enum_first += value_base;
@@ -2899,9 +2945,11 @@ namespace yyjson
                 static_assert((element_setting<As> && ...),
                               "a position of yyjson::prefix_items takes the constraints such as yyjson::minimum and "
                               "yyjson::satisfies<f>, yyjson::items, yyjson::prefix_items, yyjson::contains, "
-                              "yyjson::property_names and yyjson::additional_properties(settings...)");
+                              "yyjson::property_names, yyjson::additional_properties(settings...) and "
+                              "yyjson::not_(settings...)");
                 static_assert(!(holds_type_test<As>::value || ...),
-                              "yyjson::contains in a position of yyjson::prefix_items takes no yyjson::is_type<T>");
+                              "yyjson::contains or yyjson::not_ in a position of yyjson::prefix_items takes no "
+                              "yyjson::is_type<T>");
                 (tree.add(0, settings), ...);
                 tree.check();
             }
@@ -2953,8 +3001,8 @@ namespace yyjson
                       "yyjson::field takes yyjson::rename, yyjson::skip, yyjson::required, yyjson::optional_key, "
                       "yyjson::omit_default, yyjson::extra_keys, yyjson::adjacent_tag, the constraints such as "
                       "yyjson::minimum and "
-                      "yyjson::satisfies<f>, yyjson::items and yyjson::additional_properties(settings...), and "
-                      "yyjson::title, "
+                      "yyjson::satisfies<f>, yyjson::items, yyjson::additional_properties(settings...) and "
+                      "yyjson::not_(settings...), and yyjson::title, "
                       "yyjson::description, yyjson::examples, yyjson::deprecated and yyjson::schema, and in "
                       "yyjson::then and yyjson::else_ yyjson::is_type<T>");
         return {member, {values...}};
@@ -3016,7 +3064,8 @@ namespace yyjson
                            ...),
                           "yyjson::alt takes the constraints such as yyjson::minimum and yyjson::satisfies<f>, "
                           "yyjson::items, yyjson::prefix_items, yyjson::contains, yyjson::property_names, "
-                          "yyjson::additional_properties(settings...), and yyjson::title, yyjson::description, "
+                          "yyjson::additional_properties(settings...), yyjson::not_(settings...), and "
+                          "yyjson::title, yyjson::description, "
                           "yyjson::examples and yyjson::deprecated; not the settings of a key");
             static_assert(!requires { typename alternative_traits<T>::alt_type; },
                           "yyjson::alt takes the type of a value, and not another yyjson::alt");
@@ -3077,10 +3126,10 @@ namespace yyjson
             static_assert(error != field_key_error::prefix_position_too_large,
                           "a position of yyjson::prefix_items holds the settings of the values in it in up to 8 "
                           "nodes: one for itself and one for each yyjson::items, yyjson::contains, "
-                          "yyjson::property_names, yyjson::additional_properties(settings...) and position of "
-                          "yyjson::prefix_items in it, up to 16 values of yyjson::const_ and "
-                          "yyjson::enum_, and, before C++26, up to 256 characters of the strings written as "
-                          "string literals; pass a longer string as a std::string_view");
+                          "yyjson::property_names, yyjson::additional_properties(settings...), "
+                          "yyjson::not_(settings...) and position of yyjson::prefix_items in it, up to 16 values "
+                          "of yyjson::const_ and yyjson::enum_, and, before C++26, up to 256 characters "
+                          "of the strings written as string literals; pass a longer string as a std::string_view");
             return error == field_key_error::none;
         }
 
@@ -3519,21 +3568,41 @@ namespace yyjson
         return if_then_else_t<if_t<Is...>, then_t<Ts...>, else_t<Es...>>{condition, then_part, else_part};
     }
 
-    // A struct annotation, as JSON Schema's `not` of `properties` and `required`: the fields of an object must
-    // not satisfy all of these, which take the settings of the fields of `yyjson::if_`.
+    // A struct annotation, as JSON Schema's `not` of `properties` and `required`, when its arguments are
+    // `yyjson::field(...)`: the fields of an object must not satisfy all of these, which take the settings of the
+    // fields of `yyjson::if_`.
+    // A setting of a value, as JSON Schema's `not` beside the keywords of the value, when its arguments are
+    // settings: the value must not satisfy all of them.  It takes `yyjson::const_`, `yyjson::enum_`,
+    // the bounds of a number, `yyjson::multiple_of`, the lengths of a string, `yyjson::pattern`, `yyjson::format`,
+    // `yyjson::min_items`, `yyjson::max_items`, and `yyjson::is_type<T>` for a `yyjson::value` or an
+    // `yyjson::object`; an empty `std::optional` or null passes.  A field, a level of `yyjson::items` and the
+    // other settings of the values in it, `yyjson::alt`, `yyjson::then` and `yyjson::else_` take several of them.
     template <typename... As>
-    consteval auto not_(As... fields)
+    consteval auto not_(As... args)
     {
-        static_assert(sizeof...(As) != 0, "yyjson::not_ needs a field");
-        static_assert((detail::is_field_annotation<As>::value && ...), "yyjson::not_ takes yyjson::field(...)");
-        static_assert((detail::condition_settings<As, false> && ...),
-                      "a field of yyjson::not_ takes yyjson::required, yyjson::const_, yyjson::enum_, "
-                      "yyjson::minimum, yyjson::maximum, yyjson::exclusive_minimum, yyjson::exclusive_maximum, "
-                      "yyjson::multiple_of, yyjson::min_length, yyjson::max_length, yyjson::pattern, "
-                      "yyjson::format, yyjson::contains, yyjson::min_contains and yyjson::max_contains");
-        if constexpr ((detail::condition_settings<As, false> && ...))
-            return not_t<typename detail::condition_field_of<As>::type...>{
-                detail::make_setting_list(detail::make_condition_field(fields)...)};
+        static_assert(sizeof...(As) != 0, "yyjson::not_ needs a field or a setting");
+        if constexpr ((detail::is_field_annotation<As>::value && ...))
+        {
+            static_assert((detail::condition_settings<As, false> && ...),
+                          "a field of yyjson::not_ takes yyjson::required, yyjson::const_, yyjson::enum_, "
+                          "yyjson::minimum, yyjson::maximum, yyjson::exclusive_minimum, yyjson::exclusive_maximum, "
+                          "yyjson::multiple_of, yyjson::min_length, yyjson::max_length, yyjson::pattern, "
+                          "yyjson::format, yyjson::contains, yyjson::min_contains and yyjson::max_contains");
+            if constexpr ((detail::condition_settings<As, false> && ...))
+                return not_t<typename detail::condition_field_of<As>::type...>{
+                    detail::make_setting_list(detail::make_condition_field(args)...)};
+        }
+        else
+        {
+            static_assert((detail::not_setting<As> && ...),
+                          "yyjson::not_ takes yyjson::field(...) as a struct annotation, or, as a setting of a "
+                          "value, yyjson::const_, yyjson::enum_, yyjson::minimum, yyjson::maximum, "
+                          "yyjson::exclusive_minimum, yyjson::exclusive_maximum, yyjson::multiple_of, "
+                          "yyjson::min_length, yyjson::max_length, yyjson::pattern, yyjson::format, "
+                          "yyjson::min_items, yyjson::max_items and yyjson::is_type<T>");
+            if constexpr ((detail::not_setting<As> && ...))
+                return not_value_t<As...>{detail::make_setting_list(args...)};
+        }
     }
 
     namespace detail
@@ -4336,7 +4405,7 @@ namespace yyjson
                     const auto& node = result.schemas.nodes[e];
                     if (renamed[e] || tagged[e] || result.required[e] || result.optional_key[e] ||
                         result.omit_default[e] || described[e] != 0 || node.constraints.set != 0 || node.items != 0 ||
-                        node.contains != 0 || node.prefix_count != 0)
+                        node.contains != 0 || node.prefix_count != 0 || node.negated != 0)
                         result.error = field_key_error::extra_keys_with_setting;
                     else if (result.additional == additional_keys::denied)
                         result.error = field_key_error::extra_keys_denied;
@@ -4444,7 +4513,7 @@ namespace yyjson
             return template_annotations_of<field_reflection::detail::member_at<T, I>, ^^yyjson::items,
                                            ^^yyjson::additional_properties, ^^yyjson::contains,
                                            ^^yyjson::property_names, ^^yyjson::prefix_items_t,
-                                           ^^yyjson::enum_>();
+                                           ^^yyjson::enum_, ^^yyjson::not_value_t>();
         }
         template <typename T, std::size_t I>
         inline constexpr std::span<const std::meta::info> element_annotations =
@@ -4764,10 +4833,10 @@ namespace yyjson
             static_assert(table.error != field_key_error::prefix_position_too_large,
                           "a position of yyjson::prefix_items holds the settings of the values in it in up to 8 "
                           "nodes: one for itself and one for each yyjson::items, yyjson::contains, "
-                          "yyjson::property_names, yyjson::additional_properties(settings...) and position of "
-                          "yyjson::prefix_items in it, up to 16 values of yyjson::const_ and "
-                          "yyjson::enum_, and, before C++26, up to 256 characters of the strings written as "
-                          "string literals; pass a longer string as a std::string_view");
+                          "yyjson::property_names, yyjson::additional_properties(settings...), "
+                          "yyjson::not_(settings...) and position of yyjson::prefix_items in it, up to 16 values "
+                          "of yyjson::const_ and yyjson::enum_, and, before C++26, up to 256 characters "
+                          "of the strings written as string literals; pass a longer string as a std::string_view");
             static_assert(table.error != field_key_error::dependency_skipped,
                           "yyjson::dependent_required, yyjson::one_of_required or yyjson::any_of_required names a "
                           "member annotated with yyjson::skip or yyjson::extra_keys, which has no key");
@@ -6744,10 +6813,10 @@ namespace yyjson
             static_assert(tree.error != field_key_error::prefix_position_too_large,
                           "a position of yyjson::prefix_items holds the settings of the values in it in up to 8 "
                           "nodes: one for itself and one for each yyjson::items, yyjson::contains, "
-                          "yyjson::property_names, yyjson::additional_properties(settings...) and position of "
-                          "yyjson::prefix_items in it, up to 16 values of yyjson::const_ and "
-                          "yyjson::enum_, and, before C++26, up to 256 characters of the strings written as "
-                          "string literals; pass a longer string as a std::string_view");
+                          "yyjson::property_names, yyjson::additional_properties(settings...), "
+                          "yyjson::not_(settings...) and position of yyjson::prefix_items in it, up to 16 values "
+                          "of yyjson::const_ and yyjson::enum_, and, before C++26, up to 256 characters "
+                          "of the strings written as string literals; pass a longer string as a std::string_view");
         };
 
         // The field of S that the entry E of its conditions names: its index K among the fields that are read,
@@ -6798,6 +6867,7 @@ namespace yyjson
             enum_,
             format,
             type_test,  // a value that is not read as the type of `yyjson::is_type<T>`
+            negated,    // a value that satisfies all the settings of a `yyjson::not_`
         };
 
         // What does not satisfy a constraint: the value of a field, an element in it, or a key of a map in it.
@@ -6897,6 +6967,8 @@ namespace yyjson
                                        c.max_contains == 1 ? "item that satisfies" : "items that satisfy");
                 case constraint_kind::type_test:
                     return "is not read as the type of yyjson::is_type<T>";
+                case constraint_kind::negated:
+                    return "satisfies the settings of yyjson::not_";
                 default:
                     return "is rejected by yyjson::satisfies";
             }
@@ -7913,8 +7985,9 @@ namespace yyjson
                           "of std::monostate are those of the value that it holds, even though null is read");
         };
 
-        // The constraint of the level `Level` that the value `v` does not satisfy.
-        template <typename Level, typename V>
+        // The constraint of the level `Level` that the value `v` does not satisfy.  The settings of a `Negated` level,
+        // those of `yyjson::not_`, may leave no value to read.
+        template <typename Level, bool Negated = false, typename V>
         constraint_kind value_constraint_violation(const V& v)
         {
             constexpr const field_constraints& c = Level::constraints;
@@ -7940,7 +8013,7 @@ namespace yyjson
                           "yyjson::const_ and yyjson::enum_ constrain a field or an element of a string, "
                           "a number or a bool, with values of its kind or nullptr, or of an enumeration written by "
                           "name, with the names of its enumerators or nullptr");
-            if constexpr (settings_read_nothing<Level, V>()) (void)settings_leave_no_value<Level, V>{};
+            if constexpr (!Negated && settings_read_nothing<Level, V>()) (void)settings_leave_no_value<Level, V>{};
             if constexpr (listed && enum_by_name<V> && of_kind)
             {
                 constexpr auto& enumerators = listed_enumerators<Level, V>;
@@ -8039,6 +8112,34 @@ namespace yyjson
             return constraint_kind::none;
         }
 
+        // Whether `field` satisfies all the settings of the `yyjson::not_` of the node `NotLevel`, or of one of the
+        // `yyjson::not_` after it.  An empty `std::optional` or null satisfies none.
+        template <typename NotLevel, typename F>
+        bool rejected_by_not(const F& field)
+        {
+            using U = constrained_value_t<F>;
+            const U* value = nullptr;
+            if constexpr (nullable<F>)
+                value = held_value(field);
+            else
+                value = std::addressof(field);
+            if (value == nullptr) return false;
+            auto all = value_constraint_violation<NotLevel, true>(*value) == constraint_kind::none;
+            if constexpr (NotLevel::node.type_test != nullptr)
+            {
+                static_assert(dom_kind_of<U> != dom_kind::none,
+                              "yyjson::is_type<T> in yyjson::not_ tests a value of yyjson::value, yyjson::array or "
+                              "yyjson::object");
+                if constexpr (dom_kind_of<U> != dom_kind::none)
+                    all = all && NotLevel::node.type_test->test(value, dom_kind_of<U>);
+            }
+            if (all) return true;
+            if constexpr (NotLevel::node.next != 0)
+                return rejected_by_not<typename NotLevel::template at<NotLevel::node.next>>(field);
+            else
+                return false;
+        }
+
         // The constraint of the node `Level` that `field` does not satisfy, or `none`.  `items`, `values`,
         // `prefix_items` and `property_names` tell that an element, a value or a key in it does not satisfy those
         // of a node below.
@@ -8088,6 +8189,9 @@ namespace yyjson
                     if (!Level::node.type_test->test(std::addressof(field), dom_kind_of<F>))
                         return constraint_kind::type_test;
             }
+            if constexpr (Level::node.negated != 0)
+                if (rejected_by_not<typename Level::template at<Level::node.negated>>(field))
+                    return constraint_kind::negated;
             if constexpr (Level::node.structured())
                 if (value != nullptr) return structure_violation<Level>(*value);
             return constraint_kind::none;
@@ -8411,6 +8515,12 @@ namespace yyjson
             throw_constraint_violation(target_of(json), violation_key<S, K>, type_name<S>(), k, level::constraints,
                                        level::values);
         }
+
+        // Whether null read into a field of the type F is a value that its constraints test: a `yyjson::value` or a
+        // DOM type that a `std::optional` holds, which `yyjson::not_(yyjson::is_type<std::nullptr_t>)` may reject.
+        // Null leaves any other field as it is in `T()`, or makes it empty.
+        template <typename F>
+        inline constexpr bool null_is_checked = dom_kind_of<constrained_value_t<F>> != dom_kind::none;
 
         // Throws `bad_cast` unless the field K of S, read from the JSON value `json`, satisfies its constraints.
         // A violation of the constraints of the elements is thrown at the element.
@@ -9446,8 +9556,11 @@ namespace yyjson
                     else
                     {
                         assign_reflected_field(field, value, reflected_field_replaceable<i>(t));
+                        // null read as a missing key leaves the field as it is in `T()`, which is not checked, unless
+                        // it is a DOM value
                         if constexpr (constrained_field<T, K>)
-                            if (checks_null_field<std::remove_cvref_t<decltype(field)>> || !value.is_null())
+                            if (checks_null_field<std::remove_cvref_t<decltype(field)>> ||
+                                null_is_checked<std::remove_cvref_t<decltype(field)>> || !value.is_null())
                                 check_constraints<T, K>(field, value);
                     }
                 });
@@ -9481,7 +9594,8 @@ namespace yyjson
                     {
                         assign_reflected_field(field, value, visitable_field_replaceable<I>(t));
                         if constexpr (constrained_field<T, I>)
-                            if (checks_null_field<std::remove_cvref_t<decltype(field)>> || !value.is_null())
+                            if (checks_null_field<std::remove_cvref_t<decltype(field)>> ||
+                                null_is_checked<std::remove_cvref_t<decltype(field)>> || !value.is_null())
                                 check_constraints<T, I>(field, value);
                     }
                 });
@@ -17649,7 +17763,7 @@ namespace yyjson
         template <typename Level>
         consteval bool level_within(std::uint32_t described)
         {
-            return !Level::node.structured() && (Level::constraints.set & ~described) == 0;
+            return !Level::node.structured() && Level::node.negated == 0 && (Level::constraints.set & ~described) == 0;
         }
 
         // The values of `yyjson::const_` and `yyjson::enum_` of the level that a value equals, as `eq`
@@ -22493,10 +22607,13 @@ namespace yyjson
                     }
                     [[maybe_unused]] const bool null = *cur_ == 'n';
                     std::forward<Read>(read)(struct_field<I>(t));
-                    // `merge_field` checks the constraints of a field that it does not reset
+                    // `merge_field` checks the constraints of a field that it does not reset, and null read as a
+                    // missing key leaves the field as it is in `T()`, which is not checked, unless it is a DOM value
                     using field_type = std::remove_cvref_t<decltype(struct_field<I>(t))>;
                     if constexpr (!Merge && yyjson::detail::constrained_field<T, I>)
-                        if (yyjson::detail::checks_null_field<field_type> || !null) check_constraints<T, I>(t);
+                        if (yyjson::detail::checks_null_field<field_type> ||
+                            yyjson::detail::null_is_checked<field_type> || !null)
+                            check_constraints<T, I>(t);
                 }
             }
 
