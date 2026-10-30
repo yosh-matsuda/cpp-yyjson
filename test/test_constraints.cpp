@@ -771,6 +771,60 @@ inline constexpr auto yyjson::annotations<ContainsConditions> = yyjson::annotate
     yyjson::not_(
         yyjson::field("deps", yyjson::required, yyjson::contains(yyjson::is_type<int>), yyjson::min_contains(2))));
 
+// additional_properties(false) in then and else_: a circle has only a kind and a radius, another shape only a kind
+// and a width, even among the keys that would go to the map of yyjson::extra_keys
+struct ClosedShape
+{
+    std::optional<std::string> kind;
+    std::optional<double> r;
+    std::optional<int> w;
+    std::map<std::string, int> rest;
+};
+template <>
+inline constexpr auto yyjson::annotations<ClosedShape> = yyjson::annotate(
+    yyjson::field("rest", yyjson::extra_keys),
+    yyjson::if_then_else(
+        yyjson::if_(yyjson::field("kind", yyjson::const_("circle"), yyjson::required)),
+        yyjson::then(yyjson::field("kind"), yyjson::field("r", yyjson::required, yyjson::minimum(0)),
+                     yyjson::additional_properties(false)),
+        yyjson::else_(yyjson::field("kind"), yyjson::field("w"), yyjson::additional_properties(false))));
+// the keys of a map of yyjson::pattern_properties, and then without fields; additional_properties(true) changes nothing
+struct ClosedPatterns
+{
+    std::optional<int> a;
+    std::map<std::string, int> xs;
+};
+template <>
+inline constexpr auto yyjson::annotations<ClosedPatterns> = yyjson::annotate(
+    yyjson::field("xs", yyjson::pattern_properties("^x")),
+    yyjson::if_then_else(yyjson::if_(yyjson::field("a", yyjson::maximum(0))),
+                         yyjson::then(yyjson::additional_properties(false)),
+                         yyjson::else_(yyjson::field("a"), yyjson::additional_properties(true))));
+// the keys of tags are allowed: an adjacent tag, and the internal tag of an alternative
+struct ClosedAdjacent
+{
+    std::variant<int, std::string> data;
+    std::optional<int> n;
+};
+template <>
+inline constexpr auto yyjson::annotations<ClosedAdjacent> =
+    yyjson::annotate(yyjson::field("data", yyjson::adjacent_tag("kind", {"i", "s"})),
+                     yyjson::if_then_else(yyjson::if_(yyjson::field("n", yyjson::required)),
+                                          yyjson::then(yyjson::field("n"), yyjson::field("data"),
+                                                       yyjson::additional_properties(false))));
+struct ClosedAlternative
+{
+    std::optional<int> a;
+    std::optional<int> b;
+};
+template <>
+inline constexpr auto yyjson::annotations<ClosedAlternative> =
+    yyjson::annotate(yyjson::if_then_else(yyjson::if_(yyjson::field("a", yyjson::required)),
+                                          yyjson::then(yyjson::field("a"), yyjson::additional_properties(false))));
+using ClosedVariant = std::variant<ClosedAlternative, ConditionPoint>;
+template <>
+inline constexpr auto yyjson::annotations<ClosedVariant> = yyjson::annotate(yyjson::internal_tag("type", {"c", "p"}));
+
 // the nodes of the settings are counted from the types, and a struct without settings of the values in its fields
 // takes none
 static_assert(yyjson::detail::node_count<decltype(yyjson::items(yyjson::items(yyjson::minimum(0))))>.nodes == 2);
@@ -1262,6 +1316,15 @@ struct [[ = yyjson::if_then_else(yyjson::if_(yyjson::field("kind", yyjson::const
 {
     std::optional<std::string> kind;
     std::optional<double> r;
+};
+
+struct [[ = yyjson::if_then_else(yyjson::if_(yyjson::field("kind", yyjson::const_("circle"), yyjson::required)),
+                                 yyjson::then(yyjson::field("kind"), yyjson::field("r"),
+                                              yyjson::additional_properties(false))) ]] ClosedAnnotated
+{
+    std::optional<std::string> kind;
+    std::optional<double> r;
+    std::optional<double> w;
 };
 
 struct ConstrainedAnnotated
@@ -2460,6 +2523,122 @@ TEST(Constraints, Conditions)
     check(presence, R"({"e":0,"c":7})", "ConditionPresence has the keys and the values that yyjson::not_ rejects");
 }
 
+TEST(Constraints, ClosedConditions)
+{
+    // every read of `json` but merge_into: accepted, or rejected at the key `key`; the strict read rejects the key
+    // `unknown`, which is not a key of T, first
+    const auto check = []<typename T>(std::type_identity<T>, const char* json, std::string_view key = "",
+                                      std::string_view unknown = "") {
+        const auto reads = std::array<std::function<void()>, 5>{
+            [&] { (void)yyjson::read<T>(json); }, [&] { (void)yyjson::read(json).template cast<T>(); },
+            [&] {
+                auto t = T();
+                yyjson::read_into(json, t);
+            },
+            [&] { (void)yyjson::read<std::vector<T>>(std::format("[{}]", json)); },
+            [&] { (void)yyjson::read<T>(json, yyjson::strict); }};
+        const auto message = std::format(R"( has the key "{}", which yyjson::additional_properties(false) of )"
+                                         R"(yyjson::if_then_else rejects)",
+                                         key);
+        for (std::size_t i = 0; i < reads.size(); ++i)
+        {
+            if (i == 4 && !unknown.empty())
+            {
+                const auto e = bad_cast_of(reads[i]);
+                EXPECT_TRUE(message_of(e).find(std::format(R"(has no field of the key "{}")", unknown)) !=
+                            std::string::npos)
+                    << json << "\n"
+                    << e.what();
+                EXPECT_EQ(e.path(), "/" + std::string(unknown)) << json;
+            }
+            else if (key.empty())
+                EXPECT_NO_THROW(reads[i]()) << json;
+            else
+            {
+                const auto e = bad_cast_of(reads[i]);
+                EXPECT_TRUE(message_of(e).find(message) != std::string::npos) << json << "\n" << e.what();
+                EXPECT_EQ(e.path(), (i == 3 ? "/0/" : "/") + std::string(key)) << json;
+            }
+        }
+#if YYJSON_VERSION_HEX >= 0x000C00
+        EXPECT_EQ(read_directly<T>(json, yyjson::ReadFlag::NoFlag).has_value(), key.empty()) << json;
+#endif
+    };
+    constexpr auto shape = std::type_identity<ClosedShape>{};
+    check(shape, R"({"kind":"circle","r":1})");
+    check(shape, R"({"r":1,"kind":"circle"})");
+    check(shape, R"({})");
+    check(shape, R"({"kind":"square","w":1})");
+    check(shape, R"({"kind":"circle","r":1,"w":2})", "w");
+    check(shape, R"({"w":2,"kind":"circle","r":1})", "w");
+    check(shape, R"({"kind":"circle","r":1,"x":1})", "x");
+    check(shape, R"({"kind":"square","r":1})", "r");
+    check(shape, R"({"x":1})", "x");
+    // the other conditions are checked first
+    EXPECT_TRUE(message_of(bad_cast_of([] { (void)yyjson::read<ClosedShape>(R"({"kind":"circle","r":-1,"w":2})"); }))
+                    .find("less than the minimum 0") != std::string::npos);
+
+    constexpr auto patterns = std::type_identity<ClosedPatterns>{};
+    check(patterns, R"({})");
+    check(patterns, R"({"a":1,"x1":2})");
+    check(patterns, R"({"x1":2})", "x1");
+    check(patterns, R"({"a":0})", "a");
+    check(patterns, R"({"z":0})", "z", "z");
+
+    constexpr auto adjacent = std::type_identity<ClosedAdjacent>{};
+    check(adjacent, R"({"kind":"i","data":1,"n":1})");
+    check(adjacent, R"({"n":1,"data":"a","kind":"s"})");
+    check(adjacent, R"({"kind":"i","data":1,"n":1,"z":0})", "z", "z");
+    check(adjacent, R"({"kind":"i","data":1,"z":0})", "", "z");
+
+    EXPECT_NO_THROW((void)yyjson::read<ClosedVariant>(R"({"type":"c","a":1})"));
+    EXPECT_NO_THROW((void)yyjson::read<ClosedVariant>(R"({"a":1,"type":"c"})"));
+    EXPECT_NO_THROW((void)yyjson::read(R"({"type":"c","a":1})").cast<ClosedVariant>());
+    auto e = bad_cast_of([] { (void)yyjson::read<ClosedVariant>(R"({"type":"c","a":1,"b":2})"); });
+    EXPECT_EQ(e.path(), "/b");
+    e = bad_cast_of([] { (void)yyjson::read(R"({"type":"c","a":1,"b":2})").cast<ClosedVariant>(); });
+    EXPECT_EQ(e.path(), "/b");
+#if YYJSON_VERSION_HEX >= 0x000C00
+    EXPECT_TRUE(read_directly<ClosedVariant>(R"({"type":"c","a":1})", yyjson::ReadFlag::NoFlag).has_value());
+    EXPECT_FALSE(read_directly<ClosedVariant>(R"({"type":"c","a":1,"b":2})", yyjson::ReadFlag::NoFlag).has_value());
+#endif
+
+    // merge_into does not check the conditions
+    auto merged = ClosedShape{"circle", 1.0, {}, {}};
+    yyjson::merge_into(R"({"w":1})", merged);
+    EXPECT_EQ(merged.w, 1);
+
+    // validate and write(strict) test the keys that writing writes
+    const auto rejects = [](const auto& t, std::string_view path) {
+        auto f = bad_cast_of([&] { yyjson::validate(t); });
+        EXPECT_EQ(f.path(), path);
+        EXPECT_TRUE(message_of(f).find("which yyjson::additional_properties(false) of yyjson::if_then_else rejects") !=
+                    std::string::npos)
+            << f.what();
+        f = bad_cast_of([&] { (void)yyjson::write(t, yyjson::strict); });
+        EXPECT_EQ(f.path(), path);
+    };
+    auto t = ClosedShape{"circle", 1.0, {}, {}};
+    EXPECT_NO_THROW(yyjson::validate(t));
+    t.w = 2;
+    rejects(t, "/w");
+    t.w.reset();
+    t.rest = {{"x", 1}};
+    rejects(t, "/x");
+    t.kind = "square";
+    t.r.reset();
+    t.rest.clear();
+    EXPECT_NO_THROW(yyjson::validate(t));
+    t.r = 1.0;
+    rejects(t, "/r");
+    rejects(ClosedPatterns{{}, {{"x1", 1}}}, "/x1");
+    EXPECT_NO_THROW(yyjson::validate(ClosedPatterns{1, {{"x1", 1}}}));
+    EXPECT_NO_THROW(yyjson::validate(ClosedAdjacent{1, 2}));
+    EXPECT_NO_THROW(yyjson::validate(ClosedVariant(ClosedAlternative{1, {}})));
+    rejects(ClosedVariant(ClosedAlternative{1, 2}), "/b");
+    EXPECT_EQ(yyjson::write(ClosedVariant(ClosedAlternative{1, {}}), yyjson::strict), R"({"type":"c","a":1})");
+}
+
 TEST(Constraints, IsTypeFunction)
 {
     const auto doc = yyjson::read(R"({"p":{"x":1,"y":2},"n":1.5,"s":"a"})");
@@ -3206,6 +3385,14 @@ TEST(Constraints, Annotations)
         const auto e = bad_cast_of([&] { (void)yyjson::read<ConditionsAnnotated>(json); });
         EXPECT_TRUE(message_of(e).starts_with(message)) << e.what();
     }
+
+    EXPECT_NO_THROW((void)yyjson::read<ClosedAnnotated>(R"({"kind":"circle","r":1})"));
+    EXPECT_NO_THROW((void)yyjson::read<ClosedAnnotated>(R"({"kind":"square","w":1})"));
+    const auto closed = bad_cast_of([] { (void)yyjson::read<ClosedAnnotated>(R"({"kind":"circle","w":1})"); });
+    EXPECT_TRUE(message_of(closed).starts_with(R"(ClosedAnnotated has the key "w", which )"
+                                               R"(yyjson::additional_properties(false) of yyjson::if_then_else rejects)"))
+        << closed.what();
+    EXPECT_EQ(closed.path(), "/w");
 
     expect_accepted<PatternAnnotated>(R"({"ab":10,"ax":1,"xb":10,"zz":1})", {10, {{"ax", 1}}, {{"xb", 10}}});
     expect_rejected<PatternAnnotated>(

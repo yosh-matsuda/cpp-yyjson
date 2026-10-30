@@ -2543,13 +2543,17 @@ namespace yyjson
         template <typename... As>
         inline constexpr tree_size node_count<not_value_t<As...>> = (tree_size{1, 0} + ... + node_count<As>);
 
-        // The settings of the field `member` of a struct, which `yyjson::annotate` takes.
+        // The settings of the field `member` of a struct, which `yyjson::annotate` takes.  Only `yyjson::then` and
+        // `yyjson::else_` take a field without settings, which names its key for
+        // `yyjson::additional_properties(false)`.
         template <typename... As>
         struct field_annotation
         {
             std::string_view member;
             std::tuple<As...> values;
         };
+        template <typename A>
+        inline constexpr bool empty_field_annotation = std::same_as<A, field_annotation<>>;
     }  // namespace detail
 
     // The settings of the elements of a range field that is read from a JSON array, as JSON Schema's `items`:
@@ -3090,7 +3094,6 @@ namespace yyjson
     template <typename... As>
     consteval detail::field_annotation<As...> field(std::string_view member, As... values)
     {
-        static_assert(sizeof...(As) != 0, "yyjson::field needs a setting of the field");
         static_assert((detail::field_setting<As> && ...),
                       "yyjson::field takes yyjson::rename, yyjson::skip, yyjson::required, yyjson::optional_key, "
                       "yyjson::omit_default, yyjson::extra_keys, yyjson::adjacent_tag, the constraints such as "
@@ -3557,6 +3560,38 @@ namespace yyjson
         template <typename... As, bool Assert>
         inline constexpr bool condition_settings<field_annotation<As...>, Assert> =
             ((Assert ? condition_assert_setting<As> : condition_test_setting<As>) && ...);
+
+        // `yyjson::additional_properties(bool)` in `yyjson::then` or `yyjson::else_`.
+        template <typename A>
+        inline constexpr bool is_closing_setting = std::same_as<A, additional_properties<>>;
+        // The positions of the fields among the arguments As of `yyjson::then` or `yyjson::else_`.
+        template <typename... As>
+        inline constexpr auto assert_field_positions = [] {
+            constexpr std::array<bool, sizeof...(As)> closing{is_closing_setting<As>...};
+            auto positions = std::array<std::size_t, static_cast<std::size_t>(std::ranges::count(closing, false))>{};
+            for (std::size_t i = 0, k = 0; i < closing.size(); ++i)
+                if (!closing[i]) positions[k++] = i;
+            return positions;
+        }();
+        // The part `Part` of `yyjson::if_then_else` of the fields among `args`, closed by
+        // `yyjson::additional_properties(false)` among them.
+        template <template <typename...> class Part, typename... As>
+        consteval auto make_assert_part(As... args)
+        {
+            const auto values = std::tuple<As...>(args...);
+            auto closed = false;
+            (
+                [&] {
+                    if constexpr (is_closing_setting<As>) closed = !args.allowed;
+                }(),
+                ...);
+            return [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                return Part<typename condition_field_of<
+                    std::tuple_element_t<assert_field_positions<As...>[Is], std::tuple<As...>>>::type...>{
+                    make_setting_list(make_condition_field(std::get<assert_field_positions<As...>[Is]>(values))...),
+                    closed};
+            }(std::make_index_sequence<assert_field_positions<As...>.size()>{});
+        }
     }  // namespace detail
 
     // The parts of `yyjson::if_then_else` and `yyjson::not_`, which their functions make.
@@ -3569,11 +3604,13 @@ namespace yyjson
     struct then_t
     {
         detail::setting_list<Fs...> fields;
+        bool closed = false;
     };
     template <typename... Fs>
     struct else_t
     {
         detail::setting_list<Fs...> fields;
+        bool closed = false;
     };
     template <typename... Fs>
     struct not_t
@@ -3600,6 +3637,8 @@ namespace yyjson
     {
         static_assert(sizeof...(As) != 0, "yyjson::if_ needs a field");
         static_assert((detail::is_field_annotation<As>::value && ...), "yyjson::if_ takes yyjson::field(...)");
+        static_assert(!(detail::empty_field_annotation<As> || ...),
+                      "yyjson::field needs a setting of the field, except in yyjson::then and yyjson::else_");
         static_assert((detail::condition_settings<As, false> && ...),
                       "a field of yyjson::if_ takes yyjson::required, yyjson::const_, yyjson::enum_, "
                       "yyjson::minimum, yyjson::maximum, yyjson::exclusive_minimum, yyjson::exclusive_maximum, "
@@ -3612,32 +3651,38 @@ namespace yyjson
     // What `yyjson::if_then_else` requires of the fields of an object when its condition holds, or with
     // `yyjson::else_` when it does not, as JSON Schema's `then` and `else` of `properties` and `required`.  A field
     // takes `yyjson::required`, every constraint such as `yyjson::minimum` and `yyjson::satisfies<f>`, the settings
-    // of the values in it such as `yyjson::items`, and `yyjson::is_type<T>`.
+    // of the values in it such as `yyjson::items`, and `yyjson::is_type<T>`.  `yyjson::additional_properties(false)`
+    // among them, as JSON Schema's `additionalProperties: false` beside `properties`, lets the object have only the
+    // keys of the fields that the part names, `yyjson::field("k")` without settings too, and the keys of its tags.
     template <typename... As>
-    consteval auto then(As... fields)
+    consteval auto then(As... args)
     {
         static_assert(sizeof...(As) != 0, "yyjson::then needs a field");
-        static_assert((detail::is_field_annotation<As>::value && ...), "yyjson::then takes yyjson::field(...)");
-        static_assert((detail::condition_settings<As, true> && ...),
+        static_assert(((detail::is_field_annotation<As>::value || detail::is_closing_setting<As>) && ...),
+                      "yyjson::then takes yyjson::field(...) and yyjson::additional_properties(bool)");
+        static_assert((detail::is_closing_setting<As> + ... + 0) <= 1,
+                      "yyjson::then takes yyjson::additional_properties(bool) once");
+        static_assert(((detail::is_closing_setting<As> || detail::condition_settings<As, true>) && ...),
                       "a field of yyjson::then takes yyjson::required, the constraints such as yyjson::minimum and "
                       "yyjson::satisfies<f>, yyjson::items and the other settings of the values in it, and "
                       "yyjson::is_type<T>");
-        if constexpr ((detail::condition_settings<As, true> && ...))
-            return then_t<typename detail::condition_field_of<As>::type...>{
-                detail::make_setting_list(detail::make_condition_field(fields)...)};
+        if constexpr (((detail::is_closing_setting<As> || detail::condition_settings<As, true>) && ...))
+            return detail::make_assert_part<then_t>(args...);
     }
     template <typename... As>
-    consteval auto else_(As... fields)
+    consteval auto else_(As... args)
     {
         static_assert(sizeof...(As) != 0, "yyjson::else_ needs a field");
-        static_assert((detail::is_field_annotation<As>::value && ...), "yyjson::else_ takes yyjson::field(...)");
-        static_assert((detail::condition_settings<As, true> && ...),
+        static_assert(((detail::is_field_annotation<As>::value || detail::is_closing_setting<As>) && ...),
+                      "yyjson::else_ takes yyjson::field(...) and yyjson::additional_properties(bool)");
+        static_assert((detail::is_closing_setting<As> + ... + 0) <= 1,
+                      "yyjson::else_ takes yyjson::additional_properties(bool) once");
+        static_assert(((detail::is_closing_setting<As> || detail::condition_settings<As, true>) && ...),
                       "a field of yyjson::else_ takes yyjson::required, the constraints such as yyjson::minimum and "
                       "yyjson::satisfies<f>, yyjson::items and the other settings of the values in it, and "
                       "yyjson::is_type<T>");
-        if constexpr ((detail::condition_settings<As, true> && ...))
-            return else_t<typename detail::condition_field_of<As>::type...>{
-                detail::make_setting_list(detail::make_condition_field(fields)...)};
+        if constexpr (((detail::is_closing_setting<As> || detail::condition_settings<As, true>) && ...))
+            return detail::make_assert_part<else_t>(args...);
     }
 
     // A struct annotation, as JSON Schema's `if`, `then` and `else` of `properties` and `required`: when the
@@ -3677,6 +3722,8 @@ namespace yyjson
         static_assert(sizeof...(As) != 0, "yyjson::not_ needs a field or a setting");
         if constexpr ((detail::is_field_annotation<As>::value && ...))
         {
+            static_assert(!(detail::empty_field_annotation<As> || ...),
+                          "yyjson::field needs a setting of the field, except in yyjson::then and yyjson::else_");
             static_assert((detail::condition_settings<As, false> && ...),
                           "a field of yyjson::not_ takes yyjson::required, yyjson::const_, yyjson::enum_, "
                           "yyjson::minimum, yyjson::maximum, yyjson::exclusive_minimum, yyjson::exclusive_maximum, "
@@ -3738,6 +3785,8 @@ namespace yyjson
                       "enumeration, yyjson::schema_name for a struct, an enumeration, a variant or a type with a "
                       "caster, and yyjson::title, "
                       "yyjson::description, yyjson::examples, yyjson::deprecated and yyjson::schema for any type");
+        static_assert(!(detail::empty_field_annotation<As> || ...),
+                      "yyjson::field needs a setting of the field, except in yyjson::then and yyjson::else_");
         return detail::annotation_list<As...>{
             detail::annotation_values<std::index_sequence_for<As...>, As...>(values...)};
     }
@@ -7271,10 +7320,13 @@ namespace yyjson
         };
         // A condition, whose fields are the entries from `begin` to `end`: those of `yyjson::if_` up to
         // `then_begin`, then those of `yyjson::then` up to `else_begin`, then those of `yyjson::else_`.  A `negated`
-        // one, `yyjson::not_`, has only the fields up to `then_begin`, which must not all hold.
+        // one, `yyjson::not_`, has only the fields up to `then_begin`, which must not all hold.  A `then_closed` or
+        // `else_closed` part has `yyjson::additional_properties(false)`.
         struct condition_rule
         {
             bool negated = false;
+            bool then_closed = false;
+            bool else_closed = false;
             std::size_t begin = 0;
             std::size_t then_begin = 0;
             std::size_t else_begin = 0;
@@ -7338,6 +7390,8 @@ namespace yyjson
                         add_fields(a.then_part.fields);
                         rule.else_begin = entry_size;
                         add_fields(a.else_part.fields);
+                        rule.then_closed = a.then_part.closed;
+                        rule.else_closed = a.else_part.closed;
                     }
                     else
                     {
@@ -7383,6 +7437,10 @@ namespace yyjson
             static constexpr auto tree = data.tree;
             static constexpr auto entries = data.entries;
             static constexpr auto rules = data.rules;
+            // whether a part has `yyjson::additional_properties(false)`
+            static constexpr bool closes = std::ranges::any_of(rules, [](const condition_rule& r) {
+                return r.then_closed || r.else_closed;
+            });
             static_assert(tree.error != field_key_error::same_setting_twice,
                           "a field of yyjson::if_, yyjson::then, yyjson::else_ or yyjson::not_ has the same setting "
                           "twice");
@@ -9154,6 +9212,17 @@ namespace yyjson
         }
 
         inline constexpr std::size_t no_condition = static_cast<std::size_t>(-1);
+        // The entry of a failed condition whose part has `yyjson::additional_properties(false)` and a key that the
+        // part does not name.
+        inline constexpr std::size_t closed_keys = no_condition - 1;
+        // Whether a branch of the conditions of S takes `yyjson::additional_properties(false)`.
+        template <typename S>
+        inline constexpr bool closes_keys = [] {
+            if constexpr (has_conditions<S>)
+                return condition_table<S>::closes;
+            else
+                return false;
+        }();
         // The condition of a struct that a value does not satisfy, and the entry of `yyjson::then` or
         // `yyjson::else_` that does not hold, or `no_condition` for `yyjson::not_`.
         struct condition_failure
@@ -9162,19 +9231,55 @@ namespace yyjson
             std::size_t entry = no_condition;
         };
 
+        // The field of S that the entry E of its conditions names, by its index among the fields that are read.
+        template <typename S>
+        inline constexpr auto condition_entry_fields = []<std::size_t... Es>(std::index_sequence<Es...>) {
+            return std::array<std::size_t, sizeof...(Es)>{condition_entry_of<S, Es>::field...};
+        }(std::make_index_sequence<condition_table<S>::entries.size()>{});
+
+        // Whether the entries from `begin` to `end` of the conditions of S name the field k.
+        template <typename S>
+        bool condition_names_field(std::size_t k, std::size_t begin, std::size_t end) noexcept
+        {
+            for (auto e = begin; e < end; ++e)
+                if (condition_entry_fields<S>[e] == k) return true;
+            return false;
+        }
+        // Whether the entries from `begin` to `end` of the conditions of S name the field of the key `key`.
+        template <typename S>
+        bool condition_names_key(std::string_view key, std::size_t begin, std::size_t end) noexcept
+        {
+            static constexpr auto keys = []<std::size_t... Es>(std::index_sequence<Es...>) {
+                return std::array<std::string_view, sizeof...(Es)>{
+                    struct_field_key<S, condition_entry_of<S, Es>::field>...};
+            }(std::make_index_sequence<condition_table<S>::entries.size()>{});
+            for (auto e = begin; e < end; ++e)
+                if (keys[e] == key) return true;
+            return false;
+        }
+
+        // a template: an inline function that is not one moves the inlining of GCC in the code of other types
+        template <typename = void>
+        [[noreturn]] CPPYYJSON_COLD void throw_condition_key(cast_target at, std::string_view key,
+                                                             std::string_view type)
+        {
+            throw_bad_cast_at(at, "{} has the key \"{}\", which yyjson::additional_properties(false) of "
+                                  "yyjson::if_then_else rejects", type, key);
+        }
+
         // The first condition of S, `yyjson::if_then_else` or `yyjson::not_`, that `s` does not satisfy, where
-        // `present(k)` tells whether the object has the key of the field k.  The entries are checked only as far as
-        // the result needs them.
-        template <typename S, typename Present>
-        condition_failure failed_condition(const S& s, const Present& present)
+        // `present(k)` tells whether the object has the key of the field k, and `admits(begin, end)` whether the
+        // object has no key but those of the fields that the entries from `begin` to `end` name and those of its
+        // tags, for a part with `yyjson::additional_properties(false)`, or throws.  The entries are checked only as
+        // far as the result needs them.
+        template <typename S, typename Present, typename Admits>
+        condition_failure failed_condition(const S& s, const Present& present, [[maybe_unused]] const Admits& admits)
         {
             using table = condition_table<S>;
             static constexpr auto holds = []<std::size_t... Es>(std::index_sequence<Es...>) {
                 return std::array<bool (*)(const S&, bool), sizeof...(Es)>{&condition_entry_holds<S, Es>...};
             }(std::make_index_sequence<table::entries.size()>{});
-            static constexpr auto fields = []<std::size_t... Es>(std::index_sequence<Es...>) {
-                return std::array<std::size_t, sizeof...(Es)>{condition_entry_of<S, Es>::field...};
-            }(std::make_index_sequence<table::entries.size()>{});
+            static constexpr auto& fields = condition_entry_fields<S>;
             const auto all_hold = [&](std::size_t begin, std::size_t end) {
                 for (auto e = begin; e < end; ++e)
                     if (!holds[e](s, present(fields[e]))) return e;
@@ -9188,10 +9293,14 @@ namespace yyjson
                 {
                     if (matched) return {r, no_condition};
                 }
-                else if (const auto e = matched ? all_hold(rule.then_begin, rule.else_begin)
-                                                : all_hold(rule.else_begin, rule.end);
-                         e != no_condition)
-                    return {r, e};
+                else
+                {
+                    const auto begin = matched ? rule.then_begin : rule.else_begin;
+                    const auto end = matched ? rule.else_begin : rule.end;
+                    if (const auto e = all_hold(begin, end); e != no_condition) return {r, e};
+                    if constexpr (table::closes)
+                        if ((matched ? rule.then_closed : rule.else_closed) && !admits(begin, end)) return {r, closed_keys};
+                }
             }
             return {};
         }
@@ -9267,6 +9376,20 @@ namespace yyjson
             throw_condition_rejected(target_of(obj), type_name<S>(), true);
         }
 
+        // The `admits` of `failed_condition` for the object `keys`, read into S, which throws `bad_cast` at the
+        // value of the first key that the part does not let it have.
+        template <typename S, typename Val>
+        auto condition_keys_of(const Val* keys)
+        {
+            return [keys](std::size_t begin, std::size_t end) {
+                for_each_member(keys, [&](std::string_view k, const Val* value) {
+                    if (!condition_names_key<S>(k, begin, end) && !is_tag_key<S>(k, keys)) [[unlikely]]
+                        throw_condition_key(target_of(value), k, type_name<S>());
+                });
+                return true;
+            };
+        }
+
         // `check_conditions` for an object that does not have the keys of the fields in their order, `keys` the
         // `struct_keys_of` of `obj`: the fields that it has are told by its keys.
         template <typename S, const auto& Matcher, typename Obj, typename Val>
@@ -9277,7 +9400,7 @@ namespace yyjson
                 if (const auto i = Matcher.find(k, 0); i < seen.size()) seen.set(i);
             });
             const auto present = [&](std::size_t k) { return seen[k]; };
-            if (const auto f = failed_condition(s, present); f.rule != no_condition)
+            if (const auto f = failed_condition(s, present, condition_keys_of<S>(keys)); f.rule != no_condition)
                 throw_condition_failure(s, obj, f, present);
         }
 
@@ -9290,7 +9413,8 @@ namespace yyjson
             if (!in_order) [[unlikely]]
                 return check_irregular_conditions<S, Matcher>(s, obj, keys);
             constexpr auto present = [](std::size_t) { return true; };
-            if (const auto f = failed_condition(s, present); f.rule != no_condition) [[unlikely]]
+            if (const auto f = failed_condition(s, present, condition_keys_of<S>(keys)); f.rule != no_condition)
+                [[unlikely]]
                 throw_condition_failure(s, obj, f, present);
         }
 
@@ -16558,6 +16682,36 @@ namespace yyjson
             throw_condition_rejected(cast_target{}, type_name<S>(), false);
         }
 
+        // Throws `bad_cast` at the first key that writing writes for `s`, where `written[k]` tells whether it writes
+        // the key of the field k, other than those of the fields that the entries from `begin` to `end` of the
+        // conditions of S name and those of its tags.
+        template <typename S, std::size_t N>
+        void validate_condition_keys(const S& s, const std::array<bool, N>& written, std::size_t begin,
+                                     std::size_t end)
+        {
+            const auto reject = [](std::string_view key) {
+                validate_within([key] { return key_token(key); },
+                                [key] { throw_condition_key(cast_target{}, key, type_name<S>()); });
+            };
+            [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                (void)((written[Ks] && !condition_names_field<S>(Ks, begin, end) &&
+                        (reject(struct_field_key<S, Ks>), true)) ||
+                       ...);
+            }(std::make_index_sequence<N>{});
+            if constexpr (has_extra_keys<S>)
+                if (const auto& extra = extra_keys_field(s); !std::ranges::empty(extra))
+                    reject(std::string_view(std::ranges::begin(extra)->first));
+            if constexpr (has_pattern_fields<S>)
+                [&]<std::size_t... Ps>(std::index_sequence<Ps...>) {
+                    (
+                        [&] {
+                            if (const auto& map = pattern_field<Ps>(s); !std::ranges::empty(map))
+                                reject(std::string_view(std::ranges::begin(map)->first));
+                        }(),
+                        ...);
+                }(std::make_index_sequence<pattern_count<S>>{});
+        }
+
         // Throws `bad_cast` unless `s` satisfies the conditions of S, where `written[k]` tells whether writing
         // writes the key of the field k.  A field read as the type of `yyjson::is_type<T>` is read as
         // `yyjson::strict` reads it, as the read of the output of `yyjson::write(t, yyjson::strict)`, unless only
@@ -16567,7 +16721,10 @@ namespace yyjson
         {
             const auto check = [&] {
                 const auto present = [&](std::size_t k) { return written[k]; };
-                const auto f = failed_condition(s, present);
+                const auto f = failed_condition(s, present, [&](std::size_t begin, std::size_t end) {
+                    validate_condition_keys(s, written, begin, end);
+                    return true;
+                });
                 if (f.rule == no_condition) return;
                 if (f.entry != no_condition)
                     [&]<std::size_t... Es>(std::index_sequence<Es...>) {
@@ -24182,14 +24339,51 @@ namespace yyjson
             // field holds the alternative of the tag already.  Called after `cur_` has passed the object and the
             // fields that it does not have are given their values.
             // Fails unless `t` satisfies the conditions of T, which the DOM fallback reports, where `seen` tells
-            // the fields whose keys the object has.
+            // the fields whose keys the object at `open` has.
             template <typename T, typename Seen>
-            CPPYYJSON_ALWAYS_INLINE void check_conditions(const T& t, [[maybe_unused]] const Seen& seen)
+            CPPYYJSON_ALWAYS_INLINE void check_conditions(const T& t, [[maybe_unused]] const Seen& seen,
+                                                          [[maybe_unused]] const char* open)
             {
                 if constexpr (yyjson::detail::has_conditions<T>)
-                    if (yyjson::detail::failed_condition(t, [&](std::size_t k) { return seen[k]; }).rule !=
-                        yyjson::detail::no_condition) [[unlikely]]
+                    if (yyjson::detail::failed_condition(t, [&](std::size_t k) { return seen[k]; },
+                                                         [&](std::size_t begin, std::size_t end) {
+                                                             return condition_keys_admitted<T>(open, begin, end);
+                                                         })
+                            .rule != yyjson::detail::no_condition) [[unlikely]]
                         fail();
+            }
+
+            // Whether the object at `open` of the struct T, which has been read, has no key but those of the fields
+            // that the entries from `begin` to `end` of the conditions of T name and those of its tags.
+            template <typename T>
+            CPPYYJSON_NOINLINE CPPYYJSON_COLD bool condition_keys_admitted(const char* open, std::size_t begin,
+                                                                          std::size_t end)
+            {
+                const char* const saved = cur_;
+                auto buf = std::string();
+                auto admitted = true;
+                cur_ = open + 1;
+                skip_ws();
+                while (*cur_ != '}')
+                {
+                    const auto key = std::string(read_short_string(buf));
+                    if (!yyjson::detail::condition_names_key<T>(key, begin, end) &&
+                        !yyjson::detail::is_tag_key<T>(key, open))
+                    {
+                        admitted = false;
+                        break;
+                    }
+                    read_colon();
+                    skip_value();
+                    skip_ws();
+                    if (*cur_ == ',')
+                    {
+                        ++cur_;
+                        skip_ws();
+                    }
+                }
+                cur_ = saved;
+                return admitted;
             }
 
             template <typename T>
@@ -25708,7 +25902,7 @@ namespace yyjson
                 check_adjacent_tags_without_values(t, adjacent);
                 if constexpr (yyjson::detail::has_pattern_fields<T>)
                     if (yyjson::detail::field_patterns_of<T>().any) check_field_patterns<T, struct_key_matcher<T>()>(open);
-                check_conditions(t, seen);
+                check_conditions(t, seen, open);
             }
 
             // Reads a field as `read_field` does, but on its first key in the object puts back its value in `T()`
@@ -26874,6 +27068,23 @@ namespace yyjson
                 ~extra_keys_scope() { r_.extra_ = saved_; }
             };
 
+            // Keeps the start of the object of the struct T for `check_conditions`, if a branch of its conditions
+            // takes `yyjson::additional_properties(false)`; does not read `cur_` otherwise, which would move the
+            // code that GCC generates for other types.
+            template <typename T>
+            struct condition_scope
+            {
+                static constexpr const char* open = nullptr;
+                explicit condition_scope(const direct_reader&) noexcept {}
+            };
+            template <typename T>
+            requires yyjson::detail::closes_keys<T>
+            struct condition_scope<T>
+            {
+                const char* const open;
+                explicit condition_scope(const direct_reader& r) noexcept : open(r.cur_) {}
+            };
+
             // Reads the members of the object at `open` of the struct T from `cur_` at a key on, with `hint` the
             // field that is expected next, and assigns those that `Matcher` finds with `assign(index)`.  The
             // object has had the keys of the fields before `hint` in their order.  Checks the keys of the object
@@ -27123,6 +27334,7 @@ namespace yyjson
             void read_reflected_fields(T& t)
             {
                 [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<T>();
+                [[maybe_unused]] const auto conditions = condition_scope<T>(*this);
                 auto adjacent = adjacent_fields_of<T>{cur_};
                 [[maybe_unused]] const auto extra = extra_keys_scope<T>(*this, t);
                 const auto read_one =
@@ -27141,7 +27353,7 @@ namespace yyjson
                     read_skipped_adjacent_fields(t, adjacent);
                     check_adjacent_tags_without_values(t, adjacent);
                     if constexpr (yyjson::detail::has_pattern_fields<T>) check_field_patterns_of<T>(extra.open);
-                    check_conditions(t, seen);
+                    check_conditions(t, seen, conditions.open);
                 }
                 else
                 {
@@ -27165,6 +27377,7 @@ namespace yyjson
             void read_visitable_fields(T& t)
             {
                 [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<T>();
+                [[maybe_unused]] const auto conditions = condition_scope<T>(*this);
                 auto adjacent = adjacent_fields_of<T>{cur_};
                 const auto read_one =
                     [&]<std::size_t I>(std::integral_constant<std::size_t, I>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
@@ -27178,7 +27391,7 @@ namespace yyjson
                     const auto seen = read_tracked_struct_fields<T, visit_struct<T>::key_matcher>(t, read_one);
                     read_skipped_adjacent_fields(t, adjacent);
                     check_adjacent_tags_without_values(t, adjacent);
-                    check_conditions(t, seen);
+                    check_conditions(t, seen, conditions.open);
                 }
                 else
                 {
