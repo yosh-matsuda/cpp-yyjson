@@ -251,7 +251,7 @@ A property becomes a member, in the order of `properties`:
 
 `additionalProperties` becomes [`yyjson::additional_properties`](reference.md#yyjsonadditional_properties): `false` closes the struct, and an absent keyword or `true` is written as `yyjson::additional_properties(true)`, so that a strict read also accepts the other keys, as the schema does. A schema in `additionalProperties` gives a field of [`yyjson::extra_keys`](#keys-that-name-no-property).
 
-`dependentRequired` becomes `yyjson::dependent_required`, and `oneOf` or `anyOf` of subschemas that only list `required` keys become [`yyjson::one_of_required` and `yyjson::any_of_required`](reference.md#yyjsonone_of_required-yyjsonany_of_required). `if`, `then`, `else`, `not` and `dependentSchemas` become `yyjson::if_then_else` and `yyjson::not_`; see [Conditions](#conditions). `minProperties` and `maxProperties` of a struct are left out with a warning.
+`dependentRequired` becomes `yyjson::dependent_required`, and `oneOf` or `anyOf` of subschemas that only list `required` keys become [`yyjson::one_of_required` and `yyjson::any_of_required`](reference.md#yyjsonone_of_required-yyjsonany_of_required). `if`, `then`, `else`, `not` and `dependentSchemas` become `yyjson::if_then_else` and `yyjson::not_`; see [Conditions](#conditions). `minProperties` and `maxProperties` of a struct become [`yyjson::min_properties` and `yyjson::max_properties`](reference.md#yyjsonmin_properties-yyjsonmax_properties), except on an [array of positions](#arrays-of-positions) and on a struct of one value that [`yyjson::transparent`](reference.md#yyjsontransparent) reads; `minProperties` of 0 is left out. Through `allOf`, the struct takes the largest `minProperties` and the smallest `maxProperties`. The struct reads the bounds on all the keys of the object, also on the keys that no member holds, and writes only the keys of its members: a non-strict read of an object with such keys may then write an object of fewer keys than `minProperties`, unless the struct has a field of [`yyjson::extra_keys`](#keys-that-name-no-property) or `--keep-unknown-keys` is given.
 
 A struct of more than 100 members is registered with [`VISITABLE_STRUCT`](conversions.md#visitable_struct) under C++20, as the reflection of C++20 takes no more, and cannot have a field of `yyjson::extra_keys` or `yyjson::pattern_properties`; a struct of more than 1365 members needs `--cpp26`.
 
@@ -448,6 +448,7 @@ yyjson::value any = yyjson::value(yyjson::read(R"({"k":[1,"x"]})"));
 *   `null` as the default of a type that does not take `null` means "unset": the member is `std::optional<T>`.
 *   A default of `float` that rounds to infinity is not converted, as reading throws on it; one that rounds to zero is `0.0f`, the value that reading gives.
 *   A property that `dependentRequired` requires, or that a group of `oneOf` / `anyOf` of `required` counts, is `std::optional<T>` with a `// default:` comment, without a warning: `write` would leave out a key that holds the default, and the document would lack a key that the schema requires.
+*   So is a property of a struct with `minProperties`, for the same reason: a key that `write` leaves out would not count.
 
 A default that the generator cannot convert makes the member `std::optional<T>` with a `// default:` comment and a warning, and the program applies the default. This happens for a default that does not read as the type, such as a key that a closed struct does not have, for the default of a variant whose alternative the generator cannot choose, because an alternative depends on a `pattern`, a `contains` or a `format` that it does not check.
 
@@ -706,7 +707,7 @@ A warning names the location in the schema and what the generated code does inst
 | Group | Example | The generated code |
 | --- | --- | --- |
 | a keyword that is not supported | `$dynamicRef`, `$recursiveRef`, `if` of a string | reads more than the schema accepts |
-| a form that is not supported | `contains` that the elements cannot express, `minItems` or `maxItems` beyond the positions of an [array of positions](#arrays-of-positions), `minProperties` of a struct, [`unevaluatedProperties` beside `anyOf`](#unevaluatedproperties-and-unevaluateditems) | reads more than the schema accepts |
+| a form that is not supported | `contains` that the elements cannot express, `minItems` or `maxItems` beyond the positions of an [array of positions](#arrays-of-positions), [`unevaluatedProperties` beside `anyOf`](#unevaluatedproperties-and-unevaluateditems) | reads more than the schema accepts |
 | a type inferred from keywords, with `--infer-types` | "the schema has no `type`; it is read as string from its keywords" | reads only that type |
 | a variant of more alternatives than `--max-alternatives` | "a variant of 447 alternatives is more than 64 (--max-alternatives) ..." | reads any JSON value there |
 | a reference that cannot be followed | a missing file, a URI that is not the `$id` of a schema read and is not mapped to a file, a file of `--schema` that cannot be read | reads any JSON value there |
@@ -723,6 +724,8 @@ A schema can contradict itself, so that no value is valid at some place. The gen
 | Settings | The generated code |
 | --- | --- |
 | `minLength` above `maxLength`, `minItems` above `maxItems`, `minProperties` above `maxProperties` of a map, bounds that no number of the C++ type is within, `const` or `enum` outside the bounds | does not compile: the library rejects at compile time settings that leave no value to read |
+| `minProperties` above `maxProperties` of a struct | does not compile: the library rejects such bounds of a struct at compile time |
+| `required` of more keys than `maxProperties` | compiles, and reading an object there always fails |
 | `minContains` above `maxContains` | compiles, and reading an array there always fails |
 | a key in `required` whose property has the schema `false` | compiles, and reading an object there always fails |
 | `const` or `enum` beside bounds or lengths that reject some of its values | reads the values of `const` and `enum` as they are, also those that the schema rejects |
@@ -731,7 +734,7 @@ A schema can contradict itself, so that no value is valid at some place. The gen
 
 The `const` or the `enum` decides what is read when `type` and the values contradict each other, because the values say more of what the author meant, and following `type` would leave nothing to read there. The same holds for the `type` of a schema around `oneOf` or `anyOf` of strings, which goes into every subschema: `{"type": "object", "oneOf": [{"const": "a"}, {"const": "b"}, {...}]}` makes the strings an enum class as it does without the `type`.
 
-The fourth and the last rows are the ones where the code reads less strictly without the warning saying so in its group: the C++ type of a `const` or an `enum` does not take the other keywords beside it.
+The sixth and the last rows are the ones where the code reads less strictly without the warning saying so in its group: the C++ type of a `const` or an `enum` does not take the other keywords beside it.
 
 ## Round trip
 
