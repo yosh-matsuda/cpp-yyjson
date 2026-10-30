@@ -805,6 +805,60 @@ struct MaybeOuter { MaybeInner in; };
 // Written only: a borrowed string is not read.
 struct Borrowed { std::string_view s = "x"; const char* p = "y"; };
 
+// Structs annotated with `yyjson::as_array`: positions at the end that may be missing, with constraints and metadata.
+struct ARule
+{
+    int level = 0;
+    std::optional<std::string> name;
+    std::optional<double> weight;
+};
+template <>
+inline constexpr auto yyjson::annotations<ARule> =
+    yyjson::annotate(yyjson::as_array, yyjson::field("level", yyjson::minimum(0), yyjson::title("Level")),
+                     yyjson::field("weight", yyjson::maximum(1.0)));
+// elements after the positions, dropped
+struct AOpen
+{
+    int a = 0;
+    std::optional<int> b;
+};
+template <> inline constexpr auto yyjson::annotations<AOpen> = yyjson::annotate(yyjson::as_array, yyjson::items(true));
+// no elements after the positions, a position that is always required and one with a default
+struct AClosed
+{
+    int a = 0;
+    int b = 0;
+    int c = 2;
+};
+template <>
+inline constexpr auto yyjson::annotations<AClosed> =
+    yyjson::annotate(yyjson::as_array, yyjson::items(false), yyjson::field("b", yyjson::required),
+                     yyjson::field("c", yyjson::omit_default));
+// elements after the positions kept in a field, which constrains them
+struct ASeries
+{
+    std::string name;
+    std::vector<int> values;
+};
+template <>
+inline constexpr auto yyjson::annotations<ASeries> = yyjson::annotate(
+    yyjson::as_array, yyjson::field("values", yyjson::extra_items, yyjson::items(yyjson::minimum(0))));
+// a recursive struct
+struct ANode
+{
+    int value = 0;
+    std::vector<ANode> children;
+};
+template <>
+inline constexpr auto yyjson::annotations<ANode> =
+    yyjson::annotate(yyjson::as_array, yyjson::field("children", yyjson::extra_items));
+struct AHolder
+{
+    ARule rule;
+    std::vector<ASeries> series;
+    std::optional<ANode> tree;
+};
+
 namespace
 {
     namespace jss = jsoncons::jsonschema;
@@ -1535,6 +1589,76 @@ TEST(Schema, Transparent)
         EXPECT_EQ(s["$defs"]["TAccount"]["required"], json::parse(R"(["id","tags","ids","shape"])"));
     // and the root refers to it, as to a struct
     EXPECT_EQ(to_jsoncons(yyjson::json_schema<TId>())["$ref"], json("#/$defs/TId"));
+}
+
+TEST(Schema, AsArray)
+{
+    check<ARule>({
+        R"([1])",
+        R"([1,"a"])",
+        R"([1,"a",0.5])",
+        R"([])",
+        R"([-1])",
+        R"([1,"a",2.0])",
+        R"([1,"a",0.5,9])",
+        R"([1,null])",
+        R"([1,"a",null])",
+        R"(["x"])",
+        R"({"level":1})",
+    });
+    check<AOpen>({
+        R"([1,2,3])",
+        R"([1])",
+        R"([])",
+        R"([1,"x"])",
+    });
+    check<AClosed>({
+        R"([1])",
+        R"([1,2])",
+        R"([1,2,3])",
+        R"([1,2,3,4])",
+        R"([])",
+    });
+    check<ASeries>({
+        R"(["s"])",
+        R"(["s",1,2])",
+        R"(["s",-1])",
+        R"(["s","x"])",
+        R"([])",
+    });
+    check<ANode>({
+        R"([1,[2],[3,[4]]])",
+        R"([1,2])",
+        R"([1,[]])",
+    });
+    check<AHolder>({
+        R"({"rule":[1],"series":[["a",1]],"tree":[1,[2]]})",
+        R"({"rule":[1,"x",0.5,7],"series":[]})",
+        R"({"rule":[-1],"series":[]})",
+    });
+
+    // positions in `prefixItems`, with the constraints, the defaults and the metadata of the fields
+    const auto read = to_jsoncons(yyjson::json_schema<ARule>());
+    EXPECT_EQ(read["$defs"]["ARule"], json::parse(R"({"type":"array","prefixItems":[
+        {"type":"integer","minimum":0,"maximum":2147483647,"default":0,"title":"Level"},
+        {"type":"string"},
+        {"type":"number","maximum":1.0}]})"));
+    // `yyjson::strict` requires the positions that are not optional, and takes no elements after them
+    const auto strict = to_jsoncons(yyjson::json_schema<ARule>(yyjson::strict));
+    EXPECT_EQ(strict["$defs"]["ARule"]["minItems"], json(1));
+    EXPECT_EQ(strict["$defs"]["ARule"]["items"], json(false));
+    // `minItems` counts up to the last position that is required; a position before it is written, too
+    EXPECT_EQ(to_jsoncons(yyjson::json_schema<AClosed>())["$defs"]["AClosed"]["minItems"], json(2));
+    const auto write = to_jsoncons(yyjson::json_schema<AClosed>({.direction = yyjson::schema_direction::write}));
+    EXPECT_EQ(write["$defs"]["AClosed"]["minItems"], json(2));
+    EXPECT_EQ(write["$defs"]["AClosed"]["items"], json(false));
+    // `yyjson::items(true)` takes the elements after the positions under `yyjson::strict` too
+    EXPECT_FALSE(to_jsoncons(yyjson::json_schema<AOpen>(yyjson::strict))["$defs"]["AOpen"].contains("items"));
+    // the field of `yyjson::extra_items` gives the schema of the elements after the positions
+    EXPECT_EQ(to_jsoncons(yyjson::json_schema<ASeries>(yyjson::strict))["$defs"]["ASeries"]["items"],
+              json::parse(R"({"type":"integer","minimum":0,"maximum":2147483647})"));
+    EXPECT_EQ(to_jsoncons(yyjson::json_schema<ANode>())["$defs"]["ANode"]["items"],
+              json::parse(R"({"$ref":"#/$defs/ANode"})"));
 }
 
 TEST(Schema, VecOpt)

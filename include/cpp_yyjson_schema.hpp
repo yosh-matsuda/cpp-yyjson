@@ -589,6 +589,8 @@ namespace yyjson
                     g.emit_combined<T>(out);
                 else if constexpr (yyjson::detail::transparent_struct<T>)
                     g.emit_transparent<T>(out, {});
+                else if constexpr (yyjson::detail::as_array_struct<T>)
+                    g.emit_array_struct<T>(out);
                 else if constexpr (struct_type<T>)
                     g.emit_struct<T>(out);
                 g.emit_type_metadata<T>(out);
@@ -1130,6 +1132,16 @@ namespace yyjson
 
             template <typename S>
             void emit_struct(object_ref out, std::span<const variant_tag> tags = {});
+            template <typename S>
+            void emit_array_struct(object_ref out);
+            template <typename S, std::size_t K>
+            bool emit_field_value(object_ref p, const schema_node* nodes, const metadata& m);
+            template <typename S, std::size_t K>
+            [[nodiscard]] bool field_required() const;
+            template <typename S, std::size_t K>
+            void emit_field_default(object_ref p, const S* defaults, bool rejects);
+            template <typename S, std::size_t K>
+            void emit_field_metadata(object_ref p, const metadata& m);
             template <typename S>
             void emit_conditions(object_ref out, std::optional<array_ref>& all_of);
             template <typename S, std::size_t... Es>
@@ -1694,6 +1706,9 @@ namespace yyjson
                 emit_transparent<T>(out, tags);
                 emit_type_metadata<T>(out);
             }
+            else if constexpr (yyjson::detail::as_array_struct<T>)
+                // An array, which the tags cannot be in.
+                beside();
             else if constexpr (struct_type<T>)
             {
                 emit_struct<T>(out, tags);
@@ -1811,8 +1826,6 @@ namespace yyjson
                         [&] {
                             using F = yyjson::detail::struct_field_type<S, Ks>;
                             constexpr auto key = yyjson::detail::struct_field_key<S, Ks>;
-                            constexpr auto node = yyjson::detail::struct_declared_index<S, Ks>;
-                            const auto* field_nodes = yyjson::detail::constrained_field<S, Ks> ? nodes : nullptr;
                             constexpr auto declared = yyjson::detail::struct_declared_index<S, Ks>;
                             const auto m = field_metadata<S, declared>();
                             // A field that has the key of a tag is read from the tag, whose id it must accept, and is
@@ -1823,7 +1836,7 @@ namespace yyjson
                                                   ->emplace("allOf", empty_array)
                                                   .emplace_back(empty_object)
                                             : properties.emplace(key, empty_object);
-                            bool rejects = false;
+                            [[maybe_unused]] bool rejects = false;
                             if constexpr (yyjson::detail::adjacent_field<S, Ks>)
                             {
                                 static_assert(!field_has_schema<S, declared>(),
@@ -1845,79 +1858,16 @@ namespace yyjson
                                     adjacent->emplace_back(empty_object).emplace("oneOf", empty_array), key, held,
                                     std::make_index_sequence<std::variant_size_v<F>>{});
                             }
-                            else if constexpr (yyjson::detail::is_std_optional<F>::value)
-                            {
-                                // A field without a value is left out of the object, which is how the type declares
-                                // that it may be absent.  Null is read as the value type reads it.
-                                if (const auto* d = m.declared_for(writing()))
-                                    rejects = emit_declared(p, d->text(writing()), member_of<S, declared>());
-                                else
-                                    emit<typename F::value_type>(p, field_nodes, node);
-                            }
-                            else if (const auto* d = m.declared_for(writing()))
-                                rejects = emit_declared(p, d->text(writing()), member_of<S, declared>());
-                            else if constexpr (yyjson::detail::transparent_over_optional<F>)
-                            {
-                                // The same for a struct whose field is such a `std::optional`, which `$defs` defines
-                                // by the value type.
-                                emit_named<F>(p);
-                                if (field_nodes != nullptr)
-                                {
-                                    emit_constraints(p, field_nodes[node].constraints);
-                                    if (field_nodes[node].negated != 0)
-                                        emit_negated<F>(p, field_nodes, field_nodes[node].negated);
-                                }
-                            }
                             else
-                                emit<F>(p, field_nodes, node);
+                                rejects = emit_field_value<S, Ks>(p, nodes, m);
 
-                            const bool is_required = [&] {
-                                if (writing())
-                                    return !yyjson::detail::omittable<F> &&
-                                           !yyjson::detail::omits_default<S,
-                                                                          yyjson::detail::struct_declared_index<S, Ks>>;
-                                return rules::required[Ks] || (strict() && !rules::optional[Ks]);
-                            }();
                             if (tagged)
                                 ;
-                            else if (is_required)
+                            else if (field_required<S, Ks>())
                                 required.push_back(key);
-                            else if constexpr (std::default_initializable<S> && writable<F> &&
-                                               !yyjson::detail::adjacent_field<S, Ks>)
-                            {
-                                const auto emit_default = [&](const F& d) {
-                                    const bool omitted = [&] {
-                                        if constexpr (yyjson::detail::omittable<F>)
-                                            return yyjson::detail::should_omit_field(d);
-                                        else
-                                            return false;
-                                    }();
-                                    if (!omitted && !rejects && reads_back<S, Ks>(d))
-                                        p.emplace("default", d, copy_string);
-                                };
-                                // the value that reading gives the field when the object leaves out its key
-                                if (defaults == nullptr)
-                                    ;
-                                else if constexpr (yyjson::detail::has_default_from<S, declared>)
-                                    emit_default(yyjson::detail::default_field_value<S, declared, F>());
-                                else
-                                    emit_default(yyjson::detail::struct_field<Ks>(*defaults));
-                            }
-                            if (!m.empty())
-                            {
-                                using E = std::conditional_t<yyjson::detail::is_std_optional<F>::value &&
-                                                                 !yyjson::detail::adjacent_field<S, Ks>,
-                                                             typename optional_value<F>::type, F>;
-                                // F is E, or the std::optional<E> that holds the example
-                                const auto check = [](const std::optional<E>& v) {
-                                    if constexpr (std::same_as<E, F>)
-                                        return satisfies<S, Ks>(*v);
-                                    else
-                                        return satisfies<S, Ks>(v);
-                                };
-                                emit_metadata<E, field_has_examples<S, declared>()>(p, m, member_of<S, declared>(),
-                                                                                    check);
-                            }
+                            else if constexpr (!yyjson::detail::adjacent_field<S, Ks>)
+                                emit_field_default<S, Ks>(p, defaults, rejects);
+                            if (!m.empty()) emit_field_metadata<S, Ks>(p, m);
                         }(),
                         true)...};
             }(std::make_index_sequence<count>{});
@@ -2043,6 +1993,147 @@ namespace yyjson
                 auto r = out.emplace("required", empty_array);
                 for (const auto k : required) r.emplace_back(k);
             }
+        }
+
+        // Writes the schema of the value of the field K of S into `p`, by its index among the fields that are read,
+        // unless it has `yyjson::adjacent_tag`.  Returns whether the schema that `yyjson::schema` declares for it
+        // rejects every value.
+        template <typename S, std::size_t K>
+        bool generator::emit_field_value(object_ref p, const schema_node* nodes, const metadata& m)
+        {
+            using F = yyjson::detail::struct_field_type<S, K>;
+            constexpr auto node = yyjson::detail::struct_declared_index<S, K>;
+            const auto* field_nodes = yyjson::detail::constrained_field<S, K> ? nodes : nullptr;
+            if (const auto* d = m.declared_for(writing()))
+                return emit_declared(p, d->text(writing()), member_of<S, node>());
+            if constexpr (yyjson::detail::is_std_optional<F>::value)
+                // A field without a value is left out of the object, which is how the type declares that it may be
+                // absent.  Null is read as the value type reads it.
+                emit<typename F::value_type>(p, field_nodes, node);
+            else if constexpr (yyjson::detail::transparent_over_optional<F>)
+            {
+                // The same for a struct whose field is such a `std::optional`, which `$defs` defines by the value
+                // type.
+                emit_named<F>(p);
+                if (field_nodes != nullptr)
+                {
+                    emit_constraints(p, field_nodes[node].constraints);
+                    if (field_nodes[node].negated != 0) emit_negated<F>(p, field_nodes, field_nodes[node].negated);
+                }
+            }
+            else
+                emit<F>(p, field_nodes, node);
+            return false;
+        }
+
+        // Whether the field K of S has to be in the object: the write of S never leaves it out, and the read
+        // requires it.
+        template <typename S, std::size_t K>
+        bool generator::field_required() const
+        {
+            using F = yyjson::detail::struct_field_type<S, K>;
+            using rules = yyjson::detail::struct_key_rules<S>;
+            if (writing())
+                return !yyjson::detail::omittable<F> &&
+                       !yyjson::detail::omits_default<S, yyjson::detail::struct_declared_index<S, K>>;
+            return rules::required[K] || (strict() && !rules::optional[K]);
+        }
+
+        // Writes the value that reading gives the field K of S when the object leaves out its key, from `defaults`,
+        // which is `S()` or null, as the `default` of `p`, unless `rejects` or the read does not take it back.
+        template <typename S, std::size_t K>
+        void generator::emit_field_default(object_ref p, [[maybe_unused]] const S* defaults,
+                                           [[maybe_unused]] bool rejects)
+        {
+            using F = yyjson::detail::struct_field_type<S, K>;
+            constexpr auto declared = yyjson::detail::struct_declared_index<S, K>;
+            if constexpr (std::default_initializable<S> && writable<F>)
+            {
+                const auto emit_default = [&](const F& d) {
+                    const bool omitted = [&] {
+                        if constexpr (yyjson::detail::omittable<F>)
+                            return yyjson::detail::should_omit_field(d);
+                        else
+                            return false;
+                    }();
+                    if (!omitted && !rejects && reads_back<S, K>(d)) p.emplace("default", d, copy_string);
+                };
+                if (defaults == nullptr)
+                    ;
+                else if constexpr (yyjson::detail::has_default_from<S, declared>)
+                    emit_default(yyjson::detail::default_field_value<S, declared, F>());
+                else
+                    emit_default(yyjson::detail::struct_field<K>(*defaults));
+            }
+        }
+
+        // Writes the metadata `m` of the field K of S into `p`.
+        template <typename S, std::size_t K>
+        void generator::emit_field_metadata(object_ref p, const metadata& m)
+        {
+            using F = yyjson::detail::struct_field_type<S, K>;
+            constexpr auto declared = yyjson::detail::struct_declared_index<S, K>;
+            using E = std::conditional_t<yyjson::detail::is_std_optional<F>::value &&
+                                             !yyjson::detail::adjacent_field<S, K>,
+                                         typename optional_value<F>::type, F>;
+            // F is E, or the std::optional<E> that holds the example
+            const auto check = [](const std::optional<E>& v) {
+                if constexpr (std::same_as<E, F>)
+                    return satisfies<S, K>(*v);
+                else
+                    return satisfies<S, K>(v);
+            };
+            emit_metadata<E, field_has_examples<S, declared>()>(p, m, member_of<S, declared>(), check);
+        }
+
+        // A struct annotated with `yyjson::as_array` is an array of its fields in the order of their declarations,
+        // in `prefixItems`.  The fields that the read requires, or that the write never leaves out, are at least as
+        // many as `minItems` says: those before the last of them are written too, holding a value or null.  The
+        // elements after them are those of the field annotated with `yyjson::extra_items`; a struct without it takes
+        // none by `items`, unless `yyjson::items(true)` or a read without `yyjson::strict` takes and drops them.
+        template <typename S>
+        void generator::emit_array_struct(object_ref out)
+        {
+            using additional = yyjson::detail::additional_keys;
+            constexpr auto count = yyjson::detail::struct_field_count<S>;
+            constexpr const schema_node* nodes = yyjson::detail::field_table_of<S>::table.schemas.nodes.data();
+            const auto* const outer_values =
+                std::exchange(values_, yyjson::detail::field_table_of<S>::table.schemas.values.data());
+            const auto tests = type_tests_for<S>();
+            out.emplace("type", "array");
+            [[maybe_unused]] const S* const defaults = defaults_of<S>();
+            std::size_t min_items = 0;
+            if constexpr (count != 0)
+            {
+                auto prefix = out.emplace("prefixItems", empty_array);
+                [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                    [[maybe_unused]] const bool done[] = {
+                        true, (
+                                  [&] {
+                                      const auto m =
+                                          field_metadata<S, yyjson::detail::struct_declared_index<S, Ks>>();
+                                      auto p = prefix.emplace_back(empty_object);
+                                      const bool rejects = emit_field_value<S, Ks>(p, nodes, m);
+                                      if (field_required<S, Ks>())
+                                          min_items = Ks + 1;
+                                      else
+                                          emit_field_default<S, Ks>(p, defaults, rejects);
+                                      if (!m.empty()) emit_field_metadata<S, Ks>(p, m);
+                                  }(),
+                                  true)...};
+                }(std::make_index_sequence<count>{});
+            }
+            if (min_items != 0) out.emplace("minItems", min_items);
+            if constexpr (yyjson::detail::has_extra_items<S>)
+            {
+                const auto v = nodes[yyjson::detail::extra_items_index<S>].items;
+                emit<yyjson::detail::extra_item_type<S>>(out.emplace("items", empty_object), v != 0 ? nodes : nullptr,
+                                                         v);
+            }
+            else if (writing() || yyjson::detail::struct_items<S> == additional::denied ||
+                     (strict() && yyjson::detail::struct_items<S> != additional::allowed))
+                out.emplace("items", false);
+            values_ = outer_values;
         }
 
         // Writes the conditions of S, `yyjson::if_then_else` as `if`, `then` and `else`, and `yyjson::not_` as
