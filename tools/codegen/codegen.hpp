@@ -44,7 +44,8 @@ namespace cpp_yyjson_codegen
         std::string ns{};     // namespace of the generated code; empty for the global namespace
         bool cpp26 = false;   // C++26 annotations ([[=...]]) instead of yyjson::annotations<T>
         bool strict = false;  // warnings are errors
-        // emit yyjson::pattern and yyjson::pattern_properties (the program provides yyjson::pattern_matcher<>)
+        // emit yyjson::pattern, yyjson::pattern_properties and yyjson::format("regex") (the program provides
+        // yyjson::pattern_matcher<>)
         bool pattern = true;
         // a field with a default is std::optional<T>, std::nullopt for a missing key, instead of T with the default as
         // its initializer and yyjson::omit_default
@@ -1009,6 +1010,7 @@ namespace cpp_yyjson_codegen
             mutable std::vector<std::pair<std::string, std::string>> var_defs_;     // name, setting text
             mutable std::set<std::string, std::less<>> interned_;  // the strings of bounds of alternatives
             bool uses_pattern_ = false;
+            bool uses_regex_format_ = false;
             bool widened_variants_ = false;  // a variant became yyjson::value under options::max_alternatives
             std::vector<diagnostic> warnings_;
             std::set<std::pair<std::string, std::string>> warned_;
@@ -2405,7 +2407,8 @@ namespace cpp_yyjson_codegen
             enum class fit : std::uint8_t
             {
                 no,
-                unknown,  // it depends on `pattern` or `contains`, which the generator does not check
+                // it depends on `pattern`, `contains` or the format "regex", which the generator does not check
+                unknown,
                 yes
             };
 
@@ -5898,9 +5901,19 @@ namespace cpp_yyjson_codegen
                                                        "uuid",         "uri-template",
                                                        "json-pointer", "relative-json-pointer"};
                         static const auto unsupported =
-                            std::set<std::string_view>{"idn-email", "idn-hostname", "iri", "iri-reference", "regex"};
+                            std::set<std::string_view>{"idn-email", "idn-hostname", "iri", "iri-reference"};
                         if (supported.contains(f->text))
                             out.constraints.push_back({"yyjson::format(" + cpp_string(f->text) + ")", "format", *f});
+                        else if (f->text == "regex")
+                        {
+                            if (opts_.pattern)
+                            {
+                                out.constraints.push_back({"yyjson::format(\"regex\")", "format", *f});
+                                uses_regex_format_ = true;
+                            }
+                            else
+                                warn(loc, "the format \"regex\" is dropped (--no-pattern)");
+                        }
                         else if (unsupported.contains(f->text))
                             warn(loc, "the format \"" + f->text + "\" is not supported and is ignored");
                     }
@@ -7220,8 +7233,8 @@ namespace cpp_yyjson_codegen
                     warn(loc, count(no) + (no == 1 ? " does" : " do") +
                                   " not read as the C++ type; the comment `example:` has " + (no == 1 ? "it" : "them"));
                 if (unknown > 0)
-                    warn(loc, count(unknown) + " may not read as the C++ type: the generator does not check `pattern` "
-                                               "and `contains`; the comment `example:` has " +
+                    warn(loc, count(unknown) + " may not read as the C++ type: the generator does not check `pattern`, "
+                                               "`contains` and the format \"regex\"; the comment `example:` has " +
                                   (unknown == 1 ? "it" : "them"));
             }
 
@@ -7836,6 +7849,13 @@ namespace cpp_yyjson_codegen
                                  "// `yyjson::pattern_matcher<>` in the program.\n"
                                : "//\n// `yyjson::pattern` needs a specialization of `yyjson::pattern_matcher<>` in "
                                  "the program.\n";
+                if (uses_regex_format_)
+                    out += uses_pattern_
+                               ? "//\n// `yyjson::format(\"regex\")` takes a string as a regular expression when the "
+                                 "constructor of\n// `yyjson::pattern_matcher<>` accepts it without throwing.\n"
+                               : "//\n// `yyjson::format(\"regex\")` needs a specialization of "
+                                 "`yyjson::pattern_matcher<>` in the\n// program, and takes a string as a regular "
+                                 "expression when its constructor accepts it\n// without throwing.\n";
                 out += "\n#pragma once\n\n";
                 for (const auto* h : {"cstddef", "cstdint", "map", "memory", "optional", "string", "tuple", "utility",
                                       "variant", "vector"})

@@ -10,7 +10,8 @@
       "patternProperties": {"^[A-Z]": {"type": "string"}},
       "additionalProperties": false
     },
-    "limits": {"$ref": "#/$defs/Limits", "default": {"a1": "s", "b1": 2}}
+    "limits": {"$ref": "#/$defs/Limits", "default": {"a1": "s", "b1": 2}},
+    "filter": {"type": "string", "format": "regex"}
   },
   "patternProperties": {
     "^x-": {"type": "integer", "minimum": 0},

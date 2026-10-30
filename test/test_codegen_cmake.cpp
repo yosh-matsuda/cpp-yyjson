@@ -169,7 +169,8 @@ TEST(CodegenCMake, PatternProperties)
     EXPECT_EQ(yyjson::write(e), json);
     EXPECT_NO_THROW(yyjson::validate(e));
     for (const auto* bad : {R"({"x-rate":-1})", R"({"x-id":-1})", R"({"y-tag":"too long a tag"})", R"({"flag":1})",
-                            R"({"headers":{"accept":"*"}})", R"({"limits":{"c":"s"}})", R"({"limits":{"b1":"s"}})"})
+                            R"({"headers":{"accept":"*"}})", R"({"limits":{"c":"s"}})", R"({"limits":{"b1":"s"}})",
+                            R"({"filter":"^(abc]"})"})
         EXPECT_THROW((void)yyjson::read<model::Extensions>(bad), yyjson::bad_cast) << bad;
 
     // a default of a struct of pattern fields
@@ -180,6 +181,9 @@ TEST(CodegenCMake, PatternProperties)
     const auto limits = yyjson::read<model::Extensions>(R"({"limits":{"a2":"t","b2":3}})", yyjson::strict).limits;
     EXPECT_EQ(limits.pattern1, (std::map<std::string, std::string>{{"a2", "t"}}));
     EXPECT_EQ(limits.pattern2, (std::map<std::string, std::int64_t>{{"b2", 3}}));
+
+    // the format "regex" is checked by the constructor of yyjson::pattern_matcher<>
+    EXPECT_EQ(yyjson::read<model::Extensions>(R"({"filter":"^[a-z]+$"})", yyjson::strict).filter, "^[a-z]+$");
 }
 
 TEST(CodegenCMake, Recursion)

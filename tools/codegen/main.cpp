@@ -33,9 +33,10 @@ Generates C++ types with cpp-yyjson annotations from a JSON Schema (2020-12, 201
   --namespace <ns>      the namespace of the generated types, such as "app::model"
   --root-name <name>    the name of the root type (default: its title, or Root)
   --cpp26               write C++26 annotations ([[=...]]) instead of yyjson::annotations<T>
-  --no-pattern          drop `pattern` and read the keys of `patternProperties` as any JSON value, with a
-                        warning, instead of emitting yyjson::pattern and yyjson::pattern_properties, which
-                        need a specialization of yyjson::pattern_matcher<>
+  --no-pattern          drop `pattern` and the format "regex", and read the keys of `patternProperties` as
+                        any JSON value, with a warning, instead of emitting yyjson::pattern,
+                        yyjson::pattern_properties and yyjson::format("regex"), which need a
+                        specialization of yyjson::pattern_matcher<>
   --optional-defaults   make a field with a default std::optional, std::nullopt for a missing key, instead
                         of holding the default and leaving it out when writing (yyjson::omit_default)
   --keep-unknown-keys   give every struct that accepts other keys a map `extra` with yyjson::extra_keys,

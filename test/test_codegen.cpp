@@ -113,8 +113,8 @@ TEST(Codegen, Examples)
               "#/properties/n: 2 examples do not read as the C++ type; the comment `example:` has them\n"
               "#/properties/tags: an example does not read as the C++ type; the comment `example:` has it\n"
               "#/properties/mode: an example does not read as the C++ type; the comment `example:` has it\n"
-              "#/properties/id: an example may not read as the C++ type: the generator does not check `pattern` "
-              "and `contains`; the comment `example:` has it\n");
+              "#/properties/id: an example may not read as the C++ type: the generator does not check `pattern`, "
+              "`contains` and the format \"regex\"; the comment `example:` has it\n");
     EXPECT_TRUE(has(r.code, "    // example: -1\n    // example: \"a\"\n    std::int64_t n;\n"));
     EXPECT_TRUE(has(r.code, "    // example: \"a\"\n    std::optional<std::vector<std::string>> tags;\n"));
     EXPECT_TRUE(has(r.code, "    // example: \"maybe\"\n    std::optional<RootMode> mode;\n"));
@@ -1910,7 +1910,8 @@ TEST(Codegen, Warnings)
             "a": {"type": "string", "pattern": "^x"},
             "b": {"type": "array", "items": {"type": "integer"}, "not": {"items": {"minimum": 3}}},
             "c": {"$ref": "other.json#/x"},
-            "d": {"type": "string", "format": "idn-email"}
+            "d": {"type": "string", "format": "idn-email"},
+            "e": {"type": "string", "format": "regex"}
         }
     })";
     const auto r = generate(schema, {.pattern = false});
@@ -1919,11 +1920,19 @@ TEST(Codegen, Warnings)
               "#/properties/b/not: `not` cannot be expressed on a value of type array; it is ignored\n"
               "#/properties/c: the reference \"other.json#/x\" is not in this document and is read as "
               "any JSON value\n"
-              "#/properties/d: the format \"idn-email\" is not supported and is ignored\n");
+              "#/properties/d: the format \"idn-email\" is not supported and is ignored\n"
+              "#/properties/e: the format \"regex\" is dropped (--no-pattern)\n");
     EXPECT_TRUE(has(r.code, "// Warnings:\n//   #/properties/a: `pattern` is dropped (--no-pattern)\n"));
     EXPECT_FALSE(has(r.code, "pattern_matcher"));
-    EXPECT_TRUE(
-        has(generate(schema, {}).code, "`yyjson::pattern` needs a specialization of `yyjson::pattern_matcher<>`"));
+    const auto p = generate(schema, {});
+    EXPECT_TRUE(has(p.code, "`yyjson::pattern` needs a specialization of `yyjson::pattern_matcher<>`"));
+    EXPECT_TRUE(has(p.code, "yyjson::field(\"e\", yyjson::format(\"regex\"))"));
+    EXPECT_TRUE(has(p.code, "`yyjson::format(\"regex\")` takes a string as a regular expression when the "
+                            "constructor of\n// `yyjson::pattern_matcher<>` accepts it without throwing.\n"));
+    // the format "regex" alone needs the matcher too
+    const auto q = generate(R"({"type": "string", "format": "regex"})", {});
+    EXPECT_TRUE(has(q.code, "`yyjson::format(\"regex\")` needs a specialization of `yyjson::pattern_matcher<>` in "
+                            "the\n// program"));
 
 }
 
