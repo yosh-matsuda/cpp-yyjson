@@ -6827,9 +6827,8 @@ namespace yyjson
             static constexpr condition_entry entry = condition_table<S>::entries[E];
             static constexpr std::size_t field = [] {
                 return []<std::size_t... Ks>(std::index_sequence<Ks...>) {
-                    auto result = sizeof...(Ks);
-                    (void)(((struct_declared_index<S, Ks> == entry.field) && (result = Ks, true)) || ...);
-                    return result;
+                    const std::array<std::size_t, sizeof...(Ks)> declared{struct_declared_index<S, Ks>...};
+                    return static_cast<std::size_t>(std::ranges::find(declared, entry.field) - declared.begin());
                 }(std::make_index_sequence<struct_field_count<S>>{});
             }();
             static_assert(field < struct_field_count<S>);
@@ -7712,7 +7711,7 @@ namespace yyjson
         // `yyjson::default_from`.
         template <typename S>
         inline constexpr bool has_default_from_fields = []<std::size_t... Ks>(std::index_sequence<Ks...>) {
-            return (has_default_from<S, struct_declared_index<S, Ks>> || ...);
+            return any_true({has_default_from<S, struct_declared_index<S, Ks>>...});
         }(std::make_index_sequence<struct_field_count<S>>{});
 
         // A value of the type F, a holder of the value of `d` such as `std::optional<U>` or the type U of the value
@@ -7766,16 +7765,18 @@ namespace yyjson
         CPPYYJSON_NOINLINE CPPYYJSON_COLD void assign_missing_defaults(T& t, const std::bitset<N>& seen)
         {
             [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
-                (
-                    [&] {
-                        constexpr auto r = struct_declared_index<T, Ks>;
-                        if constexpr (has_default_from<T, r>)
-                        {
-                            auto& field = struct_field<Ks>(t);
-                            if (!seen[Ks]) field = default_field_value<T, r, std::remove_cvref_t<decltype(field)>>();
-                        }
-                    }(),
-                    ...);
+                [[maybe_unused]] const bool done[] = {
+                    true, (
+                              [&] {
+                                  constexpr auto r = struct_declared_index<T, Ks>;
+                                  if constexpr (has_default_from<T, r>)
+                                  {
+                                      auto& field = struct_field<Ks>(t);
+                                      if (!seen[Ks])
+                                          field = default_field_value<T, r, std::remove_cvref_t<decltype(field)>>();
+                                  }
+                              }(),
+                              true)...};
             }(std::make_index_sequence<N>{});
         }
 
@@ -15190,9 +15191,8 @@ namespace yyjson
                 return constrained_field<T, 0>;
             else if constexpr (validated_struct<T>)
                 return []<std::size_t... Ks>(std::index_sequence<Ks...>) {
-                    return ((constrained_field<T, Ks> ||
-                             (omittable<struct_field_type<T, Ks>> && strictly_required_field<T, Ks>)) ||
-                            ...) ||
+                    return any_true({(constrained_field<T, Ks> ||
+                                      (omittable<struct_field_type<T, Ks>> && strictly_required_field<T, Ks>))...}) ||
                            !struct_key_rules<T>::dependencies.empty() || !struct_key_rules<T>::groups.empty() ||
                            has_adjacent_fields<T> || has_extra_keys<T> || has_conditions<T>;
                 }(std::make_index_sequence<struct_field_count<T>>{});
@@ -15552,13 +15552,14 @@ namespace yyjson
                 return std::array<bool, n>{validate_field<S, Ks>(s)...};
             }(std::make_index_sequence<n>{});
             [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
-                (
-                    [&] {
-                        if constexpr (omittable<struct_field_type<S, Ks>> && strictly_required_field<S, Ks>)
-                            if (!written[Ks] && !validating_settings_only)
-                                throw_missing_key(cast_target{}, struct_field_key<S, Ks>, type_name<S>());
-                    }(),
-                    ...);
+                [[maybe_unused]] const bool done[] = {
+                    true, (
+                              [&] {
+                                  if constexpr (omittable<struct_field_type<S, Ks>> && strictly_required_field<S, Ks>)
+                                      if (!written[Ks] && !validating_settings_only)
+                                          throw_missing_key(cast_target{}, struct_field_key<S, Ks>, type_name<S>());
+                              }(),
+                              true)...};
             }(std::make_index_sequence<n>{});
             for (const auto& d : rules::dependencies)
                 if (written[d[0]] && !written[d[1]])

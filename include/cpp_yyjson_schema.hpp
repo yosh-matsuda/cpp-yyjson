@@ -1795,113 +1795,121 @@ namespace yyjson
             [[maybe_unused]] const S* const defaults = defaults_of<S>();
 
             [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
-                (
-                    [&] {
-                        using F = yyjson::detail::struct_field_type<S, Ks>;
-                        constexpr auto key = yyjson::detail::struct_field_key<S, Ks>;
-                        constexpr auto node = yyjson::detail::struct_declared_index<S, Ks>;
-                        const auto* field_nodes = yyjson::detail::constrained_field<S, Ks> ? nodes : nullptr;
-                        constexpr auto declared = yyjson::detail::struct_declared_index<S, Ks>;
-                        const auto m = field_metadata<S, declared>();
-                        // A field that has the key of a tag is read from the tag, whose id it must accept, and is
-                        // written only when it holds the id.
-                        const bool tagged = std::ranges::find(tags, key, &variant_tag::key) != tags.end();
-                        auto p = tagged ? properties.find(key)->second.as_object()->emplace("allOf", empty_array)
-                                              .emplace_back(empty_object)
-                                        : properties.emplace(key, empty_object);
-                        bool rejects = false;
-                        if constexpr (yyjson::detail::adjacent_field<S, Ks>)
-                        {
-                            static_assert(!field_has_schema<S, declared>(),
-                                          "yyjson::schema is not for a field with yyjson::adjacent_tag");
-                            // The variant and its tag: one branch for each alternative.
-                            using tags = yyjson::detail::struct_field_tags<S, Ks>;
-                            if constexpr (yyjson::detail::writes_adjacent_tag<S, tags>)
+                [[maybe_unused]] const bool done[] = {
+                    true,
+                    (
+                        [&] {
+                            using F = yyjson::detail::struct_field_type<S, Ks>;
+                            constexpr auto key = yyjson::detail::struct_field_key<S, Ks>;
+                            constexpr auto node = yyjson::detail::struct_declared_index<S, Ks>;
+                            const auto* field_nodes = yyjson::detail::constrained_field<S, Ks> ? nodes : nullptr;
+                            constexpr auto declared = yyjson::detail::struct_declared_index<S, Ks>;
+                            const auto m = field_metadata<S, declared>();
+                            // A field that has the key of a tag is read from the tag, whose id it must accept, and is
+                            // written only when it holds the id.
+                            const bool tagged = std::ranges::find(tags, key, &variant_tag::key) != tags.end();
+                            auto p = tagged ? properties.find(key)
+                                                  ->second.as_object()
+                                                  ->emplace("allOf", empty_array)
+                                                  .emplace_back(empty_object)
+                                            : properties.emplace(key, empty_object);
+                            bool rejects = false;
+                            if constexpr (yyjson::detail::adjacent_field<S, Ks>)
                             {
-                                auto ids = properties.emplace(tags::key, empty_object).emplace("enum", empty_array);
-                                for (const auto id : tags::ids)
-                                    if (!id.empty()) ids.emplace_back(id);
-                            }
-                            if (!adjacent) adjacent = out.emplace("allOf", empty_array);
-                            const auto held = [&]() -> std::optional<std::size_t> {
-                                if (defaults == nullptr) return std::nullopt;
-                                return yyjson::detail::struct_field<Ks>(*defaults).index();
-                            }();
-                            emit_adjacent<F, tags>(adjacent->emplace_back(empty_object).emplace("oneOf", empty_array),
-                                                   key, held, std::make_index_sequence<std::variant_size_v<F>>{});
-                        }
-                        else if constexpr (yyjson::detail::is_std_optional<F>::value)
-                        {
-                            // A field without a value is left out of the object, which is how the type declares
-                            // that it may be absent.  Null is read as the value type reads it.
-                            if (const auto* d = m.declared_for(writing()))
-                                rejects = emit_declared(p, d->text(writing()), member_of<S, declared>());
-                            else
-                                emit<typename F::value_type>(p, field_nodes, node);
-                        }
-                        else if (const auto* d = m.declared_for(writing()))
-                            rejects = emit_declared(p, d->text(writing()), member_of<S, declared>());
-                        else if constexpr (yyjson::detail::transparent_over_optional<F>)
-                        {
-                            // The same for a struct whose field is such a `std::optional`, which `$defs` defines
-                            // by the value type.
-                            emit_named<F>(p);
-                            if (field_nodes != nullptr)
-                            {
-                                emit_constraints(p, field_nodes[node].constraints);
-                                if (field_nodes[node].negated != 0)
-                                    emit_negated<F>(p, field_nodes, field_nodes[node].negated);
-                            }
-                        }
-                        else
-                            emit<F>(p, field_nodes, node);
-
-                        const bool is_required = [&] {
-                            if (writing())
-                                return !yyjson::detail::omittable<F> &&
-                                       !yyjson::detail::omits_default<S, yyjson::detail::struct_declared_index<S, Ks>>;
-                            return rules::required[Ks] || (strict() && !rules::optional[Ks]);
-                        }();
-                        if (tagged)
-                            ;
-                        else if (is_required)
-                            required.push_back(key);
-                        else if constexpr (std::default_initializable<S> && writable<F> &&
-                                           !yyjson::detail::adjacent_field<S, Ks>)
-                        {
-                            const auto emit_default = [&](const F& d) {
-                                const bool omitted = [&] {
-                                    if constexpr (yyjson::detail::omittable<F>)
-                                        return yyjson::detail::should_omit_field(d);
-                                    else
-                                        return false;
+                                static_assert(!field_has_schema<S, declared>(),
+                                              "yyjson::schema is not for a field with yyjson::adjacent_tag");
+                                // The variant and its tag: one branch for each alternative.
+                                using tags = yyjson::detail::struct_field_tags<S, Ks>;
+                                if constexpr (yyjson::detail::writes_adjacent_tag<S, tags>)
+                                {
+                                    auto ids = properties.emplace(tags::key, empty_object).emplace("enum", empty_array);
+                                    for (const auto id : tags::ids)
+                                        if (!id.empty()) ids.emplace_back(id);
+                                }
+                                if (!adjacent) adjacent = out.emplace("allOf", empty_array);
+                                const auto held = [&]() -> std::optional<std::size_t> {
+                                    if (defaults == nullptr) return std::nullopt;
+                                    return yyjson::detail::struct_field<Ks>(*defaults).index();
                                 }();
-                                if (!omitted && !rejects && reads_back<S, Ks>(d)) p.emplace("default", d, copy_string);
-                            };
-                            // the value that reading gives the field when the object leaves out its key
-                            if (defaults == nullptr)
-                                ;
-                            else if constexpr (yyjson::detail::has_default_from<S, declared>)
-                                emit_default(yyjson::detail::default_field_value<S, declared, F>());
-                            else
-                                emit_default(yyjson::detail::struct_field<Ks>(*defaults));
-                        }
-                        if (!m.empty())
-                        {
-                            using E = std::conditional_t<yyjson::detail::is_std_optional<F>::value &&
-                                                             !yyjson::detail::adjacent_field<S, Ks>,
-                                                         typename optional_value<F>::type, F>;
-                            // F is E, or the std::optional<E> that holds the example
-                            const auto check = [](const std::optional<E>& v) {
-                                if constexpr (std::same_as<E, F>)
-                                    return satisfies<S, Ks>(*v);
+                                emit_adjacent<F, tags>(
+                                    adjacent->emplace_back(empty_object).emplace("oneOf", empty_array), key, held,
+                                    std::make_index_sequence<std::variant_size_v<F>>{});
+                            }
+                            else if constexpr (yyjson::detail::is_std_optional<F>::value)
+                            {
+                                // A field without a value is left out of the object, which is how the type declares
+                                // that it may be absent.  Null is read as the value type reads it.
+                                if (const auto* d = m.declared_for(writing()))
+                                    rejects = emit_declared(p, d->text(writing()), member_of<S, declared>());
                                 else
-                                    return satisfies<S, Ks>(v);
-                            };
-                            emit_metadata<E, field_has_examples<S, declared>()>(p, m, member_of<S, declared>(), check);
-                        }
-                    }(),
-                    ...);
+                                    emit<typename F::value_type>(p, field_nodes, node);
+                            }
+                            else if (const auto* d = m.declared_for(writing()))
+                                rejects = emit_declared(p, d->text(writing()), member_of<S, declared>());
+                            else if constexpr (yyjson::detail::transparent_over_optional<F>)
+                            {
+                                // The same for a struct whose field is such a `std::optional`, which `$defs` defines
+                                // by the value type.
+                                emit_named<F>(p);
+                                if (field_nodes != nullptr)
+                                {
+                                    emit_constraints(p, field_nodes[node].constraints);
+                                    if (field_nodes[node].negated != 0)
+                                        emit_negated<F>(p, field_nodes, field_nodes[node].negated);
+                                }
+                            }
+                            else
+                                emit<F>(p, field_nodes, node);
+
+                            const bool is_required = [&] {
+                                if (writing())
+                                    return !yyjson::detail::omittable<F> &&
+                                           !yyjson::detail::omits_default<S,
+                                                                          yyjson::detail::struct_declared_index<S, Ks>>;
+                                return rules::required[Ks] || (strict() && !rules::optional[Ks]);
+                            }();
+                            if (tagged)
+                                ;
+                            else if (is_required)
+                                required.push_back(key);
+                            else if constexpr (std::default_initializable<S> && writable<F> &&
+                                               !yyjson::detail::adjacent_field<S, Ks>)
+                            {
+                                const auto emit_default = [&](const F& d) {
+                                    const bool omitted = [&] {
+                                        if constexpr (yyjson::detail::omittable<F>)
+                                            return yyjson::detail::should_omit_field(d);
+                                        else
+                                            return false;
+                                    }();
+                                    if (!omitted && !rejects && reads_back<S, Ks>(d))
+                                        p.emplace("default", d, copy_string);
+                                };
+                                // the value that reading gives the field when the object leaves out its key
+                                if (defaults == nullptr)
+                                    ;
+                                else if constexpr (yyjson::detail::has_default_from<S, declared>)
+                                    emit_default(yyjson::detail::default_field_value<S, declared, F>());
+                                else
+                                    emit_default(yyjson::detail::struct_field<Ks>(*defaults));
+                            }
+                            if (!m.empty())
+                            {
+                                using E = std::conditional_t<yyjson::detail::is_std_optional<F>::value &&
+                                                                 !yyjson::detail::adjacent_field<S, Ks>,
+                                                             typename optional_value<F>::type, F>;
+                                // F is E, or the std::optional<E> that holds the example
+                                const auto check = [](const std::optional<E>& v) {
+                                    if constexpr (std::same_as<E, F>)
+                                        return satisfies<S, Ks>(*v);
+                                    else
+                                        return satisfies<S, Ks>(v);
+                                };
+                                emit_metadata<E, field_has_examples<S, declared>()>(p, m, member_of<S, declared>(),
+                                                                                    check);
+                            }
+                        }(),
+                        true)...};
             }(std::make_index_sequence<count>{});
 
             if (!required.empty())
