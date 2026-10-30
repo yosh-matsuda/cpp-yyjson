@@ -1009,6 +1009,9 @@ TEST(Codegen, StructDefaults)
             "pattern": {"anyOf": [{"type": "object", "properties": {"s": {"type": "string", "pattern": "^a"}}},
                                   {"type": "object", "properties": {"t": {"type": "integer"}}}],
                         "default": {"s": "b"}},
+            "only": {"oneOf": [{"type": "array", "items": {"type": "string", "pattern": "^a"}},
+                               {"type": "string", "pattern": "^a"}],
+                     "default": ["ab"]},
             "tree": {"$ref": "#/$defs/T"}
         },
         "$defs": {
@@ -1040,6 +1043,8 @@ TEST(Codegen, StructDefaults)
     EXPECT_TRUE(has(r.code, "inline std::vector<T> T_children_default()\n{\n"
                             "    return std::vector<T>{T{.name = \"x\"}};\n}\n"));
     EXPECT_TRUE(has(r.code, "yyjson::field(\"children\", yyjson::default_from<&T_children_default>)"));
+    // an alternative with a pattern that the generator cannot check is taken when the others do not read the default
+    EXPECT_TRUE(has(r.code, "> only{std::in_place_index<1>, std::vector<std::string>{\"ab\"}};\n"));
     // a key that a closed struct does not have and a pattern that the generator cannot check are not converted
     EXPECT_TRUE(has(r.code, "    // default: {\"z\":1}\n    std::optional<RootClosed> closed;\n"));
     EXPECT_TRUE(has(r.code, "    // default: {\"s\":\"b\"}\n"));

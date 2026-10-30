@@ -4380,7 +4380,9 @@ namespace cpp_yyjson_codegen
 
             // the alternative of a variant that reading takes for a JSON value: the alternative that the tag names,
             // the only one that reads it in yyjson::one_of, or the first alternative that reads it, when the generator
-            // tells that the ones before do not
+            // tells that the ones before do not. An alternative whose settings the generator cannot judge (`pattern`,
+            // a format of the program) is taken when every other alternative rejects the value: reading takes no
+            // other one, and a value outside its settings is a default that is never written, as for a field
             std::optional<std::size_t> alternative(const ctype& t, const json& j) const
             {
                 if (is_nullable(t)) return j.is_null() ? 0 : 1;
@@ -4390,10 +4392,9 @@ namespace cpp_yyjson_codegen
                 {
                     const auto r = fits(j, t.args[i], i < t.sets.size() ? t.sets[i] : settings());
                     if (r == fit::no) continue;
-                    if (r == fit::unknown) return std::nullopt;
-                    // a tagged variant reads the alternative of the tag, whose `const` excludes the others
-                    if (!t.tagged && !one) return i;
                     if (found) return std::nullopt;
+                    // a tagged variant reads the alternative of the tag, whose `const` excludes the others
+                    if (r == fit::yes && !t.tagged && !one) return i;
                     found = i;
                 }
                 return found;

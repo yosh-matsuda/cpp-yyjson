@@ -450,7 +450,7 @@ yyjson::value any = yyjson::value(yyjson::read(R"({"k":[1,"x"]})"));
 *   A property that `dependentRequired` requires, or that a group of `oneOf` / `anyOf` of `required` counts, is `std::optional<T>` with a `// default:` comment, without a warning: `write` would leave out a key that holds the default, and the document would lack a key that the schema requires.
 *   So is a property of a struct with `minProperties`, for the same reason: a key that `write` leaves out would not count.
 
-A default that the generator cannot convert makes the member `std::optional<T>` with a `// default:` comment and a warning, and the program applies the default. This happens for a default that does not read as the type, such as a key that a closed struct does not have, for the default of a variant whose alternative the generator cannot choose, because an alternative depends on a `pattern`, a `contains` or a `format` that it does not check.
+A default that the generator cannot convert makes the member `std::optional<T>` with a `// default:` comment and a warning, and the program applies the default. This happens for a default that does not read as the type, such as a key that a closed struct does not have, and for the default of a variant whose alternative the generator cannot choose: an alternative that depends on a `pattern`, a `contains` or a `format` that the generator does not check is chosen only when every other alternative rejects the default.
 
 `--optional-defaults` makes every member with a default `std::optional<T>` with a `// default:` comment: a missing key reads as `std::nullopt`, which tells it apart from a key that holds the default.
 
