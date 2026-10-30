@@ -104,7 +104,7 @@ The header includes `cpp_yyjson.hpp` and the standard headers that it uses, and 
 auto order = yyjson::read<shop::Order>(json, yyjson::strict);
 ```
 
-The comment at the top of the header lists the warnings, and explains the annotations that a reader may not know, such as [`yyjson::omit_default`](reference.md#yyjsonomit_default). A header that uses `yyjson::pattern` needs a specialization of [`yyjson::pattern_matcher<>`](validation.md#pattern-matcher) in the program, as any program that reads a pattern does; `--no-pattern` leaves the patterns out instead.
+The comment at the top of the header lists the warnings, and explains the annotations that a reader may not know, such as [`yyjson::omit_default`](reference.md#yyjsonomit_default). A header that uses `yyjson::pattern` or `yyjson::pattern_properties` needs a specialization of [`yyjson::pattern_matcher<>`](validation.md#pattern-matcher) in the program, as any program that reads a pattern does; `--no-pattern` leaves the patterns out instead.
 
 ### Command line
 
@@ -122,7 +122,7 @@ cpp-yyjson-codegen <schema.json> [options]
 | `--namespace <ns>` | The namespace of the generated types, such as `app::model`. The default is the global namespace. |
 | `--root-name <name>` | The name of the root type. The default is the `title` of the root, or `Root`. |
 | `--cpp26` | Writes [C++26 annotations](conversions.md#c26-annotations) (`[[=yyjson::minimum(0)]]`) on the members instead of `yyjson::annotations<T>`. The header then needs GCC 16 with `-std=c++26 -freflection`. |
-| `--no-pattern` | Leaves out `pattern`, and the patterns of `patternProperties`, instead of writing `yyjson::pattern`. |
+| `--no-pattern` | Leaves out `pattern`, and the patterns of `patternProperties`, instead of writing `yyjson::pattern` and `yyjson::pattern_properties`. |
 | `--optional-defaults` | Makes a field with a default `std::optional<T>`, empty for a missing key, instead of a `T` that holds the default. See [Defaults](#defaults). |
 | `--keep-unknown-keys` | Gives every struct that accepts other keys a field of [`yyjson::extra_keys`](conversions.md#keys-that-name-no-field), which keeps them and writes them back. See [Keys that name no property](#keys-that-name-no-property). |
 | `--infer-types` | Reads a schema without `type` as the one type that its keywords constrain, with a warning, instead of as every kind of value. See [Schemas without `type`](#schemas-without-type). |
@@ -187,7 +187,7 @@ Each schema maps to one C++ type:
 | Schema | C++ type |
 | --- | --- |
 | `"type": "object"` with `properties` or `required` | a struct; see below |
-| `"type": "object"` without `properties`, with a schema in `additionalProperties` or [`patternProperties`](#patternproperties) | `std::map<std::string, T>` |
+| `"type": "object"` without `properties`, with a schema in `additionalProperties`, or in [`patternProperties`](#patternproperties) of one schema | `std::map<std::string, T>` |
 | `"type": "object"` without them | [`yyjson::object`](reference.md#yyjsonobject) |
 | `"type": "array"` with `items` | `std::vector<T>` |
 | `"type": "array"` with `prefixItems`, `"items": false` and `minItems` of all positions | `std::tuple<...>` |
@@ -253,7 +253,7 @@ A property becomes a member, in the order of `properties`:
 
 `dependentRequired` becomes `yyjson::dependent_required`, and `oneOf` or `anyOf` of subschemas that only list `required` keys become [`yyjson::one_of_required` and `yyjson::any_of_required`](reference.md#yyjsonone_of_required-yyjsonany_of_required). `if`, `then`, `else`, `not` and `dependentSchemas` become `yyjson::if_then_else` and `yyjson::not_`; see [Conditions](#conditions). `minProperties` and `maxProperties` of a struct are left out with a warning.
 
-A struct of more than 100 members is registered with [`VISITABLE_STRUCT`](conversions.md#visitable_struct) under C++20, as the reflection of C++20 takes no more, and cannot have a field of `yyjson::extra_keys`; a struct of more than 1365 members needs `--cpp26`.
+A struct of more than 100 members is registered with [`VISITABLE_STRUCT`](conversions.md#visitable_struct) under C++20, as the reflection of C++20 takes no more, and cannot have a field of `yyjson::extra_keys` or `yyjson::pattern_properties`; a struct of more than 1365 members needs `--cpp26`.
 
 ### Arrays of positions
 
@@ -461,7 +461,7 @@ A key that `required`, `dependentRequired`, a group of `oneOf` / `anyOf` of `req
 2.  else the schema of `additionalProperties`;
 3.  else `yyjson::value`, which reads any JSON value.
 
-The member carries the constraints of that schema. A key that matches patterns of different schemas is `yyjson::value`, with a warning. Under `additionalProperties: false` the schema rejects every object that has the key: the member is `yyjson::value`, and the struct gets `yyjson::not_(yyjson::field(key, yyjson::required))`, as for a [property whose schema is `false`](#mapping); a required key gives a warning, because no object then satisfies the schema. A key that only a condition names gets no member there: the condition knows that the key is absent, so a `then` that requires it never holds, and a `dependentSchemas` of it never applies. The keys that no keyword names go to the field of `yyjson::extra_keys` below.
+The member carries the constraints of that schema. A key that matches patterns of different schemas is `yyjson::value`, and the fields of the patterns check its value against each of them. Under `additionalProperties: false` the schema rejects every object that has the key: the member is `yyjson::value`, and the struct gets `yyjson::not_(yyjson::field(key, yyjson::required))`, as for a [property whose schema is `false`](#mapping); a required key gives a warning, because no object then satisfies the schema. A key that only a condition names gets no member there: the condition knows that the key is absent, so a `then` that requires it never holds, and a `dependentSchemas` of it never applies. The keys that no keyword names go to the field of `yyjson::extra_keys` below.
 
 ## Keys that name no property
 
@@ -474,17 +474,54 @@ An object schema without `additionalProperties`, with `true` or with `{}`, accep
 
 ## `patternProperties`
 
-`patternProperties` whose patterns all have the same schema maps to keys that match the patterns, which the library checks with `yyjson::property_names(yyjson::pattern(...))`:
+`patternProperties` of a struct becomes fields of [`yyjson::pattern_properties`](conversions.md#keys-that-a-pattern-matches), one map for each schema of the patterns, which receive the keys that their patterns match:
+
+```json
+{
+  "type": "object",
+  "properties": {"name": {"type": "string"}, "x-id": {"type": "string"}},
+  "patternProperties": {"^x-": {"type": "string", "maxLength": 8}, "^n_": {"type": "integer", "minimum": 0}},
+  "additionalProperties": false
+}
+```
+
+```cpp
+struct Root
+{
+    std::optional<std::string> name;
+    std::optional<std::string> x_id;
+    std::map<std::string, std::string> pattern1;
+    std::map<std::string, std::int64_t> pattern2;
+};
+
+template <>
+inline constexpr auto yyjson::annotations<Root> = yyjson::annotate(
+    yyjson::additional_properties(false),
+    yyjson::field("x_id", yyjson::rename("x-id")),
+    yyjson::field("pattern1", yyjson::pattern_properties("^x-"), yyjson::additional_properties(yyjson::max_length(8))),
+    yyjson::field("pattern2", yyjson::pattern_properties("^n_"), yyjson::additional_properties(yyjson::minimum(0))));
+```
+
+The library checks what JSON Schema checks: the value of `x-id` is read as `std::string` of `x_id` and checked by the settings of `pattern1` too, and a key that two patterns match is read into the first of their fields and checked against the other. The keys that no pattern matches follow `additionalProperties`: `false` rejects them, `true` or an absent keyword gives `yyjson::additional_properties(true)`, and a schema gives the field of [`yyjson::extra_keys`](#keys-that-name-no-property).
+
+*   Patterns of the same schema share one field, whose pattern joins them as `(?:p1)|(?:p2)`.
+*   A field is named by the `title` of the schema, else by the last part of its `$ref`, else `pattern1`, `pattern2` and so on in the order of the schemas.
+*   `propertyNames` becomes `yyjson::property_names` on every field of patterns and on the field of `yyjson::extra_keys`.
+*   A pattern whose schema is `false` gets no field: the properties that it matches get `yyjson::not_(yyjson::field(key, yyjson::required))` on the struct, and the other keys that it matches are not rejected, with a warning, unless `additionalProperties: false` rejects them anyway.
+*   A default is split among the fields by the patterns that its keys match. A key of a closed struct that no pattern matches makes the member `std::optional` with a `// default:` comment and a warning.
+*   A struct of more than 100 members without `--cpp26`, registered with `VISITABLE_STRUCT`, cannot have the fields: the patterns are left out with a warning, and the struct gets `yyjson::additional_properties(true)`.
+
+An object schema whose keys are all of one kind becomes a map instead of a struct:
 
 | Schema | C++ |
 | --- | --- |
-| an object of only `patternProperties`, with `additionalProperties: false`, or with `additionalProperties` of the same schema | `std::map<std::string, T>` with the patterns |
+| no `properties`, `patternProperties` of the same schema, with `additionalProperties: false` | `std::map<std::string, T>` with `yyjson::property_names(yyjson::pattern(...))` of the patterns |
+| no `properties`, `patternProperties` of the same schema as `additionalProperties` | `std::map<std::string, T>` |
 | `"patternProperties": {".*": T}` and no other key | `std::map<std::string, T>` |
-| `properties` with `patternProperties` and `additionalProperties: false` | a struct with a field of `yyjson::extra_keys` of the patterns |
 
-Several patterns become one, `(?:p1)|(?:p2)`. A property whose key matches a pattern is checked by its own schema only, with a warning, since JSON Schema checks it against both.
+A root with constraints becomes a struct of [`yyjson::transparent`](conversions.md#a-struct-as-the-value-of-its-field) that holds such a map.
 
-`patternProperties` whose patterns select different schemas is not supported: the values of an object without `properties` are read as `yyjson::value`, and the other keys of a struct go to a field of `yyjson::extra_keys` of `yyjson::value`, with a warning. `--no-pattern` drops the patterns of the keys with a warning, and keeps the map.
+`--no-pattern` leaves out the patterns of the keys, with a warning: a struct keeps the keys that no property names in a field of `yyjson::extra_keys` of `yyjson::value`, and a map reads its values as `yyjson::value`.
 
 ## `unevaluatedProperties` and `unevaluatedItems`
 
@@ -704,7 +741,8 @@ The fourth and the last rows are the ones where the code reads less strictly wit
 *   nested `anyOf` and the flattened form;
 *   `oneOf` and `anyOf` of `{"type": "null"}` and a subschema that does not take `null`;
 *   `additionalProperties: {}`, `true` and an absent keyword;
-*   `patternProperties` and the `propertyNames` with `additionalProperties` of the map;
+*   `patternProperties` of a map and the `propertyNames` with `additionalProperties` of the map;
+*   `propertyNames` of a struct and the `anyOf` that `json_schema<T>()` writes for it, with the keys of the fields and the patterns;
 *   a property whose schema is `false`, and `not` of `required` of its key.
 
 The `title` and `description` of the subschema beside `{"type": "null"}` are lost: the variant whose first alternative is `std::monostate` has no place for them, and the description of the property stays.
@@ -712,6 +750,6 @@ The `title` and `description` of the subschema beside `{"type": "null"}` are los
 ## Limits
 
 *   Only the keywords listed above are expressed; the others are left out as described in [Warnings](#warnings).
-*   A struct of more than 1365 members needs `--cpp26`, and a struct of more than 100 members has no field of `yyjson::extra_keys` without it.
+*   A struct of more than 1365 members needs `--cpp26`, and a struct of more than 100 members has no field of `yyjson::extra_keys` or `yyjson::pattern_properties` without it.
 *   A position of `prefixItems` in a `std::tuple` or a `std::vector` keeps up to 16 values of `const` and `enum`; more are dropped with a warning, as is `contains` of a type there. Under C++20, such a position copies up to 256 characters of string literals, and longer strings become `std::string_view` literals. An [array of positions](#arrays-of-positions) has none of these limits, but takes up to 100 positions under C++20.
 *   Formats that the library does not check, and keywords that only annotate, are left out.
