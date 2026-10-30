@@ -547,7 +547,7 @@ inline constexpr auto yyjson::annotations<ListedEnums> =
                      yyjson::field("maybe", yyjson::const_("mid")),
                      yyjson::field("tones", yyjson::items(yyjson::enum_("low", "HIGH"))));
 
-// the formats that the library checks, and one that the program checks
+// the formats that the library checks, "regex" with the engine of pattern_matcher<>, and one that the program checks
 template <>
 struct yyjson::format_checker<>
 {
@@ -564,6 +564,7 @@ struct Formatted
     std::optional<std::string> mail;
     std::vector<std::string> hosts;
     std::string code = "X";
+    std::optional<std::string> re;
     bool operator==(const Formatted&) const = default;
 };
 template <>
@@ -571,7 +572,7 @@ inline constexpr auto yyjson::annotations<Formatted> =
     yyjson::annotate(yyjson::field("when", yyjson::format("date-time")),
                      yyjson::field("mail", yyjson::format("email")),
                      yyjson::field("hosts", yyjson::items(yyjson::format("hostname"))),
-                     yyjson::field("code", yyjson::format("upper")));
+                     yyjson::field("code", yyjson::format("upper")), yyjson::field("re", yyjson::format("regex")));
 
 // dependent_required names members, whose keys are renamed
 struct Billing
@@ -2183,7 +2184,7 @@ TEST(Constraints, Format)
     expect_accepted<Formatted>(R"({"when":"1985-04-12T23:20:50.52+01:00","mail":"a.b@[IPv6:::1]",)"
                                R"("hosts":["example.com","xn--4gbwdl.xn--wgbh1c"],"code":"AB"})",
                                {"1985-04-12T23:20:50.52+01:00", "a.b@[IPv6:::1]",
-                                {"example.com", "xn--4gbwdl.xn--wgbh1c"}, "AB"});
+                                {"example.com", "xn--4gbwdl.xn--wgbh1c"}, "AB", std::nullopt});
     expect_accepted<Formatted>(R"({"mail":null})", {});
     const auto value = [](std::string_view key) {
         return std::format(R"(the value of the key "{}" of Formatted )", key);
@@ -2198,6 +2199,9 @@ TEST(Constraints, Format)
         R"({"hosts":["example.com","-a.com"]})",
         R"(an element of the value of the key "hosts" of Formatted does not have the format "hostname")", "/hosts/1");
     expect_rejected<Formatted>(R"({"code":"Ab"})", value("code") + R"(does not have the format "upper")", "/code");
+    expect_accepted<Formatted>(R"({"re":"([abc])+\\s+$"})",
+                               {"2024-02-29T23:59:60Z", std::nullopt, {}, "X", R"(([abc])+\s+$)"});
+    expect_rejected<Formatted>(R"({"re":"^(abc]"})", value("re") + R"(does not have the format "regex")", "/re");
 }
 
 TEST(Constraints, Formats)

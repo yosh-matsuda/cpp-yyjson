@@ -1648,15 +1648,17 @@ namespace yyjson
 
     // The matcher of `yyjson::pattern`, which the program specializes before reading a struct that has one:
     // constructible from the `std::string_view` of the pattern, and callable with the `std::string_view` of a string
-    // to tell whether the pattern matches it.  An object of it is constructed for each field on its first read.
+    // to tell whether the pattern matches it.  An object of it is constructed for each field on its first read.  The
+    // format "regex" of `yyjson::format` constructs one from each string, which has the format when the constructor
+    // does not throw.
     template <typename = void>
     struct pattern_matcher;
 
     // A format that a string field must have, as JSON Schema's `format`: `yyjson::field("member",
     // yyjson::format("date-time"))` or `[[=yyjson::format("date-time")]]`.  The library checks "date-time", "date",
     // "time", "duration", "email", "hostname", "ipv4", "ipv6", "uri", "uri-reference", "uuid", "uri-template",
-    // "json-pointer" and "relative-json-pointer"; the program checks the other names by specializing
-    // `yyjson::format_checker<>`.
+    // "json-pointer" and "relative-json-pointer", and "regex" with the engine of `yyjson::pattern_matcher<>`; the
+    // program checks the other names by specializing `yyjson::format_checker<>`.
     template <std::size_t N = 0>
     struct format
     {
@@ -8253,6 +8255,34 @@ namespace yyjson
             constexpr auto index = builtin_format_index(name);
             if constexpr (index < std::size(builtin_formats))
                 return builtin_formats[index].second(s);
+            else if constexpr (name == "regex")
+            {
+                // a string is a regular expression when the engine of the program accepts it
+                using matcher_type = pattern_matcher<dependent_t<void, Level>>;
+                static_assert(
+                    requires { sizeof(matcher_type); },
+                    "yyjson::format(\"regex\") needs a regular expression engine: specialize yyjson::pattern_matcher<> "
+                    "with a constructor from std::string_view that throws for a string that is not a regular "
+                    "expression");
+                if constexpr (requires { sizeof(matcher_type); })
+                {
+                    try
+                    {
+                        [[maybe_unused]] const matcher_type matcher(s);
+                        return true;
+                    }
+                    catch (const std::bad_alloc&)
+                    {
+                        throw;
+                    }
+                    catch (...)
+                    {
+                        return false;
+                    }
+                }
+                else
+                    return true;
+            }
             else
             {
                 using checker_type = format_checker<dependent_t<void, Level>>;
@@ -8260,9 +8290,10 @@ namespace yyjson
                     requires { sizeof(checker_type); },
                     "yyjson::format checks the formats \"date-time\", \"date\", \"time\", \"duration\", \"email\", "
                     "\"hostname\", \"ipv4\", \"ipv6\", \"uri\", \"uri-reference\", \"uuid\", \"uri-template\", "
-                    "\"json-pointer\" and \"relative-json-pointer\": specialize yyjson::format_checker<> for the "
-                    "others, with a constructor from the std::string_view of the name of the format and a const "
-                    "operator() that takes the std::string_view of a string and tells whether it has the format");
+                    "\"json-pointer\" and \"relative-json-pointer\", and \"regex\" with yyjson::pattern_matcher<>: "
+                    "specialize yyjson::format_checker<> for the others, with a constructor from the std::string_view "
+                    "of the name of the format and a const operator() that takes the std::string_view of a string and "
+                    "tells whether it has the format");
                 if constexpr (requires { sizeof(checker_type); })
                 {
                     static const checker_type checker(name);
