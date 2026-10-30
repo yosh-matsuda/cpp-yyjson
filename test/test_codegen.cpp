@@ -1324,6 +1324,36 @@ TEST(Codegen, Conditions)
                             {});
     EXPECT_EQ(warnings(n), "#/if: `if` is not supported here: `if`, `not` and `dependentSchemas` are not supported in "
                            "it; `then` and `else` are ignored\n");
+
+    // `additionalProperties: false` in `then` and `else`: the part names every key of its `properties`, with or
+    // without settings, and closes; `false` of a property is what the closed part does to keys it does not name;
+    // beside `patternProperties` it is ignored with a warning, and `true` adds nothing
+    const auto cl = generate(R"({
+        "type": "object",
+        "properties": {"kind": {"type": "string"}, "r": {"type": "number"}, "w": {"type": "number"},
+                       "m": {"type": "object", "additionalProperties": {"type": "string"}}},
+        "if": {"properties": {"kind": {"const": "circle"}}, "required": ["kind"]},
+        "then": {"properties": {"kind": true, "r": {"minimum": 0}, "w": false}, "additionalProperties": false},
+        "else": {"properties": {"kind": {}, "w": {}}, "additionalProperties": false},
+        "dependentSchemas": {
+            "m": {"patternProperties": {"^x": true}, "additionalProperties": false},
+            "w": {"additionalProperties": true, "required": ["kind"]}
+        }
+    })",
+                             {});
+    EXPECT_EQ(warnings(cl), "#/dependentSchemas/m/additionalProperties: `additionalProperties` false beside "
+                            "`patternProperties` is not supported here and is ignored\n"
+                            "#/dependentSchemas/m/patternProperties: `patternProperties` is not supported here and is "
+                            "ignored\n");
+    EXPECT_TRUE(has(cl.code, "    yyjson::if_then_else(\n"
+                             "        yyjson::if_(yyjson::field(\"kind\", yyjson::required, "
+                             "yyjson::const_(\"circle\"))),\n"
+                             "        yyjson::then(yyjson::field(\"kind\"), yyjson::field(\"r\", yyjson::minimum(0.0)), "
+                             "yyjson::additional_properties(false)),\n"
+                             "        yyjson::else_(yyjson::field(\"kind\"), yyjson::field(\"w\"), "
+                             "yyjson::additional_properties(false))),\n"));
+    EXPECT_TRUE(has(cl.code, "        yyjson::if_(yyjson::field(\"w\", yyjson::required)),\n"
+                             "        yyjson::then(yyjson::field(\"kind\", yyjson::required))));\n"));
 }
 
 TEST(Codegen, ExtraKeys)

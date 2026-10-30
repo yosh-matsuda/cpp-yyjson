@@ -16,7 +16,10 @@
     "else": {"required": ["points"]}
   },
   "not": {"required": ["radius", "width"]},
-  "dependentSchemas": {"width": {"properties": {"height": {"minimum": 1}}, "required": ["height"]}},
+  "dependentSchemas": {
+    "width": {"properties": {"height": {"minimum": 1}}, "required": ["height"]},
+    "points": {"properties": {"kind": {}, "points": {}}, "additionalProperties": false}
+  },
   "$defs": {
     "Origin": {"type": "object", "properties": {"x": {"type": "integer"}}, "required": ["x"]}
   }

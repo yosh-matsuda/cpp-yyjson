@@ -762,11 +762,13 @@ namespace cpp_yyjson_codegen
             std::optional<ctype> is_type{};
         };
 
-        // yyjson::if_then_else, or yyjson::not_ of the fields of `if_` when `negated`
+        // yyjson::if_then_else, or yyjson::not_ of the fields of `if_` when `negated`; `then_closed` and
+        // `else_closed` add yyjson::additional_properties(false) to the part
         struct condition
         {
             bool negated = false;
             std::vector<cond_field> if_{}, then_{}, else_{};
+            bool then_closed = false, else_closed = false;
             std::string loc{};
         };
 
@@ -3559,13 +3561,16 @@ namespace cpp_yyjson_codegen
             // what the subschema of `then` or `else` requires, as the fields of yyjson::then / yyjson::else_; the
             // parts that C++ does not express are left out with a warning. The type of yyjson::is_type<T> is named
             // after `name`, the key and `suffix`. `never` when no object satisfies the subschema: it is false, or
-            // requires a key that `additionalProperties` false rejects
+            // requires a key that `additionalProperties` false rejects. `closed` when it has `additionalProperties`
+            // false, which yyjson::additional_properties(false) expresses: the part then names every field that
+            // `properties` names, with or without settings
             std::vector<cond_field> assert_of(const json& sub, const std::string& sloc, const std::vector<field>& fields,
                                               const std::vector<std::string>& rejected, const std::string& name,
-                                              const std::string& suffix, bool& never)
+                                              const std::string& suffix, bool& never, bool& closed)
             {
                 auto out = std::vector<cond_field>();
                 never = false;
+                closed = false;
                 const auto entry = [&](const std::string& k) -> cond_field& {
                     for (auto& f : out)
                         if (f.key == k) return f;
@@ -3581,9 +3586,27 @@ namespace cpp_yyjson_codegen
                             never = true;
                             return out;
                         }
+                if (const auto* a = n->find("additionalProperties"); a != nullptr && a->is_bool() && !a->b)
+                {
+                    // the keys of `patternProperties` are not named by fields, so the part would reject them
+                    if (n->has("patternProperties"))
+                        warn(sloc + "/additionalProperties",
+                             "`additionalProperties` false beside `patternProperties` is not supported here and is "
+                             "ignored");
+                    else
+                        closed = true;
+                }
                 for (const auto& [k, v] : n->members)
                 {
                     if (is_metadata_key(k) || (k == "type" && type_has(v, "object"))) continue;
+                    if (k == "additionalProperties")
+                    {
+                        // `true` or a schema that accepts anything adds nothing
+                        if (!v.is_bool() && !accepts_anything(*normalize_full(&v, sloc + "/additionalProperties")))
+                            warn(sloc + "/additionalProperties",
+                                 "`additionalProperties` other than false is not supported here and is ignored");
+                        continue;
+                    }
                     if (k == "required" && v.is_array())
                     {
                         for (const auto& e : v.items)
@@ -3596,15 +3619,19 @@ namespace cpp_yyjson_codegen
                             if (std::ranges::find(rejected, key) != rejected.end()) continue;
                             const auto ploc = sloc + "/properties/" + pointer_token(key);
                             const auto* pn = normalize_full(&ps, ploc);
-                            if (accepts_anything(*pn)) continue;
                             const auto* f = field_of(fields, key);
                             if (f == nullptr) continue;
-                            if (pn->is_bool())
+                            if (pn->is_bool() && !pn->b)
                             {
-                                warn(ploc, "the schema `false` of a key that has a field is not supported here and is "
-                                           "ignored");
+                                // a part with yyjson::additional_properties(false) rejects a key that it does not
+                                // name
+                                if (!closed)
+                                    warn(ploc, "the schema `false` of a key that has a field is not supported here "
+                                               "and is ignored");
                                 continue;
                             }
+                            if (closed) (void)entry(key);
+                            if (accepts_anything(*pn)) continue;
                             if (auto set = settings_for(ps, f->type, ploc))
                             {
                                 if (!set->empty()) entry(key).set = std::move(*set);
@@ -3752,20 +3779,21 @@ namespace cpp_yyjson_codegen
                     if (!t.ok || t.never || t.fields.empty()) return false;
                     const auto* tv = l.entry->find("then");
                     if (tv == nullptr) continue;
-                    auto never = false;
-                    auto th = assert_of(*tv, l.loc + "/then", fields, rejected, name, "Then", never);
+                    auto never = false, closed = false;
+                    auto th = assert_of(*tv, l.loc + "/then", fields, rejected, name, "Then", never, closed);
                     if (never)
                         parts.push_back(condition{.negated = true, .if_ = std::move(t.fields), .loc = l.loc});
-                    else if (!th.empty())
-                        parts.push_back(condition{.if_ = std::move(t.fields), .then_ = std::move(th), .loc = l.loc});
+                    else if (!th.empty() || closed)
+                        parts.push_back(condition{
+                            .if_ = std::move(t.fields), .then_ = std::move(th), .then_closed = closed, .loc = l.loc});
                 }
                 if (last != nullptr)
                 {
-                    auto never = false;
-                    auto el = assert_of(*last, last_loc, fields, rejected, name, "Else", never);
+                    auto never = false, closed = false;
+                    auto el = assert_of(*last, last_loc, fields, rejected, name, "Else", never, closed);
                     if (never)
                         warn(last_loc, "`else` that no object satisfies is not supported and is ignored");
-                    else if (!el.empty())
+                    else if (!el.empty() || closed)
                     {
                         auto any = json::object_of();
                         auto props = json::object_of();
@@ -3777,7 +3805,8 @@ namespace cpp_yyjson_codegen
                             any.set("required", json::array_of({json::string_of(links[0].key)}));
                         auto t = test_of(*store(std::move(any)), cloc + "/if", fields, rejected, name + "If");
                         if (!t.ok || t.never || t.fields.empty()) return false;
-                        parts.push_back(condition{.if_ = std::move(t.fields), .else_ = std::move(el), .loc = last_loc});
+                        parts.push_back(condition{
+                            .if_ = std::move(t.fields), .else_ = std::move(el), .else_closed = closed, .loc = last_loc});
                     }
                 }
                 for (auto& p : parts) out.push_back(std::move(p));
@@ -3811,16 +3840,17 @@ namespace cpp_yyjson_codegen
                 if (tv != nullptr)
                 {
                     auto never = false;
-                    cond.then_ = assert_of(*tv, cloc + "/then", fields, rejected, name, "Then", never);
+                    cond.then_ = assert_of(*tv, cloc + "/then", fields, rejected, name, "Then", never, cond.then_closed);
                     if (never) out.push_back(condition{.negated = true, .if_ = t.fields, .loc = cloc + "/then"});
                 }
                 if (ev != nullptr)
                 {
                     auto never = false;
-                    cond.else_ = assert_of(*ev, cloc + "/else", fields, rejected, name, "Else", never);
+                    cond.else_ = assert_of(*ev, cloc + "/else", fields, rejected, name, "Else", never, cond.else_closed);
                     if (never) warn(cloc + "/else", "`else` that no object satisfies is not supported and is ignored");
                 }
-                if (!cond.then_.empty() || !cond.else_.empty()) out.push_back(std::move(cond));
+                if (!cond.then_.empty() || !cond.else_.empty() || cond.then_closed || cond.else_closed)
+                    out.push_back(std::move(cond));
             }
 
             void add_not(const json& v, const std::string& nloc, const std::vector<field>& fields,
@@ -3880,12 +3910,13 @@ namespace cpp_yyjson_codegen
                             const auto* n = normalize_full(&v, dloc);
                             if (accepts_anything(*n)) continue;
                             const auto key = cond_field{.key = k, .required = true};
-                            auto never = false;
-                            auto th = assert_of(v, dloc, fields, rejected, name, "Dependent", never);
+                            auto never = false, closed = false;
+                            auto th = assert_of(v, dloc, fields, rejected, name, "Dependent", never, closed);
                             if (never)
                                 out.push_back(condition{.negated = true, .if_ = {key}, .loc = dloc});
-                            else if (!th.empty())
-                                out.push_back(condition{.if_ = {key}, .then_ = std::move(th), .loc = dloc});
+                            else if (!th.empty() || closed)
+                                out.push_back(
+                                    condition{.if_ = {key}, .then_ = std::move(th), .then_closed = closed, .loc = dloc});
                         }
                 }
                 return out;
@@ -7445,7 +7476,7 @@ namespace cpp_yyjson_codegen
                 if (d.max_properties) items.push_back("yyjson::max_properties(" + std::to_string(*d.max_properties) + ")");
                 // the annotations of C++20 are outside the namespace
                 const auto q = opts_.cpp26 || opts_.ns.empty() ? std::string() : opts_.ns + "::";
-                const auto fields = [&](std::string_view part, const std::vector<cond_field>& cs) {
+                const auto fields = [&](std::string_view part, const std::vector<cond_field>& cs, bool closed = false) {
                     auto fs = std::vector<std::string>();
                     for (const auto& c : cs)
                     {
@@ -7457,6 +7488,7 @@ namespace cpp_yyjson_codegen
                         if (c.is_type) spec.push_back("yyjson::is_type<" + spell(*c.is_type, false, q) + ">");
                         fs.push_back("yyjson::field(" + join(spec) + ")");
                     }
+                    if (closed) fs.emplace_back("yyjson::additional_properties(false)");
                     return "yyjson::" + std::string(part) + "(" + join(fs) + ")";
                 };
                 for (const auto& c : d.conditions)
@@ -7470,8 +7502,8 @@ namespace cpp_yyjson_codegen
                     else
                     {
                         auto parts = std::vector<std::string>{fields("if_", c.if_)};
-                        if (!c.then_.empty()) parts.push_back(fields("then", c.then_));
-                        if (!c.else_.empty()) parts.push_back(fields("else_", c.else_));
+                        if (!c.then_.empty() || c.then_closed) parts.push_back(fields("then", c.then_, c.then_closed));
+                        if (!c.else_.empty() || c.else_closed) parts.push_back(fields("else_", c.else_, c.else_closed));
                         text = "yyjson::if_then_else(\n        " + join(parts, ",\n        ") + ")";
                     }
                     if (std::ranges::find(items, text) == items.end()) items.push_back(std::move(text));

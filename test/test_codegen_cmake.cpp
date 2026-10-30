@@ -266,7 +266,8 @@ TEST(CodegenCMake, Untyped)
 
 TEST(CodegenCMake, Conditions)
 {
-    // `if`, `then` and `else`, a chain of them, `not` and `dependentSchemas` as conditions of the struct
+    // `if`, `then` and `else`, a chain of them, `not` and `dependentSchemas` as conditions of the struct; the
+    // dependent schema of "points" closes the object to "kind" and "points"
     for (const auto* json : {R"({"kind":"circle","radius":1.0,"payload":{"x":1}})",
                              R"({"kind":"rect","height":3,"width":2})", R"({"kind":"poly","points":[]})",
                              R"({"points":1})"})
@@ -278,8 +279,12 @@ TEST(CodegenCMake, Conditions)
     for (const auto* json : {R"({"kind":"circle"})", R"({"kind":"circle","radius":-1})",
                              R"({"kind":"circle","radius":1,"payload":{"y":1}})", R"({"kind":"rect"})",
                              R"({"kind":"poly"})", R"({})", R"({"kind":"circle","radius":1,"width":1,"height":1})",
-                             R"({"kind":"rect","width":2})", R"({"kind":"rect","width":2,"height":0})"})
+                             R"({"kind":"rect","width":2})", R"({"kind":"rect","width":2,"height":0})",
+                             R"({"points":1,"radius":1})", R"({"kind":"poly","points":[],"payload":0})"})
         EXPECT_THROW((void)yyjson::read<model::Shape>(json), yyjson::bad_cast) << json;
+    auto shape = yyjson::read<model::Shape>(R"({"points":1})");
+    shape.radius = 1.0;
+    EXPECT_THROW(yyjson::validate(shape), yyjson::bad_cast);
 }
 
 TEST(CodegenCMake, ValueNot)
