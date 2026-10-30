@@ -231,6 +231,67 @@ inline constexpr auto yyjson::annotations<ExtraNamed> = yyjson::annotate(
     yyjson::field("more", yyjson::extra_keys, yyjson::property_names(yyjson::pattern("^x-"))));
 template <>
 inline constexpr auto yyjson::annotations<ExtraShape> = yyjson::annotate(yyjson::internal_tag("type", {"c", "g"}));
+// maps of the keys that a pattern matches, with constraints on their values and keys, the same pattern twice, the
+// keys of no pattern kept in a map, and a key of a field that a pattern matches
+struct Patterned
+{
+    int x = 0;
+    std::map<std::string, int> a;
+    std::map<std::string, std::string> b;
+};
+template <>
+inline constexpr auto yyjson::annotations<Patterned> = yyjson::annotate(
+    yyjson::field("a", yyjson::pattern_properties("^a"), yyjson::additional_properties(yyjson::minimum(10)),
+                  yyjson::property_names(yyjson::max_length(3))),
+    yyjson::field("b", yyjson::pattern_properties("^b")));
+struct PatternTwice
+{
+    std::map<std::string, int> low;
+    std::map<std::string, int> high;
+    std::map<std::string, bool> rest;
+};
+template <>
+inline constexpr auto yyjson::annotations<PatternTwice> = yyjson::annotate(
+    yyjson::field("low", yyjson::pattern_properties("^a"), yyjson::additional_properties(yyjson::minimum(10))),
+    yyjson::field("high", yyjson::pattern_properties("^a"), yyjson::additional_properties(yyjson::maximum(20))),
+    yyjson::field("rest", yyjson::extra_keys, yyjson::property_names(yyjson::min_length(2))));
+struct PatternField
+{
+    int ab = 10;
+    std::map<std::string, int> m;
+};
+template <>
+inline constexpr auto yyjson::annotations<PatternField> = yyjson::annotate(yyjson::field(
+    "m", yyjson::pattern_properties("^a"), yyjson::additional_properties(yyjson::minimum(10)),
+    yyjson::property_names(yyjson::max_length(1))));
+// tags whose keys a pattern matches, checked as keys of fields
+struct PatternTagShort
+{
+    int x = 0;
+    std::map<std::string, std::string> m;
+};
+template <>
+inline constexpr auto yyjson::annotations<PatternTagShort> = yyjson::annotate(
+    yyjson::field("m", yyjson::pattern_properties("^k"), yyjson::additional_properties(yyjson::max_length(1))));
+struct PatternTagInt
+{
+    std::map<std::string, int> m;
+};
+template <>
+inline constexpr auto yyjson::annotations<PatternTagInt> =
+    yyjson::annotate(yyjson::field("m", yyjson::pattern_properties("^k")));
+using PatternTagged = std::variant<PatternTagShort, PatternTagInt>;
+template <>
+inline constexpr auto yyjson::annotations<PatternTagged> = yyjson::annotate(yyjson::internal_tag("kind", {"s", "i"}));
+struct PatternAdjacent
+{
+    std::variant<int, std::string> data;
+    std::map<std::string, std::string> m;
+};
+template <>
+inline constexpr auto yyjson::annotations<PatternAdjacent> = yyjson::annotate(
+    yyjson::field("data", yyjson::adjacent_tag("kind", {"i", "str"})),
+    yyjson::field("m", yyjson::pattern_properties("^k"), yyjson::additional_properties(yyjson::max_length(1))));
 
 // structs read and written as the value of their only field, whose constraints and metadata they take, also as the
 // fields, elements and alternatives of others
@@ -1544,6 +1605,53 @@ TEST(Schema, ExtraKeys)
     });
     EXPECT_EQ(to_jsoncons(yyjson::json_schema<ExtraNamed>())["$defs"]["ExtraNamed"]["propertyNames"],
               json::parse(R"({"anyOf":[{"enum":["long_name"]},{"pattern":"^x-"}]})"));
+}
+
+TEST(Schema, PatternProperties)
+{
+    check<Patterned>({
+        R"({"x":1})",
+        R"({"x":1,"a1":10,"b":"s","bcdef":""})",
+        R"({"x":1,"a1":5})",
+        R"({"x":1,"abcd":10})",
+        R"({"x":1,"b":1})",
+        R"({"x":1,"zz":1})",
+        R"({"a":10})",
+    });
+    check<PatternTwice>({
+        R"({"a":15})",
+        R"({"a":25})",
+        R"({"a":5})",
+        R"({"zz":true,"a1":10})",
+        R"({"z":true})",
+        R"({"zz":1})",
+    });
+    check<PatternField>({
+        R"({"ab":10})",
+        R"({"ab":5})",
+        R"({"ab":10,"a":11})",
+        R"({"ab":10,"ac":11})",
+        R"({"ab":10,"b":11})",
+    });
+    const auto twice = to_jsoncons(yyjson::json_schema<PatternTwice>())["$defs"]["PatternTwice"];
+    EXPECT_EQ(twice["patternProperties"]["^a"]["allOf"][0]["maximum"], json(20));
+    EXPECT_EQ(twice["propertyNames"], json::parse(R"({"anyOf":[{"pattern":"^a"},{"minLength":2}]})"));
+    EXPECT_EQ(twice["additionalProperties"], json::parse(R"({"type":"boolean"})"));
+    EXPECT_EQ(to_jsoncons(yyjson::json_schema<PatternField>())["$defs"]["PatternField"]["propertyNames"],
+              json::parse(R"({"anyOf":[{"enum":["ab"]},{"not":{"pattern":"^a"}},{"maxLength":1}]})"));
+    // the patterns check the values of tags as those of fields
+    check<PatternTagged>({
+        R"({"kind":"s","x":1})",
+        R"({"kind":"s","k2":"a"})",
+        R"({"kind":"s","k2":"ab"})",
+        R"({"kind":"i"})",
+        R"({"kind":"i","k2":1})",
+    });
+    check<PatternAdjacent>({
+        R"({"kind":"i","data":1})",
+        R"({"data":1,"kind":"i","k":"a"})",
+        R"({"kind":"str","data":"a"})",
+    });
 }
 
 TEST(Schema, Transparent)

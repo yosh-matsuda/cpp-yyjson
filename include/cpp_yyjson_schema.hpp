@@ -1144,6 +1144,10 @@ namespace yyjson
             void emit_field_metadata(object_ref p, const metadata& m);
             template <typename S>
             void emit_conditions(object_ref out, std::optional<array_ref>& all_of);
+            template <typename S>
+            void emit_pattern_fields(object_ref out, const schema_node* nodes);
+            template <typename S>
+            void emit_property_names(object_ref out, object_ref properties, const schema_node* nodes);
             template <typename S, std::size_t... Es>
             void emit_condition_part(object_ref out, std::size_t begin, std::size_t end, std::index_sequence<Es...>);
             template <typename S>
@@ -1909,27 +1913,16 @@ namespace yyjson
                 }
             }
             if constexpr (yyjson::detail::has_conditions<S>) emit_conditions<S>(out, adjacent);
+            if constexpr (yyjson::detail::has_pattern_fields<S>) emit_pattern_fields<S>(out, nodes);
+            if constexpr (yyjson::detail::has_pattern_fields<S> || yyjson::detail::has_extra_keys<S>)
+                emit_property_names<S>(out, properties, nodes);
             if constexpr (yyjson::detail::has_extra_keys<S>)
             {
-                // The keys that no field has go to the field of `yyjson::extra_keys`, in both directions and with
-                // `yyjson::strict` too, so the other keys take the schema of its values.
+                // The keys that no field has and no pattern matches go to the field of `yyjson::extra_keys`, in
+                // both directions and with `yyjson::strict` too, so the other keys take the schema of its values.
                 constexpr auto e = yyjson::detail::extra_keys_index<S>;
                 using M = std::remove_cvref_t<decltype(yyjson::detail::extra_keys_field(std::declval<S&>()))>;
                 const auto v = nodes != nullptr ? nodes[e].values : 0;
-                if (const auto k = nodes != nullptr ? nodes[e].keys : 0; k != 0)
-                {
-                    // `propertyNames` checks every key, so the keys of the fields and the tags pass it as they are.
-                    auto names = out.emplace("propertyNames", empty_object);
-                    if (properties.size() == 0)
-                        emit_constraints(names, nodes[k].constraints);
-                    else
-                    {
-                        auto branches = names.emplace("anyOf", empty_array);
-                        auto known = branches.emplace_back(empty_object).emplace("enum", empty_array);
-                        for (const auto& [key, _] : properties) known.emplace_back(std::string_view(key));
-                        emit_constraints(branches.emplace_back(empty_object), nodes[k].constraints);
-                    }
-                }
                 emit<typename M::mapped_type>(out.emplace("additionalProperties", empty_object),
                                               v != 0 ? nodes : nullptr, v);
                 values_ = outer_values;
@@ -1940,6 +1933,96 @@ namespace yyjson
                                 (strict() && rules::additional != additional::allowed);
             // The keys of the branches of `allOf` are in `properties` too, so `additionalProperties` knows them.
             if (closed) out.emplace("additionalProperties", false);
+        }
+
+        // The fields of S annotated with `yyjson::pattern_properties` as `patternProperties`: every key that a
+        // pattern matches takes the schema of the values of its field, a key of a field too, as reading checks
+        // them.  Two fields of the same pattern give the schemas of both in `allOf`.
+        template <typename S>
+        void generator::emit_pattern_fields(object_ref out, const schema_node* nodes)
+        {
+            auto patterns = out.emplace("patternProperties", empty_object);
+            [&]<std::size_t... Ps>(std::index_sequence<Ps...>) {
+                (
+                    [&] {
+                        using M = yyjson::detail::pattern_map_t<S, Ps>;
+                        constexpr auto key = yyjson::detail::pattern_of<S, Ps>;
+                        const auto v = yyjson::detail::pattern_node<S, Ps>.values;
+                        auto target = [&] {
+                            const auto found = patterns.find(key);
+                            if (found == patterns.end()) return patterns.emplace(key, empty_object);
+                            auto earlier = *found->second.as_object();
+                            const auto all = earlier.find("allOf");
+                            auto list = all != earlier.end() ? *all->second.as_array()
+                                                             : earlier.emplace("allOf", empty_array);
+                            return list.emplace_back(empty_object);
+                        }();
+                        emit<typename M::mapped_type>(target, v != 0 ? nodes : nullptr, v);
+                    }(),
+                    ...);
+            }(std::make_index_sequence<yyjson::detail::pattern_count<S>>{});
+        }
+
+        // The settings of `yyjson::property_names` of the fields of `yyjson::pattern_properties` and
+        // `yyjson::extra_keys` of S as `propertyNames`, which checks every key: those of the fields and the tags,
+        // in `properties`, pass it as they are, as reading does not check them.  The keys of a field of a pattern
+        // are those that the pattern matches, wherever they go, and those of `yyjson::extra_keys` are those that
+        // no pattern matches.  Several of them go to `allOf`.
+        template <typename S>
+        void generator::emit_property_names(object_ref out, object_ref properties, const schema_node* nodes)
+        {
+            constexpr auto patterns = yyjson::detail::pattern_count<S>;
+            const auto extra_keys = [&]() -> std::size_t {
+                if constexpr (yyjson::detail::has_extra_keys<S>)
+                    return nodes != nullptr ? nodes[yyjson::detail::extra_keys_index<S>].keys : 0;
+                else
+                    return 0;
+            }();
+            const auto rules = [&]<std::size_t... Ps>(std::index_sequence<Ps...>) {
+                return (std::size_t{extra_keys != 0} + ... +
+                        std::size_t{yyjson::detail::constrained_pattern_keys<S, Ps>});
+            }(std::make_index_sequence<patterns>{});
+            if (rules == 0) return;
+            auto names = out.emplace("propertyNames", empty_object);
+            auto all = rules > 1 ? std::optional(names.emplace("allOf", empty_array)) : std::nullopt;
+            // The branches of one of them, after the keys of the fields and the tags.
+            const auto branches = [&] {
+                auto rule = all ? all->emplace_back(empty_object) : names;
+                auto list = rule.emplace("anyOf", empty_array);
+                if (properties.size() != 0)
+                {
+                    auto known = list.emplace_back(empty_object).emplace("enum", empty_array);
+                    for (const auto& [key, _] : properties) known.emplace_back(std::string_view(key));
+                }
+                return list;
+            };
+            [&]<std::size_t... Ps>(std::index_sequence<Ps...>) {
+                (
+                    [&] {
+                        if constexpr (yyjson::detail::constrained_pattern_keys<S, Ps>)
+                        {
+                            auto list = branches();
+                            list.emplace_back(empty_object)
+                                .emplace("not", empty_object)
+                                .emplace("pattern", yyjson::detail::pattern_of<S, Ps>);
+                            emit_constraints(list.emplace_back(empty_object),
+                                             nodes[yyjson::detail::pattern_node<S, Ps>.keys].constraints);
+                        }
+                    }(),
+                    ...);
+            }(std::make_index_sequence<patterns>{});
+            if (extra_keys != 0 && patterns == 0 && properties.size() == 0)
+                emit_constraints(names, nodes[extra_keys].constraints);
+            else if (extra_keys != 0)
+            {
+                auto list = branches();
+                [&]<std::size_t... Ps>(std::index_sequence<Ps...>) {
+                    constexpr std::array<std::string_view, patterns> keys{yyjson::detail::pattern_of<S, Ps>...};
+                    for (auto p = keys.begin(); p != keys.end(); ++p)
+                        if (std::find(keys.begin(), p, *p) == p) list.emplace_back(empty_object).emplace("pattern", *p);
+                }(std::make_index_sequence<patterns>{});
+                emit_constraints(list.emplace_back(empty_object), nodes[extra_keys].constraints);
+            }
         }
 
         // Writes the fields of the entries from `begin` to `end` of the conditions of S as `properties`, with the
