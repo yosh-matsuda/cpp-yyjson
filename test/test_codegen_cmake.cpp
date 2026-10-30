@@ -323,7 +323,7 @@ TEST(CodegenCMake, Positions)
 
     // a position left out before one that is present cannot be read back
     auto holed = model::Linter();
-    holed.path = model::Path{.item2 = 1.5};
+    holed.path.emplace().item2 = 1.5;
     EXPECT_THROW(yyjson::validate(holed), yyjson::bad_cast);
 }
 
