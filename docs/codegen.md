@@ -104,7 +104,7 @@ The header includes `cpp_yyjson.hpp` and the standard headers that it uses, and 
 auto order = yyjson::read<shop::Order>(json, yyjson::strict);
 ```
 
-The comment at the top of the header lists the warnings, and explains the annotations that a reader may not know, such as [`yyjson::omit_default`](reference.md#yyjsonomit_default). A header that uses `yyjson::pattern` or `yyjson::pattern_properties` needs a specialization of [`yyjson::pattern_matcher<>`](validation.md#pattern-matcher) in the program, as any program that reads a pattern does; `--no-pattern` leaves the patterns out instead.
+The comment at the top of the header lists the warnings, and explains the annotations that a reader may not know, such as [`yyjson::omit_default`](reference.md#yyjsonomit_default). A header that uses `yyjson::pattern`, `yyjson::pattern_properties` or `yyjson::format("regex")` needs a specialization of [`yyjson::pattern_matcher<>`](validation.md#pattern-matcher) in the program, as any program that reads a pattern does; `--no-pattern` leaves the patterns out instead.
 
 ### Command line
 
@@ -122,7 +122,7 @@ cpp-yyjson-codegen <schema.json> [options]
 | `--namespace <ns>` | The namespace of the generated types, such as `app::model`. The default is the global namespace. |
 | `--root-name <name>` | The name of the root type. The default is the `title` of the root, or `Root`. |
 | `--cpp26` | Writes [C++26 annotations](conversions.md#c26-annotations) (`[[=yyjson::minimum(0)]]`) on the members instead of `yyjson::annotations<T>`. The header then needs GCC 16 with `-std=c++26 -freflection`. |
-| `--no-pattern` | Leaves out `pattern`, and the patterns of `patternProperties`, instead of writing `yyjson::pattern` and `yyjson::pattern_properties`. |
+| `--no-pattern` | Leaves out `pattern`, the patterns of `patternProperties` and the format `regex`, instead of writing `yyjson::pattern`, `yyjson::pattern_properties` and `yyjson::format("regex")`. |
 | `--optional-defaults` | Makes a field with a default `std::optional<T>`, empty for a missing key, instead of a `T` that holds the default. See [Defaults](#defaults). |
 | `--keep-unknown-keys` | Gives every struct that accepts other keys a field of [`yyjson::extra_keys`](conversions.md#keys-that-name-no-field), which keeps them and writes them back. See [Keys that name no property](#keys-that-name-no-property). |
 | `--infer-types` | Reads a schema without `type` as the one type that its keywords constrain, with a warning, instead of as every kind of value. See [Schemas without `type`](#schemas-without-type). |
@@ -174,7 +174,7 @@ The rule has exceptions, where valid JSON is not read:
 
 *   An integer outside the range of the C++ type. An `integer` is `std::int64_t`, or `std::uint64_t` when its bounds reach above the range of `std::int64_t`.
 *   With `--infer-types`, a schema without `type` whose keywords belong to one type: `{"maxLength": 3}` is read as a string, while JSON Schema accepts any value that is not a string. The generator warns: "the schema has no `type`; it is read as string from its keywords". Without the option, such a schema reads every kind of value; see [Schemas without `type`](#schemas-without-type).
-*   A `format` or a `pattern` that the library checks differently from a validator. JSON Schema 2020-12 treats `format` as an annotation by default, so a validator may accept a string that `yyjson::format` rejects; see [Formats and validators](json-schema.md#formats-and-validators). The generator writes `yyjson::format` without a warning, as the optional format tests of the JSON-Schema-Test-Suite expect.
+*   A `format` or a `pattern` that the library checks differently from a validator. JSON Schema 2020-12 treats `format` as an annotation by default, so a validator may accept a string that `yyjson::format` rejects; see [Formats and validators](json-schema.md#formats-and-validators). The generator writes `yyjson::format` without a warning, as the optional format tests of the JSON-Schema-Test-Suite expect. `regex` follows the dialect of the engine of `yyjson::pattern_matcher<>`, which may differ from ECMA-262 that JSON Schema names.
 *   The exceptions of the library itself, such as a key repeated in an object under `yyjson::strict`; see [What the schema guarantees](json-schema.md#what-the-schema-guarantees).
 *   The settings that the [warnings of contradictory settings](#contradictory-settings) name.
 
@@ -219,7 +219,7 @@ The subschemas of `allOf`, and the keywords beside `$ref`, merge into one schema
 | `{"allOf": [{"properties": {"x_b": {"type": "integer"}}}, {"patternProperties": {"^x_": {"minimum": 0}}}]}` | `x_b` is `std::optional<std::int64_t>` with `yyjson::minimum(0)` |
 | `{"type": "array", "prefixItems": [{"type": "string"}], "allOf": [{"items": false}]}` | `yyjson::max_items(0)` |
 
-The keywords that constrain a value become the [constraints](validation.md#constraints) of the same name: `minimum` becomes `yyjson::minimum`, `items` with constraints becomes `yyjson::items(...)`, `propertyNames` becomes `yyjson::property_names(...)`, and so on. The `format`s that the library checks become `yyjson::format`; the others are left out, with a warning for `idn-email`, `idn-hostname`, `iri`, `iri-reference` and `regex`.
+The keywords that constrain a value become the [constraints](validation.md#constraints) of the same name: `minimum` becomes `yyjson::minimum`, `items` with constraints becomes `yyjson::items(...)`, `propertyNames` becomes `yyjson::property_names(...)`, and so on. The `format`s that the library checks become `yyjson::format`; the others are left out, with a warning for `idn-email`, `idn-hostname`, `iri` and `iri-reference`. `"format": "regex"` becomes `yyjson::format("regex")`, which the [`yyjson::pattern_matcher<>`](validation.md#pattern-matcher) of the program checks, as it checks `pattern`; with `--no-pattern` it is left out with a warning.
 
 `contains`, `minContains` and `maxContains` become [`yyjson::contains(...)`, `yyjson::min_contains` and `yyjson::max_contains`](reference.md#yyjsoncontains-yyjsonmin_contains-yyjsonmax_contains). The subschema of `contains` becomes the constraints of the elements, as `items` does; on elements of `yyjson::value` or `yyjson::object`, where no constraint expresses it, it becomes the type of the subschema in [`yyjson::is_type<T>`](reference.md#yyjsonis_type), and an element matches when it reads as that type:
 

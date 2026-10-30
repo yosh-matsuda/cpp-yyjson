@@ -552,7 +552,7 @@ yyjson::read<Job>(R"({"env":{"PATH":"/bin","home":"/root"}})");
     *   bounds and values that leave no value of the type to read: bounds with no number of the type between them, such as `minimum(1)` with `maximum(0)`, or `minimum(200)` on a `std::int8_t`, and `const_` or `enum_` of which no value of the type is within the bounds and in both, such as `const_(1)` with `enum_(2, 3)`, or `const_(1.5)` on an `int`. So are a `min_length` greater than the `max_length`, a `const_` or `enum_` string of which no value has a length between them, such as `const_("abc")` with `max_length(2)`, and a `min_items` greater than the `max_items`. A `float` compares the bounds and values rounded to floats, as it does when it reads. This holds for the settings of a field, an element, a key and an alternative of `yyjson::any_of` or `yyjson::one_of`. The settings of a `std::optional` field count so although it reads `null`. `pattern`, `multiple_of`, `format` and the other constraints are not taken into account;
     *   a constraint, `yyjson::items` or `yyjson::additional_properties(settings...)` on a [skipped field](conversions.md#skipped-fields), or on the field of an [adjacent tag](conversions.md#tagged-variants);
     *   an alternative of `yyjson::any_of` that reads only values that an earlier alternative reads too, and an alternative of `yyjson::one_of` that reads only values that another alternative reads too, as described in [Alternatives with constraints](conversions.md#alternatives-with-constraints);
-    *   a `pattern` without a specialization of `yyjson::pattern_matcher<>`, described below, and a `format` of a name that the library does not check without a specialization of `yyjson::format_checker<>`, described in [Formats](#formats).
+    *   a `pattern` or a `format("regex")` without a specialization of `yyjson::pattern_matcher<>`, described below, and a `format` of a name that the library does not check without a specialization of `yyjson::format_checker<>`, described in [Formats](#formats).
 
 ### Pattern matcher
 
@@ -566,6 +566,15 @@ Each field constructs its matcher once, on its first read, and shares it with ev
 *   The call operator has to be safe to call concurrently, as `std::regex_search` on a `const std::regex` is.
 *   An exception from the constructor, such as the `std::regex_error` of an invalid regular expression, propagates out of the read. The next read constructs the matcher again.
 *   As any explicit specialization, it is one for the whole program. Every translation unit that reads a struct with a pattern has to see the same specialization before that read, so two libraries in one program that both use `yyjson::pattern` have to agree on it.
+
+`yyjson::format("regex")` uses the same specialization to tell whether a string is a regular expression: it constructs a matcher from the string, and the string has the format when the constructor returns. For this format, the constructor:
+
+*   has to throw for a string that the engine does not take as a regular expression, as the constructor of `std::regex` throws `std::regex_error`. An engine that reports an invalid pattern otherwise, such as RE2 with `ok()`, needs a constructor that checks it and throws; without that, every string has the format;
+*   gets a `std::string_view` of the value being read, which is valid only during the call: copy it, as `std::regex` does, rather than keep it. The matcher is destroyed right after;
+*   runs on every check, for every string, and is not shared;
+*   may throw any exception, which means that the string does not have the format; `std::bad_alloc` propagates out of the read.
+
+The format then follows the dialect of the engine, and not always ECMA-262, which JSON Schema names for `regex`. `std::regex` of libstdc++, with its default ECMAScript grammar, rejects lookbehind, named groups and `\p{...}`, which ECMA-262 accepts.
 
 With `std::regex`:
 
@@ -616,7 +625,7 @@ yyjson::read<Product>(R"({"code":"abc"})");  // throws: the value of the key "co
 *   `hostname` checks that a label of the form `xn--...` is valid Punycode that decodes to a label with a character other than ASCII. It does not check the tables of the characters of IDNA2008, such as the characters that are not allowed and the contextual rules, which a few validators check.
 *   JSON Schema 2020-12 treats `format` as an annotation by default, which a validator does not check unless it is told to. `yyjson::format` always checks it, as the "format-assertion" vocabulary does.
 
-Another format, such as `idn-email`, `iri` or one of the program's own, is checked by the program. Specialize `yyjson::format_checker<>` before the first read of a struct that has one, as [`yyjson::pattern_matcher<>`](#pattern-matcher) is specialized: with a constructor from the `std::string_view` of the name of the format, which refers to storage of static duration and may be kept, as in the example below, and a `const` call operator that takes the `std::string_view` of a string and returns whether it has the format. Each field constructs its checker once, on its first read, and shares it with every read on every thread. The names in the table above are checked by the library, also when the program specializes `yyjson::format_checker<>`.
+Another format, such as `idn-email`, `iri` or one of the program's own, is checked by the program. Specialize `yyjson::format_checker<>` before the first read of a struct that has one, as [`yyjson::pattern_matcher<>`](#pattern-matcher) is specialized: with a constructor from the `std::string_view` of the name of the format, which refers to storage of static duration and may be kept, as in the example below, and a `const` call operator that takes the `std::string_view` of a string and returns whether it has the format. Each field constructs its checker once, on its first read, and shares it with every read on every thread. The names in the table above, and `regex`, which [`yyjson::pattern_matcher<>`](#pattern-matcher) checks, are checked by the library, also when the program specializes `yyjson::format_checker<>`.
 
 ```cpp
 template <>
@@ -696,7 +705,7 @@ The tables below list the keywords of [JSON Schema 2020-12](https://json-schema.
 | `type: [T, "null"]` | `std::optional<T>`, or `std::variant<std::monostate, T>` | a field of `std::optional` may also leave out its key, and under `yyjson::strict` rejects `null` unless `T` reads it, as described in [`null` in a `std::optional`](#null-in-a-stdoptional). |
 | `enum` | `yyjson::enum_(v...)`, or an [enumeration](conversions.md#enumerations), of names or of integers | `yyjson::enum_` takes strings, numbers and booleans, and `nullptr` for `null` on a [type that holds a value or nothing](#how-constraints-are-checked), and not arrays or objects. It compares them with the value after the conversion to the type of the field, as described in [How constraints are checked](#how-constraints-are-checked). On an enumeration written by name, it takes the JSON names of its enumerators and narrows them. |
 | `const` | `yyjson::const_(v)` | as `enum`. |
-| `format` | `yyjson::format("name")` | always checked, as the vocabulary "format-assertion" does. The library checks the [formats](#formats) other than `idn-email`, `idn-hostname`, `iri`, `iri-reference` and `regex`, which the program checks with `yyjson::format_checker<>`. `hostname` does not check the tables of the characters of IDNA2008. |
+| `format` | `yyjson::format("name")` | always checked, as the vocabulary "format-assertion" does. The library checks the [formats](#formats) other than `idn-email`, `idn-hostname`, `iri` and `iri-reference`, which the program checks with `yyjson::format_checker<>`; `regex` follows the dialect of the engine of the [pattern matcher](#pattern-matcher). `hostname` does not check the tables of the characters of IDNA2008. |
 | `contentEncoding`, `contentMediaType`, `contentSchema` | none | decode the string with a [translator](conversions.md#translator). |
 
 ### Numbers and strings
