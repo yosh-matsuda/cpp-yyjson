@@ -91,6 +91,15 @@ struct RequiredTail
 template <>
 inline constexpr auto yyjson::annotations<RequiredTail> =
     yyjson::annotate(yyjson::as_array, yyjson::field("b", yyjson::required));
+struct TransparentGap
+{
+    MaybeInt a;
+    int b = 0;
+    bool operator==(const TransparentGap&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<TransparentGap> =
+    yyjson::annotate(yyjson::as_array, yyjson::field("b", yyjson::required));
 struct DefaultFirst
 {
     int a = 1;
@@ -378,6 +387,8 @@ TEST(AsArray, Validate)
     // an empty `std::optional` before a written value is written as null, which reading rejects; a value equal to
     // the default is written as it is
     expect_invalid(Gap{std::nullopt, 2}, "std::optional<int> is not constructible from JSON null", "/0");
+    expect_invalid(TransparentGap{{std::nullopt}, 2}, "std::optional<int> is not constructible from JSON null", "/0");
+    expect_valid(TransparentGap{{1}, 2});
     expect_valid(DefaultFirst{1, 5});
     EXPECT_EQ(yyjson::write(DefaultFirst{1, 5}), "[1,5]");
 

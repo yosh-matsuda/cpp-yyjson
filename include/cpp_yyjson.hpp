@@ -15845,6 +15845,23 @@ namespace yyjson
         template <typename T>
         std::size_t written_position_count(const T& t);
 
+        // The name of the type whose read as a field rejects the null that the writer writes for `field`, an
+        // empty `std::optional` or a struct annotated with `yyjson::transparent` around one, or an empty string.
+        template <typename F>
+        std::string_view null_hole_type(const F& field)
+        {
+            if constexpr (is_std_optional<F>::value)
+            {
+                if constexpr (!may_read_null<typename F::value_type>())
+                    if (!field.has_value()) return type_name<F>();
+                return {};
+            }
+            else if constexpr (transparent_struct<F>)
+                return null_hole_type(struct_field<0>(field));
+            else
+                return {};
+        }
+
         // Checks the field K of `s`, a struct annotated with `yyjson::as_array`, written as the element K before
         // `count` elements in all, or left out of the array after them.
         template <typename S, std::size_t K>
@@ -15860,16 +15877,11 @@ namespace yyjson
                 return;
             }
             // a value left out before a written one is written as the writer writes it, which is null for
-            // `std::nullopt`
-            if constexpr (is_std_optional<F>::value)
-            {
-                if constexpr (!may_read_null<typename F::value_type>())
-                    if (!field.has_value()) [[unlikely]]
-                        validate_within([] { return index_token(K); }, [] {
-                            throw_bad_cast_at(cast_target{}, "{} is not constructible from JSON null",
-                                              type_name<F>());
-                        });
-            }
+            // `std::nullopt`, also inside a struct annotated with `yyjson::transparent`
+            if (const auto name = null_hole_type(field); !name.empty()) [[unlikely]]
+                validate_within([] { return index_token(K); }, [name] {
+                    throw_bad_cast_at(cast_target{}, "{} is not constructible from JSON null", name);
+                });
             if constexpr (needs_validation<F>)
                 validate_within([] { return index_token(K); }, [&] { validate_value(field); });
             if constexpr (constrained_field<S, K>)
