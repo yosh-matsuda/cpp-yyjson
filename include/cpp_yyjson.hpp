@@ -20796,6 +20796,10 @@ namespace yyjson
             {
                 limit = std::current_exception();
             }
+            catch (const std::bad_alloc&)
+            {
+                limit = std::current_exception();
+            }
             catch (...)
             {
             }
@@ -20917,6 +20921,10 @@ namespace yyjson
                             return cast_alternative<I>(json);
                         }
                         catch (const recursion_limit_error&)
+                        {
+                            limit = std::current_exception();
+                        }
+                        catch (const std::bad_alloc&)
                         {
                             limit = std::current_exception();
                         }
@@ -24805,6 +24813,10 @@ namespace yyjson
                     pass_on = std::current_exception();
                 }
                 catch (const yyjson::detail::recursion_limit_error&)
+                {
+                    pass_on = std::current_exception();
+                }
+                catch (const std::bad_alloc&)
                 {
                     pass_on = std::current_exception();
                 }

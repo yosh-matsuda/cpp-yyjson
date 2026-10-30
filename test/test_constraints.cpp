@@ -8,7 +8,11 @@ template <>
 struct yyjson::pattern_matcher<>
 {
     std::regex regex;
-    explicit pattern_matcher(std::string_view pattern) : regex(pattern.begin(), pattern.end()) {}
+    explicit pattern_matcher(std::string_view pattern) : regex(pattern.begin(), pattern.end())
+    {
+        // the format "regex" passes on a std::bad_alloc of the matcher
+        if (pattern == "<out of memory>") throw std::bad_alloc();
+    }
     bool operator()(std::string_view s) const { return std::regex_search(s.begin(), s.end(), regex); }
 };
 
@@ -2202,6 +2206,25 @@ TEST(Constraints, Format)
     expect_accepted<Formatted>(R"({"re":"([abc])+\\s+$"})",
                                {"2024-02-29T23:59:60Z", std::nullopt, {}, "X", R"(([abc])+\s+$)"});
     expect_rejected<Formatted>(R"({"re":"^(abc]"})", value("re") + R"(does not have the format "regex")", "/re");
+}
+
+TEST(Constraints, FormatRegexOutOfMemory)
+{
+    constexpr auto json = R"({"re":"<out of memory>"})";
+    EXPECT_THROW((void)yyjson::read<Formatted>(json), std::bad_alloc);
+    EXPECT_THROW((void)yyjson::read(json).cast<Formatted>(), std::bad_alloc);
+    // not passed on to the next alternative of a std::variant
+    using variant = std::variant<Formatted, yyjson::value>;
+    EXPECT_THROW((void)yyjson::read<variant>(json), std::bad_alloc);
+    EXPECT_THROW((void)yyjson::read(json).cast<variant>(), std::bad_alloc);
+
+    using any = yyjson::any_of<yyjson::alt<std::string, yyjson::format("regex")>, std::string>;
+    using one = yyjson::one_of<yyjson::alt<std::string, yyjson::format("regex")>, int>;
+    constexpr auto value = R"("<out of memory>")";
+    EXPECT_THROW((void)yyjson::read<any>(value), std::bad_alloc);
+    EXPECT_THROW((void)yyjson::read(value).cast<any>(), std::bad_alloc);
+    EXPECT_THROW((void)yyjson::read<one>(value), std::bad_alloc);
+    EXPECT_THROW((void)yyjson::read(value).cast<one>(), std::bad_alloc);
 }
 
 TEST(Constraints, Formats)
