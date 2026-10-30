@@ -209,7 +209,7 @@ auto tpl_obj2 = cast<decltype(tpl_obj)>(json_obj);          // deserialize
 // -> {{"number", 1.5}, {"error", nullptr}, {"text", "abc"}}
 ```
 
-A JSON array or object with more or fewer elements than the tuple throws `yyjson::bad_cast`, as it does for a `std::array`.
+A JSON array or object with more or fewer elements than the tuple throws `yyjson::bad_cast`, as it does for a `std::array`. A struct with [`yyjson::as_array`](#a-struct-as-a-json-array) reads an array whose elements have names, and which may be shorter or longer.
 
 ### Untagged variants
 
@@ -353,6 +353,8 @@ The annotations of a type change how the type converts, with no caster. Speciali
 | `yyjson::if_then_else(yyjson::if_(...), yyjson::then(...), yyjson::else_(...))`, `yyjson::not_(...)` | a struct | requires keys and values of fields when other fields have some, or rejects some | [Conditions between fields](validation.md#conditions-between-fields) |
 | `yyjson::internal_tag(key, ids)` | a `std::variant` | tells the alternative by a member of its object | [Tagged variants](#tagged-variants) |
 | `yyjson::transparent` | a struct of one field | reads and writes the struct as the value of its field | [A struct as the value of its field](#a-struct-as-the-value-of-its-field) |
+| `yyjson::as_array`, `yyjson::items(b)` | a struct | reads and writes the struct as a JSON array of its fields, and rejects or allows the elements after them | [A struct as a JSON array](#a-struct-as-a-json-array) |
+| `yyjson::extra_items` | the last field of a struct with `yyjson::as_array` | reads the elements after the other fields into the range, and writes them back | [A struct as a JSON array](#a-struct-as-a-json-array) |
 | `yyjson::enum_format::...`, `yyjson::enumerator("name", s...)` | an enumeration | chooses names or integers, and renames enumerators | [Enumerations](#formats-and-renamed-enumerators) |
 
 With C++26 static reflection, the settings of a field can also be written on the member itself; see [C++26 annotations](#c26-annotations).
@@ -589,9 +591,82 @@ A [translator](#translator) also converts a struct from and to the value of a me
     *   a setting on the field other than the constraints: `yyjson::rename`, `yyjson::required`, `yyjson::optional_key`, `yyjson::omit_default`, `yyjson::default_from`, `yyjson::extra_keys`, `yyjson::adjacent_tag` and the annotations of the JSON Schema, which go on the struct;
     *   `yyjson::additional_properties`, `yyjson::dependent_required`, `yyjson::one_of_required`, `yyjson::any_of_required`, `yyjson::if_then_else` and `yyjson::not_` on the struct, which has no keys.
 
+### A struct as a JSON array
+
+`yyjson::annotate(yyjson::as_array)` reads and writes a struct as a JSON array whose elements are its fields, in the order of their declarations. A format that gives a record by the positions of its elements, such as a rule of ESLint (`[2, "always"]`), is then read into members with names, which may be missing at the end of the array:
+
+```cpp
+struct Rule
+{
+    int level = 0;
+    std::optional<std::string> mode;
+    std::optional<int> limit;
+};
+
+template <>
+inline constexpr auto yyjson::annotations<Rule> =
+    yyjson::annotate(yyjson::as_array, yyjson::field("level", yyjson::minimum(0)));
+
+auto rule = yyjson::read<Rule>(R"([2,"always"])");
+// -> Rule{2, "always", std::nullopt}
+auto json = yyjson::write(rule);
+// -> [2,"always"]
+yyjson::read<Rule>("[-1]");
+// throws: the value of the field "level" of Rule is less than the minimum 0 at /0 (line 1, column 2, pos 1)
+```
+
+A [`std::tuple`](#standard-library-types) also converts to an array whose elements have different types, but it reads only an array of exactly as many elements as it has, and its elements have no names. A struct with `yyjson::as_array` lets the array end early, takes the elements after its fields when told to, and gives its fields the settings of any field:
+
+*   **Positions.** The fields that are not [skipped](#skipped-fields) are the elements of the array, the first one at the index 0. A skipped field is no element, and keeps its value in `T()`.
+*   **Missing elements.** An array may end before the last fields. A field whose element is missing keeps its value in `T()`, as a field whose key is missing does in an object. [`yyjson::strict`](validation.md#strict-reading) rejects a missing element of a field unless an object could leave its key out: a `std::optional` field, or one with `yyjson::optional_key`, `yyjson::omit_default` or `yyjson::default_from`. `yyjson::required` rejects a missing element always. The message names the element and its field, as in `Rule is not constructible from JSON without the element 0 of the field "level"`.
+*   **Elements after the fields.** An array may have more elements than the struct has fields. They are dropped, and `yyjson::strict` rejects them with the message `Rule has no field of the element 3` at `/3`. `yyjson::items(b)` on the struct decides it for both reads, as `yyjson::additional_properties(b)` does for the keys of an object: `yyjson::items(true)` drops them also under `yyjson::strict`, and `yyjson::items(false)` rejects them also without it.
+*   **A field for the elements after the others.** `yyjson::field("member", yyjson::extra_items)` on the last field that is not skipped gives it the elements after those of the other fields, which it receives one by one with `push_back`, and writes them after the other fields. The field is a range with `push_back` and `clear`, such as `std::vector<double>` or `std::vector<yyjson::value>`, and `yyjson::items(settings...)` on it constrains the elements. A struct of a field of its own type in such a range reads a tree of arrays:
+
+    ```cpp
+    struct Series
+    {
+        std::string label;
+        std::vector<double> values;
+    };
+
+    template <>
+    inline constexpr auto yyjson::annotations<Series> = yyjson::annotate(
+        yyjson::as_array, yyjson::field("values", yyjson::extra_items, yyjson::items(yyjson::minimum(0))));
+
+    auto series = yyjson::read<Series>(R"(["cpu",0.5,0.75])");
+    // -> Series{"cpu", {0.5, 0.75}}
+    yyjson::read<Series>(R"(["cpu",0.5,-1])");
+    // throws: an element of the value of the field "values" of Series is less than the minimum 0 at /2 (line 1, column 12, pos 11)
+
+    struct Node
+    {
+        std::string name;
+        std::vector<Node> children;
+    };
+
+    template <>
+    inline constexpr auto yyjson::annotations<Node> =
+        yyjson::annotate(yyjson::as_array, yyjson::field("children", yyjson::extra_items));
+
+    auto tree = yyjson::read<Node>(R"(["a",["b"],["c",["d"]]])");
+    // -> tree.children.size() == 2
+    ```
+
+*   **Writing.** The fields are written in order, and the values at the end that an object would leave out are left out: an empty `std::optional`, a value of `yyjson::omit_default` equal to its value in `T()` and a value of `yyjson::default_from` equal to what its function makes. Such a value before a value that is written is written, since the array has no other way to put the later value at its index: an empty `std::optional` as `null`, and a default as it is. `null` at the index of a `std::optional` field is read as the value of the `std::optional`, as in an object, so that `yyjson::write(Rule{1, std::nullopt, 80})` gives `[1,null,80]`, which `yyjson::read<Rule>` rejects with `std::optional<std::string> is not constructible from JSON null at /1`. [`yyjson::validate`](validation.md#checking-a-c-value) and `write(t, yyjson::strict)` reject such a value; they also reject a value of a `yyjson::required` field that would be left out.
+*   **Errors.** A message names the field of the element, and the path is the index of the element: `/0` above, and `/rules/quotes/0` for the struct in the value of the key `"quotes"` of a map field `rules`. A JSON value that is not an array, such as an object, throws `Rule is not constructible from JSON`.
+*   **Where it is used.** The struct is an array everywhere: as a field of another struct, an element, a value of a map, an alternative of a `std::variant`, which is chosen by the JSON array as for a `std::vector`, and the root. `read_into` and `merge_into` read the whole array into the struct as `read_into` does: `merge_into` does not merge an array into the fields that it has.
+*   **Settings.** The fields take every setting of a field that is not about a key: the [constraints](validation.md#constraints) and the [constraints of elements](validation.md#constraints-of-elements), `yyjson::required`, `yyjson::optional_key`, `yyjson::omit_default`, `yyjson::default_from`, `yyjson::skip` and the annotations of the [JSON Schema](json-schema.md#defaults-and-descriptions). The struct takes `yyjson::items(b)` and the annotations of the JSON Schema. [`yyjson::json_schema`](json-schema.md) gives the struct the schema of an array: `prefixItems` of the fields, `minItems` of the elements that the array needs, and `items` of the elements after the fields.
+*   A position of a type that cannot be read makes the struct not readable, and one that cannot be written makes it not writable, as a field of any struct does.
+*   The following fail to compile with a `static_assert`:
+    *   `yyjson::as_array` given twice, together with `yyjson::transparent`, or on a struct that `VISITABLE_STRUCT` registers;
+    *   `yyjson::additional_properties`, `yyjson::dependent_required`, `yyjson::one_of_required`, `yyjson::any_of_required`, `yyjson::if_then_else` and `yyjson::not_` on the struct, which has no keys;
+    *   `yyjson::rename`, `yyjson::extra_keys` and `yyjson::adjacent_tag` on a field;
+    *   `yyjson::items(b)` on a struct without `yyjson::as_array`;
+    *   `yyjson::extra_items` on a field of a struct without `yyjson::as_array`, on two fields, on a field that is not the last one that is not skipped, on a field of a type that is not such a range, together with `yyjson::items(false)` on the struct, or together with another setting than `yyjson::items(settings...)`, such as `yyjson::required` or `yyjson::min_items`.
+
 ### C++26 annotations
 
-With C++26 static reflection, such as GCC 16 with `-std=c++26 -freflection`, the settings of a field can be written on the member itself as an [annotation](https://wg21.link/p3394). Every setting that `yyjson::field` takes is also an annotation: `[[=yyjson::rename("key")]]`, `[[=yyjson::skip]]`, `[[=yyjson::required]]`, `[[=yyjson::optional_key]]`, `[[=yyjson::omit_default]]`, `[[=yyjson::default_from<f>]]`, `[[=yyjson::extra_keys]]`, `[[=yyjson::adjacent_tag(key, ids)]]`, the [constraints](validation.md#constraints), such as `[[=yyjson::minimum(0)]]`, and the [constraints of elements](validation.md#constraints-of-elements), such as `[[=yyjson::items(yyjson::minimum(0))]]` and `[[=yyjson::prefix_items({yyjson::minimum(0)}, {})]]`.
+With C++26 static reflection, such as GCC 16 with `-std=c++26 -freflection`, the settings of a field can be written on the member itself as an [annotation](https://wg21.link/p3394). Every setting that `yyjson::field` takes is also an annotation: `[[=yyjson::rename("key")]]`, `[[=yyjson::skip]]`, `[[=yyjson::required]]`, `[[=yyjson::optional_key]]`, `[[=yyjson::omit_default]]`, `[[=yyjson::default_from<f>]]`, `[[=yyjson::extra_keys]]`, `[[=yyjson::extra_items]]`, `[[=yyjson::adjacent_tag(key, ids)]]`, the [constraints](validation.md#constraints), such as `[[=yyjson::minimum(0)]]`, and the [constraints of elements](validation.md#constraints-of-elements), such as `[[=yyjson::items(yyjson::minimum(0))]]` and `[[=yyjson::prefix_items({yyjson::minimum(0)}, {})]]`.
 
 ```cpp
 struct Project
@@ -608,7 +683,7 @@ auto json = yyjson::write(project);
 ```
 
 *   The annotations of the members and a `yyjson::annotations` specialization can be combined, as long as no field gets the same setting twice; that fails to compile.
-*   Of the annotations on the struct itself, only [`yyjson::transparent`](#a-struct-as-the-value-of-its-field), [`yyjson::additional_properties`](validation.md#strict-reading), [`yyjson::dependent_required`](validation.md#annotations-of-keys), [`yyjson::one_of_required` and `yyjson::any_of_required`](validation.md#annotations-of-keys), [`yyjson::if_then_else` and `yyjson::not_`](validation.md#conditions-between-fields) and the annotations of the [JSON Schema](json-schema.md#defaults-and-descriptions) (`yyjson::title`, `yyjson::description`, `yyjson::deprecated`, `yyjson::examples`, `yyjson::schema` and `yyjson::schema_name`) are read. A member takes the same annotations of the JSON Schema except `yyjson::schema_name`.
+*   Of the annotations on the struct itself, only [`yyjson::transparent`](#a-struct-as-the-value-of-its-field), [`yyjson::as_array` and `yyjson::items(b)`](#a-struct-as-a-json-array), as in `struct [[=yyjson::as_array, =yyjson::items(false)]] Rule`, [`yyjson::additional_properties`](validation.md#strict-reading), [`yyjson::dependent_required`](validation.md#annotations-of-keys), [`yyjson::one_of_required` and `yyjson::any_of_required`](validation.md#annotations-of-keys), [`yyjson::if_then_else` and `yyjson::not_`](validation.md#conditions-between-fields) and the annotations of the [JSON Schema](json-schema.md#defaults-and-descriptions) (`yyjson::title`, `yyjson::description`, `yyjson::deprecated`, `yyjson::examples`, `yyjson::schema` and `yyjson::schema_name`) are read. A member takes the same annotations of the JSON Schema except `yyjson::schema_name`.
 *   An enumeration takes a [format](#formats-and-renamed-enumerators) on its declaration, as in `enum class [[=yyjson::enum_format::integer]] Permission : unsigned { ... };`. An enumerator takes a new name, as in `in_progress [[=yyjson::rename("in-progress")]],`. These combine with `yyjson::annotations<E>` as the settings of fields do. An annotation on an alias, that is, an enumerator with the value of one declared before it, is not read.
 *   The annotations apply to the structs that the compile-time reflection converts. An annotation of this library on a member of a struct that `VISITABLE_STRUCT` registers fails to compile; use the pairs of the macro or `yyjson::annotations` there.
 *   The annotations are read when the macro `FIELD_RFL_ANNOTATIONS` is `1`. `yyjson::rename`, `yyjson::skip` and the tags are always available for `yyjson::annotations`.

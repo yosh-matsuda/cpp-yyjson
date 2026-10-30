@@ -57,6 +57,7 @@ This page lists the functions, classes and other entities of cpp-yyjson, grouped
     *   [`yyjson::if_then_else`, `yyjson::not_`](#yyjsonif_then_else-yyjsonnot_)
     *   [`yyjson::is_type`](#yyjsonis_type)
     *   [`yyjson::transparent`](#yyjsontransparent)
+    *   [`yyjson::as_array`, `yyjson::extra_items`](#yyjsonas_array-yyjsonextra_items)
     *   [Constraints](#constraints)
     *   [`yyjson::items`](#yyjsonitems)
     *   [`yyjson::prefix_items`](#yyjsonprefix_items)
@@ -1588,7 +1589,7 @@ Specialize `annotations<T>` before the first use of `T`. `annotate` takes these 
 
 | `T` | Settings |
 | --- | --- |
-| a struct | [`yyjson::field`](#yyjsonfield), [`yyjson::transparent`](#yyjsontransparent), [`yyjson::additional_properties`](#yyjsonadditional_properties), [`yyjson::dependent_required`](#yyjsondependent_required), [`yyjson::one_of_required`, `yyjson::any_of_required`](#yyjsonone_of_required-yyjsonany_of_required), [`yyjson::if_then_else`, `yyjson::not_`](#yyjsonif_then_else-yyjsonnot_) and [`yyjson::schema_name`](#yyjsonschema_name) |
+| a struct | [`yyjson::field`](#yyjsonfield), [`yyjson::transparent`](#yyjsontransparent), [`yyjson::as_array`, `yyjson::items(bool)`](#yyjsonas_array-yyjsonextra_items), [`yyjson::additional_properties`](#yyjsonadditional_properties), [`yyjson::dependent_required`](#yyjsondependent_required), [`yyjson::one_of_required`, `yyjson::any_of_required`](#yyjsonone_of_required-yyjsonany_of_required), [`yyjson::if_then_else`, `yyjson::not_`](#yyjsonif_then_else-yyjsonnot_) and [`yyjson::schema_name`](#yyjsonschema_name) |
 | a `std::variant` | [`yyjson::internal_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag) and [`yyjson::schema_name`](#yyjsonschema_name) |
 | a [`yyjson::any_of` or `yyjson::one_of`](#yyjsonany_of-yyjsonone_of-yyjsonalt) | [`yyjson::schema_name`](#yyjsonschema_name) |
 | an enumeration | [`yyjson::enumerator` and `yyjson::enum_format`](#yyjsonenum_format-yyjsonenumerator), and [`yyjson::schema_name`](#yyjsonschema_name) |
@@ -1622,7 +1623,7 @@ template <typename... As>
 consteval field_annotation<As...> field(std::string_view member, As... values);
 ```
 
-`values` are one or more of [`yyjson::rename`](#yyjsonrename), [`yyjson::skip`](#yyjsonskip), [`yyjson::required`](#yyjsonrequired), [`yyjson::optional_key`](#yyjsonoptional_key), [`yyjson::omit_default`](#yyjsonomit_default), [`yyjson::default_from`](#yyjsondefault_from), [`yyjson::extra_keys`](#yyjsonextra_keys), [`yyjson::adjacent_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag), the [constraints](#constraints), [`yyjson::items`](#yyjsonitems), [`yyjson::prefix_items`](#yyjsonprefix_items), [`yyjson::contains`, `yyjson::min_contains`, `yyjson::max_contains`](#yyjsoncontains-yyjsonmin_contains-yyjsonmax_contains), [`yyjson::property_names`](#yyjsonproperty_names), [`yyjson::additional_properties(settings...)`](#yyjsonadditional_properties), [`yyjson::title`, `yyjson::description`, `yyjson::deprecated`, `yyjson::examples`](#yyjsontitle-yyjsondescription-yyjsondeprecated-yyjsonexamples) and [`yyjson::schema`](#yyjsonschema). Any other setting is a compile error.
+`values` are one or more of [`yyjson::rename`](#yyjsonrename), [`yyjson::skip`](#yyjsonskip), [`yyjson::required`](#yyjsonrequired), [`yyjson::optional_key`](#yyjsonoptional_key), [`yyjson::omit_default`](#yyjsonomit_default), [`yyjson::default_from`](#yyjsondefault_from), [`yyjson::extra_keys`](#yyjsonextra_keys), [`yyjson::extra_items`](#yyjsonas_array-yyjsonextra_items), [`yyjson::adjacent_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag), the [constraints](#constraints), [`yyjson::items`](#yyjsonitems), [`yyjson::prefix_items`](#yyjsonprefix_items), [`yyjson::contains`, `yyjson::min_contains`, `yyjson::max_contains`](#yyjsoncontains-yyjsonmin_contains-yyjsonmax_contains), [`yyjson::property_names`](#yyjsonproperty_names), [`yyjson::additional_properties(settings...)`](#yyjsonadditional_properties), [`yyjson::title`, `yyjson::description`, `yyjson::deprecated`, `yyjson::examples`](#yyjsontitle-yyjsondescription-yyjsondeprecated-yyjsonexamples) and [`yyjson::schema`](#yyjsonschema). Any other setting is a compile error.
 
 ### `yyjson::rename`
 
@@ -1941,6 +1942,46 @@ yyjson::read<std::vector<UserId>>("[7,0]");
 // throws yyjson::bad_cast: the value of UserId is less than the minimum 1 at /1 ...
 ```
 
+### `yyjson::as_array`, `yyjson::extra_items`
+
+A struct that is read and written as a JSON array, its fields being the elements in the order of their declaration, and the field that receives the elements after them.
+
+```cpp
+inline constexpr as_array_t as_array{};
+inline constexpr extra_items_t extra_items{};
+consteval explicit items(bool allowed);  // items<>, a setting of the struct
+```
+
+`yyjson::as_array` and `yyjson::items(bool)` are settings of the struct, given to [`yyjson::annotate`](#yyjsonannotationst-yyjsonannotate); `yyjson::extra_items` is a setting of a field. Each field that is not skipped is a position of the array, and a skipped field is none. See [A struct as a JSON array](conversions.md#a-struct-as-a-json-array).
+
+*   An array may end before the element of a field that would be an optional key in an object: a `std::optional`, or a field with [`yyjson::optional_key`](#yyjsonoptional_key), [`yyjson::omit_default`](#yyjsonomit_default) or [`yyjson::default_from`](#yyjsondefault_from). Without [`yyjson::strict`](#yyjsonstrict), it may end before any other field too, which then keeps its value in `T()`. [`yyjson::required`](#yyjsonrequired) rejects an array without the element of its field, also without `yyjson::strict`.
+*   Elements after the fields: `yyjson::items(true)` accepts and drops them, also under `yyjson::strict`; `yyjson::items(false)` rejects them; without either, they are dropped, and `yyjson::strict` rejects them. A field of `yyjson::extra_items` receives them instead: it is the last field that is not skipped, a range with `push_back` and `clear`, and takes [`yyjson::items(settings...)`](#yyjsonitems) for its elements.
+*   `write` writes the fields in order and the elements of the field of `yyjson::extra_items` after them. It leaves out the run of fields at the end whose values it would leave out of an object: an empty `std::optional`, a value of `yyjson::omit_default` or `yyjson::default_from` equal to its default. Such a value before one that is written is written, an empty `std::optional` as `null`; [`yyjson::validate`](#yyjsonvalidate) and `write(t, yyjson::strict)` reject that `null`, which the struct does not read back.
+*   `read_into` and `merge_into` replace the whole value, as for an array. A `std::variant` takes the alternative with `yyjson::as_array` for a JSON array.
+*   [`yyjson::json_schema`](#yyjsonjson_schemat) defines the struct in `$defs` by `{"type": "array", "prefixItems": [...]}` with `minItems` and `items`; see [JSON Schema](json-schema.md#c-types).
+*   The struct takes [`yyjson::title`, `yyjson::description`, `yyjson::deprecated`, `yyjson::examples`](#yyjsontitle-yyjsondescription-yyjsondeprecated-yyjsonexamples), [`yyjson::schema`](#yyjsonschema) and [`yyjson::schema_name`](#yyjsonschema_name), and its fields the settings of a field other than those named below.
+
+`yyjson::as_array` given twice, on a struct of `VISITABLE_STRUCT` or with `yyjson::transparent`; `yyjson::additional_properties`, `yyjson::dependent_required`, `yyjson::one_of_required`, `yyjson::any_of_required`, `yyjson::if_then_else` or `yyjson::not_` on the struct; `yyjson::rename`, `yyjson::adjacent_tag` or `yyjson::extra_keys` on a field; `yyjson::items(bool)` on a struct without `yyjson::as_array`; and `yyjson::extra_items` on a struct without `yyjson::as_array`, twice, on a field that is not the last, with another setting than `yyjson::items(settings...)`, or beside `yyjson::items(false)` are compile errors.
+
+```cpp
+struct Rule
+{
+    int level = 0;
+    std::optional<std::string> mode;
+    std::optional<int> limit;
+};
+
+template <>
+inline constexpr auto yyjson::annotations<Rule> =
+    yyjson::annotate(yyjson::as_array, yyjson::items(false), yyjson::field("level", yyjson::minimum(0)));
+
+auto rule = yyjson::read<Rule>(R"([2,"always"])");  // -> Rule{2, "always", std::nullopt}
+auto json = yyjson::write(rule);                     // -> [2,"always"]
+yyjson::write(Rule{1, std::nullopt, 80});            // -> [1,null,80]
+yyjson::read<Rule>("[-1]");
+// throws yyjson::bad_cast: the value of the field "level" of Rule is less than the minimum 0 at /0 ...
+```
+
 ### Constraints
 
 Settings of a field that restrict the values that it reads, as the keywords of JSON Schema of the same names do. [JSON Schema keywords](validation.md#json-schema-keywords) lists every keyword with what corresponds to it.
@@ -2024,7 +2065,7 @@ yyjson::read<Scores>(R"({"scores":[1,-2]})");
 // throws yyjson::bad_cast: an element of the value of the key "scores" of Scores is less than the minimum 0 at /scores/1 ...
 ```
 
-The path of the exception points at the element, also in a set or an unordered map. With [`yyjson::prefix_items`](#yyjsonprefix_items), `yyjson::items` constrains only the elements after the prefix. See [Constraints of elements](validation.md#constraints-of-elements).
+The path of the exception points at the element, also in a set or an unordered map. With [`yyjson::prefix_items`](#yyjsonprefix_items), `yyjson::items` constrains only the elements after the prefix. On the field of [`yyjson::extra_items`](#yyjsonas_array-yyjsonextra_items), it constrains the elements after the other fields. `yyjson::items(bool)`, which takes no settings, is a setting of a struct with [`yyjson::as_array`](#yyjsonas_array-yyjsonextra_items). See [Constraints of elements](validation.md#constraints-of-elements).
 
 ### `yyjson::prefix_items`
 
@@ -2045,7 +2086,7 @@ Each position is a braced list of settings, `{}` for a position without them, or
 | a `std::tuple`, a `std::pair` or another tuple-like type | `std::get<i>` of the value, of its own type |
 | a range read from a JSON array in its order, such as `std::vector`, `std::array` and `std::list` | the element `i`, when the array has one |
 
-A range may be read from an array with fewer elements than positions. A tuple-like type, `std::array` included, is read only from an array of exactly as many elements as it has. With `yyjson::items` on the same field, `yyjson::items` constrains the elements after the prefix. A field takes up to 16 positions. A position holds up to 8 groups of settings: its own, and one for each `yyjson::items`, `yyjson::contains`, `yyjson::property_names`, `yyjson::additional_properties(settings...)` and position of a `yyjson::prefix_items` in it. Its settings hold up to 16 values of `yyjson::const_` and `yyjson::enum_`, and, before C++26, up to 256 characters of the strings given to `yyjson::const_`, `yyjson::enum_`, `yyjson::pattern` and `yyjson::format` as string literals; a string given as a `std::string_view` does not count. More positions than a tuple has elements, more groups, values or characters, and `yyjson::prefix_items` on a set, a map or a string are compile errors.
+A range may be read from an array with fewer elements than positions. A tuple-like type, `std::array` included, is read only from an array of exactly as many elements as it has. Positions of different types that an array may leave out at its end are the fields of a struct with [`yyjson::as_array`](#yyjsonas_array-yyjsonextra_items). With `yyjson::items` on the same field, `yyjson::items` constrains the elements after the prefix. A field takes up to 16 positions. A position holds up to 8 groups of settings: its own, and one for each `yyjson::items`, `yyjson::contains`, `yyjson::property_names`, `yyjson::additional_properties(settings...)` and position of a `yyjson::prefix_items` in it. Its settings hold up to 16 values of `yyjson::const_` and `yyjson::enum_`, and, before C++26, up to 256 characters of the strings given to `yyjson::const_`, `yyjson::enum_`, `yyjson::pattern` and `yyjson::format` as string literals; a string given as a `std::string_view` does not count. More positions than a tuple has elements, more groups, values or characters, and `yyjson::prefix_items` on a set, a map or a string are compile errors.
 
 ```cpp
 struct Row
