@@ -407,7 +407,7 @@ A key that `required`, `dependentRequired`, a group of `oneOf` / `anyOf` of `req
 2.  else the schema of `additionalProperties`;
 3.  else `yyjson::value`, which reads any JSON value.
 
-The member carries the constraints of that schema. A key that matches patterns of different schemas is `yyjson::value`, with a warning. Under `additionalProperties: false` the schema rejects every object that has the key: the member is `yyjson::value`, with a warning, so that a required key or a group of keys can still be checked. A key that only a condition names gets no member there: the condition knows that the key is absent, so a `then` that requires it never holds, and a `dependentSchemas` of it never applies. The keys that no keyword names go to the field of `yyjson::extra_keys` below.
+The member carries the constraints of that schema. A key that matches patterns of different schemas is `yyjson::value`, with a warning. Under `additionalProperties: false` the schema rejects every object that has the key: the member is `yyjson::value`, and the struct gets `yyjson::not_(yyjson::field(key, yyjson::required))`, as for a [property whose schema is `false`](#mapping); a required key gives a warning, because no object then satisfies the schema. A key that only a condition names gets no member there: the condition knows that the key is absent, so a `then` that requires it never holds, and a `dependentSchemas` of it never applies. The keys that no keyword names go to the field of `yyjson::extra_keys` below.
 
 ## Keys that name no property
 

@@ -3091,9 +3091,13 @@ namespace cpp_yyjson_codegen
                     }
                     if (!t)
                     {
-                        warn(kloc, "the key \"" + k + "\" is no property, and `additionalProperties` is false; " +
-                                       (req ? "no object satisfies the schema" : "an object that has the key does not "
-                                                                                 "satisfy the schema"));
+                        // as a property whose schema is `false`: the object must not have the key
+                        if (req)
+                            warn(kloc, "the key \"" + k +
+                                           "\" is no property, and `additionalProperties` is false; no object "
+                                           "satisfies the schema");
+                        absent.push_back(
+                            condition{.negated = true, .if_ = {cond_field{.key = k, .required = true}}, .loc = kloc});
                         t = typed{};
                     }
                     auto f = field{.member = k, .key = k, .required = req, .schema = schema, .loc = kloc};

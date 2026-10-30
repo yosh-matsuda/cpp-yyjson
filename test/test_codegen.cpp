@@ -53,13 +53,14 @@ TEST(Codegen, Fields)
     EXPECT_TRUE(has(c, "    std::optional<std::string> note;\n"));
     EXPECT_TRUE(has(c, "    std::optional<bool> class_;\n"));
     EXPECT_TRUE(has(c, "    std::optional<std::string> home_page;\n"));
-    // a required key without a property takes any JSON value
+    // a required key without a property takes any JSON value, and the struct rejects it as the schema does
     EXPECT_TRUE(has(c, "    yyjson::value token;\n"));
     EXPECT_TRUE(has(c,
                     "yyjson::annotations<app::model::UserRecord> = yyjson::annotate(\n"
                     "    yyjson::title(\"user record\"),\n"
                     "    yyjson::description(\"A user.\"),\n"
                     "    yyjson::additional_properties(false),\n"
+                    "    yyjson::not_(yyjson::field(\"token\", yyjson::required)),\n"
                     "    yyjson::field(\"id\", yyjson::required, yyjson::minimum(1)),\n"));
     EXPECT_TRUE(has(c, "yyjson::field(\"score\", yyjson::omit_default)"));
     EXPECT_TRUE(has(c, "yyjson::field(\"class_\", yyjson::rename(\"class\"))"));
@@ -1189,9 +1190,10 @@ TEST(Codegen, NamedKeys)
         "additionalProperties": false
     })",
                                  {});
+    // the key that `additionalProperties: false` rejects is rejected by the struct too
     EXPECT_TRUE(has(closed.code, "    std::optional<yyjson::value> b;\n"));
-    EXPECT_EQ(warnings(closed), "#/dependentRequired/a: the key \"b\" is no property, and `additionalProperties` is "
-                                "false; an object that has the key does not satisfy the schema\n");
+    EXPECT_TRUE(has(closed.code, "    yyjson::not_(yyjson::field(\"b\", yyjson::required))"));
+    EXPECT_EQ(warnings(closed), "");
 }
 
 TEST(Codegen, Conditions)
