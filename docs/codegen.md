@@ -305,7 +305,7 @@ inline constexpr auto yyjson::annotations<Rule> = yyjson::annotate(
 
 *   `minItems` above the number of positions, and `maxItems` of an array that may go on after the positions, are left out with a warning. `maxItems` up to the number of positions ends the array there, as `"items": false` does.
 *   `uniqueItems` and `contains`, which compare the positions with each other, give `std::vector<yyjson::value>` with a warning, and so do more than 100 positions under C++20, which the reflection of C++20 takes no more; `--cpp26` takes them.
-*   An array of positions that holds itself, such as `{"prefixItems": [{"type": "string"}, {"type": "array", "items": {"$ref": "#"}}]}` as the root, is a struct `Root2` with `yyjson::as_array` inside the struct `Root` with [`yyjson::transparent`](reference.md#yyjsontransparent).
+*   An array of positions that holds itself, such as `{"type": "array", "prefixItems": [{"type": "string"}, {"type": "array", "items": {"$ref": "#"}}]}` as the root, is a struct `Root2` with `yyjson::as_array` inside the struct `Root` with [`yyjson::transparent`](reference.md#yyjsontransparent).
 
 ### Enumerations
 
