@@ -340,6 +340,7 @@ The annotations of a type change how the type converts, with no caster. Speciali
 | `yyjson::rename("key")` | a field | reads and writes the field by the JSON key `key` | [JSON keys](#json-keys) |
 | `yyjson::skip` | a field | leaves the field out of reading and writing | [Skipped fields](#skipped-fields) |
 | `yyjson::extra_keys` | a map field | reads the keys that name no field into the map, and writes them back | [Keys that name no field](#keys-that-name-no-field) |
+| `yyjson::pattern_properties("re")` | a map field | reads the keys that the pattern matches into the map, and writes them back | [Keys that a pattern matches](#keys-that-a-pattern-matches) |
 | `yyjson::required`, `yyjson::optional_key` | a field | requires the key, or lets the object leave it out | [Strict reading](validation.md#strict-reading) |
 | `yyjson::omit_default` | a field | lets the object leave the key out, and leaves it out when writing the value in `T()` | [Fields with a default value](validation.md#fields-with-a-default-value) |
 | `yyjson::default_from<f>` | a field | reads a missing key as the value that `f` makes, and leaves the key out when writing that value | [Fields with a default value](validation.md#fields-with-a-default-value) |
@@ -482,6 +483,47 @@ Without the annotation, a field of type `yyjson::object` keeps a whole object, a
     *   another setting on the field than `yyjson::additional_properties(settings...)` and `yyjson::property_names(settings...)`, such as `yyjson::rename`, `yyjson::required` or `yyjson::min_items`, and a field named by `yyjson::dependent_required`, `yyjson::one_of_required` or `yyjson::any_of_required`;
     *   `yyjson::extra_keys` on a struct that `VISITABLE_STRUCT` registers.
 
+### Keys that a pattern matches
+
+`yyjson::field("member", yyjson::pattern_properties("re"))` gives a map field the keys that the regular expression `re` matches, as `patternProperties` of JSON Schema does. A struct may have several such fields, one for each kind of key, beside its own fields and a field of [`yyjson::extra_keys`](#keys-that-name-no-field):
+
+```cpp
+struct Stats
+{
+    std::string name;
+    int n_total = 0;
+    std::map<std::string, int> counts;          // the keys that start with n_
+    std::map<std::string, std::string> labels;  // the keys that start with l_
+};
+
+template <>
+inline constexpr auto yyjson::annotations<Stats> = yyjson::annotate(
+    yyjson::field("counts", yyjson::pattern_properties("^n_"), yyjson::additional_properties(yyjson::minimum(0))),
+    yyjson::field("labels", yyjson::pattern_properties("^l_"), yyjson::property_names(yyjson::max_length(8))));
+
+auto stats = yyjson::read<Stats>(R"({"name":"a","n_total":3,"n_x":1,"l_y":"s","other":true})");
+// -> Stats{"a", 3, {{"n_x", 1}}, {{"l_y", "s"}}}; "other" is ignored
+auto json = yyjson::write(stats);
+// -> {"name":"a","n_total":3,"n_x":1,"l_y":"s"}
+yyjson::read<Stats>(R"({"name":"a","n_total":-1})");
+// throws: the value of the key "n_total" of Stats is less than the minimum 0 at /n_total (line 1, column 23, pos 22)
+```
+
+The patterns are matched by the [pattern matcher](validation.md#pattern-matcher) that the program specializes, as for `yyjson::pattern`. A key goes to a field as follows:
+
+*   A key of a field or of a tag is read into that field or tag. If a pattern matches the key, as `^n_` matches `n_total` above, the value must also be read by the type of the values of that field of patterns, and satisfy their settings, as JSON Schema applies both `properties` and `patternProperties` to such a key.
+*   Any other key goes to the first field of patterns, in the order of the members, whose pattern matches it. The value must also be read by every later field whose pattern matches the key, and satisfy its settings, which are checked through a temporary value; the key is not added to its map.
+*   A key that no pattern matches goes to the field of `yyjson::extra_keys`, or is a key that names no field: the read ignores it, [`yyjson::strict`](validation.md#strict-reading) rejects it, and so does `yyjson::additional_properties(false)` on the struct.
+*   A field whose values are `yyjson::value` without settings reads every value, so it checks nothing for the keys of the other fields.
+
+The rest follows `yyjson::extra_keys`:
+
+*   The field has no key of its own and is a map of the same kind. `yyjson::additional_properties(settings...)` on it gives the constraints of the values and `yyjson::property_names(settings...)` those of the keys; the path of an error is the key.
+*   `yyjson::read<T>`, `cast<T>` and `read_into` add the keys to the maps in `T()`. `merge_into` merges the keys into the maps, erases a key whose value is `null`, and checks a key against the first field whose pattern matches it only.
+*   `yyjson::strict` rejects a key that appears twice among those that the maps receive.
+*   Writing puts the keys of the maps after the fields, field by field in the order of the members and each map in its order, and then the keys of `yyjson::extra_keys`. A key of a map that is also the key of a field or of a tag throws `std::invalid_argument` from `yyjson::write`. [`yyjson::validate`](validation.md#checking-a-c-value) and `write(t, yyjson::strict)` check what the read would: they throw `yyjson::bad_cast` for such a key, for a key that the pattern of its field does not match, such as `the key "x" of Stats does not match the pattern "^n_" of the field of yyjson::pattern_properties that has it`, for a key that an earlier field of patterns matches, for a key in two maps, for a key of `yyjson::extra_keys` that a pattern matches, and for a value that another field whose pattern matches its key would not read.
+*   The settings that `yyjson::field` takes for the field are only `yyjson::additional_properties(settings...)` and `yyjson::property_names(settings...)`; the others, a field of a type that is not such a map, a field named by `yyjson::dependent_required`, `yyjson::one_of_required`, `yyjson::any_of_required`, `yyjson::if_then_else` or `yyjson::not_`, more than 64 fields of patterns in a struct, and a struct that `VISITABLE_STRUCT` registers fail to compile.
+
 ### A struct as the value of its field
 
 `yyjson::annotate(yyjson::transparent)` reads and writes a struct of one field as the value of that field, with no object around it. The constraints of the field become those of the type, and hold wherever the type is used:
@@ -588,7 +630,7 @@ A [translator](#translator) also converts a struct from and to the value of a me
 *   A struct that `VISITABLE_STRUCT` registers takes the annotation too. Define the specialization before the macro, as for the other settings.
 *   The following fail to compile with a `static_assert`:
     *   no field, or more than one field, that is not skipped, and `yyjson::transparent` given twice;
-    *   a setting on the field other than the constraints: `yyjson::rename`, `yyjson::required`, `yyjson::optional_key`, `yyjson::omit_default`, `yyjson::default_from`, `yyjson::extra_keys`, `yyjson::adjacent_tag` and the annotations of the JSON Schema, which go on the struct;
+    *   a setting on the field other than the constraints: `yyjson::rename`, `yyjson::required`, `yyjson::optional_key`, `yyjson::omit_default`, `yyjson::default_from`, `yyjson::extra_keys`, `yyjson::pattern_properties`, `yyjson::adjacent_tag` and the annotations of the JSON Schema, which go on the struct;
     *   `yyjson::additional_properties`, `yyjson::dependent_required`, `yyjson::one_of_required`, `yyjson::any_of_required`, `yyjson::if_then_else` and `yyjson::not_` on the struct, which has no keys.
 
 ### A struct as a JSON array
@@ -660,13 +702,13 @@ A [`std::tuple`](#standard-library-types) also converts to an array whose elemen
 *   The following fail to compile with a `static_assert`:
     *   `yyjson::as_array` given twice, together with `yyjson::transparent`, or on a struct that `VISITABLE_STRUCT` registers;
     *   `yyjson::additional_properties`, `yyjson::dependent_required`, `yyjson::one_of_required`, `yyjson::any_of_required`, `yyjson::if_then_else` and `yyjson::not_` on the struct, which has no keys;
-    *   `yyjson::rename`, `yyjson::extra_keys` and `yyjson::adjacent_tag` on a field;
+    *   `yyjson::rename`, `yyjson::extra_keys`, `yyjson::pattern_properties` and `yyjson::adjacent_tag` on a field;
     *   `yyjson::items(b)` on a struct without `yyjson::as_array`;
     *   `yyjson::extra_items` on a field of a struct without `yyjson::as_array`, on two fields, on a field that is not the last one that is not skipped, on a field of a type that is not such a range, together with `yyjson::items(false)` on the struct, or together with another setting than `yyjson::items(settings...)`, such as `yyjson::required` or `yyjson::min_items`.
 
 ### C++26 annotations
 
-With C++26 static reflection, such as GCC 16 with `-std=c++26 -freflection`, the settings of a field can be written on the member itself as an [annotation](https://wg21.link/p3394). Every setting that `yyjson::field` takes is also an annotation: `[[=yyjson::rename("key")]]`, `[[=yyjson::skip]]`, `[[=yyjson::required]]`, `[[=yyjson::optional_key]]`, `[[=yyjson::omit_default]]`, `[[=yyjson::default_from<f>]]`, `[[=yyjson::extra_keys]]`, `[[=yyjson::extra_items]]`, `[[=yyjson::adjacent_tag(key, ids)]]`, the [constraints](validation.md#constraints), such as `[[=yyjson::minimum(0)]]`, and the [constraints of elements](validation.md#constraints-of-elements), such as `[[=yyjson::items(yyjson::minimum(0))]]` and `[[=yyjson::prefix_items({yyjson::minimum(0)}, {})]]`.
+With C++26 static reflection, such as GCC 16 with `-std=c++26 -freflection`, the settings of a field can be written on the member itself as an [annotation](https://wg21.link/p3394). Every setting that `yyjson::field` takes is also an annotation: `[[=yyjson::rename("key")]]`, `[[=yyjson::skip]]`, `[[=yyjson::required]]`, `[[=yyjson::optional_key]]`, `[[=yyjson::omit_default]]`, `[[=yyjson::default_from<f>]]`, `[[=yyjson::extra_keys]]`, `[[=yyjson::pattern_properties("re")]]`, `[[=yyjson::extra_items]]`, `[[=yyjson::adjacent_tag(key, ids)]]`, the [constraints](validation.md#constraints), such as `[[=yyjson::minimum(0)]]`, and the [constraints of elements](validation.md#constraints-of-elements), such as `[[=yyjson::items(yyjson::minimum(0))]]` and `[[=yyjson::prefix_items({yyjson::minimum(0)}, {})]]`.
 
 ```cpp
 struct Project
