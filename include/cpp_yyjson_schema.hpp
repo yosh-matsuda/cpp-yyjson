@@ -1532,21 +1532,23 @@ namespace yyjson
                          each.emplace_back(empty_object), part(Is, 1) != 0 ? nodes : nullptr, part(Is, 1)),
                      ...);
                 }
-                return;
             }
-            out.emplace("type", "array");
-            if (n != nullptr) emit_constraints(out, n->constraints);
-            auto prefix = out.emplace("prefixItems", empty_array);
-            (
-                [&] {
-                    const bool constrained = n != nullptr && Is < n->prefix_count;
-                    emit<std::tuple_element_t<Is, T>>(prefix.emplace_back(empty_object),
-                                                      constrained ? nodes : nullptr,
-                                                      constrained ? n->prefix + Is : 0);
-                }(),
-                ...);
-            out.emplace("minItems", sizeof...(Is));
-            out.emplace("items", false);
+            else
+            {
+                out.emplace("type", "array");
+                if (n != nullptr) emit_constraints(out, n->constraints);
+                auto prefix = out.emplace("prefixItems", empty_array);
+                (
+                    [&] {
+                        const bool constrained = n != nullptr && Is < n->prefix_count;
+                        emit<std::tuple_element_t<Is, T>>(prefix.emplace_back(empty_object),
+                                                          constrained ? nodes : nullptr,
+                                                          constrained ? n->prefix + Is : 0);
+                    }(),
+                    ...);
+                out.emplace("minItems", sizeof...(Is));
+                out.emplace("items", false);
+            }
         }
 
         template <typename V>
