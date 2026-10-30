@@ -130,6 +130,45 @@ template <>
 inline constexpr auto yyjson::annotations<ValidateEnvelope> =
     yyjson::annotate(yyjson::field("data", yyjson::adjacent_tag("kind", {"circle", "rect"})));
 
+// min_properties and max_properties count the keys that are written: fields, the keys of yyjson::extra_keys, adjacent
+// tags that are not fields, and internal tags
+struct ValidateCounted
+{
+    std::optional<int> a;
+    std::map<std::string, int> rest;
+};
+template <>
+inline constexpr auto yyjson::annotations<ValidateCounted> = yyjson::annotate(
+    yyjson::min_properties(1), yyjson::max_properties(2), yyjson::field("rest", yyjson::extra_keys));
+struct ValidateCountedTags
+{
+    std::variant<ValidateCircle, ValidateRect> data;
+    std::optional<int> n;
+};
+template <>
+inline constexpr auto yyjson::annotations<ValidateCountedTags> = yyjson::annotate(
+    yyjson::max_properties(2), yyjson::field("data", yyjson::adjacent_tag("kind", {"circle", "rect"})));
+struct ValidateCountedAlternative
+{
+    int a = 0;
+    std::optional<int> b;
+};
+template <>
+inline constexpr auto yyjson::annotations<ValidateCountedAlternative> = yyjson::annotate(yyjson::max_properties(2));
+using ValidateCountedVariant = std::variant<ValidateCountedAlternative, std::unique_ptr<ValidateCountedAlternative>>;
+template <>
+inline constexpr auto yyjson::annotations<ValidateCountedVariant> =
+    yyjson::annotate(yyjson::internal_tag("kind", {"v", "p"}));
+// a struct in an alternative, whose object has no tag
+struct ValidateCountedHolder
+{
+    ValidateCountedAlternative inner;
+};
+using ValidateHolderVariant = std::variant<ValidateCountedHolder, ValidateCountedAlternative>;
+template <>
+inline constexpr auto yyjson::annotations<ValidateHolderVariant> =
+    yyjson::annotate(yyjson::internal_tag("kind", {"h", "v"}));
+
 struct ValidateTree
 {
     int n = 0;
@@ -353,6 +392,33 @@ TEST(Validate, Keys)
     expect_invalid(
         ValidateGroups{1, {true, 1}},
         R"(ValidateGroups is not constructible from JSON with all the keys of more than one of ["a"], ["b"])", "");
+}
+
+TEST(Validate, PropertyCounts)
+{
+    expect_valid(ValidateCounted{1, {}});
+    expect_valid(ValidateCounted{{}, {{"x", 1}, {"y", 2}}});
+    expect_invalid(ValidateCounted{},
+                   "ValidateCounted is not constructible from JSON with 0 keys, fewer than the minimum 1", "");
+    expect_invalid(ValidateCounted{1, {{"x", 1}, {"y", 2}}},
+                   "ValidateCounted is not constructible from JSON with 3 keys, more than the maximum 2", "");
+    expect_valid(ValidateCountedTags{ValidateCircle{}, {}});
+    expect_invalid(ValidateCountedTags{ValidateCircle{}, 1},
+                   "ValidateCountedTags is not constructible from JSON with 3 keys, more than the maximum 2", "");
+    expect_valid(ValidateCountedVariant{ValidateCountedAlternative{}});
+    expect_valid(ValidateCountedVariant{std::make_unique<ValidateCountedAlternative>()});
+    const auto more = "ValidateCountedAlternative is not constructible from JSON with 3 keys, more than the maximum 2";
+    const auto check = [&](const ValidateCountedVariant& v) {
+        const auto e = validate_error([&] { yyjson::validate(v); });
+        EXPECT_EQ(message_of(e), more);
+        EXPECT_THROW((void)yyjson::write(v, yyjson::strict), yyjson::bad_cast);
+        EXPECT_THROW((void)yyjson::read<ValidateCountedVariant>(std::string(yyjson::write(v)), yyjson::strict),
+                     yyjson::bad_cast);
+    };
+    check(ValidateCountedAlternative{1, 2});
+    check(std::make_unique<ValidateCountedAlternative>(1, 2));
+    // the object of a field of the alternative has no tag
+    expect_valid(ValidateHolderVariant{ValidateCountedHolder{{1, 2}}});
 }
 
 TEST(Validate, Conditions)

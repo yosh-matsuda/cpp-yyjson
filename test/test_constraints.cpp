@@ -626,6 +626,56 @@ inline constexpr auto yyjson::annotations<ExclusiveVisitable> =
     yyjson::annotate(yyjson::one_of_required({"a"}, {"b"}));
 VISITABLE_STRUCT(ExclusiveVisitable, a, b);
 
+// min_properties and max_properties count the keys of the object, unknown keys too
+struct Sized
+{
+    std::optional<int> a;
+    std::optional<int> b;
+    std::optional<int> c;
+};
+template <>
+inline constexpr auto yyjson::annotations<Sized> =
+    yyjson::annotate(yyjson::min_properties(1), yyjson::max_properties(2));
+// a struct without fields
+struct SizedEmpty
+{
+};
+template <>
+inline constexpr auto yyjson::annotations<SizedEmpty> = yyjson::annotate(yyjson::min_properties(1));
+// the keys that a field of yyjson::extra_keys receives
+struct SizedExtra
+{
+    std::optional<int> a;
+    std::map<std::string, int> rest;
+};
+template <>
+inline constexpr auto yyjson::annotations<SizedExtra> =
+    yyjson::annotate(yyjson::max_properties(2), yyjson::field("rest", yyjson::extra_keys));
+// VISITABLE_STRUCT
+struct SizedVisitable
+{
+    std::optional<int> a;
+    std::optional<int> b;
+};
+template <>
+inline constexpr auto yyjson::annotations<SizedVisitable> = yyjson::annotate(yyjson::max_properties(1));
+VISITABLE_STRUCT(SizedVisitable, a, b);
+// the tag of an internally tagged variant is a key of the object of the alternative
+struct SizedTagged
+{
+    int a = 0;
+    std::optional<int> b;
+};
+template <>
+inline constexpr auto yyjson::annotations<SizedTagged> = yyjson::annotate(yyjson::max_properties(2));
+struct SizedOther
+{
+    int x = 0;
+};
+using SizedVariant = std::variant<SizedTagged, SizedOther>;
+template <>
+inline constexpr auto yyjson::annotations<SizedVariant> = yyjson::annotate(yyjson::internal_tag("kind", {"t", "o"}));
+
 // if_then_else and not_: a circle has a radius of at least 0, another shape a point and three sides or more, and no
 // kind starts with "x"; the radius is renamed
 struct ConditionPoint
@@ -725,6 +775,28 @@ inline constexpr auto yyjson::annotations<ContainsConditions> = yyjson::annotate
 // takes none
 static_assert(yyjson::detail::node_count<decltype(yyjson::items(yyjson::items(yyjson::minimum(0))))>.nodes == 2);
 static_assert(yyjson::detail::value_node_count<Bounded> == yyjson::detail::tree_size{});
+
+struct CountsInverted
+{
+    int a = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<CountsInverted> =
+    yyjson::annotate(yyjson::min_properties(3), yyjson::max_properties(2));
+struct CountsTwice
+{
+    int a = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<CountsTwice> =
+    yyjson::annotate(yyjson::max_properties(3), yyjson::max_properties(2));
+struct CountsEqual
+{
+    int a = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<CountsEqual> =
+    yyjson::annotate(yyjson::min_properties(2), yyjson::max_properties(2));
 
 // The rules that the static assertions enforce, tested on the conditions that they assert: the error of the table of
 // the keys of a struct that is never read, and the concepts of the types that a setting constrains.
@@ -906,6 +978,9 @@ namespace compile_rules
     static_assert(table_error<Reachable> == none);
     static_assert(table_error<ConditionOnSkipped> == condition_field_kind);
     static_assert(table_error<ConditionPresence> == none);
+    static_assert(table_error<CountsInverted> == min_properties_above_max);
+    static_assert(table_error<CountsTwice> == additional_twice);
+    static_assert(table_error<CountsEqual> == none);
     static_assert(table_error<ConditionOnExtraKeys> == condition_field_kind);
     static_assert(table_error<ConditionWithIsType> == is_type_outside_condition);
     static_assert(table_error<ConditionTransparent> == condition_transparent);
@@ -2221,6 +2296,81 @@ TEST(Constraints, RequiredGroups)
     // in a field
     const auto e = bad_cast_of([] { (void)yyjson::read<std::vector<Measure>>(R"([{"env":"e"},{}])"); });
     EXPECT_EQ(e.path(), "/1");
+}
+
+TEST(Constraints, PropertyCounts)
+{
+    const auto fewer = [](std::string_view type, std::size_t n, std::size_t min) {
+        return std::format("{} is not constructible from JSON with {} keys, fewer than the minimum {}", type, n, min);
+    };
+    const auto more = [](std::string_view type, std::size_t n, std::size_t max) {
+        return std::format("{} is not constructible from JSON with {} keys, more than the maximum {}", type, n, max);
+    };
+    // every read of `json` but merge_into: accepted, or rejected at the object with `message`
+    const auto check = []<typename T>(std::type_identity<T>, const char* json, std::string_view message) {
+        const auto reads = std::array<std::function<void()>, 3>{
+            [&] { (void)yyjson::read<T>(json); }, [&] { (void)yyjson::read(json).template cast<T>(); },
+            [&] {
+                auto t = T();
+                yyjson::read_into(json, t);
+            }};
+        for (const auto& read : reads)
+        {
+            if (message.empty())
+                EXPECT_NO_THROW(read()) << json;
+            else
+            {
+                const auto e = bad_cast_of(read);
+                EXPECT_TRUE(message_of(e).starts_with(message)) << json << "\n" << e.what();
+                EXPECT_EQ(e.path(), "") << json;
+            }
+        }
+#if YYJSON_VERSION_HEX >= 0x000C00
+        EXPECT_EQ(read_directly<T>(json, yyjson::ReadFlag::NoFlag).has_value(), message.empty()) << json;
+#endif
+    };
+    constexpr auto sized = std::type_identity<Sized>{};
+    check(sized, R"({"a":1})", "");
+    check(sized, R"({"a":1,"b":2})", "");
+    check(sized, R"({"c":1,"a":2})", "");
+    check(sized, R"({})", fewer("Sized", 0, 1));
+    // the keys of all the fields in their order, the first fields and a key out of order
+    check(sized, R"({"a":1,"b":2,"c":3})", more("Sized", 3, 2));
+    check(sized, R"({"a":1,"b":2,"x":3})", more("Sized", 3, 2));
+    check(sized, R"({"c":1,"b":2,"a":3})", more("Sized", 3, 2));
+    // unknown keys count, and a repeated key counts each time
+    check(sized, R"({"x":1})", "");
+    check(sized, R"({"x":1,"y":2,"z":3})", more("Sized", 3, 2));
+    check(sized, R"({"a":1,"a":2,"a":3})", more("Sized", 3, 2));
+    EXPECT_THROW((void)yyjson::read<Sized>(R"({"x":1})", yyjson::strict), yyjson::bad_cast);
+    EXPECT_NO_THROW((void)yyjson::read<Sized>(R"({"b":1})", yyjson::strict));
+
+    constexpr auto empty = std::type_identity<SizedEmpty>{};
+    check(empty, R"({})", fewer("SizedEmpty", 0, 1));
+    check(empty, R"({"x":1})", "");
+
+    constexpr auto extra = std::type_identity<SizedExtra>{};
+    check(extra, R"({"a":1,"p":2})", "");
+    check(extra, R"({"p":1,"q":2,"a":3})", more("SizedExtra", 3, 2));
+
+    constexpr auto visitable = std::type_identity<SizedVisitable>{};
+    check(visitable, R"({"b":1})", "");
+    check(visitable, R"({"a":1,"b":2})", more("SizedVisitable", 2, 1));
+
+    constexpr auto tagged = std::type_identity<SizedVariant>{};
+    check(tagged, R"({"kind":"t","a":1})", "");
+    check(tagged, R"({"a":1,"kind":"t"})", "");
+    const auto e = bad_cast_of([] { (void)yyjson::read<SizedVariant>(R"({"kind":"t","a":1,"b":2})"); });
+    EXPECT_TRUE(message_of(e).find(more("SizedTagged", 3, 2)) != std::string::npos) << e.what();
+
+    // merge_into does not count the keys
+    auto t = Sized{1, 2, std::nullopt};
+    yyjson::merge_into(R"({})", t);
+    yyjson::merge_into(R"({"c":3})", t);
+    EXPECT_EQ(t.c, 3);
+    // in a field
+    const auto f = bad_cast_of([] { (void)yyjson::read<std::vector<Sized>>(R"([{"a":1},{}])"); });
+    EXPECT_EQ(f.path(), "/1");
 }
 
 TEST(Constraints, Conditions)

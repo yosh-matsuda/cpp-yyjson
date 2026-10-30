@@ -1309,6 +1309,23 @@ namespace yyjson
     };
     additional_properties(bool) -> additional_properties<>;
 
+    // The bounds of the number of the keys of the object of a struct, as
+    // `yyjson::annotations<T> = yyjson::annotate(yyjson::min_properties(1))` or
+    // `struct [[=yyjson::max_properties(8)]] T` gives them, as JSON Schema's `minProperties` and `maxProperties`.
+    // Reading counts all the keys of the object, those that name no field too; `yyjson::validate` and writing with
+    // `yyjson::strict` count the keys that are written.  `yyjson::merge_into` does not check them.  The bounds of
+    // the number of the elements of a map field are `yyjson::min_items` and `yyjson::max_items`.
+    struct min_properties
+    {
+        std::size_t value;
+        consteval explicit min_properties(std::size_t v) : value(v) {}
+    };
+    struct max_properties
+    {
+        std::size_t value;
+        consteval explicit max_properties(std::size_t v) : value(v) {}
+    };
+
     // The fields whose keys an object must have when it has the key of the field `member`, as JSON Schema's
     // `dependentRequired`, which `yyjson::dependent_required` makes.
     template <std::size_t N>
@@ -2679,6 +2696,7 @@ namespace yyjson
             extra_items_denied,
             pattern_with_setting,
             pattern_visitable,
+            min_properties_above_max,
         };
 
         // The constraints of a value, those in `set` by `constraint_bit`.  The values of `yyjson::const_` and
@@ -3701,6 +3719,7 @@ namespace yyjson
             count_true<(is_field_annotation<As>::value || std::same_as<As, additional_properties<>> ||
                         std::same_as<As, transparent_t> || std::same_as<As, as_array_t> ||
                         std::same_as<As, items<>> || is_dependent_required<As>::value ||
+                        std::same_as<As, min_properties> || std::same_as<As, max_properties> ||
                         is_required_groups<As>::value || is_condition_annotation<As>::value ||
                         internal_tag_annotation<As> || enum_annotation<As> || type_metadata_setting<As>)...> ==
             sizeof...(As);
@@ -3713,7 +3732,8 @@ namespace yyjson
                       "yyjson::annotate takes yyjson::field(...), yyjson::additional_properties, "
                       "yyjson::transparent, yyjson::as_array, yyjson::items(bool), yyjson::dependent_required, "
                       "yyjson::one_of_required, "
-                      "yyjson::any_of_required, yyjson::if_then_else and yyjson::not_ for a struct, "
+                      "yyjson::any_of_required, yyjson::if_then_else, yyjson::not_, yyjson::min_properties and "
+                      "yyjson::max_properties for a struct, "
                       "yyjson::internal_tag for a variant, yyjson::enumerator(...) and yyjson::enum_format for an "
                       "enumeration, yyjson::schema_name for a struct, an enumeration, a variant or a type with a "
                       "caster, and yyjson::title, "
@@ -4225,6 +4245,9 @@ namespace yyjson
             std::array<bool, N> pattern = {};
             std::array<std::string_view, N> patterns = {};
             additional_keys additional = additional_keys::unset;
+            // `yyjson::min_properties` and `yyjson::max_properties` of the struct
+            std::size_t min_properties = 0;
+            std::size_t max_properties = std::numeric_limits<std::size_t>::max();
             bool transparent = false;  // whether the struct is annotated with `yyjson::transparent`
             bool as_array = false;     // whether the struct is annotated with `yyjson::as_array`
             additional_keys items = additional_keys::unset;  // `yyjson::items(bool)` of the struct
@@ -4258,6 +4281,8 @@ namespace yyjson
             // the fields that `yyjson::if_then_else` or `yyjson::not_` names
             std::array<bool, N> conditioned = {};
             bool has_conditions = false;
+            bool has_min_properties = false;
+            bool has_max_properties = false;
             // where the search for the member of the next `yyjson::field` starts: after the previous one, so that
             // settings in the order of the members are found at once
             std::size_t next = 0;
@@ -4382,6 +4407,18 @@ namespace yyjson
                 if (table.additional != additional_keys::unset) return fail(field_key_error::additional_twice);
                 table.additional = a.allowed ? additional_keys::allowed : additional_keys::denied;
             }
+            constexpr void set_min_properties(min_properties a)
+            {
+                if (has_min_properties) return fail(field_key_error::additional_twice);
+                has_min_properties = true;
+                table.min_properties = a.value;
+            }
+            constexpr void set_max_properties(max_properties a)
+            {
+                if (has_max_properties) return fail(field_key_error::additional_twice);
+                has_max_properties = true;
+                table.max_properties = a.value;
+            }
             // The index of the member `member`, or N.  The search starts at `start` and wraps around.
             [[nodiscard]] constexpr std::size_t member_index(std::string_view member,
                                                              std::size_t start = 0) const noexcept
@@ -4503,6 +4540,10 @@ namespace yyjson
                     add_required_groups(a);
                 else if constexpr (is_condition_annotation<A>::value)
                     add_condition(a);
+                else if constexpr (std::same_as<A, min_properties>)
+                    set_min_properties(a);
+                else if constexpr (std::same_as<A, max_properties>)
+                    set_max_properties(a);
                 else if constexpr (!type_metadata_setting<A>)
                     fail(field_key_error::not_a_struct_setting);
             }
@@ -4519,7 +4560,7 @@ namespace yyjson
                 }
                 if (t.transparent) return field_key_error::as_array_transparent;
                 if (t.additional != additional_keys::unset || dependencies_added != 0 || choices_added != 0 ||
-                    has_conditions)
+                    has_conditions || has_min_properties || has_max_properties)
                     return field_key_error::as_array_struct_setting;
                 for (std::size_t i = 0; i < N; ++i)
                 {
@@ -4550,6 +4591,8 @@ namespace yyjson
                 auto result = table;
                 result.schemas.check();
                 if (result.error == field_key_error::none) result.error = result.schemas.error;
+                if (result.min_properties > result.max_properties && result.error == field_key_error::none)
+                    result.error = field_key_error::min_properties_above_max;
                 for (std::size_t i = 0; i < N; ++i)
                 {
                     if (tagged[i] && !result.schemas.nodes[i].empty() && result.error == field_key_error::none)
@@ -4628,7 +4671,7 @@ namespace yyjson
                              result.omit_default[f] || result.extra == f || result.pattern[f] || described[f] != 0)
                         result.error = field_key_error::transparent_field_setting;
                     else if (result.additional != additional_keys::unset || dependencies_added != 0 ||
-                             choices_added != 0)
+                             choices_added != 0 || has_min_properties || has_max_properties)
                         result.error = field_key_error::transparent_struct_setting;
                     else if (has_conditions)
                         result.error = field_key_error::condition_transparent;
@@ -4810,6 +4853,8 @@ namespace yyjson
                        !field_reflection::type_annotations<T, transparent_t>.empty() ||
                        !field_reflection::type_annotations<T, as_array_t>.empty() ||
                        !field_reflection::type_annotations<T, items<>>.empty() ||
+                       !field_reflection::type_annotations<T, min_properties>.empty() ||
+                       !field_reflection::type_annotations<T, max_properties>.empty() ||
                        !dependency_annotations<T>.empty() || !required_group_annotations<T>.empty() ||
                        !condition_annotations<T>.empty();
             else
@@ -4827,6 +4872,10 @@ namespace yyjson
             for (std::size_t k = 0; k < field_reflection::type_annotations<T, as_array_t>.size(); ++k)
                 builder.make_array();
             for (const items<>& a : field_reflection::type_annotations<T, items<>>) builder.set_items(a);
+            for (const min_properties& a : field_reflection::type_annotations<T, min_properties>)
+                builder.set_min_properties(a);
+            for (const max_properties& a : field_reflection::type_annotations<T, max_properties>)
+                builder.set_max_properties(a);
             [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
                 (builder.add_dependency(
                      std::meta::extract<dependency_annotation_type<T, Ks>>(dependency_annotations<T>[Ks])),
@@ -5013,7 +5062,8 @@ namespace yyjson
                           "yyjson::default_from already leaves out the key of a field that holds its default value, "
                           "as yyjson::omit_default does: give the field only one of them");
             static_assert(table.error != field_key_error::additional_twice,
-                          "yyjson::annotations of a struct has yyjson::additional_properties twice");
+                          "a struct is annotated with yyjson::additional_properties, yyjson::min_properties or "
+                          "yyjson::max_properties twice");
             static_assert(table.error != field_key_error::skipped_with_setting,
                           "a field annotated with yyjson::skip takes no other setting");
             static_assert(table.error != field_key_error::skip_visitable,
@@ -5077,8 +5127,8 @@ namespace yyjson
                           "yyjson::pattern_properties, yyjson::adjacent_tag or metadata such as yyjson::description, which the struct takes instead");
             static_assert(table.error != field_key_error::transparent_struct_setting,
                           "a struct annotated with yyjson::transparent is not an object: it takes no "
-                          "yyjson::additional_properties, yyjson::dependent_required, yyjson::one_of_required or "
-                          "yyjson::any_of_required");
+                          "yyjson::additional_properties, yyjson::dependent_required, yyjson::one_of_required, "
+                          "yyjson::any_of_required, yyjson::min_properties or yyjson::max_properties");
             static_assert(table.error != field_key_error::is_type_outside_condition,
                           "yyjson::is_type<T> is a setting of a field of yyjson::then or yyjson::else_, and of the "
                           "elements of yyjson::contains, only");
@@ -5099,7 +5149,8 @@ namespace yyjson
             static_assert(table.error != field_key_error::as_array_struct_setting,
                           "a struct annotated with yyjson::as_array is not an object: it takes no "
                           "yyjson::additional_properties, yyjson::dependent_required, yyjson::one_of_required, "
-                          "yyjson::any_of_required, yyjson::if_then_else or yyjson::not_");
+                          "yyjson::any_of_required, yyjson::if_then_else, yyjson::not_, yyjson::min_properties or "
+                          "yyjson::max_properties");
             static_assert(table.error != field_key_error::as_array_field_setting,
                           "the fields of a struct annotated with yyjson::as_array are positions in an array without "
                           "keys: they take no key, yyjson::adjacent_tag, yyjson::extra_keys or "
@@ -5120,6 +5171,9 @@ namespace yyjson
             static_assert(table.error != field_key_error::extra_items_denied,
                           "a struct annotated with yyjson::items(false) has no elements for a field annotated with "
                           "yyjson::extra_items to receive");
+            static_assert(table.error != field_key_error::min_properties_above_max,
+                          "yyjson::min_properties of a struct is greater than its yyjson::max_properties: no object "
+                          "has a number of keys within them");
             static constexpr auto value = table.keys;
         };
 
@@ -6727,9 +6781,29 @@ namespace yyjson
                 }
                 return true;
             }();
+            // `yyjson::min_properties` and `yyjson::max_properties`, and whether the struct has either.
+            static constexpr std::size_t min_properties = [] {
+                if constexpr (has_table)
+                    return table().min_properties;
+                else
+                    return std::size_t{0};
+            }();
+            static constexpr std::size_t max_properties = [] {
+                if constexpr (has_table)
+                    return table().max_properties;
+                else
+                    return std::numeric_limits<std::size_t>::max();
+            }();
+            static constexpr bool bounded =
+                min_properties != 0 || max_properties != std::numeric_limits<std::size_t>::max();
+            // Whether `count` keys are within the bounds.
+            static constexpr bool within_bounds(std::size_t count) noexcept
+            {
+                return count >= min_properties && count <= max_properties;
+            }
             static constexpr bool always = additional == additional_keys::denied ||
                                            std::ranges::find(required, true) != required.end() ||
-                                           !dependencies.empty() || !groups.empty();
+                                           !dependencies.empty() || !groups.empty() || bounded;
             static_assert(
                 []<std::size_t... Ks>(std::index_sequence<Ks...>) {
                     return count_true<(required[Ks] && is_std_optional<struct_field_type<S, Ks>>::value)...> == 0;
@@ -6747,12 +6821,22 @@ namespace yyjson
             else
                 return false;
         }();
+        // Whether the struct T has `yyjson::min_properties` or `yyjson::max_properties`.
+        template <typename T>
+        inline constexpr bool bounds_properties = [] {
+            if constexpr (visitable<T> || (reflectable<T> && annotated_fields<T>))
+                return struct_key_rules<T>::bounded;
+            else
+                return false;
+        }();
         // Whether an object of the struct T that has the keys of all its fields in their order has its keys checked
-        // as well, which `yyjson::one_of_required` with more than one group needs.
+        // as well, which `yyjson::one_of_required` with more than one group needs, and `yyjson::min_properties` or
+        // `yyjson::max_properties` that the number of the fields is not within.
         template <typename T>
         inline constexpr bool checks_all_keys = [] {
             if constexpr (visitable<T> || (reflectable<T> && annotated_fields<T>))
-                return !struct_key_rules<T>::all_keys_allowed;
+                return !struct_key_rules<T>::all_keys_allowed ||
+                       !struct_key_rules<T>::within_bounds(struct_key_rules<T>::n);
             else
                 return false;
         }();
@@ -6792,6 +6876,21 @@ namespace yyjson
                                                                   std::string_view type)
         {
             throw_bad_cast_at(at, "{} is not constructible from JSON without the key \"{}\"", type, key);
+        }
+        // Throws unless `count` keys are within `yyjson::min_properties` and `yyjson::max_properties` of the struct T.
+        template <typename T>
+        void check_property_count(cast_target at, std::size_t count)
+        {
+            using rules = struct_key_rules<T>;
+            if constexpr (rules::bounded)
+            {
+                if (count < rules::min_properties) [[unlikely]]
+                    throw_bad_cast_at(at, "{} is not constructible from JSON with {} keys, fewer than the minimum {}",
+                                      type_name<T>(), count, rules::min_properties);
+                if (count > rules::max_properties) [[unlikely]]
+                    throw_bad_cast_at(at, "{} is not constructible from JSON with {} keys, more than the maximum {}",
+                                      type_name<T>(), count, rules::max_properties);
+            }
         }
         // The field of a struct annotated with `yyjson::as_array` that is read from the element `position`, which
         // the array does not have.
@@ -9786,15 +9885,19 @@ namespace yyjson
                         throw_missing_dependency(target_of(obj), rules::keys[j], rules::keys[k], type_name<T>());
                 }
                 check_required_groups<T>(target_of(obj), [&](std::size_t i) { return seen[i]; });
+                // the members of the object, a repeated key each time
+                if constexpr (rules::bounded) check_property_count<T>(target_of(obj), unsafe_yyjson_get_len(obj));
             }
         }
 
-        // Throws for an object that has the keys of all the fields of the struct T in their order, which
-        // `yyjson::one_of_required` of T does not let it when it has more than one group.
+        // Throws for an object that has the keys of all the fields of the struct T in their order, and no other key,
+        // which `yyjson::one_of_required` of T does not let it when it has more than one group, and
+        // `yyjson::min_properties` or `yyjson::max_properties` may not.
         template <typename T, typename Val>
         CPPYYJSON_NOINLINE CPPYYJSON_COLD void check_all_struct_keys(const Val* obj)
         {
             check_required_groups<T>(target_of(obj), [](std::size_t) { return true; });
+            if constexpr (struct_key_rules<T>::bounded) check_property_count<T>(target_of(obj), struct_key_rules<T>::n);
         }
 
         // The `yyjson_val` or `yyjson_mut_val` of the object `obj` to pass to `check_irregular_struct_keys`.  Passing
@@ -15889,6 +15992,31 @@ namespace yyjson
         // by `settings_hold`.
         inline constinit thread_local bool validating_settings_only = false;
 
+        // The tags of internally tagged variants that the writer writes into the object of the struct that
+        // `validate_struct` checks next on this thread, which count toward `yyjson::min_properties` and
+        // `yyjson::max_properties`.  Set by `validate_value` of such a variant around its alternative.
+        inline constinit thread_local std::size_t pending_tag_keys = 0;
+
+        // Whether a value of the type T, an alternative of an internally tagged variant, may hold the object of a
+        // struct annotated with `yyjson::min_properties` or `yyjson::max_properties`, which counts the tags.
+        template <typename T>
+        consteval bool counts_tag_keys()
+        {
+            if constexpr (bounds_properties<T>)
+                return true;
+            else if constexpr (requires { std::variant_size<T>::value; } && !combined_variant<T>)
+            {
+                if constexpr (internally_tagged<T>)
+                    return []<std::size_t... Is>(std::index_sequence<Is...>) {
+                        return (counts_tag_keys<constrained_value_t<std::variant_alternative_t<Is, T>>>() || ...);
+                    }(std::make_index_sequence<std::variant_size_v<T>>{});
+                else
+                    return false;
+            }
+            else
+                return false;
+        }
+
         // Whether `yyjson::validate` checks something of a value of the type T, beside the values in it.
         template <typename T>
         consteval bool validates_itself()
@@ -15914,7 +16042,7 @@ namespace yyjson
                                       (omittable<struct_field_type<T, Ks>> && strictly_required_field<T, Ks>))...}) ||
                            !struct_key_rules<T>::dependencies.empty() || !struct_key_rules<T>::groups.empty() ||
                            has_adjacent_fields<T> || has_extra_keys<T> || has_pattern_fields<T> ||
-                           has_conditions<T>;
+                           has_conditions<T> || struct_key_rules<T>::bounded;
                 }(std::make_index_sequence<struct_field_count<T>>{});
             else
                 return false;
@@ -16450,6 +16578,9 @@ namespace yyjson
         {
             using rules = struct_key_rules<S>;
             constexpr auto n = struct_field_count<S>;
+            // the tags belong to this object, not to the objects of its fields
+            [[maybe_unused]] std::size_t tag_keys = 0;
+            if constexpr (rules::bounded) tag_keys = std::exchange(pending_tag_keys, 0);
             [[maybe_unused]] const auto written = [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
                 return std::array<bool, n>{validate_field<S, Ks>(s)...};
             }(std::make_index_sequence<n>{});
@@ -16471,6 +16602,17 @@ namespace yyjson
             if constexpr (has_adjacent_fields<S>) check_adjacent_tags<S, bad_cast>(s);
             if constexpr (has_adjacent_fields<S> && has_pattern_fields<S>) validate_adjacent_tag_patterns(s);
             if constexpr (has_conditions<S>) validate_conditions(s, written);
+            if constexpr (rules::bounded)
+            {
+                auto count = tag_keys + static_cast<std::size_t>(std::ranges::count(written, true));
+                if constexpr (has_adjacent_fields<S>) count += written_adjacent_tags(s);
+                if constexpr (has_pattern_fields<S>)
+                    [&]<std::size_t... Ps>(std::index_sequence<Ps...>) {
+                        ((count += std::ranges::size(pattern_field<Ps>(s))), ...);
+                    }(std::make_index_sequence<pattern_count<S>>{});
+                if constexpr (has_extra_keys<S>) count += std::ranges::size(extra_keys_field(s));
+                check_property_count<S>(cast_target{}, count);
+            }
         }
 
         template <typename T>
@@ -16601,11 +16743,23 @@ namespace yyjson
                     std::visit(
                         [&](const auto& a) {
                             if constexpr (internally_tagged<U>) check_extra_tag_key<variant_tags<U>, bad_cast>(a);
-                            validate_value(a);
+                            using A = constrained_value_t<std::remove_cvref_t<decltype(a)>>;
+                            if constexpr (internally_tagged<U> && counts_tag_keys<U>())
+                            {
+                                // the tag is a key of the object of the alternative, and of no object in it
+                                struct restore
+                                {
+                                    std::size_t saved;
+                                    ~restore() { pending_tag_keys = saved; }
+                                } r{pending_tag_keys};
+                                pending_tag_keys = counts_tag_keys<A>() ? r.saved + 1 : 0;
+                                validate_value(a);
+                            }
+                            else
+                                validate_value(a);
                             if constexpr (internally_tagged<U>)
                             {
                                 // the tag is written into the object of the alternative, whose patterns check it
-                                using A = constrained_value_t<std::remove_cvref_t<decltype(a)>>;
                                 if constexpr (has_pattern_fields<A>)
                                     if (held_value(a) != nullptr)
                                         validate_tag_patterns<A>(variant_tags<U>::key, variant_tags<U>::ids[v.index()]);
@@ -26272,6 +26426,10 @@ namespace yyjson
                         rules::groups.size())
                         fail();
                 }
+                if constexpr (rules::bounded)
+                {
+                    if (!rules::within_bounds(count)) fail();
+                }
             }
 
             // Checks the fields of the struct T after an object that has the keys of its fields from 0 to `count`
@@ -26701,8 +26859,11 @@ namespace yyjson
                 constexpr auto n = std::remove_cvref_t<decltype(Matcher)>::size;
                 seen_fields<n> seen;
                 auto irregular = false;
+                // the number of the keys, counted for `yyjson::min_properties` and `yyjson::max_properties` only
+                [[maybe_unused]] auto count = hint;
                 for (;;)
                 {
+                    if constexpr (yyjson::detail::bounds_properties<T>) ++count;
                     if (*cur_ != '"') [[unlikely]]
                         fail();
                     [[maybe_unused]] const char* const at = cur_;
@@ -26753,6 +26914,11 @@ namespace yyjson
                     close(open);
                     if (irregular) [[unlikely]]
                     {
+                        // checked here: passing the count to the cold check costs a register at every call site
+                        if constexpr (yyjson::detail::bounds_properties<T> && !Merge)
+                        {
+                            if (!yyjson::detail::struct_key_rules<T>::within_bounds(count)) fail();
+                        }
                         if (yyjson::detail::checks_keys_always<T> || strict_)
                             check_fields_after_irregular<T, Merge>(seen, hint);
                     }
@@ -26795,7 +26961,8 @@ namespace yyjson
                 if (*cur_ == '}')
                 {
                     close(open);
-                    if constexpr (n != 0) check_fields_after_prefix<T, Merge>(0);
+                    if constexpr (n != 0 || yyjson::detail::checks_all_keys<T>)
+                        check_fields_after_prefix<T, Merge>(0);
                     return;
                 }
                 read_fields_from<T, Merge, Matcher>(open, indent, 0, assign);
@@ -26817,7 +26984,8 @@ namespace yyjson
                 if (*cur_ == '}')
                 {
                     close(open);
-                    if constexpr (n != 0) check_fields_after_prefix<T, Merge>(0);
+                    if constexpr (n != 0 || yyjson::detail::checks_all_keys<T>)
+                        check_fields_after_prefix<T, Merge>(0);
                     return;
                 }
                 // the field whose key is out of order, or past `n` when the object has ended after the field K:

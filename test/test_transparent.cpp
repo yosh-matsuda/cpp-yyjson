@@ -118,6 +118,7 @@ TRANSPARENT_RULE(TransparentClosed, yyjson::transparent, yyjson::additional_prop
                  yyjson::field("w", yyjson::skip))
 TRANSPARENT_RULE(TransparentOpen, yyjson::transparent, yyjson::additional_properties(true),
                  yyjson::field("w", yyjson::skip))
+TRANSPARENT_RULE(TransparentCounted, yyjson::transparent, yyjson::max_properties(1), yyjson::field("w", yyjson::skip))
 TRANSPARENT_RULE(TransparentConstrained, yyjson::transparent, yyjson::description("d"),
                  yyjson::field("w", yyjson::skip), yyjson::field("v", yyjson::minimum(0), yyjson::maximum(9)))
 #undef TRANSPARENT_RULE
@@ -136,6 +137,7 @@ namespace transparent_rules
     static_assert(table_error<TransparentDescribedField> == transparent_field_setting);
     static_assert(table_error<TransparentClosed> == transparent_struct_setting);
     static_assert(table_error<TransparentOpen> == transparent_struct_setting);
+    static_assert(table_error<TransparentCounted> == transparent_struct_setting);
     static_assert(table_error<TransparentConstrained> == none);
 
     // a field of a transparent struct of an optional value is optional, as the optional value would be

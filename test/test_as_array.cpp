@@ -133,6 +133,7 @@ AS_ARRAY_RULE(ArrayRenamed, yyjson::as_array, yyjson::field("a", yyjson::rename(
 AS_ARRAY_RULE(ArrayExtraKeys, yyjson::as_array, yyjson::field("e", yyjson::extra_keys))
 AS_ARRAY_RULE(ArrayClosedObject, yyjson::as_array, yyjson::additional_properties(false))
 AS_ARRAY_RULE(ArrayDependent, yyjson::as_array, yyjson::dependent_required("a", {"e"}))
+AS_ARRAY_RULE(ArrayCounted, yyjson::as_array, yyjson::min_properties(1))
 AS_ARRAY_RULE(ArrayItemsAlone, yyjson::items(false))
 AS_ARRAY_RULE(ExtraItemsAlone, yyjson::field("e", yyjson::extra_items))
 AS_ARRAY_RULE(ExtraItemsNotLast, yyjson::as_array, yyjson::field("a", yyjson::extra_items))
@@ -165,6 +166,7 @@ namespace as_array_rules
     static_assert(table_error<ArrayExtraKeys> == as_array_field_setting);
     static_assert(table_error<ArrayClosedObject> == as_array_struct_setting);
     static_assert(table_error<ArrayDependent> == as_array_struct_setting);
+    static_assert(table_error<ArrayCounted> == as_array_struct_setting);
     static_assert(table_error<ArrayItemsAlone> == items_without_as_array);
     static_assert(table_error<ExtraItemsAlone> == extra_items_without_as_array);
     static_assert(table_error<ExtraItemsNotLast> == extra_items_not_last);
