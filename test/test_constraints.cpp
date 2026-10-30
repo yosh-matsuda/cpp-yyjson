@@ -989,6 +989,150 @@ namespace compile_rules
                   !holds_type_test<decltype(yyjson::items(yyjson::contains(yyjson::minimum(0))))>::value);
 }  // namespace compile_rules
 
+// Members of an object routed to map fields by the patterns of their keys
+struct PatternMaps
+{
+    int ab = 10;
+    std::map<std::string, int> a;
+    std::map<std::string, int> b;
+    std::map<std::string, std::string> s;
+    bool operator==(const PatternMaps&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<PatternMaps> = yyjson::annotate(
+    yyjson::field("a", yyjson::pattern_properties("^a"), yyjson::property_names(yyjson::max_length(3))),
+    yyjson::field("b", yyjson::pattern_properties("b$"), yyjson::additional_properties(yyjson::minimum(10))),
+    yyjson::field("s", yyjson::pattern_properties("^s")));
+// every field is a map, and the keys that no pattern matches go to the field of `yyjson::extra_keys`
+struct PatternRest
+{
+    std::unordered_map<std::string, int> a;
+    std::map<std::string, bool> rest;
+    bool operator==(const PatternRest&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<PatternRest> =
+    yyjson::annotate(yyjson::field("a", yyjson::pattern_properties("^a")), yyjson::field("rest", yyjson::extra_keys));
+struct PatternClosed
+{
+    std::map<std::string, yyjson::value> x;
+    bool operator==(const PatternClosed&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<PatternClosed> =
+    yyjson::annotate(yyjson::additional_properties(false), yyjson::field("x", yyjson::pattern_properties("^x")));
+// a struct that accepts unknown keys under strict ignores the keys that no pattern matches
+struct PatternOpen
+{
+    int a = 0;
+    std::map<std::string, int> p;
+    bool operator==(const PatternOpen&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<PatternOpen> =
+    yyjson::annotate(yyjson::additional_properties(true), yyjson::field("p", yyjson::pattern_properties("^p")));
+// a pattern that matches the key of a tag checks the value of the tag
+struct PatternTagShort
+{
+    int x = 0;
+    std::map<std::string, std::string> m;
+    bool operator==(const PatternTagShort&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<PatternTagShort> = yyjson::annotate(yyjson::field(
+    "m", yyjson::pattern_properties("^k"), yyjson::additional_properties(yyjson::max_length(1))));
+struct PatternTagInt
+{
+    int x = 0;
+    std::map<std::string, int> m;
+    bool operator==(const PatternTagInt&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<PatternTagInt> =
+    yyjson::annotate(yyjson::field("m", yyjson::pattern_properties("^k")));
+struct PatternTagOther
+{
+    int y = 0;
+    bool operator==(const PatternTagOther&) const = default;
+};
+using PatternTagged = std::variant<PatternTagShort, PatternTagOther>;
+template <>
+inline constexpr auto yyjson::annotations<PatternTagged> =
+    yyjson::annotate(yyjson::internal_tag("kind", {"s", "longer"}));
+using PatternTaggedLong = std::variant<PatternTagOther, PatternTagShort>;
+template <>
+inline constexpr auto yyjson::annotations<PatternTaggedLong> =
+    yyjson::annotate(yyjson::internal_tag("kind", {"o", "st"}));
+using PatternTaggedShared = std::variant<std::shared_ptr<PatternTagInt>, PatternTagOther>;
+template <>
+inline constexpr auto yyjson::annotations<PatternTaggedShared> =
+    yyjson::annotate(yyjson::internal_tag("kind", {"i", "o"}));
+struct PatternAdjacent
+{
+    std::variant<int, std::string> data;
+    std::map<std::string, int> m;
+    bool operator==(const PatternAdjacent&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<PatternAdjacent> =
+    yyjson::annotate(yyjson::field("data", yyjson::adjacent_tag("kind", {"i", "s"})),
+                     yyjson::field("m", yyjson::pattern_properties("^k")));
+// `object_emitter::emplace_members` writes the maps as the struct does
+struct PatternEmitted
+{
+    PatternMaps maps;
+};
+template <>
+struct yyjson::caster<PatternEmitted>
+{
+    static void to_json(yyjson::object_emitter& out, const PatternEmitted& e)
+    {
+        out.emplace("first", true);
+        out.emplace_members(e.maps);
+    }
+};
+
+// The rules that the static assertions of `yyjson::pattern_properties` enforce
+#define PATTERN_RULE(NAME, ...)       \
+    struct NAME                       \
+    {                                 \
+        int v = 0;                    \
+        std::map<std::string, int> m; \
+        std::map<std::string, int> n; \
+    };                                \
+    template <>                       \
+    inline constexpr auto yyjson::annotations<NAME> = yyjson::annotate(__VA_ARGS__);
+PATTERN_RULE(PatternRenamed, yyjson::field("m", yyjson::pattern_properties("^a"), yyjson::rename("k")))
+PATTERN_RULE(PatternRequired, yyjson::field("m", yyjson::pattern_properties("^a"), yyjson::required))
+PATTERN_RULE(PatternCounted, yyjson::field("m", yyjson::pattern_properties("^a"), yyjson::min_items(1)))
+PATTERN_RULE(PatternDescribed, yyjson::field("m", yyjson::pattern_properties("^a"), yyjson::description("d")))
+PATTERN_RULE(PatternExtra, yyjson::field("m", yyjson::pattern_properties("^a"), yyjson::extra_keys))
+PATTERN_RULE(PatternTwice, yyjson::field("m", yyjson::pattern_properties("^a"), yyjson::pattern_properties("^b")))
+PATTERN_RULE(PatternSkipped, yyjson::field("m", yyjson::skip, yyjson::pattern_properties("^a")))
+PATTERN_RULE(PatternDependency, yyjson::dependent_required("v", {"m"}),
+             yyjson::field("m", yyjson::pattern_properties("^a")))
+PATTERN_RULE(PatternSettings,
+             yyjson::field("m", yyjson::pattern_properties("^a"), yyjson::additional_properties(yyjson::minimum(0)),
+                           yyjson::property_names(yyjson::max_length(3))),
+             yyjson::field("n", yyjson::pattern_properties("^a")))
+#undef PATTERN_RULE
+namespace pattern_rules
+{
+    template <typename T>
+    constexpr auto table_error =
+        yyjson::detail::make_field_key_table<T, yyjson::detail::reflected_field_names<T>>().error;
+    using enum yyjson::detail::field_key_error;
+    static_assert(table_error<PatternRenamed> == pattern_with_setting);
+    static_assert(table_error<PatternRequired> == pattern_with_setting);
+    static_assert(table_error<PatternCounted> == pattern_with_setting);
+    static_assert(table_error<PatternDescribed> == pattern_with_setting);
+    static_assert(table_error<PatternExtra> == pattern_with_setting);
+    static_assert(table_error<PatternTwice> == same_setting_twice);
+    static_assert(table_error<PatternSkipped> == skipped_with_setting);
+    static_assert(table_error<PatternDependency> == dependency_skipped);
+    static_assert(table_error<PatternSettings> == none);
+}  // namespace pattern_rules
+
 #if FIELD_RFL_ANNOTATIONS
 struct ElementsAnnotated
 {
@@ -1051,6 +1195,14 @@ struct ConstrainedAnnotated
     [[= yyjson::pattern("^x")]] std::string s = "x";
     [[= yyjson::satisfies<is_even>]] int even = 0;
     bool operator==(const ConstrainedAnnotated&) const = default;
+};
+
+struct PatternAnnotated
+{
+    int ab = 0;
+    [[ = yyjson::pattern_properties("^a"), = yyjson::property_names(yyjson::max_length(3)) ]] std::map<std::string, int> a;
+    [[ = yyjson::pattern_properties("b$"), = yyjson::additional_properties(yyjson::minimum(10)) ]] std::map<std::string, int> b;
+    bool operator==(const PatternAnnotated&) const = default;
 };
 #endif
 
@@ -2656,6 +2808,178 @@ TEST(Constraints, AlternativeReading)
     EXPECT_EQ(yyjson::value(Alternatives(std::string("id"))).write(), R"("id")");
 }
 
+TEST(Constraints, PatternProperties)
+{
+    const auto check = [](std::string_view json, std::string_view message, std::string_view path) {
+        return [=](const yyjson::bad_cast& e) {
+            EXPECT_TRUE(message_of(e).starts_with(message)) << json << "\n" << e.what();
+            EXPECT_EQ(e.path(), path) << json;
+        };
+    };
+    // every read of `json` but merge_into throws `message` at `path`; merge_into into `t` checks a value only against
+    // the field that receives it
+    const auto rejected_but_merged = [&]<typename T>(T t, std::string_view json, std::string_view message,
+                                                     std::string_view path) {
+        const auto c = check(json, message, path);
+        c(bad_cast_of([&] { (void)yyjson::read<T>(json); }));
+        c(bad_cast_of([&] { (void)yyjson::read<T>(json, yyjson::strict); }));
+        c(bad_cast_of([&] { (void)yyjson::read(json).template cast<T>(); }));
+        c(bad_cast_of([&] {
+            auto u = T();
+            yyjson::read_into(json, u);
+        }));
+#if YYJSON_VERSION_HEX >= 0x000C00
+        EXPECT_FALSE(read_directly<T>(json, yyjson::ReadFlag::NoFlag).has_value()) << json;
+#endif
+        EXPECT_NO_THROW(yyjson::merge_into(json, t)) << json;
+        return t;
+    };
+    const auto strict_rejects = [&]<typename T>(std::type_identity<T>, std::string_view json,
+                                                std::string_view message, std::string_view path) {
+        const auto c = check(json, message, path);
+        c(bad_cast_of([&] { (void)yyjson::read<T>(json, yyjson::strict); }));
+        c(bad_cast_of([&] { (void)yyjson::read(json).template cast<T>(yyjson::strict); }));
+    };
+    constexpr auto maps = std::type_identity<PatternMaps>{};
+
+    // a key goes to the first field whose pattern matches it, in the order of the members
+    expect_accepted<PatternMaps>(R"({"ab":12,"ax":1,"xb":10,"sv":"t"})", {12, {{"ax", 1}}, {{"xb", 10}}, {{"sv", "t"}}});
+    expect_accepted<PatternMaps>(R"({"ax":1,"ab":12})", {12, {{"ax", 1}}, {}, {}});
+    expect_rejected<PatternMaps>(R"({"sb":"x"})", "int is not constructible from JSON string", "/sb");
+    expect_rejected<PatternMaps>(R"({"ab":12,"xb":9})",
+                                 R"(the value of the key "xb" of PatternMaps is less than the minimum 10)", "/xb");
+    expect_rejected<PatternMaps>(R"({"aaaa":1})", R"(the key "aaaa" of PatternMaps is longer than the maximum length 3)",
+                                 "/aaaa");
+    // a key that no pattern matches is unknown
+    expect_accepted<PatternMaps>(R"({"ab":12,"zz":1})", {12, {}, {}, {}});
+    strict_rejects(maps, R"({"ab":12,"zz":1})", R"(PatternMaps has no field of the key "zz")", "/zz");
+    strict_rejects(maps, R"({"ab":12,"ax":1,"ax":2})", R"(the object read into PatternMaps has the key "ax" twice)", "/ax");
+    // a key that no field receives may appear twice, as in a struct without pattern fields
+    for (const auto json : {R"({"a":1,"zz":1,"zz":2})", R"({"zz":1,"a":1,"zz":2,"p1":3})"})
+    {
+        const auto expected = std::string_view(json).find("p1") != std::string_view::npos ? PatternOpen{1, {{"p1", 3}}} : PatternOpen{1, {}};
+        EXPECT_EQ(yyjson::read<PatternOpen>(json, yyjson::strict), expected) << json;
+        EXPECT_EQ(yyjson::read(json).cast<PatternOpen>(yyjson::strict), expected) << json;
+        auto t = PatternOpen();
+        yyjson::merge_into(json, t, yyjson::strict);
+        EXPECT_EQ(t, expected) << json;
+    }
+    strict_rejects(std::type_identity<PatternOpen>{}, R"({"a":1,"p1":1,"p1":2})",
+                   R"(the object read into PatternOpen has the key "p1" twice)", "/p1");
+
+    // the value of a key that a later pattern or a field matches satisfies that pattern too
+    EXPECT_EQ(rejected_but_merged(PatternMaps(), R"({"ab":12,"axb":9})",
+                                  R"(the value of the key "axb" of PatternMaps is less than the minimum 10)", "/axb")
+                  .a,
+              (std::map<std::string, int>{{"axb", 9}}));
+    EXPECT_EQ(rejected_but_merged(PatternMaps(), R"({"ab":9})",
+                                  R"(the value of the key "ab" of PatternMaps is less than the minimum 10)", "/ab")
+                  .ab,
+              9);
+    expect_accepted<PatternMaps>(R"({"axb":10,"ab":10})", {10, {{"axb", 10}}, {}, {}});
+
+    // the keys that no pattern matches go to the field of `yyjson::extra_keys`, or are rejected
+    expect_accepted<PatternRest>(R"({"ax":1,"z":true})", {{{"ax", 1}}, {{"z", true}}});
+    EXPECT_EQ(yyjson::read<PatternRest>(R"({"ax":1,"z":true})", yyjson::strict),
+              (PatternRest{{{"ax", 1}}, {{"z", true}}}));
+    expect_rejected<PatternRest>(R"({"ax":true})", "int is not constructible from JSON bool", "/ax");
+    expect_accepted<PatternClosed>(R"({"x1":[1]})", {{{"x1", yyjson::read("[1]")}}});
+    expect_rejected<PatternClosed>(R"({"x1":1,"y":1})", R"(PatternClosed has no field of the key "y")", "/y");
+
+    // the value of a tag whose key a pattern matches satisfies that pattern
+    expect_accepted<PatternTagged>(R"({"kind":"s","x":1})", PatternTagShort{1, {}});
+    expect_accepted<PatternTagged>(R"({"kind":"longer","y":1})", PatternTagOther{1});
+    // merge_into reads an alternative that the variant does not hold, and merges into the one that it holds
+    rejected_but_merged(PatternTaggedLong(PatternTagShort()), R"({"kind":"st","x":1})",
+                        R"(the value of the key "kind" of PatternTagShort is longer than the maximum length 1)",
+                        "/kind");
+    // merge_into reads the struct that a pointer holds anew
+    expect_rejected<PatternTaggedShared>(R"({"kind":"i","x":1})", "int is not constructible from JSON string", "/kind");
+    for (const auto json : {R"({"kind":"i","data":1})", R"({"data":1,"kind":"i"})"})
+        rejected_but_merged(PatternAdjacent(), json, "int is not constructible from JSON string",
+                            "/kind");
+}
+
+TEST(Constraints, PatternPropertiesWrite)
+{
+    // validate and write(t, strict) throw `message` at `path`; the plain write throws std::invalid_argument for a key
+    // that it would write twice and writes the rest
+    const auto rejected = []<typename T>(const T& t, std::string_view message, std::string_view path,
+                                         bool written_twice = false) {
+        const auto check = [&](const yyjson::bad_cast& e) {
+            EXPECT_TRUE(message_of(e).starts_with(message)) << e.what();
+            EXPECT_EQ(e.path(), path) << message;
+        };
+        check(bad_cast_of([&] { yyjson::validate(t); }));
+        check(bad_cast_of([&] { (void)yyjson::write(t, yyjson::strict); }));
+        if (written_twice)
+        {
+            EXPECT_THROW((void)yyjson::write(t), std::invalid_argument) << message;
+            EXPECT_THROW((void)yyjson::value(t), std::invalid_argument) << message;
+        }
+        else
+        {
+            EXPECT_EQ(std::string(yyjson::write(t)), std::string(yyjson::value(t).write())) << message;
+        }
+    };
+    const auto maps = PatternMaps{12, {{"ax", 1}}, {{"xb", 10}}, {{"sv", "t"}}};
+    const auto text = R"({"ab":12,"ax":1,"xb":10,"sv":"t"})";
+    EXPECT_EQ(std::string(yyjson::write(maps)), text);
+    EXPECT_EQ(std::string(yyjson::write(maps, yyjson::strict)), text);
+    EXPECT_EQ(std::string(yyjson::value(maps).write()), text);
+    EXPECT_NO_THROW(yyjson::validate(maps));
+    EXPECT_EQ(yyjson::read<PatternMaps>(text, yyjson::strict), maps);
+
+    auto t = maps;
+    t.a["ab"] = 3;
+    rejected(t, R"(a field of yyjson::pattern_properties of PatternMaps has the key "ab", which PatternMaps writes for a field or a tag)",
+             "", true);
+    t = maps;
+    t.b["ax"] = 30;
+    rejected(t, R"(the fields of yyjson::pattern_properties of PatternMaps have the key "ax" more than once)", "",
+             true);
+    t = maps;
+    t.b["qq"] = 30;
+    rejected(t, R"(the key "qq" of PatternMaps does not match the pattern "b$" of the field of yyjson::pattern_properties that has it)",
+             "/qq");
+    t = maps;
+    t.b["axb"] = 30;
+    rejected(t, R"(the key "axb" of PatternMaps matches the pattern "^a" of a field of yyjson::pattern_properties before the field that has it)",
+             "/axb");
+    t = maps;
+    t.a["aab"] = 3;
+    rejected(t, R"(the value of the key "aab" of PatternMaps is less than the minimum 10)", "/aab");
+    t = maps;
+    t.a["aaaa"] = 30;
+    rejected(t, R"(the key "aaaa" of PatternMaps is longer than the maximum length 3)", "/aaaa");
+    t = maps;
+    t.ab = 3;
+    rejected(t, R"(the value of the key "ab" of PatternMaps is less than the minimum 10)", "/ab");
+    rejected(PatternRest{{{"ax", 1}}, {{"ay", true}}},
+             R"(the key "ay" of PatternRest matches the pattern "^a" of a field of yyjson::pattern_properties, but the field of yyjson::extra_keys has it)",
+             "/ay");
+
+    // tags
+    EXPECT_NO_THROW(yyjson::validate(PatternTagged(PatternTagShort())));
+    rejected(PatternTaggedLong(PatternTagShort()),
+             R"(the value of the key "kind" of PatternTagShort is longer than the maximum length 1)", "/kind");
+    rejected(PatternTaggedShared(std::make_shared<PatternTagInt>()), "int is not constructible from JSON string",
+             "/kind");
+    rejected(PatternAdjacent{1, {}}, "int is not constructible from JSON string", "/kind");
+    auto adjacent = PatternAdjacent{1, {{"kind", 1}}};
+    rejected(adjacent, R"(a field of yyjson::pattern_properties of PatternAdjacent has the key "kind", which PatternAdjacent writes for a field or a tag)",
+             "", true);
+
+    // object_emitter::emplace_members
+    EXPECT_EQ(std::string(yyjson::write(PatternEmitted{maps})), R"({"first":true,"ab":12,"ax":1,"xb":10,"sv":"t"})");
+    EXPECT_EQ(std::string(yyjson::value(PatternEmitted{maps}).write()),
+              R"({"first":true,"ab":12,"ax":1,"xb":10,"sv":"t"})");
+    t = maps;
+    t.s["ab"] = "x";
+    EXPECT_THROW((void)yyjson::write(PatternEmitted{t}), std::invalid_argument);
+    EXPECT_THROW((void)yyjson::value(PatternEmitted{t}), std::invalid_argument);
+}
+
 #if FIELD_RFL_ANNOTATIONS
 TEST(Constraints, Annotations)
 {
@@ -2732,6 +3056,13 @@ TEST(Constraints, Annotations)
         const auto e = bad_cast_of([&] { (void)yyjson::read<ConditionsAnnotated>(json); });
         EXPECT_TRUE(message_of(e).starts_with(message)) << e.what();
     }
+
+    expect_accepted<PatternAnnotated>(R"({"ab":10,"ax":1,"xb":10,"zz":1})", {10, {{"ax", 1}}, {{"xb", 10}}});
+    expect_rejected<PatternAnnotated>(
+        R"({"xb":9})", R"(the value of the key "xb" of PatternAnnotated is less than the minimum 10)", "/xb");
+    expect_rejected<PatternAnnotated>(
+        R"({"aaaa":1})", R"(the key "aaaa" of PatternAnnotated is longer than the maximum length 3)", "/aaaa");
+    EXPECT_EQ(yyjson::write(PatternAnnotated{10, {{"ax", 1}}, {{"xb", 10}}}), R"({"ab":10,"ax":1,"xb":10})");
 
     expect_accepted<ConstrainedAnnotated>(R"({"n":3,"s":"xy","even":4})", {3, "xy", 4});
     expect_rejected<ConstrainedAnnotated>(
