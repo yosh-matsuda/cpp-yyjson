@@ -2096,12 +2096,62 @@ namespace yyjson
             for (const auto value : values) n += value ? 1 : 0;
             return n;
         }();
+        // Whether any or all of `values` are true, for packs as long as the fields of a struct, which can be more
+        // than the 256 operands of a fold expression too.  Every value is evaluated.
+        constexpr bool any_true(std::initializer_list<bool> values) noexcept
+        {
+            for (const auto value : values)
+                if (value) return true;
+            return false;
+        }
+        constexpr bool all_true(std::initializer_list<bool> values) noexcept
+        {
+            for (const auto value : values)
+                if (!value) return false;
+            return true;
+        }
         // f(setting) for each setting of an `annotate(...)`, in order.
         template <typename F, std::size_t... Is, typename... As>
         constexpr void for_each_annotation(F&& f, const annotation_values<std::index_sequence<Is...>, As...>& v)
         {
             // not const: MSVC rejects a const array whose initializer calls f (C2737)
             [[maybe_unused]] bool done[] = {true, (f(static_cast<const annotation_leaf<Is, As>&>(v).value), true)...};
+        }
+
+        // The number of the indices that a fold expression over the fields of a struct takes at once.  A struct of
+        // `VISITABLE_STRUCT` can have more fields than the 256 operands that clang before 22 takes in a fold.
+        inline constexpr std::size_t index_chunk = 128;
+        // f(std::integral_constant<std::size_t, K>()) for K = Base, Base + 1, ... below N while it returns true;
+        // whether it did for all of them.
+        template <std::size_t N, std::size_t Base = 0, typename F>
+        CPPYYJSON_ALWAYS_INLINE constexpr bool all_indices(const F& f)
+        {
+            constexpr auto m = std::min(N - Base, index_chunk);
+            const bool all = [&]<std::size_t... Ks>(std::index_sequence<Ks...>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                return (f(std::integral_constant<std::size_t, Base + Ks>{}) && ...);
+            }(std::make_index_sequence<m>{});
+            if constexpr (Base + m < N)
+                return all && all_indices<N, Base + m>(f);
+            else
+                return all;
+        }
+        // f(std::integral_constant<std::size_t, K>(), args...) for the K below N that equals `index`, if any.
+        template <std::size_t N, std::size_t Base = 0, typename F, typename... Args>
+        CPPYYJSON_ALWAYS_INLINE constexpr void call_at_index(std::size_t index, const F& f, const Args&... args)
+        {
+            constexpr auto m = std::min(N - Base, index_chunk);
+            if constexpr (Base + m < N)
+            {
+                if (index >= Base + m)
+                {
+                    call_at_index<N, Base + m>(index, f, args...);
+                    return;
+                }
+            }
+            [&]<std::size_t... Ks>(std::index_sequence<Ks...>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                (void)((index == Base + Ks && (f(std::integral_constant<std::size_t, Base + Ks>{}, args...), true)) ||
+                       ...);
+            }(std::make_index_sequence<m>{});
         }
         // f(settings...) with the settings of an `annotate(...)`.
         template <typename F, std::size_t... Is, typename... As>
@@ -4101,9 +4151,8 @@ namespace yyjson
         consteval std::size_t struct_field_of_key(std::string_view key)
         {
             return [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                auto result = sizeof...(Is);
-                (void)((struct_field_key<S, Is> == key && (result = Is, true)) || ...);
-                return result;
+                const auto keys = std::array<std::string_view, sizeof...(Is)>{struct_field_key<S, Is>...};
+                return static_cast<std::size_t>(std::ranges::find(keys, key) - keys.begin());
             }(std::make_index_sequence<struct_field_count<S>>{});
         }
 
@@ -4112,7 +4161,8 @@ namespace yyjson
         {
             if constexpr (reflectable<S> || visitable<S>)
                 return [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                    return ((enum_integer_only<struct_field_type<S, Is>> && struct_field_key<S, Is> == key) || ...);
+                    return any_true(
+                        {(enum_integer_only<struct_field_type<S, Is>> && struct_field_key<S, Is> == key)...});
                 }(std::make_index_sequence<struct_field_count<S>>{});
             else
                 return false;
@@ -4158,16 +4208,15 @@ namespace yyjson
             if constexpr (may_have_adjacent_fields<S>)
                 return []<std::size_t... Ks>(std::index_sequence<Ks...>) {
                     static_assert(
-                        !([] {
+                        !any_true({[] {
                             if constexpr (adjacent_field<S, Ks>)
                                 return integer_enum_field_of_key<S>(struct_field_tags<S, Ks>::key);
                             else
                                 return false;
-                        }() ||
-                          ...),
+                        }()...}),
                         "the field of the key of yyjson::adjacent_tag holds the name of an alternative, which "
                         "an enumeration of yyjson::enum_format::integer cannot");
-                    return (adjacent_field<S, Ks> || ...);
+                    return any_true({adjacent_field<S, Ks>...});
                 }(std::make_index_sequence<struct_field_count<S>>{});
             else
                 return false;
@@ -4180,12 +4229,12 @@ namespace yyjson
             if (struct_field_of_key<S>(key) != struct_field_count<S>) return true;
             if constexpr (has_adjacent_fields<S>)
                 return [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
-                    return ([&] {
+                    return any_true({[&] {
                         if constexpr (writes_adjacent_tag<S, struct_field_tags<S, Ks>>)
                             return struct_field_tags<S, Ks>::key == key;
                         else
                             return false;
-                    }() || ...);
+                    }()...});
                 }(std::make_index_sequence<struct_field_count<S>>{});
             else
                 return false;
@@ -4199,12 +4248,12 @@ namespace yyjson
         inline constexpr bool holds_adjacent_tag = [] {
             if constexpr (has_adjacent_fields<S>)
                 return []<std::size_t... Ks>(std::index_sequence<Ks...>) {
-                    return ([] {
+                    return any_true({[] {
                         if constexpr (adjacent_field<S, Ks>)
                             return adjacent_tag_field<S, Ks> == J;
                         else
                             return false;
-                    }() || ...);
+                    }()...});
                 }(std::make_index_sequence<struct_field_count<S>>{});
             else
                 return false;
@@ -4223,12 +4272,13 @@ namespace yyjson
                     constexpr auto keys = [] {
                         auto result = std::array<std::string_view, sizeof...(Ks)>{};
                         auto n = std::size_t{0};
-                        (
-                            [&] {
-                                if constexpr (writes_adjacent_tag<S, struct_field_tags<S, Ks>>)
-                                    result[n++] = struct_field_tags<S, Ks>::key;
-                            }(),
-                            ...);
+                        [[maybe_unused]] const bool done[] = {
+                            true, (
+                                      [&] {
+                                          if constexpr (writes_adjacent_tag<S, struct_field_tags<S, Ks>>)
+                                              result[n++] = struct_field_tags<S, Ks>::key;
+                                      }(),
+                                      true)...};
                         return std::pair(n, distinct_names(result, [n](std::size_t i) { return i < n; }));
                     }();
                     static_assert(keys.second,
@@ -4321,7 +4371,7 @@ namespace yyjson
                                            !dependencies.empty();
             static_assert(
                 []<std::size_t... Ks>(std::index_sequence<Ks...>) {
-                    return !((required[Ks] && is_std_optional<struct_field_type<S, Ks>>::value) || ...);
+                    return count_true<(required[Ks] && is_std_optional<struct_field_type<S, Ks>>::value)...> == 0;
                 }(std::make_index_sequence<n>{}),
                 "a std::optional field may be left out of the object, which yyjson::required does not let it: give "
                 "the field a type other than std::optional, or leave out yyjson::required");
@@ -4346,12 +4396,12 @@ namespace yyjson
             if constexpr (has_adjacent_fields<S>)
             {
                 const auto adjacent = [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
-                    return ([&] {
+                    return any_true({[&] {
                         if constexpr (writes_adjacent_tag<S, struct_field_tags<S, Ks>>)
                             return struct_field_tags<S, Ks>::key == key;
                         else
                             return false;
-                    }() || ...);
+                    }()...});
                 }(std::make_index_sequence<struct_field_count<S>>{});
                 if (adjacent) return true;
             }
@@ -5897,16 +5947,17 @@ namespace yyjson
         {
             return [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
                 auto n = std::size_t{0};
-                (
-                    [&] {
-                        using tags = struct_field_tags<S, Ks>;
-                        if constexpr (writes_adjacent_tag<S, tags>)
-                        {
-                            const auto index = struct_field<Ks>(s).index();
-                            n += index != tags::monostate && index != std::variant_npos;
-                        }
-                    }(),
-                    ...);
+                [[maybe_unused]] const bool done[] = {true, (
+                                                                [&] {
+                                                                    using tags = struct_field_tags<S, Ks>;
+                                                                    if constexpr (writes_adjacent_tag<S, tags>)
+                                                                    {
+                                                                        const auto index = struct_field<Ks>(s).index();
+                                                                        n += index != tags::monostate &&
+                                                                             index != std::variant_npos;
+                                                                    }
+                                                                }(),
+                                                                true)...};
                 return n;
             }(std::make_index_sequence<struct_field_count<S>>{});
         }
@@ -5916,35 +5967,37 @@ namespace yyjson
         void check_adjacent_tags(const S& s)
         {
             [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
-                (
-                    [&] {
-                        using tags = struct_field_tags<S, Ks>;
-                        if constexpr (tags::tagging == variant_tagging::adjacent && !writes_adjacent_tag<S, tags>)
-                        {
-                            constexpr auto t = struct_field_of_key<S>(tags::key);
-                            using tag_type = struct_field_type<S, t>;
-                            const auto index = struct_field<Ks>(s).index();
-                            // a variant without a value is left to `std::visit`, which throws
-                            if (index == tags::monostate || index == std::variant_npos) return;
-                            const auto& tag = struct_field<t>(s);
-                            auto id = std::string_view();
-                            if constexpr (std::is_enum_v<tag_type>)
-                                id = enum_name_of(tag);
-                            else
+                [[maybe_unused]] const bool done[] = {
+                    true,
+                    (
+                        [&] {
+                            using tags = struct_field_tags<S, Ks>;
+                            if constexpr (tags::tagging == variant_tagging::adjacent && !writes_adjacent_tag<S, tags>)
                             {
-                                static_assert(std::convertible_to<const tag_type&, std::string_view>,
-                                              "the field of the key of yyjson::adjacent_tag must be a string or an "
-                                              "enumeration");
-                                id = std::string_view(tag);
+                                constexpr auto t = struct_field_of_key<S>(tags::key);
+                                using tag_type = struct_field_type<S, t>;
+                                const auto index = struct_field<Ks>(s).index();
+                                // a variant without a value is left to `std::visit`, which throws
+                                if (index == tags::monostate || index == std::variant_npos) return;
+                                const auto& tag = struct_field<t>(s);
+                                auto id = std::string_view();
+                                if constexpr (std::is_enum_v<tag_type>)
+                                    id = enum_name_of(tag);
+                                else
+                                {
+                                    static_assert(std::convertible_to<const tag_type&, std::string_view>,
+                                                  "the field of the key of yyjson::adjacent_tag must be a string or an "
+                                                  "enumeration");
+                                    id = std::string_view(tag);
+                                }
+                                if (id != tags::ids[index])
+                                    throw std::invalid_argument(std::format(
+                                        "the field \"{}\" of {} is \"{}\", but the field \"{}\" holds the alternative "
+                                        "\"{}\"",
+                                        tags::key, type_name<S>(), id, struct_field_key<S, Ks>, tags::ids[index]));
                             }
-                            if (id != tags::ids[index])
-                                throw std::invalid_argument(std::format(
-                                    "the field \"{}\" of {} is \"{}\", but the field \"{}\" holds the alternative "
-                                    "\"{}\"",
-                                    tags::key, type_name<S>(), id, struct_field_key<S, Ks>, tags::ids[index]));
-                        }
-                    }(),
-                    ...);
+                        }(),
+                        true)...};
             }(std::make_index_sequence<struct_field_count<S>>{});
         }
 
@@ -6086,23 +6139,24 @@ namespace yyjson
         void check_adjacent_tags_without_values(const S& s, const Obj& obj)
         {
             [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
-                (
-                    [&] {
-                        if constexpr (adjacent_field<S, Ks>)
-                        {
-                            using tags = struct_field_tags<S, Ks>;
-                            using V = struct_field_type<S, Ks>;
-                            for ([[maybe_unused]] auto&& [key, value] : obj)
-                            {
-                                if (std::string_view(key) == struct_field_key<S, Ks>) return;
-                            }
-                            const auto index = tagged_alternative<V, tags>(obj);
-                            if (index != std::variant_npos && index != struct_field<Ks>(s).index())
-                                throw_variant_tag_without_value(target_of(obj), tags::key, tags::ids[index],
-                                                                struct_field_key<S, Ks>, type_name<S>());
-                        }
-                    }(),
-                    ...);
+                [[maybe_unused]] const bool done[] = {
+                    true, (
+                              [&] {
+                                  if constexpr (adjacent_field<S, Ks>)
+                                  {
+                                      using tags = struct_field_tags<S, Ks>;
+                                      using V = struct_field_type<S, Ks>;
+                                      for ([[maybe_unused]] auto&& [key, value] : obj)
+                                      {
+                                          if (std::string_view(key) == struct_field_key<S, Ks>) return;
+                                      }
+                                      const auto index = tagged_alternative<V, tags>(obj);
+                                      if (index != std::variant_npos && index != struct_field<Ks>(s).index())
+                                          throw_variant_tag_without_value(target_of(obj), tags::key, tags::ids[index],
+                                                                          struct_field_key<S, Ks>, type_name<S>());
+                                  }
+                              }(),
+                              true)...};
             }(std::make_index_sequence<struct_field_count<S>>{});
         }
 
@@ -6302,10 +6356,13 @@ namespace yyjson
                 auto&& [key, value] = *it;
                 if (const auto index = Matcher.find(key, hint); index < n)
                 {
-                    [&]<std::size_t... Ks>(std::index_sequence<Ks...>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
-                        (void)((index == Ks && (assign(std::integral_constant<std::size_t, Ks>{}, value), true)) ||
-                               ...);
-                    }(std::make_index_sequence<n>{});
+                    if constexpr (n <= index_chunk)
+                        [&]<std::size_t... Ks>(std::index_sequence<Ks...>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                            (void)((index == Ks && (assign(std::integral_constant<std::size_t, Ks>{}, value), true)) ||
+                                   ...);
+                        }(std::make_index_sequence<n>{});
+                    else
+                        call_at_index<n>(index, assign, value);
                     hint = index + 1;
                 }
             }
@@ -6341,9 +6398,12 @@ namespace yyjson
                 ++it;
                 return true;
             };
-            [&]<std::size_t... Ks>(std::index_sequence<Ks...>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
-                (void)(in_order(std::integral_constant<std::size_t, Ks>{}) && ...);
-            }(std::make_index_sequence<n>{});
+            if constexpr (n <= index_chunk)
+                [&]<std::size_t... Ks>(std::index_sequence<Ks...>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                    (void)(in_order(std::integral_constant<std::size_t, Ks>{}) && ...);
+                }(std::make_index_sequence<n>{});
+            else
+                (void)all_indices<n>(in_order);
             if (next <= n && count != 0) assign_fields_rest<Matcher>(it, count, next, assign);
             return next == n && count == 0;
         }
@@ -7216,7 +7276,7 @@ namespace yyjson
                     return true;
                 else
                     return []<std::size_t... Is>(std::index_sequence<Is...>) {
-                        return (create_value_callable<visitable_member_t<T, Is>> && ...);
+                        return yyjson::detail::all_true({create_value_callable<visitable_member_t<T, Is>>...});
                     }(std::make_index_sequence<visitable_member_count<T>>{});
             }
             template <typename T>
@@ -10333,9 +10393,9 @@ namespace yyjson
                 if constexpr (yyjson::detail::recursive_type<T>)
                     return true;
                 else
-                    return requires(const visitable_member_t<T, Is>&... members) {
-                        (std::declval<object_ref&>().emplace(std::string_view(), members), ...);
-                    };
+                    return yyjson::detail::count_true<requires(const visitable_member_t<T, Is>& member) {
+                               std::declval<object_ref&>().emplace(std::string_view(), member);
+                           }...> == sizeof...(Is);
             }
             template <typename T>
             concept to_json_with_visitable =
@@ -11673,9 +11733,16 @@ namespace yyjson
                 return std::string_view(a) == std::string_view(b);
             else if constexpr (visitable<U> || reflected_range_aggregate<U> ||
                                (!std::ranges::range<U> && !tuple_like<U> && reflectable<U>))
-                return [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
-                    return (json_equal(struct_field<Ks>(a), struct_field<Ks>(b)) && ...);
-                }(std::make_index_sequence<struct_field_count<U>>{});
+            {
+                if constexpr (struct_field_count<U> <= index_chunk)
+                    return [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                        return (json_equal(struct_field<Ks>(a), struct_field<Ks>(b)) && ...);
+                    }(std::make_index_sequence<struct_field_count<U>>{});
+                else
+                    return all_indices<struct_field_count<U>>([&](auto k) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                        return json_equal(struct_field<k>(a), struct_field<k>(b));
+                    });
+            }
             else if constexpr (std::ranges::range<const U>)
             {
                 if constexpr (std::ranges::sized_range<const U>)
@@ -11729,7 +11796,7 @@ namespace yyjson
                     return true;
                 else if constexpr (visitable<T>)
                     return []<std::size_t... Is>(std::index_sequence<Is...>) {
-                        return (writes_value<writer::detail::visitable_member_t<T, Is>> && ...);
+                        return yyjson::detail::all_true({writes_value<writer::detail::visitable_member_t<T, Is>>...});
                     }(std::make_index_sequence<writer::detail::visitable_member_count<T>>());
                 else if constexpr (!std_array<T> && reflectable<T>)
                     return []<std::size_t... Is>(std::index_sequence<Is...>) {
@@ -12292,13 +12359,13 @@ namespace yyjson
             using members = std::remove_cv_t<decltype(visit_struct<T>::members)>;
             return []<std::size_t... Is>(std::index_sequence<Is...>) {
                 if constexpr (!CheckRecursive && recursive_type<T>)
-                    return (!std::is_const_v<std::remove_all_extents_t<
-                                typename member_pointee<std::tuple_element_t<Is, members>>::type>> &&
-                            ...);
+                    return count_true<!std::is_const_v<std::remove_all_extents_t<
+                               typename member_pointee<std::tuple_element_t<Is, members>>::type>>...> == sizeof...(Is);
                 else
-                    return (field_assignable<typename std::ranges::range_value_t<Json>::second_type,
-                                             typename member_pointee<std::tuple_element_t<Is, members>>::type> &&
-                            ...);
+                    return count_true<
+                               field_assignable<typename std::ranges::range_value_t<Json>::second_type,
+                                                typename member_pointee<std::tuple_element_t<Is, members>>::type>...> ==
+                           sizeof...(Is);
             }(std::make_index_sequence<std::tuple_size_v<members>>{});
         }
 
@@ -12322,9 +12389,8 @@ namespace yyjson
             {
                 using members = std::remove_cv_t<decltype(visit_struct<T>::members)>;
                 return []<std::size_t... Is>(std::index_sequence<Is...>) {
-                    return (std::is_move_assignable_v<std::remove_all_extents_t<
-                                typename member_pointee<std::tuple_element_t<Is, members>>::type>> &&
-                            ...);
+                    return count_true<std::is_move_assignable_v<std::remove_all_extents_t<
+                               typename member_pointee<std::tuple_element_t<Is, members>>::type>>...> == sizeof...(Is);
                 }(std::make_index_sequence<std::tuple_size_v<members>>{});
             }
             else if constexpr (yyjson::detail::reflectable<T>)
@@ -17173,9 +17239,12 @@ namespace yyjson
         template <typename T, typename F>
         CPPYYJSON_ALWAYS_INLINE inline void with_struct_field(std::size_t index, F&& f)
         {
-            [&]<std::size_t... Is>(std::index_sequence<Is...>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
-                (void)((index == Is && (f(std::integral_constant<std::size_t, Is>{}), true)) || ...);
-            }(std::make_index_sequence<struct_field_count<T>>{});
+            if constexpr (struct_field_count<T> <= yyjson::detail::index_chunk)
+                [&]<std::size_t... Is>(std::index_sequence<Is...>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                    (void)((index == Is && (f(std::integral_constant<std::size_t, Is>{}), true)) || ...);
+                }(std::make_index_sequence<struct_field_count<T>>{});
+            else
+                yyjson::detail::call_at_index<struct_field_count<T>>(index, f);
         }
 
         // Whether T has fields annotated with `yyjson::skip`, which `read_into` gives their values in `T()` as
@@ -20280,15 +20349,16 @@ namespace yyjson
                 if constexpr (yyjson::detail::has_adjacent_fields<T>)
                 {
                     [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                        (
-                            [&] {
-                                if constexpr (yyjson::detail::adjacent_field<T, Is>)
-                                {
-                                    if (adjacent.docs[Is] != nullptr) [[unlikely]]
-                                        read_skipped_adjacent_field<T, Is, Merge>(t, adjacent);
-                                }
-                            }(),
-                            ...);
+                        [[maybe_unused]] const bool done[] = {
+                            true, (
+                                      [&] {
+                                          if constexpr (yyjson::detail::adjacent_field<T, Is>)
+                                          {
+                                              if (adjacent.docs[Is] != nullptr) [[unlikely]]
+                                                  read_skipped_adjacent_field<T, Is, Merge>(t, adjacent);
+                                          }
+                                      }(),
+                                      true)...};
                     }(std::make_index_sequence<struct_field_count<T>>{});
                 }
             }
@@ -20302,15 +20372,16 @@ namespace yyjson
                 if constexpr (yyjson::detail::has_adjacent_fields<T>)
                 {
                     [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                        (
-                            [&] {
-                                if constexpr (yyjson::detail::adjacent_field<T, Is>)
-                                {
-                                    if (adjacent.at[Is] == nullptr)
-                                        check_adjacent_tag_without_value<T, Is>(t, adjacent);
-                                }
-                            }(),
-                            ...);
+                        [[maybe_unused]] const bool done[] = {
+                            true, (
+                                      [&] {
+                                          if constexpr (yyjson::detail::adjacent_field<T, Is>)
+                                          {
+                                              if (adjacent.at[Is] == nullptr)
+                                                  check_adjacent_tag_without_value<T, Is>(t, adjacent);
+                                          }
+                                      }(),
+                                      true)...};
                     }(std::make_index_sequence<struct_field_count<T>>{});
                 }
             }
@@ -21524,9 +21595,10 @@ namespace yyjson
                 {
                     auto defaults = T();
                     [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                        ((seen[Is] || (yyjson::detail::move_field(struct_field<Is>(t), struct_field<Is>(defaults)),
-                                       true)),
-                         ...);
+                        [[maybe_unused]] const bool done[] = {
+                            true,
+                            (seen[Is] ||
+                             (yyjson::detail::move_field(struct_field<Is>(t), struct_field<Is>(defaults)), true))...};
                     }(std::make_index_sequence<n>{});
                     reset_skipped_fields(t, defaults);
                 }
@@ -21534,9 +21606,10 @@ namespace yyjson
                 {
                     auto defaults = T();
                     [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                        ((seen[Is] || (yyjson::detail::move_field(struct_field<Is>(t), struct_field<Is>(defaults)),
-                                       true)),
-                         ...);
+                        [[maybe_unused]] const bool done[] = {
+                            true,
+                            (seen[Is] ||
+                             (yyjson::detail::move_field(struct_field<Is>(t), struct_field<Is>(defaults)), true))...};
                     }(std::make_index_sequence<n>{});
                 }
                 check_adjacent_tags_without_values(t, adjacent);
@@ -22543,9 +22616,13 @@ namespace yyjson
                 else
                 {
                     const auto assign = [&](std::size_t index) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
-                        [&]<std::size_t... Ks>(std::index_sequence<Ks...>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
-                            (void)((index == Ks && (read_one(std::integral_constant<std::size_t, Ks>{}), true)) || ...);
-                        }(std::make_index_sequence<n>{});
+                        if constexpr (n <= yyjson::detail::index_chunk)
+                            [&]<std::size_t... Ks>(std::index_sequence<Ks...>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                                (void)((index == Ks && (read_one(std::integral_constant<std::size_t, Ks>{}), true)) ||
+                                       ...);
+                            }(std::make_index_sequence<n>{});
+                        else
+                            yyjson::detail::call_at_index<n>(index, read_one);
                     };
                     if constexpr (yyjson::detail::key_watching<ReadOne>)
                     {
@@ -23656,66 +23733,66 @@ struct std::formatter<T>
 #define VISITABLE_STRUCT_IMPL1(X) std::string_view(CPPYYJSON_VISITABLE_SELECT(CPPYYJSON_VISITABLE_MEMBER_NAME_, X))
 #define VISITABLE_STRUCT_IMPL2(X) std::string_view(CPPYYJSON_VISITABLE_SELECT(CPPYYJSON_VISITABLE_KEY_, X))
 #define VISITABLE_STRUCT_IMPL4(X) &class_type::CPPYYJSON_VISITABLE_SELECT(CPPYYJSON_VISITABLE_MEMBER_, X)
-#define VISITABLE_STRUCT(CLASS, ...)                                                                                \
-    static_assert(std::default_initializable<CLASS>, #CLASS " is not default initializable");                       \
-    template <>                                                                                                     \
-    struct yyjson::visit_struct<CLASS> : public std::true_type                                                      \
-    {                                                                                                               \
-        using class_type = CLASS;                                                                                   \
-        static constexpr yyjson::detail::member_list members{                                                       \
-            CPPYYJSON_FOR_EACH(VISITABLE_STRUCT_IMPL4, __VA_ARGS__)};                                               \
-        static constexpr auto field_count = std::tuple_size_v<std::remove_cv_t<decltype(members)>>;                 \
-        struct field_names                                                                                          \
-        {                                                                                                           \
-            static constexpr std::array<std::string_view, field_count> members{                                     \
-                CPPYYJSON_FOR_EACH(VISITABLE_STRUCT_IMPL1, __VA_ARGS__)};                                           \
-            static constexpr std::array<std::string_view, field_count> keys{                                        \
-                CPPYYJSON_FOR_EACH(VISITABLE_STRUCT_IMPL2, __VA_ARGS__)};                                           \
-        };                                                                                                          \
-        static constexpr auto names = yyjson::detail::field_keys<CLASS, field_names>::value;                        \
-        static constexpr yyjson::detail::field_key_matcher key_matcher{names};                                      \
-        template <typename Object>                                                                                  \
-        static auto from_json_impl(const Object& obj)                                                               \
-        {                                                                                                           \
-            auto result = CLASS();                                                                                  \
-            yyjson::detail::assign_visitable_fields(result, members, obj);                                          \
-            return result;                                                                                          \
-        }                                                                                                           \
-        template <typename Emitter, typename T, typename... Ts>                                                     \
-        static void emplace_fields(Emitter& emitter, T&& t, Ts... ts)                                               \
-        {                                                                                                           \
-            if constexpr (yyjson::detail::has_adjacent_fields<CLASS>) yyjson::detail::check_adjacent_tags(t);       \
-            [&]<std::size_t... Is>(std::index_sequence<Is...>) {                                                    \
-                (yyjson::detail::emplace_struct_field<CLASS, Is, yyjson::detail::is_plain_key(names[Is])>(          \
-                     emitter, names[Is],                                                                            \
-                     yyjson::detail::writable_field(                                                                \
-                         std::forward<T>(t).*yyjson::detail::member_pointer<Is>(members)),                          \
-                     ts...),                                                                                        \
-                 ...);                                                                                              \
-            }(std::make_index_sequence<field_count>{});                                                             \
-        }                                                                                                           \
-        template <typename Emitter, typename... Ts>                                                                 \
-        requires (!std::same_as<std::remove_cvref_t<Emitter>, yyjson::writer::object_ref>)                          \
-        static void to_json_impl(Emitter& emitter, const CLASS& t, Ts... ts)                                        \
-        {                                                                                                           \
-            emplace_fields(emitter, t, ts...);                                                                      \
-        }                                                                                                           \
-        template <typename Emitter, typename... Ts>                                                                 \
-        requires (!std::same_as<std::remove_cvref_t<Emitter>, yyjson::writer::object_ref>)                          \
-        static void to_json_impl(Emitter& emitter, CLASS&& t, Ts... ts)                                             \
-        {                                                                                                           \
-            emplace_fields(emitter, std::move(t), ts...);                                                           \
-        }                                                                                                           \
-        template <typename... Ts>                                                                                   \
-        static void to_json_impl(writer::object_ref& obj, const CLASS& t, Ts... ts)                                 \
-        {                                                                                                           \
-            obj.assign_reflected_fields_max(yyjson::detail::struct_member_capacity<CLASS>,                          \
-                                            [&](auto& emitter) { emplace_fields(emitter, t, ts...); });             \
-        }                                                                                                           \
-        template <typename... Ts>                                                                                   \
-        static void to_json_impl(writer::object_ref& obj, CLASS&& t, Ts... ts)                                      \
-        {                                                                                                           \
-            obj.assign_reflected_fields_max(yyjson::detail::struct_member_capacity<CLASS>,                          \
-                                            [&](auto& emitter) { emplace_fields(emitter, std::move(t), ts...); });  \
-        }                                                                                                           \
+#define VISITABLE_STRUCT(CLASS, ...)                                                                                   \
+    static_assert(std::default_initializable<CLASS>, #CLASS " is not default initializable");                          \
+    template <>                                                                                                        \
+    struct yyjson::visit_struct<CLASS> : public std::true_type                                                         \
+    {                                                                                                                  \
+        using class_type = CLASS;                                                                                      \
+        static constexpr yyjson::detail::member_list members{CPPYYJSON_FOR_EACH(VISITABLE_STRUCT_IMPL4, __VA_ARGS__)}; \
+        static constexpr auto field_count = std::tuple_size_v<std::remove_cv_t<decltype(members)>>;                    \
+        struct field_names                                                                                             \
+        {                                                                                                              \
+            static constexpr std::array<std::string_view, field_count> members{                                        \
+                CPPYYJSON_FOR_EACH(VISITABLE_STRUCT_IMPL1, __VA_ARGS__)};                                              \
+            static constexpr std::array<std::string_view, field_count> keys{                                           \
+                CPPYYJSON_FOR_EACH(VISITABLE_STRUCT_IMPL2, __VA_ARGS__)};                                              \
+        };                                                                                                             \
+        static constexpr auto names = yyjson::detail::field_keys<CLASS, field_names>::value;                           \
+        static constexpr yyjson::detail::field_key_matcher key_matcher{names};                                         \
+        template <typename Object>                                                                                     \
+        static auto from_json_impl(const Object& obj)                                                                  \
+        {                                                                                                              \
+            auto result = CLASS();                                                                                     \
+            yyjson::detail::assign_visitable_fields(result, members, obj);                                             \
+            return result;                                                                                             \
+        }                                                                                                              \
+        template <typename Emitter, typename T, typename... Ts>                                                        \
+        static void emplace_fields(Emitter& emitter, T&& t, Ts... ts)                                                  \
+        {                                                                                                              \
+            if constexpr (yyjson::detail::has_adjacent_fields<CLASS>) yyjson::detail::check_adjacent_tags(t);          \
+            [&]<std::size_t... Is>(std::index_sequence<Is...>) {                                                       \
+                [[maybe_unused]] const bool done[] = {                                                                 \
+                    true, (yyjson::detail::emplace_struct_field<CLASS, Is, yyjson::detail::is_plain_key(names[Is])>(   \
+                               emitter, names[Is],                                                                     \
+                               yyjson::detail::writable_field(std::forward<T>(t).*                                     \
+                                                              yyjson::detail::member_pointer<Is>(members)),            \
+                               ts...),                                                                                 \
+                           true)...};                                                                                  \
+            }(std::make_index_sequence<field_count>{});                                                                \
+        }                                                                                                              \
+        template <typename Emitter, typename... Ts>                                                                    \
+        requires (!std::same_as<std::remove_cvref_t<Emitter>, yyjson::writer::object_ref>)                             \
+        static void to_json_impl(Emitter& emitter, const CLASS& t, Ts... ts)                                           \
+        {                                                                                                              \
+            emplace_fields(emitter, t, ts...);                                                                         \
+        }                                                                                                              \
+        template <typename Emitter, typename... Ts>                                                                    \
+        requires (!std::same_as<std::remove_cvref_t<Emitter>, yyjson::writer::object_ref>)                             \
+        static void to_json_impl(Emitter& emitter, CLASS&& t, Ts... ts)                                                \
+        {                                                                                                              \
+            emplace_fields(emitter, std::move(t), ts...);                                                              \
+        }                                                                                                              \
+        template <typename... Ts>                                                                                      \
+        static void to_json_impl(writer::object_ref& obj, const CLASS& t, Ts... ts)                                    \
+        {                                                                                                              \
+            obj.assign_reflected_fields_max(yyjson::detail::struct_member_capacity<CLASS>,                             \
+                                            [&](auto& emitter) { emplace_fields(emitter, t, ts...); });                \
+        }                                                                                                              \
+        template <typename... Ts>                                                                                      \
+        static void to_json_impl(writer::object_ref& obj, CLASS&& t, Ts... ts)                                         \
+        {                                                                                                              \
+            obj.assign_reflected_fields_max(yyjson::detail::struct_member_capacity<CLASS>,                             \
+                                            [&](auto& emitter) { emplace_fields(emitter, std::move(t), ts...); });     \
+        }                                                                                                              \
     }
