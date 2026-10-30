@@ -4,12 +4,24 @@
   "type": "object",
   "properties": {
     "name": {"type": "string"},
+    "x-id": {"type": "integer"},
     "headers": {
       "type": "object",
       "patternProperties": {"^[A-Z]": {"type": "string"}},
       "additionalProperties": false
-    }
+    },
+    "limits": {"$ref": "#/$defs/Limits", "default": {"a1": "s", "b1": 2}}
   },
-  "patternProperties": {"^x-": {"type": "integer", "minimum": 0}},
-  "additionalProperties": false
+  "patternProperties": {
+    "^x-": {"type": "integer", "minimum": 0},
+    "^y-": {"title": "Labels", "type": "string", "maxLength": 8}
+  },
+  "additionalProperties": {"type": "boolean"},
+  "$defs": {
+    "Limits": {
+      "type": "object",
+      "patternProperties": {"^a": {"type": "string"}, "^b": {"type": "integer"}},
+      "additionalProperties": false
+    }
+  }
 }

@@ -748,6 +748,18 @@ TEST(Codegen, ManyFields)
     EXPECT_EQ(warnings(dropped), "#: a struct of more than 100 fields has no field of yyjson::extra_keys without "
                                  "--cpp26; the keys that name no property are dropped\n");
     EXPECT_FALSE(has(dropped.code, " extra;"));
+    // nor yyjson::pattern_properties: the keys that the patterns name are accepted and dropped
+    auto patterned = schema(100);
+    patterned.pop_back();
+    patterned += R"(, "patternProperties": {"^x-": {"type": "string"}}, "additionalProperties": false})";
+    const auto open = generate(patterned, {});
+    EXPECT_EQ(warnings(open), "#: a struct of more than 100 fields has no field of yyjson::pattern_properties without "
+                              "--cpp26; the keys that name no property are dropped, and neither `patternProperties` "
+                              "nor `additionalProperties` is checked\n");
+    EXPECT_FALSE(has(open.code, "yyjson::pattern_properties(\""));
+    EXPECT_FALSE(has(open.code, "pattern_matcher"));
+    EXPECT_TRUE(has(open.code, "    yyjson::additional_properties(true),\n"));
+    EXPECT_TRUE(has(generate(patterned, {.cpp26 = true}).code, "[[=yyjson::pattern_properties(\"^x-\")]]"));
     EXPECT_TRUE(has(generate(schema(100), {.cpp26 = true, .keep_unknown_keys = true}).code, "yyjson::extra_keys"));
 
     EXPECT_FALSE(has(generate(schema(1365), {}).code, "p_1365"));
@@ -1177,12 +1189,11 @@ TEST(Codegen, NamedKeys)
         "additionalProperties": false
     })",
                                 {});
-    EXPECT_TRUE(has(other.code, "    std::optional<yyjson::value> ab;\n    std::optional<std::int64_t> b;\n"));
-    EXPECT_EQ(warnings(other),
-              "#/patternProperties: the key \"ab\" matches patterns with different schemas; it is read as any JSON "
-              "value\n#/patternProperties: `patternProperties` with a schema that the name of a key selects is not "
-              "supported; the keys that name no property are kept in the field of yyjson::extra_keys as any JSON "
-              "value, and `additionalProperties` is not checked\n");
+    // the fields of the patterns check the value of "ab" against both schemas
+    EXPECT_TRUE(has(other.code, "    std::optional<yyjson::value> ab;\n    std::optional<std::int64_t> b;\n"
+                                "    std::map<std::string, std::string> pattern1;\n"
+                                "    std::map<std::string, std::int64_t> pattern2;\n"));
+    EXPECT_EQ(warnings(other), "");
     const auto closed = generate(R"({
         "type": "object",
         "properties": {"a": {"type": "string"}},
@@ -1352,7 +1363,8 @@ TEST(Codegen, ExtraKeys)
 
 TEST(Codegen, PatternProperties)
 {
-    // one schema for every key that `patternProperties` names, and no other key: a map whose keys match the patterns
+    // a map whose keys match the patterns when one schema holds for every key that `patternProperties` names and
+    // there is no other key; a struct of fields of yyjson::pattern_properties otherwise
     const auto r = generate(R"({
         "type": "object",
         "properties": {
@@ -1377,22 +1389,24 @@ TEST(Codegen, PatternProperties)
         "additionalProperties": false
     })",
                             {});
-    EXPECT_EQ(warnings(r), "#/properties/loose: `patternProperties` with a schema that the name of a key selects is "
-                           "not supported; the values are read as any JSON value\n");
+    EXPECT_EQ(warnings(r), "");
     EXPECT_TRUE(has(r.code, "    std::optional<std::map<std::string, std::string>> headers;\n"
                             "    std::optional<std::map<std::string, bool>> same;\n"
                             "    std::optional<std::map<std::string, double>> every;\n"
                             "    std::optional<std::map<std::string, yyjson::value>> named;\n"
-                            "    std::optional<yyjson::object> loose;\n"
-                            "    std::map<std::string, std::int64_t> extra;\n"));
+                            "    std::optional<RootLoose> loose;\n"
+                            "    std::map<std::string, std::int64_t> pattern1;\n"));
     EXPECT_TRUE(has(r.code, "    yyjson::field(\"headers\", yyjson::property_names(yyjson::max_length(8), "
                             "yyjson::pattern(\"(?:^[A-Z])|(?:^x)\"))),\n"
                             "    yyjson::field(\"named\", yyjson::property_names(yyjson::pattern(\"^n\"))),\n"
-                            "    yyjson::field(\"extra\", yyjson::extra_keys, "
-                            "yyjson::property_names(yyjson::pattern(\"^x-\"))));"));
-    EXPECT_TRUE(has(r.code, "    yyjson::additional_properties(true),\n"));
+                            "    yyjson::field(\"pattern1\", yyjson::pattern_properties(\"^x-\")));"));
+    // an object that accepts other keys keeps them out of the map of the pattern
+    EXPECT_TRUE(has(r.code, "struct RootLoose\n{\n    std::map<std::string, bool> pattern1;\n};\n"));
+    EXPECT_TRUE(has(r.code, "    yyjson::additional_properties(true),\n"
+                            "    yyjson::field(\"pattern1\", yyjson::pattern_properties(\"^n\")));"));
 
-    // a property that a pattern names with another schema, a pattern beside the one of `propertyNames`, --no-pattern
+    // a property that a pattern names is checked against the schema of the pattern too; a pattern beside the one of
+    // `propertyNames`; --no-pattern
     const auto w = generate(R"({
         "type": "object",
         "properties": {"x-a": {"type": "string"}, "m": {
@@ -1406,9 +1420,9 @@ TEST(Codegen, PatternProperties)
     })",
                             {});
     EXPECT_EQ(warnings(w), "#/properties/m/patternProperties: `propertyNames` has a pattern; the keys are not checked "
-                           "against the patterns of `patternProperties`\n"
-                           "#/properties/x-a: the key \"x-a\" matches the pattern \"^x-\" of `patternProperties`, whose "
-                           "schema is not checked for it\n");
+                           "against the patterns of `patternProperties`\n");
+    EXPECT_TRUE(has(w.code, "    std::optional<std::string> x_a;\n"));
+    EXPECT_TRUE(has(w.code, "    yyjson::field(\"pattern1\", yyjson::pattern_properties(\"^x-\")));"));
     EXPECT_TRUE(has(w.code, "    yyjson::field(\"m\", yyjson::property_names(yyjson::pattern(\"^[a-z]\"))),\n"));
     const auto n = generate(R"({"type": "object", "patternProperties": {"^x-": {"type": "integer"}},
                                 "additionalProperties": false})",
@@ -1469,7 +1483,8 @@ TEST(Codegen, PatternProperties)
               "#/propertyNames: `propertyNames` is not expressed by string constraints and is ignored\n");
     EXPECT_FALSE(has(inexpressible.code, "extra"));
 
-    // a schema that the name of a key selects: the other keys as any JSON value, with a warning
+    // a schema that the name of a key selects: a field for each pattern; --no-pattern keeps the other keys as any
+    // JSON value, with a warning
     const auto p = generate(R"({
         "type": "object",
         "properties": {"a": {"type": "string"}},
@@ -1477,13 +1492,20 @@ TEST(Codegen, PatternProperties)
         "additionalProperties": false
     })",
                             {});
-    const auto q = generate(R"({
+    const auto q_schema = R"({
         "type": "object",
         "properties": {"a": {"type": "string"}},
         "patternProperties": {"^x-": {"type": "string"}, "^y-": {"type": "integer"}},
         "additionalProperties": false
-    })",
-                            {});
+    })";
+    const auto fields = generate(q_schema, {});
+    EXPECT_EQ(warnings(fields), "");
+    EXPECT_TRUE(has(fields.code, "    std::optional<std::string> a;\n    std::map<std::string, std::string> pattern1;\n"
+                                 "    std::map<std::string, std::int64_t> pattern2;\n"));
+    EXPECT_TRUE(has(fields.code, "    yyjson::additional_properties(false),\n"
+                                 "    yyjson::field(\"pattern1\", yyjson::pattern_properties(\"^x-\")),\n"
+                                 "    yyjson::field(\"pattern2\", yyjson::pattern_properties(\"^y-\")));"));
+    const auto q = generate(q_schema, {.pattern = false});
     EXPECT_EQ(warnings(q),
               "#/patternProperties: `patternProperties` with a schema that the name of a key selects is not supported; "
               "the keys that name no property are kept in the field of yyjson::extra_keys as any JSON value, and "
@@ -1492,6 +1514,74 @@ TEST(Codegen, PatternProperties)
     EXPECT_TRUE(
         has(q.code, "    yyjson::additional_properties(true),\n    yyjson::field(\"extra\", yyjson::extra_keys));"));
     EXPECT_EQ(warnings(p), "");
+}
+
+TEST(Codegen, PatternFields)
+{
+    // a field of yyjson::pattern_properties for each schema of `patternProperties`: the patterns of equal schemas
+    // share a field, named by `title`, the reference or the order; `propertyNames` checks the keys of every field
+    const auto schema = R"({
+          "type": "object",
+          "properties": {"name": {"type": "string"}, "bad": {"type": "string"}, "o": {"$ref": "#/$defs/O"}},
+          "required": ["name"],
+          "patternProperties": {
+            "^x-": {"type": "integer", "minimum": 0},
+            "^y-": {"title": "Labels", "type": "string", "maxLength": 8},
+            "^z-": {"type": "integer", "minimum": 0},
+            "^t-": {"$ref": "#/$defs/Tag"},
+            "^ba": false
+          },
+          "additionalProperties": {"type": "boolean"},
+          "propertyNames": {"maxLength": 20},
+          "$defs": {
+            "Tag": {"type": "object", "properties": {"v": {"type": "string"}}},
+            "M": {"type": "object", "patternProperties": {"^a": {"type": "string"}, "^b": {"type": "integer"}},
+                  "additionalProperties": false},
+            "O": {"type": "object", "properties": {"m": {"$ref": "#/$defs/M", "default": {"a1": "s", "b1": 2}}}}
+          }
+    })";
+    const auto r = generate(schema, {});
+    EXPECT_EQ(warnings(r), "#/patternProperties/^ba: a pattern of `patternProperties` whose schema is `false` is not "
+                           "supported; the keys that it matches and no property names are not rejected\n");
+    EXPECT_TRUE(has(r.code, "    std::string name;\n    std::optional<std::string> bad;\n    std::optional<O> o;\n"
+                            "    std::map<std::string, std::int64_t> pattern1;\n"
+                            "    std::map<std::string, std::string> labels;\n"
+                            "    std::map<std::string, Tag> tag;\n"
+                            "    std::map<std::string, bool> extra;\n"));
+    // the property that a pattern of `false` names is rejected
+    EXPECT_TRUE(has(r.code, "    yyjson::not_(yyjson::field(\"bad\", yyjson::required)),\n"));
+    EXPECT_TRUE(has(r.code, "    yyjson::field(\"pattern1\", yyjson::pattern_properties(\"(?:^x-)|(?:^z-)\"), "
+                            "yyjson::property_names(yyjson::max_length(20)), "
+                            "yyjson::additional_properties(yyjson::minimum(0))),\n"
+                            "    yyjson::field(\"labels\", yyjson::pattern_properties(\"^y-\"), "
+                            "yyjson::property_names(yyjson::max_length(20)), "
+                            "yyjson::additional_properties(yyjson::max_length(8))),\n"
+                            "    yyjson::field(\"tag\", yyjson::pattern_properties(\"^t-\"), "
+                            "yyjson::property_names(yyjson::max_length(20))),\n"
+                            "    yyjson::field(\"extra\", yyjson::extra_keys, "
+                            "yyjson::property_names(yyjson::max_length(20))));"));
+    EXPECT_TRUE(has(r.code, "// `yyjson::pattern` and `yyjson::pattern_properties` need a specialization of\n"));
+    // a default goes to the fields of the patterns that match its keys
+    EXPECT_TRUE(has(r.code, "    M m{.pattern1 = {{\"a1\", \"s\"}}, .pattern2 = {{\"b1\", 2}}};\n"));
+    EXPECT_TRUE(has(r.code, "    yyjson::additional_properties(false),\n"
+                            "    yyjson::field(\"pattern1\", yyjson::pattern_properties(\"^a\")),\n"
+                            "    yyjson::field(\"pattern2\", yyjson::pattern_properties(\"^b\")));"));
+    EXPECT_TRUE(has(generate(schema, {.cpp26 = true}).code,
+                    "    [[=yyjson::pattern_properties(\"^y-\"), =yyjson::property_names(yyjson::max_length(20)), "
+                    "=yyjson::additional_properties(yyjson::max_length(8))]] std::map<std::string, std::string> "
+                    "labels;\n"));
+
+    // a default whose key no pattern of a closed struct matches cannot be written as an initializer
+    const auto unmatched = generate(R"({
+        "type": "object",
+        "properties": {"m": {"$ref": "#/$defs/M", "default": {"c": "s"}}},
+        "$defs": {"M": {"type": "object", "patternProperties": {"^a": {"type": "string"}, "^b": {"type": "integer"}},
+                        "additionalProperties": false}}
+    })",
+                                    {});
+    EXPECT_EQ(warnings(unmatched),
+              "#/properties/m: the default {\"c\":\"s\"} is not converted to the C++ type; the field is std::optional\n");
+    EXPECT_TRUE(has(unmatched.code, "    // default: {\"c\":\"s\"}\n    std::optional<M> m;\n"));
 }
 
 TEST(Codegen, Draft07)

@@ -44,7 +44,8 @@ namespace cpp_yyjson_codegen
         std::string ns{};     // namespace of the generated code; empty for the global namespace
         bool cpp26 = false;   // C++26 annotations ([[=...]]) instead of yyjson::annotations<T>
         bool strict = false;  // warnings are errors
-        bool pattern = true;  // emit yyjson::pattern (the program provides yyjson::pattern_matcher<>)
+        // emit yyjson::pattern and yyjson::pattern_properties (the program provides yyjson::pattern_matcher<>)
+        bool pattern = true;
         // a field with a default is std::optional<T>, std::nullopt for a missing key, instead of T with the default as
         // its initializer and yyjson::omit_default
         bool optional_defaults = false;
@@ -733,6 +734,8 @@ namespace cpp_yyjson_codegen
             // yyjson::extra_keys: a map of the keys that name no property; no key. In a struct of yyjson::as_array,
             // yyjson::extra_items: a vector of the elements after the positions
             bool extra = false;
+            // with `extra`, a map of yyjson::pattern_properties: the keys that name no property and match the pattern
+            std::optional<std::string> pattern{};
             std::string init{};          // " = x" or "{...}"
             std::string default_note{};  // the default of a std::optional field, for a comment
             std::string default_from{};  // the function of yyjson::default_from that makes the default
@@ -985,6 +988,7 @@ namespace cpp_yyjson_codegen
             std::set<std::string> type_names_;
             std::vector<int> position_;  // the place of a struct in definition order, -1 for others
             mutable bool partial_init_ = false;  // a designated initializer leaves members out
+            mutable std::map<std::string, std::optional<std::regex>, std::less<>> regexes_;  // nullopt: not read
             // the functions of yyjson::default_from: name, return type and returned expression
             struct default_function
             {
@@ -2770,6 +2774,11 @@ namespace cpp_yyjson_codegen
                         });
                     if (s.has("properties") || s.has("required") || dependent || !condition_keys(s).empty())
                         return make_struct(s0, s, loc, hint, named, nullable, whole);
+                    // patterns of different schemas: a struct of a field of yyjson::pattern_properties for each
+                    if (const auto* pp = s.find("patternProperties"); opts_.pattern && pp != nullptr &&
+                                                                     pp->is_object() && !pp->members.empty() &&
+                                                                     !pattern_map_of(s, loc))
+                        return make_struct(s0, s, loc, hint, named, nullable, whole);
                     r = type_map(s, loc, hint);
                 }
                 else if (kind == "array")
@@ -3028,11 +3037,21 @@ namespace cpp_yyjson_codegen
                     }
                     if (!matched.empty())
                     {
+                        // a pattern whose schema is `false` rejects the key
+                        if (const auto f = std::ranges::find_if(
+                                matched, [](const auto& m) { return m.second->is_bool() && !m.second->b; });
+                            f != matched.end())
+                        {
+                            schema = f->second;
+                            return std::nullopt;
+                        }
                         const auto same = [&](const auto& m) { return equal(*m.second, *matched[0].second); };
                         if (!std::ranges::all_of(matched, same))
                         {
-                            warn(loc + "/patternProperties", "the key \"" + k + "\" matches patterns with different "
-                                                              "schemas; it is read as any JSON value");
+                            // the fields of yyjson::pattern_properties check the value against each schema
+                            if (!opts_.pattern)
+                                warn(loc + "/patternProperties", "the key \"" + k + "\" matches patterns with different "
+                                                                  "schemas; it is read as any JSON value");
                             return typed{};
                         }
                         schema = matched[0].second;
@@ -3076,6 +3095,94 @@ namespace cpp_yyjson_codegen
                     f.dflt = *dflt;
                     f.type = std::move(t);
                 }
+            }
+
+            // The fields of yyjson::pattern_properties of the object schema `s`, one for the patterns of each
+            // schema of `patternProperties`, whose patterns it joins.  A pattern whose schema accepts any value is
+            // left out where the struct accepts the keys that name no property anyway.  A pattern whose schema is
+            // `false` has no field: the properties of `fields` whose keys it matches go to `absent`, and the other
+            // keys that it matches are not rejected (warning) unless `additionalProperties` is false.
+            template <typename IsRequired>
+            std::vector<field> pattern_fields(const json& s, const std::vector<field>& fields,
+                                              std::vector<condition>& absent, const IsRequired& is_required, int idx,
+                                              const std::string& loc)
+            {
+                const auto& pp = *s.find("patternProperties");
+                const auto* ap = s.find("additionalProperties");
+                const auto open = ap == nullptr || accepts_anything(*ap);
+                const auto closed = ap != nullptr && ap->is_bool() && !ap->b;
+                const auto* props = s.find("properties");
+                struct group
+                {
+                    std::vector<std::string> patterns;
+                    const json* schema;
+                    std::string loc;
+                };
+                auto groups = std::vector<group>();
+                for (const auto& [p, sub] : pp.members)
+                {
+                    const auto ploc = loc + "/patternProperties/" + pointer_token(p);
+                    if (const auto* target = normalize_full(&sub, ploc); target->is_bool() && !target->b)
+                    {
+                        if (!closed)
+                            warn(ploc, "a pattern of `patternProperties` whose schema is `false` is not supported; the "
+                                       "keys that it matches and no property names are not rejected");
+                        try
+                        {
+                            const auto re = std::regex(p, std::regex::ECMAScript);
+                            for (const auto& f : fields)
+                            {
+                                if (f.extra || props == nullptr || props->find(f.key) == nullptr ||
+                                    !std::regex_search(f.key, re))
+                                    continue;
+                                if (std::ranges::any_of(absent, [&](const condition& c) {
+                                        return c.if_.size() == 1 && c.if_.front().key == f.key;
+                                    }))
+                                    continue;
+                                if (is_required(f.key))
+                                    warn(f.loc, "the key \"" + f.key +
+                                                    "\" matches a pattern of `patternProperties` whose schema is "
+                                                    "`false`; no object satisfies the schema");
+                                absent.push_back(condition{
+                                    .negated = true, .if_ = {cond_field{.key = f.key, .required = true}}, .loc = f.loc});
+                            }
+                        }
+                        catch (const std::regex_error&)
+                        {
+                            warn(ploc, "the pattern is not checked against the keys of the properties: std::regex "
+                                       "does not read it");
+                        }
+                        continue;
+                    }
+                    if (open && accepts_anything(sub)) continue;
+                    if (auto it = std::ranges::find_if(groups, [&](const group& g) { return equal(*g.schema, sub); });
+                        it != groups.end())
+                        it->patterns.push_back(p);
+                    else
+                        groups.push_back(group{.patterns = {p}, .schema = &sub, .loc = ploc});
+                }
+                auto out = std::vector<field>();
+                auto n = 0;
+                for (const auto& g : groups)
+                {
+                    ++n;
+                    auto name = std::string();
+                    if (const auto* t = g.schema->find("title"); t != nullptr && t->is_string()) name = snake(t->text);
+                    if (const auto* r = g.schema->find("$ref"); name.empty() && r != nullptr && r->is_string())
+                        name = snake(std::string_view(r->text).substr(r->text.rfind('/') + 1));
+                    if (name.empty() || !(name.front() >= 'a' && name.front() <= 'z'))
+                        name = "pattern" + std::to_string(n);
+                    auto t = type_of(g.schema, g.loc, decls_[idx].name + pascal(name));
+                    auto pattern = std::string();
+                    for (const auto& p : g.patterns)
+                        pattern += g.patterns.size() == 1 ? p : (pattern.empty() ? "" : "|") + ("(?:" + p + ")");
+                    auto f = field{.member = name, .type = make(tk::map, {std::move(t.t)}), .loc = g.loc};
+                    f.extra = true;
+                    f.pattern = std::move(pattern);
+                    if (!t.s.empty()) f.set.additional.push_back(std::move(t.s));
+                    out.push_back(std::move(f));
+                }
+                return out;
             }
 
             void fill_struct(int idx, const json& s, const std::string& loc)
@@ -3133,9 +3240,13 @@ namespace cpp_yyjson_codegen
                     {
                         // as a property whose schema is `false`: the object must not have the key
                         if (req)
+                        {
                             warn(kloc, "the key \"" + k +
-                                           "\" is no property, and `additionalProperties` is false; no object "
-                                           "satisfies the schema");
+                                           (schema == nullptr
+                                                ? "\" is no property, and `additionalProperties` is false"
+                                                : "\" matches a pattern of `patternProperties` whose schema is `false`") +
+                                           "; no object satisfies the schema");
+                        }
                         absent.push_back(
                             condition{.negated = true, .if_ = {cond_field{.key = k, .required = true}}, .loc = kloc});
                         t = typed{};
@@ -3189,7 +3300,18 @@ namespace cpp_yyjson_codegen
                     ap == nullptr || (ap->is_bool() && ap->b) || (ap->is_object() && ap->members.empty());
                 auto key_pattern = std::optional<std::string>();
                 const auto* pp = s.find("patternProperties");
-                if (pp != nullptr && pp->is_object() && !pp->members.empty())
+                auto patterns = std::vector<field>();
+                if (pp != nullptr && pp->is_object() && !pp->members.empty() && opts_.pattern)
+                {
+                    // a field of yyjson::pattern_properties for each schema of the patterns, which checks the keys
+                    // of the fields and of the other fields of patterns that its pattern matches too
+                    patterns = pattern_fields(s, fields, absent, is_required, idx, loc);
+                    if (ap != nullptr && ap->is_bool())
+                        additional = ap->b;
+                    else if (!ap_any)
+                        extra = type_of(ap, loc + "/additionalProperties", decls_[idx].name + "Extra");
+                }
+                else if (pp != nullptr && pp->is_object() && !pp->members.empty())
                 {
                     if (auto m = pattern_map_of(s, loc))
                     {
@@ -3218,11 +3340,11 @@ namespace cpp_yyjson_codegen
                 for (const auto* k : {"minProperties", "maxProperties"})
                     if (s.has(k))
                         warn(loc,
-                             std::string("`") + k + "` of an object with properties is not supported and is ignored");
+                             std::string("`") + k + "` of an object that is a struct is not supported and is ignored");
                 // `propertyNames` checks the keys that the field of yyjson::extra_keys receives; an open struct gets
                 // the field for it
                 auto names = std::optional<settings>();
-                if (const auto* pn = s.find("propertyNames"); pn != nullptr && !extra && !additional)
+                if (const auto* pn = s.find("propertyNames"); pn != nullptr && !extra && !additional && patterns.empty())
                     warn(loc + "/propertyNames", "`propertyNames` of an object without a field of yyjson::extra_keys is "
                                                  "not supported and is ignored");
                 else if (pn != nullptr)
@@ -3237,7 +3359,7 @@ namespace cpp_yyjson_codegen
                                                      "ignored");
                     else
                     {
-                        if (!extra) extra = typed{make(tk::any), {}};
+                        if (!extra && additional) extra = typed{make(tk::any), {}};
                         if (!exact)
                             warn(loc + "/propertyNames",
                                  "`propertyNames` is checked only for the keys that name no property");
@@ -3246,14 +3368,31 @@ namespace cpp_yyjson_codegen
                 if (!opts_.cpp26 && fields.size() > max_visitable_fields)
                     fail(loc, "a struct of more than " + std::to_string(max_visitable_fields) +
                                   " properties needs --cpp26: VISITABLE_STRUCT takes no more");
-                if (extra && !opts_.cpp26 && fields.size() >= max_reflected_fields)
+                if ((extra || !patterns.empty()) && !opts_.cpp26 &&
+                    fields.size() + patterns.size() >= max_reflected_fields)
                 {
-                    // the field would make a struct that VISITABLE_STRUCT registers, which takes no
-                    // yyjson::extra_keys
+                    // the field would make a struct that VISITABLE_STRUCT registers, which takes neither
+                    // yyjson::extra_keys nor yyjson::pattern_properties
+                    const auto* what = !extra            ? "yyjson::pattern_properties"
+                                       : patterns.empty() ? "yyjson::extra_keys"
+                                                          : "yyjson::extra_keys or yyjson::pattern_properties";
                     warn(loc, "a struct of more than " + std::to_string(max_reflected_fields) +
-                                  " fields has no field of yyjson::extra_keys without --cpp26; the keys that name no "
-                                  "property are dropped");
+                                  " fields has no field of " + what +
+                                  " without --cpp26; the keys that name no property are dropped" +
+                                  (patterns.empty() ? ""
+                                   : additional     ? ", and `patternProperties` is not checked"
+                                                    : ", and neither `patternProperties` nor `additionalProperties` "
+                                                      "is checked"));
+                    // the keys that the patterns accept are accepted
+                    if (!patterns.empty()) additional = true;
                     extra.reset();
+                    patterns.clear();
+                }
+                for (auto& f : patterns)
+                {
+                    if (names && !names->empty()) f.set.property_names.push_back(*names);
+                    fields.push_back(std::move(f));
+                    uses_pattern_ = true;
                 }
                 if (extra)
                 {
@@ -4018,6 +4157,43 @@ namespace cpp_yyjson_codegen
                 return std::nullopt;
             }
 
+            // whether the pattern of ECMAScript `re` matches `key`; nullopt where std::regex does not read it
+            std::optional<bool> pattern_matches(const std::string& re, std::string_view key) const
+            {
+                auto it = regexes_.find(re);
+                if (it == regexes_.end())
+                {
+                    auto r = std::optional<std::regex>();
+                    try
+                    {
+                        r.emplace(re, std::regex::ECMAScript);
+                    }
+                    catch (const std::regex_error&)
+                    {
+                    }
+                    it = regexes_.emplace(re, std::move(r)).first;
+                }
+                if (!it->second) return std::nullopt;
+                return std::regex_search(key.begin(), key.end(), *it->second);
+            }
+
+            // The field of `d` that receives the key `k` that no field names: the first field of
+            // yyjson::pattern_properties whose pattern matches it, else the field of yyjson::extra_keys; -1 for none,
+            // nullopt where std::regex does not read a pattern
+            std::optional<int> receiver(const decl& d, std::string_view k) const
+            {
+                for (std::size_t i = 0; i < d.fields.size(); ++i)
+                    if (const auto& f = d.fields[i]; f.extra && f.pattern)
+                    {
+                        const auto m = pattern_matches(*f.pattern, k);
+                        if (!m) return std::nullopt;
+                        if (*m) return static_cast<int>(i);
+                    }
+                for (std::size_t i = 0; i < d.fields.size(); ++i)
+                    if (d.fields[i].extra && !d.fields[i].pattern) return static_cast<int>(i);
+                return -1;
+            }
+
             // designated initializers of the members that the object names; the other members keep their initializers
             std::optional<std::string> struct_init(int idx, const json& j, int before) const
             {
@@ -4068,20 +4244,32 @@ namespace cpp_yyjson_codegen
                 }
                 if (!j.is_object()) return std::nullopt;
                 auto items = std::vector<std::string>();
-                auto rest = json();
-                rest.k = json::kind::object;
+                // the other keys by the field that receives them, and those that no field receives
+                auto rests = std::vector<json>(d.fields.size());
+                auto left = std::size_t{0};
                 for (const auto& [k, v] : j.members)
-                    if (std::ranges::none_of(d.fields, [&](const field& f) { return !f.extra && f.key == k; }))
-                        rest.members.emplace_back(k, v);
-                for (const auto& f : d.fields)
                 {
+                    if (std::ranges::any_of(d.fields, [&](const field& f) { return !f.extra && f.key == k; }))
+                        continue;
+                    const auto r = receiver(d, k);
+                    if (!r) return std::nullopt;
+                    if (*r < 0)
+                        ++left;
+                    else
+                    {
+                        rests[static_cast<std::size_t>(*r)].k = json::kind::object;
+                        rests[static_cast<std::size_t>(*r)].members.emplace_back(k, v);
+                    }
+                }
+                for (std::size_t i = 0; i < d.fields.size(); ++i)
+                {
+                    const auto& f = d.fields[i];
                     if (f.extra)
                     {
-                        if (rest.members.empty()) continue;
-                        const auto v = initializer(f.type, rest, before);
+                        if (rests[i].members.empty()) continue;
+                        const auto v = initializer(f.type, rests[i], before);
                         if (!v) return std::nullopt;
                         items.push_back(member(f, *v));
-                        rest.members.clear();
                     }
                     else if (const auto* v = j.find(f.key))
                     {
@@ -4093,7 +4281,7 @@ namespace cpp_yyjson_codegen
                         return std::nullopt;
                 }
                 // reading drops the other keys of an open struct
-                if (!rest.members.empty() && !d.additional) return std::nullopt;
+                if (left != 0 && !d.additional) return std::nullopt;
                 if (items.size() < d.fields.size()) partial_init_ = true;
                 return "{" + join(items) + "}";
             }
@@ -6258,7 +6446,7 @@ namespace cpp_yyjson_codegen
                     auto used = std::set<std::string>();
                     for (auto& f : d.fields)
                     {
-                        const auto base = f.extra ? std::string("extra") : sanitize(f.key);
+                        const auto base = f.pattern ? sanitize(f.member) : f.extra ? std::string("extra") : sanitize(f.key);
                         // a member cannot take the name of a type, which it would hide in the struct
                         auto m = base;
                         if (type_names_.contains(m) && !base.ends_with('_')) m += "_";
@@ -6446,7 +6634,8 @@ namespace cpp_yyjson_codegen
                 };
                 const auto excludes = [&](const decl& closed, const decl& other) {
                     return !closed.additional && std::ranges::any_of(other.fields, [&](const field& f) {
-                               return f.required && !f.extra && find(closed, f.key) == nullptr;
+                               return f.required && !f.extra && find(closed, f.key) == nullptr &&
+                                      receiver(closed, f.key) == -1;
                            });
                 };
                 if (excludes(x, y) || excludes(y, x)) return true;
@@ -6729,15 +6918,42 @@ namespace cpp_yyjson_codegen
                 if (!j.is_object()) return fit::no;
                 auto r = fit::yes;
                 const field* extra = nullptr;
+                const auto value_fit = [&](const json& v, const field& m) {
+                    return fits(v, m.type.args[0], m.set.additional.empty() ? settings() : m.set.additional[0]);
+                };
+                // the value of the key `k` against every field of yyjson::pattern_properties whose pattern matches
+                // `k`; whether one matches, nullopt where none does and std::regex does not read a pattern
+                const auto patterns_fit = [&](std::string_view k, const json& v) {
+                    auto matched = std::optional<bool>(false);
+                    for (const auto& p : d.fields)
+                    {
+                        if (!p.pattern) continue;
+                        const auto m = pattern_matches(*p.pattern, k);
+                        if (!m)
+                        {
+                            r = std::min(r, fit::unknown);
+                            if (matched == false) matched.reset();
+                        }
+                        else if (*m)
+                        {
+                            matched = true;
+                            r = std::min(r, value_fit(v, p));
+                        }
+                    }
+                    return matched;
+                };
                 for (const auto& f : d.fields)
                 {
                     if (f.extra)
                     {
-                        extra = &f;
+                        if (!f.pattern) extra = &f;
                         continue;
                     }
                     if (const auto* v = j.find(f.key))
+                    {
                         r = std::min(r, fits(*v, f.type, f.set));
+                        patterns_fit(f.key, *v);
+                    }
                     else if (f.required)
                         return fit::no;
                     if (r == fit::no) return r;
@@ -6745,11 +6961,14 @@ namespace cpp_yyjson_codegen
                 for (const auto& [k, v] : j.members)
                 {
                     if (std::ranges::any_of(d.fields, [&](const field& f) { return !f.extra && f.key == k; })) continue;
-                    if (extra != nullptr)
-                        r = std::min(r, fits(v, extra->type.args[0],
-                                             extra->set.additional.empty() ? settings() : extra->set.additional[0]));
-                    else if (!d.additional)
-                        return fit::no;
+                    // a key that a pattern may match is checked by the pattern only
+                    if (const auto m = patterns_fit(k, v); m == false)
+                    {
+                        if (extra != nullptr)
+                            r = std::min(r, value_fit(v, *extra));
+                        else if (!d.additional)
+                            return fit::no;
+                    }
                     if (r == fit::no) return r;
                 }
                 for (const auto& [k, keys] : d.dependent)
@@ -7131,7 +7350,10 @@ namespace cpp_yyjson_codegen
                 if (f.extra)
                 {
                     // the field has no key, and takes only the settings of its values or elements
-                    items.emplace_back(as_array ? "yyjson::extra_items" : "yyjson::extra_keys");
+                    if (f.pattern)
+                        items.push_back("yyjson::pattern_properties(" + cpp_string(*f.pattern) + ")");
+                    else
+                        items.emplace_back(as_array ? "yyjson::extra_items" : "yyjson::extra_keys");
                     for (auto& s : render_settings(f.set, f.type, q)) items.push_back(std::move(s));
                     return items;
                 }
@@ -7465,13 +7687,24 @@ namespace cpp_yyjson_codegen
                         "field, whose\n// constraints are those of the schema of the struct.\n";
                 const auto any_extra = [&](bool as_array) {
                     return std::ranges::any_of(decls_, [&](const decl& d) {
-                        return d.as_array == as_array && std::ranges::any_of(d.fields, &field::extra);
+                        return d.as_array == as_array && std::ranges::any_of(d.fields, [](const field& f) {
+                                   return f.extra && !f.pattern;
+                               });
                     });
                 };
+                const auto any_pattern_field = any_field([](const field& f) { return f.pattern.has_value(); });
+                if (any_pattern_field)
+                    out += "//\n// A field with `yyjson::pattern_properties` holds the keys of the object that "
+                           "name no other field\n// and match its pattern, in the first such field. A value whose "
+                           "key a pattern matches\n// satisfies the constraints of that field too, whichever field "
+                           "holds it. Writing puts the\n// keys after the fields.\n";
                 if (any_extra(false))
-                    out +=
-                        "//\n// A field with `yyjson::extra_keys` holds the keys of the object that name no other "
-                        "field, and\n// writing puts them after the fields.\n";
+                    out += any_pattern_field
+                               ? "//\n// A field with `yyjson::extra_keys` holds the keys of the object that name no "
+                                 "other field and\n// that no pattern matches, and writing puts them after the "
+                                 "fields.\n"
+                               : "//\n// A field with `yyjson::extra_keys` holds the keys of the object that name no "
+                                 "other field, and\n// writing puts them after the fields.\n";
                 if (std::ranges::any_of(decls_, &decl::as_array))
                     out += "//\n// A struct with `yyjson::as_array` is read and written as a JSON array whose "
                            "elements are its\n// fields in order. A std::optional field or one with a default may be "
@@ -7514,9 +7747,11 @@ namespace cpp_yyjson_codegen
                     out += "\n";
                 }
                 if (uses_pattern_)
-                    out +=
-                        "//\n// `yyjson::pattern` needs a specialization of `yyjson::pattern_matcher<>` in the "
-                        "program.\n";
+                    out += any_pattern_field
+                               ? "//\n// `yyjson::pattern` and `yyjson::pattern_properties` need a specialization of\n"
+                                 "// `yyjson::pattern_matcher<>` in the program.\n"
+                               : "//\n// `yyjson::pattern` needs a specialization of `yyjson::pattern_matcher<>` in "
+                                 "the program.\n";
                 out += "\n#pragma once\n\n";
                 for (const auto* h : {"cstddef", "cstdint", "map", "memory", "optional", "string", "tuple", "utility",
                                       "variant", "vector"})

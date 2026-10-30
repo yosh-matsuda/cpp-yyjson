@@ -8,6 +8,7 @@
 #include <gtest/gtest.h>
 
 #include <cpp_yyjson.hpp>
+#include <map>
 #include <regex>
 #include <string>
 #include <string_view>
@@ -156,16 +157,29 @@ TEST(CodegenCMake, Alternatives)
 
 TEST(CodegenCMake, PatternProperties)
 {
-    // the keys that `patternProperties` names go to the field of yyjson::extra_keys, which checks their names
-    const auto json = R"({"name":"a","headers":{"Accept":"*"},"x-rate":1})";
+    // each schema of `patternProperties` has a field of yyjson::pattern_properties, and the other keys go to the
+    // field of yyjson::extra_keys by the schema of `additionalProperties`
+    const auto json = R"({"name":"a","headers":{"Accept":"*"},"x-rate":1,"y-tag":"t","flag":true})";
     const auto e = yyjson::read<model::Extensions>(json, yyjson::strict);
-    EXPECT_EQ(e.extra.at("x-rate"), 1);
+    EXPECT_EQ(e.pattern1, (std::map<std::string, std::int64_t>{{"x-rate", 1}}));
+    EXPECT_EQ(e.labels, (std::map<std::string, std::string>{{"y-tag", "t"}}));
+    EXPECT_EQ(e.extra, (std::map<std::string, bool>{{"flag", true}}));
     ASSERT_TRUE(e.headers.has_value());
     EXPECT_EQ(e.headers->at("Accept"), "*");
     EXPECT_EQ(yyjson::write(e), json);
-    EXPECT_THROW((void)yyjson::read<model::Extensions>(R"({"rate":1})"), yyjson::bad_cast);
-    EXPECT_THROW((void)yyjson::read<model::Extensions>(R"({"x-rate":-1})"), yyjson::bad_cast);
-    EXPECT_THROW((void)yyjson::read<model::Extensions>(R"({"headers":{"accept":"*"}})"), yyjson::bad_cast);
+    EXPECT_NO_THROW(yyjson::validate(e));
+    for (const auto* bad : {R"({"x-rate":-1})", R"({"x-id":-1})", R"({"y-tag":"too long a tag"})", R"({"flag":1})",
+                            R"({"headers":{"accept":"*"}})", R"({"limits":{"c":"s"}})", R"({"limits":{"b1":"s"}})"})
+        EXPECT_THROW((void)yyjson::read<model::Extensions>(bad), yyjson::bad_cast) << bad;
+
+    // a default of a struct of pattern fields
+    const auto d = model::Extensions();
+    EXPECT_EQ(d.limits.pattern1, (std::map<std::string, std::string>{{"a1", "s"}}));
+    EXPECT_EQ(d.limits.pattern2, (std::map<std::string, std::int64_t>{{"b1", 2}}));
+    EXPECT_EQ(yyjson::write(d), "{}");
+    const auto limits = yyjson::read<model::Extensions>(R"({"limits":{"a2":"t","b2":3}})", yyjson::strict).limits;
+    EXPECT_EQ(limits.pattern1, (std::map<std::string, std::string>{{"a2", "t"}}));
+    EXPECT_EQ(limits.pattern2, (std::map<std::string, std::int64_t>{{"b2", 3}}));
 }
 
 TEST(CodegenCMake, Recursion)
