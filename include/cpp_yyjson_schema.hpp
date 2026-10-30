@@ -1894,6 +1894,10 @@ namespace yyjson
                     list.emplace_back(rules::keys[j]);
                 }
             }
+            // The keys of the object, unknown keys and tags too, in both directions.
+            if constexpr (rules::min_properties != 0) out.emplace("minProperties", rules::min_properties);
+            if constexpr (rules::max_properties != std::numeric_limits<std::size_t>::max())
+                out.emplace("maxProperties", rules::max_properties);
             if constexpr (!rules::groups.empty())
             {
                 // `oneOf` or `anyOf` of the groups, in `allOf` when the struct has one already

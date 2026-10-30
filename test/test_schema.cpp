@@ -148,6 +148,37 @@ inline constexpr auto yyjson::annotations<Groups> =
     yyjson::annotate(yyjson::one_of_required({"env"}, {"value", "unit"}), yyjson::field("unit", yyjson::rename("u")),
                      yyjson::any_of_required({"email"}, {"phone"}), yyjson::any_of_required({"env"}, {"phone"}));
 
+// the number of the keys of the object, unknown keys, extra keys and tags too
+struct KeyCounted
+{
+    std::optional<int> a;
+    std::optional<int> b;
+};
+template <>
+inline constexpr auto yyjson::annotations<KeyCounted> =
+    yyjson::annotate(yyjson::min_properties(1), yyjson::max_properties(2));
+struct KeyCountExtra
+{
+    int a = 0;
+    std::map<std::string, int> extra;
+};
+template <>
+inline constexpr auto yyjson::annotations<KeyCountExtra> =
+    yyjson::annotate(yyjson::max_properties(2), yyjson::field("extra", yyjson::extra_keys));
+struct KeyCountTagged
+{
+    std::optional<int> a;
+};
+template <>
+inline constexpr auto yyjson::annotations<KeyCountTagged> = yyjson::annotate(yyjson::min_properties(2));
+struct KeyCountOther
+{
+    int b = 0;
+};
+using KeyCountVariant = std::variant<KeyCountTagged, KeyCountOther>;
+template <>
+inline constexpr auto yyjson::annotations<KeyCountVariant> = yyjson::annotate(yyjson::internal_tag("kind", {"t", "o"}));
+
 // conditions on the keys: a circle has a radius of at least 0, another kind a point, and no kind starts with "x";
 // a single condition goes into the schema of the struct itself
 struct CondPoint
@@ -1015,6 +1046,20 @@ namespace
         }
     }
 
+    template <typename T>
+    bool meets_constraints(const T& t)
+    {
+        try
+        {
+            yyjson::validate(t);
+            return true;
+        }
+        catch (const yyjson::bad_cast&)
+        {
+            return false;
+        }
+    }
+
     // The schemas of T are valid 2020-12 schemas, and the validator agrees with `yyjson::read<T>` on `docs` but
     // where a document is marked with a difference.  What `write` writes of a document that T reads is valid
     // against the write schema.
@@ -1049,7 +1094,9 @@ namespace
                     EXPECT_FALSE(d.diff & (lenient_bit | format_bit | loose_bit))
                         << mode << ": marked, but agree: " << d.json;
             }
-            if (!(d.diff & format) && reads<T>(d.json, false))
+            // the write schema describes the values that meet the constraints; a non-strict read keeps the
+            // initializer of a missing key, which may not
+            if (!(d.diff & format) && reads<T>(d.json, false) && meets_constraints(yyjson::read<T>(d.json)))
             {
                 const auto written = std::string(yyjson::write(yyjson::read<T>(d.json)));
                 EXPECT_TRUE(validators[2].is_valid(json::parse(written))) << "write: " << written;
@@ -1525,6 +1572,32 @@ TEST(Schema, RequiredGroups)
     // the keyword that the struct already has goes into allOf
     EXPECT_EQ(s["anyOf"], json::parse(R"([{"required":["email"]},{"required":["phone"]}])"));
     EXPECT_EQ(s["allOf"], json::parse(R"([{"anyOf":[{"required":["env"]},{"required":["phone"]}]}])"));
+}
+
+TEST(Schema, PropertyCounts)
+{
+    check<KeyCounted>({
+        R"({"a":1})",
+        R"({"a":1,"b":2})",
+        R"({"x":1})",
+        R"({})",
+        R"({"a":1,"b":2,"x":3})",
+    });
+    const auto s = to_jsoncons(yyjson::json_schema<KeyCounted>())["$defs"]["KeyCounted"];
+    EXPECT_EQ(s["minProperties"], 1);
+    EXPECT_EQ(s["maxProperties"], 2);
+    check<KeyCountExtra>({
+        R"({"a":1})",
+        R"({"a":1,"x":2})",
+        R"({"x":1,"y":2})",
+        R"({"a":1,"x":2,"y":3})",
+    });
+    // the tag of an internally tagged alternative is a key of its object
+    check<KeyCountVariant>({
+        R"({"kind":"t","a":1})",
+        R"({"kind":"t"})",
+        R"({"kind":"o","b":1})",
+    });
 }
 
 TEST(Schema, Conditions)
