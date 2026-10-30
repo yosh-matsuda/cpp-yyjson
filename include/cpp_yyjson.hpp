@@ -15998,24 +15998,37 @@ namespace yyjson
         inline constinit thread_local std::size_t pending_tag_keys = 0;
 
         // Whether a value of the type T, an alternative of an internally tagged variant, may hold the object of a
-        // struct annotated with `yyjson::min_properties` or `yyjson::max_properties`, which counts the tags.
-        template <typename T>
+        // struct annotated with `yyjson::min_properties` or `yyjson::max_properties`, into which the writer writes
+        // the tags: directly, through the field of a struct annotated with `yyjson::transparent`, or through an
+        // alternative of a variant.  `Seen` are the types on the way, which a recursive type reaches again.
+        template <typename T, typename... Seen>
         consteval bool counts_tag_keys()
         {
-            if constexpr (bounds_properties<T>)
+            if constexpr ((std::same_as<T, Seen> || ...))
+                return false;
+            else if constexpr (bounds_properties<T>)
                 return true;
-            else if constexpr (requires { std::variant_size<T>::value; } && !combined_variant<T>)
-            {
-                if constexpr (internally_tagged<T>)
-                    return []<std::size_t... Is>(std::index_sequence<Is...>) {
-                        return (counts_tag_keys<constrained_value_t<std::variant_alternative_t<Is, T>>>() || ...);
-                    }(std::make_index_sequence<std::variant_size_v<T>>{});
-                else
-                    return false;
-            }
+            else if constexpr (transparent_struct<T>)
+                return counts_tag_keys<constrained_value_t<struct_field_type<T, 0>>, T, Seen...>();
+            else if constexpr (requires { std::variant_size<T>::value; })
+                return []<std::size_t... Is>(std::index_sequence<Is...>) {
+                    return (counts_tag_keys<constrained_value_t<std::variant_alternative_t<Is, T>>, T, Seen...>() ||
+                            ...);
+                }(std::make_index_sequence<std::variant_size_v<T>>{});
             else
                 return false;
         }
+
+        // Clears the tags of `pending_tag_keys` while a value that does not hold the object of a struct that counts
+        // them is checked, so that a struct in it does not count them, and restores them after.
+        struct pending_tag_scope
+        {
+            std::size_t saved;
+            explicit pending_tag_scope(std::size_t keys) : saved(std::exchange(pending_tag_keys, keys)) {}
+            pending_tag_scope(const pending_tag_scope&) = delete;
+            pending_tag_scope& operator=(const pending_tag_scope&) = delete;
+            ~pending_tag_scope() { pending_tag_keys = saved; }
+        };
 
         // Whether `yyjson::validate` checks something of a value of the type T, beside the values in it.
         template <typename T>
@@ -16747,12 +16760,14 @@ namespace yyjson
                             if constexpr (internally_tagged<U> && counts_tag_keys<U>())
                             {
                                 // the tag is a key of the object of the alternative, and of no object in it
-                                struct restore
-                                {
-                                    std::size_t saved;
-                                    ~restore() { pending_tag_keys = saved; }
-                                } r{pending_tag_keys};
-                                pending_tag_keys = counts_tag_keys<A>() ? r.saved + 1 : 0;
+                                const auto scope =
+                                    pending_tag_scope(counts_tag_keys<A>() ? pending_tag_keys + 1 : 0);
+                                validate_value(a);
+                            }
+                            else if constexpr (counts_tag_keys<U>() && !counts_tag_keys<A>())
+                            {
+                                // the tags of an outer variant go into an object of another alternative
+                                const auto scope = pending_tag_scope(0);
                                 validate_value(a);
                             }
                             else
@@ -20835,7 +20850,19 @@ namespace yyjson
         {
             if (v.valueless_by_exception()) return;
             [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                (void)((v.index() == Is && (validate_alternative<V, Is>(*std::get_if<Is>(&v)), true)) || ...);
+                (void)((v.index() == Is && ([&] {
+                            using A = constrained_value_t<std::variant_alternative_t<Is, V>>;
+                            if constexpr (counts_tag_keys<V>() && !counts_tag_keys<A>())
+                            {
+                                // the tags of an outer variant go into an object of another alternative
+                                const auto scope = pending_tag_scope(0);
+                                validate_alternative<V, Is>(*std::get_if<Is>(&v));
+                            }
+                            else
+                                validate_alternative<V, Is>(*std::get_if<Is>(&v));
+                        }(),
+                        true)) ||
+                       ...);
             }(std::make_index_sequence<std::variant_size_v<V>>{});
         }
     }  // namespace detail

@@ -168,6 +168,33 @@ using ValidateHolderVariant = std::variant<ValidateCountedHolder, ValidateCounte
 template <>
 inline constexpr auto yyjson::annotations<ValidateHolderVariant> =
     yyjson::annotate(yyjson::internal_tag("kind", {"h", "v"}));
+// a struct reached through a transparent struct or a variant without a tag, whose object has the tag
+struct ValidateCountedWrap
+{
+    ValidateCountedAlternative value;
+};
+template <>
+inline constexpr auto yyjson::annotations<ValidateCountedWrap> = yyjson::annotate(yyjson::transparent);
+struct ValidateCountedText
+{
+    std::string s;
+};
+using ValidateCountedInner = std::variant<ValidateCountedAlternative, ValidateCountedText, ValidateCountedHolder>;
+using ValidateCountedCombined = yyjson::any_of<ValidateCountedAlternative, ValidateCountedText>;
+using ValidateCountedOuter =
+    std::variant<ValidateCountedWrap, ValidateCountedInner, ValidateCountedCombined, ValidateCountedHolder>;
+template <>
+inline constexpr auto yyjson::annotations<ValidateCountedOuter> =
+    yyjson::annotate(yyjson::internal_tag("kind", {"w", "i", "c", "h"}));
+// a recursive type through a transparent struct
+struct ValidateCountedNode;
+using ValidateCountedNodes = std::variant<ValidateCountedAlternative, std::vector<ValidateCountedNode>>;
+struct ValidateCountedNode
+{
+    ValidateCountedNodes value;
+};
+template <>
+inline constexpr auto yyjson::annotations<ValidateCountedNode> = yyjson::annotate(yyjson::transparent);
 
 struct ValidateTree
 {
@@ -419,6 +446,22 @@ TEST(Validate, PropertyCounts)
     check(std::make_unique<ValidateCountedAlternative>(1, 2));
     // the object of a field of the alternative has no tag
     expect_valid(ValidateHolderVariant{ValidateCountedHolder{{1, 2}}});
+    // the tag goes into the object of a struct through a transparent struct, a variant without a tag or yyjson::any_of
+    const auto check_outer = [&](const ValidateCountedOuter& v) {
+        const auto e = validate_error([&] { yyjson::validate(v); });
+        EXPECT_EQ(message_of(e), more);
+        EXPECT_THROW((void)yyjson::write(v, yyjson::strict), yyjson::bad_cast);
+        EXPECT_THROW((void)yyjson::read<ValidateCountedOuter>(std::string(yyjson::write(v)), yyjson::strict),
+                     yyjson::bad_cast);
+    };
+    check_outer(ValidateCountedWrap{{1, 2}});
+    check_outer(ValidateCountedInner{ValidateCountedAlternative{1, 2}});
+    check_outer(ValidateCountedCombined{ValidateCountedAlternative{1, 2}});
+    expect_valid(ValidateCountedOuter{ValidateCountedWrap{{1, {}}}});
+    expect_valid(ValidateCountedOuter{ValidateCountedInner{ValidateCountedText{}}});
+    expect_valid(ValidateCountedOuter{ValidateCountedInner{ValidateCountedHolder{{1, 2}}}});
+    expect_valid(ValidateCountedOuter{ValidateCountedHolder{{1, 2}}});
+    expect_valid(ValidateCountedNode{ValidateCountedAlternative{1, 2}});
 }
 
 TEST(Validate, Conditions)
