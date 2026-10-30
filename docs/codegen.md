@@ -190,7 +190,9 @@ Each schema maps to one C++ type:
 | `"type": "object"` without `properties`, with a schema in `additionalProperties` or [`patternProperties`](#patternproperties) | `std::map<std::string, T>` |
 | `"type": "object"` without them | [`yyjson::object`](reference.md#yyjsonobject) |
 | `"type": "array"` with `items` | `std::vector<T>` |
-| `"type": "array"` with `prefixItems` and `"items": false` | `std::tuple<...>`, or `std::vector<T>` with `yyjson::max_items` when all positions have the same type |
+| `"type": "array"` with `prefixItems`, `"items": false` and `minItems` of all positions | `std::tuple<...>` |
+| `"type": "array"` with `prefixItems` of one type, and `items` of that type or `false` | `std::vector<T>` with `yyjson::prefix_items`, and `yyjson::max_items` for `"items": false` |
+| `"type": "array"` with other `prefixItems` | a struct with [`yyjson::as_array`](conversions.md#a-struct-as-a-json-array); see [Arrays of positions](#arrays-of-positions) |
 | `"type": "string"` | `std::string` |
 | `"type": "integer"` | `std::int64_t`; `std::int32_t` with `"format": "int32"`; `std::uint64_t` for bounds above `std::int64_t` |
 | `"type": "number"` | `double`; `float` with `"format": "float"` |
@@ -230,7 +232,7 @@ The keywords that constrain a value become the [constraints](validation.md#const
 *   When the type of the subschema reads more than the subschema accepts, the generator warns, and also leaves out `maxContains`, which would then count elements that the schema does not count.
 *   A `contains` that every element matches, such as `{}`, becomes `yyjson::min_items` and `yyjson::max_items` of `minContains` and `maxContains`.
 *   `"contains": false` adds nothing with `"minContains": 0`; otherwise no array is valid, and it is left out with a warning.
-*   A position of `prefixItems` takes no `yyjson::is_type<T>`: its constraints are left out with a warning.
+*   A position of `prefixItems` that is an element of a `std::tuple` or a `std::vector` takes no `yyjson::is_type<T>`: its constraints are left out with a warning. A field of an [array of positions](#arrays-of-positions) takes it.
 *   On elements of other types that the subschema does not fit, such as integers under `{"type": "string"}`, or a variant of [a schema without `type`](#schemas-without-type), `contains` is left out with a warning.
 
 The metadata go to annotations and comments: `title`, `description`, `deprecated` and `examples` become `yyjson::title`, `yyjson::description`, `yyjson::deprecated` and `yyjson::examples`, `description` also a `///` comment, and `$comment` a `//` comment. An example that does not read as the C++ type, or that the generator cannot check, becomes an `// example:` comment instead, since `json_schema<T>()` throws for an example that does not read.
@@ -252,6 +254,58 @@ A property becomes a member, in the order of `properties`:
 `dependentRequired` becomes `yyjson::dependent_required`, and `oneOf` or `anyOf` of subschemas that only list `required` keys become [`yyjson::one_of_required` and `yyjson::any_of_required`](reference.md#yyjsonone_of_required-yyjsonany_of_required). `if`, `then`, `else`, `not` and `dependentSchemas` become `yyjson::if_then_else` and `yyjson::not_`; see [Conditions](#conditions). `minProperties` and `maxProperties` of a struct are left out with a warning.
 
 A struct of more than 100 members is registered with [`VISITABLE_STRUCT`](conversions.md#visitable_struct) under C++20, as the reflection of C++20 takes no more, and cannot have a field of `yyjson::extra_keys`; a struct of more than 1365 members needs `--cpp26`.
+
+### Arrays of positions
+
+An array whose positions of `prefixItems` and elements after them do not share one type, such as positions of different types or positions without `items`, and that may end before the last position or go on after it, becomes a struct with [`yyjson::as_array`](conversions.md#a-struct-as-a-json-array): each position is a member, in order, and the struct is read and written as a JSON array. An array of exactly the positions, with `"items": false` and `minItems` of all of them, stays a `std::tuple`.
+
+| Position | Member |
+| --- | --- |
+| below `minItems` | `T` with `yyjson::required` |
+| with a `default` | `T` initialized to the default, with `yyjson::omit_default`, as for a [property](#defaults) |
+| otherwise | `std::optional<T>` |
+
+A member is named by the `title` of its position in snake_case, else `item1`, `item2`, ... in order. The elements after the positions follow `items`:
+
+| `items` | The struct |
+| --- | --- |
+| `false` | `yyjson::items(false)`: an array with more elements is rejected |
+| a schema | a last member `extra` of `std::vector<T>` with [`yyjson::extra_items`](reference.md#yyjsonas_array-yyjsonextra_items), which holds the elements after the positions, and the constraints of the schema in `yyjson::items(...)` |
+| absent or `true` | `yyjson::items(true)`: the other elements are accepted and dropped, also under `yyjson::strict`; with `--keep-unknown-keys`, a member `extra` of `std::vector<yyjson::value>` keeps them |
+
+```json
+{
+  "title": "Rule",
+  "type": "array",
+  "prefixItems": [{"title": "level", "type": "integer", "minimum": 0}, {"type": "string"}, {"type": "integer"}],
+  "minItems": 1,
+  "items": false
+}
+```
+
+becomes
+
+```cpp
+struct Rule
+{
+    std::int64_t level;
+    std::optional<std::string> item2;
+    std::optional<std::int64_t> item3;
+};
+
+template <>
+inline constexpr auto yyjson::annotations<Rule> = yyjson::annotate(
+    yyjson::title("Rule"),
+    yyjson::as_array,
+    yyjson::items(false),
+    yyjson::field("level", yyjson::required, yyjson::minimum(0), yyjson::title("level")));
+```
+
+`write` leaves out the members at the end that hold no value or their defaults, as `[2]` for `Rule{2}`, but writes `null` for an empty member before one that holds a value, which the schema rejects; [`yyjson::validate`](reference.md#yyjsonvalidate) and `write(t, yyjson::strict)` reject such a value.
+
+*   `minItems` above the number of positions, and `maxItems` of an array that may go on after the positions, are left out with a warning. `maxItems` up to the number of positions ends the array there, as `"items": false` does.
+*   `uniqueItems` and `contains`, which compare the positions with each other, give `std::vector<yyjson::value>` with a warning, and so do more than 100 positions under C++20, which the reflection of C++20 takes no more; `--cpp26` takes them.
+*   An array of positions that holds itself, such as `{"prefixItems": [{"type": "string"}, {"type": "array", "items": {"$ref": "#"}}]}` as the root, is a struct `Root2` with `yyjson::as_array` inside the struct `Root` with [`yyjson::transparent`](reference.md#yyjsontransparent).
 
 ### Enumerations
 
@@ -364,7 +418,7 @@ An entry of `$defs` takes its key as the name and keeps its metadata and `yyjson
 | --- | --- |
 | the root | `--root-name`, or the `title` in PascalCase (`"user record"` → `UserRecord`), or `Root` |
 | an entry of `$defs` or `definitions` | the key, with characters outside an identifier replaced by `_` (`gen.Item` → `gen_Item`), and [`yyjson::schema_name`](json-schema.md#names-of-types) with the key |
-| an inline object or enumeration | the name of its parent and the PascalCase of its property, such as `OrderStatus`, followed by `Item` for the elements of an array (`OrderItemsItem`) and by `Option1`, `Option2`, ... for alternatives (`OrderShapeOption2`) |
+| an inline object, array of positions or enumeration | the name of its parent and the PascalCase of its property, such as `OrderStatus`, followed by `Item` for the elements of an array (`OrderItemsItem`) and by `Option1`, `Option2`, ... for alternatives (`OrderShapeOption2`) |
 | an alternative of a tagged variant | the value of its tag in PascalCase, such as `Circle` |
 | a property | the key, with characters outside an identifier replaced by `_` and a C++ keyword followed by `_`, with `yyjson::rename` to the key |
 
@@ -615,7 +669,7 @@ A warning names the location in the schema and what the generated code does inst
 | Group | Example | The generated code |
 | --- | --- | --- |
 | a keyword that is not supported | `$dynamicRef`, `$recursiveRef`, `if` of a string | reads more than the schema accepts |
-| a form that is not supported | `contains` that the elements cannot express, positions of `prefixItems` of different types, `minProperties` of a struct, [`unevaluatedProperties` beside `anyOf`](#unevaluatedproperties-and-unevaluateditems) | reads more than the schema accepts |
+| a form that is not supported | `contains` that the elements cannot express, `minItems` or `maxItems` beyond the positions of an [array of positions](#arrays-of-positions), `minProperties` of a struct, [`unevaluatedProperties` beside `anyOf`](#unevaluatedproperties-and-unevaluateditems) | reads more than the schema accepts |
 | a type inferred from keywords, with `--infer-types` | "the schema has no `type`; it is read as string from its keywords" | reads only that type |
 | a variant of more alternatives than `--max-alternatives` | "a variant of 447 alternatives is more than 64 (--max-alternatives) ..." | reads any JSON value there |
 | a reference that cannot be followed | a missing file, a URI that is not the `$id` of a schema read and is not mapped to a file, a file of `--schema` that cannot be read | reads any JSON value there |
@@ -659,5 +713,5 @@ The `title` and `description` of the subschema beside `{"type": "null"}` are los
 
 *   Only the keywords listed above are expressed; the others are left out as described in [Warnings](#warnings).
 *   A struct of more than 1365 members needs `--cpp26`, and a struct of more than 100 members has no field of `yyjson::extra_keys` without it.
-*   A position of `prefixItems` keeps up to 16 values of `const` and `enum`; more are dropped with a warning, as is `contains` of a type there. Under C++20, a position copies up to 256 characters of string literals, and longer strings become `std::string_view` literals.
+*   A position of `prefixItems` in a `std::tuple` or a `std::vector` keeps up to 16 values of `const` and `enum`; more are dropped with a warning, as is `contains` of a type there. Under C++20, such a position copies up to 256 characters of string literals, and longer strings become `std::string_view` literals. An [array of positions](#arrays-of-positions) has none of these limits, but takes up to 100 positions under C++20.
 *   Formats that the library does not check, and keywords that only annotate, are left out.
