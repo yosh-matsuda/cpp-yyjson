@@ -585,6 +585,29 @@ namespace cpp_yyjson_codegen
             return out;
         }
 
+        // "Start Time" and "startTime" -> "start_time": the name of a member from a title
+        inline std::string snake(std::string_view s)
+        {
+            auto out = std::string();
+            for (std::size_t i = 0; i < s.size(); ++i)
+            {
+                const auto c = s[i];
+                if (!is_alnum(c))
+                {
+                    if (!out.empty() && out.back() != '_') out += '_';
+                    continue;
+                }
+                const auto upper = c >= 'A' && c <= 'Z';
+                if (upper && !out.empty() && out.back() != '_' &&
+                    ((s[i - 1] >= 'a' && s[i - 1] <= 'z') || is_digit(s[i - 1]) ||
+                     (i + 1 < s.size() && s[i + 1] >= 'a' && s[i + 1] <= 'z' && s[i - 1] >= 'A' && s[i - 1] <= 'Z')))
+                    out += '_';
+                out += upper ? static_cast<char>(c - 'A' + 'a') : c;
+            }
+            while (!out.empty() && out.back() == '_') out.pop_back();
+            return out;
+        }
+
         inline std::string pointer_token(std::string_view s)
         {
             auto out = std::string();
@@ -707,7 +730,9 @@ namespace cpp_yyjson_codegen
             ctype type{};
             settings set{};
             bool required = false, omit_default = false;
-            bool extra = false;          // yyjson::extra_keys: a map of the keys that name no property; no key
+            // yyjson::extra_keys: a map of the keys that name no property; no key. In a struct of yyjson::as_array,
+            // yyjson::extra_items: a vector of the elements after the positions
+            bool extra = false;
             std::string init{};          // " = x" or "{...}"
             std::string default_note{};  // the default of a std::optional field, for a comment
             std::string default_from{};  // the function of yyjson::default_from that makes the default
@@ -766,6 +791,9 @@ namespace cpp_yyjson_codegen
             std::vector<condition> conditions{};
             bool filled = false;
             bool transparent = false;  // yyjson::transparent: read and written as the value of its only field
+            // yyjson::as_array: read and written as a JSON array whose positions are the fields; `additional` is
+            // yyjson::items(bool) then
+            bool as_array = false;
             // enum: member name, JSON name
             std::vector<std::pair<std::string, std::string>> enumerators{};
             std::map<std::string, metadata> enumerator_meta{};  // by JSON name: comments of the enumerators
@@ -2745,7 +2773,7 @@ namespace cpp_yyjson_codegen
                     r = type_map(s, loc, hint);
                 }
                 else if (kind == "array")
-                    r = type_array(s, loc, hint);
+                    r = type_array(s0, s, loc, hint, named);
                 else if (kind == "string")
                     r = {make(tk::string), {}};
                 else if (kind == "integer")
@@ -3018,6 +3046,38 @@ namespace cpp_yyjson_codegen
                 return type_of(ap, loc + "/additionalProperties", hint);
             }
 
+            // the type of the field of a property or a position, with its default. `required`: the key or the
+            // position is always there
+            void place_default(field& f, ctype t, const json* dflt, bool required) const
+            {
+                if (required)
+                {
+                    // the default of a required key is never used by reading; it initializes the member
+                    if (dflt != nullptr) f.dflt = *dflt;
+                    f.type = std::move(t);
+                    f.required = true;
+                }
+                else if (dflt == nullptr || (dflt->is_null() && !holds_null(t)))
+                {
+                    // no default, or `null` for a type without null, which authors write for "unset": the missing
+                    // key is std::nullopt
+                    f.type = make(tk::optional, {std::move(t)});
+                }
+                else if (opts_.optional_defaults)
+                {
+                    // std::nullopt is the missing key, which the program reads as the default in the comment
+                    f.default_note = dump(*dflt);
+                    f.type = make(tk::optional, {std::move(t)});
+                }
+                else
+                {
+                    // convert_defaults() makes it the initializer, once the structs it may construct are known, or
+                    // makes the field std::optional
+                    f.dflt = *dflt;
+                    f.type = std::move(t);
+                }
+            }
+
             void fill_struct(int idx, const json& s, const std::string& loc)
             {
                 auto required = std::vector<std::string>();
@@ -3053,32 +3113,7 @@ namespace cpp_yyjson_codegen
                         if (dflt == nullptr && is_required(k) && target->is_object()) dflt = target->find("const");
                         auto f = field{.member = k, .key = k, .meta = meta_of(*own), .loc = floc};
                         f.set = std::move(ft.s);
-                        if (is_required(k))
-                        {
-                            // the default of a required key is never used by reading; it initializes the member
-                            if (dflt != nullptr) f.dflt = *dflt;
-                            f.type = std::move(ft.t);
-                            f.required = true;
-                        }
-                        else if (dflt == nullptr || (dflt->is_null() && !holds_null(ft.t)))
-                        {
-                            // no default, or `null` for a type without null, which authors write for "unset": the
-                            // missing key is std::nullopt
-                            f.type = make(tk::optional, {std::move(ft.t)});
-                        }
-                        else if (opts_.optional_defaults)
-                        {
-                            // std::nullopt is the missing key, which the program reads as the default in the comment
-                            f.default_note = dump(*dflt);
-                            f.type = make(tk::optional, {std::move(ft.t)});
-                        }
-                        else
-                        {
-                            // convert_defaults() makes it the initializer, once the structs it may construct are
-                            // known, or makes the field std::optional
-                            f.dflt = *dflt;
-                            f.type = std::move(ft.t);
-                        }
+                        place_default(f, std::move(ft.t), dflt, is_required(k));
                         fields.push_back(std::move(f));
                     }
                 }
@@ -3998,6 +4033,39 @@ namespace cpp_yyjson_codegen
                     if (!v) return std::nullopt;
                     return "{" + member(d.fields[0], *v) + "}";
                 }
+                if (d.as_array)
+                {
+                    // the positions by index; the elements after them go to the field of yyjson::extra_items
+                    if (!j.is_array()) return std::nullopt;
+                    auto items = std::vector<std::string>();
+                    std::size_t i = 0;
+                    for (const auto& f : d.fields)
+                    {
+                        if (f.extra)
+                        {
+                            if (i >= j.items.size()) continue;
+                            auto rest = json();
+                            rest.k = json::kind::array;
+                            rest.items.assign(j.items.begin() + static_cast<std::ptrdiff_t>(i), j.items.end());
+                            const auto v = initializer(f.type, rest, before);
+                            if (!v) return std::nullopt;
+                            items.push_back(member(f, *v));
+                            i = j.items.size();
+                        }
+                        else if (i < j.items.size())
+                        {
+                            const auto x = initializer(f.type, j.items[i++], before);
+                            if (!x) return std::nullopt;
+                            items.push_back(member(f, *x));
+                        }
+                        else if (f.required || (f.init.empty() && needs_initializer(f.type)))
+                            return std::nullopt;
+                    }
+                    // reading drops the other elements under yyjson::items(true)
+                    if (i < j.items.size() && !d.additional) return std::nullopt;
+                    if (items.size() < d.fields.size()) partial_init_ = true;
+                    return "{" + join(items) + "}";
+                }
                 if (!j.is_object()) return std::nullopt;
                 auto items = std::vector<std::string>();
                 auto rest = json();
@@ -4209,10 +4277,18 @@ namespace cpp_yyjson_codegen
                 return t;
             }
 
+            // a struct read from a JSON object
             bool is_struct(const ctype& t) const
             {
                 const auto& r = resolved(t);
-                return r.k == tk::named && decls_[r.decl].kind == decl::kind_t::structure;
+                return r.k == tk::named && decls_[r.decl].kind == decl::kind_t::structure && !decls_[r.decl].as_array;
+            }
+
+            // a struct of yyjson::as_array, read from a JSON array
+            bool is_array_struct(const ctype& t) const
+            {
+                const auto& r = resolved(t);
+                return r.k == tk::named && decls_[r.decl].kind == decl::kind_t::structure && decls_[r.decl].as_array;
             }
 
             // an alternative of a variant has no field to carry its metadata, so an unnamed struct made from it takes
@@ -4246,7 +4322,7 @@ namespace cpp_yyjson_codegen
                     case tk::f64:
                         return 3;
                     case tk::named:
-                        return decls_[r.decl].kind == decl::kind_t::enumeration ? 4 : 8;
+                        return decls_[r.decl].kind == decl::kind_t::enumeration ? 4 : decls_[r.decl].as_array ? 6 : 8;
                     case tk::string:
                         return 5;
                     case tk::vector:
@@ -4537,7 +4613,7 @@ namespace cpp_yyjson_codegen
                             bound_seen_.pop_back();
                             return b;
                         }
-                        b.object.extent = bound_extent::partial;
+                        (x.as_array ? b.array : b.object).extent = bound_extent::partial;
                         return b;
                     }
                     case tk::vector:
@@ -5696,7 +5772,8 @@ namespace cpp_yyjson_codegen
                                          : is_integer_kind(t.k)                    ? has("integer") || has("number")
                                          : is_float_kind(t.k)                      ? has("number")
                                          : t.k == tk::boolean                      ? has("boolean")
-                                         : t.k == tk::vector || t.k == tk::tuple   ? has("array")
+                                         : t.k == tk::vector || t.k == tk::tuple ||
+                                                 is_array_struct(t)                ? has("array")
                                          : is_obj                                  ? has("object")
                                          : t.k == tk::null || t.k == tk::monostate ? has("null")
                                                                                    : types.size() >= 6;
@@ -5729,7 +5806,7 @@ namespace cpp_yyjson_codegen
                 if (t.k == tk::string || is_integer_kind(t.k) || is_float_kind(t.k))
                     scalar_constraints(*n, t.k, out, loc);
                 if (is_enum && string_keys) return std::nullopt;
-                if (t.k == tk::tuple && array_keys) return std::nullopt;
+                if ((t.k == tk::tuple || is_array_struct(t)) && array_keys) return std::nullopt;
                 if (t.k == tk::vector && array_keys)
                 {
                     if (n->has("prefixItems")) return std::nullopt;
@@ -5957,20 +6034,44 @@ namespace cpp_yyjson_codegen
                 out.prefix = std::move(prefix);
             }
 
-            typed type_array(const json& s, const std::string& loc, const std::string& hint)
+            typed type_array(const json* s0, const json& s, const std::string& loc, const std::string& hint,
+                             bool named)
             {
                 const auto* prefix = s.find("prefixItems");
                 const auto* items = s.find("items");
-                const auto items_false = items != nullptr && items->is_bool() && !items->b;
+                auto items_false = items != nullptr && items->is_bool() && !items->b;
                 auto r = typed();
                 if (prefix != nullptr && prefix->is_array() && !prefix->items.empty())
                 {
-                    const auto n = prefix->items.size();
+                    // a position that accepts no value ends the array before it, and so does `maxItems`
+                    auto n = prefix->items.size();
+                    for (std::size_t i = 0; i < n; ++i)
+                        if (const auto* p = normalize_full(&prefix->items[i], loc + "/prefixItems/" + std::to_string(i));
+                            p->is_bool() && !p->b)
+                        {
+                            n = i;
+                            items_false = true;
+                        }
+                    if (const auto m = s.has("maxItems") ? as_uint64(*s.find("maxItems")) : std::nullopt; m && *m <= n)
+                    {
+                        n = static_cast<std::size_t>(*m);
+                        items_false = true;
+                    }
+                    if (n == 0)
+                    {
+                        r.t = make(tk::vector, {make(tk::any)});
+                        r.s.max_items = 0;
+                        array_counts(s, r.s, loc);
+                        return r;
+                    }
                     auto pos = std::vector<typed>();
                     for (std::size_t i = 0; i < n; ++i)
                         pos.push_back(type_of(&prefix->items[i], loc + "/prefixItems/" + std::to_string(i),
                                               hint + "Item" + std::to_string(i + 1)));
                     const auto* mi = s.find("minItems");
+                    if (items_false && mi != nullptr && as_uint64(*mi) && *as_uint64(*mi) > n)
+                        warn(loc, "`minItems` is more than the positions of `prefixItems`, and no element may follow "
+                                  "them; no array satisfies the schema");
                     if (items_false && mi != nullptr && as_uint64(*mi) && *as_uint64(*mi) >= n)
                     {
                         r.t = make(tk::tuple);
@@ -5996,13 +6097,24 @@ namespace cpp_yyjson_codegen
                         set_prefix(r.s, std::move(ps), loc);
                         if (!items_false && !rest.s.empty()) r.s.items.push_back(std::move(rest.s));
                     }
-                    else
+                    else if (!opts_.cpp26 && n + (items_false ? 0 : 1) > max_reflected_fields)
                     {
-                        warn(loc,
-                             "positions of `prefixItems` of different types are read as yyjson::value; their "
-                             "constraints are dropped");
+                        warn(loc, "positions of `prefixItems` of different types are read as yyjson::value without "
+                                  "--cpp26 when there are more than " +
+                                      std::to_string(max_reflected_fields) +
+                                      " of them; their constraints are dropped");
                         r.t = make(tk::vector, {make(tk::any)});
                     }
+                    // a struct cannot compare its positions with each other and with the elements after them
+                    else if (const auto* u = s.find("uniqueItems"); (u != nullptr && u->is_bool() && u->b) ||
+                                                                     s.has("contains"))
+                    {
+                        warn(loc, "positions of `prefixItems` of different types are read as yyjson::value beside "
+                                  "`uniqueItems` or `contains`; their constraints are dropped");
+                        r.t = make(tk::vector, {make(tk::any)});
+                    }
+                    else
+                        return make_array_struct(s0, s, std::move(pos), items_false, std::move(rest), loc, hint, named);
                     if (items_false) r.s.max_items = n;
                 }
                 else if (items_false)
@@ -6022,6 +6134,69 @@ namespace cpp_yyjson_codegen
                     warn(loc + "/contains",
                          "`contains` with a type other than the element type is not supported and is ignored");
                 return r;
+            }
+
+            // a struct of yyjson::as_array for an array whose positions have different types: a field for each
+            // position, which is required below `minItems`, and a field of yyjson::extra_items for the elements after
+            // them when `items` has a schema
+            typed make_array_struct(const json* s0, const json& s, std::vector<typed> pos, bool closed, typed rest,
+                                    const std::string& loc, const std::string& hint, bool named)
+            {
+                const auto n = pos.size();
+                const auto* mi = s.find("minItems");
+                const auto min = mi != nullptr ? as_uint64(*mi).value_or(0) : 0;
+                const auto& prefix = *s.find("prefixItems");
+                auto fields = std::vector<field>();
+                for (std::size_t i = 0; i < n; ++i)
+                {
+                    const auto ploc = loc + "/prefixItems/" + std::to_string(i);
+                    const auto& sub = prefix.items[i];
+                    const auto* target = normalize_full(&sub, ploc);
+                    const auto* own = is_pure_ref(sub) ? &sub : normalize(&sub, ploc);
+                    const auto required = i < min;
+                    const auto* dflt = own->find("default");
+                    if (dflt == nullptr && target->is_object()) dflt = target->find("default");
+                    if (dflt == nullptr && required && target->is_object()) dflt = target->find("const");
+                    // the member takes the name of the title of the position; name_members() makes it an identifier
+                    const auto* title = own->find("title");
+                    auto name = title != nullptr && title->is_string() ? snake(title->text) : std::string();
+                    if (name.empty()) name = "item" + std::to_string(i + 1);
+                    auto f = field{.member = name, .key = name, .meta = meta_of(*own), .loc = ploc};
+                    f.set = std::move(pos[i].s);
+                    place_default(f, std::move(pos[i].t), dflt, required);
+                    fields.push_back(std::move(f));
+                }
+                // a closed array with `minItems` of all positions is a std::tuple, so the array here is open
+                if (min > n)
+                    warn(loc, "`minItems` beyond the positions of `prefixItems` is not supported and is ignored");
+                // the elements after the positions: rejected, accepted and dropped, or kept in the field of
+                // yyjson::extra_items
+                const auto any_rest = rest.t.k == tk::any && rest.s.empty();
+                if (!closed && (!any_rest || opts_.keep_unknown_keys))
+                {
+                    auto f = field{.type = make(tk::vector, {std::move(rest.t)}), .loc = loc + "/items"};
+                    f.extra = true;
+                    if (!rest.s.empty()) f.set.items.push_back(std::move(rest.s));
+                    fields.push_back(std::move(f));
+                }
+                if (const auto* mx = s.find("maxItems"); mx != nullptr && !closed)
+                    warn(loc, "`maxItems` beyond the positions of `prefixItems` is not supported and is ignored");
+                // the struct of the schema still being typed is the transparent struct of self_struct(), which holds
+                // this one
+                const auto own_name = named && !self_structs_.contains(s0);
+                auto d = decl{.kind = decl::kind_t::structure,
+                              .name = own_name ? hint : unique_type_name(hint),
+                              .loc = loc,
+                              .fields = std::move(fields),
+                              .additional = !closed,
+                              .filled = true,
+                              .as_array = true};
+                if (own_name)
+                {
+                    d.meta = meta_of(s);
+                    if (const auto it = def_keys_.find(s0); it != def_keys_.end()) d.schema_name = it->second;
+                }
+                return typed{named_type(add_decl(std::move(d))), {}};
             }
 
             typed type_map(const json& s, const std::string& loc, const std::string& hint)
@@ -6090,8 +6265,9 @@ namespace cpp_yyjson_codegen
                         for (auto n = 2; type_names_.contains(m) || used.contains(m); ++n) m = numbered(base, n);
                         used.insert(m);
                         f.member = m;
-                        // the field of a transparent struct has no key, so yyjson::rename has nothing to rename
-                        if (d.transparent) f.key = m;
+                        // the field of a transparent struct has no key, and a position has none either, so
+                        // yyjson::rename has nothing to rename
+                        if (d.transparent || d.as_array) f.key = m;
                     }
                 }
             }
@@ -6528,6 +6704,28 @@ namespace cpp_yyjson_codegen
             fit fits_struct(const json& j, const decl& d) const
             {
                 if (d.transparent) return fits(j, d.fields[0].type, d.fields[0].set);
+                if (d.as_array)
+                {
+                    // the positions by index, then the elements after them
+                    if (!j.is_array()) return fit::no;
+                    auto r = fit::yes;
+                    std::size_t i = 0;
+                    for (const auto& f : d.fields)
+                    {
+                        if (f.extra)
+                        {
+                            for (; i < j.items.size() && r != fit::no; ++i)
+                                r = std::min(r, fits(j.items[i], f.type.args[0],
+                                                     f.set.items.empty() ? settings() : f.set.items[0]));
+                        }
+                        else if (i < j.items.size())
+                            r = std::min(r, fits(j.items[i++], f.type, f.set));
+                        else if (f.required)
+                            return fit::no;
+                        if (r == fit::no) return r;
+                    }
+                    return i < j.items.size() && !d.additional ? fit::no : r;
+                }
                 if (!j.is_object()) return fit::no;
                 auto r = fit::yes;
                 const field* extra = nullptr;
@@ -6925,15 +7123,15 @@ namespace cpp_yyjson_codegen
                 for (const auto& e : m.noted_examples) out += std::string(indent) + "// example: " + dump(e) + "\n";
             }
 
-            std::vector<std::string> field_items(const field& f)
+            std::vector<std::string> field_items(const field& f, bool as_array)
             {
                 auto items = std::vector<std::string>();
                 // the annotations of C++20 are outside the namespace
                 const auto q = opts_.cpp26 || opts_.ns.empty() ? std::string() : opts_.ns + "::";
                 if (f.extra)
                 {
-                    // the field has no key, and takes only the settings of its values
-                    items.emplace_back("yyjson::extra_keys");
+                    // the field has no key, and takes only the settings of its values or elements
+                    items.emplace_back(as_array ? "yyjson::extra_items" : "yyjson::extra_keys");
                     for (auto& s : render_settings(f.set, f.type, q)) items.push_back(std::move(s));
                     return items;
                 }
@@ -6954,6 +7152,14 @@ namespace cpp_yyjson_codegen
                 if (d.transparent)
                 {
                     items.emplace_back("yyjson::transparent");
+                    return items;
+                }
+                if (d.as_array)
+                {
+                    // explicit, so that a read under yyjson::strict accepts the elements that the schema accepts
+                    items.emplace_back("yyjson::as_array");
+                    if (!std::ranges::any_of(d.fields, [](const field& f) { return f.extra; }))
+                        items.emplace_back(d.additional ? "yyjson::items(true)" : "yyjson::items(false)");
                     return items;
                 }
                 // explicit, so that a read under yyjson::strict accepts the keys that the schema accepts
@@ -7150,7 +7356,7 @@ namespace cpp_yyjson_codegen
                         if (!f.default_note.empty()) body += "    // default: " + f.default_note + "\n";
                         if (shares_type(f.type)) body += "    // alternatives share a type; use index()\n";
                         body += moved_note(f.type, "    ");
-                        const auto fi = field_items(f);
+                        const auto fi = field_items(f, d.as_array);
                         body += "    ";
                         if (opts_.cpp26 && !fi.empty()) body += attributes(fi) + " ";
                         body += spell(f.type) + " " + f.member + f.init + ";\n";
@@ -7257,10 +7463,23 @@ namespace cpp_yyjson_codegen
                     out +=
                         "//\n// A struct with `yyjson::transparent` is read and written as the value of its only "
                         "field, whose\n// constraints are those of the schema of the struct.\n";
-                if (any_field([](const field& f) { return f.extra; }))
+                const auto any_extra = [&](bool as_array) {
+                    return std::ranges::any_of(decls_, [&](const decl& d) {
+                        return d.as_array == as_array && std::ranges::any_of(d.fields, &field::extra);
+                    });
+                };
+                if (any_extra(false))
                     out +=
                         "//\n// A field with `yyjson::extra_keys` holds the keys of the object that name no other "
                         "field, and\n// writing puts them after the fields.\n";
+                if (std::ranges::any_of(decls_, &decl::as_array))
+                    out += "//\n// A struct with `yyjson::as_array` is read and written as a JSON array whose "
+                           "elements are its\n// fields in order. A std::optional field or one with a default may be "
+                           "missing at the end of\n// the array, and writing leaves out the run of such fields at "
+                           "the end that hold no value or\n// their defaults.\n";
+                if (any_extra(true))
+                    out += "//\n// A field with `yyjson::extra_items` holds the elements after the other fields, "
+                           "and writing puts\n// them at the end.\n";
                 if (widened_variants_)
                     out += "//\n// A variant of more than " + std::to_string(opts_.max_alternatives) +
                            " alternatives (--max-alternatives) is yyjson::value, which reads any JSON\n// value: "

@@ -2,8 +2,8 @@
 // references codegen/customer.schema.json, from codegen/defaults.schema.json, from
 // codegen/alternatives.schema.json, from codegen/patterns.schema.json, from
 // codegen/recursion.schema.json, from codegen/untyped.schema.json (also with INFER_TYPES), from
-// codegen/conditions.schema.json, from codegen/contains.schema.json and from
-// codegen/invoice.schema.json, which references codegen/remote/money.schema.json through URI_MAP and
+// codegen/conditions.schema.json, from codegen/contains.schema.json, from
+// codegen/positions.schema.json and from codegen/invoice.schema.json, which references codegen/remote/money.schema.json through URI_MAP and
 // codegen/tax.schema.json through SCHEMAS.
 #include <gtest/gtest.h>
 
@@ -28,6 +28,7 @@ struct yyjson::pattern_matcher<>
 #include "negations.hpp"
 #include "order.hpp"
 #include "patterns.hpp"
+#include "positions.hpp"
 #include "recursion.hpp"
 #include "untyped.hpp"
 #include "untyped_inferred.hpp"
@@ -285,6 +286,45 @@ TEST(CodegenCMake, ValueNot)
     auto listing = model::Listing();
     listing.name = "tmp";
     EXPECT_THROW(yyjson::validate(listing), yyjson::bad_cast);
+}
+
+TEST(CodegenCMake, Positions)
+{
+    // positions of different types are the fields of yyjson::as_array structs, the elements after them a field of
+    // yyjson::extra_items
+    const auto json = R"({"rule":[2,"src",{}],"path":["a",1.5,3,4],"size":[1.5,"cm"]})";
+    const auto linter = yyjson::read<model::Linter>(json, yyjson::strict);
+    EXPECT_EQ(linter.rule.level, 2);
+    EXPECT_EQ(linter.rule.applicable_to, "src");
+    ASSERT_TRUE(linter.path.has_value());
+    EXPECT_EQ(linter.path->item1, "a");
+    EXPECT_EQ(linter.path->extra, (std::vector<std::int64_t>{3, 4}));
+    EXPECT_EQ(std::string_view(yyjson::write(linter)), std::string_view(json));
+    EXPECT_NO_THROW(yyjson::validate(linter));
+
+    // missing positions at the tail keep their initializers and are not written; elements after the positions of
+    // an array without `items` are dropped
+    for (const auto& [in, out] : {std::pair{R"({"rule":[0]})", R"({"rule":[0]})"}, std::pair{"{}", "{}"},
+                                  std::pair{R"({"rule":[1,"all"]})", "{}"},
+                                  std::pair{R"({"path":["a"]})", R"({"path":["a"]})"},
+                                  std::pair{R"({"size":[1.5,"cm",true]})", R"({"size":[1.5,"cm"]})"}})
+        EXPECT_EQ(std::string_view(yyjson::write(yyjson::read<model::Linter>(in))), std::string_view(out)) << in;
+    for (const auto* in : {R"({"rule":[]})", R"({"rule":[3]})", R"({"rule":[0,"a",{},1]})", R"({"rule":[0,1]})",
+                           R"({"path":["a",1,-1]})", R"({"size":[1.5]})"})
+        EXPECT_THROW((void)yyjson::read<model::Linter>(in), yyjson::bad_cast) << in;
+    try
+    {
+        (void)yyjson::read<model::Linter>(R"({"path":["a",1,-1]})");
+    }
+    catch (const yyjson::bad_cast& e)
+    {
+        EXPECT_EQ(e.path(), "/path/2");
+    }
+
+    // a position left out before one that is present cannot be read back
+    auto holed = model::Linter();
+    holed.path = model::Path{.item2 = 1.5};
+    EXPECT_THROW(yyjson::validate(holed), yyjson::bad_cast);
 }
 
 TEST(CodegenCMake, Contains)

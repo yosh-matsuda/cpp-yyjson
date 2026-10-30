@@ -1984,6 +1984,119 @@ TEST(Codegen, FalseProperties)
                  cpp_yyjson_codegen::error);
 }
 
+TEST(Codegen, AsArray)
+{
+    // positions of different types in an array of variable length: a struct of yyjson::as_array whose fields are
+    // the positions; positions below `minItems` are required, the others std::optional
+    const auto r = generate(R"({
+        "$defs": {
+            "Rule": {
+                "type": "array",
+                "prefixItems": [
+                    {"type": "integer", "enum": [0, 1, 2], "title": "Level"},
+                    {"type": "string", "default": "all", "title": "applicableTo"},
+                    {}
+                ],
+                "minItems": 1,
+                "items": false
+            },
+            "Point": {"type": "array", "prefixItems": [{"type": "number"}, {"type": "string"}],
+                      "items": {"type": "integer", "minimum": 0}},
+            "Open": {"type": "array", "prefixItems": [{"type": "number"}, {"type": "string"}], "minItems": 2},
+            "Cut": {"type": "array", "prefixItems": [{"type": "number"}, {"type": "string"}, {"type": "boolean"}],
+                    "maxItems": 2},
+            "Ended": {"type": "array", "prefixItems": [{"type": "number"}, {"type": "string"}, false]},
+            "List": {"type": "array", "prefixItems": [{"type": "string"}, {"$ref": "#/$defs/List"}]}
+        },
+        "type": "object",
+        "properties": {
+            "rule": {"$ref": "#/$defs/Rule", "default": [1]},
+            "point": {"$ref": "#/$defs/Point"},
+            "open": {"$ref": "#/$defs/Open"},
+            "cut": {"$ref": "#/$defs/Cut"},
+            "ended": {"$ref": "#/$defs/Ended"},
+            "list": {"$ref": "#/$defs/List"},
+            "inline": {"type": "array", "prefixItems": [{"type": "integer"}, {"type": "boolean"}]}
+        }
+    })", {});
+    EXPECT_EQ(warnings(r), "");
+    // titles name the members; a default of a position is the initializer, and one of the array fills the positions
+    EXPECT_TRUE(has(r.code, "struct Rule\n{\n    std::int64_t level;\n    std::string applicable_to = \"all\";\n"
+                            "    std::optional<yyjson::value> item3;\n};\n"));
+    EXPECT_TRUE(has(r.code, "yyjson::annotations<Rule> = yyjson::annotate(\n    yyjson::schema_name(\"Rule\"),\n"
+                            "    yyjson::as_array,\n    yyjson::items(false),\n"
+                            "    yyjson::field(\"level\", yyjson::required, yyjson::enum_(0, 1, 2), "
+                            "yyjson::title(\"Level\")),\n"
+                            "    yyjson::field(\"applicable_to\", yyjson::omit_default, "
+                            "yyjson::title(\"applicableTo\")));\n"));
+    EXPECT_TRUE(has(r.code, "    Rule rule{.level = 1};\n"));
+    // the schema of `items` goes to a field of yyjson::extra_items
+    EXPECT_TRUE(has(r.code, "struct Point\n{\n    std::optional<double> item1;\n    std::optional<std::string> item2;\n"
+                            "    std::vector<std::int64_t> extra;\n};\n"));
+    EXPECT_TRUE(has(r.code, "    yyjson::as_array,\n"
+                            "    yyjson::field(\"extra\", yyjson::extra_items, yyjson::items(yyjson::minimum(0))));\n"));
+    // without `items`, elements after the positions are accepted and dropped
+    EXPECT_TRUE(has(r.code, "struct Open\n{\n    double item1;\n    std::string item2;\n};\n"));
+    EXPECT_TRUE(has(r.code, "    yyjson::as_array,\n    yyjson::items(true),\n"
+                            "    yyjson::field(\"item1\", yyjson::required),\n"
+                            "    yyjson::field(\"item2\", yyjson::required));\n"));
+    // `maxItems` and a position of `false` end the array
+    EXPECT_TRUE(has(r.code, "struct Cut\n{\n    std::optional<double> item1;\n    std::optional<std::string> item2;\n"
+                            "};\n"));
+    EXPECT_TRUE(has(r.code, "struct Ended\n{\n    std::optional<double> item1;\n    std::optional<std::string> item2;\n"
+                            "};\n"));
+    EXPECT_TRUE(has(r.code, "yyjson::annotations<Cut> = yyjson::annotate(\n    yyjson::schema_name(\"Cut\"),\n"
+                            "    yyjson::as_array,\n    yyjson::items(false));\n"));
+    // a recursive array is a transparent struct that holds the struct of the positions
+    EXPECT_TRUE(has(r.code, "struct List2\n{\n    std::optional<std::string> item1;\n"
+                            "    std::optional<yyjson::indirect<List>> item2;\n};\n"));
+    EXPECT_TRUE(has(r.code, "struct List\n{\n    List2 value;\n};\n"));
+    EXPECT_TRUE(has(r.code, "struct RootInline\n{\n    std::optional<std::int64_t> item1;\n    std::optional<bool> item2;\n"
+                            "};\n"));
+    // the positions of a closed array that are all required stay a std::tuple
+    EXPECT_TRUE(has(generate(R"({"type": "array", "prefixItems": [{"type": "integer"}, {"type": "string"}],
+                                 "minItems": 2, "items": false})", {}).code,
+                    "using Root = std::tuple<std::int64_t, std::string>;\n"));
+
+    // --keep-unknown-keys keeps the elements after the positions
+    const auto kept = generate(R"({"type": "array", "prefixItems": [{"type": "integer"}, {"type": "string"}]})",
+                               {.keep_unknown_keys = true});
+    EXPECT_TRUE(has(kept.code, "    std::optional<std::string> item2;\n    std::vector<yyjson::value> extra;\n"));
+    EXPECT_TRUE(has(kept.code, "    yyjson::as_array,\n    yyjson::field(\"extra\", yyjson::extra_items));\n"));
+
+    // counts beyond the positions, and keywords of the whole array
+    const auto counts = [](std::string_view rest) {
+        return warnings(generate(R"({"type": "array", "prefixItems": [{"type": "integer"}, {"type": "string"}], )" +
+                                     std::string(rest) + "}",
+                                 {}));
+    };
+    EXPECT_EQ(counts(R"("items": false, "minItems": 3)"),
+              "#: `minItems` is more than the positions of `prefixItems`, and no element may follow them; no array "
+              "satisfies the schema\n");
+    EXPECT_EQ(counts(R"("minItems": 3)"), "#: `minItems` beyond the positions of `prefixItems` is not supported and "
+                                          "is ignored\n");
+    EXPECT_EQ(counts(R"("maxItems": 5)"), "#: `maxItems` beyond the positions of `prefixItems` is not supported and "
+                                          "is ignored\n");
+    // a struct cannot compare its positions, so `uniqueItems` and `contains` keep the elements of any JSON value
+    const auto unique = generate(R"({"type": "array", "prefixItems": [{"type": "integer"}, {"type": "string"}],
+                                     "uniqueItems": true})", {});
+    EXPECT_EQ(warnings(unique), "#: positions of `prefixItems` of different types are read as yyjson::value beside "
+                                "`uniqueItems` or `contains`; their constraints are dropped\n");
+    EXPECT_TRUE(has(unique.code, "    std::vector<yyjson::value> value;\n"));
+    EXPECT_TRUE(has(unique.code, "    yyjson::field(\"value\", yyjson::unique_items));\n"));
+
+    // more positions than C++20 reflects
+    auto many = std::string(R"({"type": "array", "items": false, "prefixItems": [{"type": "string"})");
+    for (auto i = 1; i < 101; ++i) many += R"(, {"type": "integer"})";
+    many += "]}";
+    const auto fallback = generate(many, {});
+    EXPECT_EQ(warnings(fallback), "#: positions of `prefixItems` of different types are read as yyjson::value without "
+                                  "--cpp26 when there are more than 100 of them; their constraints are dropped\n");
+    EXPECT_TRUE(has(fallback.code, "struct Root\n{\n    std::vector<yyjson::value> value;\n};\n"));
+    EXPECT_TRUE(has(fallback.code, "    yyjson::field(\"value\", yyjson::max_items(101)));\n"));
+    EXPECT_TRUE(has(generate(many, {.cpp26 = true}).code, "struct [[=yyjson::as_array, =yyjson::items(false)]] Root\n"));
+}
+
 TEST(Codegen, ValueNot)
 {
     // `not` of a value: constraints of the value's type, kinds rejected entirely left out, values of `enum` filtered

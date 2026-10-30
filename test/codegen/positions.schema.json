@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Linter",
+  "$defs": {
+    "Rule": {
+      "type": "array",
+      "prefixItems": [
+        {"type": "integer", "enum": [0, 1, 2], "title": "Level"},
+        {"type": "string", "default": "all", "title": "applicableTo"},
+        {"type": "object"}
+      ],
+      "minItems": 1,
+      "items": false
+    },
+    "Path": {
+      "type": "array",
+      "prefixItems": [{"type": "string"}, {"type": "number"}],
+      "items": {"type": "integer", "minimum": 0}
+    },
+    "Size": {"type": "array", "prefixItems": [{"type": "number"}, {"type": "string"}], "minItems": 2}
+  },
+  "type": "object",
+  "properties": {
+    "rule": {"$ref": "#/$defs/Rule", "default": [1]},
+    "path": {"$ref": "#/$defs/Path"},
+    "size": {"$ref": "#/$defs/Size"}
+  }
+}
