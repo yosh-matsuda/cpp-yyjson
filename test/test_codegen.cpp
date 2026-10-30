@@ -2376,6 +2376,46 @@ TEST(Codegen, Contradictions)
     EXPECT_THROW((void)generate(schema, {.strict = true}), cpp_yyjson_codegen::error);
 }
 
+TEST(Codegen, PropertyCounts)
+{
+    // `minProperties` and `maxProperties` of a struct are yyjson::min_properties and yyjson::max_properties; allOf
+    // takes the greater minimum and the smaller maximum. Writing leaves out a key whose member holds the default,
+    // which the minimum would not count: a default of such a struct is in a comment of a std::optional member.
+    // A default of a struct with too many keys is not an initializer
+    const auto schema = R"({
+        "type": "object",
+        "properties": {
+            "a": {"type": "integer", "default": 5},
+            "holder": {"$ref": "#/$defs/Holder"}
+        },
+        "minProperties": 1,
+        "allOf": [{"minProperties": 0, "maxProperties": 3}, {"maxProperties": 2}],
+        "$defs": {
+            "Inner": {"type": "object", "properties": {"x": {"type": "integer"}, "y": {"type": "integer"}},
+                      "maxProperties": 1},
+            "Holder": {"type": "object", "properties": {"inner": {"$ref": "#/$defs/Inner", "default": {"x": 1, "y": 2}},
+                                                        "n": {"type": "integer", "default": 1}}},
+            "Empty": {"type": "object", "properties": {"x": {"type": "integer"}}, "minProperties": 3,
+                      "maxProperties": 2},
+            "Over": {"type": "object", "properties": {"x": {"type": "integer"}, "y": {"type": "integer"}},
+                     "required": ["x", "y"], "maxProperties": 1}
+        }
+    })";
+    const auto r = generate(schema, {});
+    EXPECT_EQ(warnings(r),
+              "#/$defs/Holder/properties/inner: the default {\"x\":1,\"y\":2} is not converted to the C++ type; the "
+              "field is std::optional\n"
+              "#/$defs/Empty: `minProperties` is greater than `maxProperties`: the schema accepts no object here, "
+              "and the generated code does not compile\n"
+              "#/$defs/Over: `required` names more keys than `maxProperties` allows: the schema accepts no object "
+              "here, and reading one always fails\n");
+    EXPECT_TRUE(has(r.code, "    yyjson::min_properties(1),\n    yyjson::max_properties(2));"));
+    EXPECT_TRUE(has(r.code, "yyjson::min_properties(3),\n    yyjson::max_properties(2));"));
+    EXPECT_TRUE(has(r.code, "    // default: 5\n    std::optional<std::int64_t> a;"));
+    EXPECT_TRUE(has(r.code, "std::int64_t n = 1;"));
+    EXPECT_THROW((void)generate(schema, {.strict = true}), cpp_yyjson_codegen::error);
+}
+
 TEST(Codegen, ValuesOutsideType)
 {
     // the values of `const` and `enum` of the types of `type` are read, or all of them when none is, with a warning

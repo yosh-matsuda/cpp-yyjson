@@ -792,6 +792,8 @@ namespace cpp_yyjson_codegen
             std::vector<std::pair<std::string, std::vector<std::string>>> dependent{};  // keys
             std::vector<required_groups> groups{};                                      // keys
             std::vector<condition> conditions{};
+            // yyjson::min_properties / yyjson::max_properties: the number of the keys of the object
+            std::optional<std::uint64_t> min_properties{}, max_properties{};
             bool filled = false;
             bool transparent = false;  // yyjson::transparent: read and written as the value of its only field
             // yyjson::as_array: read and written as a JSON array whose positions are the fields; `additional` is
@@ -3337,10 +3339,12 @@ namespace cpp_yyjson_codegen
                 else if (!ap_any)
                     extra = type_of(ap, loc + "/additionalProperties", decls_[idx].name + "Extra");
                 if (!extra && additional && opts_.keep_unknown_keys) extra = typed{make(tk::any), {}};
-                for (const auto* k : {"minProperties", "maxProperties"})
-                    if (s.has(k))
-                        warn(loc,
-                             std::string("`") + k + "` of an object that is a struct is not supported and is ignored");
+                auto min_properties = std::optional<std::uint64_t>();
+                auto max_properties = std::optional<std::uint64_t>();
+                if (const auto* v = s.find("minProperties"); v != nullptr && as_uint64(*v) && *as_uint64(*v) > 0)
+                    min_properties = as_uint64(*v);
+                if (const auto* v = s.find("maxProperties"); v != nullptr && as_uint64(*v))
+                    max_properties = as_uint64(*v);
                 // `propertyNames` checks the keys that the field of yyjson::extra_keys receives; an open struct gets
                 // the field for it
                 auto names = std::optional<settings>();
@@ -3412,6 +3416,8 @@ namespace cpp_yyjson_codegen
                 d.dependent = std::move(dependent);
                 d.groups = std::move(groups);
                 d.conditions = std::move(conditions);
+                d.min_properties = min_properties;
+                d.max_properties = max_properties;
                 d.filled = true;
             }
 
@@ -3925,8 +3931,12 @@ namespace cpp_yyjson_codegen
                         else if (presence_matters(decls_[i], f.key))
                         {
                             // writing would leave the key out when the member holds the default, while another key
-                            // requires it (dependentRequired) or a group of oneOf / anyOf counts it: std::nullopt is
-                            // the missing key, which the program reads as the default in the comment
+                            // requires it (dependentRequired), a group of oneOf / anyOf counts it or minProperties
+                            // counts it: std::nullopt is the missing key, which the program reads as the default in
+                            // the comment. A default that the type does not read is reported as in the last branch
+                            if (!j.is_null() && fits(j, f.type, f.set) == fit::no)
+                                warn(f.loc, "the default " + dump(j) +
+                                                " is not converted to the C++ type; the field is std::optional");
                             f.default_note = dump(j);
                             if (f.type.k != tk::optional) f.type = make(tk::optional, {std::move(f.type)});
                         }
@@ -3957,13 +3967,14 @@ namespace cpp_yyjson_codegen
                     }
             }
 
-            // whether the presence of the key is checked: another key requires it, or a group of required keys has it
+            // whether the presence of the key is checked: another key requires it, a group of required keys has it,
+            // or the struct has a minimum number of keys, which a key that writing leaves out would not count to
             static bool presence_matters(const decl& d, const std::string& key)
             {
                 const auto has = [&](const std::vector<std::string>& keys) {
                     return std::ranges::find(keys, key) != keys.end();
                 };
-                return std::ranges::any_of(d.dependent, [&](const auto& e) { return has(e.second); }) ||
+                return d.min_properties.has_value() || std::ranges::any_of(d.dependent, [&](const auto& e) { return has(e.second); }) ||
                        std::ranges::any_of(d.groups, [&](const required_groups& g) {
                            return std::ranges::any_of(g.groups, has);
                        });
@@ -4282,6 +4293,10 @@ namespace cpp_yyjson_codegen
                 }
                 // reading drops the other keys of an open struct
                 if (left != 0 && !d.additional) return std::nullopt;
+                // reading counts all the keys of the object
+                if ((d.min_properties && j.members.size() < *d.min_properties) ||
+                    (d.max_properties && j.members.size() > *d.max_properties))
+                    return std::nullopt;
                 if (items.size() < d.fields.size()) partial_init_ = true;
                 return "{" + join(items) + "}";
             }
@@ -6980,6 +6995,10 @@ namespace cpp_yyjson_codegen
                     });
                     if (g.exactly_one ? n != 1 : n == 0) return fit::no;
                 }
+                // reading counts all the keys of the object
+                if ((d.min_properties && j.members.size() < *d.min_properties) ||
+                    (d.max_properties && j.members.size() > *d.max_properties))
+                    return fit::no;
                 return r;
             }
 
@@ -7244,6 +7263,17 @@ namespace cpp_yyjson_codegen
                 for (const auto& d : decls_)
                 {
                     if (d.kind == decl::kind_t::alias) check_alternative_levels(d.target, d.loc);
+                    if (d.kind == decl::kind_t::structure && d.max_properties)
+                    {
+                        const auto required = static_cast<std::uint64_t>(
+                            std::ranges::count_if(d.fields, [](const field& f) { return !f.extra && f.required; }));
+                        if (d.min_properties && *d.min_properties > *d.max_properties)
+                            warn(d.loc, "`minProperties` is greater than `maxProperties`: the schema accepts no object "
+                                        "here, and the generated code does not compile");
+                        else if (required > *d.max_properties)
+                            warn(d.loc, "`required` names more keys than `maxProperties` allows: the schema accepts no "
+                                        "object here, and reading one always fails");
+                    }
                     for (const auto& f : d.fields)
                     {
                         check_level(f.type, f.set, f.loc);
@@ -7411,6 +7441,8 @@ namespace cpp_yyjson_codegen
                         std::string(g.exactly_one ? "yyjson::one_of_required(" : "yyjson::any_of_required(") +
                         join(gs) + ")");
                 }
+                if (d.min_properties) items.push_back("yyjson::min_properties(" + std::to_string(*d.min_properties) + ")");
+                if (d.max_properties) items.push_back("yyjson::max_properties(" + std::to_string(*d.max_properties) + ")");
                 // the annotations of C++20 are outside the namespace
                 const auto q = opts_.cpp26 || opts_.ns.empty() ? std::string() : opts_.ns + "::";
                 const auto fields = [&](std::string_view part, const std::vector<cond_field>& cs) {
