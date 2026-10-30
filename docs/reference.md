@@ -1815,6 +1815,8 @@ As in JSON Schema, where `"additionalProperties": false` is the schema that reje
 
 A field with [`yyjson::extra_keys`](#yyjsonextra_keys) receives such keys instead, and takes `additional_properties(settings...)` for their values and [`yyjson::property_names(settings...)`](#yyjsonproperty_names) for their keys; `additional_properties(false)` on its struct is a compile error. A field with [`yyjson::pattern_properties`](#yyjsonpattern_properties) receives the keys that its pattern matches and takes the same two settings; `additional_properties(bool)` on its struct applies to the keys that no pattern matches.
 
+`yyjson::then` and `yyjson::else_` of [`yyjson::if_then_else`](#yyjsonif_then_else-yyjsonnot_) also take `additional_properties(false)`, which limits the keys of the object to those that the part names while the part applies.
+
 See [Annotations of keys](validation.md#annotations-of-keys).
 
 ### `yyjson::dependent_required`
@@ -1914,10 +1916,10 @@ Conditions between the fields of an object read into a struct, as the keywords `
 ```cpp
 template <typename... Fields>
 consteval /* unspecified */ if_(Fields... fields);
-template <typename... Fields>
-consteval /* unspecified */ then(Fields... fields);
-template <typename... Fields>
-consteval /* unspecified */ else_(Fields... fields);
+template <typename... Args>
+consteval /* unspecified */ then(Args... fields);  // fields, and yyjson::additional_properties(false) once
+template <typename... Args>
+consteval /* unspecified */ else_(Args... fields);  // fields, and yyjson::additional_properties(false) once
 
 consteval /* unspecified */ if_then_else(/* if_ */ condition, /* then */ then_part);
 consteval /* unspecified */ if_then_else(/* if_ */ condition, /* else_ */ else_part);
@@ -1931,11 +1933,12 @@ consteval /* unspecified */ not_(Fields... fields);
 
 *   A field of `if_` holds when the object does not have its key, or when the value satisfies its settings; with `yyjson::required`, only in the second case. `if_` holds when all its fields hold. The settings are `yyjson::required`, `yyjson::const_`, `yyjson::enum_`, `yyjson::minimum`, `yyjson::maximum`, `yyjson::exclusive_minimum`, `yyjson::exclusive_maximum`, `yyjson::multiple_of`, `yyjson::min_length`, `yyjson::max_length`, `yyjson::pattern` and `yyjson::format`, and for an array `yyjson::contains` with `yyjson::min_contains` and `yyjson::max_contains`.
 *   A field of `then` and `else_` holds by the same rule, with `yyjson::required`, the [constraints](#constraints), `yyjson::satisfies<f>`, the settings of the values in it such as [`yyjson::items`](#yyjsonitems), and [`yyjson::is_type<T>`](#yyjsonis_type), which holds when the value of a `yyjson::value` or `yyjson::object` field, or a `std::optional` of them, converts to `T`.
+*   `then` and `else_` also take [`yyjson::additional_properties(false)`](#yyjsonadditional_properties) once, as `additionalProperties: false` beside `properties` does in JSON Schema: when the part applies, the object may have only the keys of the fields that the part names and the keys of its tags, the keys of [`yyjson::adjacent_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag) and the key of [`yyjson::internal_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag) of the alternative being read. A field without settings, `yyjson::field("k")`, names a key for it and requires nothing else; only `then` and `else_` take one. `yyjson::additional_properties(true)` adds nothing.
 *   `if_then_else` requires `then` when `if_` holds and `else_` when it does not; either may be left out. `not_` takes the settings of `if_` and rejects an object for which all its fields hold.
 
 `yyjson::not_` of settings rather than fields is a constraint of one value, described in [Constraints](#constraints); a field of `then` and `else_` takes it, and a field of `if_` and `not_` does not.
 
-Reading an object that breaks one of them throws `yyjson::bad_cast`, with or without [`yyjson::strict`](#yyjsonstrict), except in `yyjson::merge_into`; `yyjson::is_type<T>` converts with `yyjson::strict` when the read has it. A missing key that `then` or `else_` requires gives `S is not constructible from JSON without the key "k", which yyjson::if_then_else requires`, a value that breaks a setting gives the message of that setting at the path of the value, and `not_` gives `S has the keys and the values that yyjson::not_ rejects`. [`yyjson::validate`](#yyjsonvalidate) and `write(t, yyjson::strict)` check them by the keys that are written. A struct may have several of them, which all apply.
+Reading an object that breaks one of them throws `yyjson::bad_cast`, with or without [`yyjson::strict`](#yyjsonstrict), except in `yyjson::merge_into`; `yyjson::is_type<T>` converts with `yyjson::strict` when the read has it. A missing key that `then` or `else_` requires gives `S is not constructible from JSON without the key "k", which yyjson::if_then_else requires`, a value that breaks a setting gives the message of that setting at the path of the value, a key that `yyjson::additional_properties(false)` of the part rejects gives `S has the key "k", which yyjson::additional_properties(false) of yyjson::if_then_else rejects` at the path of its value, and `not_` gives `S has the keys and the values that yyjson::not_ rejects`. Reading checks the keys of the object, including those that no field has and those of `yyjson::extra_keys` and `yyjson::pattern_properties` fields; under `yyjson::strict`, a key that no field has is rejected first, as an unknown key. [`yyjson::validate`](#yyjsonvalidate) and `write(t, yyjson::strict)` check them by the keys that are written. A struct may have several of them, which all apply.
 
 Reading tells which fields the object has by its keys, and checks the settings of the fields that it has; the value that a field holds without its key, such as a member initializer, does not count. A name that is not a member of the struct, a skipped field, a field of [`yyjson::extra_keys`](#yyjsonextra_keys), a setting that the part does not take, `yyjson::is_type<T>` outside `then` and `else_`, and these annotations on a struct with [`yyjson::transparent`](#yyjsontransparent) are compile errors. See [Conditions between fields](validation.md#conditions-between-fields).
 

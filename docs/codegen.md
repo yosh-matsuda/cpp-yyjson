@@ -625,8 +625,11 @@ inline constexpr auto yyjson::annotations<Root> = yyjson::annotate(
 | `then: false` | `yyjson::not_` of the fields of `if` |
 | `not` | `yyjson::not_(...)`; `not` of `anyOf` is one `yyjson::not_` for each subschema |
 | `"dependentSchemas": {"k": S}` | `yyjson::if_then_else(yyjson::if_(yyjson::field("k", yyjson::required)), yyjson::then(S))`; `false` is `yyjson::not_(yyjson::field("k", yyjson::required))` |
+| `additionalProperties: false` in `then`, `else` or a subschema of `dependentSchemas` | `yyjson::additional_properties(false)` in `yyjson::then` or `yyjson::else_`, with a `yyjson::field("k")` for each key of `properties` that has a member |
 
 `if` and `not` test keys and values: `required`, and in `properties`, `const`, `enum`, the bounds of numbers, the lengths and `pattern` of strings, `format`, and [`contains`](#mapping) with `minContains` and `maxContains`. A test must be exact, so a `contains` that the generator can only loosen leaves the condition out with a warning. `"type": "object"` adds nothing on a struct and is left out. `then`, `else` and the subschemas of `dependentSchemas` take `required` and the constraints that the members take, of values and of elements. A `$ref` in `then` or `else` for a key whose member is `yyjson::value` or `yyjson::object` reads the value as the type of the reference, with `yyjson::is_type<T>`, which checks the type but not its constraints; the generator warns when the reference has constraints of its own. A `$ref` to the type of the member adds nothing and is left out.
+
+`additionalProperties: false` in `then` or `else` lets the object have only the keys of the `properties` beside it, while the part applies. The part then names every such key that has a member, also a key whose schema accepts any value, as `yyjson::field("k")` without settings; the library also lets the keys of the tags through, which the schema lists in `properties` as well. `additionalProperties` of `true` or of a schema that accepts any value adds nothing. Another schema in it, and `false` beside `patternProperties`, are left out with a warning.
 
 JSON Schema has no `else if`. An `else` that holds one more `if`, and so on, is a chain: when every `if` of the chain tests the same key against values that no other `if` lists, and at most one of them lets an absent key through, each link becomes a `yyjson::if_then_else` of its own, and the last `else` one more whose `if_` lists all the values. Another `if`, `not` or `dependentSchemas` inside `then`, `else` or `dependentSchemas` is left out with a warning.
 
@@ -639,6 +642,8 @@ A condition that the settings cannot express is left out with a warning, so the 
 | `if` that every object satisfies, such as `{}` or `{"type": "object"}` | "`if` that every object satisfies is not supported; `then` and `else` are ignored" |
 | `else: false` | "`else` that no object satisfies is not supported and is ignored" |
 | a keyword of `then` or `else` that no setting of the member expresses | "the schema of the key "k" is not expressed by the settings of its field and is ignored" |
+| `additionalProperties` with a schema in `then` or `else` | "`additionalProperties` other than false is not supported here and is ignored" |
+| `additionalProperties: false` beside `patternProperties` in `then` or `else` | "`additionalProperties` false beside `patternProperties` is not supported here and is ignored" |
 | `if` of a value that is not read as a struct, such as `if` with `maxLength` on a string | "`if` is not supported on a value that is not read as a struct and is ignored" |
 
 A condition on a value that is not an object holds for every value when it tests only keys, or when its `if` only objects satisfy, and the generator leaves it out without a warning. `not` of a value is described in [`not` of a value](#not-of-a-value).

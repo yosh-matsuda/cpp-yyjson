@@ -284,6 +284,26 @@ yyjson::read<Shape>(R"({"kind":"none"})");
 *   A field of `yyjson::then` and `yyjson::else_` takes `yyjson::required`, every [constraint](#constraints), `yyjson::satisfies<f>` and the [settings of the elements](#constraints-of-elements) among them, and `yyjson::is_type<T>`, which requires that the value of a `yyjson::value` or `yyjson::object` field reads as `T`. `yyjson::is_type<T>` is a compile error elsewhere, except in [`yyjson::contains`](#constraints-of-elements).
 *   As in JSON Schema, the settings of a field other than `yyjson::required` apply to the value of its key and say nothing when the object does not have the key. `yyjson::if_(yyjson::field("kind", yyjson::const_("circle")))` therefore holds for an object without "kind"; give the field `yyjson::required` too for a condition that holds only with the key. For the same reason, `yyjson::not_` of a field without `yyjson::required` also rejects an object without its key.
 *   A field that a part names has a key of its own: it may be of any type and have any annotation of keys, but a skipped field and a field of `yyjson::extra_keys` are compile errors, as are the annotations on a struct with [`yyjson::transparent`](conversions.md#a-struct-as-the-value-of-its-field). The fields are named by their members, and the messages give their keys, which `yyjson::rename` may change.
+*   `yyjson::then` and `yyjson::else_` also take `yyjson::additional_properties(false)` once, as `additionalProperties: false` beside `properties` in a subschema of `then` or `else`: while the part applies, the object may have only the keys of the fields that the part names and the keys of the tags of the struct, the keys of `yyjson::adjacent_tag` and the key of `yyjson::internal_tag` of the alternative being read. A field without settings, `yyjson::field("k")`, names a key for it and requires nothing else. Reading checks every key of the object, also those of `yyjson::extra_keys` and `yyjson::pattern_properties` fields and those that no field has, and `yyjson::validate` and `write(t, yyjson::strict)` check the keys that are written:
+
+    ```cpp
+    struct Figure
+    {
+        std::string kind;
+        std::optional<double> r;
+        std::optional<double> w;
+    };
+    template <>
+    inline constexpr auto yyjson::annotations<Figure> = yyjson::annotate(yyjson::if_then_else(
+        yyjson::if_(yyjson::field("kind", yyjson::const_("circle"), yyjson::required)),
+        yyjson::then(yyjson::field("kind"), yyjson::field("r"), yyjson::additional_properties(false))));
+
+    yyjson::read<Figure>(R"({"kind":"square","w":2})");  // -> Figure{"square", std::nullopt, 2.0}
+    yyjson::read<Figure>(R"({"kind":"circle","w":2})");
+    // throws: Figure has the key "w", which yyjson::additional_properties(false) of yyjson::if_then_else rejects at /w ...
+    ```
+
+    Under `yyjson::strict`, a key that no field has is rejected first, as an unknown key. `yyjson::additional_properties(true)` adds nothing.
 *   `yyjson::then` and `yyjson::else_` may be left out, but not both. A struct may have several of these annotations, which all apply, as an `allOf` of them does. There is no `else if`: give each case its own `yyjson::if_then_else` with conditions that exclude each other.
 *   Reading tells which fields an object has by its keys, as `yyjson::dependent_required` does, and checks the settings on the C++ values of the fields that it has, after the object is read, with or without `yyjson::strict`, except in the objects that `merge_into` merges into. The value that a field holds without its key, such as the member initializer of `std::optional<int> x = 5;` or the default of `yyjson::omit_default`, does not count. `yyjson::is_type<T>` reads the value with `yyjson::strict` when the object is read with it, as in the example above, where a strict read rejects `{"kind":"square","center":{"x":1}}` because `Point` has no "y".
 *   `yyjson::validate` and `yyjson::write` with `yyjson::strict` check them by the keys that `write` writes, and read the value of `yyjson::is_type<T>` with `yyjson::strict`. A non-strict read of the object above followed by `yyjson::validate` therefore throws `Point is not constructible from JSON without the key "y" at /center`. The two can also differ when a field holds a value without its key: reading `{}` leaves `std::optional<int> x = 5;` at `5`, which `write` writes, so a condition on "x" that the object did not meet may hold for the written object, as the [member initializer of a `std::optional`](#fields-with-a-default-value) does not read back either. A plain field that a non-strict read leaves at its value in `T()` is written in the same way.
