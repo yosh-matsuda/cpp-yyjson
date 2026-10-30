@@ -233,6 +233,58 @@ inline constexpr auto yyjson::annotations<CondKeys> =
                      yyjson::if_then_else(yyjson::if_(yyjson::field("e", yyjson::required)),
                                           yyjson::then(yyjson::field("d", yyjson::required))),
                      yyjson::not_(yyjson::field("b", yyjson::const_(-1))));
+// additional_properties(false) in then and else_, beside a map of yyjson::extra_keys or yyjson::pattern_properties,
+// and with the keys of tags
+struct CondClosed
+{
+    std::optional<std::string> kind;
+    std::optional<double> r;
+    std::optional<int> w;
+    std::map<std::string, int> rest;
+};
+template <>
+inline constexpr auto yyjson::annotations<CondClosed> = yyjson::annotate(
+    yyjson::field("rest", yyjson::extra_keys),
+    yyjson::if_then_else(
+        yyjson::if_(yyjson::field("kind", yyjson::const_("circle"), yyjson::required)),
+        yyjson::then(yyjson::field("kind"), yyjson::field("r", yyjson::required, yyjson::minimum(0)),
+                     yyjson::additional_properties(false)),
+        yyjson::else_(yyjson::field("kind"), yyjson::field("w"), yyjson::additional_properties(false))));
+struct CondClosedPatterns
+{
+    std::optional<int> a;
+    std::map<std::string, int> xs;
+};
+template <>
+inline constexpr auto yyjson::annotations<CondClosedPatterns> = yyjson::annotate(
+    yyjson::field("xs", yyjson::pattern_properties("^x")),
+    yyjson::if_then_else(yyjson::if_(yyjson::field("a", yyjson::maximum(0))),
+                         yyjson::then(yyjson::additional_properties(false)),
+                         yyjson::else_(yyjson::field("a"), yyjson::additional_properties(true))));
+struct CondClosedAdjacent
+{
+    std::variant<int, std::string> data;
+    std::optional<int> n;
+};
+template <>
+inline constexpr auto yyjson::annotations<CondClosedAdjacent> =
+    yyjson::annotate(yyjson::field("data", yyjson::adjacent_tag("kind", {"i", "s"})),
+                     yyjson::if_then_else(yyjson::if_(yyjson::field("n", yyjson::required)),
+                                          yyjson::then(yyjson::field("n"), yyjson::field("data"),
+                                                       yyjson::additional_properties(false))));
+struct CondClosedAlternative
+{
+    std::optional<int> a;
+    std::optional<int> b;
+};
+template <>
+inline constexpr auto yyjson::annotations<CondClosedAlternative> =
+    yyjson::annotate(yyjson::if_then_else(yyjson::if_(yyjson::field("a", yyjson::required)),
+                                          yyjson::then(yyjson::field("a"), yyjson::additional_properties(false))));
+using CondClosedVariant = std::variant<CondClosedAlternative, CondPoint>;
+template <>
+inline constexpr auto yyjson::annotations<CondClosedVariant> =
+    yyjson::annotate(yyjson::internal_tag("type", {"c", "p"}));
 
 // keys of no field kept in a map, whose values are constrained, also in an alternative of an internally tagged variant
 struct Extra
@@ -1640,6 +1692,46 @@ TEST(Schema, Conditions)
         R"({"e":0,"d":3,"b":1})",
         R"({"b":1,"d":3})",
     });
+    check<CondClosed>({
+        R"({"kind":"circle","r":1})",
+        R"({"kind":"circle","r":1,"w":2})",
+        R"({"kind":"circle","r":1,"z":2})",
+        R"({"kind":"circle"})",
+        R"({"kind":"sq","w":2})",
+        R"({"kind":"sq","r":1})",
+        R"({"w":2,"z":3})",
+        R"({})",
+    });
+    check<CondClosedPatterns>({
+        R"({"a":0})",
+        R"({"a":0,"x1":1})",
+        R"({"a":1,"x1":1})",
+        R"({"x1":1})",
+        R"({"a":0,"z":1})",
+    });
+    check<CondClosedAdjacent>({
+        R"({"kind":"i","data":1,"n":1})",
+        R"({"kind":"s","data":"a"})",
+        R"({"kind":"i","data":1,"n":1,"z":0})",
+        R"({"kind":"i","data":1,"z":0})",
+    });
+    check<CondClosedVariant>({
+        R"({"type":"c","a":1})",
+        R"({"type":"c","a":1,"b":2})",
+        R"({"type":"c","b":2})",
+        R"({"type":"p","x":1})",
+    });
+    {
+        const auto c = to_jsoncons(yyjson::json_schema<CondClosed>())["$defs"]["CondClosed"];
+        EXPECT_EQ(c["then"]["additionalProperties"], json(false));
+        EXPECT_EQ(c["then"]["properties"]["kind"], json::parse("{}"));
+        EXPECT_EQ(c["else"]["properties"].size(), 2);
+        const auto p = to_jsoncons(yyjson::json_schema<CondClosedPatterns>())["$defs"]["CondClosedPatterns"];
+        EXPECT_EQ(p["then"], json::parse(R"({"additionalProperties":false})"));
+        EXPECT_EQ(p["else"], json::parse("{}"));
+        const auto a = to_jsoncons(yyjson::json_schema<CondClosedAdjacent>())["$defs"]["CondClosedAdjacent"];
+        EXPECT_TRUE(a["then"]["properties"].contains("kind"));
+    }
     // validate reads the value of is_type under strict, as the read of the output does
     const auto loose = yyjson::read<Conditioned>(R"({"kind":"sq","p":{"x":1,"y":2}})");
     EXPECT_THROW(yyjson::validate(loose), yyjson::bad_cast);

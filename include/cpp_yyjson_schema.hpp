@@ -1143,13 +1143,14 @@ namespace yyjson
             template <typename S, std::size_t K>
             void emit_field_metadata(object_ref p, const metadata& m);
             template <typename S>
-            void emit_conditions(object_ref out, std::optional<array_ref>& all_of);
+            void emit_conditions(object_ref out, std::optional<array_ref>& all_of, std::span<const variant_tag> tags);
             template <typename S>
             void emit_pattern_fields(object_ref out, const schema_node* nodes);
             template <typename S>
             void emit_property_names(object_ref out, object_ref properties, const schema_node* nodes);
             template <typename S, std::size_t... Es>
-            void emit_condition_part(object_ref out, std::size_t begin, std::size_t end, std::index_sequence<Es...>);
+            void emit_condition_part(object_ref out, std::size_t begin, std::size_t end, std::index_sequence<Es...>,
+                                     std::span<const std::string_view> closed = {});
             template <typename S>
             void emit_transparent(object_ref out, std::span<const variant_tag> tags);
             template <typename F, typename Tags, std::size_t... Is>
@@ -1918,7 +1919,7 @@ namespace yyjson
                     }
                 }
             }
-            if constexpr (yyjson::detail::has_conditions<S>) emit_conditions<S>(out, adjacent);
+            if constexpr (yyjson::detail::has_conditions<S>) emit_conditions<S>(out, adjacent, tags);
             if constexpr (yyjson::detail::has_pattern_fields<S>) emit_pattern_fields<S>(out, nodes);
             if constexpr (yyjson::detail::has_pattern_fields<S> || yyjson::detail::has_extra_keys<S>)
                 emit_property_names<S>(out, properties, nodes);
@@ -2032,15 +2033,22 @@ namespace yyjson
         }
 
         // Writes the fields of the entries from `begin` to `end` of the conditions of S as `properties`, with the
-        // keys that the entries require as `required`.  A field that the part names again goes to `allOf`.
+        // keys that the entries require as `required`.  A field that the part names again goes to `allOf`.  A part
+        // with `yyjson::additional_properties(false)` has the keys of its tags in `closed`; it names every field
+        // that it has and those keys in `properties`, and rejects the other keys.
         template <typename S, std::size_t... Es>
         void generator::emit_condition_part(object_ref out, std::size_t begin, std::size_t end,
-                                            std::index_sequence<Es...>)
+                                            std::index_sequence<Es...>, std::span<const std::string_view> closed)
         {
             using table = yyjson::detail::condition_table<S>;
             auto properties = std::optional<object_ref>();
             auto required = std::vector<std::string_view>();
             auto again = std::optional<array_ref>();
+            const bool closes = closed.data() != nullptr;
+            const auto name = [&](std::string_view key) {
+                if (!properties) properties = out.emplace("properties", empty_object);
+                if (!properties->contains(key)) properties->emplace(key, empty_object);
+            };
             (
                 [&] {
                     if (Es < begin || Es >= end) return;
@@ -2052,7 +2060,11 @@ namespace yyjson
                     if (entry::entry.required && std::ranges::find(required, key) == required.end())
                         required.push_back(key);
                     // A field that only `yyjson::required` names has no schema of its own.
-                    if constexpr (std::is_void_v<R> && !entry::constrained) return;
+                    if constexpr (std::is_void_v<R> && !entry::constrained)
+                    {
+                        if (closes) name(key);
+                        return;
+                    }
                     auto p = [&] {
                         if (!properties) properties = out.emplace("properties", empty_object);
                         if (!properties->contains(key)) return properties->emplace(key, empty_object);
@@ -2077,6 +2089,11 @@ namespace yyjson
                         emit<V>(p, nodes, Es);
                 }(),
                 ...);
+            if (closes)
+            {
+                for (const auto k : closed) name(k);
+                out.emplace("additionalProperties", false);
+            }
             if (!required.empty())
             {
                 auto r = out.emplace("required", empty_array);
@@ -2226,13 +2243,38 @@ namespace yyjson
         }
 
         // Writes the conditions of S, `yyjson::if_then_else` as `if`, `then` and `else`, and `yyjson::not_` as
-        // `not`, each in a branch of `allOf` when S has more than one.
+        // `not`, each in a branch of `allOf` when S has more than one.  `tags` are the tags of `yyjson::internal_tag`
+        // that the object of S has.
         template <typename S>
-        void generator::emit_conditions(object_ref out, std::optional<array_ref>& all_of)
+        void generator::emit_conditions(object_ref out, std::optional<array_ref>& all_of,
+                                        std::span<const variant_tag> tags)
         {
             using table = yyjson::detail::condition_table<S>;
             constexpr auto entries = std::make_index_sequence<table::entries.size()>{};
             const auto* const outer_values = std::exchange(values_, table::tree.values.data());
+            // The keys of the tags, which a part with `yyjson::additional_properties(false)` does not reject.  The
+            // span is not empty for such a part even when S has no tags.
+            auto tag_keys = std::vector<std::string_view>();
+            if constexpr (table::closes)
+            {
+                tag_keys.reserve(tags.size() + 1);
+                for (const auto& tag : tags) tag_keys.push_back(tag.key);
+                if constexpr (yyjson::detail::has_adjacent_fields<S>)
+                    [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                        (
+                            [&] {
+                                using T = yyjson::detail::struct_field_tags<S, Ks>;
+                                if constexpr (yyjson::detail::writes_adjacent_tag<S, T>) tag_keys.push_back(T::key);
+                            }(),
+                            ...);
+                    }(std::make_index_sequence<yyjson::detail::struct_field_count<S>>{});
+            }
+            const auto closed = [&](bool c) {
+                static constexpr std::string_view none[1] = {};
+                if (!c) return std::span<const std::string_view>();
+                return tag_keys.empty() ? std::span<const std::string_view>(none, 0)
+                                        : std::span<const std::string_view>(tag_keys);
+            };
             for (const auto& rule : table::rules)
             {
                 auto target = [&] {
@@ -2246,11 +2288,12 @@ namespace yyjson
                     continue;
                 }
                 emit_condition_part<S>(target.emplace("if", empty_object), rule.begin, rule.then_begin, entries);
-                if (rule.then_begin != rule.else_begin)
+                if (rule.then_begin != rule.else_begin || rule.then_closed)
                     emit_condition_part<S>(target.emplace("then", empty_object), rule.then_begin, rule.else_begin,
-                                           entries);
-                if (rule.else_begin != rule.end)
-                    emit_condition_part<S>(target.emplace("else", empty_object), rule.else_begin, rule.end, entries);
+                                           entries, closed(rule.then_closed));
+                if (rule.else_begin != rule.end || rule.else_closed)
+                    emit_condition_part<S>(target.emplace("else", empty_object), rule.else_begin, rule.end, entries,
+                                           closed(rule.else_closed));
             }
             values_ = outer_values;
         }
