@@ -2735,7 +2735,12 @@ namespace cpp_yyjson_codegen
                 auto r = typed();
                 if (kind == "object")
                 {
-                    if (s.has("properties") || s.has("required") || !condition_keys(s).empty())
+                    const auto* dep = s.find("dependentRequired");
+                    const auto dependent =
+                        dep != nullptr && dep->is_object() && std::ranges::any_of(dep->members, [](const auto& m) {
+                            return m.second.is_array() && !m.second.items.empty();
+                        });
+                    if (s.has("properties") || s.has("required") || dependent || !condition_keys(s).empty())
                         return make_struct(s0, s, loc, hint, named, nullable, whole);
                     r = type_map(s, loc, hint);
                 }

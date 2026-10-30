@@ -1194,6 +1194,11 @@ TEST(Codegen, NamedKeys)
     EXPECT_TRUE(has(closed.code, "    std::optional<yyjson::value> b;\n"));
     EXPECT_TRUE(has(closed.code, "    yyjson::not_(yyjson::field(\"b\", yyjson::required))"));
     EXPECT_EQ(warnings(closed), "");
+    // `dependentRequired` alone makes a struct
+    const auto dependent = generate(R"({"type": "object", "dependentRequired": {"a": ["b"]}})", {});
+    EXPECT_TRUE(has(dependent.code, "    std::optional<yyjson::value> a;\n    std::optional<yyjson::value> b;\n"));
+    EXPECT_TRUE(has(dependent.code, "    yyjson::dependent_required(\"a\", {\"b\"}));\n"));
+    EXPECT_EQ(warnings(dependent), "");
 }
 
 TEST(Codegen, Conditions)
