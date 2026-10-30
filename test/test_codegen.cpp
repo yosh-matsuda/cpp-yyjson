@@ -1354,6 +1354,23 @@ TEST(Codegen, Conditions)
                              "yyjson::additional_properties(false))),\n"));
     EXPECT_TRUE(has(cl.code, "        yyjson::if_(yyjson::field(\"w\", yyjson::required)),\n"
                              "        yyjson::then(yyjson::field(\"kind\", yyjson::required))));\n"));
+
+    // a closed part that requires a key that its `properties` does not list, or lists as `false`, rejects every
+    // object: `then` becomes yyjson::not_ of the fields of `if`, and `else` is ignored with a warning
+    const auto cr = generate(R"({
+        "type": "object",
+        "properties": {"kind": {"type": "string"}, "r": {"type": "number"}, "w": {"type": "number"}},
+        "if": {"properties": {"kind": {"const": "circle"}}, "required": ["kind"]},
+        "then": {"properties": {"kind": {}, "w": false}, "required": ["w"], "additionalProperties": false},
+        "else": {"properties": {"kind": {}}, "required": ["r"], "additionalProperties": false},
+        "dependentSchemas": {"r": {"required": ["w"], "additionalProperties": false}}
+    })",
+                             {});
+    EXPECT_EQ(warnings(cr), "#/else: `else` that no object satisfies is not supported and is ignored\n");
+    EXPECT_TRUE(has(cr.code, "    yyjson::not_(yyjson::field(\"kind\", yyjson::required, "
+                             "yyjson::const_(\"circle\"))),\n"));
+    EXPECT_TRUE(has(cr.code, "    yyjson::not_(yyjson::field(\"r\", yyjson::required))"));
+    EXPECT_FALSE(has(cr.code, "additional_properties(false)"));
 }
 
 TEST(Codegen, ExtraKeys)

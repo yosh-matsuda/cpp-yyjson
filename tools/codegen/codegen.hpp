@@ -3594,7 +3594,27 @@ namespace cpp_yyjson_codegen
                              "`additionalProperties` false beside `patternProperties` is not supported here and is "
                              "ignored");
                     else
+                    {
                         closed = true;
+                        // a required key that `properties` does not list, or lists as `false`, is rejected
+                        const auto* props = n->find("properties");
+                        if (const auto* r = n->find("required"); r != nullptr && r->is_array())
+                            for (const auto& e : r->items)
+                            {
+                                if (!e.is_string()) continue;
+                                const auto* ps = props != nullptr && props->is_object() ? props->find(e.text) : nullptr;
+                                if (ps == nullptr || [&] {
+                                        const auto* pn = normalize_full(ps, sloc + "/properties/" +
+                                                                                pointer_token(e.text));
+                                        return pn->is_bool() && !pn->b;
+                                    }())
+                                {
+                                    never = true;
+                                    closed = false;
+                                    return out;
+                                }
+                            }
+                    }
                 }
                 for (const auto& [k, v] : n->members)
                 {
