@@ -483,6 +483,16 @@ namespace yyjson
             : concat_types<yyjson::detail::type_list<As..., Bs...>, Rest...>
         {
         };
+        // Eight lists at a time, so that a struct of many fields does not exceed the depth of instantiation.
+        template <typename... As, typename... Bs, typename... Cs, typename... Ds, typename... Es, typename... Fs,
+                  typename... Gs, typename... Hs, typename... Rest>
+        struct concat_types<yyjson::detail::type_list<As...>, yyjson::detail::type_list<Bs...>,
+                            yyjson::detail::type_list<Cs...>, yyjson::detail::type_list<Ds...>,
+                            yyjson::detail::type_list<Es...>, yyjson::detail::type_list<Fs...>,
+                            yyjson::detail::type_list<Gs...>, yyjson::detail::type_list<Hs...>, Rest...>
+            : concat_types<yyjson::detail::type_list<As..., Bs..., Cs..., Ds..., Es..., Fs..., Gs..., Hs...>, Rest...>
+        {
+        };
         template <typename A>
         struct type_tests_in
         {
