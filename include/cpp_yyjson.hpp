@@ -1250,6 +1250,25 @@ namespace yyjson
     };
     inline constexpr transparent_t transparent{};
 
+    // A struct that is read and written as a JSON array, its fields that are not skipped being the elements in the
+    // order of their declaration, as `yyjson::annotations<T> = yyjson::annotate(yyjson::as_array)` or
+    // `struct [[=yyjson::as_array]] T` gives it.  A field whose key would be optional, a `std::optional` or one with
+    // `yyjson::omit_default`, `yyjson::default_from` or `yyjson::optional_key`, may be missing at the end of the
+    // array, and is then left out at the end when it is written.  `yyjson::items(bool)` of the struct tells whether
+    // the array may have more elements, and a field annotated with `yyjson::extra_items` receives them.
+    struct as_array_t
+    {
+    };
+    inline constexpr as_array_t as_array{};
+
+    // The last field of a struct annotated with `yyjson::as_array`, a range that receives the elements after those
+    // of the other fields, as `yyjson::field("member", yyjson::extra_items)` or `[[=yyjson::extra_items]]` gives it.
+    // Its elements are written after the other fields; `yyjson::items(settings...)` constrains them.
+    struct extra_items_t
+    {
+    };
+    inline constexpr extra_items_t extra_items{};
+
     // Whether the object of a struct may have keys that name no field, as
     // `yyjson::annotations<T> = yyjson::annotate(yyjson::additional_properties(false))` or
     // `struct [[=yyjson::additional_properties(false)]] T` gives it.  With `false`, reading an object with such a key
@@ -2329,6 +2348,19 @@ namespace yyjson
 
     template <typename... As>
     struct items;
+    // Whether the array of a struct annotated with `yyjson::as_array` may have more elements than the struct has
+    // fields, as `yyjson::annotations<T> = yyjson::annotate(yyjson::as_array, yyjson::items(false))` gives it, as
+    // JSON Schema's boolean `items`.  With `true`, the elements are skipped, also under `yyjson::strict`; with
+    // `false`, reading such an array throws `yyjson::bad_cast`.  Without it, the elements are skipped, and
+    // `yyjson::strict` rejects them.  `yyjson::items(settings...)` constrains the elements of a range field.
+    template <>
+    struct items<>
+    {
+        bool allowed = true;
+
+        consteval explicit items(bool allowed) : allowed(allowed) {}
+    };
+    items(bool) -> items<>;
     template <typename... As>
     struct contains;
     template <typename... As>
@@ -2365,8 +2397,8 @@ namespace yyjson
         struct is_items : std::false_type
         {
         };
-        template <typename... As>
-        struct is_items<items<As...>> : std::true_type
+        template <typename A, typename... As>
+        struct is_items<items<A, As...>> : std::true_type
         {
         };
         // `yyjson::additional_properties(settings...)` of a field, but not `yyjson::additional_properties(bool)`
@@ -2418,7 +2450,8 @@ namespace yyjson
         concept field_setting =
             std::same_as<A, rename> || std::same_as<A, skip_t> || std::same_as<A, required_t> ||
             std::same_as<A, optional_key_t> || std::same_as<A, omit_default_t> || std::same_as<A, default_from_t> ||
-            std::same_as<A, extra_keys_t> || adjacent_tag_annotation<A> || constraint_setting<A> ||
+            std::same_as<A, extra_keys_t> || std::same_as<A, extra_items_t> || adjacent_tag_annotation<A> ||
+            constraint_setting<A> ||
             element_settings<A> || metadata_setting<A> || is_type_setting<A>::value;
 
         // The number of the nodes that a position of `yyjson::prefix_items` has at most: its own and those of the
@@ -2455,7 +2488,8 @@ namespace yyjson
         template <std::size_t N, std::size_t L>
         inline constexpr tree_size node_count<enum_<N, L>> = {0, N};
         template <typename... As>
-        inline constexpr tree_size node_count<items<As...>> = (tree_size{1, 0} + ... + node_count<As>);
+        inline constexpr tree_size node_count<items<As...>> =
+            sizeof...(As) == 0 ? tree_size{} : (tree_size{1, 0} + ... + node_count<As>);
         template <typename... As>
         inline constexpr tree_size node_count<additional_properties<As...>> =
             sizeof...(As) == 0 ? tree_size{} : (tree_size{1, 0} + ... + node_count<As>);
@@ -2497,8 +2531,14 @@ namespace yyjson
                           "yyjson::additional_properties(settings...) and yyjson::not_(settings...)");
         }
     };
+    // Clang takes the implicit guides from the declaration before `items<>`, which has no constructor, so the guide
+    // from the constructor is written out.
+    template <typename... As>
+    requires (!(std::same_as<As, items<>> || ...))
+    items(As...) -> items<As...>;
     // `items(items(...))` constrains the elements of the elements, rather than copying the inner `items`.
     template <typename... Bs>
+    requires (sizeof...(Bs) != 0)
     items(items<Bs...>) -> items<items<Bs...>>;
 
     // The settings of the values of a map field, as JSON Schema's `additionalProperties` with a schema:
@@ -2603,6 +2643,17 @@ namespace yyjson
             is_type_outside_condition,
             condition_field_kind,
             condition_transparent,
+            as_array_twice,
+            as_array_field_setting,
+            as_array_struct_setting,
+            as_array_transparent,
+            as_array_visitable,
+            items_without_as_array,
+            extra_items_without_as_array,
+            extra_items_twice,
+            extra_items_not_last,
+            extra_items_with_setting,
+            extra_items_denied,
         };
 
         // The constraints of a value, those in `set` by `constraint_bit`.  The values of `yyjson::const_` and
@@ -3623,7 +3674,8 @@ namespace yyjson
         template <typename... As>
         inline constexpr bool annotate_settings =
             count_true<(is_field_annotation<As>::value || std::same_as<As, additional_properties<>> ||
-                        std::same_as<As, transparent_t> || is_dependent_required<As>::value ||
+                        std::same_as<As, transparent_t> || std::same_as<As, as_array_t> ||
+                        std::same_as<As, items<>> || is_dependent_required<As>::value ||
                         is_required_groups<As>::value || is_condition_annotation<As>::value ||
                         internal_tag_annotation<As> || enum_annotation<As> || type_metadata_setting<As>)...> ==
             sizeof...(As);
@@ -3634,7 +3686,8 @@ namespace yyjson
     {
         static_assert(detail::annotate_settings<As...>,
                       "yyjson::annotate takes yyjson::field(...), yyjson::additional_properties, "
-                      "yyjson::transparent, yyjson::dependent_required, yyjson::one_of_required, "
+                      "yyjson::transparent, yyjson::as_array, yyjson::items(bool), yyjson::dependent_required, "
+                      "yyjson::one_of_required, "
                       "yyjson::any_of_required, yyjson::if_then_else and yyjson::not_ for a struct, "
                       "yyjson::internal_tag for a variant, yyjson::enumerator(...) and yyjson::enum_format for an "
                       "enumeration, yyjson::schema_name for a struct, an enumeration, a variant or a type with a "
@@ -4105,6 +4158,19 @@ namespace yyjson
         template <typename T>
         concept transparent_struct = std::is_class_v<T> && transparent_annotated<T>;
 
+        // Whether the class T is annotated with `yyjson::as_array`, which `caster<T>` is specialized for.
+        template <typename T>
+        inline constexpr bool as_array_annotated =
+            []<typename... As>(std::type_identity<std::tuple<As...>>) {
+                return (std::same_as<As, as_array_t> || ...);
+            }(std::type_identity<annotation_values_of<T>>{})
+#if FIELD_RFL_ANNOTATIONS
+            || !field_reflection::type_annotations<T, as_array_t>.empty()
+#endif
+            ;
+        template <typename T>
+        concept as_array_struct = std::is_class_v<T> && as_array_annotated<T>;
+
         // `yyjson::additional_properties` of a struct, if it has one.
         enum class additional_keys : std::uint8_t
         {
@@ -4132,6 +4198,9 @@ namespace yyjson
             std::size_t extra = N;                  // the field annotated with `yyjson::extra_keys`, or N
             additional_keys additional = additional_keys::unset;
             bool transparent = false;  // whether the struct is annotated with `yyjson::transparent`
+            bool as_array = false;     // whether the struct is annotated with `yyjson::as_array`
+            additional_keys items = additional_keys::unset;  // `yyjson::items(bool)` of the struct
+            std::size_t extra_items = N;  // the field annotated with `yyjson::extra_items`, or N
             schema_tree<M, V> schemas = {{}, N};
             bool constrained = false;  // whether a field has a constraint
             // the fields {i, j} where the key of field i requires the key of field j by `yyjson::dependent_required`
@@ -4181,7 +4250,8 @@ namespace yyjson
                 if (visitable) return fail(field_key_error::skip_visitable);
                 if (table.skipped[i]) return fail(field_key_error::same_setting_twice);
                 if (renamed[i] || tagged[i] || table.required[i] || table.optional_key[i] || table.omit_default[i] ||
-                    table.extra == i || described[i] != 0 || !table.schemas.nodes[i].empty())
+                    table.extra == i || table.extra_items == i || described[i] != 0 ||
+                    !table.schemas.nodes[i].empty())
                     return fail(field_key_error::skipped_with_setting);
                 table.skipped[i] = true;
             }
@@ -4252,6 +4322,24 @@ namespace yyjson
             {
                 if (table.transparent) return fail(field_key_error::transparent_twice);
                 table.transparent = true;
+            }
+            constexpr void make_array()
+            {
+                if (visitable) return fail(field_key_error::as_array_visitable);
+                if (table.as_array) return fail(field_key_error::as_array_twice);
+                table.as_array = true;
+            }
+            constexpr void set_items(items<> a)
+            {
+                if (table.items != additional_keys::unset) return fail(field_key_error::same_setting_twice);
+                table.items = a.allowed ? additional_keys::allowed : additional_keys::denied;
+            }
+            constexpr void receive_extra_items(std::size_t i)
+            {
+                if (table.extra_items == i) return fail(field_key_error::same_setting_twice);
+                if (table.extra_items != N) return fail(field_key_error::extra_items_twice);
+                if (table.skipped[i]) return fail(field_key_error::skipped_with_setting);
+                table.extra_items = i;
             }
             constexpr void set_additional(additional_properties<> a)
             {
@@ -4341,6 +4429,8 @@ namespace yyjson
                     default_from_value(i, a);
                 else if constexpr (std::same_as<A, extra_keys_t>)
                     receive_extra_keys(i);
+                else if constexpr (std::same_as<A, extra_items_t>)
+                    receive_extra_items(i);
                 else if constexpr (constraint_setting<A> || element_settings<A>)
                     constrain_field(i, a);
                 else if constexpr (metadata_setting<A>)
@@ -4365,6 +4455,10 @@ namespace yyjson
                     set_additional(a);
                 else if constexpr (std::same_as<A, transparent_t>)
                     make_transparent();
+                else if constexpr (std::same_as<A, as_array_t>)
+                    make_array();
+                else if constexpr (std::same_as<A, items<>>)
+                    set_items(a);
                 else if constexpr (is_dependent_required<A>::value)
                     add_dependency(a);
                 else if constexpr (is_required_groups<A>::value)
@@ -4373,6 +4467,42 @@ namespace yyjson
                     add_condition(a);
                 else if constexpr (!type_metadata_setting<A>)
                     fail(field_key_error::not_a_struct_setting);
+            }
+
+            // The error of the settings of a struct annotated with `yyjson::as_array`, whose fields are positions
+            // without keys, or of `yyjson::items(bool)` and `yyjson::extra_items` without it.
+            [[nodiscard]] constexpr field_key_error array_error(const field_key_table<N, M, V, D, G, F>& t) const
+            {
+                if (!t.as_array)
+                {
+                    if (t.items != additional_keys::unset) return field_key_error::items_without_as_array;
+                    if (t.extra_items != N) return field_key_error::extra_items_without_as_array;
+                    return field_key_error::none;
+                }
+                if (t.transparent) return field_key_error::as_array_transparent;
+                if (t.additional != additional_keys::unset || dependencies_added != 0 || choices_added != 0 ||
+                    has_conditions)
+                    return field_key_error::as_array_struct_setting;
+                for (std::size_t i = 0; i < N; ++i)
+                {
+                    if (!t.skipped[i] && (renamed[i] || tagged[i] || t.extra == i))
+                        return field_key_error::as_array_field_setting;
+                }
+                if (const auto e = t.extra_items; e != N)
+                {
+                    for (auto i = e + 1; i < N; ++i)
+                    {
+                        if (!t.skipped[i]) return field_key_error::extra_items_not_last;
+                    }
+                    // the field takes only the settings of its elements
+                    const auto& node = t.schemas.nodes[e];
+                    if (t.required[e] || t.optional_key[e] || t.omit_default[e] || described[e] != 0 ||
+                        node.constraints.set != 0 || node.values != 0 || node.keys != 0 || node.contains != 0 ||
+                        node.prefix_count != 0 || node.negated != 0 || node.type_test != nullptr)
+                        return field_key_error::extra_items_with_setting;
+                    if (t.items == additional_keys::denied) return field_key_error::extra_items_denied;
+                }
+                return field_key_error::none;
             }
 
             // Duplicate keys are reported only when a key was given, so that a `VISITABLE_STRUCT` listing a
@@ -4444,6 +4574,7 @@ namespace yyjson
                     else if (has_conditions)
                         result.error = field_key_error::condition_transparent;
                 }
+                if (result.error == field_key_error::none) result.error = array_error(result);
                 for (std::size_t i = 0; i < N; ++i)
                 {
                     // the field has a key of its own, which the condition tests
@@ -4566,6 +4697,7 @@ namespace yyjson
                              !field_reflection::field_annotations<T, Is, omit_default_t>.empty() ||
                              !field_reflection::field_annotations<T, Is, default_from_t>.empty() ||
                              !field_reflection::field_annotations<T, Is, extra_keys_t>.empty() ||
+                             !field_reflection::field_annotations<T, Is, extra_items_t>.empty() ||
                              !field_reflection::field_annotations<T, Is, adjacent_tag_annotation_type>.empty() ||
                              constraint_annotated<T, Is, constraint_types> || !element_annotations<T, Is>.empty()) ||
                             ...);
@@ -4615,6 +4747,8 @@ namespace yyjson
             if constexpr (std::is_class_v<T>)
                 return !field_reflection::type_annotations<T, additional_properties<>>.empty() ||
                        !field_reflection::type_annotations<T, transparent_t>.empty() ||
+                       !field_reflection::type_annotations<T, as_array_t>.empty() ||
+                       !field_reflection::type_annotations<T, items<>>.empty() ||
                        !dependency_annotations<T>.empty() || !required_group_annotations<T>.empty() ||
                        !condition_annotations<T>.empty();
             else
@@ -4629,6 +4763,9 @@ namespace yyjson
                 builder.set_additional(a);
             for (std::size_t k = 0; k < field_reflection::type_annotations<T, transparent_t>.size(); ++k)
                 builder.make_transparent();
+            for (std::size_t k = 0; k < field_reflection::type_annotations<T, as_array_t>.size(); ++k)
+                builder.make_array();
+            for (const items<>& a : field_reflection::type_annotations<T, items<>>) builder.set_items(a);
             [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
                 (builder.add_dependency(
                      std::meta::extract<dependency_annotation_type<T, Ks>>(dependency_annotations<T>[Ks])),
@@ -4671,6 +4808,9 @@ namespace yyjson
                         for (std::size_t k = 0; k < field_reflection::field_annotations<T, Is, extra_keys_t>.size();
                              ++k)
                             builder.receive_extra_keys(Is);
+                        for (std::size_t k = 0; k < field_reflection::field_annotations<T, Is, extra_items_t>.size();
+                             ++k)
+                            builder.receive_extra_items(Is);
                         for (std::size_t k = 0;
                              k < field_reflection::field_annotations<T, Is, adjacent_tag_annotation_type>.size(); ++k)
                             builder.tag_field(Is);
@@ -4875,6 +5015,37 @@ namespace yyjson
             static_assert(table.error != field_key_error::condition_transparent,
                           "a struct annotated with yyjson::transparent is not an object: it takes no "
                           "yyjson::if_then_else or yyjson::not_");
+            static_assert(table.error != field_key_error::as_array_twice,
+                          "a struct is annotated with yyjson::as_array twice");
+            static_assert(table.error != field_key_error::as_array_visitable,
+                          "yyjson::as_array needs a struct that the compile-time reflection converts, not a "
+                          "VISITABLE_STRUCT");
+            static_assert(table.error != field_key_error::as_array_transparent,
+                          "a struct is annotated with both yyjson::as_array and yyjson::transparent: it is read and "
+                          "written either as an array or as the value of its field");
+            static_assert(table.error != field_key_error::as_array_struct_setting,
+                          "a struct annotated with yyjson::as_array is not an object: it takes no "
+                          "yyjson::additional_properties, yyjson::dependent_required, yyjson::one_of_required, "
+                          "yyjson::any_of_required, yyjson::if_then_else or yyjson::not_");
+            static_assert(table.error != field_key_error::as_array_field_setting,
+                          "the fields of a struct annotated with yyjson::as_array are positions in an array without "
+                          "keys: they take no key, yyjson::adjacent_tag or yyjson::extra_keys");
+            static_assert(table.error != field_key_error::items_without_as_array,
+                          "yyjson::items(bool) annotates a struct annotated with yyjson::as_array; "
+                          "yyjson::items(settings...) constrains the elements of a range field");
+            static_assert(table.error != field_key_error::extra_items_without_as_array,
+                          "yyjson::extra_items annotates a field of a struct annotated with yyjson::as_array");
+            static_assert(table.error != field_key_error::extra_items_twice,
+                          "only one field of a struct may be annotated with yyjson::extra_items");
+            static_assert(table.error != field_key_error::extra_items_not_last,
+                          "the field annotated with yyjson::extra_items receives the elements after those of the "
+                          "other fields: it is the last field that is not skipped");
+            static_assert(table.error != field_key_error::extra_items_with_setting,
+                          "a field annotated with yyjson::extra_items is not an element of the array: it takes only "
+                          "yyjson::items(settings...), which constrains the elements that it receives");
+            static_assert(table.error != field_key_error::extra_items_denied,
+                          "a struct annotated with yyjson::items(false) has no elements for a field annotated with "
+                          "yyjson::extra_items to receive");
             static constexpr auto value = table.keys;
         };
 
@@ -4887,19 +5058,20 @@ namespace yyjson
                 return std::string_view(field_reflection::field_name<T, I>);
         }();
 
-        // The indices of the fields of a reflected struct that are read and written by their keys, which are all
-        // but those annotated with `yyjson::skip` and `yyjson::extra_keys`, as a `std::index_sequence`.
-        // `reflected_field_index<T, K>` is the K-th.
+        // The indices of the fields of a reflected struct that are read and written by their keys, or by their
+        // positions in an array, which are all but those annotated with `yyjson::skip`, `yyjson::extra_keys` and
+        // `yyjson::extra_items`, as a `std::index_sequence`.  `reflected_field_index<T, K>` is the K-th.
         template <typename T>
         inline constexpr auto unskipped_field_indices = [] {
             constexpr auto& table = field_keys<T, reflected_field_names<T>>::table;
             constexpr auto& skipped = table.skipped;
-            constexpr auto count =
-                static_cast<std::size_t>(std::ranges::count(skipped, false)) - (table.extra != skipped.size() ? 1 : 0);
+            constexpr auto count = static_cast<std::size_t>(std::ranges::count(skipped, false)) -
+                                   (table.extra != skipped.size() ? 1 : 0) -
+                                   (table.extra_items != skipped.size() ? 1 : 0);
             auto indices = std::array<std::size_t, count>{};
             for (std::size_t i = 0, k = 0; i < skipped.size(); ++i)
             {
-                if (!skipped[i] && i != table.extra) indices[k++] = i;
+                if (!skipped[i] && i != table.extra && i != table.extra_items) indices[k++] = i;
             }
             return indices;
         }();
@@ -5008,6 +5180,11 @@ namespace yyjson
             using type = type_list<alternative_type_t<As>...>;
         };
 
+        // The fields of the struct T in `fields`, then those annotated with `yyjson::extra_keys` and
+        // `yyjson::extra_items`, which are not read by a key or a position, as a `std::index_sequence`.
+        template <typename T, std::size_t... Is>
+        consteval auto unread_fields_too(std::index_sequence<Is...> fields);
+
         // A node of the graph in which a class leads to the types of its fields, or to its template arguments
         // when it has no fields to reflect, which is how a JSON value of one type can hold one of another.
         template <typename T>
@@ -5033,7 +5210,7 @@ namespace yyjson
                 else if constexpr (yyjson::detail::reflectable<T>)
                     return []<std::size_t... Is>(std::index_sequence<Is...>) {
                         return decltype(nodes(type_list<field_reflection::field_type<T, Is>...>{})){};
-                    }(reflected_fields<T>{});
+                    }(unread_fields_too<T>(reflected_fields<T>{}));
                 else
                     return decltype(nodes(typename template_type_args<T>::type{})){};
             }
@@ -5230,13 +5407,15 @@ namespace yyjson
         // types cannot be nested deeper than their definitions, and are not counted.  Nor are the standard
         // types that this library casts, such as `std::shared_ptr<T>` of a recursive `T`: every cycle of
         // types passes through a type of the user, so counting those counts each level once.  A struct annotated
-        // with `yyjson::transparent` is a type of the user too, although this library casts it.
+        // with `yyjson::transparent` or `yyjson::as_array` is a type of the user too, although this library casts
+        // it.
         template <typename T>
         class recursion_guard
         {
         };
         template <typename T>
-        requires recursive_type<T> && (!std::derived_from<caster<T>, builtin_caster> || transparent_struct<T>) &&
+        requires recursive_type<T> &&
+                 (!std::derived_from<caster<T>, builtin_caster> || transparent_struct<T> || as_array_struct<T>) &&
                  (CPPYYJSON_RECURSION_DEPTH_LIMIT != 0)
         class recursion_guard<T>
         {
@@ -5982,6 +6161,57 @@ namespace yyjson
         template <typename S>
         inline constexpr bool has_extra_keys = extra_keys_index<S> != no_extra_keys;
 
+        // The field of the struct S annotated with `yyjson::extra_items`, by its index among all the fields, or
+        // `no_extra_keys`, and whether S has one.
+        template <typename S>
+        inline constexpr std::size_t extra_items_index = [] {
+            if constexpr (!visitable<S> && reflectable<S> && annotated_fields<S>)
+            {
+                constexpr auto e = field_keys<S, reflected_field_names<S>>::table.extra_items;
+                return e == field_reflection::field_count<S> ? no_extra_keys : e;
+            }
+            else
+                return no_extra_keys;
+        }();
+        template <typename S>
+        inline constexpr bool has_extra_items = extra_items_index<S> != no_extra_keys;
+
+        // `yyjson::items(bool)` of the struct S annotated with `yyjson::as_array`.
+        template <typename S>
+        inline constexpr additional_keys struct_items = field_keys<S, reflected_field_names<S>>::table.items;
+
+        // A range that `yyjson::extra_items` takes, which receives the elements one by one at its end.
+        template <typename R>
+        concept extra_items_range = std::ranges::sized_range<R> && requires(R& r, std::ranges::range_value_t<R> v) {
+            r.push_back(std::move(v));
+            r.clear();
+        };
+
+        // The field of `s` annotated with `yyjson::extra_items`.
+        template <typename S>
+        auto& extra_items_field(S& s) noexcept
+        {
+            using U = std::remove_const_t<S>;
+            auto& field = field_reflection::get_field<extra_items_index<U>>(s);
+            static_assert(extra_items_range<std::remove_cvref_t<decltype(field)>>,
+                          "a field annotated with yyjson::extra_items is a range with push_back and clear, such as "
+                          "std::vector<yyjson::value> or std::vector<int>");
+            return field;
+        }
+
+        template <typename T, std::size_t... Is>
+        consteval auto unread_fields_too(std::index_sequence<Is...> fields)
+        {
+            if constexpr (has_extra_keys<T> && has_extra_items<T>)
+                return std::index_sequence<Is..., extra_keys_index<T>, extra_items_index<T>>{};
+            else if constexpr (has_extra_keys<T>)
+                return std::index_sequence<Is..., extra_keys_index<T>>{};
+            else if constexpr (has_extra_items<T>)
+                return std::index_sequence<Is..., extra_items_index<T>>{};
+            else
+                return fields;
+        }
+
         // A map that `yyjson::extra_keys` takes: its keys are made from the keys of the object and written back as
         // strings.
         template <typename M>
@@ -6449,6 +6679,21 @@ namespace yyjson
         {
             throw_bad_cast_at(at, "{} is not constructible from JSON without the key \"{}\"", type, key);
         }
+        // The field of a struct annotated with `yyjson::as_array` that is read from the element `position`, which
+        // the array does not have.
+        template <typename = void>
+        [[noreturn]] CPPYYJSON_COLD void throw_missing_position(cast_target at, std::string_view key,
+                                                                std::size_t position, std::string_view type)
+        {
+            throw_bad_cast_at(at, "{} is not constructible from JSON without the element {} of the field \"{}\"", type,
+                              position, key);
+        }
+        template <typename = void>
+        [[noreturn]] CPPYYJSON_COLD void throw_extra_element(cast_target at, std::size_t position,
+                                                             std::string_view type)
+        {
+            throw_bad_cast_at(at, "{} has no field of the element {}", type, position);
+        }
         [[noreturn]] CPPYYJSON_COLD inline void throw_missing_dependency(cast_target at, std::string_view key,
                                                                          std::string_view dependent,
                                                                          std::string_view type)
@@ -6606,6 +6851,19 @@ namespace yyjson
         template <typename S>
         using extra_keys_level =
             constraint_node<S, no_extra_keys, field_table_of<S>::table.schemas.nodes[extra_keys_index<S>].keys>;
+
+        // The settings of the elements of the field of S annotated with `yyjson::extra_items`, which
+        // `yyjson::items(settings...)` gives, and whether it has any.
+        template <typename S>
+        inline constexpr bool constrained_extra_items = [] {
+            if constexpr (has_extra_items<S>)
+                return field_table_of<S>::table.schemas.nodes[extra_items_index<S>].items != 0;
+            else
+                return false;
+        }();
+        template <typename S>
+        using extra_items_level =
+            constraint_node<S, no_extra_keys, field_table_of<S>::table.schemas.nodes[extra_items_index<S>].items>;
 
         // The annotations `yyjson::if_then_else` and `yyjson::not_` of the struct S, in the order that
         // `make_field_key_table` applies them: those of `annotations<S>`, then, in C++26, those of S itself.
@@ -6976,14 +7234,16 @@ namespace yyjson
         [[noreturn]] CPPYYJSON_COLD inline void throw_constraint_violation(
             cast_target at, std::string_view key, std::string_view type, constraint_kind kind,
             const field_constraints& c, std::span<const json_scalar> values,
-            constraint_subject subject = constraint_subject::value)
+            constraint_subject subject = constraint_subject::value, bool position = false)
         {
             const auto what = constraint_what(kind, c, values);
             const auto subject_text = subject == constraint_subject::element ? "an element of the value"
                                       : subject == constraint_subject::key   ? "a key of the value"
                                                                              : "the value";
             if (key.data() == nullptr) throw_bad_cast_at(at, "{} of {} {}", subject_text, type, what);
-            throw_bad_cast_at(at, "{} of the key \"{}\" of {} {}", subject_text, key, type, what);
+            // the field of a struct annotated with `yyjson::as_array` is a position in an array, without a key
+            throw_bad_cast_at(at, "{} of the {} \"{}\" of {} {}", subject_text, position ? "field" : "key", key,
+                              type, what);
         }
 
         // Compares the integer `v` with the number `b` exactly.
@@ -8391,7 +8651,7 @@ namespace yyjson
                 if (k == constraint_kind::none) return;
                 throw_located_violation<S, Level, constrained_value_t<E>>(e, k, key);
                 throw_constraint_violation(target_of(e), key, type_name<S>(), k, Level::constraints, Level::values,
-                                           constraint_subject::element);
+                                           constraint_subject::element, as_array_struct<S>);
             }
         }
 
@@ -8478,7 +8738,7 @@ namespace yyjson
                                     violated != constraint_kind::none)
                                     throw_constraint_violation(target_of(std::get<1>(kv)), key, type_name<S>(),
                                                                violated, next::constraints, next::values,
-                                                               constraint_subject::key);
+                                                               constraint_subject::key, as_array_struct<S>);
                             }
             }
             if constexpr (Level::node.constraints.template has<unique_items_t>() && constraint_items<V> &&
@@ -8503,7 +8763,8 @@ namespace yyjson
                             if (const auto j = first_duplicate(elements); j != no_duplicate)
                                 throw_constraint_violation(target_of((*a)[j]), key, type_name<S>(),
                                                            constraint_kind::duplicate_item, Level::constraints,
-                                                           Level::values, constraint_subject::element);
+                                                           Level::values, constraint_subject::element,
+                                                           as_array_struct<S>);
                         }
             }
         }
@@ -8514,7 +8775,7 @@ namespace yyjson
             using level = constraint_level<S, K>;
             throw_located_violation<S, level, constrained_value_t<F>>(json, k, violation_key<S, K>);
             throw_constraint_violation(target_of(json), violation_key<S, K>, type_name<S>(), k, level::constraints,
-                                       level::values);
+                                       level::values, constraint_subject::value, as_array_struct<S>);
         }
 
         // Whether null read into a field of the type F is a value that its constraints test: a `yyjson::value` or a
@@ -14871,6 +15132,9 @@ namespace yyjson
                 // the keys that `yyjson::extra_keys` keeps are written beside the fields
                 if constexpr (has_extra_keys<U>)
                     if (!equal(extra_keys_field(a), extra_keys_field(b))) return false;
+                // and the elements that `yyjson::extra_items` keeps after them
+                if constexpr (has_extra_items<U>)
+                    if (!equal(extra_items_field(a), extra_items_field(b))) return false;
                 if constexpr (struct_field_count<U> <= index_chunk)
                     return [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
                         return (equal(struct_field<Ks>(a), struct_field<Ks>(b)) && ...);
@@ -15189,6 +15453,13 @@ namespace yyjson
                 return combined_validates_itself<T>();
             else if constexpr (transparent_struct<T>)
                 return constrained_field<T, 0>;
+            // a field that may be left out can be missing at the end of the array or written as null before others
+            else if constexpr (as_array_struct<T>)
+                return []<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                    return any_true({(constrained_field<T, Ks> || omittable<struct_field_type<T, Ks>> ||
+                                      omits_default<T, struct_declared_index<T, Ks>>)...}) ||
+                           has_extra_items<T>;
+                }(std::make_index_sequence<struct_field_count<T>>{});
             else if constexpr (validated_struct<T>)
                 return []<std::size_t... Ks>(std::index_sequence<Ks...>) {
                     return any_true({(constrained_field<T, Ks> ||
@@ -15300,7 +15571,7 @@ namespace yyjson
                 if (const auto* value = held_value(e); value != nullptr)
                     throw_value_located_violation<S, Level>(*value, k, key);
                 throw_constraint_violation(cast_target{}, key, violated_type_name<S>(), k, Level::constraints, Level::values,
-                                           constraint_subject::element);
+                                           constraint_subject::element, as_array_struct<S>);
             });
         }
         template <typename S, typename Level, std::size_t J, typename It, typename End>
@@ -15381,7 +15652,7 @@ namespace yyjson
                             validate_within([&e] { return key_token(written_key(std::get<0>(e))); }, [&] {
                                 throw_constraint_violation(cast_target{}, key, violated_type_name<S>(),
                                                            violated, next::constraints, next::values,
-                                                           constraint_subject::key);
+                                                           constraint_subject::key, as_array_struct<S>);
                             });
             }
             // as in JSON, a duplicate is located in an array only, since a range of key-value pairs is written as
@@ -15394,7 +15665,8 @@ namespace yyjson
                         validate_within([j] { return index_token(j); }, [&] {
                             throw_constraint_violation(cast_target{}, key, violated_type_name<S>(),
                                                        constraint_kind::duplicate_item, Level::constraints,
-                                                       Level::values, constraint_subject::element);
+                                                       Level::values, constraint_subject::element,
+                                                       as_array_struct<S>);
                         });
             }
         }
@@ -15408,7 +15680,7 @@ namespace yyjson
             if (const auto* value = held_value(field); value != nullptr)
                 throw_value_located_violation<S, level>(*value, k, violation_key<S, K>);
             throw_constraint_violation(cast_target{}, violation_key<S, K>, type_name<S>(), k, level::constraints,
-                                       level::values);
+                                       level::values, constraint_subject::value, as_array_struct<S>);
         }
 
         template <typename T>
@@ -15570,6 +15842,82 @@ namespace yyjson
             if constexpr (has_conditions<S>) validate_conditions(s, written);
         }
 
+        template <typename T>
+        std::size_t written_position_count(const T& t);
+
+        // Checks the field K of `s`, a struct annotated with `yyjson::as_array`, written as the element K before
+        // `count` elements in all, or left out of the array after them.
+        template <typename S, std::size_t K>
+        void validate_position(const S& s, std::size_t count)
+        {
+            using F = struct_field_type<S, K>;
+            using rules = struct_key_rules<S>;
+            const auto& field = struct_field<K>(s);
+            if (K >= count)
+            {
+                if (rules::required[K] || (!rules::optional[K] && !validating_settings_only)) [[unlikely]]
+                    throw_missing_position(cast_target{}, struct_field_key<S, K>, K, type_name<S>());
+                return;
+            }
+            // a value left out before a written one is written as the writer writes it, which is null for
+            // `std::nullopt`
+            if constexpr (is_std_optional<F>::value)
+            {
+                if constexpr (!may_read_null<typename F::value_type>())
+                    if (!field.has_value()) [[unlikely]]
+                        validate_within([] { return index_token(K); }, [] {
+                            throw_bad_cast_at(cast_target{}, "{} is not constructible from JSON null",
+                                              type_name<F>());
+                        });
+            }
+            if constexpr (needs_validation<F>)
+                validate_within([] { return index_token(K); }, [&] { validate_value(field); });
+            if constexpr (constrained_field<S, K>)
+            {
+                if (const auto k = constraint_violation<S, K>(field); k != constraint_kind::none) [[unlikely]]
+                    if (!written_as_null(field))
+                        validate_within([] { return index_token(K); },
+                                        [&] { throw_value_violation<S, K>(field, k); });
+            }
+        }
+
+        // Checks the fields of `s`, a struct annotated with `yyjson::as_array`, by their positions in the array
+        // that the writer writes, then the elements of the field annotated with `yyjson::extra_items` after them.
+        template <typename S>
+        void validate_array_struct(const S& s)
+        {
+            constexpr auto n = struct_field_count<S>;
+            const auto count = written_position_count(s);
+            [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                [[maybe_unused]] const bool done[] = {true, (validate_position<S, Ks>(s, count), true)...};
+            }(std::make_index_sequence<n>{});
+            if constexpr (has_extra_items<S>)
+            {
+                auto j = n;
+                for (const auto& e : extra_items_field(s))
+                {
+                    validate_within([j] { return index_token(j); }, [&] {
+                        validate_value(e);
+                        if constexpr (constrained_extra_items<S>)
+                        {
+                            using level = extra_items_level<S>;
+                            if (const auto c = level_violation<level>(e); c != constraint_kind::none) [[unlikely]]
+                                if (!written_as_null(e))
+                                {
+                                    constexpr auto key = field_key<S, extra_items_index<S>>;
+                                    if (const auto* value = held_value(e); value != nullptr)
+                                        throw_value_located_violation<S, level>(*value, c, key);
+                                    throw_constraint_violation(cast_target{}, key, type_name<S>(), c,
+                                                               level::constraints, level::values,
+                                                               constraint_subject::element, true);
+                                }
+                        }
+                    });
+                    ++j;
+                }
+            }
+        }
+
         // A member of a tuple that is written as an object, or an element of one that is written as an array.
         template <bool Members, std::size_t I, typename U>
         void validate_tuple_element(const U& v)
@@ -15625,6 +15973,8 @@ namespace yyjson
                         if (!written_as_null(field)) throw_value_violation<U, 0>(field, k);
                 }
             }
+            else if constexpr (as_array_struct<U>)
+                validate_array_struct(v);
             else if constexpr (validated_struct<U>)
                 validate_struct(v);
             else if constexpr (key_value_range<U>)
@@ -15713,8 +16063,10 @@ namespace yyjson
         template <typename T, typename Json>
         T user_from_json(const Json& json)
         {
-            // `assign_transparent` counts a struct annotated with `yyjson::transparent`, wherever it is read
-            [[maybe_unused]] const auto guard = recursion_guard<std::conditional_t<transparent_struct<T>, void, T>>();
+            // `assign_transparent` and `assign_array_fields` count the structs annotated with `yyjson::transparent`
+            // and `yyjson::as_array`, wherever they are read
+            [[maybe_unused]] const auto guard =
+                recursion_guard<std::conditional_t<transparent_struct<T> || as_array_struct<T>, void, T>>();
             if constexpr (!from_json_translator<T>::castable)
                 return caster<T>::from_json(json);
             else if constexpr (views_copy<from_json_source<T>, Json>)
@@ -16023,7 +16375,7 @@ namespace yyjson
         // explicit, and `{}` initializes the member by copy-list-initialization.
         template <typename T, typename Json>
         concept reflected_object_castable =
-            std::constructible_from<T> && (!visitable<T>) &&
+            std::constructible_from<T> && (!visitable<T>) && (!as_array_struct<T>) &&
             (!std::ranges::input_range<T> || reflected_range_aggregate<T>) && all_fields_castable<Json, T>;
 
         // `cast<T>` of a value of a read document builds `T()` and assigns the fields from the object,
@@ -16677,14 +17029,16 @@ namespace yyjson
 
         template <typename... Ts>
         requires copy_string_args<Ts...> && visitable<T> && (!writer::detail::to_json_usr_translator<T>) &&
-                 (!detail::transparent_struct<T>) && writer::detail::to_json_with_visitable<T>
+                 (!detail::transparent_struct<T>) && (!detail::as_array_struct<T>) &&
+                 writer::detail::to_json_with_visitable<T>
         static void to_json(writer::object_ref& obj, const T& t, Ts... ts)
         {
             visit_struct<T>::to_json_impl(obj, t, ts...);
         }
         template <typename... Ts>
         requires copy_string_args<Ts...> && visitable<T> && (!writer::detail::to_json_usr_translator<T>) &&
-                 (!detail::transparent_struct<T>) && writer::detail::to_json_with_visitable<T>
+                 (!detail::transparent_struct<T>) && (!detail::as_array_struct<T>) &&
+                 writer::detail::to_json_with_visitable<T>
         static void to_json(writer::object_ref& obj, T&& t, Ts... ts)
         {
             visit_struct<T>::to_json_impl(obj, std::move(t), ts...);
@@ -16692,7 +17046,8 @@ namespace yyjson
 
         template <typename... Ts>
         requires copy_string_args<Ts...> && (!visitable<T>) && (!writer::detail::to_json_usr_translator<T>) &&
-                 (!detail::transparent_struct<T>) && writer::detail::to_json_with_reflection<T>
+                 (!detail::transparent_struct<T>) && (!detail::as_array_struct<T>) &&
+                 writer::detail::to_json_with_reflection<T>
         static void to_json(writer::object_ref& obj, const T& t, Ts... ts)
         {
             if constexpr (detail::has_adjacent_fields<T>) detail::check_adjacent_tags(t);
@@ -16708,7 +17063,8 @@ namespace yyjson
         }
         template <typename... Ts>
         requires copy_string_args<Ts...> && (!visitable<T>) && (!writer::detail::to_json_usr_translator<T>) &&
-                 (!detail::transparent_struct<T>) && writer::detail::to_json_with_reflection<T>
+                 (!detail::transparent_struct<T>) && (!detail::as_array_struct<T>) &&
+                 writer::detail::to_json_with_reflection<T>
         static void to_json(writer::object_ref& obj, T&& t, Ts... ts)
         {
             // The fields are moved one by one out of `t` itself.  `for_each_field` would move them into a
@@ -17009,6 +17365,221 @@ namespace yyjson
         }
     };
 
+    namespace detail
+    {
+        // The element type of the field of S annotated with `yyjson::extra_items`.
+        template <typename S>
+        using extra_item_type =
+            std::ranges::range_value_t<std::remove_cvref_t<decltype(extra_items_field(std::declval<S&>()))>>;
+
+        // The fields of the struct T annotated with `yyjson::as_array` are read from `Json`, a JSON value, and
+        // written to an array.
+        template <typename T, typename Json>
+        consteval bool array_fields_castable()
+        {
+            if constexpr (!std::constructible_from<T> || !requires(const Json& json) { json.as_array(); })
+                return false;
+            else if constexpr (recursive_type<T>)
+                return true;
+            else
+            {
+                const auto extra_castable = [] {
+                    if constexpr (has_extra_items<T>)
+                        return castable<Json, extra_item_type<T>>;
+                    else
+                        return true;
+                }();
+                return extra_castable && []<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                    const bool assignable[] = {true, field_assignable<Json, struct_field_type<T, Ks>>...};
+                    return std::ranges::all_of(assignable, std::identity());
+                }(std::make_index_sequence<struct_field_count<T>>{});
+            }
+        }
+        template <typename T>
+        consteval bool array_fields_writable()
+        {
+            if constexpr (recursive_type<T>)
+                return true;
+            else
+            {
+                const auto extra_writable = [] {
+                    if constexpr (has_extra_items<T>)
+                        return requires(writer::array_ref& arr, const extra_item_type<T>& e) { arr.emplace_back(e); };
+                    else
+                        return true;
+                }();
+                return extra_writable && []<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                    const bool writable[] = {
+                        true, requires(writer::array_ref& arr, const struct_field_type<T, Ks>& f) {
+                            arr.emplace_back(f);
+                        }...};
+                    return std::ranges::all_of(writable, std::identity());
+                }(std::make_index_sequence<struct_field_count<T>>{});
+            }
+        }
+
+        // Throws `bad_cast` at the element `json`, or at a value in it, read as `v` into the field of S annotated
+        // with `yyjson::extra_items`, unless `v` satisfies the settings of its elements.
+        template <typename S, typename V, typename Json>
+        [[noreturn]] CPPYYJSON_NOINLINE CPPYYJSON_COLD void throw_extra_item_violation(const Json& json,
+                                                                                       constraint_kind k)
+        {
+            using level = extra_items_level<S>;
+            constexpr auto key = field_key<S, extra_items_index<S>>;
+            throw_located_violation<S, level, constrained_value_t<V>>(json, k, key);
+            throw_constraint_violation(target_of(json), key, type_name<S>(), k, level::constraints, level::values,
+                                       constraint_subject::element, true);
+        }
+
+        // Reads the JSON array `json` into `t`, a struct annotated with `yyjson::as_array`: its fields from the
+        // elements in the order of their declarations, and the elements after them into the field annotated with
+        // `yyjson::extra_items`.  A field whose key an object could leave out may be missing at the end, as may
+        // any field without `yyjson::strict`.
+        template <typename T, typename Json>
+        void assign_array_fields(T& t, const Json& json)
+        {
+            [[maybe_unused]] const auto guard = recursion_guard<T>();
+            const auto arr = json.as_array();
+            if (!arr.has_value()) [[unlikely]]
+                throw_bad_cast_at(target_of(json), "{} is not constructible from JSON", type_name<T>());
+            using rules = struct_key_rules<T>;
+            constexpr auto n = struct_field_count<T>;
+            const auto size = arr->size();
+            auto it = arr->begin();
+            [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                [[maybe_unused]] const bool done[] = {
+                    true, (
+                              [&] {
+                                  constexpr auto i = reflected_field_index<T, Ks>;
+                                  auto& field = field_reflection::get_field<i>(t);
+                                  using F = std::remove_cvref_t<decltype(field)>;
+                                  if (Ks < size)
+                                  {
+                                      const auto value = *it;
+                                      ++it;
+                                      assign_reflected_field(field, value, reflected_field_replaceable<i>(t));
+                                      if constexpr (constrained_field<T, Ks>)
+                                          if (null_is_checked<F> || !value.is_null())
+                                              check_constraints<T, Ks>(field, value);
+                                  }
+                                  else
+                                  {
+                                      if (rules::required[Ks] || (strict_reading && !rules::optional[Ks])) [[unlikely]]
+                                          throw_missing_position(target_of(json), struct_field_key<T, Ks>, Ks,
+                                                                 type_name<T>());
+                                      if constexpr (has_default_from<T, i>) field = default_field_value<T, i, F>();
+                                  }
+                              }(),
+                              true)...};
+            }(std::make_index_sequence<n>{});
+            if constexpr (has_extra_items<T>)
+            {
+                using E = extra_item_type<T>;
+                auto& extra = extra_items_field(t);
+                extra.clear();
+                for (std::size_t j = n; j < size; ++j, ++it)
+                {
+                    const auto e = *it;
+                    auto v = cast_nested<E>(e);
+                    if constexpr (constrained_extra_items<T>)
+                        if (const auto k = level_violation<extra_items_level<T>>(v); k != constraint_kind::none)
+                            [[unlikely]]
+                            throw_extra_item_violation<T, E>(e, k);
+                    extra.push_back(std::move(v));
+                }
+            }
+            else if (size > n) [[unlikely]]
+            {
+                if (struct_items<T> == additional_keys::denied ||
+                    (struct_items<T> == additional_keys::unset && strict_reading))
+                    throw_extra_element(target_of(*it), n, type_name<T>());
+            }
+        }
+
+        // Whether the field K of `t`, a struct annotated with `yyjson::as_array`, by its index among the fields
+        // that are read, would be left out of an object.
+        template <typename T, std::size_t K>
+        bool omitted_position(const T& t)
+        {
+            constexpr auto i = reflected_field_index<T, K>;
+            const auto& field = field_reflection::get_field<i>(t);
+            if constexpr (omits_default<T, i>)
+                if (holds_default<T, i>(field)) return true;
+            if constexpr (omittable<decltype(field)>)
+                return should_omit_field(field);
+            else
+                return false;
+        }
+
+        // The number of the fields of `t`, a struct annotated with `yyjson::as_array`, that are written: all of
+        // them but those at the end that would be left out of an object, or all if there are extra elements.
+        template <typename T>
+        std::size_t written_position_count(const T& t)
+        {
+            constexpr auto n = struct_field_count<T>;
+            if constexpr (has_extra_items<T>)
+                if (!std::ranges::empty(extra_items_field(t))) return n;
+            std::size_t count = 0;
+            [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                [[maybe_unused]] const bool done[] = {
+                    true, (omitted_position<T, Ks>(t) || ((count = Ks + 1), true))...};
+            }(std::make_index_sequence<n>{});
+            return count;
+        }
+
+        // Writes the fields of `t`, a struct annotated with `yyjson::as_array`, as the elements of `arr`, and then
+        // the elements of the field annotated with `yyjson::extra_items`.
+        template <typename Array, typename T, typename... Ts>
+        void emplace_array_fields(Array& arr, T&& t, Ts... ts)
+        {
+            using U = std::remove_cvref_t<T>;
+            const auto count = written_position_count(std::as_const(t));
+            [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                [[maybe_unused]] const bool done[] = {
+                    true, (Ks >= count || (arr.emplace_back_no_iter(
+                                               forward_field<reflected_field_index<U, Ks>>(std::forward<T>(t)), ts...),
+                                           true))...};
+            }(std::make_index_sequence<struct_field_count<U>>{});
+            if constexpr (has_extra_items<U>)
+            {
+                using M = std::remove_reference_t<decltype(extra_items_field(t))>;
+                using R = std::conditional_t<std::is_rvalue_reference_v<T&&>, M&&, M&>;
+                for (auto&& e : static_cast<R>(extra_items_field(t)))
+                    arr.emplace_back_no_iter(forward_element<R>(std::forward<decltype(e)>(e)), ts...);
+            }
+        }
+    }  // namespace detail
+
+    // A struct annotated with `yyjson::as_array`, which is read from and written as an array of the values of its
+    // fields.  A cast makes a new object, so that `yyjson::read_into` and `yyjson::merge_into` replace the whole of
+    // it, as they replace an array.
+    template <typename T>
+    requires detail::as_array_struct<T>
+    struct caster<T> : detail::builtin_caster
+    {
+        template <typename Json>
+        requires(detail::array_fields_castable<T, Json>())
+        static T from_json(const Json& json)
+        {
+            auto t = T();
+            detail::assign_array_fields(t, json);
+            return t;
+        }
+
+        template <typename... Ts>
+        requires detail::copy_string_args<Ts...> && (detail::array_fields_writable<T>())
+        static void to_json(writer::array_ref& arr, const T& t, Ts... ts)
+        {
+            detail::emplace_array_fields(arr, t, ts...);
+        }
+        template <typename... Ts>
+        requires detail::copy_string_args<Ts...> && (detail::array_fields_writable<T>())
+        static void to_json(writer::array_ref& arr, T&& t, Ts... ts)
+        {
+            detail::emplace_array_fields(arr, std::move(t), ts...);
+        }
+    };
+
     template <>
     struct caster<std::monostate>
     {
@@ -17122,6 +17693,8 @@ namespace yyjson
                     return json_kind_null | accepted_json_kinds<typename T::value_type, Json, Seen...>();
                 else if constexpr (tuple_like<T>)
                     return json_kind_array | json_kind_object;
+                else if constexpr (as_array_struct<T>)
+                    return json_kind_array;
                 else
                     return json_kind_all;
             }
@@ -20643,6 +21216,33 @@ namespace yyjson
                 ((next_element(first), write_value(std::get<Is>(std::forward<T>(t)))), ...);
             }
 
+            // The fields of `t`, a struct annotated with `yyjson::as_array`, as its caster writes them to an array.
+            template <typename T>
+            void write_array_fields(bool& first, T&& t)
+            {
+                using U = std::remove_cvref_t<T>;
+                const auto count = yyjson::detail::written_position_count(std::as_const(t));
+                [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                    [[maybe_unused]] const bool done[] = {
+                        true,
+                        (Ks >= count ||
+                         (next_element(first),
+                          write_value(yyjson::detail::forward_field<yyjson::detail::reflected_field_index<U, Ks>>(
+                              std::forward<T>(t))),
+                          true))...};
+                }(std::make_index_sequence<yyjson::detail::struct_field_count<U>>{});
+                if constexpr (yyjson::detail::has_extra_items<U>)
+                {
+                    using M = std::remove_reference_t<decltype(yyjson::detail::extra_items_field(t))>;
+                    using R = std::conditional_t<std::is_rvalue_reference_v<T&&>, M&&, M&>;
+                    for (auto&& e : static_cast<R>(yyjson::detail::extra_items_field(t)))
+                    {
+                        next_element(first);
+                        write_value(yyjson::detail::forward_element<R>(std::forward<decltype(e)>(e)));
+                    }
+                }
+            }
+
             // Whether `write_value` builds T in the mutable document: the last branch of `write_in_place`.
             template <typename T>
             static consteval bool written_in_document()
@@ -20662,6 +21262,7 @@ namespace yyjson
                               std::same_as<V, value_ref>) ||
                              (builtin && is_variant<U>::value && std::same_as<V, value_ref>) ||
                              (builtin && yyjson::detail::transparent_struct<U> && std::same_as<V, value_ref>) ||
+                             (builtin && yyjson::detail::as_array_struct<U> && std::same_as<V, array_ref>) ||
                              (builtin && std::same_as<U, std::vector<bool>> && std::same_as<V, array_ref>) ||
                              (builtin && yyjson::detail::tuple_like<U> &&
                               (std::same_as<V, array_ref> || std::same_as<V, object_ref>)));
@@ -20791,6 +21392,14 @@ namespace yyjson
                         next_element(first);
                         write_bool(v);
                     }
+                    close(']', first);
+                }
+                else if constexpr (std::derived_from<caster<U>, yyjson::detail::builtin_caster> &&
+                                   yyjson::detail::as_array_struct<U> && std::same_as<V, array_ref>)
+                {
+                    open('[');
+                    auto first = true;
+                    write_array_fields(first, std::forward<T>(t));
                     close(']', first);
                 }
                 else if constexpr (std::derived_from<caster<U>, yyjson::detail::builtin_caster> &&
@@ -23428,6 +24037,88 @@ namespace yyjson
                 fail();
             }
 
+            // Reads the array at `cur_` into a new T, a struct annotated with `yyjson::as_array`, as its caster reads
+            // it from a document: the fields from the elements in order, and the elements after them into the field
+            // annotated with `yyjson::extra_items`.  The document throws what fails.
+            template <typename T>
+            T read_array_fields()
+            {
+                using yyjson::detail::struct_field;
+                using rules = yyjson::detail::struct_key_rules<T>;
+                [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<T>();
+                if (*cur_ != '[') [[unlikely]]
+                    fail();
+                const char* const open = cur_;
+                ++cur_;
+                skip_ws();
+                auto result = T();
+                auto more = *cur_ != ']';
+                // moves to the next element, and tells whether there is one
+                const auto next = [&] {
+                    skip_ws();
+                    if (*cur_ == ',')
+                    {
+                        ++cur_;
+                        skip_ws();
+                        return true;
+                    }
+                    if (*cur_ != ']') [[unlikely]]
+                        fail();
+                    return false;
+                };
+                [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                    [[maybe_unused]] const bool done[] = {
+                        true, (
+                                  [&] {
+                                      constexpr auto i = yyjson::detail::reflected_field_index<T, Ks>;
+                                      auto& field = struct_field<Ks>(result);
+                                      using F = std::remove_cvref_t<decltype(field)>;
+                                      if (more)
+                                      {
+                                          [[maybe_unused]] const bool null = *cur_ == 'n';
+                                          read_field(field, yyjson::detail::reflected_field_replaceable<i>(result));
+                                          if constexpr (yyjson::detail::constrained_field<T, Ks>)
+                                              if (yyjson::detail::null_is_checked<F> || !null)
+                                                  check_constraints<T, Ks>(result);
+                                          more = next();
+                                      }
+                                      else
+                                      {
+                                          if (rules::required[Ks] || (strict_ && !rules::optional[Ks])) [[unlikely]]
+                                              fail();
+                                          if constexpr (yyjson::detail::has_default_from<T, i>)
+                                              field = yyjson::detail::default_field_value<T, i, F>();
+                                      }
+                                  }(),
+                                  true)...};
+                }(std::make_index_sequence<struct_field_count<T>>{});
+                if constexpr (yyjson::detail::has_extra_items<T>)
+                {
+                    using E = yyjson::detail::extra_item_type<T>;
+                    auto& extra = yyjson::detail::extra_items_field(result);
+                    extra.clear();
+                    for (; more; more = next())
+                    {
+                        auto v = read_element<E>();
+                        if constexpr (yyjson::detail::constrained_extra_items<T>)
+                            if (yyjson::detail::level_violation<yyjson::detail::extra_items_level<T>>(v) !=
+                                yyjson::detail::constraint_kind::none) [[unlikely]]
+                                fail();
+                        extra.push_back(std::move(v));
+                    }
+                }
+                else if (more)
+                {
+                    if (yyjson::detail::struct_items<T> == yyjson::detail::additional_keys::denied ||
+                        (yyjson::detail::struct_items<T> == yyjson::detail::additional_keys::unset && strict_))
+                        [[unlikely]]
+                        fail();
+                    for (; more; more = next()) skip_value();
+                }
+                close(open);
+                return result;
+            }
+
             // Reads the value at `cur_` as `cast<T>` reads it from a document.
             template <typename T>
             T read_value()
@@ -23471,6 +24162,9 @@ namespace yyjson
                         return yyjson::detail::from_json_translator<T>::convert(std::move(source));
                     });
                 }
+                else if constexpr (yyjson::detail::as_array_struct<T> &&
+                                   std::derived_from<caster<T>, yyjson::detail::builtin_caster>)
+                    return read_array_fields<T>();
                 else if constexpr (transparent_readable<T>)
                 {
                     auto result = T();

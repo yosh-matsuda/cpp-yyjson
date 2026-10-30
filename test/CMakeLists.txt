@@ -58,6 +58,7 @@ add_executable(
   test_error_path.cpp
   test_strict.cpp
   test_transparent.cpp
+  test_as_array.cpp
   test_constraints.cpp
   test_validate.cpp
   test_many_fields.cpp)
