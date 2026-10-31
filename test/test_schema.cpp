@@ -488,6 +488,8 @@ struct Nul
     std::optional<std::unique_ptr<int>> level;
     std::vector<std::unique_ptr<std::string>> tags;
     std::vector<std::shared_ptr<int>> ids;
+    std::unique_ptr<int> pick;
+    std::variant<std::monostate, double> none;
 };
 template <> inline constexpr auto yyjson::annotations<Nul> = yyjson::annotate(
     yyjson::field("code", yyjson::max_length(3)),
@@ -496,7 +498,9 @@ template <> inline constexpr auto yyjson::annotations<Nul> = yyjson::annotate(
     yyjson::field("list", yyjson::min_items(1), yyjson::items(yyjson::maximum(9))),
     yyjson::field("level", yyjson::maximum(5)),
     yyjson::field("tags", yyjson::items(yyjson::max_length(3))),
-    yyjson::field("ids", yyjson::unique_items));
+    yyjson::field("ids", yyjson::unique_items),
+    yyjson::field("pick", yyjson::enum_(1, nullptr)),
+    yyjson::field("none", yyjson::const_(nullptr)));
 struct Fm
 {
     std::optional<std::string> date_time;
@@ -1294,8 +1298,11 @@ TEST(Schema, Nul)
 {
     check<Nul>({
         R"({})",
-        R"({"code":null,"kind":null,"count":null,"list":null,"level":null,"tags":[null],"ids":[null,1]})",
-        R"({"code":"abc","kind":"a","count":0,"list":[9],"level":5,"tags":["abc"],"ids":[1,2]})",
+        R"({"code":null,"count":null,"list":null,"level":null,"tags":[null],"ids":[null,1],"pick":null,"none":null})",
+        R"({"code":"abc","kind":"a","count":0,"list":[9],"level":5,"tags":["abc"],"ids":[1,2],"pick":1})",
+        R"({"kind":null})",
+        R"({"pick":2})",
+        R"({"none":1})",
         R"({"code":"abcd"})",
         R"({"kind":"c"})",
         R"({"count":-1})",

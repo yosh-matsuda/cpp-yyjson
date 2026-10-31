@@ -946,7 +946,36 @@ namespace yyjson
                 else
                     f(s.number.real);
             }
+            // Whether a value that holds null or nothing, with the settings of the node n, may be null: unless
+            // `yyjson::const_` or `yyjson::enum_` leave `nullptr` out.
+            bool admits_null(const schema_node* n) const
+            {
+                using kind = yyjson::detail::json_scalar::kind_t;
+                if (n == nullptr) return true;
+                const auto& c = n->constraints;
+                if (c.has<yyjson::const_<>>() && values_[c.constant].kind != kind::null) return false;
+                if (c.has<yyjson::enum_<0>>())
+                {
+                    for (std::size_t i = 0; i < c.enum_count; ++i)
+                        if (values_[c.enum_first + i].kind == kind::null) return true;
+                    return false;
+                }
+                return true;
+            }
+            // Whether `yyjson::const_` or `yyjson::enum_` of the node n list only `nullptr`.
+            bool only_null(const schema_node* n) const
+            {
+                using kind = yyjson::detail::json_scalar::kind_t;
+                if (n == nullptr) return false;
+                const auto& c = n->constraints;
+                if (c.has<yyjson::const_<>>()) return values_[c.constant].kind == kind::null;
+                if (!c.has<yyjson::enum_<0>>()) return false;
+                for (std::size_t i = 0; i < c.enum_count; ++i)
+                    if (values_[c.enum_first + i].kind != kind::null) return false;
+                return true;
+            }
             // Writes the constraints of a node.  The bounds of a number type are written by `emit_number`.
+            // A listed `nullptr` belongs to the null branch beside the value and is left out here.
             void emit_constraints(object_ref out, const yyjson::detail::field_constraints& c) const
             {
                 if (c.has<yyjson::minimum>()) emit_bound(out, "minimum", c.minimum);
@@ -960,13 +989,15 @@ namespace yyjson
                 if (c.has<yyjson::max_items>()) out.emplace("maxItems", c.max_items);
                 if (c.has<yyjson::pattern<>>()) out.emplace("pattern", c.pattern());
                 if (c.has<yyjson::format<>>()) out.emplace("format", c.format());
-                if (c.has<yyjson::const_<>>())
+                using kind = yyjson::detail::json_scalar::kind_t;
+                if (c.has<yyjson::const_<>>() && values_[c.constant].kind != kind::null)
                     visit_scalar(values_[c.constant], [&](auto v) { out.emplace("const", v); });
                 if (c.has<yyjson::enum_<0>>())
                 {
                     auto values = out.emplace("enum", empty_array);
                     for (std::size_t i = 0; i < c.enum_count; ++i)
-                        visit_scalar(values_[c.enum_first + i], [&](auto v) { values.emplace_back(v); });
+                        if (values_[c.enum_first + i].kind != kind::null)
+                            visit_scalar(values_[c.enum_first + i], [&](auto v) { values.emplace_back(v); });
                 }
                 if (c.has<yyjson::unique_items_t>()) out.emplace("uniqueItems", true);
                 if (c.has<yyjson::min_contains>()) out.emplace("minContains", c.min_contains);
@@ -1024,13 +1055,18 @@ namespace yyjson
                 }
                 else
                     out.emplace("not", empty_object);
-                if (n != nullptr && n->constraints.has<yyjson::const_<>>())
+                // A listed `nullptr` belongs to the null branch beside the value.
+                const auto number = [&](std::size_t i) {
+                    return values_[i].kind != yyjson::detail::json_scalar::kind_t::null;
+                };
+                if (n != nullptr && n->constraints.has<yyjson::const_<>>() && number(n->constraints.constant))
                     out.emplace("const", written_real(rounded(values_[n->constraints.constant].number)));
                 if (n != nullptr && n->constraints.has<yyjson::enum_<0>>())
                 {
                     auto values = out.emplace("enum", empty_array);
-                    for (std::size_t i = 0; i < n->constraints.enum_count; ++i)
-                        values.emplace_back(written_real(rounded(values_[n->constraints.enum_first + i].number)));
+                    const auto first = n->constraints.enum_first;
+                    for (std::size_t i = first; i < first + n->constraints.enum_count; ++i)
+                        if (number(i)) values.emplace_back(written_real(rounded(values_[i].number)));
                 }
                 emit_constraints(out, rest);
             }
@@ -1334,9 +1370,16 @@ namespace yyjson
             else if constexpr (yyjson::detail::is_std_optional<T>::value || yyjson::detail::owning_pointer<T>)
             {
                 using U = std::remove_cvref_t<decltype(*std::declval<T&>())>;
-                auto any = out.emplace("anyOf", empty_array);
-                emit<U>(any.emplace_back(empty_object), nodes, node);
-                any.emplace_back(empty_object).emplace("type", "null");
+                if (!admits_null(n))
+                    emit<U>(out, nodes, node);
+                else if (only_null(n))
+                    out.emplace("type", "null");
+                else
+                {
+                    auto any = out.emplace("anyOf", empty_array);
+                    emit<U>(any.emplace_back(empty_object), nodes, node);
+                    any.emplace_back(empty_object).emplace("type", "null");
+                }
             }
             else if constexpr (yyjson::detail::indirect_value<T> &&
                                std::derived_from<caster<T>, yyjson::detail::builtin_caster>)
@@ -1358,7 +1401,18 @@ namespace yyjson
                         (emit<std::variant_alternative_t<Is, T>>(any.emplace_back(empty_object), nodes, node), ...);
                     }(std::make_index_sequence<2>{});
                 };
-                if (!named<T>())
+                if (!admits_null(n))
+                {
+                    // `yyjson::const_` or `yyjson::enum_` reject null; only the value is read.
+                    using V = std::variant_alternative_t<std::same_as<std::variant_alternative_t<0, T>, std::monostate>
+                                                             ? 1
+                                                             : 0,
+                                                         T>;
+                    emit<V>(out, nodes, node);
+                }
+                else if (only_null(n))
+                    out.emplace("type", "null");
+                else if (!named<T>())
                     alternatives(out.emplace("anyOf", empty_array));
                 else
                 {
