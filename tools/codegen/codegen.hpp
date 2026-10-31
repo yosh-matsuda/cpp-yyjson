@@ -7199,9 +7199,20 @@ namespace cpp_yyjson_codegen
                             text += c.text[i];
                             continue;
                         }
+                        auto start = i;
                         auto end = i + 1;
-                        while (c.text[end] != '"') end += c.text[end] == '\\' ? 2 : 1;
-                        const auto literal = std::string_view(c.text).substr(i, end + 1 - i);
+                        if (text.ends_with('R'))
+                        {
+                            // a raw string literal R"delim(...)delim"
+                            text.pop_back();
+                            --start;
+                            const auto open = c.text.find('(', i);
+                            const auto delim = c.text.substr(i + 1, open - i - 1);
+                            end = c.text.find(")" + delim + "\"", open) + delim.size() + 1;
+                        }
+                        else
+                            while (c.text[end] != '"') end += c.text[end] == '\\' ? 2 : 1;
+                        const auto literal = std::string_view(c.text).substr(start, end + 1 - start);
                         if (text.ends_with("std::string_view("))
                             text += literal;
                         else

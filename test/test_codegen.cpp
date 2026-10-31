@@ -2939,6 +2939,13 @@ TEST(Codegen, TransparentRoot)
     EXPECT_EQ(warnings(long_strings), "");
     EXPECT_TRUE(has(long_strings.code, "yyjson::prefix_items(yyjson::const_(std::string_view(\"" + pattern +
                                            "\")), yyjson::pattern(\"^b\"))"));
+    // a pattern with a quote is a raw string literal, which the view keeps whole
+    const auto raw_pattern = std::string(300, 'a') + "\"x";
+    const auto raw_strings = generate(R"({"type": "array", "prefixItems": [{"type": "string", "pattern": "^)" +
+                                          std::string(300, 'a') + R"(\"x"}], "items": {"type": "string"}})",
+                                      {});
+    EXPECT_TRUE(has(raw_strings.code, "yyjson::prefix_items(yyjson::pattern(std::string_view(R\"(^" + raw_pattern +
+                                          ")\")))"));
     const auto c26_strings = generate(R"({"type": "array", "prefixItems": [{"type": "string", "pattern": ")" + pattern +
                                           R"("}], "items": {"type": "string"}})",
                                       {.cpp26 = true});
