@@ -2640,7 +2640,7 @@ namespace yyjson
 
     // The settings of the keys of a map field that is read from a JSON object, as JSON Schema's `propertyNames`:
     // `yyjson::field("labels", yyjson::property_names(yyjson::pattern("^[a-z]+$")))`.  It takes the constraints of
-    // a string and `yyjson::satisfies<f>`, which takes the key type of the map.
+    // a string, `yyjson::satisfies<f>`, which takes the key type of the map, and `yyjson::not_(settings...)`.
     template <typename... As>
     struct property_names
     {
@@ -2649,9 +2649,9 @@ namespace yyjson
         consteval explicit property_names(As... values) : settings(detail::make_setting_list(values...))
         {
             static_assert(sizeof...(As) != 0, "yyjson::property_names needs a setting of the keys");
-            static_assert((detail::constraint_setting<As> && ...),
-                          "yyjson::property_names takes the constraints such as yyjson::max_length and "
-                          "yyjson::satisfies<f>");
+            static_assert(((detail::constraint_setting<As> || detail::is_not_value<As>::value) && ...),
+                          "yyjson::property_names takes the constraints such as yyjson::max_length, "
+                          "yyjson::satisfies<f> and yyjson::not_(settings...)");
         }
     };
 

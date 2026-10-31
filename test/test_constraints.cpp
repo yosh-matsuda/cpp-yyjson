@@ -2835,6 +2835,7 @@ struct ValueNot
     yyjson::value any = 0;
     std::optional<int> m;
     yyjson::any_of<yyjson::alt<int, yyjson::not_(yyjson::const_(7))>, std::string> u = 0;
+    std::map<std::string, int> keys;
 };
 template <>
 inline constexpr auto yyjson::annotations<ValueNot> = yyjson::annotate(
@@ -2842,6 +2843,8 @@ inline constexpr auto yyjson::annotations<ValueNot> = yyjson::annotate(
     yyjson::field("s", yyjson::not_(yyjson::pattern("^x"))),
     yyjson::field("v", yyjson::items(yyjson::not_(yyjson::enum_(1, 2)))),
     yyjson::field("any", yyjson::not_(yyjson::is_type<std::nullptr_t>)),
+    yyjson::field("keys",
+                  yyjson::property_names(yyjson::pattern("^[a-z]"), yyjson::not_(yyjson::enum_("ab", "cd")))),
     yyjson::if_then_else(yyjson::if_(yyjson::field("n", yyjson::const_(1))),
                          yyjson::then(yyjson::field("m", yyjson::not_(yyjson::const_(0))))));
 
@@ -2872,7 +2875,7 @@ TEST(Constraints, ValueNot)
     // the keys that strict reading requires, and the members that the documents below change
     const auto doc = [](std::string_view members) {
         auto result = std::string("{") + std::string(members);
-        for (const auto& [key, value] : {std::pair{"n", "0"}, {"v", "[]"}, {"any", "1"}, {"u", "1"}})
+        for (const auto& [key, value] : {std::pair{"n", "0"}, {"v", "[]"}, {"any", "1"}, {"u", "1"}, {"keys", "{}"}})
             if (members.find(std::format(R"("{}":)", key)) == std::string_view::npos)
                 result += std::format(R"({}"{}":{})", result.size() == 1 ? "" : ",", key, value);
         return result + "}";
@@ -2896,6 +2899,12 @@ TEST(Constraints, ValueNot)
     check_doc(R"("n":1,"m":0)", field("m"), "/m");
     check_doc(R"("n":2,"m":0)", "");
     check_doc(R"("n":1)", "");
+    // not_ in property_names rejects the keys that it lists
+    check_doc(R"("keys":{"ac":1,"x":2})", "");
+    check_doc(R"("keys":{"ac":1,"cd":2})",
+              R"(a key of the value of the key "keys" of ValueNot satisfies the settings of yyjson::not_)", "/keys/cd");
+    check_doc(R"("keys":{"A":1})",
+              R"(a key of the value of the key "keys" of ValueNot does not match the pattern)", "/keys/A");
 
     // validate and write(strict) test the values that writing writes
     auto t = ValueNot{};
@@ -2913,6 +2922,10 @@ TEST(Constraints, ValueNot)
     e = bad_cast_of([&] { yyjson::validate(t); });
     EXPECT_TRUE(message_of(e).starts_with("the value of the alternative 0 of ")) << e.what();
     EXPECT_EQ(e.path(), "/u");
+    t.u = 0;
+    t.keys = {{"ab", 1}};
+    e = bad_cast_of([&] { (void)yyjson::write(t, yyjson::strict); });
+    EXPECT_EQ(e.path(), "/keys/ab") << e.what();
 }
 
 // not_ of a value that may be null tests null as JSON Schema does: the settings other than const_ and enum_

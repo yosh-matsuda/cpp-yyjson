@@ -928,10 +928,24 @@ inline constexpr auto yyjson::annotations<NegatedValues> = yyjson::annotate(
     yyjson::field("any", yyjson::not_(yyjson::is_type<std::nullptr_t>)),
     yyjson::field("point", yyjson::not_(yyjson::is_type<CondPoint>)),
     yyjson::field("f", yyjson::not_(yyjson::const_(0.1))),
-    yyjson::field("mp", yyjson::not_(yyjson::min_items(2))),
+    yyjson::field("mp", yyjson::not_(yyjson::min_items(2)),
+                  yyjson::property_names(yyjson::not_(yyjson::const_("z")))),
     yyjson::field("nv", yyjson::not_(yyjson::const_(3))),
     yyjson::if_then_else(yyjson::if_(yyjson::field("n", yyjson::const_(1))),
                          yyjson::then(yyjson::field("m", yyjson::not_(yyjson::const_(0))))));
+
+// not_ in property_names of the maps that take the keys of patterns and the other keys
+struct NegatedKeys
+{
+    int x = 0;
+    std::map<std::string, int> p;
+    std::map<std::string, int> e;
+};
+template <>
+inline constexpr auto yyjson::annotations<NegatedKeys> = yyjson::annotate(
+    yyjson::field("p", yyjson::pattern_properties("^p"),
+                  yyjson::property_names(yyjson::not_(yyjson::const_("pz")))),
+    yyjson::field("e", yyjson::extra_keys, yyjson::property_names(yyjson::not_(yyjson::enum_("bad", "worse")))));
 
 // not_ of values that may be null: null satisfies minimum, and is_type<T> tests it
 struct NegatedNulls
@@ -2353,6 +2367,7 @@ TEST(Schema, NegatedValues)
         R"({"n":0,"v":[],"any":0,"f":0.2,"mp":{},"nv":null,"u":0})",
         R"({"n":0,"v":[],"any":0,"f":0,"mp":{"a":1},"nv":null,"u":0})",
         R"({"n":0,"v":[],"any":0,"f":0,"mp":{"a":1,"b":2},"nv":null,"u":0})",
+        R"({"n":0,"v":[],"any":0,"f":0,"mp":{"z":1},"nv":null,"u":0})",
         R"({"n":0,"v":[],"any":0,"f":0,"mp":{},"nv":3,"u":0})",
         R"({"n":0,"v":[],"any":0,"f":0,"mp":{},"nv":4,"u":0})",
         R"({"n":0,"v":[],"any":0,"f":0,"mp":{},"nv":null,"u":7})",
@@ -2367,10 +2382,23 @@ TEST(Schema, NegatedValues)
     EXPECT_EQ(p["point"]["not"], json::parse(R"({"$ref":"#/$defs/CondPoint"})"));
     EXPECT_EQ(p["f"]["not"]["const"].as<double>(), 0.1);
     EXPECT_EQ(p["mp"]["not"], json::parse(R"({"minProperties":2})"));
+    EXPECT_EQ(p["mp"]["propertyNames"], json::parse(R"({"not":{"const":"z"}})"));
     EXPECT_EQ(p["nv"]["anyOf"][1]["not"], json::parse(R"({"const":3})"));
     EXPECT_FALSE(p["nv"]["anyOf"][0].contains("not"));
     EXPECT_EQ(p["u"]["anyOf"][0]["not"], json::parse(R"({"const":7})"));
     EXPECT_EQ(s["$defs"]["NegatedValues"]["then"]["properties"]["m"]["not"], json::parse(R"({"const":0})"));
+}
+
+TEST(Schema, NegatedKeys)
+{
+    check<NegatedKeys>({
+        R"({"x":1})",
+        R"({"x":1,"pa":1,"q":2})",
+        R"({"x":1,"pz":1})",
+        R"({"x":1,"bad":1})",
+        R"({"x":1,"worse":1,"pb":2})",
+        R"({"x":1,"q":"a"})",
+    });
 }
 
 TEST(Schema, NegatedNulls)

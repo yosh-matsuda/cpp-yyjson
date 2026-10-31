@@ -708,6 +708,14 @@ namespace yyjson
                 for (auto k = first; k != 0; k = nodes[k].next) settings(any.emplace_back(empty_object), nodes[k]);
             }
 
+            // Writes the settings of `yyjson::property_names` at the node `keys`: the constraints of a string and
+            // its `yyjson::not_`.
+            void emit_key_settings(object_ref out, const schema_node* nodes, std::size_t keys)
+            {
+                emit_constraints(out, nodes[keys].constraints);
+                if (nodes[keys].negated != 0) emit_negated<std::string>(out, nodes, nodes[keys].negated);
+            }
+
             // `yyjson::strict` applies to reading only: what `write` gives has every key that is not left out.
             [[nodiscard]] bool strict() const noexcept { return strict_ && !writing(); }
             [[nodiscard]] bool writing() const noexcept { return writing_; }
@@ -1518,7 +1526,7 @@ namespace yyjson
                     if constexpr (std::is_enum_v<K>)
                         emit_enum_key<K>(keys);
                     else if (n != nullptr && n->keys != 0)
-                        emit_constraints(keys, nodes[n->keys].constraints);
+                        emit_key_settings(keys, nodes, n->keys);
                 };
                 const auto value_schema = [&](object_ref values) {
                     emit<V>(values, child(n != nullptr ? n->values : 0), n != nullptr ? n->values : 0);
@@ -2121,14 +2129,14 @@ namespace yyjson
                             list.emplace_back(empty_object)
                                 .emplace("not", empty_object)
                                 .emplace("pattern", yyjson::detail::pattern_of<S, Ps>);
-                            emit_constraints(list.emplace_back(empty_object),
-                                             nodes[yyjson::detail::pattern_node<S, Ps>.keys].constraints);
+                            emit_key_settings(list.emplace_back(empty_object), nodes,
+                                              yyjson::detail::pattern_node<S, Ps>.keys);
                         }
                     }(),
                     ...);
             }(std::make_index_sequence<patterns>{});
             if (extra_keys != 0 && patterns == 0 && properties.size() == 0)
-                emit_constraints(names, nodes[extra_keys].constraints);
+                emit_key_settings(names, nodes, extra_keys);
             else if (extra_keys != 0)
             {
                 auto list = branches();
@@ -2137,7 +2145,7 @@ namespace yyjson
                     for (auto p = keys.begin(); p != keys.end(); ++p)
                         if (std::find(keys.begin(), p, *p) == p) list.emplace_back(empty_object).emplace("pattern", *p);
                 }(std::make_index_sequence<patterns>{});
-                emit_constraints(list.emplace_back(empty_object), nodes[extra_keys].constraints);
+                emit_key_settings(list.emplace_back(empty_object), nodes, extra_keys);
             }
         }
 
