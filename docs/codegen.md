@@ -481,7 +481,16 @@ An object schema without `additionalProperties`, with `true` or with `{}`, accep
 *   `additionalProperties` with a schema: `std::map<std::string, T>`, with the constraints of the schema in `yyjson::additional_properties(...)`;
 *   `--keep-unknown-keys`, for every struct that accepts other keys, and `propertyNames` that string constraints express, of a struct that accepts other keys: `std::map<std::string, yyjson::value>`.
 
-`propertyNames` of a struct becomes `yyjson::property_names` on the field of `yyjson::extra_keys`, which checks the keys that name no member. The form that `json_schema<T>()` writes, `{"anyOf": [{"enum": [<members>]}, <names>]}`, is taken apart into the second subschema; another `propertyNames` is checked only for the other keys, with a warning. A struct that accepts no other key has no such field and leaves `propertyNames` out with a warning, and so does a `propertyNames` that string constraints do not express, such as `anyOf` of `const` and `enum`.
+`propertyNames` is read as a schema of strings, since keys are strings, before it becomes string constraints:
+
+*   a subschema of `anyOf` or `oneOf` that accepts no string, such as `{"type": "integer"}` or `{"not": {}}`, is left out;
+*   a subschema of `anyOf` that accepts every string, such as a `format` that the library does not know, leaves the keys unchecked;
+*   the `const` and `enum` of the other subschemas join into one `enum`, unless `oneOf` lists a value twice;
+*   `not`, also beside `allOf` or a `$ref`, becomes [`yyjson::not_`](validation.md#how-constraints-are-checked) inside `yyjson::property_names`.
+
+A `propertyNames` that string constraints still do not express, such as `anyOf` of `const` and `pattern`, is left out with a warning.
+
+`propertyNames` of a struct becomes `yyjson::property_names` on the field of `yyjson::extra_keys` and on the fields of patterns, which hold the keys that name no member. The generator checks the keys of the properties itself. A key that fails `propertyNames` gives `yyjson::not_(yyjson::field(k, yyjson::required))` on the struct, so that an object with the key is rejected; a key that `required` names and that fails gives a warning as well, since no object satisfies the schema. The keys in the form that `json_schema<T>()` writes, `{"anyOf": [{"enum": [<members>]}, <names>]}`, pass. When the generator cannot tell whether a key passes, as for a `pattern` that `std::regex` does not take, it warns that `propertyNames` is checked only for the keys that name no property, or, for a struct that accepts no other key, that `propertyNames` is not checked.
 
 ## `patternProperties`
 
@@ -747,13 +756,14 @@ A schema can contradict itself, so that no value is valid at some place. The gen
 | `required` of more keys than `maxProperties` | compiles, and reading an object there always fails |
 | `minContains` above `maxContains` | compiles, and reading an array there always fails |
 | a key in `required` whose property has the schema `false` | compiles, and reading an object there always fails |
+| a key in `required` that fails `propertyNames` | compiles, and reading an object there always fails |
 | `const` or `enum` beside bounds or lengths that reject some of its values | reads the values of `const` and `enum` as they are, also those that the schema rejects |
 | `const` or `enum` with values outside `type`, such as `{"type": "string", "enum": ["a", []]}` | reads the values of the types of `type`, `"a"` here |
 | `const` or `enum` with no value of the types of `type`, such as `{"type": "object", "enum": ["a", "b"]}` | ignores `type` and reads the values of `const` and `enum`, as `"a"` and `"b"` here |
 
 The `const` or the `enum` decides what is read when `type` and the values contradict each other, because the values say more of what the author meant, and following `type` would leave nothing to read there. The same holds for the `type` of a schema around `oneOf` or `anyOf` of strings, which goes into every subschema: `{"type": "object", "oneOf": [{"const": "a"}, {"const": "b"}, {...}]}` makes the strings an enum class as it does without the `type`.
 
-The sixth and the last rows are the ones where the code reads less strictly without the warning saying so in its group: the C++ type of a `const` or an `enum` does not take the other keywords beside it.
+The seventh and the last rows are the ones where the code reads less strictly without the warning saying so in its group: the C++ type of a `const` or an `enum` does not take the other keywords beside it.
 
 ## Round trip
 
@@ -765,7 +775,8 @@ The sixth and the last rows are the ones where the code reads less strictly with
 *   `additionalProperties: {}`, `true` and an absent keyword;
 *   `patternProperties` of a map and the `propertyNames` with `additionalProperties` of the map;
 *   `propertyNames` of a struct and the `anyOf` that `json_schema<T>()` writes for it, with the keys of the fields and the patterns;
-*   a property whose schema is `false`, and `not` of `required` of its key.
+*   a property whose schema is `false`, and `not` of `required` of its key;
+*   `propertyNames` that a key of a property fails, and `not` of `required` of that key.
 
 The `title` and `description` of the subschema beside `{"type": "null"}` are lost: the variant whose first alternative is `std::monostate` has no place for them, and the description of the property stays.
 
