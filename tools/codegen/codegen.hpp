@@ -5839,7 +5839,8 @@ namespace cpp_yyjson_codegen
                 if (any != nullptr && one != nullptr) any = nullptr;
                 const auto* list = any != nullptr ? any : one;
                 if (list == nullptr) return std::nullopt;
-                auto r = choice_parts{.list = list, .any = any != nullptr, .base = json::object_of()};
+                auto r = choice_parts{
+                    .list = list, .any = any != nullptr, .base = json::object_of(), .schemas = {}, .locs = {}};
                 if (!list->is_array()) return r;
                 for (const auto& [k, v] : s.members)
                     if (!(k == "anyOf" && any != nullptr) && !(k == "oneOf" && list == one) && !is_metadata_key(k) &&
