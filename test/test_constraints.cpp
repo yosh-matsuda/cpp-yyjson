@@ -2811,7 +2811,7 @@ TEST(Constraints, ValueNot)
     // the keys that strict reading requires, and the members that the documents below change
     const auto doc = [](std::string_view members) {
         auto result = std::string("{") + std::string(members);
-        for (const auto [key, value] : {std::pair{"n", "0"}, {"v", "[]"}, {"any", "1"}, {"u", "1"}})
+        for (const auto& [key, value] : {std::pair{"n", "0"}, {"v", "[]"}, {"any", "1"}, {"u", "1"}})
             if (members.find(std::format(R"("{}":)", key)) == std::string_view::npos)
                 result += std::format(R"({}"{}":{})", result.size() == 1 ? "" : ",", key, value);
         return result + "}";
