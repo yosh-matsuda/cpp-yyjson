@@ -652,7 +652,19 @@ A value that the member never holds, such as `{"const": "off"}` on an enum class
 
 `additionalProperties: false` in `then` or `else` lets the object have only the keys of the `properties` beside it, while the part applies. The part then names every such key that has a member, also a key whose schema accepts any value, as `yyjson::field("k")` without settings; the library also lets the keys of the tags through, which the schema lists in `properties` as well. `additionalProperties` of `true` or of a schema that accepts any value adds nothing. Another schema in it, and `false` beside `patternProperties`, are left out with a warning. A part that requires a key that its `properties` does not list, or lists as `false`, rejects every object, as `then: false` and `else: false` do.
 
-JSON Schema has no `else if`. An `else` that holds one more `if`, and so on, is a chain: when every `if` of the chain tests the same key against values that no other `if` lists, and at most one of them lets an absent key through, each link becomes a `yyjson::if_then_else` of its own, and the last `else` one more whose `if_` lists all the values. Another `if`, `not` or `dependentSchemas` inside `then`, `else` or `dependentSchemas` is left out with a warning.
+JSON Schema has no `else if`. An `else` that holds one more `if`, and so on, is a chain: when every `if` of the chain tests the same key against values that no other `if` lists, and at most one of them lets an absent key through, each link becomes a `yyjson::if_then_else` of its own, and the last `else` one more whose `if_` lists all the values.
+
+Another `if`, `not` or `dependentSchemas` inside `then`, `else` or a subschema of `dependentSchemas` applies only while the part around it applies. The generator joins its tests with the tests of the `if` around it, `P` below, which for a subschema of `"dependentSchemas": {"k": ...}` is `yyjson::field("k", yyjson::required)`:
+
+| Inside | Nested | Settings |
+| --- | --- | --- |
+| `then` of `if` `P` | `if` `J` with `then` `A` | `yyjson::if_then_else(yyjson::if_(P, J), yyjson::then(A))` |
+| `then` of `if` `P` | `not` `X`, or `if` `J` with `then: false` | `yyjson::not_(P, X)`, `yyjson::not_(P, J)` |
+| `then` of `if` `P` | `"dependentSchemas": {"m": A}` | `yyjson::if_then_else(yyjson::if_(P, yyjson::field("m", yyjson::required)), yyjson::then(A))` |
+| `else` of `if` `P` | `not` `X`, or `if` `J` with `then: false` | `yyjson::if_then_else(yyjson::if_(X), yyjson::then(P))`, the same with `J` |
+| `else` of `if` `P` | `"dependentSchemas": {"m": false}` | `yyjson::if_then_else(yyjson::if_(yyjson::field("m", yyjson::required)), yyjson::then(P))` |
+
+The parts nest further in the same way, up to 8 levels. The joined tests are exact, since `yyjson::if_` and `yyjson::not_` test the value of a key only when the object has it. A part that applies when one `if` holds and another fails, such as `else` of an `if` inside `then`, or `then` of an `if` inside `else`, has no settings that express it, and is left out with a warning.
 
 A condition that the settings cannot express is left out with a warning, so the code reads more than the schema accepts:
 
@@ -668,6 +680,10 @@ A condition that the settings cannot express is left out with a warning, so the 
 | `additionalProperties` with a schema in `then` or `else` | "`additionalProperties` other than false is not supported here and is ignored" |
 | `additionalProperties: false` beside `patternProperties` in `then` or `else` | "`additionalProperties` false beside `patternProperties` is not supported here and is ignored" |
 | `if` of a value that is not read as a struct, such as `if` with `maxLength` on a string | "`if` is not supported on a value that is not read as a struct and is ignored" |
+| a nested part that applies when one `if` holds and another fails | "a subschema that applies when one `if` holds and another fails is not supported and is ignored" |
+| `else` of an `if` inside `else` | "`else` of an `if` inside `else` is not supported and is ignored" |
+| a nested `if` or `not` that tests a key that the `if` around it tests by other values | "`if` is not supported here: it tests a key that the `if` around it tests by other values; `then` is ignored", and for `not` "... by other values; it is ignored" |
+| conditions nested more than 8 levels deep | "conditions nested more than 8 levels deep are not supported and are ignored" |
 
 A condition on a value that is not an object holds for every value when it tests only keys, or when its `if` only objects satisfy, and the generator leaves it out without a warning. `not` of a value is described in [`not` of a value](#not-of-a-value).
 
