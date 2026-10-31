@@ -993,6 +993,12 @@ namespace cpp_yyjson_codegen
             mutable std::vector<int> bound_seen_;  // transparent structs that bound_of is in
             std::map<const json*, const json*> normalized_;
             std::set<const json*> normalizing_;
+            std::map<const json*, bool> no_choice_;  // schemas whose subschemas of anyOf / oneOf all accept no value
+            std::set<const json*> choosing_;
+            // while no_choice() normalizes subschemas, warnings are not given and the schemas normalized are not
+            // kept, so that the warnings come later from the place where the schema is read, as before
+            int quiet_ = 0;
+            std::vector<const json*> quiet_normalized_;
             std::set<const json*> conditions_used_;  // normalized schemas whose "$conditions" a struct took
             std::vector<variant_note> notes_;
             std::set<std::string> type_names_;
@@ -1031,6 +1037,7 @@ namespace cpp_yyjson_codegen
 
             void warn(std::string loc, std::string msg)
             {
+                if (quiet_ > 0) return;
                 ++warn_calls_;
                 if (const auto it = loc_keys_.find(loc.substr(0, loc.find('#'))); it != loc_keys_.end())
                     loc.replace(0, it->first.size(), it->second);
@@ -1705,8 +1712,48 @@ namespace cpp_yyjson_codegen
 
             const json* normalize_full(const json* s, const std::string& loc) { return normalize(deref(s, loc), loc); }
 
-            // merges allOf, and $ref with sibling keywords, into one schema
+            // merges allOf, and $ref with sibling keywords, into one schema, which is `false` when no subschema of
+            // its `anyOf` / `oneOf` accepts a value
             const json* normalize(const json* s, const std::string& loc)
+            {
+                const auto* n = merge_parts(s, loc);
+                if (!n->is_object() || !no_choice(n, loc)) return n;
+                if (const auto it = normalized_.find(s); it != normalized_.end() && it->second->is_bool())
+                    return it->second;
+                const auto* f = store(json::boolean_of(false));
+                return quiet_ > 0 ? f : normalized_[s] = f;
+            }
+
+            // whether no subschema of `anyOf` / `oneOf`, with the keywords beside it, accepts a value
+            bool no_choice(const json* s, const std::string& loc)
+            {
+                if (!s->has("anyOf") && !s->has("oneOf")) return false;
+                if (const auto it = no_choice_.find(s); it != no_choice_.end()) return it->second;
+                if (!choosing_.insert(s).second) return false;
+                ++quiet_;
+                const auto c = choices_of(*s, loc);
+                auto r = c && !c->schemas.empty();
+                for (std::size_t i = 0; r && i < c->schemas.size(); ++i)
+                {
+                    const auto* n = normalize(c->schemas[i], c->locs[i]);
+                    r = n->is_bool() && !n->b;
+                }
+                if (--quiet_ == 0)
+                {
+                    for (const auto* q : quiet_normalized_) normalized_.erase(q);
+                    quiet_normalized_.clear();
+                }
+                choosing_.erase(s);
+                return no_choice_[s] = r;
+            }
+
+            const json* keep_normalized(const json* s, const json* n)
+            {
+                if (quiet_ > 0) quiet_normalized_.push_back(s);
+                return normalized_[s] = n;
+            }
+
+            const json* merge_parts(const json* s, const std::string& loc)
             {
                 if (!s->is_object()) return s;
                 const auto has_all = s->has("allOf");
@@ -1722,7 +1769,7 @@ namespace cpp_yyjson_codegen
                 // `not` of a schema that accepts every value accepts no value
                 if (const auto* nt = s->find("not");
                     nt != nullptr && (nt->is_bool() || nt->is_object()) && adds_nothing(*nt))
-                    return normalized_[s] = store(json::boolean_of(false));
+                    return keep_normalized(s, store(json::boolean_of(false)));
                 if (!normalizing_.insert(s).second)
                 {
                     warn(loc, "`allOf` refers to itself; the schema is read as any JSON value");
@@ -1793,7 +1840,7 @@ namespace cpp_yyjson_codegen
                     base.set("$ref", *parts[0].first->find("$ref"));
                     const auto* r = store(std::move(base));
                     normalizing_.erase(s);
-                    return normalized_[s] = r;
+                    return keep_normalized(s, r);
                 }
                 if (const auto* ref = s->find("$ref"))
                     if (const auto* t = resolve(*ref, loc)) base = merge(base, *normalize_full(t, loc), loc);
@@ -1803,7 +1850,7 @@ namespace cpp_yyjson_codegen
                 settle_unevaluated(*s, base, true, loc);
                 const auto* r = store(std::move(base));
                 normalizing_.erase(s);
-                return normalized_[s] = r;
+                return keep_normalized(s, r);
             }
 
             // the keywords of draft-07 as their 2020-12 counterparts: `items` of an array and `additionalItems` as
@@ -1981,10 +2028,9 @@ namespace cpp_yyjson_codegen
                                                                         : "";
                             if (!m.empty() && std::ranges::find(out, m) == out.end()) out.push_back(m);
                         }
-                        if (out.empty())
-                            warn(loc, "the types of `allOf` have no common type; the first is used");
-                        else
-                            r.set("type", type_json(out));
+                        // types that have no value in common leave no value to the schema
+                        if (out.empty()) return json::boolean_of(false);
+                        r.set("type", type_json(out));
                     }
                     else if (k == "properties" && av->is_object() && bv.is_object())
                     {
@@ -5646,41 +5692,75 @@ namespace cpp_yyjson_codegen
                 return r;
             }
 
+            // the subschemas of `anyOf` or `oneOf` of a schema, each with the keywords beside it
+            struct choice_parts
+            {
+                const json* list = nullptr;
+                bool any = false;  // `anyOf`, else `oneOf`
+                json base;         // the keywords beside the list
+                std::vector<const json*> schemas;
+                std::vector<std::string> locs;
+            };
+
+            std::optional<choice_parts> choices_of(const json& s, const std::string& loc)
+            {
+                // a keyword of required groups stays in the schema of each alternative
+                const auto* any = required_groups_of(s, "anyOf") ? nullptr : s.find("anyOf");
+                const auto* one = required_groups_of(s, "oneOf") ? nullptr : s.find("oneOf");
+                // exactly one o_i and some a_j hold where exactly one of (o_i and anyOf a) holds, so `anyOf` beside
+                // `oneOf` stays in the base of each alternative of `oneOf`
+                if (any != nullptr && one != nullptr) any = nullptr;
+                const auto* list = any != nullptr ? any : one;
+                if (list == nullptr) return std::nullopt;
+                auto r = choice_parts{.list = list, .any = any != nullptr, .base = json::object_of()};
+                if (!list->is_array()) return r;
+                for (const auto& [k, v] : s.members)
+                    if (!(k == "anyOf" && any != nullptr) && !(k == "oneOf" && list == one) && !is_metadata_key(k) &&
+                        !is_ignored_key(k))
+                        r.base.members.emplace_back(k, v);
+                const auto kw = std::string(any != nullptr ? "anyOf" : "oneOf");
+                for (std::size_t i = 0; i < list->items.size(); ++i)
+                {
+                    r.locs.push_back(loc + "/" + kw + "/" + std::to_string(i));
+                    if (r.base.members.empty() || ref_within_base(r.base, list->items[i], r.locs.back()))
+                        r.schemas.push_back(&list->items[i]);
+                    else
+                    {
+                        auto c = r.base;
+                        c.set("allOf", json::array_of({list->items[i]}));
+                        r.schemas.push_back(store_merged(std::move(c)));
+                    }
+                }
+                return r;
+            }
+
             typed type_variant(const json* s0, const json* s, const std::string& loc, const std::string& hint,
                                bool named)
             {
-                // a keyword of required groups stays in the schema of each alternative
-                const auto* any = required_groups_of(*s, "anyOf") ? nullptr : s->find("anyOf");
-                const auto* one = required_groups_of(*s, "oneOf") ? nullptr : s->find("oneOf");
-                if (any != nullptr && one != nullptr)
-                    warn(loc, "`anyOf` and `oneOf` together are not supported; `oneOf` is ignored");
-                const auto* list = any != nullptr ? any : one;
-                const auto kw = std::string(any != nullptr ? "anyOf" : "oneOf");
+                auto parts = *choices_of(*s, loc);
+                const auto* list = parts.list;
+                const auto kw = std::string(parts.any ? "anyOf" : "oneOf");
                 if (!list->is_array() || list->items.empty())
                 {
                     warn(loc, "`" + kw + "` is not a non-empty array; the value is read as any JSON value");
                     return {};
                 }
-                auto base = json::object_of();
-                for (const auto& [k, v] : s->members)
-                    if (!(k == "anyOf" && any != nullptr) && !(k == "oneOf" && one != nullptr) && !is_metadata_key(k) &&
-                        !is_ignored_key(k))
-                        base.members.emplace_back(k, v);
-                auto schemas = std::vector<const json*>();
-                auto locs = std::vector<std::string>();
-                for (std::size_t i = 0; i < list->items.size(); ++i)
-                {
-                    locs.push_back(loc + "/" + kw + "/" + std::to_string(i));
-                    if (base.members.empty() || ref_within_base(base, list->items[i], locs.back()))
-                        schemas.push_back(&list->items[i]);
-                    else
-                    {
-                        auto c = base;
-                        c.set("allOf", json::array_of({list->items[i]}));
-                        schemas.push_back(store_merged(std::move(c)));
-                    }
-                }
+                const auto& base = parts.base;
+                auto& schemas = parts.schemas;
+                auto& locs = parts.locs;
                 if (auto r = string_choices(s0, *s, base, *list, kw, loc, hint, named)) return *r;
+                // an alternative that accepts no value, such as one of a type that the base excludes, reads nothing
+                for (std::size_t i = schemas.size(); i-- > 0;)
+                    if (const auto* n = normalize(schemas[i], locs[i]); n->is_bool() && !n->b)
+                    {
+                        schemas.erase(schemas.begin() + static_cast<std::ptrdiff_t>(i));
+                        locs.erase(locs.begin() + static_cast<std::ptrdiff_t>(i));
+                    }
+                if (schemas.empty())
+                {
+                    warn(loc, "no subschema of `" + kw + "` accepts a value; the value is read as any JSON value");
+                    return {};
+                }
                 if (auto r = tagged_variant(schemas, locs, loc)) return *r;
                 if (auto r = nullable_tagged_variant(base, *list, kw, locs, loc)) return *r;
                 auto alts = std::vector<typed>();
@@ -5701,7 +5781,7 @@ namespace cpp_yyjson_codegen
                     if (t.k == tk::named && same_metadata(decls_[t.decl].meta, m)) m = metadata();
                     metas.push_back(std::move(m));
                 }
-                return make_variant(std::move(alts), loc, any != nullptr ? combination::any_of : combination::one_of,
+                return make_variant(std::move(alts), loc, parts.any ? combination::any_of : combination::one_of,
                                     std::move(metas));
             }
 
@@ -6668,7 +6748,22 @@ namespace cpp_yyjson_codegen
             {
                 const auto* prefix = s.find("prefixItems");
                 const auto* items = s.find("items");
-                auto items_false = items != nullptr && items->is_bool() && !items->b;
+                auto items_false = false;
+                // a reference is followed with the location of its target, as type_body() does, so that the
+                // warnings of the target keep that location
+                auto iloc = loc + "/items";
+                const auto* it = items;
+                for (auto k = 0; it != nullptr && is_pure_ref(*it) && k < 64; ++k)
+                {
+                    const auto* ref = it->find("$ref");
+                    it = resolve(*ref, iloc);
+                    iloc = ref->text;
+                }
+                if (it != nullptr && !is_pure_ref(*it))
+                {
+                    const auto* n = normalize(it, iloc);
+                    items_false = n->is_bool() && !n->b;
+                }
                 auto r = typed();
                 if (prefix != nullptr && prefix->is_array() && !prefix->items.empty())
                 {

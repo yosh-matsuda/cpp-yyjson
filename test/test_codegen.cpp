@@ -2258,6 +2258,38 @@ TEST(Codegen, FalseProperties)
                  cpp_yyjson_codegen::error);
 }
 
+TEST(Codegen, AnyOfBesideOneOf)
+{
+    // `anyOf` beside `oneOf` applies to each subschema of `oneOf`; subschemas that accept no value are dropped, and a
+    // schema none of whose subschemas accepts a value accepts no value, as allOf of types with nothing in common
+    const auto r = generate(R"({
+        "$defs": {"Uri": {"oneOf": [{"type": "null"}, {"type": "string"}]}},
+        "type": "object",
+        "properties": {
+            "uri": {"$ref": "#/$defs/Uri", "anyOf": [{"type": "string", "format": "uri"}, {"type": "null"}]},
+            "x": {"anyOf": [{"type": "string"}, {"type": "integer"}],
+                  "oneOf": [{"type": "boolean"}, {"type": "integer"}]},
+            "y": {"anyOf": [{"type": "string"}, {"type": "integer"}],
+                  "oneOf": [{"type": "boolean"}, {"type": "integer"}, {"type": "string", "maxLength": 3}]},
+            "n": {"anyOf": [{"allOf": [{"type": "null"}, {"type": "string"}]}, false]},
+            "m": {"allOf": [{"type": "integer"}, {"type": "string"}]},
+            "t": {"type": "array", "prefixItems": [{"type": "boolean"}], "minItems": 1,
+                  "items": {"allOf": [{"type": "string"}, {"type": "array"}]}}
+        }
+    })", {});
+    EXPECT_EQ(warnings(r), "");
+    EXPECT_TRUE(has(r.code, "    std::optional<std::variant<std::monostate, std::string>> uri;\n"
+                            "    std::optional<std::int64_t> x;\n"
+                            "    std::optional<yyjson::one_of<std::int64_t, yyjson::alt<std::string, "
+                            "yyjson::max_length(3)>>> y;\n"
+                            "    std::optional<yyjson::value> n;\n"
+                            "    std::optional<yyjson::value> m;\n"
+                            "    std::optional<std::tuple<bool>> t;\n"));
+    EXPECT_TRUE(has(r.code, "    yyjson::not_(yyjson::field(\"n\", yyjson::required)),\n"
+                            "    yyjson::not_(yyjson::field(\"m\", yyjson::required)),\n"
+                            "    yyjson::field(\"uri\", yyjson::format(\"uri\")));\n"));
+}
+
 TEST(Codegen, AsArray)
 {
     // positions of different types in an array of variable length: a struct of yyjson::as_array whose fields are
