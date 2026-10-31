@@ -874,7 +874,8 @@ TEST(Codegen, Contains)
 
     // `contains` false: an array satisfies it only with `minContains` 0
     const auto never = generate(R"({"type": "array", "contains": false})", {});
-    EXPECT_EQ(warnings(never), "#/contains: `contains` false accepts no array and is ignored\n");
+    EXPECT_EQ(warnings(never), "#/contains: `contains` false accepts no array; reading it always fails\n");
+    EXPECT_TRUE(has(never.code, "yyjson::field(\"value\", yyjson::not_(yyjson::is_type<yyjson::value>)))"));
 
     // examples are checked against `contains` and its counts
     const auto examples = generate(R"({"type": "object", "properties": {"codes": {"type": "array",
@@ -1839,12 +1840,12 @@ TEST(Codegen, PatternFields)
           }
     })";
     const auto r = generate(schema, {});
-    EXPECT_EQ(warnings(r), "#/patternProperties/^ba: a pattern of `patternProperties` whose schema is `false` is not "
-                           "supported; the keys that it matches and no property names are not rejected\n");
+    EXPECT_EQ(warnings(r), "");
     EXPECT_TRUE(has(r.code, "    std::string name;\n    std::optional<std::string> bad;\n    std::optional<O> o;\n"
                             "    std::map<std::string, std::int64_t> pattern1;\n"
                             "    std::map<std::string, std::string> labels;\n"
                             "    std::map<std::string, Tag> tag;\n"
+                            "    std::map<std::string, yyjson::value> pattern4;\n"
                             "    std::map<std::string, bool> extra;\n"));
     // the property that a pattern of `false` names is rejected
     EXPECT_TRUE(has(r.code, "    yyjson::not_(yyjson::field(\"bad\", yyjson::required)),\n"));
@@ -1856,6 +1857,9 @@ TEST(Codegen, PatternFields)
                             "yyjson::additional_properties(yyjson::max_length(8))),\n"
                             "    yyjson::field(\"tag\", yyjson::pattern_properties(\"^t-\"), "
                             "yyjson::property_names(yyjson::max_length(20))),\n"
+                            "    yyjson::field(\"pattern4\", yyjson::pattern_properties(\"^ba\"), "
+                            "yyjson::property_names(yyjson::max_length(20)), "
+                            "yyjson::additional_properties(yyjson::not_(yyjson::is_type<yyjson::value>))),\n"
                             "    yyjson::field(\"extra\", yyjson::extra_keys, "
                             "yyjson::property_names(yyjson::max_length(20))));"));
     EXPECT_TRUE(has(r.code, "// `yyjson::pattern` and `yyjson::pattern_properties` need a specialization of\n"));
@@ -2386,8 +2390,7 @@ TEST(Codegen, FalseProperties)
         "patternProperties": {"^x_": {"type": "string"}},
         "additionalProperties": false
     })", {});
-    // only the alias of the definition reads any JSON value
-    EXPECT_EQ(warnings(absent), "#/$defs/Never: the schema `false` accepts no value; it is read as any JSON value\n");
+    EXPECT_EQ(warnings(absent), "");
     EXPECT_TRUE(has(absent.code, "    std::optional<yyjson::value> a;\n    std::optional<yyjson::value> b;\n"
                                  "    std::optional<yyjson::value> x_c;\n    std::optional<std::int64_t> d;\n"));
     EXPECT_TRUE(has(absent.code, "    yyjson::not_(yyjson::field(\"a\", yyjson::required)),\n"
@@ -2402,6 +2405,68 @@ TEST(Codegen, FalseProperties)
                                    "    yyjson::field(\"a\", yyjson::required));\n"));
     EXPECT_THROW(generate(R"({"type": "object", "properties": {"a": false}, "required": ["a"]})", {.strict = true}),
                  cpp_yyjson_codegen::error);
+}
+
+TEST(Codegen, FalseSchemas)
+{
+    // the schema `false` and `{"not": {}}` are read by a value with yyjson::not_ that no value passes, without a
+    // warning; the schema `true` is yyjson::value
+    for (const auto* schema : {"false", R"({"not": {}, "title": "T"})"})
+    {
+        const auto r = generate(schema, {});
+        EXPECT_EQ(warnings(r), "") << schema;
+        EXPECT_TRUE(has(r.code, "    yyjson::transparent,\n"
+                                "    yyjson::field(\"value\", yyjson::not_(yyjson::is_type<yyjson::value>)));\n"))
+            << schema;
+    }
+    EXPECT_TRUE(has(generate("true", {}).code, "using Root = yyjson::value;\n"));
+
+    // subschemas that leave no value to read together are warned about
+    const auto open = generate(R"({"oneOf": [true, {"title": "x"}]})", {});
+    EXPECT_EQ(warnings(open), "#: no value satisfies the keywords of the schema together; reading it always fails\n");
+    EXPECT_TRUE(has(open.code, "yyjson::not_(yyjson::is_type<yyjson::value>)"));
+    EXPECT_THROW(generate(R"({"oneOf": [true, {"title": "x"}]})", {.strict = true}),
+                 cpp_yyjson_codegen::error);
+
+    // `contains` whose subschema accepts no value leaves no array to read
+    const auto arrays =
+        generate(R"({"type": "array", "contains": {"allOf": [{"type": "string"}, {"type": "integer"}]}})", {});
+    EXPECT_EQ(warnings(arrays), "#/contains: `contains` false accepts no array; reading it always fails\n");
+    EXPECT_TRUE(has(arrays.code, "yyjson::not_(yyjson::is_type<yyjson::value>)"));
+
+    // `oneOf` with one subschema that accepts every value rejects the others; `if` true or false selects `then` or
+    // `else`; `contains` false accepts no array, so a type of other kinds drops the arrays; `propertyNames` false
+    // accepts empty objects only, and a schema `false` of elements empty arrays only
+    const auto r = generate(R"({
+        "$defs": {"N": false},
+        "type": "object",
+        "properties": {
+            "id": {"oneOf": [{"type": "number"}, {}]},
+            "a": {"if": true, "then": {"type": "string"}, "else": {"type": "integer"}},
+            "b": {"if": false, "then": {"type": "string"}, "else": {"type": "integer"}},
+            "c": {"type": ["array", "string"], "contains": false},
+            "d": {"type": "array", "items": {"type": "integer"}, "contains": false, "minContains": 0},
+            "f": {"type": ["array", "boolean"], "contains": {"$ref": "#/$defs/N"}},
+            "m": {"type": "object", "propertyNames": false},
+            "s": {"type": "object", "properties": {"k": {"type": "integer"}}, "propertyNames": false},
+            "e": {"type": "array", "items": {"$ref": "#/$defs/N"}}
+        }
+    })", {});
+    EXPECT_EQ(warnings(r), "");
+    EXPECT_TRUE(has(r.code, "using N = yyjson::value;\n"));
+    EXPECT_TRUE(has(r.code, "    std::optional<yyjson::value> id;\n"
+                            "    std::optional<std::string> a;\n"
+                            "    std::optional<std::int64_t> b;\n"
+                            "    std::optional<std::string> c;\n"
+                            "    std::optional<std::vector<std::int64_t>> d;\n"
+                            "    std::optional<bool> f;\n"
+                            "    std::optional<std::map<std::string, yyjson::value>> m;\n"
+                            "    std::optional<RootS> s;\n"
+                            "    std::optional<std::vector<yyjson::value>> e;\n"));
+    EXPECT_TRUE(has(r.code, "    yyjson::additional_properties(true),\n    yyjson::max_properties(0));\n"));
+    EXPECT_TRUE(has(r.code, "    yyjson::field(\"id\", yyjson::not_(yyjson::is_type<double>)),\n"
+                            "    yyjson::field(\"m\", yyjson::max_items(0)),\n"
+                            "    yyjson::field(\"e\", yyjson::max_items(0)));\n"));
 }
 
 TEST(Codegen, AnyOfBesideOneOf)
@@ -2623,17 +2688,23 @@ TEST(Codegen, ValueNot)
         }
     })", {});
     EXPECT_EQ(warnings(dropped),
-              "#/properties/a/not: `not` rejects every value: the schema accepts no value; it is read as any JSON value\n"
-              "#/properties/b: `not` rejects every value of the type: the schema accepts no value; it is read as any "
-              "JSON value\n"
-              "#/properties/c: `not` rejects every value of `const`: the schema accepts no value; it is read as any "
-              "JSON value\n"
+              "#/properties/a/not: `not` rejects every value: the schema accepts no value, and reading it always "
+              "fails\n"
+              "#/properties/b: `not` rejects every value of the type: the schema accepts no value, and reading it "
+              "always fails\n"
+              "#/properties/c: `not` rejects every value of `const`: the schema accepts no value, and reading it "
+              "always fails\n"
               "#/properties/d/not: whether `not` rejects the value \"ab\" of `enum` is not known; the value is kept\n"
               "#/properties/d/not: whether `not` rejects the value \"b\" of `enum` is not known; the value is kept\n"
               "#/properties/e/not: `not` cannot be expressed on a value of type array; it is ignored\n"
               "#/properties/f/not: `not` cannot be expressed on null; it is ignored\n"
               "#/properties/f/not: `not` cannot be expressed on a value of type integer; it is ignored\n");
-    EXPECT_FALSE(has(dropped.code, "not_"));
+    // a value that `not` rejects whatever it is
+    EXPECT_TRUE(has(dropped.code, "    std::optional<yyjson::value> a;\n    std::optional<yyjson::value> b;\n"
+                                  "    std::optional<yyjson::value> c;\n"));
+    EXPECT_TRUE(has(dropped.code, "    yyjson::field(\"a\", yyjson::not_(yyjson::is_type<yyjson::value>)),\n"
+                                  "    yyjson::field(\"b\", yyjson::not_(yyjson::is_type<yyjson::value>)),\n"
+                                  "    yyjson::field(\"c\", yyjson::not_(yyjson::is_type<yyjson::value>)));"));
     EXPECT_THROW(generate(R"({"type": "object", "properties": {"a": {"not": {"type": "number"}, "type": "integer"}}})",
                           {.strict = true}),
                  cpp_yyjson_codegen::error);
@@ -2978,7 +3049,8 @@ TEST(Codegen, Errors)
     };
     EXPECT_EQ(message(R"({"type": "object", "properties": {"b": {"not": {"type": ["null", "boolean", "object", "array",
               "number", "string"]}}}})", {.strict = true}),
-              "#/properties/b/not: `not` rejects every value: the schema accepts no value; it is read as any JSON value\n");
+              "#/properties/b/not: `not` rejects every value: the schema accepts no value, and reading it always "
+              "fails\n");
     EXPECT_EQ(message("[1]", {}), "#: the schema is not an object or a boolean\n");
     EXPECT_TRUE(message("{", {}).starts_with(": the schema is not valid JSON"));
     EXPECT_EQ(message("{}", {.ns = "1a"}), ": the namespace \"1a\" is not a C++ namespace name\n");

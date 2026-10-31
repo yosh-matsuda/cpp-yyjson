@@ -1031,6 +1031,10 @@ namespace cpp_yyjson_codegen
             std::set<const json*> loose_;
             std::vector<ctype> type_tests_;       // the types of yyjson::is_type<T>: settings::type_test
             std::set<const json*> handled_nots_;  // the value-level `not` that type_body() took or warned about
+            std::set<const json*> reported_false_;  // schemas whose normalization to `false` was warned about
+            // merged schemas whose `contains` accepts no value: {the schema read with `contains` false, the copy}
+            std::map<const json*, std::pair<const json*, const json*>> contains_nothing_;
+            std::set<const json*> containing_;  // merged schemas whose `contains` is being normalized
 
             // the key that a warning shows for the URI of a document: "" for the root, the path for a file
             std::map<std::string, std::string> loc_keys_;
@@ -1717,11 +1721,38 @@ namespace cpp_yyjson_codegen
             const json* normalize(const json* s, const std::string& loc)
             {
                 const auto* n = merge_parts(s, loc);
+                if (const auto* f = contains_nothing(s, n, loc); f != nullptr) n = f;
                 if (!n->is_object() || !no_choice(n, loc)) return n;
                 if (const auto it = normalized_.find(s); it != normalized_.end() && it->second->is_bool())
                     return it->second;
                 const auto* f = store(json::boolean_of(false));
                 return quiet_ > 0 ? f : normalized_[s] = f;
+            }
+
+            // `n`, the merged schema of `s`, read as if its `contains` were `false` when the subschema of `contains`
+            // accepts no value through a reference or keywords that no value satisfies together; null otherwise
+            const json* contains_nothing(const json* s, const json* n, const std::string& loc)
+            {
+                if (!n->is_object()) return nullptr;
+                const auto* c = n->find("contains");
+                if (c == nullptr || c->is_bool()) return nullptr;
+                if (const auto it = contains_nothing_.find(n); it != contains_nothing_.end())
+                    return it->second.first;
+                if (!containing_.insert(n).second) return nullptr;
+                const auto* cn = normalize_full(c, loc + "/contains");
+                containing_.erase(n);
+                auto r = std::pair<const json*, const json*>();
+                if (cn->is_bool() && !cn->b)
+                {
+                    auto copy = json(*n);
+                    copy.set("contains", json::boolean_of(false));
+                    r.second = store(std::move(copy));
+                    r.first = merge_parts(r.second, loc);
+                }
+                if (r.second != nullptr && reported_false_.contains(r.second) && quiet_ == 0)
+                    reported_false_.insert(s);
+                if (quiet_ == 0) contains_nothing_[n] = r;
+                return r.first;
             }
 
             // whether no subschema of `anyOf` / `oneOf`, with the keywords beside it, accepts a value
@@ -1764,11 +1795,21 @@ namespace cpp_yyjson_codegen
                 const auto unevaluated = s->has("unevaluatedProperties") || s->has("unevaluatedItems");
                 const auto conditional = std::ranges::any_of(
                     s->members, [](const auto& m) { return is_condition_key(m.first) && m.first != "$conditions"; });
-                if (!has_all && !ref_siblings && !legacy && !unevaluated && !conditional) return s;
+                const auto* one = s->find("oneOf");
+                const auto open_choices =
+                    one != nullptr && one->is_array()
+                        ? std::ranges::count_if(one->items, [](const json& e) { return accepts_anything(e); })
+                        : 0;
+                const auto* ct = s->find("contains");
+                const auto no_contains = ct != nullptr && ct->is_bool() && !ct->b;
+                if (!has_all && !ref_siblings && !legacy && !unevaluated && !conditional && open_choices == 0 &&
+                    !no_contains)
+                    return s;
                 if (const auto it = normalized_.find(s); it != normalized_.end()) return it->second;
-                // `not` of a schema that accepts every value accepts no value
+                // `not` of a schema that accepts every value accepts no value, and so does `oneOf` of two subschemas
+                // that accept every value
                 if (const auto* nt = s->find("not");
-                    nt != nullptr && (nt->is_bool() || nt->is_object()) && adds_nothing(*nt))
+                    open_choices > 1 || (nt != nullptr && (nt->is_bool() || nt->is_object()) && adds_nothing(*nt)))
                     return keep_normalized(s, store(json::boolean_of(false)));
                 if (!normalizing_.insert(s).second)
                 {
@@ -1779,6 +1820,52 @@ namespace cpp_yyjson_codegen
                 for (const auto& [k, v] : s->members)
                     if (k != "allOf" && k != "$ref") base.members.emplace_back(k, v);
                 upgrade(base);
+                // keywords that come down to others: `oneOf` with one subschema that accepts every value is `not` of
+                // `anyOf` of the others, `if` that accepts every value or none is its `then` or its `else`, and
+                // `contains` false is `not` of arrays unless `minContains` is 0
+                auto rewritten = std::vector<std::pair<const json*, std::string>>();
+                if (open_choices == 1)
+                {
+                    auto others = json::array_of({});
+                    for (const auto& e : one->items)
+                        if (!accepts_anything(e)) others.items.push_back(e);
+                    base.erase("oneOf");
+                    if (!others.items.empty())
+                    {
+                        auto any = json::object_of();
+                        any.set("anyOf", std::move(others));
+                        auto n = json::object_of();
+                        n.set("not", std::move(any));
+                        rewritten.emplace_back(store(std::move(n)), loc + "/oneOf");
+                    }
+                }
+                if (const auto* i = base.find("if"); i != nullptr && (accepts_anything(*i) || (i->is_bool() && !i->b)))
+                {
+                    const auto* branch = accepts_anything(*i) ? "then" : "else";
+                    if (const auto* b = base.find(branch)) rewritten.emplace_back(store(json(*b)), loc + "/" + branch);
+                    for (const auto* k : {"if", "then", "else"}) base.erase(k);
+                }
+                if (no_contains)
+                {
+                    const auto* mn = base.find("minContains");
+                    const auto min_c = mn != nullptr && as_uint64(*mn) ? *as_uint64(*mn) : 1;
+                    if (const auto* ty = base.find("type"); min_c > 0 && ty != nullptr && ty->is_string() &&
+                                                            ty->text == "array")
+                    {
+                        warn(loc + "/contains", "`contains` false accepts no array; reading it always fails");
+                        if (quiet_ == 0) reported_false_.insert(s);
+                        return keep_normalized(s, store(json::boolean_of(false)));
+                    }
+                    for (const auto* k : {"contains", "minContains", "maxContains"}) base.erase(k);
+                    if (min_c > 0)
+                    {
+                        auto arrays = json::object_of();
+                        arrays.set("type", json::string_of("array"));
+                        auto n = json::object_of();
+                        n.set("not", std::move(arrays));
+                        rewritten.emplace_back(store(std::move(n)), loc + "/contains");
+                    }
+                }
                 // `not` of `not` is the inner schema, a part of allOf; not beside unevaluated*, for which the keywords
                 // inside `not` evaluate nothing
                 const json* twice = nullptr;
@@ -1811,6 +1898,8 @@ namespace cpp_yyjson_codegen
                         }
                     }
                 if (twice != nullptr && !adds_nothing(*twice)) parts.emplace_back(twice, loc + "/not/not");
+                for (auto& r : rewritten)
+                    if (!adds_nothing(*r.first)) parts.push_back(std::move(r));
                 // {"allOf": [{"$ref": ...}]} with metadata only, or with a `const` that the referred schema already
                 // fixes, as an enumeration of one value: keep the reference to the named type
                 const auto keeps_ref = [&] {
@@ -2271,8 +2360,10 @@ namespace cpp_yyjson_codegen
             {
                 if (s0->is_bool())
                 {
-                    if (!s0->b) warn(loc, "the schema `false` accepts no value; it is read as any JSON value");
-                    return {};
+                    // the root and $defs go through type_named(), which gives a struct or an alias the settings;
+                    // `true` needs a name only at the root
+                    if (!s0->b) return def_names_.contains(s0) ? type_named(s0, loc) : no_value();
+                    return s0 == &root_ ? type_named(s0, loc) : typed{};
                 }
                 if (!s0->is_object())
                 {
@@ -2637,6 +2728,18 @@ namespace cpp_yyjson_codegen
                 return out;
             }
 
+            // the type of a schema that accepts no value: yyjson::value with
+            // yyjson::not_(yyjson::is_type<yyjson::value>), which rejects every value
+            typed no_value()
+            {
+                auto n = settings();
+                n.type_test = static_cast<int>(type_tests_.size());
+                type_tests_.push_back(make(tk::any));
+                auto r = typed();
+                r.s.negated.push_back(std::move(n));
+                return r;
+            }
+
             // yyjson::not_(yyjson::is_type<T>) on `r`, with T the type of `sub` for values of `kind` (any kind when
             // empty); left out with a warning when T reads more than `sub` accepts
             void add_type_test(typed& r, const json* sub, const std::string& nloc, const std::string& hint,
@@ -2725,8 +2828,8 @@ namespace cpp_yyjson_codegen
                     if (all)
                     {
                         warn(nloc,
-                             "`not` rejects every value: the schema accepts no value; it is read as any JSON value");
-                        return {};
+                             "`not` rejects every value: the schema accepts no value, and reading it always fails");
+                        return no_value();
                     }
                     add_type_test(r, sub, nloc, hint, {});
                 }
@@ -2782,7 +2885,20 @@ namespace cpp_yyjson_codegen
             typed type_body(const json* s0, const std::string& loc, const std::string& hint, bool named)
             {
                 const auto* s = normalize(s0, loc);
-                if (!s->is_object()) return s->is_bool() && !s->b ? type_of(s, loc, hint) : typed{};
+                if (s->is_bool() && !s->b)
+                {
+                    // `false` as written, or as `{"not": {}}`, rejects every value on purpose; keywords that no value
+                    // satisfies together are likely a mistake of the schema
+                    const auto* nt = s0->is_object() ? s0->find("not") : nullptr;
+                    const auto idiom =
+                        nt != nullptr && adds_nothing(*nt) && std::ranges::all_of(s0->members, [](const auto& m) {
+                            return m.first == "not" || is_metadata_key(m.first);
+                        });
+                    if (!s0->is_bool() && !idiom && !reported_false_.contains(s0))
+                        warn(loc, "no value satisfies the keywords of the schema together; reading it always fails");
+                    return no_value();
+                }
+                if (!s->is_object()) return {};
                 warn_unsupported(*s, loc);
                 if (const auto* ref = s->find("$ref"))
                 {
@@ -2828,10 +2944,9 @@ namespace cpp_yyjson_codegen
                     std::erase_if(types, [&](const std::string& k) { return rejected(k); });
                     if (types.empty() && !nullable)
                     {
-                        warn(loc,
-                             "`not` rejects every value of the type: the schema accepts no value; it is read as "
-                             "any JSON value");
-                        return {};
+                        warn(loc, "`not` rejects every value of the type: the schema accepts no value, and reading it "
+                                  "always fails");
+                        return no_value();
                     }
                 }
                 if (types.empty()) return nullable ? typed{make(tk::null), {}} : typed{};
@@ -3297,9 +3412,9 @@ namespace cpp_yyjson_codegen
 
             // The fields of yyjson::pattern_properties of the object schema `s`, one for the patterns of each
             // schema of `patternProperties`, whose patterns it joins.  A pattern whose schema accepts any value is
-            // left out where the struct accepts the keys that name no property anyway.  A pattern whose schema is
-            // `false` has no field: the properties of `fields` whose keys it matches go to `absent`, and the other
-            // keys that it matches are not rejected (warning) unless `additionalProperties` is false.
+            // left out where the struct accepts the keys that name no property anyway.  The properties of `fields`
+            // whose keys a pattern of the schema `false` matches go to `absent`; the other keys that it matches go to
+            // a field whose values accept nothing, which is left out when `additionalProperties` is false.
             template <typename IsRequired>
             std::vector<field> pattern_fields(const json& s, const std::vector<field>& fields,
                                               std::vector<condition>& absent, const IsRequired& is_required, int idx,
@@ -3322,9 +3437,6 @@ namespace cpp_yyjson_codegen
                     const auto ploc = loc + "/patternProperties/" + pointer_token(p);
                     if (const auto* target = normalize_full(&sub, ploc); target->is_bool() && !target->b)
                     {
-                        if (!closed)
-                            warn(ploc, "a pattern of `patternProperties` whose schema is `false` is not supported; the "
-                                       "keys that it matches and no property names are not rejected");
                         try
                         {
                             const auto re = std::regex(p, std::regex::ECMAScript);
@@ -3350,7 +3462,8 @@ namespace cpp_yyjson_codegen
                             warn(ploc, "the pattern is not checked against the keys of the properties: std::regex "
                                        "does not read it");
                         }
-                        continue;
+                        // the other keys that it matches go to a field whose values accept nothing
+                        if (closed) continue;
                     }
                     if (open && accepts_anything(sub)) continue;
                     if (auto it = std::ranges::find_if(groups, [&](const group& g) { return equal(*g.schema, sub); });
@@ -3549,7 +3662,14 @@ namespace cpp_yyjson_codegen
                 // `propertyNames` checks the keys that the field of yyjson::extra_keys receives; an open struct gets
                 // the field for it
                 auto names = std::optional<settings>();
-                if (const auto* pn = s.find("propertyNames"))
+                const auto* pn = s.find("propertyNames");
+                if (pn != nullptr && reach_of(pn, "string", loc + "/propertyNames") == reach::none)
+                {
+                    // every key fails: only the empty object satisfies the schema, and a required key is the
+                    // contradiction with maxProperties that check_levels() reports
+                    max_properties = 0;
+                }
+                else if (pn != nullptr)
                 {
                     const auto pnloc = loc + "/propertyNames";
                     const auto [other, listed] = names_of_other_keys(*pn, fields);
@@ -5768,8 +5888,8 @@ namespace cpp_yyjson_codegen
                 if (kept.empty())
                 {
                     warn(loc, std::string("`not` rejects every value of `") + keyword +
-                                  "`: the schema accepts no value; it is read as any JSON value");
-                    return {};
+                                  "`: the schema accepts no value, and reading it always fails");
+                    return no_value();
                 }
                 if (kept.size() == values.size())
                     return c != nullptr ? type_const(s, loc) : type_enum(s0, s, loc, hint, named);
@@ -7343,7 +7463,10 @@ namespace cpp_yyjson_codegen
                     r.s.min_items = as_uint64(*v);
                 if (const auto* v = s.find("maxProperties"); v != nullptr && as_uint64(*v))
                     r.s.max_items = r.s.max_items ? std::min(*r.s.max_items, *as_uint64(*v)) : *as_uint64(*v);
-                if (const auto* pn = s.find("propertyNames"))
+                if (const auto* pn = s.find("propertyNames");
+                    pn != nullptr && reach_of(pn, "string", loc + "/propertyNames") == reach::none)
+                    r.s.max_items = 0;
+                else if (pn != nullptr)
                 {
                     if (auto e = key_settings(*pn, loc + "/propertyNames"); !e)
                         warn(loc + "/propertyNames",
@@ -8781,15 +8904,11 @@ namespace cpp_yyjson_codegen
                                                                             is_condition_key(m.first);
                                                                  }) ||
                                              (!root_.has("$defs") && !root_.has("definitions"))));
-                auto root_name = std::string();
-                if (root_.is_object())
-                {
-                    const auto* title = root_.find("title");
-                    root_name = !opts_.root_name.empty() ? opts_.root_name
-                                : title != nullptr && title->is_string() && !pascal(title->text).empty()
-                                    ? global_safe(sanitize(pascal(title->text)))
-                                    : std::string("Root");
-                }
+                const auto* title = root_.is_object() ? root_.find("title") : nullptr;
+                const auto root_name = !opts_.root_name.empty() ? opts_.root_name
+                                       : title != nullptr && title->is_string() && !pascal(title->text).empty()
+                                           ? global_safe(sanitize(pascal(title->text)))
+                                           : std::string("Root");
                 if (root_typed)
                 {
                     type_names_.insert(root_name);

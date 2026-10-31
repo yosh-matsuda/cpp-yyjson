@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Gate",
+  "type": "object",
+  "properties": {
+    "id": {"oneOf": [{"type": "integer"}, {}]},
+    "flags": {"type": "object", "propertyNames": false},
+    "label": {"type": ["array", "string"], "contains": false},
+    "mode": {"if": true, "then": {"type": "string"}, "else": {"type": "integer"}},
+    "level": {"if": false, "then": {"type": "string"}, "else": {"type": "integer"}},
+    "attrs": {"type": "object", "patternProperties": {"^_": false}}
+  },
+  "patternProperties": {"^x-": false}
+}

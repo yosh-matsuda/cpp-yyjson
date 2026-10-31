@@ -3,8 +3,8 @@
 // codegen/alternatives.schema.json, from codegen/patterns.schema.json, from
 // codegen/recursion.schema.json, from codegen/untyped.schema.json (also with INFER_TYPES), from
 // codegen/conditions.schema.json, from codegen/contains.schema.json, from
-// codegen/positions.schema.json and from codegen/invoice.schema.json, which references codegen/remote/money.schema.json through URI_MAP and
-// codegen/tax.schema.json through SCHEMAS.
+// codegen/positions.schema.json, from codegen/rejections.schema.json and from codegen/invoice.schema.json, which
+// references codegen/remote/money.schema.json through URI_MAP and codegen/tax.schema.json through SCHEMAS.
 #include <gtest/gtest.h>
 
 #include <cpp_yyjson.hpp>
@@ -32,6 +32,7 @@ struct yyjson::pattern_matcher<>
 #include "patterns.hpp"
 #include "positions.hpp"
 #include "recursion.hpp"
+#include "rejections.hpp"
 #include "untyped.hpp"
 #include "untyped_inferred.hpp"
 
@@ -332,6 +333,26 @@ TEST(CodegenCMake, ValueNot)
     auto listing = model::Listing();
     listing.name = "tmp";
     EXPECT_THROW(yyjson::validate(listing), yyjson::bad_cast);
+}
+
+TEST(CodegenCMake, Rejections)
+{
+    // subschemas that accept no value: `oneOf` beside a subschema that accepts every value, `propertyNames` false,
+    // `contains` false, `if` true or false, and patterns of `patternProperties` false
+    for (const auto* json : {R"({"id":"a","flags":{},"label":"s","mode":"m","level":1,"attrs":{}})",
+                             R"({"id":1.5,"attrs":{}})"})
+    {
+        const auto gate = yyjson::read<model::Gate>(json);
+        EXPECT_EQ(std::string_view(yyjson::write(gate)), std::string_view(json));
+        EXPECT_NO_THROW(yyjson::validate(gate)) << json;
+    }
+    for (const auto* json : {R"({"id":1})", R"({"flags":{"a":1}})", R"({"label":[]})", R"({"mode":1})",
+                             R"({"level":"s"})", R"({"attrs":{"_a":1}})", R"({"x-a":1})"})
+        EXPECT_THROW((void)yyjson::read<model::Gate>(json), yyjson::bad_cast) << json;
+    EXPECT_NO_THROW((void)yyjson::read<model::Gate>(R"({"attrs":{"a":1},"y":1})"));
+    auto gate = model::Gate();
+    gate.pattern1.emplace("x-a", yyjson::value(1));
+    EXPECT_THROW(yyjson::validate(gate), yyjson::bad_cast);
 }
 
 TEST(CodegenCMake, Positions)
