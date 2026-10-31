@@ -1206,7 +1206,7 @@ namespace yyjson
 
     namespace detail
     {
-        // A JSON string, number, boolean or null, which `yyjson::const_value` and `yyjson::enum_values` take.  It
+        // A JSON string, number, boolean or null, which `yyjson::const_` and `yyjson::enum_` take.  It
         // is a structural type, as the values of C++26 annotations that hold it have to be.
         struct json_scalar
         {
@@ -1253,37 +1253,37 @@ namespace yyjson
     }  // namespace detail
 
     // The value that a string, number or boolean field must equal, as JSON Schema's `const`:
-    // `yyjson::field("version", yyjson::const_value(2))` or `[[=yyjson::const_value(2)]]`.  The value of the field
-    // is compared after it is read, as a value of the type of the field: a `float` field equals `const_value(0.1)`
+    // `yyjson::field("version", yyjson::const_(2))` or `[[=yyjson::const_(2)]]`.  The value of the field
+    // is compared after it is read, as a value of the type of the field: a `float` field equals `const_(0.1)`
     // when it holds `0.1f`.  `nullptr` is JSON null, which a type that holds a value or nothing, such as
     // `std::variant<std::monostate, U>`, equals when it holds nothing; such a type holding nothing equals no other
     // value.
-    struct const_value
+    struct const_
     {
         detail::json_scalar value;
 
         template <typename V>
-        consteval explicit const_value(const V& v) : value(v)
+        consteval explicit const_(const V& v) : value(v)
         {
         }
     };
 
     // The values one of which a string, number or boolean field must equal, as JSON Schema's `enum`:
-    // `yyjson::field("unit", yyjson::enum_values("mm", "cm", "m"))`.  They are compared as `yyjson::const_value`.
+    // `yyjson::field("unit", yyjson::enum_("mm", "cm", "m"))`.  They are compared as `yyjson::const_`.
     template <std::size_t N>
-    struct enum_values
+    struct enum_
     {
         std::array<detail::json_scalar, N> values;
 
         template <typename... Vs>
         requires (sizeof...(Vs) == N)
-        consteval explicit enum_values(const Vs&... vs) : values{detail::json_scalar(vs)...}
+        consteval explicit enum_(const Vs&... vs) : values{detail::json_scalar(vs)...}
         {
-            static_assert(N != 0, "yyjson::enum_values needs a value");
+            static_assert(N != 0, "yyjson::enum_ needs a value");
         }
     };
     template <typename... Vs>
-    enum_values(const Vs&...) -> enum_values<sizeof...(Vs)>;
+    enum_(const Vs&...) -> enum_<sizeof...(Vs)>;
 
     // A check of a field that `yyjson::satisfies<f>` gives, which `f` makes with the value of the field.
     struct satisfies_t
@@ -1473,17 +1473,17 @@ namespace yyjson
         using constraint_types =
             type_list<minimum, maximum, exclusive_minimum, exclusive_maximum, multiple_of, min_length, max_length,
                       min_items, max_items, pattern, satisfies_t, unique_items_t, min_contains, max_contains,
-                      const_value, enum_values<0>, format>;
-        // The type of the constraint A in `constraint_types`, where every `yyjson::enum_values` is `enum_values<0>`.
+                      const_, enum_<0>, format>;
+        // The type of the constraint A in `constraint_types`, where every `yyjson::enum_` is `enum_<0>`.
         template <typename A>
         struct constraint_type
         {
             using type = A;
         };
         template <std::size_t N>
-        struct constraint_type<enum_values<N>>
+        struct constraint_type<enum_<N>>
         {
-            using type = enum_values<0>;
+            using type = enum_<0>;
         };
         template <typename A, typename List = constraint_types>
         inline constexpr std::uint32_t constraint_bit = 0;
@@ -1583,8 +1583,8 @@ namespace yyjson
                                 constraint_setting<A> || element_settings<A>;
 
         // The number of the nodes that a position of `yyjson::prefix_items` has at most: its own and those of the
-        // settings of the values in it, and the number of the values of `yyjson::const_value` and
-        // `yyjson::enum_values` in them.
+        // settings of the values in it, and the number of the values of `yyjson::const_` and
+        // `yyjson::enum_` in them.
         inline constexpr std::size_t prefix_position_nodes = 8;
         inline constexpr std::size_t prefix_position_values = 16;
 
@@ -1605,9 +1605,9 @@ namespace yyjson
         template <typename A>
         inline constexpr tree_size node_count = {};
         template <>
-        inline constexpr tree_size node_count<const_value> = {0, 1};
+        inline constexpr tree_size node_count<const_> = {0, 1};
         template <std::size_t N>
-        inline constexpr tree_size node_count<enum_values<N>> = {0, N};
+        inline constexpr tree_size node_count<enum_<N>> = {0, N};
         template <typename... As>
         inline constexpr tree_size node_count<items<As...>> = (tree_size{1, 0} + ... + node_count<As>);
         template <typename... As>
@@ -1739,8 +1739,8 @@ namespace yyjson
             dependency_skipped,
         };
 
-        // The constraints of a value, those in `set` by `constraint_bit`.  The values of `yyjson::const_value` and
-        // `yyjson::enum_values` are in `schema_tree::values`, at `constant` and from `enum_first`.  It is a
+        // The constraints of a value, those in `set` by `constraint_bit`.  The values of `yyjson::const_` and
+        // `yyjson::enum_` are in `schema_tree::values`, at `constant` and from `enum_first`.  It is a
         // structural type, as the values of C++26 annotations that hold it have to be.
         struct field_constraints
         {
@@ -1772,7 +1772,7 @@ namespace yyjson
             }
             [[nodiscard]] constexpr std::string_view pattern() const noexcept { return {pattern_data, pattern_size}; }
             [[nodiscard]] constexpr std::string_view format() const noexcept { return {format_data, format_size}; }
-            // Adds the constraint `a`, but not the values of `yyjson::const_value` and `yyjson::enum_values`, which
+            // Adds the constraint `a`, but not the values of `yyjson::const_` and `yyjson::enum_`, which
             // `schema_tree::add` adds.
             template <typename A>
             constexpr void add(const A& a) noexcept
@@ -1840,7 +1840,7 @@ namespace yyjson
 
         // The settings of values, as a tree in up to M nodes: the first `size` nodes at first are the roots, and
         // the settings of the values in a value add nodes after them.  A node is never the child of another one at
-        // index 0.  The values of `yyjson::const_value` and `yyjson::enum_values` are the first `value_size` of
+        // index 0.  The values of `yyjson::const_` and `yyjson::enum_` are the first `value_size` of
         // the V `values`.  It keeps the first error.
         template <std::size_t M, std::size_t V = 0>
         struct schema_tree
@@ -1885,7 +1885,7 @@ namespace yyjson
                     {
                         if (!a.value.positive()) return fail(field_key_error::multiple_of_not_positive);
                     }
-                    else if constexpr (std::same_as<A, const_value>)
+                    else if constexpr (std::same_as<A, const_>)
                     {
                         if (!has_room_for_values(1)) return;
                         c.constant = value_size;
@@ -2669,7 +2669,7 @@ namespace yyjson
         };
 
         // `M` is the number of the nodes of the settings of the fields and of the values in them, those of field i
-        // at index i, `V` the number of the values of `yyjson::const_value` and `yyjson::enum_values` in them, and
+        // at index i, `V` the number of the values of `yyjson::const_` and `yyjson::enum_` in them, and
         // `D` the number of the fields that `yyjson::dependent_required` requires.
         template <std::size_t N, std::size_t M = N, std::size_t V = 0, std::size_t D = 0>
         struct field_key_table
@@ -2872,7 +2872,7 @@ namespace yyjson
 
         // The annotations of the entity `R` whose types are specializations of one of the templates `Templates`,
         // which could not be looked up one type by one: `yyjson::items` and the other settings of the values in a
-        // field, `yyjson::enum_values`, and `yyjson::dependent_required` of a struct.
+        // field, `yyjson::enum_`, and `yyjson::dependent_required` of a struct.
         template <std::meta::info R, std::meta::info... Templates>
         consteval std::vector<std::meta::info> template_annotations_of()
         {
@@ -2892,7 +2892,7 @@ namespace yyjson
             return template_annotations_of<field_reflection::detail::member_at<T, I>, ^^yyjson::items,
                                            ^^yyjson::additional_properties, ^^yyjson::contains,
                                            ^^yyjson::property_names, ^^yyjson::prefix_items_t,
-                                           ^^yyjson::enum_values>();
+                                           ^^yyjson::enum_>();
         }
         template <typename T, std::size_t I>
         inline constexpr std::span<const std::meta::info> element_annotations =
@@ -2901,10 +2901,10 @@ namespace yyjson
         using element_annotation_type =
             typename[:std::meta::remove_cvref(std::meta::type_of(element_annotations<T, I>[K])):];
         // The nodes and the values that the annotations of the field I of T add: those in `element_annotations`,
-        // and the value of `yyjson::const_value`.
+        // and the value of `yyjson::const_`.
         template <typename T, std::size_t I>
         inline constexpr tree_size annotated_node_count = []<std::size_t... Ks>(std::index_sequence<Ks...>) {
-            return (tree_size{0, field_reflection::field_annotations<T, I, const_value>.size()} + ... +
+            return (tree_size{0, field_reflection::field_annotations<T, I, const_>.size()} + ... +
                     node_count<element_annotation_type<T, I, Ks>>);
         }(std::make_index_sequence<element_annotations<T, I>.size()>{});
         template <typename T, std::size_t I, typename Builder>
@@ -3117,8 +3117,8 @@ namespace yyjson
                           "a position of yyjson::prefix_items holds the settings of the values in it in up to 8 "
                           "nodes: one for itself and one for each yyjson::items, yyjson::contains, "
                           "yyjson::property_names, yyjson::additional_properties(settings...) and position of "
-                          "yyjson::prefix_items in it, and up to 16 values of yyjson::const_value and "
-                          "yyjson::enum_values");
+                          "yyjson::prefix_items in it, and up to 16 values of yyjson::const_ and "
+                          "yyjson::enum_");
             static_assert(table.error != field_key_error::dependency_skipped,
                           "yyjson::dependent_required names a member annotated with yyjson::skip, which has no key");
             static constexpr auto value = table.keys;
@@ -4478,14 +4478,14 @@ namespace yyjson
 
         // The settings at the node `Node` of the tree of the settings of the struct S, which is the node of the field
         // K or one of the values in it.  `at<C>` is the node C, which a member of `node` names.  `values` are the
-        // value of `yyjson::const_value`, if it has one, and then those of `yyjson::enum_values`.
+        // value of `yyjson::const_`, if it has one, and then those of `yyjson::enum_`.
         template <typename S, std::size_t K, std::size_t Node>
         struct constraint_node
         {
             static constexpr schema_node node = field_table_of<S>::table.schemas.nodes[Node];
             static constexpr field_constraints constraints = node.constraints;
             static constexpr auto values = [] {
-                constexpr std::size_t constants = constraints.has<const_value>() ? 1 : 0;
+                constexpr std::size_t constants = constraints.has<const_>() ? 1 : 0;
                 auto result = std::array<json_scalar, constants + constraints.enum_count>{};
                 if constexpr (constants != 0)
                     result[0] = field_table_of<S>::table.schemas.values[constraints.constant];
@@ -4523,8 +4523,8 @@ namespace yyjson
             contains,
             min_contains,
             max_contains,
-            const_value,
-            enum_values,
+            const_,
+            enum_,
             format,
         };
 
@@ -4573,12 +4573,12 @@ namespace yyjson
             const auto what = [&]() -> std::string {
                 switch (kind)
                 {
-                    case constraint_kind::const_value:
+                    case constraint_kind::const_:
                         return "is not equal to the constant " + scalar_text(values[0]);
-                    case constraint_kind::enum_values:
+                    case constraint_kind::enum_:
                     {
                         auto text = std::string("is not one of ");
-                        const auto listed = values.subspan(c.has<const_value>() ? 1 : 0);
+                        const auto listed = values.subspan(c.has<const_>() ? 1 : 0);
                         for (std::size_t i = 0; i < listed.size(); ++i)
                             text += (i == 0 ? "" : ", ") + scalar_text(listed[i]);
                         return text;
@@ -5459,12 +5459,12 @@ namespace yyjson
             }
         }
 
-        // The kind of the values of `yyjson::const_value` and `yyjson::enum_values` that a value of V can equal.
+        // The kind of the values of `yyjson::const_` and `yyjson::enum_` that a value of V can equal.
         template <typename V>
         inline constexpr auto scalar_kind_of = std::same_as<V, bool>    ? json_scalar::kind_t::boolean
                                                : std::is_arithmetic_v<V> ? json_scalar::kind_t::number
                                                                          : json_scalar::kind_t::string;
-        // Whether the value `v` equals the value `s` of `yyjson::const_value` or `yyjson::enum_values`, of its kind,
+        // Whether the value `v` equals the value `s` of `yyjson::const_` or `yyjson::enum_`, of its kind,
         // as a value of V.
         template <typename V>
         bool equals_scalar(const V& v, const json_scalar& s) noexcept
@@ -5501,7 +5501,7 @@ namespace yyjson
                           "string");
             static_assert(!items || constraint_items<V>,
                           "yyjson::min_items and max_items constrain a field or an element of a range");
-            constexpr bool listed = c.has<const_value>() || c.has<enum_values<0>>();
+            constexpr bool listed = c.has<const_>() || c.has<enum_<0>>();
             constexpr bool scalar = std::is_arithmetic_v<V> || constraint_string<V>;
             // null, which `level_violation` compares, may stand beside the values of any type
             static_assert(!listed || std::ranges::all_of(Level::values,
@@ -5509,7 +5509,7 @@ namespace yyjson
                                                              return s.kind == json_scalar::kind_t::null ||
                                                                     (scalar && s.kind == scalar_kind_of<V>);
                                                          }),
-                          "yyjson::const_value and yyjson::enum_values constrain a field or an element of a string, "
+                          "yyjson::const_ and yyjson::enum_ constrain a field or an element of a string, "
                           "a number or a bool, with values of its kind or nullptr");
             if constexpr (listed)
             {
@@ -5519,13 +5519,13 @@ namespace yyjson
                     else
                         return false;
                 };
-                constexpr std::size_t constants = c.has<const_value>() ? 1 : 0;
+                constexpr std::size_t constants = c.has<const_>() ? 1 : 0;
                 if constexpr (constants != 0)
-                    if (!equals(Level::values[0])) return constraint_kind::const_value;
-                if constexpr (c.has<enum_values<0>>())
+                    if (!equals(Level::values[0])) return constraint_kind::const_;
+                if constexpr (c.has<enum_<0>>())
                 {
                     if (!std::ranges::any_of(std::span(Level::values).subspan(constants), equals))
-                        return constraint_kind::enum_values;
+                        return constraint_kind::enum_;
                 }
             }
             if constexpr (numeric && std::is_arithmetic_v<V> && !std::same_as<V, bool>)
@@ -5571,20 +5571,20 @@ namespace yyjson
         template <typename Level, typename V>
         constraint_kind structure_violation(const V& v);
 
-        // The constraint of the level `Level` that JSON null does not satisfy: `yyjson::const_value` and
-        // `yyjson::enum_values` without `nullptr`, as JSON Schema's `const` and `enum`.  The other settings
+        // The constraint of the level `Level` that JSON null does not satisfy: `yyjson::const_` and
+        // `yyjson::enum_` without `nullptr`, as JSON Schema's `const` and `enum`.  The other settings
         // constrain values of their kinds and pass null.
         template <typename Level>
         constexpr constraint_kind null_violation() noexcept
         {
             constexpr const field_constraints& c = Level::constraints;
-            constexpr std::size_t constants = c.has<const_value>() ? 1 : 0;
+            constexpr std::size_t constants = c.has<const_>() ? 1 : 0;
             constexpr auto is_null = [](const json_scalar& s) { return s.kind == json_scalar::kind_t::null; };
             if constexpr (constants != 0)
-                if constexpr (!is_null(Level::values[0])) return constraint_kind::const_value;
-            if constexpr (c.has<enum_values<0>>())
+                if constexpr (!is_null(Level::values[0])) return constraint_kind::const_;
+            if constexpr (c.has<enum_<0>>())
                 if constexpr (!std::ranges::any_of(std::span(Level::values).subspan(constants), is_null))
-                    return constraint_kind::enum_values;
+                    return constraint_kind::enum_;
             return constraint_kind::none;
         }
 
@@ -5606,7 +5606,7 @@ namespace yyjson
             constexpr bool lists_null = std::ranges::any_of(
                 Level::values, [](const json_scalar& s) { return s.kind == json_scalar::kind_t::null; });
             static_assert(!lists_null || nullable<F>,
-                          "yyjson::const_value(nullptr) and yyjson::enum_values with nullptr constrain a value that "
+                          "yyjson::const_(nullptr) and yyjson::enum_ with nullptr constrain a value that "
                           "can be null: std::optional, a smart pointer, or std::variant of std::monostate");
             const U* value = nullptr;
             if constexpr (nullable<F>)

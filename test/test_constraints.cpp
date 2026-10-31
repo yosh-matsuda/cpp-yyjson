@@ -205,7 +205,7 @@ inline constexpr auto yyjson::annotations<Owned> = yyjson::annotate(
     yyjson::field("level", yyjson::maximum(5), yyjson::satisfies<[](const int& v) { return v != 3; }>),
     yyjson::field("tags", yyjson::items(yyjson::max_length(3)), yyjson::unique_items));
 
-// const_value and enum_values reject JSON null unless they list nullptr, as JSON Schema's const and enum
+// const_ and enum_ reject JSON null unless they list nullptr, as JSON Schema's const and enum
 struct NullableListed
 {
     std::variant<std::monostate, std::string> unit;
@@ -219,10 +219,10 @@ struct NullableListed
 };
 template <>
 inline constexpr auto yyjson::annotations<NullableListed> = yyjson::annotate(
-    yyjson::field("unit", yyjson::enum_values("mm", "cm")), yyjson::field("level", yyjson::enum_values(1, 2, nullptr)),
-    yyjson::field("count", yyjson::const_value(1)), yyjson::field("steps", yyjson::items(yyjson::enum_values(1, 2))),
-    yyjson::field("note", yyjson::const_value("x")), yyjson::field("mode", yyjson::const_value(nullptr)),
-    yyjson::field("none", yyjson::const_value(nullptr)));
+    yyjson::field("unit", yyjson::enum_("mm", "cm")), yyjson::field("level", yyjson::enum_(1, 2, nullptr)),
+    yyjson::field("count", yyjson::const_(1)), yyjson::field("steps", yyjson::items(yyjson::enum_(1, 2))),
+    yyjson::field("note", yyjson::const_("x")), yyjson::field("mode", yyjson::const_(nullptr)),
+    yyjson::field("none", yyjson::const_(nullptr)));
 
 // the elements of a range that are equal to an earlier one, the positions of a range or of a tuple, the keys of a
 // map, and the elements of a range that satisfy settings
@@ -459,7 +459,7 @@ inline constexpr auto yyjson::annotations<Visited> = yyjson::annotate(
     yyjson::field("k", yyjson::property_names(yyjson::max_length(1))));
 VISITABLE_STRUCT(Visited, u, p, c, k);
 
-// const_value and enum_values compare the value read as a value of the type of the field
+// const_ and enum_ compare the value read as a value of the type of the field
 struct Listed
 {
     std::string unit = "m";
@@ -476,14 +476,14 @@ struct Listed
 };
 template <>
 inline constexpr auto yyjson::annotations<Listed> = yyjson::annotate(
-    yyjson::field("unit", yyjson::enum_values("mm", "cm", "m")), yyjson::field("version", yyjson::const_value(2)),
-    yyjson::field("ratio", yyjson::enum_values(0.1, 0.5)), yyjson::field("flag", yyjson::const_value(true)),
-    yyjson::field("big", yyjson::enum_values(-1, 0, 18446744073709551615ULL)),
-    yyjson::field("level", yyjson::enum_values(1, 2, 3)),
-    yyjson::field("odd", yyjson::const_value(1), yyjson::enum_values(2, 3)),
-    yyjson::field("tags", yyjson::items(yyjson::enum_values("a", "b"))),
-    yyjson::field("named", yyjson::property_names(yyjson::enum_values("x", "y"))),
-    yyjson::field("pair", yyjson::prefix_items({yyjson::const_value(1)}, {yyjson::enum_values("x", "y")})));
+    yyjson::field("unit", yyjson::enum_("mm", "cm", "m")), yyjson::field("version", yyjson::const_(2)),
+    yyjson::field("ratio", yyjson::enum_(0.1, 0.5)), yyjson::field("flag", yyjson::const_(true)),
+    yyjson::field("big", yyjson::enum_(-1, 0, 18446744073709551615ULL)),
+    yyjson::field("level", yyjson::enum_(1, 2, 3)),
+    yyjson::field("odd", yyjson::const_(1), yyjson::enum_(2, 3)),
+    yyjson::field("tags", yyjson::items(yyjson::enum_("a", "b"))),
+    yyjson::field("named", yyjson::property_names(yyjson::enum_("x", "y"))),
+    yyjson::field("pair", yyjson::prefix_items({yyjson::const_(1)}, {yyjson::enum_("x", "y")})));
 
 // the formats that the library checks, and one that the program checks
 template <>
@@ -561,17 +561,17 @@ CONSTRAINT_RULE(PositionOf8, yyjson::prefix_items({POSITION_OF_8}))
 CONSTRAINT_RULE(PositionOf9, yyjson::prefix_items({POSITION_OF_8, yyjson::additional_properties(yyjson::minimum(0))}))
 #undef POSITION_OF_8
 CONSTRAINT_RULE(MultipleOfZeroInItems, yyjson::items(yyjson::multiple_of(0)))
-// const_value and enum_values once at a level, and up to 16 values in a position
-CONSTRAINT_RULE(ConstTwice, yyjson::items(yyjson::items(yyjson::const_value(1), yyjson::const_value(2))))
-CONSTRAINT_RULE(EnumTwice, yyjson::items(yyjson::items(yyjson::enum_values(1), yyjson::enum_values(2))))
+// const_ and enum_ once at a level, and up to 16 values in a position
+CONSTRAINT_RULE(ConstTwice, yyjson::items(yyjson::items(yyjson::const_(1), yyjson::const_(2))))
+CONSTRAINT_RULE(EnumTwice, yyjson::items(yyjson::items(yyjson::enum_(1), yyjson::enum_(2))))
 CONSTRAINT_RULE(FormatTwice, yyjson::items(yyjson::format("date"), yyjson::format("time")))
 CONSTRAINT_RULE(PositionOf16Values,
-                yyjson::prefix_items({yyjson::items(yyjson::const_value(0),
-                                                    yyjson::enum_values(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
+                yyjson::prefix_items({yyjson::items(yyjson::const_(0),
+                                                    yyjson::enum_(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
                                                                         14, 15))}))
 CONSTRAINT_RULE(PositionOf17Values,
-                yyjson::prefix_items({yyjson::items(yyjson::const_value(0),
-                                                    yyjson::enum_values(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
+                yyjson::prefix_items({yyjson::items(yyjson::const_(0),
+                                                    yyjson::enum_(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
                                                                         14, 15, 16))}))
 #undef CONSTRAINT_RULE
 // dependent_required names a member that is read, and once
@@ -694,10 +694,10 @@ struct ElementsAnnotated2
 
 struct [[= yyjson::dependent_required("card", {"address"})]] KeywordsAnnotated
 {
-    [[= yyjson::const_value(2)]] int version = 2;
-    [[= yyjson::enum_values("a", "b")]] std::string unit = "a";
+    [[= yyjson::const_(2)]] int version = 2;
+    [[= yyjson::enum_("a", "b")]] std::string unit = "a";
     [[= yyjson::format("date")]] std::string day = "2024-01-01";
-    [[= yyjson::items(yyjson::enum_values(1.5, 2))]] std::vector<double> steps;
+    [[= yyjson::items(yyjson::enum_(1.5, 2))]] std::vector<double> steps;
     std::optional<std::string> card;
     std::optional<std::string> address;
     bool operator==(const KeywordsAnnotated&) const = default;
@@ -1484,7 +1484,7 @@ TEST(Constraints, ConstAndEnum)
     expect_rejected<Listed>(R"({"big":18446744073709551614})",
                             value("big") + "is not one of -1, 0, 18446744073709551615", "/big");
     expect_rejected<Listed>(R"({"level":4})", value("level") + "is not one of 1, 2, 3", "/level");
-    // the constant is checked first, and the values of enum_values are listed without it
+    // the constant is checked first, and the values of enum_ are listed without it
     expect_rejected<Listed>(R"({"odd":2})", value("odd") + "is not equal to the constant 1", "/odd");
     expect_rejected<Listed>(R"({"odd":1})", value("odd") + "is not one of 2, 3", "/odd");
     expect_rejected<Listed>(R"({"tags":["a","c"]})", element("tags") + R"(is not one of "a", "b")", "/tags/1");

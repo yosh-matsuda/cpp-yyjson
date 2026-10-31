@@ -1521,8 +1521,8 @@ yyjson::read<Payment>(R"({"card":"1234"})");
 Settings of a field that restrict the values that it reads, as the keywords of JSON Schema of the same names do. [JSON Schema keywords](validation.md#json-schema-keywords) lists every keyword with what corresponds to it.
 
 ```cpp
-consteval explicit const_value(auto v);
-consteval explicit enum_values(auto... v);
+consteval explicit const_(auto v);
+consteval explicit enum_(auto... v);
 consteval explicit minimum(auto m);
 consteval explicit maximum(auto m);
 consteval explicit exclusive_minimum(auto m);
@@ -1541,8 +1541,8 @@ inline constexpr satisfies_t satisfies;
 
 | Constraint | The field | Rejects a value |
 | --- | --- | --- |
-| `yyjson::const_value(v)` | a string, a number or a `bool`; `nullptr` on a type that can be empty | not equal to `v` |
-| `yyjson::enum_values(v...)` | a string, a number or a `bool`; `nullptr` on a type that can be empty | equal to none of `v...` |
+| `yyjson::const_(v)` | a string, a number or a `bool`; `nullptr` on a type that can be empty | not equal to `v` |
+| `yyjson::enum_(v...)` | a string, a number or a `bool`; `nullptr` on a type that can be empty | equal to none of `v...` |
 | `yyjson::minimum(m)` | a number | less than `m` |
 | `yyjson::maximum(m)` | a number | greater than `m` |
 | `yyjson::exclusive_minimum(m)` | a number | `m` or less |
@@ -1557,7 +1557,7 @@ inline constexpr satisfies_t satisfies;
 | `yyjson::unique_items` | a range whose elements may be equal | with an element that is written as the same JSON value as an earlier one |
 | `yyjson::satisfies<f>` | any | for which `f(value)` returns `false` |
 
-The constraints are settings of [`yyjson::field`](#yyjsonfield), and of [`yyjson::items`](#yyjsonitems) and the other settings of the elements. `yyjson::unique_items` on a string, on a range of elements that contain a value that has no `operator==` and that is not compared by its parts, and on a set or a map, whose elements are unique by construction, is a compile error; [`yyjson::strict`](#yyjsonstrict) rejects the JSON that repeats an element or a key of them. The constraints apply to the value that a `std::optional`, a `std::unique_ptr`, a `std::shared_ptr` or a `std::variant` of `std::monostate` and one other type holds, nested or not, and not to an empty one, except `yyjson::const_value` and `yyjson::enum_values`, which an empty one satisfies only when they list `nullptr`. Reading a value that a constraint rejects throws `yyjson::bad_cast`; writing does not check them. `yyjson::const_value` and `yyjson::enum_values` take strings, numbers or booleans of the kind of the field, and `nullptr` for JSON `null` on those types that can be empty, and not arrays or objects; `yyjson::enum_values` takes at least one. They compare them with the value of the field in its type. `yyjson::pattern` needs a [`yyjson::pattern_matcher<>`](#yyjsonpattern_matcher). `yyjson::format` checks the [formats of JSON Schema](validation.md#formats) other than `idn-email`, `idn-hostname`, `iri`, `iri-reference` and `regex`, and the others with a [`yyjson::format_checker<>`](#yyjsonformat_checker). See [Constraints](validation.md#constraints).
+The constraints are settings of [`yyjson::field`](#yyjsonfield), and of [`yyjson::items`](#yyjsonitems) and the other settings of the elements. `yyjson::unique_items` on a string, on a range of elements that contain a value that has no `operator==` and that is not compared by its parts, and on a set or a map, whose elements are unique by construction, is a compile error; [`yyjson::strict`](#yyjsonstrict) rejects the JSON that repeats an element or a key of them. The constraints apply to the value that a `std::optional`, a `std::unique_ptr`, a `std::shared_ptr` or a `std::variant` of `std::monostate` and one other type holds, nested or not, and not to an empty one, except `yyjson::const_` and `yyjson::enum_`, which an empty one satisfies only when they list `nullptr`. Reading a value that a constraint rejects throws `yyjson::bad_cast`; writing does not check them. `yyjson::const_` and `yyjson::enum_` take strings, numbers or booleans of the kind of the field, and `nullptr` for JSON `null` on those types that can be empty, and not arrays or objects; `yyjson::enum_` takes at least one. They compare them with the value of the field in its type. `yyjson::pattern` needs a [`yyjson::pattern_matcher<>`](#yyjsonpattern_matcher). `yyjson::format` checks the [formats of JSON Schema](validation.md#formats) other than `idn-email`, `idn-hostname`, `iri`, `iri-reference` and `regex`, and the others with a [`yyjson::format_checker<>`](#yyjsonformat_checker). See [Constraints](validation.md#constraints).
 
 ### `yyjson::items`
 
