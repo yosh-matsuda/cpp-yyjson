@@ -1907,6 +1907,168 @@ namespace yyjson
         // The settings that describe a type in the JSON Schema only, which reading and writing ignore.
         template <typename A>
         concept type_metadata_setting = metadata_setting<A> || std::same_as<A, schema_name>;
+
+        // The syntax of the JSON text of `yyjson::json_text`, checked at compile time.  Each function gives the
+        // position after what it reads.  UTF-8 is not checked: reading the text checks it.
+        consteval std::size_t json_text_space(std::string_view t, std::size_t i)
+        {
+            while (i < t.size() && (t[i] == ' ' || t[i] == '\t' || t[i] == '\n' || t[i] == '\r')) ++i;
+            return i;
+        }
+        consteval bool json_text_hex(char c)
+        {
+            return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+        }
+        consteval std::size_t json_text_string(std::string_view t, std::size_t i)
+        {
+            for (++i; i < t.size(); ++i)
+            {
+                const auto c = static_cast<unsigned char>(t[i]);
+                if (c == '"') return i + 1;
+                if (c < 0x20) throw "yyjson::json_text has a control character in a string";
+                if (c != '\\') continue;
+                if (++i == t.size()) break;
+                if (t[i] == 'u')
+                {
+                    if (t.size() - i <= 4 || !json_text_hex(t[i + 1]) || !json_text_hex(t[i + 2]) ||
+                        !json_text_hex(t[i + 3]) || !json_text_hex(t[i + 4]))
+                        throw "yyjson::json_text has an invalid \\u escape";
+                    i += 4;
+                }
+                else if (std::string_view("\"\\/bfnrt").find(t[i]) == std::string_view::npos)
+                    throw "yyjson::json_text has an invalid escape";
+            }
+            throw "yyjson::json_text has an unterminated string";
+        }
+        consteval std::size_t json_text_digits(std::string_view t, std::size_t i)
+        {
+            const auto start = i;
+            while (i < t.size() && t[i] >= '0' && t[i] <= '9') ++i;
+            if (i == start) throw "yyjson::json_text has an invalid number";
+            return i;
+        }
+        consteval std::size_t json_text_value(std::string_view t, std::size_t i, int depth)
+        {
+            i = json_text_space(t, i);
+            if (i == t.size()) throw "yyjson::json_text has no value where one is expected";
+            const auto literal = [&](std::string_view word) {
+                if (t.substr(i, word.size()) != word) throw "yyjson::json_text has an invalid literal";
+                return i + word.size();
+            };
+            const auto c = t[i];
+            if (c == '"') return json_text_string(t, i);
+            if (c == 't') return literal("true");
+            if (c == 'f') return literal("false");
+            if (c == 'n') return literal("null");
+            if (c == '[' || c == '{')
+            {
+                if (depth == 128) throw "yyjson::json_text nests more than 128 arrays and objects";
+                const auto close = c == '[' ? ']' : '}';
+                i = json_text_space(t, i + 1);
+                if (i < t.size() && t[i] == close) return i + 1;
+                while (true)
+                {
+                    if (c == '{')
+                    {
+                        if (i == t.size() || t[i] != '"')
+                            throw "yyjson::json_text has an object key that is not a string";
+                        i = json_text_space(t, json_text_string(t, i));
+                        if (i == t.size() || t[i] != ':') throw "yyjson::json_text has no ':' after an object key";
+                        ++i;
+                    }
+                    i = json_text_space(t, json_text_value(t, i, depth + 1));
+                    if (i == t.size()) throw "yyjson::json_text has an unterminated array or object";
+                    if (t[i] == close) return i + 1;
+                    if (t[i] != ',') throw "yyjson::json_text has no ',' between values";
+                    i = json_text_space(t, i + 1);
+                }
+            }
+            if (c != '-' && (c < '0' || c > '9')) throw "yyjson::json_text has an invalid value";
+            if (c == '-') ++i;
+            if (i < t.size() && t[i] == '0')
+                ++i;
+            else
+                i = json_text_digits(t, i);
+            if (i < t.size() && t[i] == '.') i = json_text_digits(t, i + 1);
+            if (i < t.size() && (t[i] == 'e' || t[i] == 'E'))
+            {
+                ++i;
+                if (i < t.size() && (t[i] == '+' || t[i] == '-')) ++i;
+                i = json_text_digits(t, i);
+            }
+            return i;
+        }
+        consteval void check_json_text(std::string_view t)
+        {
+            if (json_text_space(t, json_text_value(t, 0, 0)) != t.size())
+                throw "yyjson::json_text has text after the value";
+        }
+    }  // namespace detail
+
+    // A JSON value written as JSON text, which `yyjson::const_` and `yyjson::enum_` take for a value that is an
+    // object or an array: `yyjson::const_(yyjson::json_text(R"({"x": 1})"))`.  The text must be valid JSON, which is
+    // checked at compile time.  The value of the field equals it when it equals the value that reading the text as
+    // the type of the field gives.  Before C++26, `yyjson::json_text("...")` holds the characters of the literal, so
+    // that it can be a template argument, as in `yyjson::alt`; see `detail::setting_string`.
+    template <std::size_t N = 0>
+    struct json_text
+    {
+        detail::setting_string<N> text_string;
+
+        consteval explicit json_text(std::string_view t)
+        requires (N == 0)
+            : text_string(t)
+        {
+            detail::check_json_text(t);
+        }
+        template <std::size_t K>
+        requires (K == N && N != 0)
+        consteval explicit json_text(const char (&t)[K]) : text_string(t)
+        {
+            detail::check_json_text(text_string.view());
+        }
+
+        [[nodiscard]] constexpr std::string_view text() const noexcept { return text_string.view(); }
+    };
+    json_text(std::string_view) -> json_text<>;
+#if !defined(__cpp_lib_define_static)
+    template <std::size_t N>
+    json_text(const char (&)[N]) -> json_text<N>;
+#endif
+
+    namespace detail
+    {
+        template <std::size_t N>
+        inline constexpr std::size_t literal_size<json_text<N>> = N;
+
+        template <typename V>
+        inline constexpr bool is_json_text = false;
+        template <std::size_t N>
+        inline constexpr bool is_json_text<json_text<N>> = true;
+
+        // The kind of the JSON value of a valid JSON text: 0 null, 1 boolean, 2 number, 3 string, 4 array, 5 object.
+        constexpr int json_text_kind(std::string_view t) noexcept
+        {
+            std::size_t i = 0;
+            while (i < t.size() && (t[i] == ' ' || t[i] == '\t' || t[i] == '\n' || t[i] == '\r')) ++i;
+            if (i == t.size()) return 0;
+            switch (t[i])
+            {
+                case 'n':
+                    return 0;
+                case 't':
+                case 'f':
+                    return 1;
+                case '"':
+                    return 3;
+                case '[':
+                    return 4;
+                case '{':
+                    return 5;
+                default:
+                    return 2;
+            }
+        }
     }  // namespace detail
 
     namespace detail
@@ -1915,12 +2077,14 @@ namespace yyjson
         // is a structural type, as the values of C++26 annotations that hold it have to be.
         struct json_scalar
         {
+            // `json` is a value of `yyjson::json_text`, whose text is in `text`; one that is null is `null`.
             enum class kind_t : std::uint8_t
             {
                 string,
                 number,
                 boolean,
-                null
+                null,
+                json
             };
             kind_t kind = kind_t::number;
             bound_number number;
@@ -1933,10 +2097,17 @@ namespace yyjson
             }
             template <typename V>
             requires (!std::same_as<V, std::nullptr_t>) &&
-                     (std::same_as<V, bool> || std::is_arithmetic_v<V> || std::convertible_to<V, std::string_view>)
+                     (std::same_as<V, bool> || std::is_arithmetic_v<V> || std::convertible_to<V, std::string_view> ||
+                      std::same_as<V, json_text<>>)
             consteval json_scalar(const V& v)  // NOLINT(google-explicit-constructor)
             {
-                if constexpr (std::same_as<V, bool>)
+                if constexpr (std::same_as<V, json_text<>>)
+                {
+                    const auto s = v.text();
+                    kind = json_text_kind(s) == 0 ? kind_t::null : kind_t::json;
+                    text = {s.data(), s.size()};
+                }
+                else if constexpr (std::same_as<V, bool>)
                 {
                     kind = kind_t::boolean;
                     boolean = v;
@@ -1954,7 +2125,13 @@ namespace yyjson
             template <typename V, std::size_t L>
             consteval json_scalar(const V& v, char_pool<L>& pool)
             {
-                if constexpr (literal_size<V> != 0)
+                if constexpr (is_json_text<V> && literal_size<V> != 0)
+                {
+                    const auto s = v.text();
+                    kind = json_text_kind(s) == 0 ? kind_t::null : kind_t::json;
+                    if (kind == kind_t::json) text = pool.add(s);
+                }
+                else if constexpr (literal_size<V> != 0)
                 {
                     kind = kind_t::string;
                     text = pool.add(setting_string(v).view());
@@ -1973,8 +2150,11 @@ namespace yyjson
     // is compared after it is read, as a value of the type of the field: a `float` field equals `const_(0.1)`
     // when it holds `0.1f`.  `nullptr` is JSON null, which a type that holds a value or nothing, such as
     // `std::variant<std::monostate, U>`, equals when it holds nothing; such a type holding nothing equals no other
-    // value.
-    // Before C++26 it holds a string literal, the L characters of it, as `detail::setting_string` tells.
+    // value.  A value of any type, an object or an array too, is given as `yyjson::json_text`, which is read as the
+    // type of the field once, when it is first compared, and compared with the value as JSON values are: a text that
+    // the type cannot read throws `std::invalid_argument` there.
+    // Before C++26 it holds a string literal or the text of `yyjson::json_text`, the L characters of it, as
+    // `detail::setting_string` tells.
     template <std::size_t L = 0>
     struct const_
     {
@@ -1992,7 +2172,8 @@ namespace yyjson
     const_(const V&) -> const_<detail::literal_size<V>>;
 
     // The values one of which a string, number or boolean field must equal, as JSON Schema's `enum`:
-    // `yyjson::field("unit", yyjson::enum_("mm", "cm", "m"))`.  They are compared as `yyjson::const_`.
+    // `yyjson::field("unit", yyjson::enum_("mm", "cm", "m"))`.  They are compared as `yyjson::const_`.  The values
+    // are either all `yyjson::json_text` or none of them is.
     // Before C++26 it holds the strings given as string literals, the L characters of them, as
     // `detail::setting_string` tells.
     template <std::size_t N, std::size_t L = 0>
@@ -2007,6 +2188,8 @@ namespace yyjson
         consteval explicit enum_(const Vs&... vs) : values{detail::json_scalar(vs, chars)...}
         {
             static_assert(N != 0, "yyjson::enum_ needs a value");
+            static_assert((detail::is_json_text<Vs> && ...) || (!detail::is_json_text<Vs> && ...),
+                          "yyjson::enum_ takes either JSON texts only or C++ values only");
         }
     };
     template <typename... Vs>
@@ -7594,6 +7777,8 @@ namespace yyjson
                     return v.boolean ? "true" : "false";
                 case json_scalar::kind_t::null:
                     return "null";
+                case json_scalar::kind_t::json:
+                    return std::string(v.string());
                 default:
                     return bound_text(v.number);
             }
@@ -8695,7 +8880,9 @@ namespace yyjson
             auto result = std::array<E, Level::values.size()>{};
             for (std::size_t i = 0; i < result.size(); ++i)
             {
-                if (Level::values[i].kind == json_scalar::kind_t::null) continue;
+                if (Level::values[i].kind == json_scalar::kind_t::null ||
+                    Level::values[i].kind == json_scalar::kind_t::json)
+                    continue;
                 const auto index = enum_index_of_name<E>(Level::values[i].string());
                 if (index == enum_conversion<E>::names.size()) return std::optional<decltype(result)>();
                 result[i] = field_reflection::enum_values<E>[index];
@@ -8748,9 +8935,9 @@ namespace yyjson
         inline constexpr unsigned kind_object = 32;
         inline constexpr unsigned kind_opaque = 64;
         inline constexpr unsigned kind_any = 63;
-        constexpr unsigned kind_bit(json_scalar::kind_t kind) noexcept
+        constexpr unsigned kind_bit(const json_scalar& s) noexcept
         {
-            switch (kind)
+            switch (s.kind)
             {
                 case json_scalar::kind_t::null:
                     return kind_null;
@@ -8758,6 +8945,12 @@ namespace yyjson
                     return kind_boolean;
                 case json_scalar::kind_t::number:
                     return kind_number;
+                case json_scalar::kind_t::json:
+                {
+                    constexpr unsigned kinds[] = {kind_null,   kind_boolean, kind_number,
+                                                  kind_string, kind_array,   kind_object};
+                    return kinds[json_text_kind(s.string())];
+                }
                 default:
                     return kind_string;
             }
@@ -8822,13 +9015,47 @@ namespace yyjson
         template <typename T>
         std::size_t written_element_count(const T& t);
 
+        // Whether the level lists a value of `yyjson::json_text`.
+        template <typename Level>
+        inline constexpr bool lists_json = std::ranges::any_of(
+            Level::values, [](const json_scalar& s) { return s.kind == json_scalar::kind_t::json; });
+
+        // Whether `v` equals the value of the `yyjson::json_text` that is the value I of the level, read as a value
+        // of V, or of `std::string` for a string.  A text that cannot be read so equals no value of several kinds,
+        // `Multi`, and throws `std::invalid_argument` for a value of one kind.
+        template <typename Level, std::size_t I, bool Multi, typename V>
+        bool equals_json_text(const V& v);
+        // Whether the value `v` of `yyjson::value` or of a reference to an element of `yyjson::array` equals the
+        // value I of `yyjson::const_` and `yyjson::enum_` of the level, as JSON values.
+        template <typename Level, std::size_t I, typename V>
+        bool dom_equals_listed(const V& v);
+
+        // Whether `v` equals the value I of `yyjson::const_` and `yyjson::enum_` of the level, of a level that
+        // lists a value of `yyjson::json_text`: null equals no value that `kind_violation` checks.
+        template <typename Level, std::size_t I, bool Multi, typename V>
+        bool equals_listed(const V& v)
+        {
+            constexpr auto kind = Level::values[I].kind;
+            if constexpr (kind == json_scalar::kind_t::json)
+                return equals_json_text<Level, I, Multi>(v);
+            else if constexpr (kind == json_scalar::kind_t::null)
+                return false;
+            else if constexpr (enum_by_name<V>)
+                return named_enumerators<Level, V>[I] == v;
+            else if constexpr (std::is_arithmetic_v<V> || constraint_string<V>)
+                return kind == scalar_kind_of<V> && equals_scalar(v, Level::values[I]);
+            else
+                return false;
+        }
+
         // The constraint of the level `Level` that the value `v`, of one JSON kind, does not satisfy, of the settings
         // of its kind: `yyjson::const_` and `yyjson::enum_` take the values of its kind, numeric bounds
         // a number, lengths, `yyjson::pattern` and `yyjson::format` a string, and the numbers of items an array.
         // `value_constraint_violation` rejects at compile time the settings that a field or an element of the type
         // V does not take.  Of a value of several kinds, `Multi`, the numbers of items do not count the members of a
-        // map, which is an object.
-        template <typename Level, bool Multi = false, typename V>
+        // map, which is an object.  Without `Listed`, the values of `yyjson::const_` and `yyjson::enum_` are not
+        // compared.
+        template <typename Level, bool Multi = false, bool Listed = true, typename V>
         constraint_kind kind_violation(const V& v)
         {
             constexpr const field_constraints& c = Level::constraints;
@@ -8841,10 +9068,25 @@ namespace yyjson
             if constexpr (value_kinds<V>() == kind_opaque)
                 return constraint_kind::none;
             else if constexpr (std::is_enum_v<V> && !enum_by_name<V>)
-                return kind_violation<Level, Multi>(static_cast<std::underlying_type_t<V>>(v));
+                return kind_violation<Level, Multi, Listed>(static_cast<std::underlying_type_t<V>>(v));
             else
             {
-                if constexpr (listed && enum_by_name<V>)
+                if constexpr (!Listed)
+                {
+                }
+                else if constexpr (listed && lists_json<Level>)
+                {
+                    if constexpr (constants != 0)
+                        if (!equals_listed<Level, 0, Multi>(v)) return constraint_kind::const_;
+                    if constexpr (c.has<enum_<0>>())
+                    {
+                        if (![&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                                return (equals_listed<Level, constants + Is, Multi>(v) || ...);
+                            }(std::make_index_sequence<Level::values.size() - constants>{}))
+                            return constraint_kind::enum_;
+                    }
+                }
+                else if constexpr (listed && enum_by_name<V>)
                 {
                     constexpr auto& enumerators = named_enumerators<Level, V>;
                     const auto equals = [&v](std::size_t i) { return enumerators[i] == v; };
@@ -8961,16 +9203,30 @@ namespace yyjson
         {
             if constexpr (multi_kind_dom<V>)
             {
-                if (v.is_null()) return null_violation<Level>();
-                if (v.is_bool()) return kind_violation<Level, true>(*v.as_bool());
-                if (v.is_sint()) return kind_violation<Level, true>(*v.as_sint());
-                if (v.is_uint()) return kind_violation<Level, true>(*v.as_uint());
-                if (v.is_real()) return kind_violation<Level, true>(*v.as_real());
-                if (v.is_string()) return kind_violation<Level, true>(*v.as_string());
                 constexpr const field_constraints& c = Level::constraints;
-                if constexpr (c.has<const_<>>())
+                // the values of `yyjson::json_text` are compared as JSON values first, and the others of the same
+                // `yyjson::const_` and `yyjson::enum_` with them
+                constexpr bool listed = !lists_json<Level>;
+                if constexpr (!listed)
+                {
+                    constexpr std::size_t constants = c.has<const_<>>() ? 1 : 0;
+                    if constexpr (constants != 0)
+                        if (!dom_equals_listed<Level, 0>(v)) return constraint_kind::const_;
+                    if constexpr (c.has<enum_<0>>())
+                        if (![&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                                return (dom_equals_listed<Level, constants + Is>(v) || ...);
+                            }(std::make_index_sequence<Level::values.size() - constants>{}))
+                            return constraint_kind::enum_;
+                }
+                if (v.is_null()) return listed ? null_violation<Level>() : constraint_kind::none;
+                if (v.is_bool()) return kind_violation<Level, true, listed>(*v.as_bool());
+                if (v.is_sint()) return kind_violation<Level, true, listed>(*v.as_sint());
+                if (v.is_uint()) return kind_violation<Level, true, listed>(*v.as_uint());
+                if (v.is_real()) return kind_violation<Level, true, listed>(*v.as_real());
+                if (v.is_string()) return kind_violation<Level, true, listed>(*v.as_string());
+                if constexpr (listed && c.has<const_<>>())
                     return constraint_kind::const_;
-                else if constexpr (c.has<enum_<0>>())
+                else if constexpr (listed && c.has<enum_<0>>())
                     return constraint_kind::enum_;
                 else if constexpr (c.has<min_items>() || c.has<max_items>())
                 {
@@ -9041,7 +9297,7 @@ namespace yyjson
                               "an array");
                 static_assert(!listed || std::ranges::any_of(Level::values,
                                                              [&](const json_scalar& s) {
-                                                                 return may_be(kind_bit(s.kind));
+                                                                 return may_be(kind_bit(s));
                                                              }),
                               "yyjson::const_ and yyjson::enum_ constrain a value of several JSON kinds "
                               "with a value that it can be");
@@ -9059,15 +9315,18 @@ namespace yyjson
                               "yyjson::min_items and max_items constrain a field or an element of a range");
                 constexpr bool scalar = std::is_arithmetic_v<V> || constraint_string<V> || enum_by_name<V>;
                 // null, which `level_violation` compares, may stand beside the values of any type
+                constexpr bool texts = lists_json<Level>;
                 constexpr bool of_kind = std::ranges::all_of(Level::values, [](const json_scalar& s) {
-                    return s.kind == json_scalar::kind_t::null || (scalar && s.kind == scalar_kind_of<V>);
+                    return s.kind == json_scalar::kind_t::null || s.kind == json_scalar::kind_t::json ||
+                           (scalar && s.kind == scalar_kind_of<V>);
                 });
                 static_assert(!listed || of_kind,
                               "yyjson::const_ and yyjson::enum_ constrain a field or an element of a "
                               "string, a number or a bool, with values of its kind or nullptr, or of an enumeration "
-                              "written by name, with the names of its enumerators or nullptr");
+                              "written by name, with the names of its enumerators or nullptr; yyjson::json_text "
+                              "constrains a value of any type that yyjson reads");
                 if constexpr (!Negated && settings_read_nothing<Level, V>()) (void)settings_leave_no_value<Level, V>{};
-                if constexpr (listed && enum_by_name<V> && of_kind)
+                if constexpr (listed && enum_by_name<V> && of_kind && !texts)
                     static_assert(listed_enumerators<Level, V>.has_value(),
                                   "a string of yyjson::const_ or yyjson::enum_ of an enumeration is not the "
                                   "JSON name of an enumerator of it");
@@ -16094,13 +16353,13 @@ namespace yyjson
         concept reflected_range_aggregate =
             std::is_class_v<T> && std::is_aggregate_v<T> && (!std_array<T>) && reflectable<T>;
 
-        // Whether `a` and `b` are written as the same JSON value, which `yyjson::unique_items` and
-        // `yyjson::omit_default` compare.  The values that the writer converts itself are compared by their
-        // parts: a struct by its fields, and not by its `operator==`; a range by its elements in their order, or as
-        // a set when it is unordered or written as a JSON object; a tuple by its elements; a variant by its
-        // alternative and value; a holder by the value that it holds, an empty one being equal only to an empty
-        // one.  Others, such as numbers, strings, JSON values and the types that a caster of the user converts, are
-        // compared by `operator==`.
+        // Whether `a` and `b` are written as the same JSON value, which `yyjson::unique_items`, `yyjson::omit_default`
+        // and the `yyjson::json_text` of `yyjson::const_` and `yyjson::enum_` compare.  The values that the writer
+        // converts itself are compared by their parts: a struct by its fields, and not by its `operator==`; a range
+        // by its elements in their order, or as a set when it is unordered or written as a JSON object; a tuple by
+        // its elements; a variant by its alternative and value; a holder by the value that it holds, an empty one
+        // being equal only to an empty one.  Others, such as numbers, strings, JSON values and the types that a
+        // caster of the user converts, are compared by `operator==`.
         template <typename T, bool SignOfZero>
         bool json_equal(const T& a, const T& b)
         {
@@ -20043,7 +20302,10 @@ namespace yyjson
             using U = std::remove_cv_t<T>;
             constexpr bool settings = !Level::node.empty();
             const auto bound = [](json_bound b, bool described) { return described ? b : partial_bound(b); };
-            if constexpr (combined_variant<U>)
+            // the values of `yyjson::json_text` are not described
+            if constexpr (lists_json<Level>)
+                return partial_bound(bound_of<T, no_settings_level>());
+            else if constexpr (combined_variant<U>)
                 return bound(alternatives_bound<U>(std::make_index_sequence<std::variant_size_v<U>>{}),
                              !combined_alternatives<U>::exactly_one && !settings);
             else if constexpr (std::same_as<U, writer::value> || std::same_as<U, json_view>)
@@ -23398,6 +23660,74 @@ namespace yyjson
                 with_cast_path(writer::detail::json_value_access::get(doc),
                                [&] { reader::detail::merge_from(t, doc); });
             });
+        }
+
+        // The value of T that the text of `yyjson::json_text` is, read under `yyjson::strict`, so that a text that
+        // T cannot hold as it is, with a key that T does not have or without one that T always writes, is not
+        // taken for another value.  None when T cannot read it, of a value of several kinds, `Multi`, which then
+        // holds a value of another kind; `std::invalid_argument` otherwise.
+        template <typename T, bool Multi>
+        std::optional<T> read_json_text(std::string_view text)
+        {
+            const auto scope = strict_scope();
+            try
+            {
+                return cast_text<T>(text, ReadFlag::NoFlag);
+            }
+            catch (const std::bad_alloc&)
+            {
+                throw;
+            }
+            catch (const std::exception& e)
+            {
+                if constexpr (Multi)
+                    return std::nullopt;
+                else
+                    throw std::invalid_argument(std::string("the JSON text ").append(text).append(
+                        " of yyjson::const_ or yyjson::enum_ cannot be read as ").append(type_name<T>()).append(
+                        ": ").append(e.what()));
+            }
+        }
+
+        template <typename Level, std::size_t I, bool Multi, typename V>
+        bool equals_json_text(const V& v)
+        {
+            constexpr std::string_view text = Level::values[I].string();
+            if constexpr (dom_kind_of<V> != dom_kind::none)
+            {
+                static const auto constant = reader::read(text);
+                return v == constant;
+            }
+            else
+            {
+                using T = std::conditional_t<constraint_string<V>, std::string, std::remove_cv_t<V>>;
+                static const auto constant = read_json_text<T, Multi>(text);
+                if (!constant.has_value()) return false;
+                if constexpr (constraint_string<V>)
+                    return static_cast<std::string_view>(v) == *constant;
+                else
+                    return json_equal(v, *constant);
+            }
+        }
+
+        template <typename Level, std::size_t I, typename V>
+        bool dom_equals_listed(const V& v)
+        {
+            constexpr const json_scalar& s = Level::values[I];
+            if constexpr (s.kind == json_scalar::kind_t::json)
+                return equals_json_text<Level, I, true>(v);
+            else if constexpr (s.kind == json_scalar::kind_t::null)
+                return v.is_null();
+            else if constexpr (s.kind == json_scalar::kind_t::boolean)
+                return v.is_bool() && equals_scalar(*v.as_bool(), s);
+            else if constexpr (s.kind == json_scalar::kind_t::number)
+            {
+                if (v.is_sint()) return equals_scalar(*v.as_sint(), s);
+                if (v.is_uint()) return equals_scalar(*v.as_uint(), s);
+                return v.is_real() && equals_scalar(*v.as_real(), s);
+            }
+            else
+                return v.is_string() && equals_scalar(*v.as_string(), s);
         }
     }  // namespace detail
 

@@ -570,6 +570,56 @@ inline constexpr auto yyjson::annotations<ListedEnums> =
                      yyjson::field("maybe", yyjson::const_("mid")),
                      yyjson::field("tones", yyjson::items(yyjson::enum_("low", "HIGH"))));
 
+// const_ and enum_ of JSON texts, read into the type of the value that they check
+struct Spot
+{
+    int x = 0;
+    int y = 0;
+    bool operator==(const Spot&) const = default;
+};
+// a setting made from a std::string_view is given to yyjson::alt as a pointer
+inline constexpr auto origin = yyjson::const_(yyjson::json_text(std::string_view(R"({"x":0,"y":0})")));
+struct ListedTexts
+{
+    Spot at;
+    std::vector<int> pair = {1, 2};
+    std::optional<std::vector<double>> scale;
+    std::variant<int, std::vector<int>> mixed;
+    std::map<std::string, int> counts = {{"a", 1}};
+    std::vector<std::pair<std::string, int>> order = {{"a", 2}, {"b", 1}};
+    std::vector<std::vector<int>> rows;
+    yyjson::any_of<yyjson::alt<Spot, &origin>, yyjson::alt<std::vector<int>, yyjson::const_(yyjson::json_text("[7]"))>,
+                   std::string>
+        place = "here";
+    bool operator==(const ListedTexts&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<ListedTexts> = yyjson::annotate(
+    yyjson::field("at",
+                  yyjson::enum_(yyjson::json_text(R"({ "y": 0, "x": 0 })"), yyjson::json_text(R"({"x":1,"y":1})"))),
+    yyjson::field("pair", yyjson::const_(yyjson::json_text("[1, 2]"))),
+    yyjson::field("scale", yyjson::enum_(yyjson::json_text("[1]"), yyjson::json_text("[2.5, 2.5]"))),
+    yyjson::field("mixed", yyjson::enum_(yyjson::json_text("0"), yyjson::json_text("[0]"), yyjson::json_text("{}"))),
+    yyjson::field("counts", yyjson::not_(yyjson::const_(yyjson::json_text(R"({"a":0})")))),
+    yyjson::field("order", yyjson::const_(yyjson::json_text(R"({"a":2,"b":1})"))),
+    yyjson::field("rows", yyjson::items(yyjson::enum_(yyjson::json_text("[]"), yyjson::json_text("[0,0]")))));
+// a DOM value compares as JSON: 1 equals 1.0, keys in any order
+struct ListedDom
+{
+    yyjson::value any;
+};
+template <>
+inline constexpr auto yyjson::annotations<ListedDom> = yyjson::annotate(
+    yyjson::field("any", yyjson::enum_(yyjson::json_text(R"({"a":[1,2.0],"b":true})"), yyjson::json_text("null"))));
+// a constant that the type cannot read
+struct UnreadableText
+{
+    int n = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<UnreadableText> =
+    yyjson::annotate(yyjson::field("n", yyjson::const_(yyjson::json_text(R"("one")"))));
+
 // the formats that the library checks, "regex" with the engine of pattern_matcher<>, and one that the program checks
 template <>
 struct yyjson::format_checker<>
@@ -2263,6 +2313,79 @@ TEST(Constraints, ConstAndEnumNames)
                                  R"(an element of the value of the key "tones" of ListedEnums is not one of "low", )"
                                  R"("HIGH")",
                                  "/tones/1");
+}
+
+TEST(Constraints, ConstAndEnumTexts)
+{
+    const auto written = ListedTexts{.at = {}, .pair = {1, 2}, .mixed = {}, .counts = {{"a", 1}}, .rows = {}};
+    expect_accepted<ListedTexts>(
+        R"({"at":{"y":1,"x":1},"pair":[1,2],"scale":[2.5,2.5],"mixed":[0],"counts":{"a":2},"rows":[[],[0,0]],)"
+        R"("place":{"x":0,"y":0}})",
+        {.at = {1, 1},
+         .scale = std::vector{2.5, 2.5},
+         .mixed = std::vector{0},
+         .counts = {{"a", 2}},
+         .rows = {{}, {0, 0}},
+         .place = Spot{}});
+    // a double reads 1 as 1.0, and an integer is a number of the variant, which reads it into its alternative
+    expect_accepted<ListedTexts>(R"({"scale":[1.0],"mixed":0})", {.scale = std::vector{1.0}});
+    expect_accepted<ListedTexts>("{}", written);
+    const auto value = [](std::string_view key) {
+        return std::format(R"(the value of the key "{}" of ListedTexts )", key);
+    };
+    // the members of an object have no order
+    expect_accepted<ListedTexts>(R"({"order":{"b":1,"a":2}})", {.order = {{"b", 1}, {"a", 2}}});
+    expect_rejected<ListedTexts>(R"({"order":{"a":2}})",
+                                 value("order") + R"(is not equal to the constant {"a":2,"b":1})", "/order");
+    expect_rejected<ListedTexts>(R"({"at":{"x":0,"y":1}})",
+                                 value("at") + R"(is not one of { "y": 0, "x": 0 }, {"x":1,"y":1})", "/at");
+    expect_rejected<ListedTexts>(R"({"pair":[2,1]})", value("pair") + "is not equal to the constant [1, 2]", "/pair");
+    expect_rejected<ListedTexts>(R"({"scale":[2.5]})", value("scale") + "is not one of [1], [2.5, 2.5]", "/scale");
+    // an object is no value of the variant: it reads no constant
+    expect_rejected<ListedTexts>(R"({"mixed":1})", value("mixed") + "is not one of 0, [0], {}", "/mixed");
+    expect_rejected<ListedTexts>(R"({"counts":{"a":0}})", value("counts"), "/counts");
+    expect_rejected<ListedTexts>(R"({"rows":[[0],[]]})",
+                                 R"(an element of the value of the key "rows" of ListedTexts is not one of [], [0,0])",
+                                 "/rows/0");
+    expect_accepted<ListedTexts>(R"({"place":[7]})", {.place = std::vector{7}});
+    // no alternative reads the value
+    expect_rejected<ListedTexts>(R"({"place":{"x":1,"y":0}})", "yyjson::any_of<", "/place");
+    expect_rejected<ListedTexts>(R"({"place":[8]})", "yyjson::any_of<", "/place");
+    const auto checked = [](const ListedTexts& t) {
+        try
+        {
+            yyjson::validate(t);
+            return std::string();
+        }
+        catch (const yyjson::bad_cast& e)
+        {
+            return std::string(e.path());
+        }
+    };
+    EXPECT_EQ(checked(written), "");
+    EXPECT_EQ(checked({.at = {2, 2}}), "/at");
+    EXPECT_EQ(checked({.pair = {}}), "/pair");
+    EXPECT_EQ(checked({.rows = {{1}}}), "/rows/0");
+    EXPECT_EQ(checked({.place = Spot{1, 1}}), "/place");
+    EXPECT_THROW((void)yyjson::write(ListedTexts{.mixed = 3}, yyjson::strict), yyjson::bad_cast);
+
+    EXPECT_NO_THROW((void)yyjson::read<ListedDom>(R"({"any":{"b":true,"a":[1.0,2]}})"));
+    EXPECT_NO_THROW((void)yyjson::read<ListedDom>(R"({"any":null})"));
+    const auto dom = bad_cast_of([] { (void)yyjson::read<ListedDom>(R"({"any":{"a":[1,2],"b":1}})"); });
+    EXPECT_EQ(dom.path(), "/any");
+
+    // the text is read when a value is checked first
+    try
+    {
+        (void)yyjson::read<UnreadableText>(R"({"n":1})");
+        ADD_FAILURE();
+    }
+    catch (const std::invalid_argument& e)
+    {
+        EXPECT_TRUE(std::string_view(e.what()).starts_with(
+            R"(the JSON text "one" of yyjson::const_ or yyjson::enum_ cannot be read as int: )"))
+            << e.what();
+    }
 }
 
 TEST(Constraints, Format)
