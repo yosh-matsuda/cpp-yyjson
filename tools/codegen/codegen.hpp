@@ -4275,7 +4275,7 @@ namespace cpp_yyjson_codegen
                     else if (!th.empty() || closed)
                         parts.push_back(
                             condition{.if_ = t.fields, .then_ = std::move(th), .then_closed = closed, .loc = l.loc});
-                    add_nested(nested, guard{std::move(t.fields)}, fields, rejected, name, parts, 1);
+                    add_nested(nested, guard{std::move(t.fields), std::nullopt}, fields, rejected, name, parts, 1);
                 }
                 if (last != nullptr)
                 {
@@ -4370,7 +4370,7 @@ namespace cpp_yyjson_codegen
                 }
                 if (!cond.then_.empty() || !cond.else_.empty() || cond.then_closed || cond.else_closed)
                     out.push_back(std::move(cond));
-                add_nested(nested_then, guard{t.fields}, fields, rejected, name, out, 1);
+                add_nested(nested_then, guard{t.fields, std::nullopt}, fields, rejected, name, out, 1);
                 add_nested(nested_else, guard{{}, t.fields}, fields, rejected, name, out, 1);
             }
 
@@ -4440,8 +4440,8 @@ namespace cpp_yyjson_codegen
                         {
                             const auto dloc = cloc + "/dependentSchemas/" + pointer_token(k);
                             if (std::ranges::find(rejected, k) != rejected.end()) continue;
-                            add_guarded(v, dloc, guard{{cond_field{.key = k, .required = true}}}, fields, rejected,
-                                        name, "Dependent", out, 1);
+                            add_guarded(v, dloc, guard{{cond_field{.key = k, .required = true}}, std::nullopt}, fields,
+                                        rejected, name, "Dependent", out, 1);
                         }
                 }
                 return out;
