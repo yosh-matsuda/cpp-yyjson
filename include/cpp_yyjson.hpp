@@ -19371,6 +19371,25 @@ namespace yyjson
                 for (const json_scalar& s : Level::values) f(s);
         }
 
+        // Whether a nullable value reads null with the settings of the level: unless `yyjson::const_` or
+        // `yyjson::enum_` leave `nullptr` out.
+        template <typename Level>
+        consteval bool admits_null()
+        {
+            if constexpr ((Level::constraints.set & listing_settings) == 0)
+                return true;
+            else
+            {
+                bool null = false;
+                for_each_listed<Level>(
+                    [](const json_scalar& x, const json_scalar& y) {
+                        return x.kind == json_scalar::kind_t::null && y.kind == x.kind;
+                    },
+                    [&null](const json_scalar& s) { null = null || s.kind == json_scalar::kind_t::null; });
+                return null;
+            }
+        }
+
         // The bools that a `bool` reads with the values of `yyjson::const_` and `yyjson::enum_` of the
         // level, as the bits of `json_bound::booleans`.
         template <typename Level>
@@ -19694,9 +19713,10 @@ namespace yyjson
             }
             else if constexpr (std::derived_from<caster<U>, builtin_caster> && untagged_nullable<U>)
             {
-                // the settings are those of the value that it holds, and null reads none
+                // the settings are those of the value that it holds; null is read unless the listed values leave
+                // it out
                 auto b = bound_of<typename nullable_holder<U>::value_type, Level>();
-                b.null = bound_extent::exact;
+                b.null = admits_null<Level>() ? bound_extent::exact : bound_extent::none;
                 return b;
             }
             else if constexpr (std::derived_from<caster<U>, builtin_caster> && indirect_value<U>)

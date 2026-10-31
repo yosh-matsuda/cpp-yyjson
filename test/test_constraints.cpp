@@ -2949,6 +2949,11 @@ namespace compile_rules
     static_assert(contained<any_of<float, double>> == 2 && contained<any_of<double, float>> == 1);
     static_assert(contained<any_of<std::string, Shade>> == 1 && contained<any_of<Shade, std::string>> == 2);
     static_assert(contained<any_of<int, std::optional<int>>> == 2 && contained<any_of<std::optional<int>, int>> == 1);
+    // a nullable alternative reads null unless const_ or enum_ leave nullptr out
+    static_assert(contained<any_of<alt<std::optional<int>, enum_(1, nullptr)>, std::monostate>> == 1);
+    static_assert(contained<any_of<alt<std::optional<int>, enum_(1, 2)>, std::monostate>> == 2);
+    static_assert(contained<any_of<alt<std::optional<int>, const_(nullptr)>, std::monostate>> == 1);
+    static_assert(contained<one_of<alt<std::unique_ptr<int>, const_(1)>, std::monostate>> == 2);
     static_assert(contained<any_of<yyjson::value, std::map<std::string, int>>> == 1);
     static_assert(contained<any_of<std::vector<yyjson::value>, std::vector<int>>> == 1);
     static_assert(contained<any_of<std::vector<int>, std::vector<yyjson::value>>> == 2);
@@ -3112,6 +3117,12 @@ TEST(Constraints, AlternativeReading)
     expect_accepted<NameOrClosed>(R"({"x":1})", NameOrClosed(AlternativeClosed{1}));
     expect_accepted<NameOrClosed>("null", NameOrClosed(std::optional<AlternativeClosed>()));
     EXPECT_THROW((void)yyjson::read<NameOrClosed>(R"({"x":1,"y":2})"), yyjson::bad_cast);
+
+    // a nullable alternative whose enum_ leave nullptr out does not read null
+    using ListedOrNull = yyjson::one_of<yyjson::alt<std::optional<int>, yyjson::enum_(1, 2)>, std::monostate>;
+    expect_accepted<ListedOrNull>("1", ListedOrNull(std::in_place_index<0>, 1));
+    expect_accepted<ListedOrNull>("null", ListedOrNull(std::monostate()));
+    expect_rejected<ListedOrNull>("3", read_by_none<ListedOrNull>(), "");
 
     // one_of fails for a value that two alternatives read
     expect_accepted<SignedOrUnsigned>("-1", SignedOrUnsigned(std::int64_t{-1}));
