@@ -205,6 +205,25 @@ inline constexpr auto yyjson::annotations<Owned> = yyjson::annotate(
     yyjson::field("level", yyjson::maximum(5), yyjson::satisfies<[](const int& v) { return v != 3; }>),
     yyjson::field("tags", yyjson::items(yyjson::max_length(3)), yyjson::unique_items));
 
+// const_value and enum_values reject JSON null unless they list nullptr, as JSON Schema's const and enum
+struct NullableListed
+{
+    std::variant<std::monostate, std::string> unit;
+    std::variant<std::monostate, int> level;
+    std::shared_ptr<int> count;
+    std::vector<std::optional<int>> steps;
+    std::optional<std::string> note;
+    std::optional<std::variant<std::monostate, int>> mode;
+    std::shared_ptr<std::vector<int>> none;
+    bool operator==(const NullableListed& other) const { return written(*this) == written(other); }
+};
+template <>
+inline constexpr auto yyjson::annotations<NullableListed> = yyjson::annotate(
+    yyjson::field("unit", yyjson::enum_values("mm", "cm")), yyjson::field("level", yyjson::enum_values(1, 2, nullptr)),
+    yyjson::field("count", yyjson::const_value(1)), yyjson::field("steps", yyjson::items(yyjson::enum_values(1, 2))),
+    yyjson::field("note", yyjson::const_value("x")), yyjson::field("mode", yyjson::const_value(nullptr)),
+    yyjson::field("none", yyjson::const_value(nullptr)));
+
 // the elements of a range that are equal to an earlier one, the positions of a range or of a tuple, the keys of a
 // map, and the elements of a range that satisfy settings
 struct Unordered
@@ -1054,6 +1073,54 @@ TEST(Constraints, Nullables)
     expect_owned_rejected(R"({"tags":["a",null,"a"]})",
                           R"(an element of the value of the key "tags" of Owned is equal to an earlier element)",
                           "/tags/2");
+}
+
+TEST(Constraints, NullableListed)
+{
+    // a key that the object leaves out is not checked
+    expect_accepted<NullableListed>("{}", {});
+    auto expected = NullableListed();
+    expected.unit = "mm";
+    expected.count = std::make_shared<int>(1);
+    expected.steps = {1, 2};
+    expected.note = "x";
+    expect_accepted<NullableListed>(
+        R"({"unit":"mm","level":null,"count":1,"steps":[1,2],"note":"x","none":null})", expected);
+    // merge_into takes null as the removal of the key, and the others read monostate
+    EXPECT_EQ(yyjson::read<NullableListed>(R"({"mode":null})").mode,
+              std::make_optional(std::variant<std::monostate, int>()));
+    expected = NullableListed();
+    expected.level = 2;
+    expect_accepted<NullableListed>(R"({"level":2})", expected);
+
+    const auto field = [](std::string_view key) {
+        return std::format(R"(the value of the key "{}" of NullableListed )", key);
+    };
+    expect_rejected<NullableListed>(R"({"level":3})", field("level") + "is not one of 1, 2, null", "/level");
+    expect_rejected<NullableListed>(R"({"steps":[1,null]})",
+                                    R"(an element of the value of the key "steps" of NullableListed is not one of 1, 2)",
+                                    "/steps/1");
+    expect_rejected<NullableListed>(R"({"mode":1})", field("mode") + "is not equal to the constant null", "/mode");
+    expect_rejected<NullableListed>(R"({"none":[]})", field("none") + "is not equal to the constant null", "/none");
+    // null of a field, which merge_into takes as the removal of the key
+    const auto expect_null_rejected = [](std::string_view json, std::string_view message, std::string_view path) {
+        const auto check = [&](const yyjson::bad_cast& e) {
+            EXPECT_TRUE(message_of(e).starts_with(message)) << json << "\n" << e.what();
+            EXPECT_EQ(e.path(), path) << json;
+        };
+        check(bad_cast_of([&] { (void)yyjson::read<NullableListed>(json); }));
+        check(bad_cast_of([&] { (void)yyjson::read<NullableListed>(json, yyjson::ReadFlag::AllowComments); }));
+        check(bad_cast_of([&] {
+            auto t = NullableListed();
+            yyjson::read_into(json, t);
+        }));
+        check(bad_cast_of([&] { (void)yyjson::read(json).cast<NullableListed>(); }));
+        auto t = NullableListed();
+        yyjson::merge_into(json, t);
+        EXPECT_EQ(t, NullableListed()) << json;
+    };
+    expect_null_rejected(R"({"unit":null})", field("unit") + R"(is not one of "mm", "cm")", "/unit");
+    expect_null_rejected(R"({"count":null})", field("count") + "is not equal to the constant 1", "/count");
 }
 
 TEST(Constraints, ElementsMerge)

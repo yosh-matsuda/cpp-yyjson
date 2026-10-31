@@ -1206,15 +1206,16 @@ namespace yyjson
 
     namespace detail
     {
-        // A JSON string, number or boolean, which `yyjson::const_value` and `yyjson::enum_values` take.  It is a
-        // structural type, as the values of C++26 annotations that hold it have to be.
+        // A JSON string, number, boolean or null, which `yyjson::const_value` and `yyjson::enum_values` take.  It
+        // is a structural type, as the values of C++26 annotations that hold it have to be.
         struct json_scalar
         {
             enum class kind_t : std::uint8_t
             {
                 string,
                 number,
-                boolean
+                boolean,
+                null
             };
             kind_t kind = kind_t::number;
             bound_number number;
@@ -1223,8 +1224,12 @@ namespace yyjson
             bool boolean = false;
 
             constexpr json_scalar() = default;
+            consteval json_scalar(std::nullptr_t) : kind(kind_t::null)  // NOLINT(google-explicit-constructor)
+            {
+            }
             template <typename V>
-            requires std::same_as<V, bool> || std::is_arithmetic_v<V> || std::convertible_to<V, std::string_view>
+            requires (!std::same_as<V, std::nullptr_t>) &&
+                     (std::same_as<V, bool> || std::is_arithmetic_v<V> || std::convertible_to<V, std::string_view>)
             consteval json_scalar(const V& v)  // NOLINT(google-explicit-constructor)
             {
                 if constexpr (std::same_as<V, bool>)
@@ -1250,7 +1255,9 @@ namespace yyjson
     // The value that a string, number or boolean field must equal, as JSON Schema's `const`:
     // `yyjson::field("version", yyjson::const_value(2))` or `[[=yyjson::const_value(2)]]`.  The value of the field
     // is compared after it is read, as a value of the type of the field: a `float` field equals `const_value(0.1)`
-    // when it holds `0.1f`.
+    // when it holds `0.1f`.  `nullptr` is JSON null, which a type that holds a value or nothing, such as
+    // `std::variant<std::monostate, U>`, equals when it holds nothing; such a type holding nothing equals no other
+    // value.
     struct const_value
     {
         detail::json_scalar value;
@@ -4550,6 +4557,8 @@ namespace yyjson
                     return std::format("\"{}\"", v.string());
                 case json_scalar::kind_t::boolean:
                     return v.boolean ? "true" : "false";
+                case json_scalar::kind_t::null:
+                    return "null";
                 default:
                     return bound_text(v.number);
             }
@@ -5494,20 +5503,28 @@ namespace yyjson
                           "yyjson::min_items and max_items constrain a field or an element of a range");
             constexpr bool listed = c.has<const_value>() || c.has<enum_values<0>>();
             constexpr bool scalar = std::is_arithmetic_v<V> || constraint_string<V>;
-            static_assert(!listed || (scalar && std::ranges::all_of(Level::values, [](const json_scalar& s) {
-                                          return s.kind == scalar_kind_of<V>;
-                                      })),
+            // null, which `level_violation` compares, may stand beside the values of any type
+            static_assert(!listed || std::ranges::all_of(Level::values,
+                                                         [](const json_scalar& s) {
+                                                             return s.kind == json_scalar::kind_t::null ||
+                                                                    (scalar && s.kind == scalar_kind_of<V>);
+                                                         }),
                           "yyjson::const_value and yyjson::enum_values constrain a field or an element of a string, "
-                          "a number or a bool, with values of its kind");
-            if constexpr (listed && scalar)
+                          "a number or a bool, with values of its kind or nullptr");
+            if constexpr (listed)
             {
+                const auto equals = [&v](const json_scalar& s) {
+                    if constexpr (scalar)
+                        return s.kind != json_scalar::kind_t::null && equals_scalar(v, s);
+                    else
+                        return false;
+                };
                 constexpr std::size_t constants = c.has<const_value>() ? 1 : 0;
                 if constexpr (constants != 0)
-                    if (!equals_scalar(v, Level::values[0])) return constraint_kind::const_value;
+                    if (!equals(Level::values[0])) return constraint_kind::const_value;
                 if constexpr (c.has<enum_values<0>>())
                 {
-                    if (!std::ranges::any_of(std::span(Level::values).subspan(constants),
-                                             [&v](const json_scalar& s) { return equals_scalar(v, s); }))
+                    if (!std::ranges::any_of(std::span(Level::values).subspan(constants), equals))
                         return constraint_kind::enum_values;
                 }
             }
@@ -5554,6 +5571,23 @@ namespace yyjson
         template <typename Level, typename V>
         constraint_kind structure_violation(const V& v);
 
+        // The constraint of the level `Level` that JSON null does not satisfy: `yyjson::const_value` and
+        // `yyjson::enum_values` without `nullptr`, as JSON Schema's `const` and `enum`.  The other settings
+        // constrain values of their kinds and pass null.
+        template <typename Level>
+        constexpr constraint_kind null_violation() noexcept
+        {
+            constexpr const field_constraints& c = Level::constraints;
+            constexpr std::size_t constants = c.has<const_value>() ? 1 : 0;
+            constexpr auto is_null = [](const json_scalar& s) { return s.kind == json_scalar::kind_t::null; };
+            if constexpr (constants != 0)
+                if constexpr (!is_null(Level::values[0])) return constraint_kind::const_value;
+            if constexpr (c.has<enum_values<0>>())
+                if constexpr (!std::ranges::any_of(std::span(Level::values).subspan(constants), is_null))
+                    return constraint_kind::enum_values;
+            return constraint_kind::none;
+        }
+
         // The constraint of the node `Level` that `field` does not satisfy, or `none`.  `items`, `values`,
         // `prefix_items` and `property_names` tell that an element, a value or a key in it does not satisfy those
         // of a node below.
@@ -5569,6 +5603,11 @@ namespace yyjson
                           "the function of yyjson::satisfies takes the type of the field, of the element or of the "
                           "key, or the type of the innermost value that std::optional, smart pointers and std::variant "
                           "of std::monostate hold");
+            constexpr bool lists_null = std::ranges::any_of(
+                Level::values, [](const json_scalar& s) { return s.kind == json_scalar::kind_t::null; });
+            static_assert(!lists_null || nullable<F>,
+                          "yyjson::const_value(nullptr) and yyjson::enum_values with nullptr constrain a value that "
+                          "can be null: std::optional, a smart pointer, or std::variant of std::monostate");
             const U* value = nullptr;
             if constexpr (nullable<F>)
             {
@@ -5579,6 +5618,8 @@ namespace yyjson
                     if constexpr (validates_value)
                         if (!c.predicate.check(value)) return constraint_kind::satisfies;
                 }
+                else if (const auto k = null_violation<Level>(); k != constraint_kind::none)
+                    return k;
             }
             else
             {
@@ -6558,9 +6599,10 @@ namespace yyjson
                     else
                     {
                         assign_reflected_field(field, value, reflected_field_replaceable<i>(t));
-                        // null leaves the field as it is in `T()`, which is not checked
+                        // null leaves a field that cannot hold it as it is in `T()`, which is not checked
                         if constexpr (constrained_field<T, K>)
-                            if (!value.is_null()) check_constraints<T, K>(field, value);
+                            if (nullable<std::remove_cvref_t<decltype(field)>> || !value.is_null())
+                                check_constraints<T, K>(field, value);
                     }
                 });
             if (!in_order) [[unlikely]]
@@ -6585,7 +6627,8 @@ namespace yyjson
                     {
                         assign_reflected_field(field, value, visitable_field_replaceable<I>(t));
                         if constexpr (constrained_field<T, I>)
-                            if (!value.is_null()) check_constraints<T, I>(field, value);
+                            if (nullable<std::remove_cvref_t<decltype(field)>> || !value.is_null())
+                                check_constraints<T, I>(field, value);
                     }
                 });
             if (!in_order) [[unlikely]]
@@ -20268,10 +20311,11 @@ namespace yyjson
                     }
                     [[maybe_unused]] const bool null = *cur_ == 'n';
                     std::forward<Read>(read)(struct_field<I>(t));
-                    // `merge_field` checks the constraints of a field that it does not reset, and null leaves the
-                    // field as it is in `T()`, which is not checked
+                    // `merge_field` checks the constraints of a field that it does not reset, and null leaves a
+                    // field that cannot hold it as it is in `T()`, which is not checked
                     if constexpr (!Merge && yyjson::detail::constrained_field<T, I>)
-                        if (!null) check_constraints<T, I>(t);
+                        if (yyjson::detail::nullable<std::remove_cvref_t<decltype(struct_field<I>(t))>> || !null)
+                            check_constraints<T, I>(t);
                 }
             }
 
