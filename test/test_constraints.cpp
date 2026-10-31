@@ -2908,6 +2908,86 @@ TEST(Constraints, ValueNotOfNull)
     EXPECT_THROW((void)yyjson::read<NullOrAbove>("5"), yyjson::bad_cast);
 }
 
+// value settings on values that can be of several JSON kinds: each setting constrains the values of its kind
+enum class MultiShade { light, dark };
+struct MultiPoint
+{
+    int x;
+};
+struct MultiKind
+{
+    yyjson::value v;
+    std::variant<std::monostate, int, std::string> w;
+    std::optional<yyjson::any_of<bool, double, std::string, std::vector<yyjson::value>, MultiPoint>> x;
+    yyjson::one_of<int, std::string> y;
+    std::variant<MultiShade, int> s;
+    yyjson::value list;
+    std::vector<yyjson::value> elements;
+};
+template <>
+inline constexpr auto yyjson::annotations<MultiKind> = yyjson::annotate(
+    yyjson::field("v", yyjson::enum_(1, "x", nullptr), yyjson::max_length(3)),
+    yyjson::field("w", yyjson::minimum(0), yyjson::max_length(2)), yyjson::field("x", yyjson::const_("on")),
+    yyjson::field("y", yyjson::not_(yyjson::const_(3))), yyjson::field("s", yyjson::enum_("dark", 3)),
+    yyjson::field("list", yyjson::min_items(2), yyjson::pattern("^a")),
+    yyjson::field("elements", yyjson::items(yyjson::exclusive_maximum(2), yyjson::min_length(1))));
+static_assert(yyjson::detail::value_kinds<yyjson::value>() == yyjson::detail::kind_any);
+static_assert(yyjson::detail::value_kinds<std::variant<MultiShade, int>>() ==
+              (yyjson::detail::kind_string | yyjson::detail::kind_number));
+
+TEST(Constraints, MultiKindValues)
+{
+    // the members of a valid object that `members` does not give
+    const auto json = [](std::string_view members) {
+        auto text = std::string("{") + std::string(members);
+        for (const auto& [key, value] : {std::pair{"v", "1"}, {"w", "1"}, {"y", "1"}, {"s", "\"dark\""}})
+            if (members.find(std::format(R"("{}":)", key)) == std::string_view::npos)
+                text += std::format(R"(,"{}":{})", key, value);
+        return text + "}";
+    };
+    for (const auto members : {R"("v":1.0,"w":null)", R"("v":"x","w":"ab","y":"3")", R"("v":null,"x":"on")",
+                               R"("s":3,"list":"abc","elements":[1,"a",null,{},[]])", R"("list":{"k":1})",
+                               R"("list":[1,2],"w":5)"})
+    {
+        EXPECT_NO_THROW((void)yyjson::read<MultiKind>(json(members))) << members;
+        EXPECT_NO_THROW((void)yyjson::read(json(members)).cast<MultiKind>()) << members;
+    }
+    expect_rejected<MultiKind>(json(R"("v":2)"), R"(the value of the key "v" of MultiKind is not one of)", "/v");
+    expect_rejected<MultiKind>(json(R"("v":[])"), R"(the value of the key "v" of MultiKind is not one of)", "/v");
+    expect_rejected<MultiKind>(json(R"("w":-1)"), "the value of the key \"w\" of MultiKind is less than", "/w");
+    expect_rejected<MultiKind>(json(R"("w":"abc")"), "the value of the key \"w\" of MultiKind is longer", "/w");
+    expect_rejected<MultiKind>(json(R"("x":true)"), "the value of the key \"x\" of MultiKind is not equal", "/x");
+    expect_rejected<MultiKind>(json(R"("x":{"x":1})"), "the value of the key \"x\" of MultiKind is not equal",
+                               "/x");
+    expect_rejected<MultiKind>(json(R"("y":3)"), "the value of the key \"y\" of MultiKind satisfies", "/y");
+    expect_rejected<MultiKind>(json(R"("s":"light")"), "the value of the key \"s\" of MultiKind is not one of",
+                               "/s");
+    expect_rejected<MultiKind>(json(R"("s":4)"), "the value of the key \"s\" of MultiKind is not one of", "/s");
+    expect_rejected<MultiKind>(json(R"("list":[1])"), "the value of the key \"list\" of MultiKind has fewer", "/list");
+    expect_rejected<MultiKind>(json(R"("list":"b")"), "the value of the key \"list\" of MultiKind does not match",
+                               "/list");
+    expect_rejected<MultiKind>(json(R"("elements":[1,2])"), "an element of the value of the key \"elements\"",
+                               "/elements/1");
+    expect_rejected<MultiKind>(json(R"("elements":[""])"), "an element of the value of the key \"elements\"",
+                               "/elements/0");
+
+    auto t = yyjson::read<MultiKind>(json(R"("x":"on")"));
+    EXPECT_NO_THROW(yyjson::validate(t));
+    t.w = std::string("abc");
+    EXPECT_EQ(bad_cast_of([&] { yyjson::validate(t); }).path(), "/w");
+    t.w = std::monostate{};
+    t.x = true;
+    EXPECT_EQ(bad_cast_of([&] { (void)yyjson::write(t, yyjson::strict); }).path(), "/x");
+    t.x = std::nullopt;
+    t.s = MultiShade::light;
+    EXPECT_EQ(bad_cast_of([&] { yyjson::validate(t); }).path(), "/s");
+    t.s = 3;
+    t.v = yyjson::value("x");
+    EXPECT_NO_THROW(yyjson::validate(t));
+    t.v = yyjson::value(1.5);
+    EXPECT_EQ(bad_cast_of([&] { yyjson::validate(t); }).path(), "/v");
+}
+
 // alternatives of yyjson::any_of and yyjson::one_of, with settings given as values and through pointers
 constexpr std::string_view alternative_id_regex = "^[a-z]+$";
 constexpr auto alternative_id_pattern = yyjson::pattern(alternative_id_regex);

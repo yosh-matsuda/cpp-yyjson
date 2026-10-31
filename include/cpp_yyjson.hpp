@@ -8658,47 +8658,128 @@ namespace yyjson
                           "of std::monostate are those of the value that it holds, even though null is read");
         };
 
-        // The constraint of the level `Level` that the value `v` does not satisfy.  The settings of a `Negated` level,
-        // those of `yyjson::not_`, may leave no value to read.
-        template <typename Level, bool Negated = false, typename V>
-        constraint_kind value_constraint_violation(const V& v)
+        // The enumerators of E that the strings of `yyjson::const_` and `yyjson::enum_` of the level
+        // `Level` name, in their order, with none in place of null, of a value of another kind and of a string that
+        // names no enumerator.
+        template <typename Level, typename E>
+        inline constexpr auto named_enumerators = [] {
+            auto result = std::array<std::optional<E>, Level::values.size()>{};
+            for (std::size_t i = 0; i < result.size(); ++i)
+            {
+                if (Level::values[i].kind != json_scalar::kind_t::string) continue;
+                const auto index = enum_index_of_name<E>(Level::values[i].string());
+                if (index != enum_conversion<E>::names.size()) result[i] = field_reflection::enum_values<E>[index];
+            }
+            return result;
+        }();
+
+        // The JSON kinds of the values that a value of a type can hold, as bits, for the settings of a value that
+        // can be of several kinds.  `kind_opaque` is a type whose caster the user defines, whose kinds are unknown.
+        inline constexpr unsigned kind_null = 1;
+        inline constexpr unsigned kind_boolean = 2;
+        inline constexpr unsigned kind_number = 4;
+        inline constexpr unsigned kind_string = 8;
+        inline constexpr unsigned kind_array = 16;
+        inline constexpr unsigned kind_object = 32;
+        inline constexpr unsigned kind_opaque = 64;
+        inline constexpr unsigned kind_any = 63;
+        constexpr unsigned kind_bit(json_scalar::kind_t kind) noexcept
+        {
+            switch (kind)
+            {
+                case json_scalar::kind_t::null:
+                    return kind_null;
+                case json_scalar::kind_t::boolean:
+                    return kind_boolean;
+                case json_scalar::kind_t::number:
+                    return kind_number;
+                default:
+                    return kind_string;
+            }
+        }
+
+        // A value that can be of several JSON kinds, whose settings constrain the values of their kinds only:
+        // `yyjson::value` and a reference to an element of `yyjson::array`, which tell their kinds when they are
+        // checked, and `std::variant`, `yyjson::any_of` and `yyjson::one_of`, but `std::variant` of std::monostate
+        // and one type, which is a value of that type or null.
+        template <typename V>
+        concept multi_kind_dom = dom_kind_of<V> == dom_kind::value || dom_kind_of<V> == dom_kind::value_ref;
+        template <typename V>
+        struct is_multi_kind_variant : std::bool_constant<combined_variant<V>>
+        {
+        };
+        template <typename... Ts>
+        struct is_multi_kind_variant<std::variant<Ts...>> : std::bool_constant<!nullable<std::variant<Ts...>>>
+        {
+        };
+        template <typename V>
+        concept multi_kind_variant = is_multi_kind_variant<V>::value;
+        template <typename V>
+        concept multi_kind = multi_kind_dom<V> || multi_kind_variant<V>;
+
+        template <typename V>
+        consteval unsigned value_kinds()
+        {
+            using U = std::remove_cv_t<V>;
+            if constexpr (std::same_as<U, std::monostate> || std::same_as<U, std::nullptr_t>)
+                return kind_null;
+            else if constexpr (multi_kind_dom<U>)
+                return kind_any;
+            else if constexpr (multi_kind_variant<U>)
+                return []<std::size_t... Is>(std::index_sequence<Is...>) {
+                    return (0u | ... | value_kinds<std::variant_alternative_t<Is, U>>());
+                }(std::make_index_sequence<std::variant_size_v<U>>{});
+            else if constexpr (nullable<U>)
+                return kind_null | value_kinds<typename nullable_holder<U>::value_type>();
+            else if constexpr (dom_kind_of<U> == dom_kind::array)
+                return kind_array;
+            else if constexpr (dom_kind_of<U> == dom_kind::object)
+                return kind_object;
+            else if constexpr (transparent_struct<U>)
+                return value_kinds<struct_field_type<U, 0>>();
+            else if constexpr ((caster_names_from_json<U> || caster_names_to_json<U>) &&
+                               !std::derived_from<caster<U>, builtin_caster>)
+                return kind_opaque;
+            else if constexpr (std::same_as<U, bool>)
+                return kind_boolean;
+            else if constexpr (std::is_arithmetic_v<U>)
+                return kind_number;
+            else if constexpr (std::is_enum_v<U>)
+                return enum_by_name<U> ? kind_string : kind_number;
+            else if constexpr (constraint_string<U>)
+                return kind_string;
+            else if constexpr (constraint_item_range<U> || constraint_tuple<U> || as_array_struct<U>)
+                return kind_array;
+            else
+                return kind_object;
+        }
+
+        // The constraint of the level `Level` that the value `v`, of one JSON kind, does not satisfy, of the settings
+        // of its kind: `yyjson::const_` and `yyjson::enum_` take the values of its kind, numeric bounds
+        // a number, lengths, `yyjson::pattern` and `yyjson::format` a string, and the numbers of items an array.
+        // `value_constraint_violation` rejects at compile time the settings that a field or an element of the type
+        // V does not take.  Of a value of several kinds, `Multi`, the numbers of items do not count the members of a
+        // map, which is an object.
+        template <typename Level, bool Multi = false, typename V>
+        constraint_kind kind_violation(const V& v)
         {
             constexpr const field_constraints& c = Level::constraints;
             constexpr bool numeric = c.has<minimum>() || c.has<maximum>() || c.has<exclusive_minimum>() ||
                                      c.has<exclusive_maximum>() || c.has<multiple_of>();
             constexpr bool text = c.has<min_length>() || c.has<max_length>() || c.has<pattern<>>() || c.has<format<>>();
             constexpr bool items = c.has<min_items>() || c.has<max_items>();
-            static_assert(!numeric || (std::is_arithmetic_v<V> && !std::same_as<V, bool>),
-                          "yyjson::minimum, maximum, exclusive_minimum, exclusive_maximum and multiple_of constrain "
-                          "a field or an element of a number");
-            static_assert(!text || constraint_string<V>,
-                          "yyjson::min_length, max_length, pattern and format constrain a field or an element of a "
-                          "string");
-            static_assert(!items || constraint_items<V>,
-                          "yyjson::min_items and max_items constrain a field or an element of a range");
             constexpr bool listed = c.has<const_<>>() || c.has<enum_<0>>();
-            constexpr bool scalar = std::is_arithmetic_v<V> || constraint_string<V> || enum_by_name<V>;
-            // null, which `level_violation` compares, may stand beside the values of any type
-            constexpr bool of_kind = std::ranges::all_of(Level::values, [](const json_scalar& s) {
-                return s.kind == json_scalar::kind_t::null || (scalar && s.kind == scalar_kind_of<V>);
-            });
-            static_assert(!listed || of_kind,
-                          "yyjson::const_ and yyjson::enum_ constrain a field or an element of a string, "
-                          "a number or a bool, with values of its kind or nullptr, or of an enumeration written by "
-                          "name, with the names of its enumerators or nullptr");
-            if constexpr (!Negated && settings_read_nothing<Level, V>()) (void)settings_leave_no_value<Level, V>{};
-            if constexpr (listed && enum_by_name<V> && of_kind)
+            constexpr std::size_t constants = c.has<const_<>>() ? 1 : 0;
+            if constexpr (value_kinds<V>() == kind_opaque)
+                return constraint_kind::none;
+            else if constexpr (std::is_enum_v<V> && !enum_by_name<V>)
+                return kind_violation<Level, Multi>(static_cast<std::underlying_type_t<V>>(v));
+            else
             {
-                constexpr auto& enumerators = listed_enumerators<Level, V>;
-                static_assert(enumerators.has_value(),
-                              "a string of yyjson::const_ or yyjson::enum_ of an enumeration is not the "
-                              "JSON name of an enumerator of it");
-                if constexpr (enumerators.has_value())
+                if constexpr (listed && enum_by_name<V>)
                 {
-                    const auto equals = [&v](std::size_t i) {
-                        return Level::values[i].kind != json_scalar::kind_t::null && v == (*enumerators)[i];
-                    };
-                    constexpr std::size_t constants = c.has<const_<>>() ? 1 : 0;
+                    constexpr auto& enumerators = named_enumerators<Level, V>;
+                    const auto equals = [&v](std::size_t i) { return enumerators[i] == v; };
                     if constexpr (constants != 0)
                         if (!equals(0)) return constraint_kind::const_;
                     if constexpr (c.has<enum_<0>>())
@@ -8707,66 +8788,70 @@ namespace yyjson
                             return constraint_kind::enum_;
                     }
                 }
-            }
-            else if constexpr (listed)
-            {
-                const auto equals = [&v](const json_scalar& s) {
-                    if constexpr (scalar)
-                        return s.kind != json_scalar::kind_t::null && equals_scalar(v, s);
+                else if constexpr (listed)
+                {
+                    // objects and arrays equal no listed value
+                    const auto equals = [&](const json_scalar& s) {
+                        if constexpr (std::is_arithmetic_v<V> || constraint_string<V>)
+                            return s.kind == scalar_kind_of<V> && equals_scalar(v, s);
+                        else
+                            return false;
+                    };
+                    if constexpr (constants != 0)
+                        if (!equals(Level::values[0])) return constraint_kind::const_;
+                    if constexpr (c.has<enum_<0>>())
+                    {
+                        if (!std::ranges::any_of(std::span(Level::values).subspan(constants), equals))
+                            return constraint_kind::enum_;
+                    }
+                }
+                if constexpr (numeric && std::is_arithmetic_v<V> && !std::same_as<V, bool>)
+                {
+                    if constexpr (c.has<minimum>())
+                        if (!std::is_gteq(compare_bound(v, c.minimum))) return constraint_kind::minimum;
+                    if constexpr (c.has<maximum>())
+                        if (!std::is_lteq(compare_bound(v, c.maximum))) return constraint_kind::maximum;
+                    if constexpr (c.has<exclusive_minimum>())
+                        if (!std::is_gt(compare_bound(v, c.exclusive_minimum)))
+                            return constraint_kind::exclusive_minimum;
+                    if constexpr (c.has<exclusive_maximum>())
+                        if (!std::is_lt(compare_bound(v, c.exclusive_maximum)))
+                            return constraint_kind::exclusive_maximum;
+                    if constexpr (c.has<multiple_of>())
+                        if (!multiple_of_bound(v, c.multiple_of)) return constraint_kind::multiple_of;
+                }
+                if constexpr (text && constraint_string<V>)
+                {
+                    const auto s = static_cast<std::string_view>(v);
+                    if constexpr (c.has<min_length>() || c.has<max_length>())
+                    {
+                        const auto n = code_points(s);
+                        if constexpr (c.has<min_length>())
+                            if (n < c.min_length) return constraint_kind::min_length;
+                        if constexpr (c.has<max_length>())
+                            if (n > c.max_length) return constraint_kind::max_length;
+                    }
+                    if constexpr (c.has<pattern<>>())
+                        if (!matches_pattern<Level>(s)) return constraint_kind::pattern;
+                    if constexpr (c.has<format<>>())
+                        if (!matches_format<Level>(s)) return constraint_kind::format;
+                }
+                if constexpr (items && (constraint_items<V> || constraint_tuple<V>) &&
+                              (!Multi || value_kinds<V>() == kind_array))
+                {
+                    std::size_t n = 0;
+                    if constexpr (constraint_items<V>)
+                        n = static_cast<std::size_t>(std::ranges::distance(v));
                     else
-                        return false;
-                };
-                constexpr std::size_t constants = c.has<const_<>>() ? 1 : 0;
-                if constexpr (constants != 0)
-                    if (!equals(Level::values[0])) return constraint_kind::const_;
-                if constexpr (c.has<enum_<0>>())
-                {
-                    if (!std::ranges::any_of(std::span(Level::values).subspan(constants), equals))
-                        return constraint_kind::enum_;
+                        n = std::tuple_size_v<V>;
+                    if constexpr (c.has<min_items>())
+                        if (n < c.min_items) return constraint_kind::min_items;
+                    if constexpr (c.has<max_items>())
+                        if (n > c.max_items) return constraint_kind::max_items;
                 }
+                return constraint_kind::none;
             }
-            if constexpr (numeric && std::is_arithmetic_v<V> && !std::same_as<V, bool>)
-            {
-                if constexpr (c.has<minimum>())
-                    if (!std::is_gteq(compare_bound(v, c.minimum))) return constraint_kind::minimum;
-                if constexpr (c.has<maximum>())
-                    if (!std::is_lteq(compare_bound(v, c.maximum))) return constraint_kind::maximum;
-                if constexpr (c.has<exclusive_minimum>())
-                    if (!std::is_gt(compare_bound(v, c.exclusive_minimum))) return constraint_kind::exclusive_minimum;
-                if constexpr (c.has<exclusive_maximum>())
-                    if (!std::is_lt(compare_bound(v, c.exclusive_maximum))) return constraint_kind::exclusive_maximum;
-                if constexpr (c.has<multiple_of>())
-                    if (!multiple_of_bound(v, c.multiple_of)) return constraint_kind::multiple_of;
-            }
-            if constexpr (text && constraint_string<V>)
-            {
-                const auto s = static_cast<std::string_view>(v);
-                if constexpr (c.has<min_length>() || c.has<max_length>())
-                {
-                    const auto n = code_points(s);
-                    if constexpr (c.has<min_length>())
-                        if (n < c.min_length) return constraint_kind::min_length;
-                    if constexpr (c.has<max_length>())
-                        if (n > c.max_length) return constraint_kind::max_length;
-                }
-                if constexpr (c.has<pattern<>>())
-                    if (!matches_pattern<Level>(s)) return constraint_kind::pattern;
-                if constexpr (c.has<format<>>())
-                    if (!matches_format<Level>(s)) return constraint_kind::format;
-            }
-            if constexpr (items && constraint_items<V>)
-            {
-                const auto n = static_cast<std::size_t>(std::ranges::distance(v));
-                if constexpr (c.has<min_items>())
-                    if (n < c.min_items) return constraint_kind::min_items;
-                if constexpr (c.has<max_items>())
-                    if (n > c.max_items) return constraint_kind::max_items;
-            }
-            return constraint_kind::none;
         }
-
-        template <typename Level, typename V>
-        constraint_kind structure_violation(const V& v);
 
         // The constraint of the level `Level` that JSON null does not satisfy: `yyjson::const_` and
         // `yyjson::enum_` without `nullptr`, as JSON Schema's `const` and `enum`.  The other settings
@@ -8785,6 +8870,135 @@ namespace yyjson
             return constraint_kind::none;
         }
 
+        // The constraint of the level `Level` that the value `v` of several kinds does not satisfy, by the kind of
+        // the value that it holds: null, which a std::monostate, a std::nullptr_t, an empty holder and JSON null
+        // are, satisfies only the listed values with `nullptr`, and an array or an object only the settings of
+        // other kinds than those of the listed values.
+        template <typename Level, typename V>
+        constraint_kind multi_kind_violation(const V& v)
+        {
+            if constexpr (multi_kind_dom<V>)
+            {
+                if (v.is_null()) return null_violation<Level>();
+                if (v.is_bool()) return kind_violation<Level, true>(*v.as_bool());
+                if (v.is_sint()) return kind_violation<Level, true>(*v.as_sint());
+                if (v.is_uint()) return kind_violation<Level, true>(*v.as_uint());
+                if (v.is_real()) return kind_violation<Level, true>(*v.as_real());
+                if (v.is_string()) return kind_violation<Level, true>(*v.as_string());
+                constexpr const field_constraints& c = Level::constraints;
+                if constexpr (c.has<const_<>>())
+                    return constraint_kind::const_;
+                else if constexpr (c.has<enum_<0>>())
+                    return constraint_kind::enum_;
+                else if constexpr (c.has<min_items>() || c.has<max_items>())
+                {
+                    if (!v.is_array()) return constraint_kind::none;
+                    const auto n = static_cast<std::size_t>(v.as_array()->size());
+                    if constexpr (c.has<min_items>())
+                        if (n < c.min_items) return constraint_kind::min_items;
+                    if constexpr (c.has<max_items>())
+                        if (n > c.max_items) return constraint_kind::max_items;
+                    return constraint_kind::none;
+                }
+                else
+                    return constraint_kind::none;
+            }
+            else
+            {
+                const auto alternative = []<typename A>(const A& a, const auto& self) -> constraint_kind {
+                    if constexpr (std::same_as<A, std::monostate> || std::same_as<A, std::nullptr_t>)
+                        return null_violation<Level>();
+                    else if constexpr (nullable<A>)
+                    {
+                        const auto* held = held_value(a);
+                        return held == nullptr ? null_violation<Level>() : self(*held, self);
+                    }
+                    else if constexpr (multi_kind<A>)
+                        return multi_kind_violation<Level>(a);
+                    else if constexpr (transparent_struct<A>)
+                        return self(struct_field<0>(a), self);
+                    else
+                        return kind_violation<Level, true>(a);
+                };
+                const auto& variant = as_std_variant(v);
+                return [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                    auto k = constraint_kind::none;
+                    (void)((variant.index() == Is ? (k = alternative(*std::get_if<Is>(&variant), alternative), true)
+                                                  : false) ||
+                           ...);
+                    return k;
+                }(std::make_index_sequence<std::variant_size_v<V>>{});
+            }
+        }
+
+        // The constraint of the level `Level` that the value `v` does not satisfy.  The settings of a `Negated` level,
+        // those of `yyjson::not_`, may leave no value to read.  The settings of a value that can be of several JSON
+        // kinds, `multi_kind`, constrain the values of their kinds, as those of JSON Schema do, and need a kind of
+        // the value that they constrain.
+        template <typename Level, bool Negated = false, typename V>
+        constraint_kind value_constraint_violation(const V& v)
+        {
+            constexpr const field_constraints& c = Level::constraints;
+            constexpr bool numeric = c.has<minimum>() || c.has<maximum>() || c.has<exclusive_minimum>() ||
+                                     c.has<exclusive_maximum>() || c.has<multiple_of>();
+            constexpr bool text = c.has<min_length>() || c.has<max_length>() || c.has<pattern<>>() || c.has<format<>>();
+            constexpr bool items = c.has<min_items>() || c.has<max_items>();
+            constexpr bool listed = c.has<const_<>>() || c.has<enum_<0>>();
+            if constexpr (multi_kind<V>)
+            {
+                constexpr auto kinds = value_kinds<V>();
+                constexpr auto may_be = [](unsigned kind) { return (kinds & (kind | kind_opaque)) != 0; };
+                static_assert(!numeric || may_be(kind_number),
+                              "yyjson::minimum, maximum, exclusive_minimum, exclusive_maximum and multiple_of "
+                              "constrain a value of several JSON kinds that can be a number");
+                static_assert(!text || may_be(kind_string),
+                              "yyjson::min_length, max_length, pattern and format constrain a value of several JSON "
+                              "kinds that can be a string");
+                static_assert(!items || may_be(kind_array),
+                              "yyjson::min_items and max_items constrain a value of several JSON kinds that can be "
+                              "an array");
+                static_assert(!listed || std::ranges::any_of(Level::values,
+                                                             [&](const json_scalar& s) {
+                                                                 return may_be(kind_bit(s.kind));
+                                                             }),
+                              "yyjson::const_ and yyjson::enum_ constrain a value of several JSON kinds "
+                              "with a value that it can be");
+                return multi_kind_violation<Level>(v);
+            }
+            else
+            {
+                static_assert(!numeric || (std::is_arithmetic_v<V> && !std::same_as<V, bool>),
+                              "yyjson::minimum, maximum, exclusive_minimum, exclusive_maximum and multiple_of "
+                              "constrain a field or an element of a number");
+                static_assert(!text || constraint_string<V>,
+                              "yyjson::min_length, max_length, pattern and format constrain a field or an element of "
+                              "a string");
+                static_assert(!items || constraint_items<V>,
+                              "yyjson::min_items and max_items constrain a field or an element of a range");
+                constexpr bool scalar = std::is_arithmetic_v<V> || constraint_string<V> || enum_by_name<V>;
+                // null, which `level_violation` compares, may stand beside the values of any type
+                constexpr bool of_kind = std::ranges::all_of(Level::values, [](const json_scalar& s) {
+                    return s.kind == json_scalar::kind_t::null || (scalar && s.kind == scalar_kind_of<V>);
+                });
+                static_assert(!listed || of_kind,
+                              "yyjson::const_ and yyjson::enum_ constrain a field or an element of a "
+                              "string, a number or a bool, with values of its kind or nullptr, or of an enumeration "
+                              "written by name, with the names of its enumerators or nullptr");
+                if constexpr (!Negated && settings_read_nothing<Level, V>()) (void)settings_leave_no_value<Level, V>{};
+                if constexpr (listed && enum_by_name<V> && of_kind)
+                    static_assert(listed_enumerators<Level, V>.has_value(),
+                                  "a string of yyjson::const_ or yyjson::enum_ of an enumeration is not the "
+                                  "JSON name of an enumerator of it");
+                if constexpr (!listed || of_kind)
+                    return kind_violation<Level>(v);
+                else
+                    return constraint_kind::none;
+            }
+        }
+
+        template <typename Level, typename V>
+        constraint_kind structure_violation(const V& v);
+
         // Whether `field` satisfies all the settings of the `yyjson::not_` of the node `NotLevel`, or of one of the
         // `yyjson::not_` after it.  An empty `std::optional` or null is null, as JSON Schema sees it: it satisfies
         // the settings unless `yyjson::const_` or `yyjson::enum_` leave `nullptr` out, and a
@@ -8795,10 +9009,10 @@ namespace yyjson
             using U = constrained_value_t<F>;
             constexpr bool lists_null = std::ranges::any_of(
                 NotLevel::values, [](const json_scalar& s) { return s.kind == json_scalar::kind_t::null; });
-            static_assert(!lists_null || nullable<F>,
+            static_assert(!lists_null || nullable<F> || (value_kinds<U>() & kind_null) != 0,
                           "yyjson::const_(nullptr) and yyjson::enum_ with nullptr in yyjson::not_ "
-                          "constrain a value that can be null: std::optional, a smart pointer, or std::variant of "
-                          "std::monostate");
+                          "constrain a value that can be null: std::optional, a smart pointer, std::variant of "
+                          "std::monostate, or yyjson::value");
             if constexpr (NotLevel::node.type_test != nullptr)
                 static_assert(dom_kind_of<U> != dom_kind::none,
                               "yyjson::is_type<T> in yyjson::not_ tests a value of yyjson::value, yyjson::array or "
@@ -8847,9 +9061,10 @@ namespace yyjson
                           "yyjson::indirect and std::variant of std::monostate hold");
             constexpr bool lists_null = std::ranges::any_of(
                 Level::values, [](const json_scalar& s) { return s.kind == json_scalar::kind_t::null; });
-            static_assert(!lists_null || nullable<F>,
+            static_assert(!lists_null || nullable<F> || (value_kinds<U>() & kind_null) != 0,
                           "yyjson::const_(nullptr) and yyjson::enum_ with nullptr constrain a value that "
-                          "can be null: std::optional, a smart pointer, or std::variant of std::monostate");
+                          "can be null: std::optional, a smart pointer, std::variant of std::monostate, or "
+                          "yyjson::value");
             const U* value = nullptr;
             if constexpr (nullable<F>)
             {
@@ -19679,7 +19894,9 @@ namespace yyjson
         consteval bool settings_read_nothing()
         {
             constexpr auto items = level_counts<Level, min_items, max_items>();
-            if constexpr (constraint_items<V> && items.high < items.low)
+            if constexpr (multi_kind<V>)
+                return false;
+            else if constexpr (constraint_items<V> && items.high < items.low)
                 return true;
             else if constexpr ((Level::constraints.set & (number_settings | length_settings)) == 0)
                 return false;
