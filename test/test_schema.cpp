@@ -479,6 +479,30 @@ inline constexpr auto yyjson::annotations<KwEnum> = yyjson::annotate(
     yyjson::field("tones", yyjson::items(yyjson::enum_("low"))),
     yyjson::if_then_else(yyjson::if_(yyjson::field("mode", yyjson::const_("low"), yyjson::required)),
                          yyjson::then(yyjson::field("level", yyjson::required))));
+// const_ and enum_ of JSON texts: the read schema holds the texts, the write schema what writing them as T gives
+struct KwPoint
+{
+    int x = 0;
+    int y = 0;
+};
+struct KwText
+{
+    KwPoint p{1, 2};
+    std::vector<int> v = {1, 2};
+    std::variant<int, std::vector<int>> w;
+    std::optional<std::vector<double>> ov;
+    yyjson::value any;
+    std::map<std::string, int> m;
+};
+template <>
+inline constexpr auto yyjson::annotations<KwText> = yyjson::annotate(
+    yyjson::field("p", yyjson::const_(yyjson::json_text(R"({"y":2,"x":1})"))),
+    yyjson::field("v", yyjson::enum_(yyjson::json_text("[1,2]"), yyjson::json_text("[3]")),
+                  yyjson::not_(yyjson::const_(yyjson::json_text("[3]")))),
+    yyjson::field("w", yyjson::enum_(yyjson::json_text("0"), yyjson::json_text("[1]"), yyjson::json_text("{}"))),
+    yyjson::field("ov", yyjson::const_(yyjson::json_text("[5]"))),
+    yyjson::field("any", yyjson::enum_(yyjson::json_text(R"({"a":[1,2.0]})"), yyjson::json_text("null"))),
+    yyjson::field("m", yyjson::const_(yyjson::json_text(R"({"b":1,"a":2})"))));
 struct Nul
 {
     std::variant<std::monostate, std::string> code;
@@ -1385,6 +1409,43 @@ TEST(Schema, KwEnum)
     EXPECT_EQ(s["properties"]["tone"]["const"], json("HIGH"));
     EXPECT_EQ(s["properties"]["tones"]["items"]["enum"], json::parse(R"(["low"])"));
     EXPECT_EQ(s["if"]["properties"]["mode"]["const"], json("low"));
+}
+
+TEST(Schema, KwText)
+{
+    check<KwText>({
+        R"({})",
+        R"({"p":{"x":1,"y":2},"v":[1,2],"w":[1],"ov":[5.0],"any":{"a":[1.0,2]},"m":{"a":2,"b":1}})",
+        R"({"p":{"x":1}})",
+        // the value is compared after it is read as T, which drops the keys that T does not know
+        {R"({"p":{"x":1,"y":2,"z":3}})", lenient_read},
+        R"({"v":[3]})",
+        R"({"v":[2,1]})",
+        R"({"w":0})",
+        R"({"w":{}})",
+        R"({"w":[2]})",
+        R"({"ov":[5]})",
+        R"({"ov":[6]})",
+        R"({"any":null})",
+        R"({"any":1})",
+        R"({"m":{"b":1,"a":2}})",
+        R"({"m":{"a":2}})",
+    });
+    // the texts as yyjson writes them, which keeps the order of the keys
+    const auto text = [](const yyjson::object& schema, std::string_view key, std::string_view keyword) {
+        const auto at = [](const auto& value, std::string_view k) { return (*value.as_object())[k]; };
+        return std::string(at(at(at(at(schema["$defs"], "KwText"), "properties"), key), keyword).write());
+    };
+    const auto read = yyjson::json_schema<KwText>();
+    EXPECT_EQ(text(read, "p", "const"), R"({"y":2,"x":1})");
+    EXPECT_EQ(text(read, "w", "enum"), "[0,[1],{}]");
+    const auto write = yyjson::json_schema<KwText>({.direction = yyjson::schema_direction::write});
+    EXPECT_EQ(text(write, "p", "const"), R"({"x":1,"y":2})");
+    EXPECT_EQ(text(write, "v", "not"), R"({"const":[3]})");
+    // the variant writes what its alternatives read of the texts: no alternative reads {}
+    EXPECT_EQ(text(write, "w", "enum"), "[0,[1]]");
+    EXPECT_EQ(text(write, "ov", "const"), "[5.0]");
+    EXPECT_EQ(text(write, "m", "const"), R"({"a":2,"b":1})");
 }
 
 // The constraints hold for the value of a pointer or of a variant with std::monostate, and null passes them.

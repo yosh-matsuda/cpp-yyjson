@@ -11,6 +11,7 @@
 #include <memory>
 #include <optional>
 #include <stdexcept>
+#include <ranges>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -701,6 +702,7 @@ namespace yyjson
                     }
                     else
                         emit_constraints(o, k.constraints, yyjson::detail::multi_kind<T>);
+                    emit_written_texts<T>(o, k.constraints);
                     if (k.type_test != nullptr) emit_type_test(o, *k.type_test);
                 };
                 auto target = out;
@@ -1048,24 +1050,118 @@ namespace yyjson
                 }
                 if (c.has<yyjson::format<>>()) out.emplace("format", c.format());
                 using kind = yyjson::detail::json_scalar::kind_t;
+                // A `yyjson::json_text` is written as it is; `emit` gives the schema of `write` what `write` gives
+                // for it.
                 const auto put = [&](const yyjson::detail::json_scalar& s, auto&& emplace) {
-                    if (s.kind != kind::null)
+                    if (s.kind == kind::json)
+                        emplace(yyjson::read(s.string()), copy_string);
+                    else if (s.kind != kind::null)
                         visit_scalar(s, emplace);
                     else if (with_null)
                         emplace(nullptr);
                 };
                 if (c.has<yyjson::const_<>>())
-                    put(values_[c.constant], [&](auto v) { out.emplace("const", v); });
+                    put(values_[c.constant], [&](const auto&... v) { out.emplace("const", v...); });
                 if (c.has<yyjson::enum_<0>>())
                 {
                     auto values = out.emplace("enum", empty_array);
                     for (std::size_t i = 0; i < c.enum_count; ++i)
-                        put(values_[c.enum_first + i], [&](auto v) { values.emplace_back(v); });
+                        put(values_[c.enum_first + i], [&](const auto&... v) { values.emplace_back(v...); });
                 }
                 if (c.has<yyjson::unique_items_t>()) out.emplace("uniqueItems", true);
                 if (c.has<yyjson::min_contains>()) out.emplace("minContains", c.min_contains);
                 if (c.has<yyjson::max_contains>()) out.emplace("maxContains", c.max_contains);
                 // `satisfies<f>` has no keyword.
+            }
+
+            // Calls `put` with what `write` gives for each value that the text of a `yyjson::json_text` reads into as
+            // the check of a value of T does: a DOM value takes the text as it is, a variant reads it into the
+            // alternative that it holds, and other types read it into T, which must read it.
+            template <typename T, typename F>
+            static void written_json_text(std::string_view text, F&& put)
+            {
+                using U = std::remove_cv_t<T>;
+                if constexpr (yyjson::detail::dom_kind_of<U> != yyjson::detail::dom_kind::none)
+                    put(std::string(std::string_view(yyjson::read(text).write())));
+                else if constexpr (yyjson::detail::multi_kind_variant<U>)
+                {
+                    using V = std::remove_cvref_t<decltype(yyjson::detail::as_std_variant(std::declval<const U&>()))>;
+                    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                        (written_json_alternative<std::variant_alternative_t<Is, V>>(text, put), ...);
+                    }(std::make_index_sequence<std::variant_size_v<V>>{});
+                }
+                else
+                    written_json_value<yyjson::detail::constrained_value_t<U>, false>(text, put);
+            }
+            template <typename A, typename F>
+            static void written_json_alternative(std::string_view text, F&& put)
+            {
+                if constexpr (std::same_as<A, std::monostate> || std::same_as<A, std::nullptr_t>)
+                    ;
+                else if constexpr (yyjson::detail::nullable<A>)
+                    written_json_alternative<yyjson::detail::constrained_value_t<A>>(text, put);
+                else if constexpr (yyjson::detail::multi_kind<A>)
+                    written_json_text<A>(text, put);
+                else if constexpr (yyjson::detail::transparent_struct<A>)
+                    written_json_alternative<
+                        std::remove_cvref_t<decltype(yyjson::detail::struct_field<0>(std::declval<const A&>()))>>(
+                        text, put);
+                else
+                    written_json_value<A, true>(text, put);
+            }
+            template <typename T, bool Multi, typename F>
+            static void written_json_value(std::string_view text, F&& put)
+            {
+                using R = std::conditional_t<yyjson::detail::constraint_string<T>, std::string, T>;
+                if constexpr (readable<R> && writable<R>)
+                    if (const auto v = yyjson::detail::read_json_text<R, Multi>(text))
+                        put(std::string(std::string_view(yyjson::write(*v))));
+            }
+            // Gives the schema of `write` what `write` gives for the values of `yyjson::const_` and `yyjson::enum_`
+            // that are `yyjson::json_text`, which the check of a value of T reads.  A constant that reads into
+            // values written differently, as an alternative of a variant each, lists them.
+            template <typename T>
+            void emit_written_texts(object_ref out, const yyjson::detail::field_constraints& c) const
+            {
+                using kind = yyjson::detail::json_scalar::kind_t;
+                const auto json = [&](std::size_t i) { return values_[i].kind == kind::json; };
+                const bool constant = c.has<yyjson::const_<>>() && json(c.constant);
+                const bool listed = c.has<yyjson::enum_<0>>() &&
+                                    std::ranges::any_of(std::views::iota(c.enum_first, c.enum_first + c.enum_count),
+                                                        json);
+                if (!writing() || (!constant && !listed)) return;
+                const auto texts = [&](std::size_t first, std::size_t count) {
+                    auto result = std::vector<std::string>();
+                    const auto add = [&](std::string t) {
+                        if (std::ranges::find(result, t) == result.end()) result.push_back(std::move(t));
+                    };
+                    for (auto i = first; i < first + count; ++i)
+                    {
+                        if (json(i))
+                            written_json_text<T>(values_[i].string(), add);
+                        else if (values_[i].kind == kind::null && yyjson::detail::multi_kind<T>)
+                            add("null");
+                    }
+                    return result;
+                };
+                const auto list = [](object_ref o, const std::vector<std::string>& ts) {
+                    auto values = o.emplace("enum", empty_array);
+                    for (const auto& t : ts) values.emplace_back(yyjson::read(t), copy_string);
+                };
+                if (listed)
+                {
+                    out.erase("enum");
+                    list(out, texts(c.enum_first, c.enum_count));
+                }
+                if (constant)
+                {
+                    out.erase("const");
+                    const auto ts = texts(c.constant, 1);
+                    if (ts.size() == 1)
+                        out.emplace("const", yyjson::read(ts.front()), copy_string);
+                    else
+                        list(out.contains("enum") ? all_of(out).emplace_back(empty_object) : out, ts);
+                }
             }
 
             // The double whose shortest text is what `yyjson::write` writes of f.
@@ -1118,18 +1214,23 @@ namespace yyjson
                 }
                 else
                     out.emplace("not", empty_object);
-                // A listed `nullptr` belongs to the null branch beside the value.
-                const auto number = [&](std::size_t i) {
-                    return values_[i].kind != yyjson::detail::json_scalar::kind_t::null;
+                // A listed `nullptr` belongs to the null branch beside the value.  A `yyjson::json_text` is written
+                // as it is, as `emit_constraints` does.
+                using value_kind = yyjson::detail::json_scalar::kind_t;
+                const auto put = [&](std::size_t i, auto&& emplace) {
+                    if (values_[i].kind == value_kind::json)
+                        emplace(yyjson::read(values_[i].string()), copy_string);
+                    else if (values_[i].kind != value_kind::null)
+                        emplace(written_real(rounded(values_[i].number)));
                 };
-                if (n != nullptr && n->constraints.has<yyjson::const_<>>() && number(n->constraints.constant))
-                    out.emplace("const", written_real(rounded(values_[n->constraints.constant].number)));
+                if (n != nullptr && n->constraints.has<yyjson::const_<>>())
+                    put(n->constraints.constant, [&](const auto&... v) { out.emplace("const", v...); });
                 if (n != nullptr && n->constraints.has<yyjson::enum_<0>>())
                 {
                     auto values = out.emplace("enum", empty_array);
                     const auto first = n->constraints.enum_first;
                     for (std::size_t i = first; i < first + n->constraints.enum_count; ++i)
-                        if (number(i)) values.emplace_back(written_real(rounded(values_[i].number)));
+                        put(i, [&](const auto&... v) { values.emplace_back(v...); });
                 }
                 emit_constraints(out, rest);
             }
@@ -1367,6 +1468,7 @@ namespace yyjson
                 emit_builtin<T>(out, nodes, node);
             if constexpr (std::same_as<T, std::remove_cvref_t<T>>)
             {
+                if (n != nullptr && settles<T>()) emit_written_texts<T>(out, n->constraints);
                 if (n != nullptr && n->type_test != nullptr) emit_type_test(out, *n->type_test);
                 if (n != nullptr && n->negated != 0 && settles<T>()) emit_negated<T>(out, nodes, n->negated);
                 static_assert(std::is_enum_v<T> || struct_type<T> || is_variant<T>::value ||
