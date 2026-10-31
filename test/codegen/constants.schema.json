@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Plot",
+  "type": "object",
+  "properties": {
+    "origin": {"$ref": "#/$defs/Coord", "const": {"x": 0, "y": 0}},
+    "corner": {"$ref": "#/$defs/Coord", "enum": [{"x": 0, "y": 0}, {"x": 1, "y": 1}]},
+    "scale": {"type": ["array", "null"], "items": {"type": "number"}, "enum": [[1, 1], [2, 2], null]},
+    "style": {"enum": ["solid", {"dash": [2, 1]}]},
+    "ticks": {"oneOf": [{"type": "integer"}, {"type": "array", "const": [0, 5, 10]}]},
+    "meta": {"const": {"version": 1, "tags": ["a", "b"]}}
+  },
+  "required": ["origin", "meta"],
+  "$defs": {
+    "Coord": {
+      "type": "object",
+      "properties": {"x": {"type": "integer"}, "y": {"type": "integer"}},
+      "required": ["x", "y"]
+    }
+  }
+}

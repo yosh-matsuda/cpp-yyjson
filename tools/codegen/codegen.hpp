@@ -2915,7 +2915,7 @@ namespace cpp_yyjson_codegen
                 if (s->has("const") || s->has("enum"))
                 {
                     if (!nots.empty()) return type_listed_not(s0, *s, nots, loc, hint, named);
-                    return s->has("const") ? type_const(*s, loc) : type_enum(s0, *s, loc, hint, named);
+                    return s->has("const") ? type_const(s0, *s, loc, hint, named) : type_enum(s0, *s, loc, hint, named);
                 }
                 auto types = types_of(*s, loc);
                 auto nullable = std::erase(types, "null") > 0;
@@ -5893,7 +5893,7 @@ namespace cpp_yyjson_codegen
                     return no_value();
                 }
                 if (kept.size() == values.size())
-                    return c != nullptr ? type_const(s, loc) : type_enum(s0, s, loc, hint, named);
+                    return c != nullptr ? type_const(s0, s, loc, hint, named) : type_enum(s0, s, loc, hint, named);
                 auto copy = s;
                 copy.erase("const");
                 copy.set("enum", json::array_of(std::move(kept)));
@@ -5901,7 +5901,8 @@ namespace cpp_yyjson_codegen
                 return type_enum(s0, *p, loc, hint, named);
             }
 
-            typed type_const(const json& s, const std::string& loc)
+            typed type_const(const json* s0, const json& s, const std::string& loc, const std::string& hint,
+                             bool named)
             {
                 const auto& c = *s.find("const");
                 auto r = typed();
@@ -5938,10 +5939,87 @@ namespace cpp_yyjson_codegen
                         r.s.constraints.push_back({"yyjson::const_(" + cpp_string(c.text) + ")", "const", c});
                         return r;
                     default:
-                        warn(loc,
-                             "`const` of an object or an array is not supported; the value is read as any JSON value");
-                        return {};
+                        return type_json_values(s0, s, {c}, loc, hint, named);
                 }
+            }
+
+            // the type of `const` / `enum` whose values `values` include an object or an array: the type of the
+            // schema without them when every value other than null is an object, or every one an array, and
+            // yyjson::value otherwise, with yyjson::const_ / yyjson::enum_ of the values as yyjson::json_text
+            typed type_json_values(const json* s0, const json& s, std::vector<json> values, const std::string& loc,
+                                   const std::string& hint, bool named)
+            {
+                const auto nullable = std::erase_if(values, [](const json& v) { return v.is_null(); }) > 0;
+                const auto objects = std::ranges::all_of(values, [](const json& v) { return v.is_object(); });
+                const auto arrays = std::ranges::all_of(values, [](const json& v) { return v.is_array(); });
+                auto r = typed();
+                if (objects || arrays)
+                {
+                    auto copy = s;
+                    copy.erase("const");
+                    copy.erase("enum");
+                    auto kind = json();
+                    kind.k = json::kind::string;
+                    kind.text = objects ? "object" : "array";
+                    copy.set("type", std::move(kind));
+                    r = type_kind(objects ? "object" : "array", s0, *store_merged(std::move(copy)), loc, hint, named,
+                                  false);
+                }
+                else if (nullable)
+                    values.push_back(json());
+                // the values that the type reads; reading a value whose fit is not known throws when the text of
+                // the constant is read
+                auto kept = std::vector<json>();
+                auto dropped = 0;
+                for (auto& v : values)
+                {
+                    const auto f = v.is_null() ? fit::yes : fits(v, r.t, r.s);
+                    if (f == fit::no)
+                        ++dropped;
+                    else
+                    {
+                        if (f == fit::unknown)
+                            warn(loc, "whether the type reads the value " + dump(v) +
+                                          " is not known; if it does not, the first read of the type throws "
+                                          "std::invalid_argument");
+                        kept.push_back(std::move(v));
+                    }
+                }
+                if (dropped > 0)
+                    warn(loc, (dropped == 1 ? std::string("a value") : std::to_string(dropped) + " values") +
+                                  " of `const` / `enum` " + (dropped == 1 ? "does" : "do") +
+                                  " not satisfy the other keywords of the schema, which reject " +
+                                  (dropped == 1 ? "it" : "them") + "; the generated code leaves " +
+                                  (dropped == 1 ? "it" : "them") + " out");
+                if (std::ranges::none_of(kept, [](const json& v) { return !v.is_null(); }))
+                {
+                    if (nullable) return {make(tk::null), {}};
+                    warn(loc, "no value of `const` / `enum` satisfies the other keywords of the schema: the schema "
+                              "accepts no value, and reading it always fails");
+                    return no_value();
+                }
+                r.s.constraints.push_back(listed_texts(kept));
+                if (!nullable || r.t.k == tk::any) return r;
+                list_null(r.s);
+                return make_nullable(std::move(r));
+            }
+
+            // a JSON value as yyjson::json_text
+            static std::string json_text_literal(const json& v)
+            {
+                return "yyjson::json_text(" + detail::quoted(dump(v)) + ")";
+            }
+
+            // yyjson::const_ of one value, or yyjson::enum_ of several, written as yyjson::json_text
+            static settings::constraint listed_texts(const std::vector<json>& values)
+            {
+                const auto null = std::ranges::any_of(values, [](const json& v) { return v.is_null(); });
+                if (values.size() == 1)
+                    return {"yyjson::const_(" + json_text_literal(values[0]) + ")", "const", values[0], null};
+                auto text = std::string("yyjson::enum_(");
+                for (auto first = true; const auto& v : values)
+                    text += (std::exchange(first, false) ? "" : ", ") + json_text_literal(v);
+                return {text + ")", "enum", json::array_of(values), null};
             }
 
             typed make_enum(const json* s0, const json& s, const std::vector<std::string>& values,
@@ -5980,7 +6058,15 @@ namespace cpp_yyjson_codegen
                 auto strings = std::vector<std::string>();
                 auto numbers = std::vector<const json*>();
                 auto bools = std::vector<bool>();
-                for (const auto* p : typed_values(e.items, type_list(s), "enum", loc))
+                const auto values = typed_values(e.items, type_list(s), "enum", loc);
+                if (std::ranges::any_of(values, [](const json* v) { return v->is_object() || v->is_array(); }))
+                {
+                    auto all = std::vector<json>();
+                    for (const auto* v : values)
+                        if (std::ranges::none_of(all, [&](const json& x) { return equal(x, *v); })) all.push_back(*v);
+                    return type_json_values(s0, s, std::move(all), loc, hint, named);
+                }
+                for (const auto* p : values)
                 {
                     const auto& v = *p;
                     if (v.is_null())
@@ -5992,12 +6078,6 @@ namespace cpp_yyjson_codegen
                     else if (v.is_bool())
                     {
                         if (std::ranges::find(bools, v.b) == bools.end()) bools.push_back(v.b);
-                    }
-                    else
-                    {
-                        warn(loc,
-                             "`enum` with an object or an array is not supported; the value is read as any JSON value");
-                        return {};
                     }
                 }
                 auto alts = std::vector<typed>();
@@ -6053,12 +6133,17 @@ namespace cpp_yyjson_codegen
             }
 
             // yyjson::const_ and yyjson::enum_ reject null unless they list it: a nullable value whose
-            // values they fix lists nullptr beside them
+            // values they fix lists nullptr beside them, or the JSON text null beside JSON texts
             static void list_null(settings& s)
             {
                 for (auto& c : s.constraints)
                 {
-                    if (c.text.starts_with("yyjson::const_("))
+                    if (c.text.starts_with("yyjson::const_(yyjson::json_text("))
+                        c.text = "yyjson::enum_(" + c.text.substr(15, c.text.size() - 16) +
+                                 ", yyjson::json_text(\"null\"))";
+                    else if (c.text.starts_with("yyjson::enum_(yyjson::json_text("))
+                        c.text.insert(c.text.size() - 1, ", yyjson::json_text(\"null\")");
+                    else if (c.text.starts_with("yyjson::const_("))
                         c.text = "yyjson::enum_(" + c.text.substr(15, c.text.size() - 16) + ", nullptr)";
                     else if (c.text.starts_with("yyjson::enum_("))
                         c.text.insert(c.text.size() - 1, ", nullptr");
@@ -6859,18 +6944,26 @@ namespace cpp_yyjson_codegen
                 const auto listed = n.has("const") || n.has("enum");
                 if ((kinds & ~allowed) != 0 && !listed) return std::nullopt;
                 auto out = settings();
-                // a literal of a listed value; "" for a value that the type or `type` leaves out, nothing for an
-                // object or an array that the value can be
+                const auto kind_of = [](const json& v) {
+                    return v.is_null()                        ? kind_null
+                           : v.is_bool()                      ? kind_boolean
+                           : v.is_number() && v.is_integral() ? kind_integer
+                           : v.is_number()                    ? kind_real
+                           : v.is_string()                    ? kind_string
+                           : v.is_array()                     ? kind_array
+                                                              : kind_object;
+                };
+                // an object or an array among the values that the value can be: every value as yyjson::json_text
+                auto texts = false;
+                for (const auto* keyword : {"const", "enum"})
+                    if (const auto* l = n.find(keyword); l != nullptr)
+                        for (const auto& v : *keyword == 'c' || !l->is_array() ? std::span(l, 1) : std::span(l->items))
+                            texts = texts || ((v.is_array() || v.is_object()) && (kinds & allowed & kind_of(v)) != 0);
+                // a literal of a listed value; "" for a value that the type or `type` leaves out
                 const auto lit = [&](const json& v) -> std::optional<std::string> {
-                    const auto kind = v.is_null()                       ? kind_null
-                                      : v.is_bool()                     ? kind_boolean
-                                      : v.is_number() && v.is_integral() ? kind_integer
-                                      : v.is_number()                   ? kind_real
-                                      : v.is_string()                   ? kind_string
-                                      : v.is_array()                    ? kind_array
-                                                                        : kind_object;
+                    const auto kind = kind_of(v);
                     if ((kinds & allowed & kind) == 0) return "";
-                    if (kind == kind_array || kind == kind_object) return std::nullopt;
+                    if (texts) return json_text_literal(v);
                     if (kind == kind_null) return "nullptr";
                     if (kind == kind_boolean) return v.b ? "true" : "false";
                     if (kind == kind_string) return cpp_string(v.text);
@@ -6999,9 +7092,24 @@ namespace cpp_yyjson_codegen
                 auto out = settings();
                 const auto scalar =
                     t.k == tk::string || t.k == tk::boolean || is_integer_kind(t.k) || is_float_kind(t.k);
-                if (n->has("const") || n->has("enum"))
+                if ((n->has("const") || n->has("enum")) && !scalar && !is_enum)
                 {
-                    if (!scalar && !is_enum) return std::nullopt;
+                    // the values that the type reads, as JSON text
+                    for (const auto* keyword : {"const", "enum"})
+                    {
+                        const auto* l = n->find(keyword);
+                        if (l == nullptr) continue;
+                        if (*keyword == 'e' && (!l->is_array() || l->items.empty())) return std::nullopt;
+                        auto kept = std::vector<json>();
+                        for (const auto& v : *keyword == 'c' ? std::span(l, 1) : std::span(l->items))
+                            if (v.is_null() ? may_be_null(target) : fits(v, t, settings()) != fit::no)
+                                kept.push_back(v);
+                        if (kept.empty()) return std::nullopt;
+                        out.constraints.push_back(listed_texts(kept));
+                    }
+                }
+                else if (n->has("const") || n->has("enum"))
+                {
                     // null is read into a nullable value, and the settings reject it unless they list it
                     const auto null = may_be_null(target) && accepts_null(*n);
                     const auto c = is_enum ? enumerator_constraints(*n, t, null) : value_constraints(*n, t.k, null);
@@ -7170,6 +7278,18 @@ namespace cpp_yyjson_codegen
                 {
                     if (c.keyword == "const") ++values;
                     if (c.keyword == "enum" && c.value.is_array()) values += c.value.items.size();
+                    // the text of yyjson::json_text, and null that list_null() adds
+                    if (c.text.find("yyjson::json_text(") != std::string::npos)
+                    {
+                        for (const auto& v : c.keyword == "const" ? std::span(&c.value, 1) : std::span(c.value.items))
+                            chars += dump(v).size();
+                        if (c.null && !(c.keyword == "const" ? c.value.is_null()
+                                                             : std::ranges::any_of(c.value.items, [](const json& v) {
+                                                                   return v.is_null();
+                                                               })))
+                            chars += 4;
+                        continue;
+                    }
                     if (c.value.is_string()) chars += c.value.text.size();
                     if (c.value.is_array())
                         for (const auto& v : c.value.items)
@@ -7945,6 +8065,21 @@ namespace cpp_yyjson_codegen
                 return r;
             }
 
+            // yyjson::const_ / yyjson::enum_ of a value that is not a scalar: JSON values compared as JSON
+            static fit fits_listed(const json& j, const settings& s)
+            {
+                for (const auto& c : s.constraints)
+                {
+                    if (c.keyword != "const" && c.keyword != "enum") continue;
+                    if (j.is_null() && c.null) continue;
+                    if (c.keyword == "const" ? !equal(j, c.value)
+                                             : std::ranges::none_of(c.value.items,
+                                                                    [&](const json& e) { return equal(j, e); }))
+                        return fit::no;
+                }
+                return fit::yes;
+            }
+
             fit fits_struct(const json& j, const decl& d) const
             {
                 if (d.transparent) return fits(j, d.fields[0].type, d.fields[0].set);
@@ -8066,9 +8201,9 @@ namespace cpp_yyjson_codegen
                 switch (t.k)
                 {
                     case tk::any:
-                        return fit::yes;
+                        return fits_listed(j, s);
                     case tk::object:
-                        return j.is_object() ? fit::yes : fit::no;
+                        return j.is_object() ? fits_listed(j, s) : fit::no;
                     case tk::null:
                     case tk::monostate:
                         return j.is_null() ? fit::yes : fit::no;
@@ -8093,14 +8228,15 @@ namespace cpp_yyjson_codegen
                     {
                         const auto& d = decls_[t.decl];
                         if (d.kind == decl::kind_t::alias) return fits(j, d.target, s);
-                        if (d.kind == decl::kind_t::structure) return fits_struct(j, d);
+                        if (d.kind == decl::kind_t::structure)
+                            return fits_listed(j, s) == fit::no ? fit::no : fits_struct(j, d);
                         return scalar(j.is_string() && std::ranges::any_of(d.enumerators, [&](const auto& e) {
                                           return e.second == j.text;
                                       }));
                     }
                     case tk::vector:
                     {
-                        if (!j.is_array()) return fit::no;
+                        if (!j.is_array() || fits_listed(j, s) == fit::no) return fit::no;
                         if ((s.min_items && j.items.size() < *s.min_items) ||
                             (s.max_items && j.items.size() > *s.max_items))
                             return fit::no;
@@ -8129,7 +8265,7 @@ namespace cpp_yyjson_codegen
                     }
                     case tk::map:
                     {
-                        if (!j.is_object()) return fit::no;
+                        if (!j.is_object() || fits_listed(j, s) == fit::no) return fit::no;
                         auto r = fit::yes;
                         for (const auto& [k, v] : j.members)
                         {
@@ -8146,7 +8282,8 @@ namespace cpp_yyjson_codegen
                     }
                     case tk::tuple:
                     {
-                        if (!j.is_array() || j.items.size() != t.args.size()) return fit::no;
+                        if (!j.is_array() || j.items.size() != t.args.size() || fits_listed(j, s) == fit::no)
+                            return fit::no;
                         auto r = fit::yes;
                         for (std::size_t i = 0; i < t.args.size(); ++i)
                             if ((r = std::min(r, fits(j.items[i], t.args[i], at(s.prefix, i)))) == fit::no) return r;
@@ -8157,6 +8294,7 @@ namespace cpp_yyjson_codegen
                         if (t.combined == combination::one_of)
                         {
                             // exactly one alternative reads the value
+                            if (fits_listed(j, s) == fit::no) return fit::no;
                             auto yes = 0;
                             auto unknown = false;
                             for (std::size_t i = 0; i < t.args.size(); ++i)
@@ -8170,6 +8308,7 @@ namespace cpp_yyjson_codegen
                         }
                         // the settings of a nullable variant are those of its value; the alternatives of yyjson::any_of
                         // have their own, and those of the others none
+                        if (!is_nullable(t) && fits_listed(j, s) == fit::no) return fit::no;
                         auto r = fit::no;
                         for (std::size_t i = 0; i < t.args.size(); ++i)
                             r = std::max(r, fits(j, t.args[i], is_nullable(t) ? s : at(t.sets, i)));

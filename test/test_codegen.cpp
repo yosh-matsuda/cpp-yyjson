@@ -2379,6 +2379,52 @@ TEST(Codegen, AllOfValues)
                             "yyjson::min_contains(2)));\n"));
 }
 
+TEST(Codegen, JsonValues)
+{
+    // `const` and `enum` of objects and arrays become yyjson::json_text; the type follows the values, null among
+    // them makes it nullable, values of several kinds read as yyjson::value
+    const auto* schema = R"j({"type": "object", "properties": {
+        "a": {"const": {"k": [1, "x"]}},
+        "b": {"type": ["array", "null"], "enum": [[1, 2], [3], null]},
+        "c": {"enum": [1, "s", {"k": 1}]},
+        "d": {"type": "string", "enum": ["x", [1]]},
+        "e": {"type": "array", "items": {"type": "string", "pattern": "^a"}, "enum": [["a"], ["b"]]},
+        "f": {"oneOf": [{"type": "integer"}, {"type": "array", "items": {"type": "integer"}, "const": [0, 5]}]},
+        "g": {"type": "array", "prefixItems": [{"const": [1]}, {"const": ["a)"]}], "items": {"type": "array"}}
+    }, "required": ["a"]})j";
+    const auto r = generate(schema, {});
+    EXPECT_EQ(warnings(r), "#/properties/d: a value of `enum` is not of the `type` beside it, which the schema rejects "
+                           "and the generated code leaves out\n"
+                           "#/properties/e: whether the type reads the value [\"a\"] is not known; if it does not, the "
+                           "first read of the type throws std::invalid_argument\n"
+                           "#/properties/e: whether the type reads the value [\"b\"] is not known; if it does not, the "
+                           "first read of the type throws std::invalid_argument\n");
+    EXPECT_TRUE(has(r.code, "inline constexpr auto Root_f_1_const = yyjson::const_(yyjson::json_text(\"[0,5]\"));\n"));
+    EXPECT_TRUE(has(r.code, "    yyjson::object a = yyjson::object(yyjson::read(R\"({\"k\":[1,\"x\"]})\"));\n"
+                            "    std::optional<std::variant<std::monostate, std::vector<yyjson::value>>> b;\n"
+                            "    std::optional<yyjson::value> c;\n    std::optional<RootD> d;\n"
+                            "    std::optional<std::vector<std::string>> e;\n"
+                            "    std::optional<yyjson::one_of<std::int64_t, yyjson::alt<std::vector<std::int64_t>, "
+                            "&Root_f_1_const>>> f;\n"));
+    EXPECT_TRUE(has(r.code, "    yyjson::field(\"a\", yyjson::required, yyjson::const_(yyjson::json_text(R\"({\"k\":[1,"
+                            "\"x\"]})\"))),\n"
+                            "    yyjson::field(\"b\", yyjson::enum_(yyjson::json_text(\"[1,2]\"), yyjson::json_text("
+                            "\"[3]\"), yyjson::json_text(\"null\"))),\n"
+                            "    yyjson::field(\"c\", yyjson::enum_(yyjson::json_text(\"1\"), yyjson::json_text(R\"("
+                            "\"s\")\"), yyjson::json_text(R\"({\"k\":1})\"))),\n"));
+    // a raw string literal takes a delimiter when the text holds `)"`
+    EXPECT_TRUE(has(r.code, "yyjson::const_(yyjson::json_text(R\"j0([\"a)\"])j0\"))"));
+    const auto c = generate(schema, {.cpp26 = true});
+    EXPECT_TRUE(has(c.code, "yyjson::alt<std::vector<std::int64_t>, yyjson::const_(yyjson::json_text(\"[0,5]\"))>"));
+
+    // the text of a prefixItems position over 256 characters is a std::string_view before C++26
+    const auto long_text = std::string(300, 'L');
+    const auto p = generate(R"({"type": "array", "prefixItems": [{"const": [")" + long_text +
+                                R"("]}], "items": {"type": "array"}})",
+                            {});
+    EXPECT_TRUE(has(p.code, "yyjson::json_text(std::string_view(R\"([\"" + long_text + "\"])\"))"));
+}
+
 TEST(Codegen, FalseProperties)
 {
     // a property whose schema is `false`, also through a reference or matched by a pattern, is a key that an object

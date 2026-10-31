@@ -23,6 +23,7 @@ struct yyjson::pattern_matcher<>
 
 #include "alternatives.hpp"
 #include "conditions.hpp"
+#include "constants.hpp"
 #include "contains.hpp"
 #include "defaults.hpp"
 #include "invoice.hpp"
@@ -353,6 +354,37 @@ TEST(CodegenCMake, Rejections)
     auto gate = model::Gate();
     gate.pattern1.emplace("x-a", yyjson::value(1));
     EXPECT_THROW(yyjson::validate(gate), yyjson::bad_cast);
+}
+
+TEST(CodegenCMake, Constants)
+{
+    // `const` and `enum` of objects and arrays are yyjson::json_text, compared as JSON values: key order does not
+    // count, 0 equals 0.0
+    for (const auto* json : {R"({"origin":{"x":0,"y":0},"meta":{"version":1,"tags":["a","b"]}})",
+                             R"({"origin":{"y":0,"x":0},"corner":{"x":1,"y":1},"scale":[2,2],"style":"solid",)"
+                             R"("ticks":[0,5,10],"meta":{"tags":["a","b"],"version":1.0}})",
+                             R"({"origin":{"x":0,"y":0},"scale":null,"style":{"dash":[2,1]},"ticks":3,)"
+                             R"("meta":{"version":1,"tags":["a","b"]}})"})
+    {
+        const auto plot = yyjson::read<model::Plot>(json, yyjson::strict);
+        EXPECT_NO_THROW(yyjson::validate(plot)) << json;
+        EXPECT_NO_THROW((void)yyjson::read<model::Plot>(yyjson::write(plot), yyjson::strict)) << json;
+    }
+    for (const auto* json : {R"({"origin":{"x":1,"y":0},"meta":{"version":1,"tags":["a","b"]}})",
+                             R"({"origin":{"x":0,"y":0},"meta":{"version":1,"tags":["b","a"]}})",
+                             R"({"origin":{"x":0,"y":0},"meta":{"version":1,"tags":["a","b"],"x":1}})",
+                             R"({"origin":{"x":0,"y":0},"corner":{"x":2,"y":2},"meta":{"version":1,"tags":["a","b"]}})",
+                             R"({"origin":{"x":0,"y":0},"scale":[1,2],"meta":{"version":1,"tags":["a","b"]}})",
+                             R"({"origin":{"x":0,"y":0},"style":"dotted","meta":{"version":1,"tags":["a","b"]}})",
+                             R"({"origin":{"x":0,"y":0},"ticks":[0,5],"meta":{"version":1,"tags":["a","b"]}})"})
+        EXPECT_THROW((void)yyjson::read<model::Plot>(json), yyjson::bad_cast) << json;
+
+    // the initializers of required members hold the constants
+    EXPECT_EQ(std::string_view(yyjson::write(model::Plot())),
+              R"({"origin":{"x":0,"y":0},"meta":{"version":1,"tags":["a","b"]}})");
+    auto plot = model::Plot();
+    plot.scale = std::vector<double>{1, 2};
+    EXPECT_THROW(yyjson::validate(plot), yyjson::bad_cast);
 }
 
 TEST(CodegenCMake, Positions)
