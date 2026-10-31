@@ -11729,9 +11729,10 @@ namespace yyjson
         // Whether `a` and `b` are written as the same JSON value, which `yyjson::unique_items` and
         // `yyjson::omit_default` compare.  The values that the writer converts itself are compared by their
         // parts: a struct by its fields, and not by its `operator==`; a range by its elements in their order, or as
-        // a set when it is unordered; a tuple by its elements; a variant by its alternative and value; a holder by
-        // the value that it holds, an empty one being equal only to an empty one.  Others, such as numbers,
-        // strings, JSON values and the types that a caster of the user converts, are compared by `operator==`.
+        // a set when it is unordered or written as a JSON object; a tuple by its elements; a variant by its
+        // alternative and value; a holder by the value that it holds, an empty one being equal only to an empty
+        // one.  Others, such as numbers, strings, JSON values and the types that a caster of the user converts, are
+        // compared by `operator==`.
         template <typename T>
         bool json_equal(const T& a, const T& b)
         {
@@ -11792,7 +11793,9 @@ namespace yyjson
                     if (std::ranges::size(a) != std::ranges::size(b)) return false;
                 using E = std::remove_cvref_t<std::ranges::range_reference_t<const U>>;
                 const auto eq = [](const E& x, const E& y) { return json_equal(x, y); };
-                if constexpr (requires { typename U::hasher; })
+                // a JSON object does not order its keys
+                if constexpr (requires { typename U::hasher; } ||
+                              key_value_like<std::remove_cv_t<std::ranges::range_value_t<const U>>>)
                     return std::ranges::is_permutation(a, b, eq);
                 else
                     return std::ranges::equal(a, b, eq);

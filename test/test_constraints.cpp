@@ -275,13 +275,14 @@ struct UniqueParts
     std::vector<UniqueLoose> loose;
     std::vector<UniqueTree> trees;
     std::vector<std::unordered_map<std::string, int>> maps;
+    std::vector<std::vector<std::pair<std::string, int>>> pairs;
     std::vector<std::tuple<int, std::string>> tuples;
 };
 template <>
 inline constexpr auto yyjson::annotations<UniqueParts> = yyjson::annotate(
     yyjson::field("boxes", yyjson::unique_items), yyjson::field("loose", yyjson::unique_items),
     yyjson::field("trees", yyjson::unique_items), yyjson::field("maps", yyjson::unique_items),
-    yyjson::field("tuples", yyjson::unique_items));
+    yyjson::field("pairs", yyjson::unique_items), yyjson::field("tuples", yyjson::unique_items));
 
 bool is_lower(const std::string& s)
 {
@@ -1188,6 +1189,9 @@ TEST(Constraints, UniqueItems)
         R"({"trees":[{"v":1,"kids":[{"v":2,"kids":[]}]},{"v":1,"kids":[{"v":2,"kids":[]}]}]})", parts("trees"),
         "/trees/1");
     expect_rejected<UniqueParts>(R"({"maps":[{"a":1,"b":2,"c":3},{"c":3,"b":2,"a":1}]})", parts("maps"), "/maps/1");
+    // a range of key-value pairs is written as an object, whose members have no order
+    EXPECT_EQ(yyjson::read<UniqueParts>(R"({"pairs":[{"a":1,"b":2},{"a":1,"b":3}]})").pairs.size(), 2);
+    expect_rejected<UniqueParts>(R"({"pairs":[{"a":1,"b":2},{"b":2,"a":1}]})", parts("pairs"), "/pairs/1");
     // a range of tuples is sorted from 17 elements on
     auto tuples = std::string(R"({"tuples":[)");
     for (auto i = 0; i < 20; ++i) tuples += std::format(R"([{},"{}"],)", i % 2, i);
