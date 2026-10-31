@@ -3793,9 +3793,11 @@ namespace cpp_yyjson_codegen
             // requires a key that `additionalProperties` false rejects. `closed` when it has `additionalProperties`
             // false, which yyjson::additional_properties(false) expresses: the part then names every field that
             // `properties` names, with or without settings
+            // `nested`, when given, takes the "$conditions" of the subschema with its location instead of a warning
             std::vector<cond_field> assert_of(const json& sub, const std::string& sloc, const std::vector<field>& fields,
                                               const std::vector<std::string>& rejected, const std::string& name,
-                                              const std::string& suffix, bool& never, bool& closed)
+                                              const std::string& suffix, bool& never, bool& closed,
+                                              std::vector<std::pair<const json*, std::string>>& nested)
             {
                 auto out = std::vector<cond_field>();
                 never = false;
@@ -3909,12 +3911,224 @@ namespace cpp_yyjson_codegen
                         }
                     }
                     else if (k == "$conditions")
-                        warn(sloc, "`if`, `not` and `dependentSchemas` inside `then` and `else` are not supported and "
-                                   "are ignored");
+                        nested.emplace_back(&v, sloc);
                     else
                         warn(sloc + "/" + k, "`" + k + "` is not supported here and is ignored");
                 }
                 return out;
+            }
+
+            // The guard of a condition nested in `then`, `else` or `dependentSchemas`: the nested condition applies to
+            // an object that passes every test of `when` and, with `unless`, fails some test of `unless` (the `if`
+            // that an `else` follows)
+            struct guard
+            {
+                std::vector<cond_field> when;
+                std::optional<std::vector<cond_field>> unless;
+            };
+
+            // the settings of one value that hold when both `a` and `b` hold; nullopt when a keyword has different
+            // values in them
+            static std::optional<settings> join_settings(settings a, const settings& b)
+            {
+                for (const auto& c : b.constraints)
+                {
+                    const auto it = std::ranges::find(a.constraints, c.keyword, &settings::constraint::keyword);
+                    if (it == a.constraints.end())
+                        a.constraints.push_back(c);
+                    else if (it->text != c.text)
+                        return std::nullopt;
+                }
+                const auto join_count = [](std::optional<std::uint64_t>& x, const std::optional<std::uint64_t>& y) {
+                    if (x && y && *x != *y) return false;
+                    if (y) x = y;
+                    return true;
+                };
+                const auto join_level = [](std::vector<settings>& x, const std::vector<settings>& y) {
+                    if (!x.empty() && !y.empty()) return false;
+                    if (!y.empty()) x = y;
+                    return true;
+                };
+                if (!join_count(a.min_items, b.min_items) || !join_count(a.max_items, b.max_items) ||
+                    !join_count(a.min_contains, b.min_contains) || !join_count(a.max_contains, b.max_contains) ||
+                    !join_level(a.items, b.items) || !join_level(a.contains, b.contains) ||
+                    !join_level(a.property_names, b.property_names) || !join_level(a.additional, b.additional) ||
+                    !join_level(a.prefix, b.prefix))
+                    return std::nullopt;
+                if (a.type_test >= 0 && b.type_test >= 0 && a.type_test != b.type_test) return std::nullopt;
+                if (b.type_test >= 0) a.type_test = b.type_test;
+                a.unique = a.unique || b.unique;
+                a.negated.insert(a.negated.end(), b.negated.begin(), b.negated.end());
+                return a;
+            }
+
+            // the tests that hold when both `a` and `b` hold, one field for each key
+            std::optional<std::vector<cond_field>> join_tests(std::vector<cond_field> a,
+                                                              const std::vector<cond_field>& b) const
+            {
+                for (const auto& f : b)
+                {
+                    const auto it = std::ranges::find(a, f.key, &cond_field::key);
+                    if (it == a.end())
+                    {
+                        a.push_back(f);
+                        continue;
+                    }
+                    it->required = it->required || f.required;
+                    if (f.is_type)
+                    {
+                        if (it->is_type && spell(*it->is_type) != spell(*f.is_type)) return std::nullopt;
+                        it->is_type = f.is_type;
+                    }
+                    auto s = join_settings(std::move(it->set), f.set);
+                    if (!s) return std::nullopt;
+                    it->set = std::move(*s);
+                }
+                return a;
+            }
+
+            // a subschema that no object satisfies under the guard `g`: the guard itself fails
+            void add_guarded_false(const guard& g, const std::string& sloc, std::vector<condition>& out)
+            {
+                if (!g.unless && !g.when.empty())
+                    out.push_back(condition{.negated = true, .if_ = g.when, .loc = sloc});
+                else if (g.unless && !g.when.empty())
+                    out.push_back(condition{.if_ = g.when, .then_ = *g.unless, .loc = sloc});
+                else
+                    warn(sloc, "a subschema that no object satisfies is not supported here and is ignored");
+            }
+
+            // the conditions of a subschema of `then`, `else` or `dependentSchemas` nested in another one, which
+            // apply under the guard `g`. The parts other than `not` and nested `if` and `dependentSchemas` are the
+            // assertions of yyjson::then or yyjson::else_ of the guard
+            void add_guarded(const json& sub, const std::string& sloc, const guard& g, const std::vector<field>& fields,
+                             const std::vector<std::string>& rejected, const std::string& name,
+                             const std::string& suffix, std::vector<condition>& out, int depth)
+            {
+                if (accepts_anything(*normalize_full(&sub, sloc))) return;
+                if (depth > 8)
+                {
+                    warn(sloc, "conditions nested more than 8 levels deep are not supported and are ignored");
+                    return;
+                }
+                auto never = false, closed = false;
+                auto nested = std::vector<std::pair<const json*, std::string>>();
+                auto a = assert_of(sub, sloc, fields, rejected, name, suffix, never, closed, nested);
+                if (never)
+                {
+                    add_guarded_false(g, sloc, out);
+                    return;
+                }
+                if (!a.empty() || closed)
+                {
+                    if (!g.unless && !g.when.empty())
+                        out.push_back(
+                            condition{.if_ = g.when, .then_ = std::move(a), .then_closed = closed, .loc = sloc});
+                    else if (g.unless && g.when.empty())
+                        out.push_back(
+                            condition{.if_ = *g.unless, .else_ = std::move(a), .else_closed = closed, .loc = sloc});
+                    else if (g.unless)
+                        warn(sloc, "a subschema that applies when one `if` holds and another fails is not supported "
+                                   "and is ignored");
+                    else
+                        warn(sloc, "a subschema that applies to every object is not supported here and is ignored");
+                }
+                add_nested(nested, g, fields, rejected, name, out, depth + 1);
+            }
+
+            // the entries of "$conditions" of subschemas of `then`, `else` or `dependentSchemas`, under the guard `g`
+            void add_nested(const std::vector<std::pair<const json*, std::string>>& nested, const guard& g,
+                            const std::vector<field>& fields, const std::vector<std::string>& rejected,
+                            const std::string& name, std::vector<condition>& out, int depth)
+            {
+                for (const auto& [list, lloc] : nested)
+                {
+                    if (!list->is_array()) continue;
+                    for (const auto& c : list->items)
+                    {
+                        const auto* l = c.find("$loc");
+                        const auto cloc = l != nullptr && l->is_string() ? l->text : lloc;
+                        if (c.has("if"))
+                            add_nested_if(c, cloc, g, fields, rejected, name, out, depth);
+                        else if (const auto* nt = c.find("not"))
+                        {
+                            // a `not` of values of other kinds holds for every object
+                            if (reach_of(nt, "object", cloc + "/not") != reach::none)
+                                add_not(*nt, cloc + "/not", fields, rejected, name, out, g);
+                        }
+                        else if (const auto* d = c.find("dependentSchemas"); d != nullptr && d->is_object())
+                            for (const auto& [k, v] : d->members)
+                            {
+                                const auto dloc = cloc + "/dependentSchemas/" + pointer_token(k);
+                                if (std::ranges::find(rejected, k) != rejected.end()) continue;
+                                auto when = join_tests(g.when, {cond_field{.key = k, .required = true}});
+                                add_guarded(v, dloc, guard{std::move(*when), g.unless}, fields, rejected, name,
+                                            "Dependent", out, depth);
+                            }
+                    }
+                }
+            }
+
+            // `if` nested in `then`, `else` or `dependentSchemas`: its `then` applies under the guard joined with the
+            // tests of `if`; its `else` applies when the tests fail, which only a guard without `unless` expresses
+            void add_nested_if(const json& c, const std::string& cloc, const guard& g, const std::vector<field>& fields,
+                               const std::vector<std::string>& rejected, const std::string& name,
+                               std::vector<condition>& out, int depth)
+            {
+                const auto* tv = c.find("then");
+                const auto* ev = c.find("else");
+                auto tloc = cloc + "/then", eloc = cloc + "/else";
+                const auto trivial = [&](const json* x, const std::string& xloc) {
+                    return x == nullptr || accepts_anything(*normalize_full(x, xloc));
+                };
+                if (trivial(tv, tloc) && trivial(ev, eloc)) return;
+                auto t = test_of(*c.find("if"), cloc + "/if", fields, rejected, name + "If");
+                if (!t.ok)
+                {
+                    warn(cloc + "/if", "`if` is not supported here: " + t.why + "; `then` and `else` are ignored");
+                    return;
+                }
+                if (!t.never && !t.absent.empty())
+                {
+                    // as in add_if: the test of the presence of the key, with `then` and `else` swapped
+                    if (t.absent.size() > 1 || !t.fields.empty())
+                    {
+                        warn(cloc + "/if", "`if` is not supported here: it holds only when the key \"" + t.absent[0] +
+                                               "\" is missing, together with other tests; `then` and `else` are "
+                                               "ignored");
+                        return;
+                    }
+                    t.fields = {cond_field{.key = t.absent[0], .required = true}};
+                    std::swap(tv, ev);
+                    std::swap(tloc, eloc);
+                }
+                const auto suffix = [](const std::string& xloc) { return xloc.ends_with("/then") ? "Then" : "Else"; };
+                if (t.never || t.fields.empty())
+                {
+                    // the subschema that applies, applies under the guard alone
+                    const auto* x = t.never ? ev : tv;
+                    const auto& xloc = t.never ? eloc : tloc;
+                    if (!trivial(x, xloc)) add_guarded(*x, xloc, g, fields, rejected, name, suffix(xloc), out, depth);
+                    return;
+                }
+                if (!trivial(tv, tloc))
+                {
+                    if (auto when = join_tests(g.when, t.fields))
+                        add_guarded(*tv, tloc, guard{std::move(*when), g.unless}, fields, rejected, name, suffix(tloc),
+                                    out, depth);
+                    else
+                        warn(cloc + "/if", "`if` is not supported here: it tests a key that the `if` around it tests "
+                                           "by other values; `then` is ignored");
+                }
+                if (!trivial(ev, eloc))
+                {
+                    if (g.unless)
+                        warn(eloc, std::string("`") + (eloc.ends_with("/else") ? "else" : "then") +
+                                       "` of an `if` inside `else` is not supported and is ignored");
+                    else
+                        add_guarded(*ev, eloc, guard{g.when, t.fields}, fields, rejected, name, suffix(eloc), out,
+                                    depth);
+                }
             }
 
             // A link of a chain of `if` and `else`: `if` tests one key by `const` or `enum`
@@ -4029,20 +4243,23 @@ namespace cpp_yyjson_codegen
                     const auto* tv = l.entry->find("then");
                     if (tv == nullptr) continue;
                     auto never = false, closed = false;
-                    auto th = assert_of(*tv, l.loc + "/then", fields, rejected, name, "Then", never, closed);
+                    auto nested = std::vector<std::pair<const json*, std::string>>();
+                    auto th = assert_of(*tv, l.loc + "/then", fields, rejected, name, "Then", never, closed, nested);
                     if (never)
-                        parts.push_back(condition{.negated = true, .if_ = std::move(t.fields), .loc = l.loc});
+                        parts.push_back(condition{.negated = true, .if_ = t.fields, .loc = l.loc});
                     else if (!th.empty() || closed)
-                        parts.push_back(condition{
-                            .if_ = std::move(t.fields), .then_ = std::move(th), .then_closed = closed, .loc = l.loc});
+                        parts.push_back(
+                            condition{.if_ = t.fields, .then_ = std::move(th), .then_closed = closed, .loc = l.loc});
+                    add_nested(nested, guard{std::move(t.fields)}, fields, rejected, name, parts, 1);
                 }
                 if (last != nullptr)
                 {
                     auto never = false, closed = false;
-                    auto el = assert_of(*last, last_loc, fields, rejected, name, "Else", never, closed);
+                    auto nested = std::vector<std::pair<const json*, std::string>>();
+                    auto el = assert_of(*last, last_loc, fields, rejected, name, "Else", never, closed, nested);
                     if (never)
                         warn(last_loc, "`else` that no object satisfies is not supported and is ignored");
-                    else if (!el.empty() || closed)
+                    else if (!el.empty() || closed || !nested.empty())
                     {
                         auto any = json::object_of();
                         auto props = json::object_of();
@@ -4054,8 +4271,10 @@ namespace cpp_yyjson_codegen
                             any.set("required", json::array_of({json::string_of(links[0].key)}));
                         auto t = test_of(*store(std::move(any)), cloc + "/if", fields, rejected, name + "If");
                         if (!t.ok || t.never || t.fields.empty() || !t.absent.empty()) return false;
-                        parts.push_back(condition{
-                            .if_ = std::move(t.fields), .else_ = std::move(el), .else_closed = closed, .loc = last_loc});
+                        if (!el.empty() || closed)
+                            parts.push_back(condition{
+                                .if_ = t.fields, .else_ = std::move(el), .else_closed = closed, .loc = last_loc});
+                        add_nested(nested, guard{{}, std::move(t.fields)}, fields, rejected, name, parts, 1);
                     }
                 }
                 for (auto& p : parts) out.push_back(std::move(p));
@@ -4102,29 +4321,39 @@ namespace cpp_yyjson_codegen
                     return;
                 }
                 auto cond = condition{.if_ = t.fields, .loc = cloc};
+                auto nested_then = std::vector<std::pair<const json*, std::string>>();
+                auto nested_else = std::vector<std::pair<const json*, std::string>>();
                 if (tv != nullptr)
                 {
                     auto never = false;
                     cond.then_ = assert_of(*tv, tloc, fields, rejected, name, tloc.ends_with("/then") ? "Then" : "Else",
-                                           never, cond.then_closed);
-                    if (never) out.push_back(condition{.negated = true, .if_ = t.fields, .loc = tloc});
+                                           never, cond.then_closed, nested_then);
+                    if (never)
+                    {
+                        out.push_back(condition{.negated = true, .if_ = t.fields, .loc = tloc});
+                        nested_then.clear();
+                    }
                 }
                 if (ev != nullptr)
                 {
                     auto never = false;
                     cond.else_ = assert_of(*ev, eloc, fields, rejected, name, eloc.ends_with("/else") ? "Else" : "Then",
-                                           never, cond.else_closed);
+                                           never, cond.else_closed, nested_else);
                     if (never)
                         warn(eloc, std::string("`") + (eloc.ends_with("/else") ? "else" : "then") +
                                        "` that no object satisfies is not supported and is ignored");
                 }
                 if (!cond.then_.empty() || !cond.else_.empty() || cond.then_closed || cond.else_closed)
                     out.push_back(std::move(cond));
+                add_nested(nested_then, guard{t.fields}, fields, rejected, name, out, 1);
+                add_nested(nested_else, guard{{}, t.fields}, fields, rejected, name, out, 1);
             }
 
+            // `not` of the struct, or nested under the guard `g`: an object that passes the tests of the guard and of
+            // the subschema is rejected
             void add_not(const json& v, const std::string& nloc, const std::vector<field>& fields,
                          const std::vector<std::string>& rejected, const std::string& name,
-                         std::vector<condition>& out)
+                         std::vector<condition>& out, const guard& g = {})
             {
                 // `not` of `anyOf` rejects an object that any subschema accepts: one yyjson::not_ for each
                 auto subs = std::vector<std::pair<const json*, std::string>>{{&v, nloc}};
@@ -4148,10 +4377,17 @@ namespace cpp_yyjson_codegen
                     else if (!t.absent.empty())
                         warn(sloc, "`not` is not supported here: its subschema holds only when the key \"" +
                                        t.absent[0] + "\" is missing; it is ignored");
-                    else if (t.fields.empty())
+                    else if (t.fields.empty() && g.when.empty() && !g.unless)
                         warn(sloc, "`not` of a schema that every object satisfies rejects every object; it is ignored");
+                    else if (t.fields.empty())
+                        add_guarded_false(g, sloc, out);
+                    else if (auto when = join_tests(g.when, t.fields); !when)
+                        warn(sloc, "`not` is not supported here: it tests a key that the `if` around it tests by other "
+                                   "values; it is ignored");
+                    else if (g.unless)
+                        out.push_back(condition{.if_ = std::move(*when), .then_ = *g.unless, .loc = sloc});
                     else
-                        out.push_back(condition{.negated = true, .if_ = std::move(t.fields), .loc = sloc});
+                        out.push_back(condition{.negated = true, .if_ = std::move(*when), .loc = sloc});
                 }
             }
 
@@ -4179,16 +4415,8 @@ namespace cpp_yyjson_codegen
                         {
                             const auto dloc = cloc + "/dependentSchemas/" + pointer_token(k);
                             if (std::ranges::find(rejected, k) != rejected.end()) continue;
-                            const auto* n = normalize_full(&v, dloc);
-                            if (accepts_anything(*n)) continue;
-                            const auto key = cond_field{.key = k, .required = true};
-                            auto never = false, closed = false;
-                            auto th = assert_of(v, dloc, fields, rejected, name, "Dependent", never, closed);
-                            if (never)
-                                out.push_back(condition{.negated = true, .if_ = {key}, .loc = dloc});
-                            else if (!th.empty() || closed)
-                                out.push_back(
-                                    condition{.if_ = {key}, .then_ = std::move(th), .then_closed = closed, .loc = dloc});
+                            add_guarded(v, dloc, guard{{cond_field{.key = k, .required = true}}}, fields, rejected,
+                                        name, "Dependent", out, 1);
                         }
                 }
                 return out;

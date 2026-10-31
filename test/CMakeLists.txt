@@ -107,6 +107,8 @@ if(TARGET cpp_yyjson_codegen)
                       NAMESPACE model)
   cpp_yyjson_generate("${PROJECT_NAME}_test_codegen_cmake" codegen/conditions.schema.json
                       NAMESPACE model)
+  cpp_yyjson_generate("${PROJECT_NAME}_test_codegen_cmake" codegen/nested_conditions.schema.json
+                      NAMESPACE model)
   cpp_yyjson_generate("${PROJECT_NAME}_test_codegen_cmake" codegen/contains.schema.json
                       NAMESPACE model)
   cpp_yyjson_generate("${PROJECT_NAME}_test_codegen_cmake" codegen/negations.schema.json

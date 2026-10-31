@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Attribute",
+  "type": "object",
+  "properties": {
+    "type": {"enum": ["list", "map", "string"]},
+    "element_type": {"type": "string"},
+    "computed": {"type": "boolean"},
+    "optional": {"type": "boolean"},
+    "vcs": {"type": "string"},
+    "archive": {"type": "string"},
+    "source": {"type": "string"},
+    "version": {"type": "string"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"type": {"enum": ["list", "map"]}}, "required": ["type"]},
+      "then": {"required": ["element_type"]},
+      "else": {"not": {"required": ["element_type"]}}
+    },
+    {
+      "if": {"properties": {"computed": {"const": true}}, "required": ["computed"]},
+      "then": {"not": {"properties": {"optional": {"const": false}}, "required": ["optional"]}}
+    },
+    {
+      "if": {"required": ["vcs"]},
+      "then": {"not": {"anyOf": [{"required": ["archive"]}, {"required": ["source"]}]}}
+    },
+    {
+      "if": {"required": ["source"]},
+      "then": {"if": {"properties": {"source": {"const": "git"}}}, "then": {"required": ["version"]}}
+    }
+  ],
+  "dependentSchemas": {"archive": {"not": {"required": ["version"]}}}
+}

@@ -27,6 +27,7 @@ struct yyjson::pattern_matcher<>
 #include "defaults.hpp"
 #include "invoice.hpp"
 #include "negations.hpp"
+#include "nested_conditions.hpp"
 #include "order.hpp"
 #include "patterns.hpp"
 #include "positions.hpp"
@@ -289,6 +290,28 @@ TEST(CodegenCMake, Conditions)
     auto shape = yyjson::read<model::Shape>(R"({"points":1})");
     shape.radius = 1.0;
     EXPECT_THROW(yyjson::validate(shape), yyjson::bad_cast);
+}
+
+TEST(CodegenCMake, NestedConditions)
+{
+    // `not`, `if` and `dependentSchemas` inside `then`, `else` and `dependentSchemas`
+    for (const auto* json : {R"({"type":"list","element_type":"int"})", R"({"type":"string"})",
+                             R"({"computed":true,"optional":true})", R"({"computed":false,"optional":false})",
+                             R"({"vcs":"git","version":"1"})", R"({"source":"git","version":"1"})",
+                             R"({"source":"url"})", R"({"archive":"a.zip","source":"url"})"})
+    {
+        const auto attribute = yyjson::read<model::Attribute>(json, yyjson::strict);
+        EXPECT_EQ(yyjson::write(attribute), json);
+        EXPECT_NO_THROW(yyjson::validate(attribute)) << json;
+    }
+    for (const auto* json : {R"({"type":"map"})", R"({"type":"string","element_type":"int"})",
+                             R"({"element_type":"int"})", R"({"computed":true,"optional":false})",
+                             R"({"vcs":"git","archive":"a.zip"})", R"({"vcs":"git","source":"url"})",
+                             R"({"source":"git"})", R"({"archive":"a.zip","version":"1"})"})
+        EXPECT_THROW((void)yyjson::read<model::Attribute>(json), yyjson::bad_cast) << json;
+    auto attribute = yyjson::read<model::Attribute>(R"({"source":"url"})");
+    attribute.source = "git";
+    EXPECT_THROW(yyjson::validate(attribute), yyjson::bad_cast);
 }
 
 TEST(CodegenCMake, ValueNot)

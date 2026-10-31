@@ -1501,6 +1501,62 @@ TEST(Codegen, ConditionsOfNullAndRepeatedReferences)
                             "        yyjson::then(yyjson::field(\"show\", yyjson::const_(nullptr)))),\n"));
 }
 
+TEST(Codegen, NestedConditions)
+{
+    // `not`, `if` and `dependentSchemas` inside `then`, `else` and `dependentSchemas` apply under the tests around
+    // them: `not` adds them to its own tests, `then` of an inner `if` joins the tests of both `if`, `else` holds the
+    // tests that fail, and `false` rejects the tests around it
+    const auto r = generate(R"({
+        "type": "object",
+        "properties": {"t": {"type": "string"}, "a": {"type": "integer"}, "b": {"type": "boolean"},
+                       "k": {"type": "string"}},
+        "allOf": [
+            {"if": {"required": ["k"]},
+             "then": {"not": {"anyOf": [{"required": ["a"]}, {"properties": {"t": {"const": "x"}}}]}}},
+            {"if": {"properties": {"t": {"const": "y"}}, "required": ["t"]}, "else": {"not": {"required": ["a"]}}},
+            {"if": {"required": ["a"]},
+             "then": {"if": {"required": ["b"]}, "then": {"required": ["k"]},
+                      "else": {"properties": {"a": {"maximum": 3}}}}},
+            {"if": {"required": ["b"]}, "then": {"dependentSchemas": {"k": false, "t": {"required": ["a"]}}}},
+            {"if": {"required": ["k"]},
+             "else": {"if": {"required": ["a"]}, "then": {"required": ["b"]}, "else": false}},
+            {"if": {"properties": {"t": {"const": "z"}}, "required": ["t"]},
+             "then": {"if": {"properties": {"t": {"const": "w"}}}, "then": {"required": ["a"]}}}
+        ],
+        "dependentSchemas": {"b": {"not": {"properties": {"a": {"const": 1}}, "required": ["a"]}}}
+    })",
+                            {});
+    // the assertions that apply when one `if` holds and another fails, `else` of an `if` inside `else`, and a key
+    // tested by different values are left out
+    EXPECT_EQ(warnings(r), "#/allOf/2/then/else: a subschema that applies when one `if` holds and another fails is "
+                           "not supported and is ignored\n"
+                           "#/allOf/4/else/then: a subschema that applies when one `if` holds and another fails is "
+                           "not supported and is ignored\n"
+                           "#/allOf/4/else/else: `else` of an `if` inside `else` is not supported and is ignored\n"
+                           "#/allOf/5/then/if: `if` is not supported here: it tests a key that the `if` around it "
+                           "tests by other values; `then` is ignored\n");
+    EXPECT_TRUE(has(r.code, "    yyjson::not_(yyjson::field(\"b\", yyjson::required), "
+                            "yyjson::field(\"a\", yyjson::required, yyjson::const_(1))),\n"
+                            "    yyjson::not_(yyjson::field(\"k\", yyjson::required), "
+                            "yyjson::field(\"a\", yyjson::required)),\n"
+                            "    yyjson::not_(yyjson::field(\"k\", yyjson::required), "
+                            "yyjson::field(\"t\", yyjson::const_(\"x\"))),\n"
+                            "    yyjson::if_then_else(\n"
+                            "        yyjson::if_(yyjson::field(\"a\", yyjson::required)),\n"
+                            "        yyjson::then(yyjson::field(\"t\", yyjson::required, "
+                            "yyjson::const_(\"y\")))),\n"
+                            "    yyjson::if_then_else(\n"
+                            "        yyjson::if_(yyjson::field(\"a\", yyjson::required), "
+                            "yyjson::field(\"b\", yyjson::required)),\n"
+                            "        yyjson::then(yyjson::field(\"k\", yyjson::required))),\n"
+                            "    yyjson::not_(yyjson::field(\"b\", yyjson::required), "
+                            "yyjson::field(\"k\", yyjson::required)),\n"
+                            "    yyjson::if_then_else(\n"
+                            "        yyjson::if_(yyjson::field(\"b\", yyjson::required), "
+                            "yyjson::field(\"t\", yyjson::required)),\n"
+                            "        yyjson::then(yyjson::field(\"a\", yyjson::required))));\n"));
+}
+
 TEST(Codegen, ExtraKeys)
 {
     // `additionalProperties` with a schema beside `properties`: a map of the other keys, by the value schema
