@@ -5111,9 +5111,10 @@ namespace cpp_yyjson_codegen
                 if (it == setting_vars_.end())
                 {
                     const auto open = text.find('(');
-                    const auto kind = text.starts_with("yyjson::") && open != std::string::npos
-                                          ? text.substr(8, open - 8)
-                                          : std::string("setting");
+                    auto kind = text.starts_with("yyjson::") && open != std::string::npos ? text.substr(8, open - 8)
+                                                                                         : std::string("setting");
+                    // const_, enum_ and not_ lose their underscore, which a number after them would double
+                    while (kind.ends_with('_')) kind.pop_back();
                     auto base = ctx_.empty() ? std::string("alternative") : ctx_;
                     for (const auto i : path_) base += "_" + std::to_string(i);
                     base += "_" + kind;

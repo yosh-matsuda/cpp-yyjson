@@ -600,7 +600,7 @@ TEST(Codegen, StringChoices)
     EXPECT_TRUE(has(r.code, "    std::optional<std::variant<std::monostate, RootOpt>> opt;\n"));
     EXPECT_TRUE(has(r.code, "    std::optional<RootTyped> typed;\n"));
     // a reference stays an alternative
-    EXPECT_TRUE(has(r.code, "yyjson::any_of<Color, yyjson::alt<std::string, &Root_color_1_const_>>"));
+    EXPECT_TRUE(has(r.code, "yyjson::any_of<Color, yyjson::alt<std::string, &Root_color_1_const>>"));
     // an `enum` beside them keeps the strings it lists
     EXPECT_TRUE(has(r.code, "enum class RootListed\n{\n    /// System\n    sys,\n    loc,\n};"));
     EXPECT_TRUE(has(r.code, "enum class RootNarrowed\n{\n    x,\n};"));
@@ -2639,14 +2639,15 @@ TEST(Codegen, ValueNot)
     })", {});
     EXPECT_EQ(warnings(r), "");
     EXPECT_TRUE(has(r.code, "enum class RootF\n{\n    p,\n    r,\n};\n"));
-    EXPECT_TRUE(has(r.code, "inline constexpr auto Root_k_1_not_ = yyjson::not_(yyjson::const_(\"\"));\n"));
+    EXPECT_TRUE(has(r.code, "inline constexpr auto Root_k_1_not = yyjson::not_(yyjson::const_(\"\"));\n"));
     EXPECT_TRUE(has(r.code, "struct RootL\n{\n    std::optional<yyjson::value> x;\n};\n"));
     EXPECT_TRUE(has(r.code, "    std::optional<std::string> a;\n    std::optional<std::int64_t> b;\n"
                             "    std::optional<yyjson::value> c;\n    std::optional<std::string> d;\n"
                             "    std::optional<yyjson::value> e;\n    std::optional<RootF> f;\n"
                             "    std::optional<std::int64_t> g;\n    std::optional<std::int64_t> h;\n"
                             "    std::optional<std::string> i;\n    std::optional<std::vector<std::int64_t>> j;\n"
-                            "    std::optional<yyjson::any_of<std::int64_t, yyjson::alt<std::string, &Root_k_1_not_>>> k;\n"
+                            "    std::optional<yyjson::any_of<std::int64_t, "
+                            "yyjson::alt<std::string, &Root_k_1_not>>> k;\n"
                             "    std::optional<RootL> l;\n    std::optional<yyjson::value> m;\n"
                             "    std::optional<yyjson::value> n;\n    std::optional<yyjson::value> o;\n"));
     EXPECT_TRUE(has(r.code, "    yyjson::not_(yyjson::field(\"x\", yyjson::required)));\n"));
