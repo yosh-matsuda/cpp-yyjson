@@ -692,7 +692,7 @@ namespace yyjson
                         emit_constraints(o, rest);
                     }
                     else
-                        emit_constraints(o, k.constraints);
+                        emit_constraints(o, k.constraints, yyjson::detail::multi_kind<T>);
                     if (k.type_test != nullptr) emit_type_test(o, *k.type_test);
                 };
                 auto target = out;
@@ -1014,8 +1014,10 @@ namespace yyjson
                 return true;
             }
             // Writes the constraints of a node.  The bounds of a number type are written by `emit_number`.
-            // A listed `nullptr` belongs to the null branch beside the value and is left out here.
-            void emit_constraints(object_ref out, const yyjson::detail::field_constraints& c) const
+            // A listed `nullptr` belongs to the null branch beside the value and is left out here, unless the value
+            // itself can be null (`with_null`): a DOM value or a variant of several JSON kinds.
+            void emit_constraints(object_ref out, const yyjson::detail::field_constraints& c,
+                                  bool with_null = false) const
             {
                 if (c.has<yyjson::minimum>()) emit_bound(out, "minimum", c.minimum);
                 if (c.has<yyjson::maximum>()) emit_bound(out, "maximum", c.maximum);
@@ -1029,14 +1031,19 @@ namespace yyjson
                 if (c.has<yyjson::pattern<>>()) out.emplace("pattern", c.pattern());
                 if (c.has<yyjson::format<>>()) out.emplace("format", c.format());
                 using kind = yyjson::detail::json_scalar::kind_t;
-                if (c.has<yyjson::const_<>>() && values_[c.constant].kind != kind::null)
-                    visit_scalar(values_[c.constant], [&](auto v) { out.emplace("const", v); });
+                const auto put = [&](const yyjson::detail::json_scalar& s, auto&& emplace) {
+                    if (s.kind != kind::null)
+                        visit_scalar(s, emplace);
+                    else if (with_null)
+                        emplace(nullptr);
+                };
+                if (c.has<yyjson::const_<>>())
+                    put(values_[c.constant], [&](auto v) { out.emplace("const", v); });
                 if (c.has<yyjson::enum_<0>>())
                 {
                     auto values = out.emplace("enum", empty_array);
                     for (std::size_t i = 0; i < c.enum_count; ++i)
-                        if (values_[c.enum_first + i].kind != kind::null)
-                            visit_scalar(values_[c.enum_first + i], [&](auto v) { values.emplace_back(v); });
+                        put(values_[c.enum_first + i], [&](auto v) { values.emplace_back(v); });
                 }
                 if (c.has<yyjson::unique_items_t>()) out.emplace("uniqueItems", true);
                 if (c.has<yyjson::min_contains>()) out.emplace("minContains", c.min_contains);
@@ -1299,7 +1306,7 @@ namespace yyjson
                 }
             const schema_node* n = nodes != nullptr ? &nodes[node] : nullptr;
             const auto constraints = [&] {
-                if (n != nullptr) emit_constraints(out, n->constraints);
+                if (n != nullptr) emit_constraints(out, n->constraints, yyjson::detail::multi_kind<T>);
             };
             if constexpr (!std::same_as<T, std::remove_cvref_t<T>>)
                 emit<std::remove_cvref_t<T>>(out, nodes, node);
@@ -1387,7 +1394,7 @@ namespace yyjson
         {
             const schema_node* n = nodes != nullptr ? &nodes[node] : nullptr;
             const auto constraints = [&] {
-                if (n != nullptr) emit_constraints(out, n->constraints);
+                if (n != nullptr) emit_constraints(out, n->constraints, yyjson::detail::multi_kind<T>);
             };
             if constexpr (std::same_as<T, bool>)
             {

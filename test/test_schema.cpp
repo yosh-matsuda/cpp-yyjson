@@ -948,6 +948,35 @@ inline constexpr auto yyjson::annotations<NegatedNulls> =
                      yyjson::field("nulls", yyjson::items(yyjson::not_(yyjson::is_type<std::nullptr_t>))),
                      yyjson::field("ints", yyjson::items(yyjson::not_(yyjson::is_type<int>))));
 
+// Settings on values that may be of several JSON kinds constrain the values of their kinds only, and null is one of
+// the listed values of `enum_`.
+enum class MultiShade
+{
+    light,
+    dark
+};
+struct MultiPoint
+{
+    int x;
+};
+struct MultiKind
+{
+    yyjson::value v;
+    std::variant<std::monostate, int, std::string> w;
+    std::optional<yyjson::any_of<bool, double, std::string, std::vector<yyjson::value>, MultiPoint>> x;
+    yyjson::one_of<int, std::string> y;
+    std::variant<MultiShade, int> s;
+    yyjson::value list;
+    std::vector<yyjson::value> elements;
+};
+template <>
+inline constexpr auto yyjson::annotations<MultiKind> = yyjson::annotate(
+    yyjson::field("v", yyjson::enum_(1, "x", nullptr), yyjson::max_length(3)),
+    yyjson::field("w", yyjson::minimum(0), yyjson::max_length(2)), yyjson::field("x", yyjson::const_("on")),
+    yyjson::field("y", yyjson::not_(yyjson::const_(3))), yyjson::field("s", yyjson::enum_("dark", 3)),
+    yyjson::field("list", yyjson::min_items(2), yyjson::pattern("^a")),
+    yyjson::field("elements", yyjson::items(yyjson::exclusive_maximum(2), yyjson::min_length(1))));
+
 // A field that its caster leaves out, which only `yyjson::strict` requires: the struct that holds it is a default of
 // the schema without `yyjson::strict`.
 struct MaybeInt
@@ -2349,6 +2378,40 @@ TEST(Schema, NegatedNulls)
                                       R"("not":{"minimum":5},"default":0})"));
     EXPECT_FALSE(p["listed"].contains("anyOf"));
     EXPECT_EQ(p["nulls"]["items"]["anyOf"][1], json::parse(R"({"type":"null","not":{"type":"null"}})"));
+}
+
+TEST(Schema, MultiKindValues)
+{
+    check<MultiKind>({
+        R"({"v":1,"w":0,"y":0,"s":0,"list":null,"elements":[]})",
+        R"({"v":null,"w":null,"y":"a","s":"dark","list":[1,2],"elements":[1,"a",null,true]})",
+        R"({"v":"x","w":"ab","y":0,"s":3,"list":"ab","elements":[]})",
+        R"({"v":2,"w":0,"y":0,"s":0,"list":null,"elements":[]})",
+        R"({"v":1.0,"w":0,"y":0,"s":0,"list":null,"elements":[]})",
+        R"({"v":"y","w":0,"y":0,"s":0,"list":null,"elements":[]})",
+        R"({"v":[],"w":0,"y":0,"s":0,"list":null,"elements":[]})",
+        R"({"v":1,"w":-1,"y":0,"s":0,"list":null,"elements":[]})",
+        R"({"v":1,"w":"abc","y":0,"s":0,"list":null,"elements":[]})",
+        R"({"v":1,"w":0,"x":"on","y":0,"s":0,"list":null,"elements":[]})",
+        R"({"v":1,"w":0,"x":"off","y":0,"s":0,"list":null,"elements":[]})",
+        R"({"v":1,"w":0,"x":true,"y":0,"s":0,"list":null,"elements":[]})",
+        R"({"v":1,"w":0,"x":{"x":1},"y":0,"s":0,"list":null,"elements":[]})",
+        R"({"v":1,"w":0,"y":3,"s":0,"list":null,"elements":[]})",
+        R"({"v":1,"w":0,"y":"3","s":0,"list":null,"elements":[]})",
+        R"({"v":1,"w":0,"y":0,"s":"light","list":null,"elements":[]})",
+        R"({"v":1,"w":0,"y":0,"s":2,"list":null,"elements":[]})",
+        R"({"v":1,"w":0,"y":0,"s":0,"list":[1],"elements":[]})",
+        R"({"v":1,"w":0,"y":0,"s":0,"list":"ba","elements":[]})",
+        R"({"v":1,"w":0,"y":0,"s":0,"list":{},"elements":[]})",
+        R"({"v":1,"w":0,"y":0,"s":0,"list":null,"elements":[2]})",
+        R"({"v":1,"w":0,"y":0,"s":0,"list":null,"elements":[""]})",
+        R"({"v":1,"w":0,"y":0,"s":0,"list":null,"elements":[{"a":1},[]]})",
+    });
+    const auto s = to_jsoncons(yyjson::json_schema<MultiKind>());
+    const auto& p = s["$defs"]["MultiKind"]["properties"];
+    EXPECT_EQ(p["v"]["enum"], json::parse(R"([1,"x",null])"));
+    EXPECT_EQ(p["s"]["enum"], json::parse(R"(["dark",3])"));
+    EXPECT_EQ(p["y"]["not"], json::parse(R"({"const":3})"));
 }
 
 TEST(Schema, DefaultLeavingKeyOut)
