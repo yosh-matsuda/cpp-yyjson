@@ -210,6 +210,7 @@ Each schema maps to one C++ type:
 | `$ref` | the named type of the target |
 | no `type`, with keywords that constrain some types, such as `maxLength` or `properties` | a variant of every kind; see [Schemas without `type`](#schemas-without-type) |
 | `{}`, `true`, no keyword of a type | [`yyjson::value`](reference.md#yyjsonvalue) |
+| `false`, `{"not": {}}`, keywords that no value satisfies together | `yyjson::value` with `yyjson::not_(yyjson::is_type<yyjson::value>)`, which rejects every value; see [Schemas that accept no value](#schemas-that-accept-no-value) |
 
 The subschemas of `allOf`, and the keywords beside `$ref`, merge into one schema, and each subschema still constrains the keys and positions that it does not declare. A property of one subschema also takes what another applies to its key: the schemas of the patterns of `patternProperties` that the key matches, else `additionalProperties`. A position of `prefixItems` beyond those of another subschema takes that subschema's `items`. A property that another subschema closes out thus gets the schema `false`, which an object satisfies only without the key, as a [property whose schema is `false`](#structs) does; an `items: false` ends the tuple there:
 
@@ -237,7 +238,7 @@ The keywords that constrain a value become the [constraints](validation.md#const
 
 *   When the type of the subschema reads more than the subschema accepts, the generator warns, and also leaves out `maxContains`, which would then count elements that the schema does not count.
 *   A `contains` that every element matches, such as `{}`, becomes `yyjson::min_items` and `yyjson::max_items` of `minContains` and `maxContains`.
-*   `"contains": false` adds nothing with `"minContains": 0`; otherwise no array is valid, and it is left out with a warning.
+*   `"contains": false`, or a subschema that accepts no value, adds nothing with `"minContains": 0`; otherwise no array is valid, so the type leaves out arrays, and a schema of arrays only accepts no value, with a warning.
 *   A position of `prefixItems` that is an element of a `std::tuple` or a `std::vector` takes no `yyjson::is_type<T>`: its constraints are left out with a warning. A field of an [array of positions](#arrays-of-positions) takes it.
 *   On elements of other types that the subschema does not fit, such as integers under `{"type": "string"}`, or a variant of [a schema without `type`](#schemas-without-type), `contains` is left out with a warning.
 
@@ -426,6 +427,30 @@ inline constexpr auto yyjson::annotations<Root> = yyjson::annotate(
 
 An entry of `$defs` takes its key as the name and keeps its metadata and `yyjson::schema_name`; an inline schema is named after its place, as `RootOverrides` for `#/properties/overrides`. Of entries that refer to each other, such as `A` an alternative of `B` and `B` an array of `A`, the first one that the generator reaches is the struct and the others stay aliases. A member that would hold the struct by value is held through `yyjson::indirect`, as for other structs. A schema that reaches itself through no array or object at all, such as `{"anyOf": [{"$ref": "#/$defs/D"}, {"type": "string"}]}` as `D`, has no value that ends; its member is `yyjson::value`, with a warning.
 
+### Schemas that accept no value
+
+`false`, and `not` of a schema that accepts every value, such as `{"not": {}}`, accept no value. Such a schema becomes `yyjson::value` with `yyjson::not_(yyjson::is_type<yyjson::value>)`, which rejects every value; at the root it is the member of a struct with [`yyjson::transparent`](reference.md#yyjsontransparent). Where the schema is a property, the elements of an array or the keys of a pattern, the generator writes what it means there:
+
+| Place | Code |
+| --- | --- |
+| a property | `std::optional<yyjson::value>` with `yyjson::not_(yyjson::field("k", yyjson::required))` on the struct; see [Structs](#structs) |
+| `items` | `yyjson::max_items(0)` |
+| a pattern of `patternProperties` | a field that rejects every key that the pattern matches; see [`patternProperties`](#patternproperties) |
+| an entry of `$defs` | `using N = yyjson::value;`, and the places that refer to it as above |
+
+Keywords that reduce to `true` or `false` are read as what they reduce to:
+
+| Schema | Read as |
+| --- | --- |
+| `if` that accepts every value, such as `"if": true` | its `then` |
+| `"if": false`, or `if` of `not` of a schema that accepts every value | its `else` |
+| `oneOf` with one subschema that accepts every value, such as `{"oneOf": [{"type": "number"}, {}]}` | `not` of `anyOf` of the other subschemas: `yyjson::value` with `yyjson::not_(yyjson::is_type<double>)` |
+| `oneOf` with two subschemas that accept every value | `false` |
+| `"contains": false` | see [`contains`](#mapping) |
+| `"propertyNames": false` | an empty object; see [Keys that name no property](#keys-that-name-no-property) |
+
+`false` as written, and `{"not": {}}` with only metadata beside it, give no warning, since the author meant them. Keywords that no value satisfies together, such as `oneOf` of two subschemas that accept every value or `allOf` of two types, give the warning "no value satisfies the keywords of the schema together; reading it always fails", or a warning of the keyword that leaves no value.
+
 ## Names
 
 | Schema | Name |
@@ -492,6 +517,8 @@ An object schema without `additionalProperties`, with `true` or with `{}`, accep
 *   the `const` and `enum` of the other subschemas join into one `enum`, unless `oneOf` lists a value twice;
 *   `not`, also beside `allOf` or a `$ref`, becomes [`yyjson::not_`](validation.md#how-constraints-are-checked) inside `yyjson::property_names`.
 
+`propertyNames: false`, or a schema that accepts no string, leaves only the empty object: a map gets `yyjson::max_items(0)`, and a struct `yyjson::max_properties(0)`.
+
 A `propertyNames` that string constraints still do not express, such as `anyOf` of `const` and `pattern`, is left out with a warning.
 
 `propertyNames` of a struct becomes `yyjson::property_names` on the field of `yyjson::extra_keys` and on the fields of patterns, which hold the keys that name no member. The generator checks the keys of the properties itself. A key that fails `propertyNames` gives `yyjson::not_(yyjson::field(k, yyjson::required))` on the struct, so that an object with the key is rejected; a key that `required` names and that fails gives a warning as well, since no object satisfies the schema. The keys in the form that `json_schema<T>()` writes, `{"anyOf": [{"enum": [<members>]}, <names>]}`, pass. When the generator cannot tell whether a key passes, as for a `pattern` that `std::regex` does not take, it warns that `propertyNames` is checked only for the keys that name no property, or, for a struct that accepts no other key, that `propertyNames` is not checked.
@@ -531,7 +558,7 @@ The library checks what JSON Schema checks: the value of `x-id` is read as `std:
 *   Patterns of the same schema share one field, whose pattern joins them as `(?:p1)|(?:p2)`.
 *   A field is named by the `title` of the schema, else by the last part of its `$ref`, else `pattern1`, `pattern2` and so on in the order of the schemas.
 *   `propertyNames` becomes `yyjson::property_names` on every field of patterns and on the field of `yyjson::extra_keys`.
-*   A pattern whose schema is `false` gets no field: the properties that it matches get `yyjson::not_(yyjson::field(key, yyjson::required))` on the struct, and the other keys that it matches are not rejected, with a warning, unless `additionalProperties: false` rejects them anyway.
+*   A pattern whose schema is `false` gets a field of `yyjson::value` with `yyjson::additional_properties(yyjson::not_(yyjson::is_type<yyjson::value>))`, which rejects every key that it matches; the properties that it matches get `yyjson::not_(yyjson::field(key, yyjson::required))` on the struct. Under `additionalProperties: false` the pattern gets no field, since the struct rejects those keys anyway.
 *   A default is split among the fields by the patterns that its keys match. A key of a closed struct that no pattern matches makes the member `std::optional` with a `// default:` comment and a warning.
 *   A struct of more than 100 members without `--cpp26`, registered with `VISITABLE_STRUCT`, cannot have the fields: the patterns are left out with a warning, and the struct gets `yyjson::additional_properties(true)`.
 
@@ -725,7 +752,8 @@ What the settings cannot express is left out with a warning, so the code reads m
 | keywords that accept some `null` and not all, such as `oneOf` of `{"type": "null"}` and `{"minimum": 5}` | "`not` cannot be expressed on null; it is ignored" |
 | a type test that no C++ type expresses exactly | "`not` of a schema that no C++ type expresses exactly is not supported and is ignored" |
 | a value of `enum` that the generator cannot test, under `pattern` or `format` | "whether `not` rejects the value "ab" of `enum` is not known; the value is kept" |
-| keywords that accept every value that the schema around reads, such as `{"type": "integer", "not": {"type": "number"}}` | "`not` rejects every value of the type: the schema accepts no value; it is read as any JSON value" |
+
+A subschema that accepts every value that the schema around reads, such as `{"type": "integer", "not": {"type": "number"}}`, leaves no value: the schema [accepts no value](#schemas-that-accept-no-value), with the warning "`not` rejects every value of the type: the schema accepts no value, and reading it always fails".
 
 ## Dialects and references
 
@@ -760,7 +788,6 @@ A warning names the location in the schema and what the generated code does inst
 | a variant of more alternatives than `--max-alternatives` | "a variant of 447 alternatives is more than 64 (--max-alternatives) ..." | reads any JSON value there |
 | a reference that cannot be followed | a missing file, a URI that is not the `$id` of a schema read and is not mapped to a file, a file of `--schema` that cannot be read | reads any JSON value there |
 | a schema that refers to itself with no array or object between | `{"anyOf": [{"$ref": "#/$defs/D"}, {"type": "string"}]}` | reads any JSON value there |
-| a schema `false` that is not a property | `"$defs": {"Never": false}`, `"items": {"$ref": "#/$defs/Never"}` | reads any JSON value there |
 | a default or an example that does not convert | "the default ... is not converted to the C++ type; the field is std::optional" | keeps it in a comment |
 | an alternative dropped | an alternative of `oneOf` contained in another one | reads the same values |
 | contradictory settings | see below | see below |
@@ -777,6 +804,7 @@ A schema can contradict itself, so that no value is valid at some place. The gen
 | `minContains` above `maxContains` | compiles, and reading an array there always fails |
 | a key in `required` whose property has the schema `false` | compiles, and reading an object there always fails |
 | a key in `required` that fails `propertyNames` | compiles, and reading an object there always fails |
+| keywords that no value satisfies together, such as `oneOf` of two subschemas that accept every value, or `"contains": false` on arrays | compiles, and reading a value there always fails |
 | `const` or `enum` beside bounds or lengths that reject some of its values | reads the values of `const` and `enum` as they are, also those that the schema rejects |
 | `const` or `enum` with values outside `type`, such as `{"type": "string", "enum": ["a", []]}` | reads the values of the types of `type`, `"a"` here |
 | `const` or `enum` with no value of the types of `type`, such as `{"type": "object", "enum": ["a", "b"]}` | ignores `type` and reads the values of `const` and `enum`, as `"a"` and `"b"` here |
@@ -795,7 +823,9 @@ The seventh and the last rows are the ones where the code reads less strictly wi
 *   `additionalProperties: {}`, `true` and an absent keyword;
 *   `patternProperties` of a map and the `propertyNames` with `additionalProperties` of the map;
 *   `propertyNames` of a struct and the `anyOf` that `json_schema<T>()` writes for it, with the keys of the fields and the patterns;
+*   `false` and `{"not": {}}`;
 *   a property whose schema is `false`, and `not` of `required` of its key;
+*   `propertyNames: false` and `maxProperties: 0`;
 *   several `pattern` in `allOf`, and the `pattern` with `allOf` of the others that `json_schema<T>()` writes;
 *   `propertyNames` that a key of a property fails, and `not` of `required` of that key.
 
