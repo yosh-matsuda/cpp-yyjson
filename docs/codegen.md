@@ -219,6 +219,10 @@ The subschemas of `allOf`, and the keywords beside `$ref`, merge into one schema
 | `{"allOf": [{"properties": {"x_b": {"type": "integer"}}}, {"patternProperties": {"^x_": {"minimum": 0}}}]}` | `x_b` is `std::optional<std::int64_t>` with `yyjson::minimum(0)` |
 | `{"type": "array", "prefixItems": [{"type": "string"}], "allOf": [{"items": false}]}` | `yyjson::max_items(0)` |
 | `{"allOf": [{"type": "integer"}, {"type": "string"}]}`, types with no value in common | the schema `false`; as a property, `yyjson::not_(yyjson::field(k, yyjson::required))` |
+| `{"allOf": [{"const": 1}, {"const": 2}]}`, values that differ | the schema `false`, as above |
+| `{"type": "string", "allOf": [{"pattern": "^a"}, {"pattern": "z$"}]}` | `yyjson::pattern("^a"), yyjson::pattern("z$")`; a string must match both |
+
+Two different `contains` in `allOf` ask for an element of each, which may be different elements; one `yyjson::contains` cannot say that. The first `contains` is kept with its own `minContains` and `maxContains`, and the second is left out with a warning, so the code reads more arrays than the schema accepts.
 
 The keywords that constrain a value become the [constraints](validation.md#constraints) of the same name: `minimum` becomes `yyjson::minimum`, `items` with constraints becomes `yyjson::items(...)`, `propertyNames` becomes `yyjson::property_names(...)`, and so on. The `format`s that the library checks become `yyjson::format`; the others are left out, with a warning for `idn-email`, `idn-hostname`, `iri` and `iri-reference`. `"format": "regex"` becomes `yyjson::format("regex")`, which the [`yyjson::pattern_matcher<>`](validation.md#pattern-matcher) of the program checks, as it checks `pattern`; with `--no-pattern` it is left out with a warning.
 
@@ -751,7 +755,7 @@ A warning names the location in the schema and what the generated code does inst
 | Group | Example | The generated code |
 | --- | --- | --- |
 | a keyword that is not supported | `$dynamicRef`, `$recursiveRef`, `if` of a string | reads more than the schema accepts |
-| a form that is not supported | `contains` that the elements cannot express, `minItems` or `maxItems` beyond the positions of an [array of positions](#arrays-of-positions), [`unevaluatedProperties` beside `anyOf`](#unevaluatedproperties-and-unevaluateditems) | reads more than the schema accepts |
+| a form that is not supported | `contains` that the elements cannot express, two different `contains` in `allOf`, `minItems` or `maxItems` beyond the positions of an [array of positions](#arrays-of-positions), [`unevaluatedProperties` beside `anyOf`](#unevaluatedproperties-and-unevaluateditems) | reads more than the schema accepts |
 | a type inferred from keywords, with `--infer-types` | "the schema has no `type`; it is read as string from its keywords" | reads only that type |
 | a variant of more alternatives than `--max-alternatives` | "a variant of 447 alternatives is more than 64 (--max-alternatives) ..." | reads any JSON value there |
 | a reference that cannot be followed | a missing file, a URI that is not the `$id` of a schema read and is not mapped to a file, a file of `--schema` that cannot be read | reads any JSON value there |
@@ -792,6 +796,7 @@ The seventh and the last rows are the ones where the code reads less strictly wi
 *   `patternProperties` of a map and the `propertyNames` with `additionalProperties` of the map;
 *   `propertyNames` of a struct and the `anyOf` that `json_schema<T>()` writes for it, with the keys of the fields and the patterns;
 *   a property whose schema is `false`, and `not` of `required` of its key;
+*   several `pattern` in `allOf`, and the `pattern` with `allOf` of the others that `json_schema<T>()` writes;
 *   `propertyNames` that a key of a property fails, and `not` of `required` of that key.
 
 The `title` and `description` of the subschema beside `{"type": "null"}` are lost: the variant whose first alternative is `std::monostate` has no place for them, and the description of the property stays.
