@@ -218,6 +218,7 @@ The subschemas of `allOf`, and the keywords beside `$ref`, merge into one schema
 | `{"allOf": [{"properties": {"a": {"type": "integer"}}}, {"properties": {"c": {"type": "string"}}, "additionalProperties": false}]}` | `a` is `std::optional<yyjson::value>`, with `yyjson::not_(yyjson::field("a", yyjson::required))` |
 | `{"allOf": [{"properties": {"x_b": {"type": "integer"}}}, {"patternProperties": {"^x_": {"minimum": 0}}}]}` | `x_b` is `std::optional<std::int64_t>` with `yyjson::minimum(0)` |
 | `{"type": "array", "prefixItems": [{"type": "string"}], "allOf": [{"items": false}]}` | `yyjson::max_items(0)` |
+| `{"allOf": [{"type": "integer"}, {"type": "string"}]}`, types with no value in common | the schema `false`; as a property, `yyjson::not_(yyjson::field(k, yyjson::required))` |
 
 The keywords that constrain a value become the [constraints](validation.md#constraints) of the same name: `minimum` becomes `yyjson::minimum`, `items` with constraints becomes `yyjson::items(...)`, `propertyNames` becomes `yyjson::property_names(...)`, and so on. The `format`s that the library checks become `yyjson::format`; the others are left out, with a warning for `idn-email`, `idn-hostname`, `iri` and `iri-reference`. `"format": "regex"` becomes `yyjson::format("regex")`, which the [`yyjson::pattern_matcher<>`](validation.md#pattern-matcher) of the program checks, as it checks `pattern`; with `--no-pattern` it is left out with a warning.
 
@@ -339,6 +340,14 @@ The generator compares the alternatives as the library does, by their kinds, bou
 
 *   `yyjson::any_of` reads the first alternative that accepts a value, so an alternative contained in another one comes first.
 *   An alternative of `oneOf` contained in another one never reads a value alone, so it is dropped with a warning, and an alternative whose settings leave no value is dropped too.
+
+`anyOf` beside `oneOf` applies to each subschema of `oneOf`, as do the other keywords beside it: a value is valid when exactly one subschema of `oneOf` and some subschema of `anyOf` hold, which is when exactly one subschema of `oneOf`, together with the `anyOf`, holds. A subschema that accepts no value together with the keywords beside it is dropped without a warning, as the schema rejects every value there, and a schema none of whose subschemas accepts a value is the schema `false`:
+
+| Schema | Code |
+| --- | --- |
+| `{"anyOf": [{"type": "string"}, {"type": "integer"}], "oneOf": [{"type": "boolean"}, {"type": "integer"}]}` | `std::int64_t` |
+| `{"$ref": "#/$defs/NullableString", "anyOf": [{"type": "string", "format": "uri"}, {"type": "null"}]}` | `std::variant<std::monostate, std::string>`, with `yyjson::format("uri")` |
+| `{"anyOf": [{"allOf": [{"type": "null"}, {"type": "string"}]}, false]}` | the schema `false`; as a property, `yyjson::not_(yyjson::field(k, yyjson::required))` |
 
 `anyOf` or `oneOf` of objects that share a required property with a different `const` string in each becomes a `std::variant` with [`yyjson::internal_tag`](conversions.md#internal-tag), which picks the alternative by the key instead of trying each. When the type of the schema also allows `null`, as `"type": ["object", "null"]` does, `null` is an alternative of its own, `std::monostate`, if the subschemas let it through: for `anyOf` one of them, for `oneOf` exactly one.
 
