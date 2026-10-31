@@ -16431,16 +16431,15 @@ namespace yyjson
         template <typename T>
         void validate_value(const T& v);
 
-        // Whether the writer writes `v` as null, whose constraints the read does not check.
+        // Whether the writer writes `v` as null, whose constraints the read does not check: the read checks those of
+        // a value that holds null or nothing, as `nullable` and `null_is_checked` tell, and of no other.
         template <typename T>
         bool written_as_null(const T& v)
         {
-            if constexpr (std::same_as<T, std::nullptr_t> || std::same_as<T, std::monostate>)
+            if constexpr (nullable<T> || null_is_checked<T>)
+                return false;
+            else if constexpr (std::same_as<T, std::nullptr_t> || std::same_as<T, std::monostate>)
                 return true;
-            else if constexpr (owning_pointer<T>)
-                return !v;
-            else if constexpr (indirect_value<T>)
-                return !v.valueless_after_move() && written_as_null(*v);
             else if constexpr (requires { std::variant_size<T>::value; })
                 return !v.valueless_by_exception() &&
                        std::visit([](const auto& a) { return written_as_null(a); }, as_std_variant(v));

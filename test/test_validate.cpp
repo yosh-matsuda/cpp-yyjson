@@ -240,11 +240,15 @@ struct ValidateNulls
 {
     std::shared_ptr<int> p = std::make_shared<int>(0);
     std::map<ValidateColor, int> colors;
+    std::shared_ptr<int> step = std::make_shared<int>(1);
+    std::variant<std::monostate, int> pick;
 };
 template <>
 inline constexpr auto yyjson::annotations<ValidateNulls> =
     yyjson::annotate(yyjson::field("p", yyjson::satisfies<validate_set>),
-                     yyjson::field("colors", yyjson::property_names(yyjson::satisfies<validate_red>)));
+                     yyjson::field("colors", yyjson::property_names(yyjson::satisfies<validate_red>)),
+                     yyjson::field("step", yyjson::enum_(1, 2)),
+                     yyjson::field("pick", yyjson::enum_(1, nullptr)));
 
 struct ValidateNullables
 {
@@ -549,8 +553,15 @@ TEST(Validate, Order)
 
 TEST(Validate, Nulls)
 {
-    // the read does not check the constraints of a field that is written as null
-    expect_valid(with<ValidateNulls>([](auto& t) { t.p = nullptr; }));
+    // the read checks the constraints of a field that holds null or nothing when it reads null
+    expect_invalid(with<ValidateNulls>([](auto& t) { t.p = nullptr; }),
+                   R"(the value of the key "p" of ValidateNulls is rejected by yyjson::satisfies)", "/p");
+    // `yyjson::const_` and `yyjson::enum_` reject null unless they list `nullptr`
+    expect_valid(ValidateNulls{});
+    expect_invalid(with<ValidateNulls>([](auto& t) { t.step = nullptr; }),
+                   R"(the value of the key "step" of ValidateNulls is not one of 1, 2)", "/step");
+    expect_invalid(with<ValidateNulls>([](auto& t) { t.pick = 2; }),
+                   R"(the value of the key "pick" of ValidateNulls is not one of 1, null)", "/pick");
     // a key that is not read from its text is reported at the field
     expect_invalid(with<ValidateNulls>([](auto& t) { t.colors = {{ValidateColor::green, 1}}; }),
                    R"(the value of the key "colors" of ValidateNulls has a key that does not satisfy the )"
