@@ -1401,7 +1401,7 @@ auto str_var = cast<Variant>(str_json);                                   // des
 // -> "a"
 ```
 
-A `std::variant` is deserialized into the first of its alternatives, in the order of the template arguments, that the JSON value converts to. An alternative that never converts from the kind of the JSON value, such as `std::vector<double>` from a number, is skipped without trying it, while an alternative with a user-defined `from_json` is always tried. A variant whose alternatives a member of the JSON object names is read by that member instead, as a [tagged variant](#tagged-variants).
+A `std::variant` is deserialized into the first of its alternatives, in the order of the template arguments, that the JSON value converts to. An alternative that never converts from the kind of the JSON value, such as `std::vector<double>` from a number, is skipped without trying it, while an alternative with a user-defined `from_json` is always tried. A `std::bad_alloc` thrown while an alternative is tried propagates out of the read, rather than passing the value to the next alternative. A variant whose alternatives a member of the JSON object names is read by that member instead, as a [tagged variant](#tagged-variants).
 
 For a multi-type JSON array or object, using the caster for `std::tuple` is valuable and efficient.
 

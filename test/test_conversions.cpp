@@ -747,6 +747,15 @@ TEST(DirectReader, BadAllocIsNotRetried)
     EXPECT_EQ(caster<AllocationFails>::calls, 3);
 }
 
+TEST(Variant, BadAllocIsNotPassedOn)
+{
+    // `std::bad_alloc` from an alternative is thrown as it is, instead of trying the next alternative
+    using variant = std::variant<AllocationFails, int>;
+    EXPECT_THROW((void)yyjson::read<variant>("1"), std::bad_alloc);
+    EXPECT_THROW((void)yyjson::read("1").cast<variant>(), std::bad_alloc);
+    EXPECT_THROW((void)yyjson::read("[1]").cast<std::vector<variant>>(), std::bad_alloc);
+}
+
 struct NoDefaultValue
 {
     explicit NoDefaultValue(int v) : v(v) {}
