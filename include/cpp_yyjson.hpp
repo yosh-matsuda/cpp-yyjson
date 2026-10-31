@@ -2237,8 +2237,8 @@ namespace yyjson
         inline constexpr dom_kind dom_kind_of = dom_kind::none;
 
         // Whether the DOM value at `v`, of the kind `kind`, is read as T under the current strictness, which the
-        // node of `yyjson::contains(yyjson::is_type<T>)` keeps as a pointer, since its tree holds no types.  Defined
-        // after the DOM types.
+        // node of `yyjson::contains(yyjson::is_type<T>)` keeps as a pointer, since its tree holds no types; the kind
+        // `none` tests JSON null.  Defined after the DOM types.
         template <typename T>
         bool test_type(const void* v, dom_kind kind);
         struct type_test_info
@@ -8786,25 +8786,42 @@ namespace yyjson
         }
 
         // Whether `field` satisfies all the settings of the `yyjson::not_` of the node `NotLevel`, or of one of the
-        // `yyjson::not_` after it.  An empty `std::optional` or null satisfies none.
+        // `yyjson::not_` after it.  An empty `std::optional` or null is null, as JSON Schema sees it: it satisfies
+        // the settings unless `yyjson::const_` or `yyjson::enum_` leave `nullptr` out, and a
+        // `yyjson::is_type<T>` when T reads null.
         template <typename NotLevel, typename F>
         bool rejected_by_not(const F& field)
         {
             using U = constrained_value_t<F>;
+            constexpr bool lists_null = std::ranges::any_of(
+                NotLevel::values, [](const json_scalar& s) { return s.kind == json_scalar::kind_t::null; });
+            static_assert(!lists_null || nullable<F>,
+                          "yyjson::const_(nullptr) and yyjson::enum_ with nullptr in yyjson::not_ "
+                          "constrain a value that can be null: std::optional, a smart pointer, or std::variant of "
+                          "std::monostate");
+            if constexpr (NotLevel::node.type_test != nullptr)
+                static_assert(dom_kind_of<U> != dom_kind::none,
+                              "yyjson::is_type<T> in yyjson::not_ tests a value of yyjson::value, yyjson::array or "
+                              "yyjson::object");
             const U* value = nullptr;
             if constexpr (nullable<F>)
                 value = held_value(field);
             else
                 value = std::addressof(field);
-            if (value == nullptr) return false;
-            auto all = value_constraint_violation<NotLevel, true>(*value) == constraint_kind::none;
-            if constexpr (NotLevel::node.type_test != nullptr)
+            bool all = false;
+            if (value != nullptr)
             {
-                static_assert(dom_kind_of<U> != dom_kind::none,
-                              "yyjson::is_type<T> in yyjson::not_ tests a value of yyjson::value, yyjson::array or "
-                              "yyjson::object");
-                if constexpr (dom_kind_of<U> != dom_kind::none)
+                all = value_constraint_violation<NotLevel, true>(*value) == constraint_kind::none;
+                if constexpr (NotLevel::node.type_test != nullptr && dom_kind_of<U> != dom_kind::none)
                     all = all && NotLevel::node.type_test->test(value, dom_kind_of<U>);
+            }
+            else
+            {
+                all = null_violation<NotLevel>() == constraint_kind::none;
+                if constexpr (NotLevel::node.type_test != nullptr)
+                {
+                    if (all) all = NotLevel::node.type_test->test(nullptr, dom_kind::none);
+                }
             }
             if (all) return true;
             if constexpr (NotLevel::node.next != 0)
@@ -15443,6 +15460,8 @@ namespace yyjson
             };
             switch (kind)
             {
+                case dom_kind::none:
+                    return test(writer::value());
                 case dom_kind::array:
                     return test(*static_cast<const writer::array*>(v));
                 case dom_kind::object:
@@ -19390,6 +19409,23 @@ namespace yyjson
             }
         }
 
+        // How much of null a nullable value reads with the settings of the level: none when the listed values leave
+        // `nullptr` out or a `yyjson::not_` has settings that all hold for null, part of it when such a `not_` has a
+        // `yyjson::is_type<T>`, whose answer for null is known only at run time.
+        template <typename Level, std::size_t Negated = Level::node.negated>
+        consteval bound_extent null_extent()
+        {
+            if constexpr (Negated == 0)
+                return admits_null<Level>() ? bound_extent::exact : bound_extent::none;
+            else
+            {
+                using N = typename Level::template at<Negated>;
+                const auto rest = null_extent<Level, N::node.next>();
+                if (rest == bound_extent::none || null_violation<N>() != constraint_kind::none) return rest;
+                return N::node.type_test != nullptr ? bound_extent::partial : bound_extent::none;
+            }
+        }
+
         // The bools that a `bool` reads with the values of `yyjson::const_` and `yyjson::enum_` of the
         // level, as the bits of `json_bound::booleans`.
         template <typename Level>
@@ -19713,10 +19749,10 @@ namespace yyjson
             }
             else if constexpr (std::derived_from<caster<U>, builtin_caster> && untagged_nullable<U>)
             {
-                // the settings are those of the value that it holds; null is read unless the listed values leave
-                // it out
+                // the settings are those of the value that it holds; null is read unless the listed values or a
+                // `yyjson::not_` leave it out
                 auto b = bound_of<typename nullable_holder<U>::value_type, Level>();
-                b.null = admits_null<Level>() ? bound_extent::exact : bound_extent::none;
+                b.null = null_extent<Level>();
                 return b;
             }
             else if constexpr (std::derived_from<caster<U>, builtin_caster> && indirect_value<U>)

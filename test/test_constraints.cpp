@@ -2854,6 +2854,60 @@ TEST(Constraints, ValueNot)
     EXPECT_EQ(e.path(), "/u");
 }
 
+// not_ of a value that may be null tests null as JSON Schema does: the settings other than const_ and enum_
+// hold for it, and is_type<T> reads it
+struct NullNot
+{
+    std::variant<std::monostate, int> above = 0;
+    std::variant<std::monostate, int> listed = 0;
+    std::variant<std::monostate, int> unlisted = 0;
+    std::vector<std::optional<yyjson::value>> nulls;
+    std::vector<std::optional<yyjson::value>> ints;
+};
+template <>
+inline constexpr auto yyjson::annotations<NullNot> =
+    yyjson::annotate(yyjson::field("above", yyjson::not_(yyjson::minimum(5))),
+                     yyjson::field("listed", yyjson::not_(yyjson::enum_(1, nullptr))),
+                     yyjson::field("unlisted", yyjson::not_(yyjson::enum_(1, 2))),
+                     yyjson::field("nulls", yyjson::items(yyjson::not_(yyjson::is_type<std::nullptr_t>))),
+                     yyjson::field("ints", yyjson::items(yyjson::not_(yyjson::is_type<int>))));
+// null is no longer read by the first alternative, so it does not contain the second
+using NullOrAbove = yyjson::one_of<yyjson::alt<std::optional<int>, yyjson::not_(yyjson::minimum(5))>, std::nullptr_t>;
+
+TEST(Constraints, ValueNotOfNull)
+{
+    const auto read = [](std::string_view members) {
+        const auto json = std::format(R"({{"above":0,"listed":0,"unlisted":0,"nulls":[],"ints":[],{}}})", members);
+        return yyjson::read<NullNot>(json);
+    };
+    const auto rejected = [&](std::string_view members, std::string_view path) {
+        const auto e = bad_cast_of([&] { (void)read(members); });
+        EXPECT_EQ(e.path(), path) << members << "\n" << e.what();
+    };
+    EXPECT_NO_THROW((void)read(R"("unlisted":null,"nulls":[1],"ints":[null,"a"])"));
+    rejected(R"("above":null)", "/above");
+    rejected(R"("listed":null)", "/listed");
+    rejected(R"("nulls":[1,null])", "/nulls/1");
+    rejected(R"("ints":[null,2])", "/ints/1");
+
+    auto t = NullNot{};
+    t.unlisted = std::monostate{};
+    t.ints = {std::nullopt};
+    EXPECT_NO_THROW(yyjson::validate(t));
+    t.above = std::monostate{};
+    EXPECT_EQ(bad_cast_of([&] { yyjson::validate(t); }).path(), "/above");
+    t.above = 0;
+    t.listed = std::monostate{};
+    EXPECT_EQ(bad_cast_of([&] { (void)yyjson::write(t, yyjson::strict); }).path(), "/listed");
+    t.listed = 0;
+    t.nulls = {std::nullopt};
+    EXPECT_EQ(bad_cast_of([&] { yyjson::validate(t); }).path(), "/nulls/0");
+
+    EXPECT_EQ(yyjson::read<NullOrAbove>("null").index(), 1);
+    EXPECT_EQ(yyjson::read<NullOrAbove>("4").index(), 0);
+    EXPECT_THROW((void)yyjson::read<NullOrAbove>("5"), yyjson::bad_cast);
+}
+
 // alternatives of yyjson::any_of and yyjson::one_of, with settings given as values and through pointers
 constexpr std::string_view alternative_id_regex = "^[a-z]+$";
 constexpr auto alternative_id_pattern = yyjson::pattern(alternative_id_regex);

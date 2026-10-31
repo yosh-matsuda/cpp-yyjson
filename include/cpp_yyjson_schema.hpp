@@ -962,6 +962,45 @@ namespace yyjson
                 }
                 return true;
             }
+            // What the `yyjson::not_` of the node n do to null: a `not_` whose settings all hold for null rejects it,
+            // unless it has a `yyjson::is_type<T>`, which tests it.
+            enum class negated_null
+            {
+                kept,
+                rejected,
+                tested
+            };
+            negated_null null_in_not(const schema_node* nodes, const schema_node* n) const
+            {
+                if (n == nullptr) return negated_null::kept;
+                auto result = negated_null::kept;
+                for (auto k = n->negated; k != 0; k = nodes[k].next)
+                {
+                    if (!admits_null(&nodes[k])) continue;
+                    if (nodes[k].type_test == nullptr) return negated_null::rejected;
+                    result = negated_null::tested;
+                }
+                return result;
+            }
+            // Writes the schema of null beside a value with the settings of the node n: `"type": "null"`, and the
+            // `not` of the `yyjson::is_type<T>` of each `yyjson::not_` whose other settings hold for null.
+            void emit_null(object_ref out, const schema_node* nodes, const schema_node* n)
+            {
+                out.emplace("type", "null");
+                if (null_in_not(nodes, n) != negated_null::tested) return;
+                std::size_t count = 0;
+                for (auto k = n->negated; k != 0; k = nodes[k].next)
+                    count += admits_null(&nodes[k]) ? 1 : 0;
+                auto negated = out.emplace("not", empty_object);
+                for (auto k = n->negated; k != 0; k = nodes[k].next)
+                {
+                    if (!admits_null(&nodes[k])) continue;
+                    if (count == 1) return emit_type_test(negated, *nodes[k].type_test);
+                    auto any = negated.contains("anyOf") ? *negated.find("anyOf")->second.as_array()
+                                                         : negated.emplace("anyOf", empty_array);
+                    emit_type_test(any.emplace_back(empty_object), *nodes[k].type_test);
+                }
+            }
             // Whether `yyjson::const_` or `yyjson::enum_` of the node n list only `nullptr`.
             bool only_null(const schema_node* n) const
             {
@@ -1370,15 +1409,15 @@ namespace yyjson
             else if constexpr (yyjson::detail::is_std_optional<T>::value || yyjson::detail::owning_pointer<T>)
             {
                 using U = std::remove_cvref_t<decltype(*std::declval<T&>())>;
-                if (!admits_null(n))
+                if (!admits_null(n) || null_in_not(nodes, n) == negated_null::rejected)
                     emit<U>(out, nodes, node);
                 else if (only_null(n))
-                    out.emplace("type", "null");
+                    emit_null(out, nodes, n);
                 else
                 {
                     auto any = out.emplace("anyOf", empty_array);
                     emit<U>(any.emplace_back(empty_object), nodes, node);
-                    any.emplace_back(empty_object).emplace("type", "null");
+                    emit_null(any.emplace_back(empty_object), nodes, n);
                 }
             }
             else if constexpr (yyjson::detail::indirect_value<T> &&
@@ -1398,12 +1437,21 @@ namespace yyjson
                 // its reference and has them beside it.
                 const auto alternatives = [&](auto any) {
                     [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                        (emit<std::variant_alternative_t<Is, T>>(any.emplace_back(empty_object), nodes, node), ...);
+                        const auto alternative = [&]<typename A>(object_ref o) {
+                            if constexpr (std::same_as<A, std::monostate>)
+                                emit_null(o, nodes, n);
+                            else
+                                emit<A>(o, nodes, node);
+                        };
+                        (alternative.template operator()<std::variant_alternative_t<Is, T>>(
+                             any.emplace_back(empty_object)),
+                         ...);
                     }(std::make_index_sequence<2>{});
                 };
-                if (!admits_null(n))
+                if (!admits_null(n) || null_in_not(nodes, n) == negated_null::rejected)
                 {
-                    // `yyjson::const_` or `yyjson::enum_` reject null; only the value is read.
+                    // `yyjson::const_`, `yyjson::enum_` or a `yyjson::not_` reject null; only the value is
+                    // read.
                     using V = std::variant_alternative_t<std::same_as<std::variant_alternative_t<0, T>, std::monostate>
                                                              ? 1
                                                              : 0,
@@ -1411,7 +1459,7 @@ namespace yyjson
                     emit<V>(out, nodes, node);
                 }
                 else if (only_null(n))
-                    out.emplace("type", "null");
+                    emit_null(out, nodes, n);
                 else if (!named<T>())
                     alternatives(out.emplace("anyOf", empty_array));
                 else

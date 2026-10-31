@@ -933,6 +933,21 @@ inline constexpr auto yyjson::annotations<NegatedValues> = yyjson::annotate(
     yyjson::if_then_else(yyjson::if_(yyjson::field("n", yyjson::const_(1))),
                          yyjson::then(yyjson::field("m", yyjson::not_(yyjson::const_(0))))));
 
+// not_ of values that may be null: null satisfies minimum, and is_type<T> tests it
+struct NegatedNulls
+{
+    std::variant<std::monostate, int> above = 0;
+    std::optional<std::variant<std::monostate, int>> listed;
+    std::vector<std::optional<yyjson::value>> nulls;
+    std::vector<std::optional<yyjson::value>> ints;
+};
+template <>
+inline constexpr auto yyjson::annotations<NegatedNulls> =
+    yyjson::annotate(yyjson::field("above", yyjson::not_(yyjson::minimum(5))),
+                     yyjson::field("listed", yyjson::not_(yyjson::enum_(1, nullptr))),
+                     yyjson::field("nulls", yyjson::items(yyjson::not_(yyjson::is_type<std::nullptr_t>))),
+                     yyjson::field("ints", yyjson::items(yyjson::not_(yyjson::is_type<int>))));
+
 // A field that its caster leaves out, which only `yyjson::strict` requires: the struct that holds it is a default of
 // the schema without `yyjson::strict`.
 struct MaybeInt
@@ -2313,6 +2328,27 @@ TEST(Schema, NegatedValues)
     EXPECT_FALSE(p["nv"]["anyOf"][0].contains("not"));
     EXPECT_EQ(p["u"]["anyOf"][0]["not"], json::parse(R"({"const":7})"));
     EXPECT_EQ(s["$defs"]["NegatedValues"]["then"]["properties"]["m"]["not"], json::parse(R"({"const":0})"));
+}
+
+TEST(Schema, NegatedNulls)
+{
+    check<NegatedNulls>({
+        R"({"above":0,"nulls":[],"ints":[]})",
+        R"({"above":null,"nulls":[],"ints":[]})",
+        R"({"above":5,"nulls":[],"ints":[]})",
+        R"({"above":0,"listed":null,"nulls":[],"ints":[]})",
+        R"({"above":0,"listed":1,"nulls":[],"ints":[]})",
+        R"({"above":0,"listed":2,"nulls":[],"ints":[]})",
+        R"({"above":0,"nulls":[1,"a"],"ints":[null,"a"]})",
+        R"({"above":0,"nulls":[null],"ints":[]})",
+        R"({"above":0,"nulls":[],"ints":[1]})",
+    });
+    const auto s = to_jsoncons(yyjson::json_schema<NegatedNulls>());
+    const auto& p = s["$defs"]["NegatedNulls"]["properties"];
+    EXPECT_EQ(p["above"], json::parse(R"({"type":"integer","minimum":-2147483648,"maximum":2147483647,)"
+                                      R"("not":{"minimum":5},"default":0})"));
+    EXPECT_FALSE(p["listed"].contains("anyOf"));
+    EXPECT_EQ(p["nulls"]["items"]["anyOf"][1], json::parse(R"({"type":"null","not":{"type":"null"}})"));
 }
 
 TEST(Schema, DefaultLeavingKeyOut)
