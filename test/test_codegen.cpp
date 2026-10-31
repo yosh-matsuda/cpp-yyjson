@@ -1625,17 +1625,52 @@ TEST(Codegen, PatternProperties)
         "propertyNames": {"maxLength": 4}
     })",
                                   {});
-    EXPECT_EQ(warnings(checked), "#/propertyNames: `propertyNames` is checked only for the keys that name no property\n");
+    // the generator checks the keys of the properties: an object must not have a key that fails
+    EXPECT_EQ(warnings(checked), "");
     EXPECT_TRUE(has(checked.code, "yyjson::property_names(yyjson::max_length(4))"));
+    EXPECT_TRUE(has(checked.code, "    yyjson::not_(yyjson::field(\"long_name\", yyjson::required)),\n"));
+    const auto unchecked = generate(R"({
+        "type": "object",
+        "properties": {"long_name": {"type": "integer"}},
+        "additionalProperties": {"type": "integer"},
+        "propertyNames": {"pattern": "(?<=x)y"}
+    })",
+                                    {});
+    EXPECT_EQ(warnings(unchecked),
+              "#/propertyNames: `propertyNames` is checked only for the keys that name no property\n");
+    // a struct that accepts no other key: only the keys of the properties, which the generator checks
     const auto closed = generate(R"({
+        "type": "object",
+        "properties": {"a": {"type": "integer"}, "modules": {"type": "integer"}, "b": {"type": "integer"}},
+        "required": ["b"],
+        "additionalProperties": false,
+        "propertyNames": {"maxLength": 4, "not": {"const": "b"}}
+    })",
+                                 {});
+    EXPECT_EQ(warnings(closed), "#/propertyNames: the key \"b\" is required and fails `propertyNames`; no object "
+                                "satisfies the schema\n");
+    EXPECT_TRUE(has(closed.code, "    yyjson::additional_properties(false),\n"
+                                 "    yyjson::not_(yyjson::field(\"modules\", yyjson::required)),\n"
+                                 "    yyjson::not_(yyjson::field(\"b\", yyjson::required)),\n"));
+    EXPECT_FALSE(has(closed.code, "extra"));
+    const auto closed_unchecked = generate(R"({
         "type": "object",
         "properties": {"a": {"type": "integer"}},
         "additionalProperties": false,
-        "propertyNames": {"maxLength": 4}
+        "propertyNames": {"pattern": "(?<=x)y"}
     })",
-                                 {});
-    EXPECT_EQ(warnings(closed), "#/propertyNames: `propertyNames` of an object without a field of yyjson::extra_keys "
-                                "is not supported and is ignored\n");
+                                           {});
+    EXPECT_EQ(warnings(closed_unchecked), "#/propertyNames: `propertyNames` is not checked: the generator cannot tell "
+                                          "whether the keys of the properties satisfy it\n");
+    const auto closed_listed = generate(R"({
+        "type": "object",
+        "properties": {"Verb": {"type": "string"}, "x": {"type": "integer"}},
+        "additionalProperties": false,
+        "propertyNames": {"anyOf": [{"const": "Verb"}, {"$ref": "#/$defs/k"}]},
+        "$defs": {"k": {"enum": ["x", "y"]}}
+    })",
+                                        {});
+    EXPECT_EQ(warnings(closed_listed), "");
     // a struct that accepts other keys gets a field of yyjson::extra_keys of any JSON value for `propertyNames`
     const auto open = generate(R"({
         "type": "object",
@@ -1651,12 +1686,44 @@ TEST(Codegen, PatternProperties)
     const auto inexpressible = generate(R"({
         "type": "object",
         "properties": {"a": {"type": "integer"}},
-        "propertyNames": {"anyOf": [{"const": "a"}, {"enum": ["b"]}]}
+        "propertyNames": {"anyOf": [{"const": ""}, {"pattern": "^[a-z]+$"}]}
     })",
                                         {});
     EXPECT_EQ(warnings(inexpressible),
               "#/propertyNames: `propertyNames` is not expressed by string constraints and is ignored\n");
     EXPECT_FALSE(has(inexpressible.code, "extra"));
+
+    // `propertyNames` read as a schema of strings: subschemas of `anyOf` that accept no string are left out, one
+    // that accepts every string checks nothing, `const` / `enum` are one `enum`, and `not` is yyjson::not_
+    const auto shapes = generate(R"({
+        "type": "object",
+        "properties": {
+            "a": {"type": "object", "additionalProperties": {"type": "integer"},
+                  "propertyNames": {"anyOf": [{"type": "string", "enum": ["X"]}, {"not": {}}, {"type": "integer"}]}},
+            "b": {"type": "object", "additionalProperties": {"type": "integer"},
+                  "propertyNames": {"anyOf": [{"const": "X"}, {"$ref": "#/$defs/y"}]}},
+            "c": {"type": "object", "additionalProperties": {"type": "integer"},
+                  "propertyNames": {"anyOf": [{"enum": ["X"]}, {"format": "python-module-name"}]}},
+            "d": {"type": "object", "additionalProperties": {"type": "integer"},
+                  "propertyNames": {"pattern": "^[a-z]", "not": {"enum": ["constructor", "prototype"]}}},
+            "e": {"type": "object", "additionalProperties": {"type": "integer"},
+                  "propertyNames": {"allOf": [{"$ref": "#/$defs/code"}, {"not": {"const": "A0"}}]}},
+            "f": {"type": "object", "additionalProperties": {"type": "integer"},
+                  "propertyNames": {"oneOf": [{"const": "X"}, {"const": "X"}]}}
+        },
+        "$defs": {"y": {"enum": ["Y", "Z"]}, "code": {"type": "string", "pattern": "^[A-Z]+[0-9]+$"}}
+    })",
+                                 {});
+    EXPECT_EQ(warnings(shapes),
+              "#/properties/f/propertyNames: `propertyNames` is not expressed by string constraints and is ignored\n");
+    EXPECT_TRUE(has(shapes.code, "    yyjson::field(\"a\", yyjson::property_names(yyjson::enum_(\"X\"))),\n"));
+    EXPECT_TRUE(has(shapes.code, "    yyjson::field(\"b\", yyjson::property_names(yyjson::enum_(\"X\", \"Y\", "
+                                 "\"Z\"))),\n"));
+    EXPECT_FALSE(has(shapes.code, "yyjson::field(\"c\""));
+    EXPECT_TRUE(has(shapes.code, "    yyjson::field(\"d\", yyjson::property_names(yyjson::pattern(\"^[a-z]\"), "
+                                 "yyjson::not_(yyjson::enum_(\"constructor\", \"prototype\")))),\n"));
+    EXPECT_TRUE(has(shapes.code, "    yyjson::field(\"e\", yyjson::property_names(yyjson::pattern(\"^[A-Z]+[0-9]+$\"), "
+                                 "yyjson::not_(yyjson::const_(\"A0\")))));\n"));
 
     // a schema that the name of a key selects: a field for each pattern; --no-pattern keeps the other keys as any
     // JSON value, with a warning

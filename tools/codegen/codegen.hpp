@@ -3039,31 +3039,146 @@ namespace cpp_yyjson_codegen
                 return {&pn, fields.empty()};
             }
 
-            // whether the key `k` satisfies the schema `names` of `propertyNames`, as far as the generator checks
-            // it: `minLength`, `maxLength` and `pattern`; false for another keyword
-            static bool key_satisfies(std::string_view k, const json& names)
+            // The settings of the keys of an object from the schema `s` of `propertyNames`, which sees only strings:
+            // a subschema of `anyOf` / `oneOf` that accepts no string is left out, one that accepts every string
+            // leaves the keys unchecked under `anyOf`, subschemas of `const` / `enum` are one `enum`, and `not` is
+            // yyjson::not_.  Nothing when string settings cannot express the schema.
+            std::optional<settings> key_settings(const json& s, const std::string& loc, int depth = 0)
             {
-                if (names.is_bool()) return names.b;
-                const auto length = static_cast<std::uint64_t>(
-                    std::ranges::count_if(k, [](char c) { return (static_cast<unsigned char>(c) & 0xC0) != 0x80; }));
-                const auto matches = [&](const std::string& pattern) {
+                const auto* n = normalize_full(&s, loc);
+                switch (reach_of(n, "string", loc))
+                {
+                    case reach::none:
+                        return std::nullopt;
+                    case reach::all:
+                        return settings();
+                    case reach::some:
+                        break;
+                }
+                if (!n->is_object() || depth > 8) return std::nullopt;
+                const auto both = [](settings a, const settings& b) {
+                    std::ranges::copy(b.constraints, std::back_inserter(a.constraints));
+                    std::ranges::copy(b.negated, std::back_inserter(a.negated));
+                    return a;
+                };
+                const auto* any = n->find("anyOf");
+                const auto* one = n->find("oneOf");
+                if (any != nullptr || one != nullptr)
+                {
+                    const auto* list = any != nullptr ? any : one;
+                    const auto* kw = any != nullptr ? "anyOf" : "oneOf";
+                    if ((any != nullptr && one != nullptr) || !list->is_array()) return std::nullopt;
+                    auto rest_schema = *n;
+                    rest_schema.erase(kw);
+                    const auto rest = key_settings(*store_merged(std::move(rest_schema)), loc, depth + 1);
+                    if (!rest) return std::nullopt;
+                    auto alternatives = std::vector<settings>();
+                    auto values = std::vector<json>();
+                    auto listed = true;
+                    for (std::size_t i = 0; i < list->items.size(); ++i)
+                    {
+                        const auto bloc = loc + "/" + kw + "/" + std::to_string(i);
+                        const auto* b = &list->items[i];
+                        const auto r = reach_of(b, "string", bloc);
+                        if (r == reach::none) continue;
+                        auto e = r == reach::all ? std::optional<settings>(settings())
+                                                 : key_settings(*b, bloc, depth + 1);
+                        if (!e) return std::nullopt;
+                        if (e->empty())
+                        {
+                            // every string, of which `oneOf` takes those that no other subschema accepts
+                            if (one != nullptr) return std::nullopt;
+                            return rest;
+                        }
+                        const auto& c = e->constraints;
+                        if (e->negated.empty() && c.size() == 1 && (c[0].keyword == "const" || c[0].keyword == "enum"))
+                        {
+                            for (const auto& v : c[0].keyword == "const" ? std::span(&c[0].value, 1)
+                                                                        : std::span(c[0].value.items))
+                            {
+                                if (!v.is_string()) continue;
+                                if (std::ranges::any_of(values, [&](const json& x) { return equal(x, v); }))
+                                {
+                                    // under `oneOf`, a string that two subschemas accept is not a key
+                                    if (one != nullptr) return std::nullopt;
+                                    continue;
+                                }
+                                values.push_back(v);
+                            }
+                        }
+                        else
+                            listed = false;
+                        alternatives.push_back(std::move(*e));
+                    }
+                    if (alternatives.empty()) return std::nullopt;
+                    if (alternatives.size() == 1) return both(*rest, alternatives[0]);
+                    if (!listed) return std::nullopt;
+                    auto e = json::object_of();
+                    e.set("type", json::string_of("string"));
+                    e.set("enum", json::array_of(std::move(values)));
+                    const auto u = settings_for(*store_merged(std::move(e)), make(tk::string), loc);
+                    if (!u) return std::nullopt;
+                    return both(*rest, *u);
+                }
+                if (const auto* list = n->find("$conditions"))
+                {
+                    if (!list->is_array()) return std::nullopt;
+                    auto rest_schema = *n;
+                    rest_schema.erase("$conditions");
+                    auto out = key_settings(*store_merged(std::move(rest_schema)), loc, depth + 1);
+                    if (!out) return std::nullopt;
+                    for (const auto& c : list->items)
+                    {
+                        // `dependentSchemas` applies to objects only
+                        if (c.has("dependentSchemas")) continue;
+                        const auto* nt = c.find("not");
+                        if (nt == nullptr || c.has("if")) return std::nullopt;
+                        const auto* l = c.find("$loc");
+                        auto nots = std::vector<std::pair<const json*, std::string>>();
+                        expand_not(nt, (l != nullptr && l->is_string() ? l->text : loc) + "/not", nots);
+                        for (const auto& [sub, nloc] : nots)
+                        {
+                            const auto r = reach_of(sub, "string", nloc);
+                            if (r == reach::none) continue;
+                            if (r == reach::all) return std::nullopt;
+                            auto e = key_settings(*sub, nloc, depth + 1);
+                            if (!e || e->empty()) return std::nullopt;
+                            out->negated.push_back(std::move(*e));
+                        }
+                    }
+                    return out;
+                }
+                return settings_for(*n, make(tk::string), loc);
+            }
+
+            // whether the key `k` satisfies the settings `s` of keys: unknown when a pattern that std::regex does
+            // not read or a format that the generator does not check decides it
+            fit key_fit(const std::string& k, const settings& s) const
+            {
+                auto r = fit::yes;
+                auto rest = s;
+                rest.negated.clear();
+                std::erase_if(rest.constraints, [&](const settings::constraint& c) {
+                    if (c.keyword != "pattern") return false;
                     try
                     {
-                        return std::regex_search(k.begin(), k.end(), std::regex(pattern, std::regex::ECMAScript));
+                        if (!std::regex_search(k, std::regex(c.value.text, std::regex::ECMAScript))) r = fit::no;
                     }
                     catch (const std::regex_error&)
                     {
-                        return false;
+                        r = std::min(r, fit::unknown);
                     }
-                };
-                return std::ranges::all_of(names.members, [&](const auto& m) {
-                    const auto& [key, v] = m;
-                    const auto n = as_uint64(v);
-                    return key == "minLength"   ? n && length >= *n
-                           : key == "maxLength" ? n && length <= *n
-                           : key == "pattern"   ? v.is_string() && matches(v.text)
-                                                : key == "title" || key == "description" || key == "$comment";
+                    return true;
                 });
+                if (r == fit::no) return r;
+                r = std::min(r, fits(json::string_of(k), make(tk::string), rest));
+                for (const auto& e : s.negated)
+                {
+                    if (r == fit::no) break;
+                    const auto inner = key_fit(k, e);
+                    r = inner == fit::yes ? fit::no : inner == fit::unknown ? std::min(r, fit::unknown) : r;
+                }
+                return r;
             }
 
             // The type of the key `k`, which no property of the object schema `s` declares but another keyword
@@ -3409,25 +3524,37 @@ namespace cpp_yyjson_codegen
                 // `propertyNames` checks the keys that the field of yyjson::extra_keys receives; an open struct gets
                 // the field for it
                 auto names = std::optional<settings>();
-                if (const auto* pn = s.find("propertyNames"); pn != nullptr && !extra && !additional && patterns.empty())
-                    warn(loc + "/propertyNames", "`propertyNames` of an object without a field of yyjson::extra_keys is "
-                                                 "not supported and is ignored");
-                else if (pn != nullptr)
+                if (const auto* pn = s.find("propertyNames"))
                 {
+                    const auto pnloc = loc + "/propertyNames";
                     const auto [other, listed] = names_of_other_keys(*pn, fields);
-                    const auto exact = listed || std::ranges::all_of(fields, [&](const auto& f) {
-                                           return f.extra || key_satisfies(f.key, *other);
-                                       });
-                    names = settings_for(*other, make(tk::string), loc + "/propertyNames");
-                    if (!names)
-                        warn(loc + "/propertyNames", "`propertyNames` is not expressed by string constraints and is "
-                                                     "ignored");
-                    else
+                    names = key_settings(*other, pnloc);
+                    // the keys of the properties, checked here: an object must not have a key that fails
+                    auto unchecked = false;
+                    for (const auto& f : fields)
                     {
-                        if (!extra && additional) extra = typed{make(tk::any), {}};
-                        if (!exact)
-                            warn(loc + "/propertyNames",
-                                 "`propertyNames` is checked only for the keys that name no property");
+                        if (f.extra || listed) continue;
+                        const auto r = names ? key_fit(f.key, *names) : fit::unknown;
+                        if (r == fit::unknown) unchecked = true;
+                        if (r != fit::no) continue;
+                        if (f.required)
+                            warn(pnloc, "the key \"" + f.key +
+                                            "\" is required and fails `propertyNames`; no object satisfies the schema");
+                        absent.push_back(condition{
+                            .negated = true, .if_ = {cond_field{.key = f.key, .required = true}}, .loc = pnloc});
+                    }
+                    // a closed struct without fields of patterns has no other keys
+                    const auto others = extra || additional || !patterns.empty();
+                    if (!names && (others || unchecked))
+                        warn(pnloc, "`propertyNames` is not expressed by string constraints and is ignored");
+                    else if (names)
+                    {
+                        if (others && !extra && additional) extra = typed{make(tk::any), {}};
+                        if (unchecked && others)
+                            warn(pnloc, "`propertyNames` is checked only for the keys that name no property");
+                        else if (unchecked)
+                            warn(pnloc, "`propertyNames` is not checked: the generator cannot tell whether the keys "
+                                        "of the properties satisfy it");
                     }
                 }
                 if (!opts_.cpp26 && fields.size() > max_visitable_fields)
@@ -6543,7 +6670,7 @@ namespace cpp_yyjson_codegen
                     }
                     if (const auto* pn = n->find("propertyNames"))
                     {
-                        auto e = settings_for(*pn, make(tk::string), loc + "/propertyNames");
+                        auto e = key_settings(*pn, loc + "/propertyNames");
                         if (!e) return std::nullopt;
                         if (!e->empty()) out.property_names.push_back(std::move(*e));
                     }
@@ -6961,7 +7088,7 @@ namespace cpp_yyjson_codegen
                     r.s.max_items = r.s.max_items ? std::min(*r.s.max_items, *as_uint64(*v)) : *as_uint64(*v);
                 if (const auto* pn = s.find("propertyNames"))
                 {
-                    if (auto e = settings_for(*pn, make(tk::string), loc + "/propertyNames"); !e)
+                    if (auto e = key_settings(*pn, loc + "/propertyNames"); !e)
                         warn(loc + "/propertyNames",
                              "`propertyNames` is not expressed by string constraints and is ignored");
                     else if (!e->empty())
