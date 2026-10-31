@@ -702,6 +702,24 @@ inline constexpr auto yyjson::annotations<ConditionShape> = yyjson::annotate(
                                        yyjson::field("sides", yyjson::items(yyjson::minimum(1)),
                                                      yyjson::min_items(3)))),
     yyjson::not_(yyjson::field("kind", yyjson::pattern("^x"))), yyjson::field("r", yyjson::rename("radius")));
+// is_type in if_ and not_: an object in "auto" needs a name, and "kind" is not null; "point" read as ConditionPoint,
+// which strict reading does not do with another key, needs a label
+struct TypeTested
+{
+    std::optional<yyjson::value> auto_;
+    std::optional<std::string> name;
+    std::optional<yyjson::value> kind;
+    std::optional<yyjson::value> point;
+    std::optional<std::string> label;
+};
+template <>
+inline constexpr auto yyjson::annotations<TypeTested> = yyjson::annotate(
+    yyjson::field("auto_", yyjson::rename("auto")),
+    yyjson::if_then_else(yyjson::if_(yyjson::field("auto_", yyjson::required, yyjson::is_type<yyjson::object>)),
+                         yyjson::then(yyjson::field("name", yyjson::required))),
+    yyjson::if_then_else(yyjson::if_(yyjson::field("point", yyjson::required, yyjson::is_type<ConditionPoint>)),
+                         yyjson::then(yyjson::field("label", yyjson::required))),
+    yyjson::not_(yyjson::field("kind", yyjson::required, yyjson::is_type<std::nullptr_t>)));
 // a field with yyjson::required in a condition, and an if_then_else without then
 struct Leveled
 {
@@ -1096,7 +1114,7 @@ namespace compile_rules
     static_assert(!condition_test_setting<yyjson::min_items> && !condition_test_setting<yyjson::unique_items_t> &&
                   !condition_test_setting<yyjson::satisfies_t> &&
                   !condition_test_setting<decltype(yyjson::items(yyjson::minimum(0)))> &&
-                  !condition_test_setting<yyjson::is_type_t<int>> && !condition_test_setting<yyjson::rename>);
+                  condition_test_setting<yyjson::is_type_t<int>> && !condition_test_setting<yyjson::rename>);
     static_assert(condition_assert_setting<yyjson::min_items> && condition_assert_setting<yyjson::is_type_t<int>> &&
                   condition_assert_setting<decltype(yyjson::items(yyjson::minimum(0)))>);
     static_assert(!condition_assert_setting<yyjson::rename> && !condition_assert_setting<yyjson::skip_t>);
@@ -2679,6 +2697,49 @@ TEST(Constraints, IsTypeFunction)
     EXPECT_TRUE((yyjson::is_type<std::map<std::string, yyjson::value>>(doc)));
     EXPECT_TRUE(yyjson::is_type<ConditionPoint>(yyjson::value(doc)));
     EXPECT_FALSE(yyjson::is_type<ConditionPoint>(yyjson::object(obj), yyjson::strict));
+}
+
+TEST(Constraints, IsTypeConditions)
+{
+    const auto reads = [](const char* json, bool strict = false) {
+        try
+        {
+            if (strict)
+                (void)yyjson::read<TypeTested>(json, yyjson::strict);
+            else
+                (void)yyjson::read<TypeTested>(json);
+            (void)(strict ? yyjson::read(json).cast<TypeTested>(yyjson::strict) : yyjson::read(json).cast<TypeTested>());
+            return true;
+        }
+        catch (const yyjson::bad_cast&)
+        {
+            return false;
+        }
+    };
+    for (const auto strict : {false, true})
+    {
+        EXPECT_TRUE(reads(R"({})", strict));
+        EXPECT_FALSE(reads(R"({"auto":{}})", strict));
+        EXPECT_TRUE(reads(R"({"auto":{},"name":"a"})", strict));
+        EXPECT_TRUE(reads(R"({"auto":[]})", strict));
+        EXPECT_TRUE(reads(R"({"auto":null})", strict));
+        EXPECT_FALSE(reads(R"({"kind":null})", strict));
+        EXPECT_TRUE(reads(R"({"kind":1})", strict));
+        EXPECT_FALSE(reads(R"({"point":{"x":1}})", strict));
+        EXPECT_TRUE(reads(R"({"point":"a"})", strict));
+    }
+    // {"x":1,"y":2} is a ConditionPoint only without yyjson::strict
+    EXPECT_FALSE(reads(R"({"point":{"x":1,"y":2}})"));
+    EXPECT_TRUE(reads(R"({"point":{"x":1,"y":2}})", true));
+    const auto e = bad_cast_of([] { (void)yyjson::read<TypeTested>(R"({"kind":null})"); });
+    EXPECT_TRUE(message_of(e).starts_with("TypeTested has the keys and the values that yyjson::not_ rejects"))
+        << e.what();
+    auto t = TypeTested{.auto_ = yyjson::read("{}"), .name = std::nullopt};
+    EXPECT_THROW(yyjson::validate(t), yyjson::bad_cast);
+    t.auto_ = yyjson::read("1");
+    EXPECT_NO_THROW(yyjson::validate(t));
+    t.kind = yyjson::read("null");
+    EXPECT_THROW(yyjson::validate(t), yyjson::bad_cast);
 }
 
 TEST(Constraints, TypedContains)

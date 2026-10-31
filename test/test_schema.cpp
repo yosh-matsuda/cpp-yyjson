@@ -977,6 +977,20 @@ inline constexpr auto yyjson::annotations<MultiKind> = yyjson::annotate(
     yyjson::field("list", yyjson::min_items(2), yyjson::pattern("^a")),
     yyjson::field("elements", yyjson::items(yyjson::exclusive_maximum(2), yyjson::min_length(1))));
 
+// yyjson::is_type<T> in if_ and not_: an object in "auto" needs a name, and "kind" is not null
+struct TypeTested
+{
+    std::optional<yyjson::value> auto_;
+    std::optional<std::string> name;
+    std::optional<yyjson::value> kind;
+};
+template <>
+inline constexpr auto yyjson::annotations<TypeTested> = yyjson::annotate(
+    yyjson::field("auto_", yyjson::rename("auto")),
+    yyjson::if_then_else(yyjson::if_(yyjson::field("auto_", yyjson::required, yyjson::is_type<yyjson::object>)),
+                         yyjson::then(yyjson::field("name", yyjson::required))),
+    yyjson::not_(yyjson::field("kind", yyjson::required, yyjson::is_type<std::nullptr_t>)));
+
 // A field that its caster leaves out, which only `yyjson::strict` requires: the struct that holds it is a default of
 // the schema without `yyjson::strict`.
 struct MaybeInt
@@ -2412,6 +2426,23 @@ TEST(Schema, MultiKindValues)
     EXPECT_EQ(p["v"]["enum"], json::parse(R"([1,"x",null])"));
     EXPECT_EQ(p["s"]["enum"], json::parse(R"(["dark",3])"));
     EXPECT_EQ(p["y"]["not"], json::parse(R"({"const":3})"));
+}
+
+TEST(Schema, TypeTestConditions)
+{
+    check<TypeTested>({
+        R"({})",
+        R"({"auto":{}})",
+        R"({"auto":{},"name":"a"})",
+        R"({"auto":[]})",
+        R"({"auto":null})",
+        R"({"kind":null})",
+        R"({"kind":1,"auto":"a"})",
+    });
+    const auto s = to_jsoncons(yyjson::json_schema<TypeTested>());
+    const auto& d = s["$defs"]["TypeTested"]["allOf"];
+    EXPECT_EQ(d[0]["if"], json::parse(R"({"properties":{"auto":{"type":"object"}},"required":["auto"]})"));
+    EXPECT_EQ(d[1]["not"], json::parse(R"({"properties":{"kind":{"type":"null"}},"required":["kind"]})"));
 }
 
 TEST(Schema, DefaultLeavingKeyOut)
