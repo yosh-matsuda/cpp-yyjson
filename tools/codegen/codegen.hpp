@@ -2005,7 +2005,17 @@ namespace cpp_yyjson_codegen
                 if (b0.is_bool()) return b0.b ? a0 : b0;
                 if (!a0.is_object() || !b0.is_object()) return a0;
                 const auto a = beside(a0, b0, loc);
-                const auto b = beside(b0, a0, loc);
+                auto b = beside(b0, a0, loc);
+                // an array that has an element of each `contains` may have different elements for them; one
+                // `contains` cannot say that, so the counts of the second go with it
+                if (const auto *ac = a.find("contains"), *bc = b.find("contains");
+                    ac != nullptr && bc != nullptr && !equal(*ac, *bc))
+                {
+                    warn(loc, "`allOf` has different values of `contains`; the first is used");
+                    std::erase_if(b.members, [](const auto& m) {
+                        return m.first == "contains" || m.first == "minContains" || m.first == "maxContains";
+                    });
+                }
                 auto r = a;
                 for (const auto& [k, bv] : b.members)
                 {
@@ -2061,6 +2071,23 @@ namespace cpp_yyjson_codegen
                     }
                     else if (k == "items" || k == "contains" || k == "propertyNames")
                         r.set(k, all_of(*av, bv));
+                    // several patterns stay as an array of them, each a yyjson::pattern of the value
+                    else if (k == "pattern")
+                    {
+                        auto list = json::array_of({});
+                        for (const auto* v : {av, &bv})
+                            for (const auto& x : v->is_array() ? v->items : std::vector<json>{*v})
+                                if (x.is_string() &&
+                                    std::ranges::none_of(list.items, [&](const json& y) { return equal(x, y); }))
+                                    list.items.push_back(x);
+                        if (list.items.size() == 1)
+                            r.set(k, std::move(list.items[0]));
+                        else
+                            r.set(k, std::move(list));
+                    }
+                    // no value equals two different values
+                    else if (k == "const" && !equal(*av, bv))
+                        return json::boolean_of(false);
                     else if (k == "prefixItems" && av->is_array() && bv.is_array())
                     {
                         auto p = *av;
@@ -2960,12 +2987,10 @@ namespace cpp_yyjson_codegen
                 }
                 if (out.property_names.empty()) out.property_names.emplace_back();
                 auto& names = out.property_names.front();
-                if (std::ranges::any_of(names.constraints, [](const auto& c) { return c.keyword == "pattern"; }))
-                {
-                    warn(loc, "`propertyNames` has a pattern; the keys are not checked against the patterns of "
-                              "`patternProperties`");
+                if (std::ranges::any_of(names.constraints, [&](const auto& c) {
+                        return c.keyword == "pattern" && c.value.text == pattern;
+                    }))
                     return;
-                }
                 names.constraints.push_back(
                     {"yyjson::pattern(" + cpp_string(pattern) + ")", "pattern", json::string_of(pattern)});
                 uses_pattern_ = true;
@@ -6429,11 +6454,14 @@ namespace cpp_yyjson_codegen
                     if (const auto n = count("maxLength"))
                         out.constraints.push_back(
                             {"yyjson::max_length(" + std::to_string(*n) + ")", "maxLength", *s.find("maxLength")});
-                    if (const auto* p = s.find("pattern"); p != nullptr && p->is_string())
+                    if (const auto* p = s.find("pattern"); p != nullptr && (p->is_string() || p->is_array()))
                     {
                         if (opts_.pattern)
                         {
-                            out.constraints.push_back({"yyjson::pattern(" + cpp_string(p->text) + ")", "pattern", *p});
+                            for (const auto& x : p->is_array() ? p->items : std::vector<json>{*p})
+                                if (x.is_string())
+                                    out.constraints.push_back(
+                                        {"yyjson::pattern(" + cpp_string(x.text) + ")", "pattern", x});
                             uses_pattern_ = true;
                         }
                         else

@@ -1650,11 +1650,11 @@ TEST(Codegen, PatternProperties)
         "additionalProperties": false
     })",
                             {});
-    EXPECT_EQ(warnings(w), "#/properties/m/patternProperties: `propertyNames` has a pattern; the keys are not checked "
-                           "against the patterns of `patternProperties`\n");
+    EXPECT_EQ(warnings(w), "");
     EXPECT_TRUE(has(w.code, "    std::optional<std::string> x_a;\n"));
     EXPECT_TRUE(has(w.code, "    yyjson::field(\"pattern1\", yyjson::pattern_properties(\"^x-\")));"));
-    EXPECT_TRUE(has(w.code, "    yyjson::field(\"m\", yyjson::property_names(yyjson::pattern(\"^[a-z]\"))),\n"));
+    EXPECT_TRUE(has(w.code, "    yyjson::field(\"m\", yyjson::property_names(yyjson::pattern(\"^[a-z]\"), "
+                            "yyjson::pattern(\"^a\"))),\n"));
     const auto n = generate(R"({"type": "object", "patternProperties": {"^x-": {"type": "integer"}},
                                 "additionalProperties": false})",
                             {.pattern = false});
@@ -2350,6 +2350,29 @@ TEST(Codegen, AllOfScopes)
     EXPECT_TRUE(has(arrays.code, "    std::optional<std::vector<std::int64_t>> t;\n"));
     EXPECT_TRUE(has(arrays.code, "    yyjson::field(\"t\", yyjson::max_items(2), "
                                  "yyjson::prefix_items(yyjson::minimum(0), yyjson::maximum(5))));\n"));
+}
+
+TEST(Codegen, AllOfValues)
+{
+    // every pattern of allOf applies; differing const values leave no value; the first of two contains is kept
+    const auto r = generate(R"({"type": "object", "properties": {
+        "s": {"type": "string", "allOf": [{"pattern": "^a"}, {"pattern": "z$"}, {"pattern": "^a"}]},
+        "t": {"allOf": [{"$ref": "#/$defs/S"}, {"pattern": "z$"}]},
+        "c": {"allOf": [{"const": 1}, {"const": 2}]},
+        "d": {"allOf": [{"const": "x"}, {"const": "x"}]},
+        "a": {"type": "array", "allOf": [{"contains": {"type": "integer"}, "minContains": 2},
+                                         {"contains": {"type": "string"}, "minContains": 3, "maxContains": 4}]}
+    }, "$defs": {"S": {"type": "string", "pattern": "^a"}}})",
+                            {});
+    EXPECT_EQ(warnings(r), "#/properties/a/allOf/1: `allOf` has different values of `contains`; the first is used\n");
+    EXPECT_TRUE(has(r.code, "    std::optional<std::string> s;\n    std::optional<std::string> t;\n"
+                            "    std::optional<yyjson::value> c;\n    std::optional<std::string> d;\n"));
+    EXPECT_TRUE(has(r.code, "    yyjson::not_(yyjson::field(\"c\", yyjson::required)),\n"));
+    EXPECT_TRUE(has(r.code, "    yyjson::field(\"s\", yyjson::pattern(\"^a\"), yyjson::pattern(\"z$\")),\n"
+                            "    yyjson::field(\"t\", yyjson::pattern(\"^a\"), yyjson::pattern(\"z$\")),\n"
+                            "    yyjson::field(\"d\", yyjson::const_(\"x\")),\n"
+                            "    yyjson::field(\"a\", yyjson::contains(yyjson::is_type<std::int64_t>), "
+                            "yyjson::min_contains(2)));\n"));
 }
 
 TEST(Codegen, FalseProperties)
