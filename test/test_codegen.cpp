@@ -1471,6 +1471,36 @@ TEST(Codegen, MultiKindConditions)
     EXPECT_TRUE(has(typed.code, "yyjson::then(yyjson::field(\"w\", "));
 }
 
+TEST(Codegen, ConditionsOfNullAndRepeatedReferences)
+{
+    // `type` null on a field that can be null is yyjson::const_(nullptr), in `if` and in `then`; `then` that
+    // refers again to the schema of the property adds nothing, even when its settings cannot be repeated there,
+    // and a reference to another schema whose settings cannot be is left out with a warning
+    const auto r = generate(R"({
+        "type": "object",
+        "properties": {
+            "kind": {"type": "string"},
+            "show": {"type": ["string", "null"]},
+            "margin": {"$ref": "#/$defs/Margin"},
+            "other": {"$ref": "#/$defs/Margin"}
+        },
+        "if": {"properties": {"kind": {"const": "a"}, "show": {"type": "null"}}},
+        "then": {"properties": {"show": {"type": "null"}, "margin": {"$ref": "#/$defs/Margin"},
+                                "other": {"$ref": "#/$defs/Other"}}},
+        "$defs": {
+            "Margin": {"type": "string", "minLength": 1, "not": {"$ref": "#/$defs/Bad"}},
+            "Other": {"type": "string", "maxLength": 3, "not": {"$ref": "#/$defs/Bad"}},
+            "Bad": {"pattern": "^-"}
+        }
+    })",
+                            {});
+    EXPECT_EQ(warnings(r), "#/then/properties/other: the schema of the key \"other\" is not expressed by the "
+                           "settings of its field and is ignored\n");
+    EXPECT_TRUE(has(r.code, "        yyjson::if_(yyjson::field(\"kind\", yyjson::const_(\"a\")), "
+                            "yyjson::field(\"show\", yyjson::const_(nullptr))),\n"
+                            "        yyjson::then(yyjson::field(\"show\", yyjson::const_(nullptr)))),\n"));
+}
+
 TEST(Codegen, ExtraKeys)
 {
     // `additionalProperties` with a schema beside `properties`: a map of the other keys, by the value schema

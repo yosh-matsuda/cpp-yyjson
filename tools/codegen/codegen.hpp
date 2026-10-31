@@ -744,6 +744,9 @@ namespace cpp_yyjson_codegen
             std::string default_from{};  // the function of yyjson::default_from that makes the default
             std::optional<json> dflt{};  // the default before render() converts it to `init`
             const json* schema = nullptr;  // a key that no property declares: the schema that gives its type
+            // a property that is only a `$ref`: its target, which a subschema of `if`, `then` or `else` that refers
+            // to it again does not narrow
+            const json* ref = nullptr;
             metadata meta{};
             std::string loc{};
         };
@@ -3214,7 +3217,12 @@ namespace cpp_yyjson_codegen
                         const auto floc = loc + "/properties/" + pointer_token(k);
                         const auto* target = normalize_full(&sub, floc);
                         const auto never = target->is_bool() && !target->b;
+                        const auto calls = warn_calls_;
                         auto ft = never ? typed{} : type_of(&sub, floc, decls_[idx].name + pascal(k));
+                        // resolved again only when it resolved without a warning
+                        const auto* ref = !never && warn_calls_ == calls && is_pure_ref(sub)
+                                              ? resolve(*sub.find("$ref"), floc)
+                                              : nullptr;
                         if (never)
                         {
                             if (is_required(k))
@@ -3227,7 +3235,7 @@ namespace cpp_yyjson_codegen
                         const auto* dflt = own->find("default");
                         if (dflt == nullptr && target->is_object()) dflt = target->find("default");
                         if (dflt == nullptr && is_required(k) && target->is_object()) dflt = target->find("const");
-                        auto f = field{.member = k, .key = k, .meta = meta_of(*own), .loc = floc};
+                        auto f = field{.member = k, .key = k, .ref = ref, .meta = meta_of(*own), .loc = floc};
                         f.set = std::move(ft.s);
                         place_default(f, std::move(ft.t), dflt, is_required(k));
                         fields.push_back(std::move(f));
@@ -3700,6 +3708,9 @@ namespace cpp_yyjson_codegen
                             }
                             if (closed) (void)entry(key);
                             if (accepts_anything(*pn)) continue;
+                            // the schema of the property, which the field already follows, adds nothing
+                            if (f->ref != nullptr && is_pure_ref(ps) && resolve(*ps.find("$ref"), ploc) == f->ref)
+                                continue;
                             if (auto set = settings_for(ps, f->type, ploc))
                             {
                                 if (!set->empty()) entry(key).set = std::move(*set);
@@ -6380,6 +6391,15 @@ namespace cpp_yyjson_codegen
                 if (const auto types = type_list(*n); !types.empty())
                 {
                     const auto has = [&](std::string_view x) { return std::ranges::find(types, x) != types.end(); };
+                    // only null, of a value that can be null: yyjson::const_(nullptr), which the keywords of
+                    // the other kinds add nothing to
+                    if (types.size() == 1 && has("null") && may_be_null(target) && !n->has("const") &&
+                        !n->has("enum"))
+                    {
+                        auto out = settings();
+                        out.constraints.push_back({"yyjson::const_(nullptr)", "const", json(), true});
+                        return out;
+                    }
                     const auto covered = t.k == tk::string || is_enum              ? has("string")
                                          : is_integer_kind(t.k)                    ? has("integer") || has("number")
                                          : is_float_kind(t.k)                      ? has("number")
