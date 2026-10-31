@@ -199,7 +199,7 @@ Each schema maps to one C++ type:
 | `"type": "boolean"` | `bool` |
 | `"type": "null"` | `std::nullptr_t` |
 | `enum` of strings | an `enum class`; see [Enumerations](#enumerations) |
-| `enum` or `const` of other values | the type of the values, with `yyjson::enum_` or `yyjson::const_` |
+| `enum` or `const` of other values | the type of the values, with `yyjson::enum_` or `yyjson::const_`; objects and arrays as [`yyjson::json_text`](reference.md#yyjsonjson_text), see below |
 | a type array, such as `["string", "integer"]` | `std::variant<...>`, with the alternatives in the order null, boolean, integer, number, string, array, object |
 | `"type": [T, "null"]`, or `anyOf` / `oneOf` with `{"type": "null"}` | a variant whose first alternative is `std::monostate` |
 | `anyOf`, `oneOf` | [`yyjson::any_of`, `yyjson::one_of`](conversions.md#alternatives-with-constraints), or a `std::variant` with an internal tag; see [Variants](#variants) |
@@ -226,6 +226,39 @@ The subschemas of `allOf`, and the keywords beside `$ref`, merge into one schema
 Two different `contains` in `allOf` ask for an element of each, which may be different elements; one `yyjson::contains` cannot say that. The first `contains` is kept with its own `minContains` and `maxContains`, and the second is left out with a warning, so the code reads more arrays than the schema accepts.
 
 The keywords that constrain a value become the [constraints](validation.md#constraints) of the same name: `minimum` becomes `yyjson::minimum`, `items` with constraints becomes `yyjson::items(...)`, `propertyNames` becomes `yyjson::property_names(...)`, and so on. The `format`s that the library checks become `yyjson::format`; the others are left out, with a warning for `idn-email`, `idn-hostname`, `iri` and `iri-reference`. `"format": "regex"` becomes `yyjson::format("regex")`, which the [`yyjson::pattern_matcher<>`](validation.md#pattern-matcher) of the program checks, as it checks `pattern`; with `--no-pattern` it is left out with a warning.
+
+`const` and `enum` of objects and arrays become [`yyjson::json_text`](reference.md#yyjsonjson_text) in `yyjson::const_` and `yyjson::enum_`, and the type of the member comes from `type` and the keywords beside them, or from the values when they have none: `yyjson::object` for objects, `std::vector<yyjson::value>` for arrays, and `yyjson::value` for values of several kinds, with all values as `yyjson::json_text` then. `null` among the values makes the type nullable and is `yyjson::json_text("null")`. Under C++20, an alternative of `yyjson::any_of` or `yyjson::one_of` takes such a constraint through a `constexpr` variable, `&Root_mode_1_const` below, and under `--cpp26` the constraint itself:
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "origin": {"type": "object", "properties": {"x": {"type": "number"}}, "const": {"x": 0}},
+    "range": {"enum": [[1, 2], [3], null]},
+    "mode": {"anyOf": [{"const": {"auto": true}}, {"type": "string"}]}
+  },
+  "required": ["origin"]
+}
+```
+
+```cpp
+inline constexpr auto Root_mode_1_const = yyjson::const_(yyjson::json_text(R"({"auto":true})"));
+
+struct Root
+{
+    RootOrigin origin{.x = 0.0};
+    std::optional<std::variant<std::monostate, std::vector<yyjson::value>>> range;
+    std::optional<yyjson::any_of<std::string, yyjson::alt<yyjson::object, &Root_mode_1_const>>> mode;
+};
+
+template <>
+inline constexpr auto yyjson::annotations<Root> = yyjson::annotate(
+    yyjson::additional_properties(true),
+    yyjson::field("origin", yyjson::required, yyjson::const_(yyjson::json_text(R"({"x":0})"))),
+    yyjson::field("range", yyjson::enum_(yyjson::json_text("[1,2]"), yyjson::json_text("[3]"), yyjson::json_text("null"))));
+```
+
+The library reads each text into the type of the member once, under `yyjson::strict`, and compares the values after the conversion, so a struct compares field by field and an object regardless of the order of its keys. A text that the type cannot read makes that first read throw `std::invalid_argument`. The generator checks that the type reads each value, and leaves out a value of `enum` that is not of the `type` beside it, with a warning, since the schema rejects it. When it cannot tell, as for elements under `pattern`, it keeps the value and warns that the first read may throw.
 
 `contains`, `minContains` and `maxContains` become [`yyjson::contains(...)`, `yyjson::min_contains` and `yyjson::max_contains`](reference.md#yyjsoncontains-yyjsonmin_contains-yyjsonmax_contains). The subschema of `contains` becomes the constraints of the elements, as `items` does. On elements of `yyjson::value`, each constraint checks the elements of its kind and lets the others through, as the keyword does, so `{"minimum": 5}` counts the numbers from 5 and every element that is not a number. On elements of `yyjson::value` or `yyjson::object`, a subschema that no constraint expresses, such as one with `type` or `$ref`, becomes the type of the subschema in [`yyjson::is_type<T>`](reference.md#yyjsonis_type), and an element matches when it reads as that type:
 
@@ -788,6 +821,7 @@ A warning names the location in the schema and what the generated code does inst
 | a variant of more alternatives than `--max-alternatives` | "a variant of 447 alternatives is more than 64 (--max-alternatives) ..." | reads any JSON value there |
 | a reference that cannot be followed | a missing file, a URI that is not the `$id` of a schema read and is not mapped to a file, a file of `--schema` that cannot be read | reads any JSON value there |
 | a schema that refers to itself with no array or object between | `{"anyOf": [{"$ref": "#/$defs/D"}, {"type": "string"}]}` | reads any JSON value there |
+| a constant that the generator cannot check | "whether the type reads the value ["p"] is not known; if it does not, the first read of the type throws std::invalid_argument" | keeps it; reading may throw `std::invalid_argument` |
 | a default or an example that does not convert | "the default ... is not converted to the C++ type; the field is std::optional" | keeps it in a comment |
 | an alternative dropped | an alternative of `oneOf` contained in another one | reads the same values |
 | contradictory settings | see below | see below |
@@ -835,5 +869,5 @@ The `title` and `description` of the subschema beside `{"type": "null"}` are los
 
 *   Only the keywords listed above are expressed; the others are left out as described in [Warnings](#warnings).
 *   A struct of more than 1365 members needs `--cpp26`, and a struct of more than 100 members has no field of `yyjson::extra_keys` or `yyjson::pattern_properties` without it.
-*   A position of `prefixItems` in a `std::tuple` or a `std::vector` keeps up to 16 values of `const` and `enum`; more are dropped with a warning, as is `contains` of a type there. Under C++20, such a position copies up to 256 characters of string literals, and longer strings become `std::string_view` literals. An [array of positions](#arrays-of-positions) has none of these limits, but takes up to 100 positions under C++20.
+*   A position of `prefixItems` in a `std::tuple` or a `std::vector` keeps up to 16 values of `const` and `enum`; more are dropped with a warning, as is `contains` of a type there. Under C++20, such a position copies up to 256 characters of string literals, the texts of `yyjson::json_text` included, and longer strings become `std::string_view` literals. An [array of positions](#arrays-of-positions) has none of these limits, but takes up to 100 positions under C++20.
 *   Formats that the library does not check, and keywords that only annotate, are left out.
