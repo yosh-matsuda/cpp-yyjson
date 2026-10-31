@@ -680,6 +680,26 @@ TEST(Codegen, Enums)
     EXPECT_TRUE(has(e.code, "yyjson::field(\"s\", yyjson::enum_(\"\", \"on\"))"));
     EXPECT_EQ(warnings(e),
               "#/properties/s: `enum` has the empty string; the value is std::string with yyjson::enum_\n");
+
+    // yyjson::const_ and yyjson::enum_ reject null unless they list nullptr
+    const auto n = generate(R"({"type": "object", "properties": {
+        "num": {"enum": [1, 2, null]}, "flag": {"enum": [true, null]}, "word": {"enum": ["", "a", null]},
+        "nonull": {"type": ["integer", "null"], "enum": [1, 2]}, "s": {"type": ["string", "null"]},
+        "list": {"type": "array", "items": {"type": ["integer", "null"], "enum": [3, null]}}},
+        "if": {"properties": {"num": {"const": 1}}, "required": ["num"]},
+        "then": {"properties": {"s": {"enum": ["q", null]}}}
+    })",
+                            {});
+    EXPECT_TRUE(has(n.code, "    std::optional<std::variant<std::monostate, std::int64_t>> num;\n"
+                            "    std::optional<std::variant<std::monostate, bool>> flag;\n"
+                            "    std::optional<std::variant<std::monostate, std::string>> word;\n"
+                            "    std::optional<std::int64_t> nonull;\n"));
+    EXPECT_TRUE(has(n.code, "yyjson::then(yyjson::field(\"s\", yyjson::enum_(\"q\", nullptr)))"));
+    EXPECT_TRUE(has(n.code, "    yyjson::field(\"num\", yyjson::enum_(1, 2, nullptr)),\n"
+                            "    yyjson::field(\"flag\", yyjson::enum_(true, nullptr)),\n"
+                            "    yyjson::field(\"word\", yyjson::enum_(\"\", \"a\", nullptr)),\n"
+                            "    yyjson::field(\"nonull\", yyjson::enum_(1, 2)),\n"
+                            "    yyjson::field(\"list\", yyjson::items(yyjson::enum_(3, nullptr))));\n"));
 }
 
 TEST(Codegen, ReservedNames)
@@ -1267,9 +1287,10 @@ TEST(Codegen, Conditions)
         },
         "allOf": [
             {"if": {"properties": {"a": {"minimum": 10}}, "required": ["a"]}, "then": false},
-            {"if": {"properties": {"n": {"const": "z"}}}, "then": {"required": ["b"]}},
+            {"if": {"properties": {"n": {"type": "string"}}}, "then": {"required": ["b"]}},
             {"if": {"required": ["t"]}, "then": {"required": ["zz"]}},
-            {"not": {"minProperties": 2}}
+            {"not": {"minProperties": 2}},
+            {"if": {"properties": {"n": {"const": "z"}}}, "then": {"required": ["b"]}}
         ],
         "dependentSchemas": {"b": false, "zz": {"required": ["a"]}}
     })",
@@ -1291,7 +1312,11 @@ TEST(Codegen, Conditions)
                             "        yyjson::else_(yyjson::field(\"b\", yyjson::required))),\n"
                             "    yyjson::not_(yyjson::field(\"b\", yyjson::required)),\n"
                             "    yyjson::not_(yyjson::field(\"a\", yyjson::required, yyjson::minimum(10))),\n"
-                            "    yyjson::not_(yyjson::field(\"t\", yyjson::required)));\n"));
+                            "    yyjson::not_(yyjson::field(\"t\", yyjson::required)),\n"
+                            // a nullable field whose settings list values rejects null unless they list nullptr
+                            "    yyjson::if_then_else(\n"
+                            "        yyjson::if_(yyjson::field(\"n\", yyjson::const_(\"z\"))),\n"
+                            "        yyjson::then(yyjson::field(\"b\", yyjson::required))));\n"));
 
     // conditions of values that are not objects: those that test only keys, and those whose `if` only objects
     // satisfy, hold for them

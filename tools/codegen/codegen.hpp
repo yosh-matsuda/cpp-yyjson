@@ -676,6 +676,8 @@ namespace cpp_yyjson_codegen
             {
                 std::string text, keyword;
                 json value;
+                // yyjson::const_ / yyjson::enum_ that lists nullptr
+                bool null = false;
             };
             std::vector<constraint> constraints;
             std::optional<std::uint64_t> min_items, max_items;
@@ -3539,8 +3541,9 @@ namespace cpp_yyjson_codegen
                                         pk != "maxLength" && pk != "pattern" && pk != "format" &&
                                         pk != "contains" && pk != "minContains" && pk != "maxContains")
                                         return fail("`" + pk + "` of the key \"" + key + "\" is not tested by a field");
-                            // the settings of a field let null through, which the schema may reject
-                            if (may_be_null(f->type) && !accepts_null(*pn))
+                            // the settings of a field let null through unless they list values, so a schema
+                            // that rejects null only by `type` is not tested by them
+                            if (may_be_null(f->type) && !accepts_null(*pn) && !pn->has("const") && !pn->has("enum"))
                                 return fail("the value of the key \"" + key + "\" may be null, which the test of its "
                                             "field lets through");
                             // the test must be exact: a looser `contains` would change which branch is taken
@@ -4913,7 +4916,7 @@ namespace cpp_yyjson_codegen
                         if (is_nullable(t))
                         {
                             b = bound_of(t.args[1], s);
-                            b.null = bound_extent::exact;
+                            b.null = admits_null(s) ? bound_extent::exact : bound_extent::none;
                             return b;
                         }
                         for (const auto& a : t.args) b = d::unite_bounds(b, bound_of(a, settings()));
@@ -4921,6 +4924,21 @@ namespace cpp_yyjson_codegen
                     }
                 }
                 return d::universal_bound();
+            }
+
+            // whether a nullable value reads null with the settings `s`: unless yyjson::const_ or
+            // yyjson::enum_ leave nullptr out, as in the library
+            static bool admits_null(const settings& s)
+            {
+                auto listed = false;
+                auto null = true;
+                for (const auto& c : s.constraints)
+                    if (c.keyword == "const" || c.keyword == "enum")
+                    {
+                        listed = true;
+                        null = null && c.null;
+                    }
+                return !listed || null;
             }
 
             static bool reads_nothing(const json_bound& b)
@@ -5404,9 +5422,30 @@ namespace cpp_yyjson_codegen
                 }
                 else if (!strings.empty())
                     alts.push_back(make_enum(s0, s, strings, loc, hint, named && groups == 1));
-                if (alts.size() == 1) return nullable ? make_nullable(std::move(alts[0])) : std::move(alts[0]);
+                if (alts.size() == 1)
+                {
+                    if (!nullable) return std::move(alts[0]);
+                    list_null(alts[0].s);
+                    return make_nullable(std::move(alts[0]));
+                }
                 if (nullable) alts.push_back({make(tk::monostate), {}});
                 return make_variant(std::move(alts), loc);
+            }
+
+            // yyjson::const_ and yyjson::enum_ reject null unless they list it: a nullable value whose
+            // values they fix lists nullptr beside them
+            static void list_null(settings& s)
+            {
+                for (auto& c : s.constraints)
+                {
+                    if (c.text.starts_with("yyjson::const_("))
+                        c.text = "yyjson::enum_(" + c.text.substr(15, c.text.size() - 16) + ", nullptr)";
+                    else if (c.text.starts_with("yyjson::enum_("))
+                        c.text.insert(c.text.size() - 1, ", nullptr");
+                    else
+                        continue;
+                    c.null = true;
+                }
             }
 
             // the value of a property that tells an alternative: `const` or an `enum` of one string
@@ -5947,11 +5986,13 @@ namespace cpp_yyjson_codegen
                 }
             }
 
-            // the constraints of `const` / `enum` on a value of kind `k`, or nothing when they do not apply
-            std::optional<std::vector<settings::constraint>> value_constraints(const json& s, tk k)
+            // the constraints of `const` / `enum` on a value of kind `k`, or nothing when they do not apply; null is
+            // listed as nullptr when `null` is true
+            std::optional<std::vector<settings::constraint>> value_constraints(const json& s, tk k, bool null = false)
             {
                 auto out = std::vector<settings::constraint>();
                 const auto lit = [&](const json& v) -> std::optional<std::string> {
+                    if (null && v.is_null()) return "nullptr";
                     if (k == tk::string && v.is_string()) return cpp_string(v.text);
                     if (k == tk::boolean && v.is_bool()) return v.b ? "true" : "false";
                     if (is_float_kind(k) && v.is_number()) return float_literal(v);
@@ -5966,48 +6007,58 @@ namespace cpp_yyjson_codegen
                 {
                     const auto l = lit(*c);
                     if (!l) return std::nullopt;
-                    out.push_back({"yyjson::const_(" + *l + ")", "const", *c});
+                    out.push_back({"yyjson::const_(" + *l + ")", "const", *c, c->is_null()});
                 }
                 if (const auto* e = s.find("enum"))
                 {
                     if (!e->is_array()) return std::nullopt;
                     auto c = std::string("yyjson::enum_(");
                     auto n = 0;
+                    auto listed_null = false;
                     for (const auto& v : e->items)
                     {
                         const auto l = lit(v);
                         if (!l) continue;  // a value of another type: never read into this kind
                         c += (n++ > 0 ? ", " : "") + *l;
+                        listed_null = listed_null || v.is_null();
                     }
                     if (n == 0) return std::nullopt;
-                    out.push_back({c + ")", "enum", *e});
+                    out.push_back({c + ")", "enum", *e, listed_null});
                 }
                 return out;
             }
 
             // `const` and `enum` of an enumeration by the JSON names of its enumerators, which yyjson::const_ and
-            // yyjson::enum_ take; std::nullopt when they name none
-            std::optional<std::vector<settings::constraint>> enumerator_constraints(const json& s, const ctype& t) const
+            // yyjson::enum_ take; std::nullopt when they name none. Null is listed as nullptr when `null` is true
+            std::optional<std::vector<settings::constraint>> enumerator_constraints(const json& s, const ctype& t,
+                                                                                    bool null = false) const
             {
                 const auto& names = decls_[t.decl].enumerators;
                 const auto known = [&](const json& v) {
-                    return v.is_string() &&
-                           std::ranges::any_of(names, [&](const auto& e) { return e.second == v.text; });
+                    return (null && v.is_null()) ||
+                           (v.is_string() &&
+                            std::ranges::any_of(names, [&](const auto& e) { return e.second == v.text; }));
                 };
+                const auto lit = [](const json& v) { return v.is_null() ? std::string("nullptr") : cpp_string(v.text); };
                 auto out = std::vector<settings::constraint>();
                 if (const auto* c = s.find("const"))
                 {
                     if (!known(*c)) return std::nullopt;
-                    out.push_back({"yyjson::const_(" + cpp_string(c->text) + ")", "const", *c});
+                    out.push_back({"yyjson::const_(" + lit(*c) + ")", "const", *c, c->is_null()});
                 }
                 if (const auto* e = s.find("enum"))
                 {
                     if (!e->is_array()) return std::nullopt;
                     auto list = std::vector<std::string>();
+                    auto listed_null = false;
                     for (const auto& v : e->items)
-                        if (known(v)) list.push_back(cpp_string(v.text));
+                        if (known(v))
+                        {
+                            list.push_back(lit(v));
+                            listed_null = listed_null || v.is_null();
+                        }
                     if (list.empty()) return std::nullopt;
-                    out.push_back({"yyjson::enum_(" + join(list) + ")", "enum", *e});
+                    out.push_back({"yyjson::enum_(" + join(list) + ")", "enum", *e, listed_null});
                 }
                 return out;
             }
@@ -6053,7 +6104,9 @@ namespace cpp_yyjson_codegen
                 if (n->has("const") || n->has("enum"))
                 {
                     if (!scalar && !is_enum) return std::nullopt;
-                    const auto c = is_enum ? enumerator_constraints(*n, t) : value_constraints(*n, t.k);
+                    // null is read into a nullable value, and the settings reject it unless they list it
+                    const auto null = may_be_null(target) && accepts_null(*n);
+                    const auto c = is_enum ? enumerator_constraints(*n, t, null) : value_constraints(*n, t.k, null);
                     if (!c) return std::nullopt;
                     out.constraints = *c;
                 }
