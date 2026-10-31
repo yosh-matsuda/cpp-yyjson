@@ -8759,6 +8759,9 @@ namespace yyjson
                 return kind_object;
         }
 
+        template <typename T>
+        std::size_t written_element_count(const T& t);
+
         // The constraint of the level `Level` that the value `v`, of one JSON kind, does not satisfy, of the settings
         // of its kind: `yyjson::const_` and `yyjson::enum_` take the values of its kind, numeric bounds
         // a number, lengths, `yyjson::pattern` and `yyjson::format` a string, and the numbers of items an array.
@@ -8825,9 +8828,18 @@ namespace yyjson
                     if constexpr (c.has<multiple_of>())
                         if (!multiple_of_bound(v, c.multiple_of)) return constraint_kind::multiple_of;
                 }
-                if constexpr (text && constraint_string<V>)
+                if constexpr (text && (constraint_string<V> || (Multi && enum_by_name<V>)))
                 {
-                    const auto s = static_cast<std::string_view>(v);
+                    std::string_view s;
+                    if constexpr (constraint_string<V>)
+                        s = static_cast<std::string_view>(v);
+                    else
+                    {
+                        // an enumeration is a string by the JSON name of its value; one without a name is written
+                        // as an integer, which the settings of a string do not constrain
+                        s = enum_name_of(v);
+                        if (s.empty()) return constraint_kind::none;
+                    }
                     if constexpr (c.has<min_length>() || c.has<max_length>())
                     {
                         const auto n = code_points(s);
@@ -8841,14 +8853,16 @@ namespace yyjson
                     if constexpr (c.has<format<>>())
                         if (!matches_format<Level>(s)) return constraint_kind::format;
                 }
-                if constexpr (items && (constraint_items<V> || constraint_tuple<V>) &&
+                if constexpr (items && (constraint_items<V> || constraint_tuple<V> || (Multi && as_array_struct<V>)) &&
                               (!Multi || value_kinds<V>() == kind_array))
                 {
                     std::size_t n = 0;
                     if constexpr (constraint_items<V>)
                         n = static_cast<std::size_t>(std::ranges::distance(v));
-                    else
+                    else if constexpr (constraint_tuple<V>)
                         n = std::tuple_size_v<V>;
+                    else
+                        n = written_element_count(v);
                     if constexpr (c.has<min_items>())
                         if (n < c.min_items) return constraint_kind::min_items;
                     if constexpr (c.has<max_items>())
@@ -18773,6 +18787,16 @@ namespace yyjson
                     true, (omitted_position<T, Ks>(t) || ((count = Ks + 1), true))...};
             }(std::make_index_sequence<n>{});
             return count;
+        }
+
+        // The number of the elements that `t`, a struct annotated with `yyjson::as_array`, is written as.
+        template <typename T>
+        std::size_t written_element_count(const T& t)
+        {
+            auto n = written_position_count(t);
+            if constexpr (has_extra_items<T>)
+                n += static_cast<std::size_t>(std::ranges::distance(extra_items_field(t)));
+            return n;
         }
 
         // Writes the fields of `t`, a struct annotated with `yyjson::as_array`, as the elements of `arr`, and then

@@ -3049,6 +3049,51 @@ TEST(Constraints, MultiKindValues)
     EXPECT_EQ(bad_cast_of([&] { yyjson::validate(t); }).path(), "/v");
 }
 
+// settings of strings on an enumeration written by name check the name, and the numbers of items on a struct written
+// as an array count the elements that it is written as
+struct MultiKindPair
+{
+    int a;
+    std::optional<int> b;
+    std::vector<int> rest;
+};
+template <>
+inline constexpr auto yyjson::annotations<MultiKindPair> =
+    yyjson::annotate(yyjson::as_array, yyjson::field("rest", yyjson::extra_items));
+struct MultiKindWritten
+{
+    std::variant<MultiShade, int> s;
+    std::variant<MultiKindPair, std::string> p;
+};
+template <>
+inline constexpr auto yyjson::annotations<MultiKindWritten> =
+    yyjson::annotate(yyjson::field("s", yyjson::pattern("^l"), yyjson::max_length(5)),
+                     yyjson::field("p", yyjson::min_items(2), yyjson::max_items(3)));
+
+TEST(Constraints, MultiKindWrittenForms)
+{
+    for (const auto json : {R"({"s":"light","p":"x"})", R"({"s":5,"p":[1,2]})", R"({"s":"light","p":[1,2,3]})"})
+    {
+        EXPECT_NO_THROW((void)yyjson::read<MultiKindWritten>(json)) << json;
+        EXPECT_NO_THROW((void)yyjson::read(json).cast<MultiKindWritten>()) << json;
+    }
+    const auto message = [](std::string_view key, std::string_view text) {
+        return std::format(R"(the value of the key "{}" of MultiKindWritten {})", key, text);
+    };
+    expect_rejected<MultiKindWritten>(R"({"s":"dark","p":"x"})", message("s", "does not match"), "/s");
+    expect_rejected<MultiKindWritten>(R"({"s":5,"p":[1]})", message("p", "has fewer"), "/p");
+    expect_rejected<MultiKindWritten>(R"({"s":5,"p":[1,2,3,4]})", message("p", "has more"), "/p");
+    auto t = MultiKindWritten{.s = MultiShade::dark, .p = std::string("x")};
+    EXPECT_EQ(bad_cast_of([&] { yyjson::validate(t); }).path(), "/s");
+    t.s = MultiShade::light;
+    t.p = MultiKindPair{.a = 1, .b = std::nullopt, .rest = {}};
+    EXPECT_EQ(bad_cast_of([&] { yyjson::validate(t); }).path(), "/p");
+    t.p = MultiKindPair{.a = 1, .b = 2, .rest = {3}};
+    EXPECT_NO_THROW(yyjson::validate(t));
+    t.p = MultiKindPair{.a = 1, .b = 2, .rest = {3, 4}};
+    EXPECT_EQ(bad_cast_of([&] { yyjson::validate(t); }).path(), "/p");
+}
+
 // alternatives of yyjson::any_of and yyjson::one_of, with settings given as values and through pointers
 constexpr std::string_view alternative_id_regex = "^[a-z]+$";
 constexpr auto alternative_id_pattern = yyjson::pattern(alternative_id_regex);
