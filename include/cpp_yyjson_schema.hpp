@@ -600,8 +600,10 @@ namespace yyjson
             registry& names_;
             bool writing_;
             bool strict_;
-            // The values of `yyjson::const_` and `yyjson::enum_` of the struct whose fields are written.
+            // The values of `yyjson::const_` and `yyjson::enum_` of the struct whose fields are written,
+            // and the nodes of its tree, where the patterns of `yyjson::pattern` after the first of a value are.
             const yyjson::detail::json_scalar* values_ = nullptr;
+            const schema_node* nodes_ = nullptr;
             // The variants tagged by `internal_tag` whose alternatives are being written in place.
             std::vector<const void*> inlined_;
             // The schemas of the types of `yyjson::is_type<T>` in `yyjson::contains` of the type whose settings are
@@ -651,7 +653,13 @@ namespace yyjson
                 if (out.size() == 0)
                     (this->*it->emit)(out);
                 else
-                    (this->*it->emit)(out.emplace("allOf", empty_array).emplace_back(empty_object));
+                    (this->*it->emit)(all_of(out).emplace_back(empty_object));
+            }
+            // The `allOf` of `out`, which is added if `out` has none.
+            static array_ref all_of(object_ref out)
+            {
+                return out.contains("allOf") ? *out.find("allOf")->second.as_array()
+                                             : out.emplace("allOf", empty_array);
             }
 
             // Whether the settings of a node hold for a value of T itself: a `std::optional`, a pointer and a variant
@@ -696,12 +704,7 @@ namespace yyjson
                     if (k.type_test != nullptr) emit_type_test(o, *k.type_test);
                 };
                 auto target = out;
-                if (out.contains("not"))
-                {
-                    auto all = out.contains("allOf") ? *out.find("allOf")->second.as_array()
-                                                     : out.emplace("allOf", empty_array);
-                    target = all.emplace_back(empty_object);
-                }
+                if (out.contains("not")) target = all_of(out).emplace_back(empty_object);
                 auto negated = target.emplace("not", empty_object);
                 if (nodes[first].next == 0) return settings(negated, nodes[first]);
                 auto any = negated.emplace("anyOf", empty_array);
@@ -1036,7 +1039,13 @@ namespace yyjson
                 if (c.has<yyjson::max_length>()) out.emplace("maxLength", c.max_length);
                 if (c.has<yyjson::min_items>()) out.emplace("minItems", c.min_items);
                 if (c.has<yyjson::max_items>()) out.emplace("maxItems", c.max_items);
-                if (c.has<yyjson::pattern<>>()) out.emplace("pattern", c.pattern());
+                if (c.has<yyjson::pattern<>>())
+                {
+                    out.emplace("pattern", c.pattern());
+                    // The patterns after the first, which `allOf` gives.
+                    for (auto k = c.next_pattern; k != 0; k = nodes_[k].constraints.next_pattern)
+                        all_of(out).emplace_back(empty_object).emplace("pattern", nodes_[k].constraints.pattern());
+                }
                 if (c.has<yyjson::format<>>()) out.emplace("format", c.format());
                 using kind = yyjson::detail::json_scalar::kind_t;
                 const auto put = [&](const yyjson::detail::json_scalar& s, auto&& emplace) {
@@ -1694,11 +1703,13 @@ namespace yyjson
             auto list = out.emplace(yyjson::detail::combined_alternatives<V>::exactly_one ? "oneOf" : "anyOf",
                                     empty_array);
             const auto* const outer_values = std::exchange(values_, table::tree.values.data());
+            const auto* const outer_nodes = std::exchange(nodes_, table::tree.nodes.data());
             const auto tests = type_tests_for<V>();
             [&]<std::size_t... Is>(std::index_sequence<Is...>) {
                 (emit_alternative<V, Is>(list.emplace_back(empty_object)), ...);
             }(std::make_index_sequence<std::variant_size_v<V>>{});
             values_ = outer_values;
+            nodes_ = outer_nodes;
         }
 
         template <typename V, std::size_t I>
@@ -1908,12 +1919,14 @@ namespace yyjson
                 values = yyjson::detail::field_table_of<S>::table.schemas.values.data();
             }
             const auto* const outer_values = std::exchange(values_, values);
+            const auto* const outer_nodes = std::exchange(nodes_, nodes);
             const auto tests = type_tests_for<S>();
             if (tags.empty())
                 emit<std::conditional_t<yyjson::detail::transparent_over_optional<S>, V, F>>(out, nodes, node);
             else
                 emit_tagged<V>(out, tags, nodes, node);
             values_ = outer_values;
+            nodes_ = outer_nodes;
         }
 
         template <typename S>
@@ -1935,6 +1948,7 @@ namespace yyjson
                 else
                     return static_cast<const yyjson::detail::json_scalar*>(nullptr);
             }());
+            const auto* const outer_nodes = std::exchange(nodes_, nodes);
             const auto tests = type_tests_for<S>();
             out.emplace("type", "object");
             auto properties = out.emplace("properties", empty_object);
@@ -2050,9 +2064,11 @@ namespace yyjson
                 emit<typename M::mapped_type>(out.emplace("additionalProperties", empty_object),
                                               v != 0 ? nodes : nullptr, v);
                 values_ = outer_values;
+                nodes_ = outer_nodes;
                 return;
             }
             values_ = outer_values;
+            nodes_ = outer_nodes;
             const bool closed = writing() || rules::additional == additional::denied ||
                                 (strict() && rules::additional != additional::allowed);
             // The keys of the branches of `allOf` are in `properties` too, so `additionalProperties` knows them.
@@ -2322,6 +2338,7 @@ namespace yyjson
             constexpr const schema_node* nodes = yyjson::detail::field_table_of<S>::table.schemas.nodes.data();
             const auto* const outer_values =
                 std::exchange(values_, yyjson::detail::field_table_of<S>::table.schemas.values.data());
+            const auto* const outer_nodes = std::exchange(nodes_, nodes);
             const auto tests = type_tests_for<S>();
             out.emplace("type", "array");
             [[maybe_unused]] const S* const defaults = defaults_of<S>();
@@ -2357,6 +2374,7 @@ namespace yyjson
                      (strict() && yyjson::detail::struct_items<S> != additional::allowed))
                 out.emplace("items", false);
             values_ = outer_values;
+            nodes_ = outer_nodes;
         }
 
         // Writes the conditions of S, `yyjson::if_then_else` as `if`, `then` and `else`, and `yyjson::not_` as
@@ -2369,6 +2387,7 @@ namespace yyjson
             using table = yyjson::detail::condition_table<S>;
             constexpr auto entries = std::make_index_sequence<table::entries.size()>{};
             const auto* const outer_values = std::exchange(values_, table::tree.values.data());
+            const auto* const outer_nodes = std::exchange(nodes_, table::tree.nodes.data());
             // The keys of the tags, which a part with `yyjson::additional_properties(false)` does not reject.  The
             // span is not empty for such a part even when S has no tags.
             auto tag_keys = std::vector<std::string_view>();
@@ -2413,6 +2432,7 @@ namespace yyjson
                                            closed(rule.else_closed));
             }
             values_ = outer_values;
+            nodes_ = outer_nodes;
         }
     }  // namespace schema_detail
 

@@ -934,6 +934,28 @@ inline constexpr auto yyjson::annotations<NegatedValues> = yyjson::annotate(
     yyjson::if_then_else(yyjson::if_(yyjson::field("n", yyjson::const_(1))),
                          yyjson::then(yyjson::field("m", yyjson::not_(yyjson::const_(0))))));
 
+// several patterns of a value, the second and the later ones in `allOf`, beside `not` and in each place that takes
+// settings
+struct Patterns
+{
+    std::string s;
+    std::optional<std::string> o;
+    std::vector<std::string> list;
+    std::map<std::string, int> m;
+    yyjson::any_of<yyjson::alt<std::string, yyjson::pattern("^u"), yyjson::pattern("v$")>, int> u = 0;
+    std::optional<std::string> c;
+};
+template <>
+inline constexpr auto yyjson::annotations<Patterns> = yyjson::annotate(
+    yyjson::field("s", yyjson::pattern("^a"), yyjson::pattern("z$")),
+    yyjson::field("o", yyjson::pattern("^o"), yyjson::not_(yyjson::const_("oxo")), yyjson::pattern("o$"),
+                  yyjson::not_(yyjson::max_length(2)), yyjson::pattern("x")),
+    yyjson::field("list", yyjson::items(yyjson::pattern("^a"), yyjson::enum_("ab", "az", "b"),
+                                        yyjson::pattern("b$"))),
+    yyjson::field("m", yyjson::property_names(yyjson::pattern("^k"), yyjson::pattern("[0-9]$"))),
+    yyjson::if_then_else(yyjson::if_(yyjson::field("s", yyjson::const_("az"))),
+                         yyjson::then(yyjson::field("c", yyjson::pattern("^c"), yyjson::pattern("d$")))));
+
 // not_ in property_names of the maps that take the keys of patterns and the other keys
 struct NegatedKeys
 {
@@ -2387,6 +2409,38 @@ TEST(Schema, NegatedValues)
     EXPECT_FALSE(p["nv"]["anyOf"][0].contains("not"));
     EXPECT_EQ(p["u"]["anyOf"][0]["not"], json::parse(R"({"const":7})"));
     EXPECT_EQ(s["$defs"]["NegatedValues"]["then"]["properties"]["m"]["not"], json::parse(R"({"const":0})"));
+}
+
+TEST(Schema, Patterns)
+{
+    check<Patterns>({
+        R"({"s":"abz"})",
+        R"({"s":"ab"})",
+        R"({"s":"bz"})",
+        R"({"s":"az","o":"oxxo"})",
+        R"({"s":"az","o":"oxo"})",
+        R"({"s":"az","o":"oo"})",
+        R"({"s":"az","o":"oxx"})",
+        R"({"s":"az","list":["ab"]})",
+        R"({"s":"az","list":["ab","az"]})",
+        R"({"s":"az","list":["b"]})",
+        R"({"s":"az","m":{"k1":1}})",
+        R"({"s":"az","m":{"kx":1}})",
+        R"({"s":"az","m":{"x1":1}})",
+        R"({"s":"az","u":"uv"})",
+        R"({"s":"az","u":"u"})",
+        R"({"s":"az","u":"v"})",
+        R"({"s":"az","c":"cd"})",
+        R"({"s":"az","c":"c"})",
+        R"({"s":"abz","c":"c"})",
+    });
+    const auto schema = to_jsoncons(yyjson::json_schema<Patterns>())["$defs"]["Patterns"];
+    EXPECT_EQ(schema["properties"]["s"],
+              json::parse(R"({"type":"string","pattern":"^a","allOf":[{"pattern":"z$"}]})"));
+    EXPECT_EQ(schema["properties"]["o"]["allOf"], json::parse(R"([{"pattern":"o$"},{"pattern":"x"}])"));
+    EXPECT_EQ(schema["properties"]["o"]["not"], json::parse(R"({"anyOf":[{"const":"oxo"},{"maxLength":2}]})"));
+    EXPECT_EQ(schema["properties"]["m"]["propertyNames"],
+              json::parse(R"({"pattern":"^k","allOf":[{"pattern":"[0-9]$"}]})"));
 }
 
 TEST(Schema, NegatedKeys)

@@ -1620,8 +1620,9 @@ namespace yyjson
     // A regular expression that a string field must match somewhere in it, as `yyjson::field("member",
     // yyjson::pattern("^[a-z]+$"))` or `[[=yyjson::pattern("^[a-z]+$")]]` gives it.  The program provides the
     // regular expressions by specializing `yyjson::pattern_matcher<>`, so that this library includes no engine.
-    // Before C++26, `yyjson::pattern("...")` holds the characters of the literal, so that it can be a template
-    // argument, as in `yyjson::alt`; see `detail::setting_string`.
+    // A value may have several, as `allOf` of JSON Schema gives them, which it must all match.  Before C++26,
+    // `yyjson::pattern("...")` holds the characters of the literal, so that it can be a template argument, as in
+    // `yyjson::alt`; see `detail::setting_string`.
     template <std::size_t N = 0>
     struct pattern
     {
@@ -2544,6 +2545,9 @@ namespace yyjson
                                                                     N * prefix_position_values};
         template <typename... As>
         inline constexpr tree_size node_count<not_value_t<As...>> = (tree_size{1, 0} + ... + node_count<As>);
+        // the second `yyjson::pattern` of a value and those after it are in nodes of their own
+        template <std::size_t N>
+        inline constexpr tree_size node_count<pattern<N>> = {1, 0};
 
         // The settings of the field `member` of a struct, which `yyjson::annotate` takes.  Only `yyjson::then` and
         // `yyjson::else_` take a field without settings, which names its key for
@@ -2706,8 +2710,10 @@ namespace yyjson
         };
 
         // The constraints of a value, those in `set` by `constraint_bit`.  The values of `yyjson::const_` and
-        // `yyjson::enum_` are in `schema_tree::values`, at `constant` and from `enum_first`.  It is a
-        // structural type, as the values of C++26 annotations that hold it have to be.
+        // `yyjson::enum_` are in `schema_tree::values`, at `constant` and from `enum_first`.  The first
+        // `yyjson::pattern` is `pattern_text`; each one after it is the `pattern_text` of the node `next_pattern` of
+        // the one before, which has nothing else, or 0 if there is none.  It is a structural type, as the values of
+        // C++26 annotations that hold it have to be.
         struct field_constraints
         {
             std::uint32_t set = 0;
@@ -2723,6 +2729,7 @@ namespace yyjson
             std::size_t min_contains = 0;
             std::size_t max_contains = 0;
             tree_string pattern_text;
+            std::size_t next_pattern = 0;
             tree_string format_text;
             std::size_t constant = 0;
             std::size_t enum_first = 0;
@@ -2884,7 +2891,21 @@ namespace yyjson
                 if constexpr (constraint_setting<A>)
                 {
                     auto& c = nodes[node].constraints;
-                    if (c.template has<A>()) return fail(field_key_error::same_setting_twice);
+                    if constexpr (setting_of<A, pattern<>>)
+                    {
+                        if (c.template has<A>())
+                        {
+                            const auto p = allocate(1);
+                            if (p == 0) return;
+                            auto last = node;
+                            while (nodes[last].constraints.next_pattern != 0)
+                                last = nodes[last].constraints.next_pattern;
+                            nodes[last].constraints.next_pattern = p;
+                            return add(p, a);
+                        }
+                    }
+                    else if (c.template has<A>())
+                        return fail(field_key_error::same_setting_twice);
                     if constexpr (std::same_as<A, multiple_of>)
                     {
                         if (!a.value.positive()) return fail(field_key_error::multiple_of_not_positive);
@@ -2994,6 +3015,7 @@ namespace yyjson
                 const auto moved = [this, &sub, base, value_base](schema_node n) {
                     for (auto* i : {&n.items, &n.values, &n.contains, &n.keys, &n.prefix, &n.negated, &n.next})
                         if (*i != 0) *i += base - 1;
+                    if (n.constraints.next_pattern != 0) n.constraints.next_pattern += base - 1;
                     n.constraints.constant += value_base;
                     n.constraints.enum_first += value_base;
                     n.constraints.pattern_text = keep(n.constraints.pattern_text, sub.chars);
@@ -3232,6 +3254,24 @@ namespace yyjson
             return error == field_key_error::none;
         }
 
+        // The number of the patterns of `yyjson::pattern` at the node `node` of `nodes`, and those patterns.
+        template <typename Nodes>
+        constexpr std::size_t value_pattern_count(const Nodes& nodes, std::size_t node) noexcept
+        {
+            if (!nodes[node].constraints.template has<pattern<>>()) return 0;
+            std::size_t n = 1;
+            for (auto k = nodes[node].constraints.next_pattern; k != 0; k = nodes[k].constraints.next_pattern) ++n;
+            return n;
+        }
+        template <std::size_t N, typename Nodes>
+        constexpr std::array<std::string_view, N> value_patterns_at(const Nodes& nodes, std::size_t node) noexcept
+        {
+            auto result = std::array<std::string_view, N>{};
+            for (std::size_t i = 0; i < N; ++i, node = nodes[node].constraints.next_pattern)
+                result[i] = nodes[node].constraints.pattern();
+            return result;
+        }
+
         // The settings at the node `Node` of the tree of `Table::tree`, as `constraint_node` has them.
         template <typename Table, std::size_t Node>
         struct table_node
@@ -3246,6 +3286,8 @@ namespace yyjson
                     result[constants + i] = Table::tree.values[constraints.enum_first + i];
                 return result;
             }();
+            static constexpr auto patterns =
+                value_patterns_at<value_pattern_count(Table::tree.nodes, Node)>(Table::tree.nodes, Node);
             template <std::size_t C>
             using at = table_node<Table, C>;
         };
@@ -4811,11 +4853,13 @@ namespace yyjson
         using element_annotation_type =
             typename[:std::meta::remove_cvref(std::meta::type_of(element_annotations<T, I>[K])):];
         // The nodes and the values that the annotations of the field I of T add: those in `element_annotations`,
-        // and the value of `yyjson::const_`.
+        // the value of `yyjson::const_` and a node for each `yyjson::pattern` (an upper bound; see
+        // `node_count<pattern<N>>`).
         template <typename T, std::size_t I>
         inline constexpr tree_size annotated_node_count = []<std::size_t... Ks>(std::index_sequence<Ks...>) {
-            return (tree_size{0, field_reflection::field_annotations<T, I, const_<>>.size()} + ... +
-                    node_count<element_annotation_type<T, I, Ks>>);
+            return (tree_size{field_reflection::field_annotations<T, I, pattern<>>.size(),
+                              field_reflection::field_annotations<T, I, const_<>>.size()} +
+                    ... + node_count<element_annotation_type<T, I, Ks>>);
         }(std::make_index_sequence<element_annotations<T, I>.size()>{});
         template <typename T, std::size_t I, typename Builder>
         constexpr void constrain_annotated_elements(Builder& builder)
@@ -7074,7 +7118,8 @@ namespace yyjson
 
         // The settings at the node `Node` of the tree of the settings of the struct S, which is the node of the field
         // K or one of the values in it.  `at<C>` is the node C, which a member of `node` names.  `values` are the
-        // value of `yyjson::const_`, if it has one, and then those of `yyjson::enum_`.
+        // value of `yyjson::const_`, if it has one, and then those of `yyjson::enum_`, and `patterns` those
+        // of `yyjson::pattern`.
         template <typename S, std::size_t K, std::size_t Node>
         struct constraint_node
         {
@@ -7089,6 +7134,9 @@ namespace yyjson
                     result[constants + i] = field_table_of<S>::table.schemas.values[constraints.enum_first + i];
                 return result;
             }();
+            static constexpr auto patterns =
+                value_patterns_at<value_pattern_count(field_table_of<S>::table.schemas.nodes, Node)>(
+                    field_table_of<S>::table.schemas.nodes, Node);
             template <std::size_t C>
             using at = constraint_node<S, K, C>;
         };
@@ -7551,10 +7599,11 @@ namespace yyjson
             }
         }
 
-        // What the subject of the constraint `kind` of `c` does, such as "is less than the minimum 0".  `values` are
-        // the `values` of the `constraint_node` of `c`.
+        // What the subject of the constraint `kind` of `c` does, such as "is less than the minimum 0".  `values` and
+        // `patterns` are those of the `constraint_node` of `c`.
         CPPYYJSON_COLD inline std::string constraint_what(constraint_kind kind, const field_constraints& c,
-                                                          std::span<const json_scalar> values)
+                                                          std::span<const json_scalar> values,
+                                                          std::span<const std::string_view> patterns)
         {
             switch (kind)
             {
@@ -7589,7 +7638,17 @@ namespace yyjson
                 case constraint_kind::max_items:
                     return std::format("has more items than the maximum {}", c.max_items);
                 case constraint_kind::pattern:
-                    return std::format("does not match the pattern \"{}\"", c.pattern());
+                {
+                    if (patterns.size() == 1) return std::format("does not match the pattern \"{}\"", patterns[0]);
+                    auto text = std::string("does not match all of the patterns");
+                    for (std::size_t i = 0; i < patterns.size(); ++i)
+                    {
+                        text += i == 0 ? " \"" : ", \"";
+                        text += patterns[i];
+                        text += '"';
+                    }
+                    return text;
+                }
                 case constraint_kind::items:
                     return "has an element that does not satisfy the constraints of yyjson::items";
                 case constraint_kind::values:
@@ -7621,10 +7680,10 @@ namespace yyjson
 
         [[noreturn]] CPPYYJSON_COLD inline void throw_constraint_violation(
             cast_target at, std::string_view key, std::string_view type, constraint_kind kind,
-            const field_constraints& c, std::span<const json_scalar> values,
+            const field_constraints& c, std::span<const json_scalar> values, std::span<const std::string_view> patterns,
             constraint_subject subject = constraint_subject::value, bool position = false)
         {
-            const auto what = constraint_what(kind, c, values);
+            const auto what = constraint_what(kind, c, values, patterns);
             const auto subject_text = subject == constraint_subject::element ? "an element of the value"
                                       : subject == constraint_subject::key   ? "a key of the value"
                                                                              : "the value";
@@ -7724,7 +7783,8 @@ namespace yyjson
             return n;
         }
 
-        template <typename Level>
+        // Whether the pattern I of the level `Level` matches `s`.
+        template <typename Level, std::size_t I>
         bool matches_pattern(std::string_view s)
         {
             using matcher_type = pattern_matcher<dependent_t<void, Level>>;
@@ -7735,7 +7795,7 @@ namespace yyjson
                 "std::string_view of a string and tells whether the pattern matches it");
             if constexpr (requires { sizeof(matcher_type); })
             {
-                static const matcher_type matcher(Level::constraints.pattern());
+                static const matcher_type matcher(Level::patterns[I]);
                 return static_cast<bool>(matcher(s));
             }
             else
@@ -8849,7 +8909,10 @@ namespace yyjson
                             if (n > c.max_length) return constraint_kind::max_length;
                     }
                     if constexpr (c.has<pattern<>>())
-                        if (!matches_pattern<Level>(s)) return constraint_kind::pattern;
+                        if (![&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                                return (matches_pattern<Level, Is>(s) && ...);
+                            }(std::make_index_sequence<Level::patterns.size()>{}))
+                            return constraint_kind::pattern;
                     if constexpr (c.has<format<>>())
                         if (!matches_format<Level>(s)) return constraint_kind::format;
                 }
@@ -9314,7 +9377,7 @@ namespace yyjson
                 if (k == constraint_kind::none) return;
                 throw_located_violation<S, Level, constrained_value_t<E>>(e, k, key);
                 throw_constraint_violation(target_of(e), key, type_name<S>(), k, Level::constraints, Level::values,
-                                           constraint_subject::element, as_array_struct<S>);
+                                           Level::patterns, constraint_subject::element, as_array_struct<S>);
             }
         }
 
@@ -9401,7 +9464,8 @@ namespace yyjson
                                     violated != constraint_kind::none)
                                     throw_constraint_violation(target_of(std::get<1>(kv)), key, type_name<S>(),
                                                                violated, next::constraints, next::values,
-                                                               constraint_subject::key, as_array_struct<S>);
+                                                               next::patterns, constraint_subject::key,
+                                                               as_array_struct<S>);
                             }
             }
             if constexpr (Level::node.constraints.template has<unique_items_t>() && constraint_items<V> &&
@@ -9426,7 +9490,7 @@ namespace yyjson
                             if (const auto j = first_duplicate(elements); j != no_duplicate)
                                 throw_constraint_violation(target_of((*a)[j]), key, type_name<S>(),
                                                            constraint_kind::duplicate_item, Level::constraints,
-                                                           Level::values, constraint_subject::element,
+                                                           Level::values, Level::patterns, constraint_subject::element,
                                                            as_array_struct<S>);
                         }
             }
@@ -9438,7 +9502,7 @@ namespace yyjson
             using level = constraint_level<S, K>;
             throw_located_violation<S, level, constrained_value_t<F>>(json, k, violation_key<S, K>);
             throw_constraint_violation(target_of(json), violation_key<S, K>, type_name<S>(), k, level::constraints,
-                                       level::values, constraint_subject::value, as_array_struct<S>);
+                                       level::values, level::patterns, constraint_subject::value, as_array_struct<S>);
         }
 
         // Whether null read into a field of the type F is a value that its constraints test: a `yyjson::value` or a
@@ -9633,11 +9697,11 @@ namespace yyjson
                     with_last_member(obj, key, [&](const auto& json) {
                         throw_located_violation<S, level, constrained_value_t<typename entry::type>>(json, k, key);
                         throw_constraint_violation(target_of(json), key, type_name<S>(), k, level::constraints,
-                                                   level::values);
+                                                   level::values, level::patterns);
                     });
                     // a value that did not come from `obj`, as the initializer of the field
                     throw_constraint_violation(target_of(obj), key, type_name<S>(), k, level::constraints,
-                                               level::values);
+                                               level::values, level::patterns);
                 }
             if constexpr (!std::is_void_v<R>)
                 with_last_member(obj, key, [](const auto& json) { (void)cast_nested<R>(json); });
@@ -10342,7 +10406,8 @@ namespace yyjson
         {
             using level = extra_values_level<S>;
             throw_located_violation<S, level, constrained_value_t<V>>(json, k, key);
-            throw_constraint_violation(target_of(json), key, type_name<S>(), k, level::constraints, level::values);
+            throw_constraint_violation(target_of(json), key, type_name<S>(), k, level::constraints, level::values,
+                                       level::patterns);
         }
         template <typename S, typename V, typename Json>
         void check_extra_value(std::string_view key, const V& v, const Json& json)
@@ -10372,7 +10437,7 @@ namespace yyjson
         {
             using level = extra_keys_level<S>;
             throw_bad_cast_at(at, "the key \"{}\" of {} {}", key, type_name<S>(),
-                              constraint_what(k, level::constraints, level::values));
+                              constraint_what(k, level::constraints, level::values, level::patterns));
         }
         // Throws `bad_cast` at the value `json` of the key `key`, which the field of S annotated with
         // `yyjson::extra_keys` receives, unless the key satisfies the settings of its keys.
@@ -10427,7 +10492,8 @@ namespace yyjson
         {
             using level = pattern_values_level<S, P>;
             throw_located_violation<S, level, constrained_value_t<V>>(json, k, key);
-            throw_constraint_violation(target_of(json), key, type_name<S>(), k, level::constraints, level::values);
+            throw_constraint_violation(target_of(json), key, type_name<S>(), k, level::constraints, level::values,
+                                       level::patterns);
         }
         template <typename S, std::size_t P, typename V, typename Json>
         void check_pattern_value(std::string_view key, const V& v, const Json& json)
@@ -10455,7 +10521,7 @@ namespace yyjson
         {
             using level = pattern_keys_level<S, P>;
             throw_bad_cast_at(at, "the key \"{}\" of {} {}", key, type_name<S>(),
-                              constraint_what(k, level::constraints, level::values));
+                              constraint_what(k, level::constraints, level::values, level::patterns));
         }
         template <typename S, std::size_t P, typename Json>
         void check_pattern_key(std::string_view key, const Json& json)
@@ -16568,8 +16634,9 @@ namespace yyjson
             validate_within(prefix, [&] {
                 if (const auto* value = held_value(e); value != nullptr)
                     throw_value_located_violation<S, Level>(*value, k, key);
-                throw_constraint_violation(cast_target{}, key, violated_type_name<S>(), k, Level::constraints, Level::values,
-                                           constraint_subject::element, as_array_struct<S>);
+                throw_constraint_violation(cast_target{}, key, violated_type_name<S>(), k, Level::constraints,
+                                           Level::values, Level::patterns, constraint_subject::element,
+                                           as_array_struct<S>);
             });
         }
         template <typename S, typename Level, std::size_t J, typename It, typename End>
@@ -16649,7 +16716,7 @@ namespace yyjson
                             violated != constraint_kind::none)
                             validate_within([&e] { return key_token(written_key(std::get<0>(e))); }, [&] {
                                 throw_constraint_violation(cast_target{}, key, violated_type_name<S>(),
-                                                           violated, next::constraints, next::values,
+                                                           violated, next::constraints, next::values, next::patterns,
                                                            constraint_subject::key, as_array_struct<S>);
                             });
             }
@@ -16663,7 +16730,7 @@ namespace yyjson
                         validate_within([j] { return index_token(j); }, [&] {
                             throw_constraint_violation(cast_target{}, key, violated_type_name<S>(),
                                                        constraint_kind::duplicate_item, Level::constraints,
-                                                       Level::values, constraint_subject::element,
+                                                       Level::values, Level::patterns, constraint_subject::element,
                                                        as_array_struct<S>);
                         });
             }
@@ -16678,7 +16745,7 @@ namespace yyjson
             if (const auto* value = held_value(field); value != nullptr)
                 throw_value_located_violation<S, level>(*value, k, violation_key<S, K>);
             throw_constraint_violation(cast_target{}, violation_key<S, K>, type_name<S>(), k, level::constraints,
-                                       level::values, constraint_subject::value, as_array_struct<S>);
+                                       level::values, level::patterns, constraint_subject::value, as_array_struct<S>);
         }
 
         template <typename T>
@@ -16743,7 +16810,7 @@ namespace yyjson
                                 if (const auto* value = held_value(m); value != nullptr)
                                     throw_value_located_violation<S, level>(*value, c, key);
                                 throw_constraint_violation(cast_target{}, key, type_name<S>(), c, level::constraints,
-                                                           level::values);
+                                                           level::values, level::patterns);
                             }
                     }
                 };
@@ -16921,7 +16988,7 @@ namespace yyjson
                                     if (const auto* value = held_value(v); value != nullptr)
                                         throw_value_located_violation<S, level>(*value, c, key);
                                     throw_constraint_violation(cast_target{}, key, type_name<S>(), c,
-                                                               level::constraints, level::values);
+                                                               level::constraints, level::values, level::patterns);
                                 }
                         }
                     });
@@ -16957,7 +17024,7 @@ namespace yyjson
                     validate_within([] { return key_token(key); }, [&] {
                         if (value != nullptr) throw_value_located_violation<S, level>(*value, k, key);
                         throw_constraint_violation(cast_target{}, key, type_name<S>(), k, level::constraints,
-                                                   level::values);
+                                                   level::values, level::patterns);
                     });
             if constexpr (!std::is_void_v<R>)
                 if (value != nullptr)
@@ -17146,7 +17213,7 @@ namespace yyjson
                                     if (const auto* value = held_value(e); value != nullptr)
                                         throw_value_located_violation<S, level>(*value, c, key);
                                     throw_constraint_violation(cast_target{}, key, type_name<S>(), c,
-                                                               level::constraints, level::values,
+                                                               level::constraints, level::values, level::patterns,
                                                                constraint_subject::element, true);
                                 }
                         }
@@ -18690,7 +18757,7 @@ namespace yyjson
             constexpr auto key = field_key<S, extra_items_index<S>>;
             throw_located_violation<S, level, constrained_value_t<V>>(json, k, key);
             throw_constraint_violation(target_of(json), key, type_name<S>(), k, level::constraints, level::values,
-                                       constraint_subject::element, true);
+                                       level::patterns, constraint_subject::element, true);
         }
 
         // Reads the JSON array `json` into `t`, a struct annotated with `yyjson::as_array`: its fields from the
@@ -19597,6 +19664,7 @@ namespace yyjson
             static constexpr schema_node node = {};
             static constexpr field_constraints constraints = {};
             static constexpr std::array<json_scalar, 0> values = {};
+            static constexpr std::array<std::string_view, 0> patterns = {};
         };
         // The settings of the levels that a bound of a scalar describes: the bounds of numbers, and the values of
         // `yyjson::const_` and `yyjson::enum_`.
@@ -21294,7 +21362,7 @@ namespace yyjson
             if (const auto* value = held_value(a); value != nullptr)
                 throw_value_located_violation<alternative_subject<V, I>, level>(*value, k, std::string_view());
             throw_constraint_violation(cast_target{}, std::string_view(), violated_type_name<alternative_subject<V, I>>(),
-                                       k, level::constraints, level::values);
+                                       k, level::constraints, level::values, level::patterns);
         }
 
         // Throws `bad_cast` if the alternative J of V, other than i, reads `json`.

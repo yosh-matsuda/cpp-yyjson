@@ -361,6 +361,25 @@ inline constexpr auto yyjson::annotations<Keyed> = yyjson::annotate(
     yyjson::field("u", yyjson::property_names(yyjson::satisfies<is_short>)),
     yyjson::field("deep", yyjson::additional_properties(yyjson::property_names(yyjson::min_length(2)))));
 
+// several patterns at one level, which a value must all match, between other settings too
+struct Patterns
+{
+    std::string s;
+    std::optional<std::string> o;
+    std::vector<std::string> list;
+    std::map<std::string, int> m;
+    std::string n;
+    bool operator==(const Patterns&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<Patterns> = yyjson::annotate(
+    yyjson::field("s", yyjson::pattern("^a"), yyjson::pattern("z$")),
+    yyjson::field("o", yyjson::pattern("^o"), yyjson::min_length(2), yyjson::pattern("o$"), yyjson::pattern("x")),
+    yyjson::field("list", yyjson::items(yyjson::pattern("^a"), yyjson::enum_("ab", "az", "b"),
+                                        yyjson::pattern("b$"))),
+    yyjson::field("m", yyjson::property_names(yyjson::pattern("^k"), yyjson::pattern("[0-9]$"))),
+    yyjson::field("n", yyjson::not_(yyjson::pattern("^a"), yyjson::pattern("z$"))));
+
 struct Containing
 {
     std::vector<std::string> roles;
@@ -1353,6 +1372,7 @@ struct [[ = yyjson::if_then_else(yyjson::if_(yyjson::field("kind", yyjson::const
 struct ConstrainedAnnotated
 {
     [[ = yyjson::minimum(1), = yyjson::maximum(3) ]] int n = 1;
+    [[ = yyjson::pattern("^p"), = yyjson::pattern("q$") ]] std::string p = "pq";
     [[= yyjson::pattern("^x")]] std::string s = "x";
     [[= yyjson::satisfies<is_even>]] int even = 0;
     bool operator==(const ConstrainedAnnotated&) const = default;
@@ -1530,6 +1550,50 @@ TEST(Constraints, Texts)
                            R"(the value of the key "map" of Texts has more items than the maximum 1)", "/map");
     expect_rejected<Texts>(R"({"note":"x"})", R"(the value of the key "note" of Texts does not match the pattern "^n")",
                            "/note");
+}
+
+TEST(Constraints, Patterns)
+{
+    expect_accepted<Patterns>(R"({"s":"abz","o":"oxo","list":["ab"],"m":{"k1":1},"n":"ab"})",
+                              {"abz", "oxo", {"ab"}, {{"k1", 1}}, "ab"});
+    expect_accepted<Patterns>(R"({"s":"az"})", {"az", {}, {}, {}, {}});
+
+    const auto value = [](std::string_view key) {
+        return std::format(R"(the value of the key "{}" of Patterns does not match all of the patterns )", key);
+    };
+    expect_rejected<Patterns>(R"({"s":"ab"})", value("s") + R"("^a", "z$")", "/s");
+    expect_rejected<Patterns>(R"({"s":"bz"})", value("s") + R"("^a", "z$")", "/s");
+    expect_rejected<Patterns>(R"({"s":"az","o":"oo"})", value("o") + R"("^o", "o$", "x")", "/o");
+    expect_rejected<Patterns>(R"({"s":"az","o":"xo"})", value("o") + R"("^o", "o$", "x")", "/o");
+    expect_rejected<Patterns>(R"({"s":"az","o":"o"})",
+                              R"(the value of the key "o" of Patterns is shorter than the minimum length 2)", "/o");
+    expect_rejected<Patterns>(
+        R"({"s":"az","list":["ab","az"]})",
+        R"(an element of the value of the key "list" of Patterns does not match all of the patterns "^a", "b$")",
+        "/list/1");
+    expect_rejected<Patterns>(R"({"s":"az","list":["b"]})",
+                              R"(an element of the value of the key "list" of Patterns does not match all of the )"
+                              R"(patterns "^a", "b$")",
+                              "/list/0");
+    expect_rejected<Patterns>(
+        R"({"s":"az","m":{"k1":1,"kx":2}})",
+        R"(a key of the value of the key "m" of Patterns does not match all of the patterns "^k", "[0-9]$")", "/m/kx");
+    expect_rejected<Patterns>(R"({"s":"az","n":"abz"})", R"(the value of the key "n" of Patterns )", "/n");
+
+    // validate and write with yyjson::strict check them as well
+    const auto rejected = [](const Patterns& t, std::string_view message, std::string_view path) {
+        const auto e = bad_cast_of([&] { yyjson::validate(t); });
+        EXPECT_TRUE(message_of(e).starts_with(message)) << e.what();
+        EXPECT_EQ(e.path(), path);
+        EXPECT_THROW((void)yyjson::write(t, yyjson::strict), yyjson::bad_cast);
+    };
+    EXPECT_NO_THROW(yyjson::validate(Patterns{"abz", "oxo", {"ab"}, {{"k1", 1}}, "ab"}));
+    rejected(Patterns{"ab"}, value("s") + R"("^a", "z$")", "/s");
+    rejected(Patterns{"az", "oxx"}, value("o") + R"("^o", "o$", "x")", "/o");
+    rejected(Patterns{"az", {}, {"ab", "b"}},
+             R"(an element of the value of the key "list" of Patterns does not match all of the patterns)", "/list/1");
+    rejected(Patterns{"az", {}, {}, {{"k", 1}}},
+             R"(a key of the value of the key "m" of Patterns does not match all of the patterns)", "/m/k");
 }
 
 TEST(Constraints, Validate)
@@ -3692,7 +3756,10 @@ TEST(Constraints, Annotations)
         R"({"aaaa":1})", R"(the key "aaaa" of PatternAnnotated is longer than the maximum length 3)", "/aaaa");
     EXPECT_EQ(yyjson::write(PatternAnnotated{10, {{"ax", 1}}, {{"xb", 10}}}), R"({"ab":10,"ax":1,"xb":10})");
 
-    expect_accepted<ConstrainedAnnotated>(R"({"n":3,"s":"xy","even":4})", {3, "xy", 4});
+    expect_accepted<ConstrainedAnnotated>(R"({"n":3,"s":"xy","even":4})", {3, "pq", "xy", 4});
+    expect_rejected<ConstrainedAnnotated>(
+        R"({"p":"pp"})",
+        R"(the value of the key "p" of ConstrainedAnnotated does not match all of the patterns "^p", "q$")", "/p");
     expect_rejected<ConstrainedAnnotated>(
         R"({"n":4})", R"(the value of the key "n" of ConstrainedAnnotated is greater than the maximum 3)", "/n");
     expect_rejected<ConstrainedAnnotated>(
