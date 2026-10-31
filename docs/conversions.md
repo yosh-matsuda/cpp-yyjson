@@ -396,7 +396,7 @@ VISITABLE_STRUCT(Project, (context, "@context"), (type, "@type"), name);
 *   `yyjson::annotations` works both for a struct that the compile-time reflection converts and for one that the `VISITABLE_STRUCT` macro registers. For the latter, define the specialization before the macro, and give a field its key either by a pair in the macro or by `yyjson::field`, not by both.
 *   The following fail to compile with a `static_assert`:
     *   a `yyjson::field` that names a member which does not exist or is not registered;
-    *   a field renamed twice, or the same setting given twice to a field;
+    *   a field renamed twice, or the same setting given twice to a field, except `yyjson::pattern` and `yyjson::not_(settings...)`, which a value may have more than once;
     *   two fields that end up with the same key.
 
 ### Skipped fields
