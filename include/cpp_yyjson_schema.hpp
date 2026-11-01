@@ -681,55 +681,77 @@ namespace yyjson
                 else
                     return true;
             }
+            // Writes the settings of the node k of a `yyjson::not_` or a `yyjson::if_` of a value of T into `o`.
+            template <typename T>
+            void emit_test_settings(object_ref o, const schema_node* nodes, const schema_node& k)
+            {
+                if constexpr (std::floating_point<T> && sizeof(T) < sizeof(double))
+                    emit_float<T>(o, &k);
+                else if constexpr (object_range<T> || std::same_as<T, writer::object> ||
+                                   std::same_as<T, reader::object>)
+                {
+                    // min_items and max_items count the properties of an object.
+                    auto rest = k.constraints;
+                    if (rest.has<yyjson::min_items>()) o.emplace("minProperties", rest.min_items);
+                    if (rest.has<yyjson::max_items>()) o.emplace("maxProperties", rest.max_items);
+                    rest.set &= ~(yyjson::detail::constraint_bit<yyjson::min_items> |
+                                  yyjson::detail::constraint_bit<yyjson::max_items>);
+                    emit_constraints(o, rest);
+                }
+                else
+                    emit_constraints(o, k.constraints, yyjson::detail::multi_kind<T>);
+                emit_written_texts<T>(o, k.constraints);
+                if (k.type_test != nullptr) emit_type_test(o, *k.type_test);
+                if constexpr (std::same_as<T, writer::array> || std::same_as<T, reader::array>)
+                {
+                    if (k.contains != 0)
+                        emit<writer::value>(o.emplace("contains", empty_object), nodes, k.contains);
+                }
+                else if constexpr (yyjson::detail::constraint_item_range<T>)
+                {
+                    if (k.contains != 0)
+                        emit<yyjson::detail::array_element_t<T>>(o.emplace("contains", empty_object), nodes,
+                                                                 k.contains);
+                }
+            }
             // Writes the `yyjson::not_` of a value of T from the node `first` on as `not`: of the schema of the
             // settings of one, or of `anyOf` those of several.  A value that has `not` already takes it in `allOf`.
             template <typename T>
             void emit_negated(object_ref out, const schema_node* nodes, std::size_t first)
             {
-                const auto settings = [&](object_ref o, const schema_node& k) {
-                    if constexpr (std::floating_point<T> && sizeof(T) < sizeof(double))
-                        emit_float<T>(o, &k);
-                    else if constexpr (object_range<T> || std::same_as<T, writer::object> ||
-                                       std::same_as<T, reader::object>)
-                    {
-                        // min_items and max_items count the properties of an object.
-                        auto rest = k.constraints;
-                        if (rest.has<yyjson::min_items>()) o.emplace("minProperties", rest.min_items);
-                        if (rest.has<yyjson::max_items>()) o.emplace("maxProperties", rest.max_items);
-                        rest.set &= ~(yyjson::detail::constraint_bit<yyjson::min_items> |
-                                      yyjson::detail::constraint_bit<yyjson::max_items>);
-                        emit_constraints(o, rest);
-                    }
-                    else
-                        emit_constraints(o, k.constraints, yyjson::detail::multi_kind<T>);
-                    emit_written_texts<T>(o, k.constraints);
-                    if (k.type_test != nullptr) emit_type_test(o, *k.type_test);
-                    if constexpr (std::same_as<T, writer::array> || std::same_as<T, reader::array>)
-                    {
-                        if (k.contains != 0)
-                            emit<writer::value>(o.emplace("contains", empty_object), nodes, k.contains);
-                    }
-                    else if constexpr (yyjson::detail::constraint_item_range<T>)
-                    {
-                        if (k.contains != 0)
-                            emit<yyjson::detail::array_element_t<T>>(o.emplace("contains", empty_object), nodes,
-                                                                     k.contains);
-                    }
-                };
                 auto target = out;
                 if (out.contains("not")) target = all_of(out).emplace_back(empty_object);
                 auto negated = target.emplace("not", empty_object);
-                if (nodes[first].next == 0) return settings(negated, nodes[first]);
+                if (nodes[first].next == 0) return emit_test_settings<T>(negated, nodes, nodes[first]);
                 auto any = negated.emplace("anyOf", empty_array);
-                for (auto k = first; k != 0; k = nodes[k].next) settings(any.emplace_back(empty_object), nodes[k]);
+                for (auto k = first; k != 0; k = nodes[k].next)
+                    emit_test_settings<T>(any.emplace_back(empty_object), nodes, nodes[k]);
+            }
+            // Writes the `yyjson::if_then_else` of a value of T from the node `first` on as `if`, `then` and
+            // `else`: `if` has the settings of `yyjson::if_`, `then` and `else` the schema of T with those of
+            // `yyjson::then` and `yyjson::else_`.  A value that has `if` already takes the others in `allOf`.
+            template <typename T>
+            void emit_conditional(object_ref out, const schema_node* nodes, std::size_t first)
+            {
+                for (auto c = first; c != 0; c = nodes[c].next)
+                {
+                    auto target = out.contains("if") ? all_of(out).emplace_back(empty_object) : out;
+                    emit_test_settings<T>(target.emplace("if", empty_object), nodes, nodes[c]);
+                    if (nodes[c].then_branch != 0)
+                        emit<T>(target.emplace("then", empty_object), nodes, nodes[c].then_branch);
+                    if (nodes[c].else_branch != 0)
+                        emit<T>(target.emplace("else", empty_object), nodes, nodes[c].else_branch);
+                }
             }
 
-            // Writes the settings of `yyjson::property_names` at the node `keys`: the constraints of a string and
-            // its `yyjson::not_`.
+            // Writes the settings of `yyjson::property_names` at the node `keys`: the constraints of a string, its
+            // `yyjson::not_` and its `yyjson::if_then_else`.
             void emit_key_settings(object_ref out, const schema_node* nodes, std::size_t keys)
             {
                 emit_constraints(out, nodes[keys].constraints);
                 if (nodes[keys].negated != 0) emit_negated<std::string>(out, nodes, nodes[keys].negated);
+                if (nodes[keys].conditional != 0)
+                    emit_conditional<std::string>(out, nodes, nodes[keys].conditional);
             }
 
             // `yyjson::strict` applies to reading only: what `write` gives has every key that is not left out.
@@ -986,8 +1008,38 @@ namespace yyjson
                 }
                 return true;
             }
+            // Whether null satisfies the settings of the node k of a `yyjson::not_` or a `yyjson::if_`, as reading
+            // tests it: unless `yyjson::const_` or `yyjson::enum_` leave `nullptr` out, or the type of
+            // `yyjson::is_type<T>` does not read null.
+            bool null_satisfies(const schema_node& k) const
+            {
+                return admits_null(&k) &&
+                       (k.type_test == nullptr || k.type_test->test(nullptr, yyjson::detail::dom_kind::none));
+            }
+            // Whether null passes the settings of the node n, as reading tests the null of a `yyjson::then` or a
+            // `yyjson::else_`.
+            bool null_passes(const schema_node* nodes, const schema_node& n) const
+            {
+                if (!null_satisfies(n)) return false;
+                for (auto k = n.negated; k != 0; k = nodes[k].next)
+                    if (null_satisfies(nodes[k])) return false;
+                return null_meets_conditions(nodes, &n);
+            }
+            // Whether null passes the `yyjson::if_then_else` of the node n: the settings of `yyjson::then` when it
+            // satisfies those of `yyjson::if_`, and those of `yyjson::else_` otherwise.
+            bool null_meets_conditions(const schema_node* nodes, const schema_node* n) const
+            {
+                if (n == nullptr) return true;
+                for (auto c = n->conditional; c != 0; c = nodes[c].next)
+                {
+                    const auto branch = null_satisfies(nodes[c]) ? nodes[c].then_branch : nodes[c].else_branch;
+                    if (branch != 0 && !null_passes(nodes, nodes[branch])) return false;
+                }
+                return true;
+            }
             // What the `yyjson::not_` of the node n do to null: a `not_` whose settings all hold for null rejects it,
-            // unless it has a `yyjson::is_type<T>`, which tests it.
+            // unless it has a `yyjson::is_type<T>`, which tests it.  A `yyjson::if_then_else` that null does not
+            // pass rejects it too.
             enum class negated_null
             {
                 kept,
@@ -996,6 +1048,7 @@ namespace yyjson
             };
             negated_null null_in_not(const schema_node* nodes, const schema_node* n) const
             {
+                if (!null_meets_conditions(nodes, n)) return negated_null::rejected;
                 if (n == nullptr) return negated_null::kept;
                 auto result = negated_null::kept;
                 for (auto k = n->negated; k != 0; k = nodes[k].next)
@@ -1482,6 +1535,8 @@ namespace yyjson
                 if (n != nullptr && settles<T>()) emit_written_texts<T>(out, n->constraints);
                 if (n != nullptr && n->type_test != nullptr) emit_type_test(out, *n->type_test);
                 if (n != nullptr && n->negated != 0 && settles<T>()) emit_negated<T>(out, nodes, n->negated);
+                if (n != nullptr && n->conditional != 0 && settles<T>())
+                    emit_conditional<T>(out, nodes, n->conditional);
                 static_assert(std::is_enum_v<T> || struct_type<T> || is_variant<T>::value ||
                                   yyjson::detail::combined_variant<T> || user_read<T> || user_write<T> ||
                                   type_setting_count<T, yyjson::schema_name>() == 0,
@@ -2371,6 +2426,8 @@ namespace yyjson
                 {
                     emit_constraints(p, field_nodes[node].constraints);
                     if (field_nodes[node].negated != 0) emit_negated<F>(p, field_nodes, field_nodes[node].negated);
+                    if (field_nodes[node].conditional != 0)
+                        emit_conditional<F>(p, field_nodes, field_nodes[node].conditional);
                 }
             }
             else

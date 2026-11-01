@@ -3244,6 +3244,134 @@ TEST(Constraints, ValueNotOfNull)
     EXPECT_THROW((void)yyjson::read<NullOrAbove>("5"), yyjson::bad_cast);
 }
 
+// if_then_else of a value: then holds for the values that satisfy if_, else_ for the others; null passes as it
+// passes not_, through the settings of then or else_
+struct ValueIf
+{
+    int n = 0;
+    std::vector<int> v;
+    std::optional<yyjson::value> any;
+    std::variant<std::monostate, int> nv = 3;
+    std::vector<std::optional<int>> nulls;
+    std::map<std::string, int> keys;
+    yyjson::any_of<yyjson::alt<int, yyjson::if_then_else(yyjson::if_(yyjson::minimum(0)),
+                                                         yyjson::then(yyjson::maximum(9)))>,
+                   std::string>
+        u = 0;
+    std::optional<int> nested;
+};
+template <>
+inline constexpr auto yyjson::annotations<ValueIf> = yyjson::annotate(
+    yyjson::field("n",
+                  yyjson::if_then_else(yyjson::if_(yyjson::minimum(10)), yyjson::then(yyjson::multiple_of(2)),
+                                       yyjson::else_(yyjson::maximum(3))),
+                  yyjson::if_then_else(yyjson::if_(yyjson::maximum(-1)),
+                                       yyjson::then(yyjson::not_(yyjson::const_(-5))))),
+    yyjson::field("v", yyjson::items(yyjson::if_then_else(yyjson::if_(yyjson::minimum(5)),
+                                                          yyjson::else_(yyjson::const_(0))))),
+    yyjson::field("any", yyjson::if_then_else(yyjson::if_(yyjson::is_type<std::string>),
+                                              yyjson::then(yyjson::min_length(2)),
+                                              yyjson::else_(yyjson::is_type<double>))),
+    yyjson::field("nv", yyjson::if_then_else(yyjson::if_(yyjson::maximum(5)), yyjson::then(yyjson::const_(3)),
+                                             yyjson::else_(yyjson::multiple_of(10)))),
+    yyjson::field("nulls", yyjson::items(yyjson::if_then_else(yyjson::if_(yyjson::maximum(5)),
+                                                              yyjson::then(yyjson::minimum(1))))),
+    yyjson::field("keys", yyjson::property_names(yyjson::if_then_else(yyjson::if_(yyjson::min_length(2)),
+                                                                      yyjson::then(yyjson::max_length(3))))),
+    yyjson::field("nested", yyjson::if_then_else(
+                                yyjson::if_(yyjson::maximum(10)),
+                                yyjson::then(yyjson::if_then_else(yyjson::if_(yyjson::minimum(5)),
+                                                                  yyjson::then(yyjson::const_(7)))))));
+
+TEST(Constraints, ValueConditions)
+{
+    const auto check = [](const char* json, std::string_view message, std::string_view path) {
+        const auto reads = std::array<std::function<void()>, 3>{
+            [&] { (void)yyjson::read<ValueIf>(json); }, [&] { (void)yyjson::read(json).cast<ValueIf>(); },
+            [&] { (void)yyjson::read<ValueIf>(json, yyjson::strict); }};
+        for (const auto& read : reads)
+        {
+            if (message.empty())
+                EXPECT_NO_THROW(read()) << json;
+            else
+            {
+                const auto e = bad_cast_of(read);
+                EXPECT_TRUE(message_of(e).starts_with(message)) << json << "\n" << e.what();
+                EXPECT_EQ(e.path(), path) << json;
+            }
+        }
+#if YYJSON_VERSION_HEX >= 0x000C00
+        EXPECT_EQ(read_directly<ValueIf>(json, yyjson::ReadFlag::NoFlag).has_value(), message.empty()) << json;
+#endif
+    };
+    const auto then = [](std::string_view subject) {
+        return std::format("{} of ValueIf satisfies the settings of yyjson::if_ and not those of yyjson::then",
+                           subject);
+    };
+    const auto otherwise = [](std::string_view subject) {
+        return std::format("{} of ValueIf satisfies neither the settings of yyjson::if_ nor those of yyjson::else_",
+                           subject);
+    };
+    const auto key = [](std::string_view k) { return std::format(R"(the value of the key "{}")", k); };
+    // the keys that strict reading requires, and the members that the documents below change
+    const auto doc = [](std::string_view members) {
+        auto result = std::string("{") + std::string(members);
+        for (const auto& [k, value] :
+             {std::pair{"n", "0"}, {"v", "[]"}, {"nv", "3"}, {"nulls", "[]"}, {"keys", "{}"}, {"u", "0"}})
+            if (members.find(std::format(R"("{}":)", k)) == std::string_view::npos)
+                result += std::format(R"({}"{}":{})", result.size() == 1 ? "" : ",", k, value);
+        return result + "}";
+    };
+    const auto check_doc = [&](std::string_view members, std::string_view message, std::string_view path = "") {
+        check(doc(members).c_str(), message, path);
+    };
+    check_doc(R"("n":12,"v":[5,0,9],"any":"ab","nv":20,"nulls":[null,1,6],"keys":{"a":1,"abc":2},"u":"x")", "");
+    check_doc(R"("n":-6,"any":1.5,"u":-1,"nested":7)", "");
+    check_doc(R"("n":11)", then(key("n")), "/n");
+    check_doc(R"("n":4)", otherwise(key("n")), "/n");
+    // the second if_then_else of the same value
+    check_doc(R"("n":-5)", then(key("n")), "/n");
+    check_doc(R"("v":[5,1])", otherwise("an element of the value of the key \"v\""), "/v/1");
+    check_doc(R"("any":"a")", then(key("any")), "/any");
+    check_doc(R"("any":[])", otherwise(key("any")), "/any");
+    // null is not a string and not a number
+    check_doc(R"("any":null)", otherwise(key("any")), "/any");
+    // null satisfies maximum and not const_
+    check_doc(R"("nv":null)", then(key("nv")), "/nv");
+    check_doc(R"("nv":4)", then(key("nv")), "/nv");
+    check_doc(R"("nv":21)", otherwise(key("nv")), "/nv");
+    check_doc(R"("nulls":[null,0])", then("an element of the value of the key \"nulls\""), "/nulls/1");
+    check_doc(R"("keys":{"abcd":1})", then("a key of the value of the key \"keys\""), "/keys/abcd");
+    check_doc(R"("u":10)", "yyjson::any_of<", "/u");
+    check_doc(R"("nested":11)", "");
+    check_doc(R"("nested":4)", "");
+    check_doc(R"("nested":6)", then(key("nested")), "/nested");
+
+    // validate and write(strict) test the values that writing writes, merge_into the values that it reads
+    auto t = ValueIf{};
+    EXPECT_NO_THROW(yyjson::validate(t));
+    t.nv = std::monostate{};
+    auto e = bad_cast_of([&] { yyjson::validate(t); });
+    EXPECT_TRUE(message_of(e).starts_with(then(key("nv")))) << e.what();
+    EXPECT_EQ(e.path(), "/nv");
+    t.nv = 3;
+    t.v = {7, 2};
+    e = bad_cast_of([&] { (void)yyjson::write(t, yyjson::strict); });
+    EXPECT_EQ(e.path(), "/v/1") << e.what();
+    t.v = {};
+    t.any = yyjson::value(nullptr);
+    EXPECT_EQ(bad_cast_of([&] { yyjson::validate(t); }).path(), "/any");
+    t.any.reset();
+    t.nulls = {std::nullopt, 0};
+    EXPECT_EQ(bad_cast_of([&] { yyjson::validate(t); }).path(), "/nulls/1");
+    t.nulls = {std::nullopt};
+    EXPECT_NO_THROW((void)yyjson::write(t, yyjson::strict));
+    e = bad_cast_of([&] { yyjson::merge_into(R"({"n":11})", t); });
+    EXPECT_EQ(e.path(), "/n") << e.what();
+    EXPECT_NO_THROW(yyjson::merge_into(R"({"n":12})", t));
+    EXPECT_EQ(t.n, 12);
+}
+
 // value settings on values that can be of several JSON kinds: each setting constrains the values of its kind
 enum class MultiShade { light, dark };
 struct MultiPoint
@@ -3432,6 +3560,17 @@ namespace compile_rules
     static_assert(alternatives_error<yyjson::alt<std::vector<int>, yyjson::max_contains(2)>> == contains_missing);
     static_assert(alternatives_error<yyjson::alt<std::vector<int>, yyjson::items(yyjson::min_contains(1))>> ==
                   contains_missing);
+    static_assert(alternatives_error<yyjson::alt<int, yyjson::if_then_else(yyjson::if_(yyjson::minimum(0)),
+                                                                           yyjson::then(yyjson::minimum(1),
+                                                                                        yyjson::minimum(2)))>> ==
+                  same_setting_twice);
+    static_assert(alternatives_error<yyjson::alt<int, yyjson::if_then_else(yyjson::if_(yyjson::minimum(0)),
+                                                                           yyjson::else_(yyjson::multiple_of(0)))>> ==
+                  multiple_of_not_positive);
+    static_assert(alternatives_error<yyjson::alt<std::vector<int>,
+                                                 yyjson::if_then_else(yyjson::if_(yyjson::min_items(1)),
+                                                                      yyjson::then(yyjson::max_contains(2)))>> ==
+                  contains_missing);
 
     static_assert(std::variant_size_v<Alternatives> == 5 && std::variant_size_v<const ExactlyOne> == 2);
     static_assert(std::same_as<std::variant_alternative_t<2, Alternatives>, std::string>);
@@ -3507,6 +3646,11 @@ namespace compile_rules
     static_assert(relations<any_of<int, alt<std::uint8_t, maximum(-1)>>>::empty == 1);
     static_assert(relations<any_of<alt<std::optional<int>, minimum(1), maximum(0)>, std::string>>::empty == 0);
     static_assert(relations<any_of<alt<std::uint8_t, maximum(0)>, std::string>>::empty == 2);
+    // a conditional leaves part of the values of its type
+    static_assert(contained<any_of<int, alt<int, yyjson::if_then_else(yyjson::if_(minimum(0)),
+                                                                      yyjson::then(maximum(9)))>>> == 1);
+    static_assert(contained<any_of<alt<int, yyjson::if_then_else(yyjson::if_(minimum(0)), yyjson::then(maximum(9)))>,
+                                   int>> == 2);
     template <typename V>
     constexpr bool reads_nothing =
         yyjson::detail::settings_read_nothing<yyjson::detail::alternative_level<V, 0>,

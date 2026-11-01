@@ -1028,6 +1028,45 @@ inline constexpr auto yyjson::annotations<NegatedNulls> =
                      yyjson::field("nulls", yyjson::items(yyjson::not_(yyjson::is_type<std::nullptr_t>))),
                      yyjson::field("ints", yyjson::items(yyjson::not_(yyjson::is_type<int>))));
 
+// if_then_else of values: `if`, `then` and `else`, beside `not`, in elements, keys, alternatives and nested; null
+// is left out of a nullable value when the settings of then or else_ that it reaches reject it
+struct ValueConditions
+{
+    int n = 0;
+    std::vector<int> v;
+    std::optional<yyjson::value> any;
+    std::variant<std::monostate, int> nv = 3;
+    std::vector<std::optional<int>> nulls;
+    std::map<std::string, int> keys;
+    yyjson::any_of<yyjson::alt<int, yyjson::if_then_else(yyjson::if_(yyjson::minimum(0)),
+                                                         yyjson::then(yyjson::maximum(9)))>,
+                   std::string>
+        u = 0;
+    std::optional<int> nested;
+};
+template <>
+inline constexpr auto yyjson::annotations<ValueConditions> = yyjson::annotate(
+    yyjson::field("n", yyjson::not_(yyjson::const_(1)),
+                  yyjson::if_then_else(yyjson::if_(yyjson::minimum(10)), yyjson::then(yyjson::multiple_of(2)),
+                                       yyjson::else_(yyjson::maximum(3))),
+                  yyjson::if_then_else(yyjson::if_(yyjson::maximum(-1)),
+                                       yyjson::then(yyjson::not_(yyjson::const_(-5))))),
+    yyjson::field("v", yyjson::items(yyjson::if_then_else(yyjson::if_(yyjson::minimum(5)),
+                                                          yyjson::else_(yyjson::const_(0))))),
+    yyjson::field("any", yyjson::if_then_else(yyjson::if_(yyjson::is_type<std::string>),
+                                              yyjson::then(yyjson::min_length(2)),
+                                              yyjson::else_(yyjson::is_type<double>))),
+    yyjson::field("nv", yyjson::if_then_else(yyjson::if_(yyjson::maximum(5)), yyjson::then(yyjson::const_(3)),
+                                             yyjson::else_(yyjson::multiple_of(10)))),
+    yyjson::field("nulls", yyjson::items(yyjson::if_then_else(yyjson::if_(yyjson::maximum(5)),
+                                                              yyjson::then(yyjson::minimum(1))))),
+    yyjson::field("keys", yyjson::property_names(yyjson::if_then_else(yyjson::if_(yyjson::min_length(2)),
+                                                                      yyjson::then(yyjson::max_length(3))))),
+    yyjson::field("nested", yyjson::if_then_else(
+                                yyjson::if_(yyjson::maximum(10)),
+                                yyjson::then(yyjson::if_then_else(yyjson::if_(yyjson::minimum(5)),
+                                                                  yyjson::then(yyjson::const_(7)))))));
+
 // Settings on values that may be of several JSON kinds constrain the values of their kinds only, and null is one of
 // the listed values of `enum_`.
 enum class MultiShade
@@ -2581,6 +2620,56 @@ TEST(Schema, NegatedNulls)
                                       R"("not":{"minimum":5},"default":0})"));
     EXPECT_FALSE(p["listed"].contains("anyOf"));
     EXPECT_EQ(p["nulls"]["items"]["anyOf"][1], json::parse(R"({"type":"null","not":{"type":"null"}})"));
+}
+
+TEST(Schema, ValueConditions)
+{
+    const auto doc = [](std::string_view members) {
+        auto result = std::string("{") + std::string(members);
+        for (const auto& [k, value] :
+             {std::pair{"n", "0"}, {"v", "[]"}, {"nv", "3"}, {"nulls", "[]"}, {"keys", "{}"}, {"u", "0"}})
+            if (members.find(std::format(R"("{}":)", k)) == std::string_view::npos)
+                result += std::format(R"({}"{}":{})", result.size() == 1 ? "" : ",", k, value);
+        return result + "}";
+    };
+    const auto docs = std::vector<std::string>{
+        doc(""),
+        doc(R"("n":12,"v":[5,0,9],"any":"ab","nv":20,"nulls":[null,1,6],"keys":{"a":1,"abc":2},"u":"x")"),
+        doc(R"("n":-6,"any":1.5,"u":-1,"nested":7)"),
+        doc(R"("n":1)"),
+        doc(R"("n":11)"),
+        doc(R"("n":4)"),
+        doc(R"("n":-5)"),
+        doc(R"("v":[5,1])"),
+        doc(R"("any":"a")"),
+        doc(R"("any":[])"),
+        doc(R"("any":null)"),
+        doc(R"("nv":null)"),
+        doc(R"("nv":4)"),
+        doc(R"("nv":21)"),
+        doc(R"("nulls":[null,0])"),
+        doc(R"("keys":{"abcd":1})"),
+        doc(R"("u":10)"),
+        doc(R"("u":"10")"),
+        doc(R"("nested":11)"),
+        doc(R"("nested":4)"),
+        doc(R"("nested":6)"),
+    };
+    // check takes the documents as literals
+    for (const auto& d : docs) check<ValueConditions>({d.c_str()});
+    const auto s = to_jsoncons(yyjson::json_schema<ValueConditions>());
+    const auto& p = s["$defs"]["ValueConditions"]["properties"];
+    EXPECT_EQ(p["n"]["if"], json::parse(R"({"minimum":10})"));
+    EXPECT_EQ(p["n"]["not"], json::parse(R"({"const":1})"));
+    EXPECT_EQ(p["n"]["else"]["maximum"].as<int>(), 3);
+    EXPECT_EQ(p["n"]["allOf"][0]["if"], json::parse(R"({"maximum":-1})"));
+    EXPECT_EQ(p["n"]["allOf"][0]["then"]["not"], json::parse(R"({"const":-5})"));
+    EXPECT_EQ(p["any"], json::parse(R"({"if":{"type":"string"},"then":{"minLength":2},"else":{"type":"number"}})"));
+    EXPECT_FALSE(p["nv"].contains("anyOf")) << p["nv"].to_string();
+    EXPECT_EQ(p["nulls"]["items"]["anyOf"][1], json::parse(R"({"type":"null"})"));
+    EXPECT_EQ(p["keys"]["propertyNames"],
+              json::parse(R"({"if":{"minLength":2},"then":{"type":"string","maxLength":3}})"));
+    EXPECT_EQ(p["nested"]["then"]["if"], json::parse(R"({"minimum":5})"));
 }
 
 TEST(Schema, MultiKindValues)
