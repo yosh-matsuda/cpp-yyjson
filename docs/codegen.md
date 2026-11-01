@@ -697,12 +697,14 @@ A key of `dependentSchemas` gives `yyjson::if_then_else(yyjson::if_(yyjson::fiel
 
 `unevaluatedItems` beside `contains` constrains the elements that no subschema of `contains` matches, so every element after `prefixItems` matches a subschema of `contains` or, when the keyword is a schema of the same types, that schema. The elements are read as that one schema, or as `yyjson::any_of` of an alternative per schema (`yyjson::any_of<yyjson::alt<std::string, yyjson::max_length(2)>, yyjson::alt<std::string, ...>>`), and `contains` counts them as before.
 
+Beside `anyOf`, a subschema evaluates a prefix of the array (its `prefixItems`, or all elements with `items`), unless it reaches `contains` or a condition. The prefixes of the subschemas that hold are evaluated, which is the longest of them, so `unevaluatedItems` goes into each alternative as beside `oneOf`: an alternative ends at its own prefix and the prefix of the base, and an array that one alternative accepts also satisfies the keyword of the schema.
+
 The keyword is left out with a warning, and the code reads the other keys or elements, where the keys or elements that count depend on the value in a way that the generated types do not follow:
 
 | Beside | Warning |
 | --- | --- |
 | a key that several subschemas of `if`, `dependentSchemas` and `anyOf` evaluate, since any of them may hold; the other keys are constrained | "the key "k" is evaluated by several subschemas of `if`, `dependentSchemas` or `anyOf`; `unevaluatedProperties` does not apply to it" |
-| `anyOf` whose subschemas evaluate items, or evaluate properties in a way that keys cannot list (`patternProperties`, `additionalProperties`, a nested condition) | "`unevaluatedProperties` beside `anyOf` whose subschemas evaluate properties is not supported; it is ignored" |
+| `anyOf` whose subschemas evaluate properties in a way that keys cannot list (`patternProperties`, `additionalProperties`, a nested condition), or a subschema of `anyOf` that evaluates items through `contains` or a condition | "`unevaluatedProperties` beside `anyOf` whose subschemas evaluate properties is not supported; it is ignored" (or "... evaluate items ...") |
 | `oneOf` beside an `anyOf` that does more than list `required` keys, or two `oneOf`, one of them in a subschema of `allOf` | "... beside several `anyOf` / `oneOf` is not supported ..." |
 | `if`, `then`, `else` or `dependentSchemas` beside `oneOf`, or whose properties cannot be listed (`patternProperties`, except an `if` alone with `false`; `additionalProperties`; a nested condition), `if`, `then` or `else` for `unevaluatedItems`, a `$dynamicRef` or `$recursiveRef` that cannot be followed | "... beside `if`, `then`, `else`, `dependentSchemas`, `$dynamicRef` or `$recursiveRef` is not supported ..." |
 | `contains` beside `anyOf` or `oneOf` whose subschemas evaluate items, or beside an `unevaluatedItems` schema of other types, for `unevaluatedItems` | "`unevaluatedItems` beside `contains` is not supported; it is ignored" |
