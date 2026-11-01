@@ -634,7 +634,7 @@ inline constexpr auto yyjson::annotations<Root> = yyjson::annotate(
     yyjson::additional_properties(false));
 ```
 
-`false` closes the struct, and a schema gives a field of [`yyjson::extra_keys`](#keys-that-name-no-property). In the same way, `unevaluatedItems` is the `items` after `prefixItems`, so `false` ends the tuple. The keyword adds nothing, and is left out silently, beside `additionalProperties` or `items`, beside a subschema whose `additionalProperties`, `items` or own unevaluated keyword already evaluates every key or element, and for a type that is not an object or an array. `unevaluatedProperties` in a subschema of `allOf`, or in the target of `$ref`, counts only the keywords of that subschema, so it rejects the properties that only the others declare: they get the schema `false` as under [`allOf`](#mapping), and the struct rejects an object that has them.
+`false` closes the struct, and a schema gives a field of [`yyjson::extra_keys`](#keys-that-name-no-property). In the same way, `unevaluatedItems` is the `items` after `prefixItems`, so `false` ends the tuple. `prefixItems` of the schema, of `allOf` and of the target of `$ref` are joined position by position, so the tuple ends after the longest of them. The keyword adds nothing, and is left out silently, beside `additionalProperties` or `items`, beside a subschema whose `additionalProperties`, `items` or own unevaluated keyword already evaluates every key or element, and for a type that is not an object or an array. `unevaluatedProperties` in a subschema of `allOf`, or in the target of `$ref`, counts only the keywords of that subschema, so it rejects the properties that only the others declare: they get the schema `false` as under [`allOf`](#mapping), and the struct rejects an object that has them.
 
 Beside `oneOf`, the properties that count are those of the base and of the subschema that matches. The keyword goes into each alternative, which is closed over the properties of the base and its own:
 
@@ -671,7 +671,7 @@ The keyword is left out with a warning, and the code reads the other keys or ele
 | `oneOf` beside an `anyOf` that does more than list `required` keys, or two `oneOf`, one of them in a subschema of `allOf` | "... beside several `anyOf` / `oneOf` is not supported ..." |
 | `if`, `then`, `else`, `dependentSchemas`, a `$dynamicRef` or `$recursiveRef` that cannot be followed | "... beside `if`, `then`, `else`, `dependentSchemas`, `$dynamicRef` or `$recursiveRef` is not supported ..." |
 | `contains`, for `unevaluatedItems` | "`unevaluatedItems` beside `contains` is not supported; it is ignored" |
-| `patternProperties` or `prefixItems` that differ between the schema and its subschemas | "... beside several `patternProperties` is not supported ..." |
+| `patternProperties` that differ between the schema and its subschemas, for `unevaluatedProperties` | "`unevaluatedProperties` beside several `patternProperties` is not supported; it is ignored" |
 | a `$ref` that cannot be read | "... beside a reference that cannot be read is not supported ..." |
 
 Draft-07 and draft-06 have neither keyword, so the generator ignores them there, with a warning.
