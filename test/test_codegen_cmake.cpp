@@ -352,11 +352,14 @@ TEST(CodegenCMake, ValueNot)
         EXPECT_EQ(std::string_view(yyjson::write(listing)), std::string_view(json));
         EXPECT_NO_THROW(yyjson::validate(listing)) << json;
     }
-    for (const auto* json : {R"({"name":"tmp1"})", R"({"port":22})", R"({"level":10})", R"({"level":null})",
-                             R"({"note":null})", R"({"status":"deleted"})", R"({"id":"1"})", R"({"tags":["a",""]})",
-                             R"({"price":"-5"})", R"({"price":-5})", R"({"owner":{"banned":false}})", R"({"owner":1})",
+    for (const auto* json : {R"({"name":"tmp1"})", R"({"port":22})", R"({"level":10})", R"({"note":null})",
+                             R"({"status":"deleted"})", R"({"id":"1"})", R"({"tags":["a",""]})", R"({"price":"-5"})",
+                             R"({"price":-5})", R"({"owner":{"banned":false}})", R"({"owner":1})",
                              R"({"ports":[1000,2000]})", R"({"ports":[1,2,3]})"})
         EXPECT_THROW((void)yyjson::read<model::Listing>(json), yyjson::bad_cast) << json;
+    // `level` is a `std::optional`, which reads `null` as a missing key unless `yyjson::strict` rejects it
+    EXPECT_FALSE(yyjson::read<model::Listing>(R"({"level":null})").level.has_value());
+    EXPECT_THROW((void)yyjson::read<model::Listing>(R"({"level":null})", yyjson::strict), yyjson::bad_cast);
     auto listing = model::Listing();
     listing.name = "tmp";
     EXPECT_THROW(yyjson::validate(listing), yyjson::bad_cast);
