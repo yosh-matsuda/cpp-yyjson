@@ -667,7 +667,7 @@ The keyword is left out with a warning, and the code reads the other keys or ele
 | --- | --- |
 | `anyOf` whose subschemas evaluate properties or items, since several of them can match | "`unevaluatedProperties` beside `anyOf` whose subschemas evaluate properties is not supported; it is ignored" |
 | `oneOf` beside an `anyOf` that does more than list `required` keys, or two `oneOf`, one of them in a subschema of `allOf` | "... beside several `anyOf` / `oneOf` is not supported ..." |
-| `if`, `then`, `else`, `dependentSchemas`, `$dynamicRef`, `$recursiveRef` | "... beside `if`, `then`, `else`, `dependentSchemas`, `$dynamicRef` or `$recursiveRef` is not supported ..." |
+| `if`, `then`, `else`, `dependentSchemas`, a `$dynamicRef` or `$recursiveRef` that cannot be followed | "... beside `if`, `then`, `else`, `dependentSchemas`, `$dynamicRef` or `$recursiveRef` is not supported ..." |
 | `contains`, for `unevaluatedItems` | "`unevaluatedItems` beside `contains` is not supported; it is ignored" |
 | `patternProperties` or `prefixItems` that differ between the schema and its subschemas | "... beside several `patternProperties` is not supported ..." |
 | a `$ref` that cannot be read | "... beside a reference that cannot be read is not supported ..." |
@@ -807,7 +807,58 @@ The dialect comes from `$schema`: 2020-12, 2019-09, draft-07 and draft-06 are re
 
 Another file, and a schema of its own `$id` that is not an entry of `$defs` of the root, is named by its `title`, else by the file name of its `$id` or its path up to the first dot; the entries of its `$defs` are named by their keys.
 
-`$dynamicRef` and `$recursiveRef` are not supported: they are ignored with a warning, and a schema of only one of them is read as `yyjson::value`.
+### `$dynamicRef` and `$recursiveRef`
+
+The target of `$dynamicRef` depends on the resources through which the evaluation reached it: when a resource passed on the way has a `$dynamicAnchor` of the same name, the outermost of them is the target. The generator follows each path from the root, and types a schema that a `$dynamicRef` reaches once for each binding of its anchors:
+
+```json
+{
+  "$id": "https://example.com/number-list",
+  "title": "NumberList",
+  "$ref": "generic-list",
+  "$defs": {
+    "GenericList": {
+      "$id": "generic-list",
+      "type": "object",
+      "properties": {"items": {"type": "array", "items": {"$dynamicRef": "#item"}}, "next": {"$ref": "#"}},
+      "required": ["items"],
+      "$defs": {"AnyItem": {"$dynamicAnchor": "item", "not": true}}
+    },
+    "NumberItem": {"$dynamicAnchor": "item", "type": "number", "minimum": 0},
+    "StringList": {
+      "$id": "string-list",
+      "$ref": "generic-list",
+      "$defs": {"StringItem": {"$dynamicAnchor": "item", "type": "string", "maxLength": 3}}
+    }
+  }
+}
+```
+
+```cpp
+using NumberList = GenericList;
+using StringList = GenericListInStringList;
+
+struct GenericList
+{
+    std::vector<NumberItem> items;  // NumberItem = double, with yyjson::minimum(0.0)
+    std::optional<yyjson::indirect<GenericList>> next;
+};
+
+struct GenericListInStringList
+{
+    std::vector<StringItem> items;  // StringItem = std::string, with yyjson::max_length(3)
+    std::optional<yyjson::indirect<GenericListInStringList>> next;
+};
+```
+
+*   The version that the root reaches keeps the name of the schema, here `GenericList` bound by the root. Each other version is named after the resources that bind its anchors: `<Type>In<Resource>`, such as `GenericListInStringList`. A version reached in the same way from two places is one type.
+*   An entry of `$defs` that the root reaches through a reference is typed with the bindings of the root. An entry that it does not reach starts with the resources on its own path, as a document would that refers to it directly.
+*   A `$dynamicRef` whose first target, resolved as `$ref`, has no `$dynamicAnchor` of that name is a `$ref`, as JSON Schema says.
+*   `$recursiveRef` and `$recursiveAnchor: true` of 2019-09 are read in the same way: when the resource of `$recursiveRef: "#"` has `$recursiveAnchor: true`, it refers to the outermost resource with `$recursiveAnchor: true` on the path, else to its own resource.
+*   A warning about a schema that is typed several times is given once, at the location of that schema.
+*   A `$dynamicRef` that cannot be followed is read as `yyjson::value`, with the warning of a `$ref` that cannot be followed.
+
+A schema that no `$dynamicRef` or `$recursiveRef` reaches is typed once.
 
 ## Warnings
 
@@ -815,7 +866,7 @@ A warning names the location in the schema and what the generated code does inst
 
 | Group | Example | The generated code |
 | --- | --- | --- |
-| a keyword that is not supported | `$dynamicRef`, `$recursiveRef`, `if` of a string | reads more than the schema accepts |
+| a keyword that is not supported | `if` of a string | reads more than the schema accepts |
 | a form that is not supported | `contains` that the elements cannot express, two different `contains` in `allOf`, `minItems` or `maxItems` beyond the positions of an [array of positions](#arrays-of-positions), [`unevaluatedProperties` beside `anyOf`](#unevaluatedproperties-and-unevaluateditems) | reads more than the schema accepts |
 | a type inferred from keywords, with `--infer-types` | "the schema has no `type`; it is read as string from its keywords" | reads only that type |
 | a variant of more alternatives than `--max-alternatives` | "a variant of 447 alternatives is more than 64 (--max-alternatives) ..." | reads any JSON value there |
@@ -861,7 +912,8 @@ The seventh and the last rows are the ones where the code reads less strictly wi
 *   a property whose schema is `false`, and `not` of `required` of its key;
 *   `propertyNames: false` and `maxProperties: 0`;
 *   several `pattern` in `allOf`, and the `pattern` with `allOf` of the others that `json_schema<T>()` writes;
-*   `propertyNames` that a key of a property fails, and `not` of `required` of that key.
+*   `propertyNames` that a key of a property fails, and `not` of `required` of that key;
+*   `$dynamicRef` or `$recursiveRef`, and a `$ref` to the version of the schema for each binding.
 
 The `title` and `description` of the subschema beside `{"type": "null"}` are lost: the variant whose first alternative is `std::monostate` has no place for them, and the description of the property stays.
 
