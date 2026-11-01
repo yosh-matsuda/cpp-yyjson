@@ -113,11 +113,11 @@ A `std::optional` field may be left out of the object. JSON `null` as its value 
 | `U` | Without `yyjson::strict` | With `yyjson::strict` |
 | --- | --- | --- |
 | `std::shared_ptr` or `std::unique_ptr` | the field gets a value that holds an empty pointer | the same |
-| another type that reads `null`, such as `std::variant<std::monostate, V>`, `std::nullptr_t` or `std::optional<V>` | the field keeps its value in `T()` | the same |
-| a type with a [user-defined caster](conversions.md#user-defined-casters) that may take `null`: a translator whose parameter reads `null`, or a `from_json` that takes a `json_view` or a JSON value | the field keeps its value in `T()` | the same, since the library cannot tell whether the caster reads `null` |
+| another type that reads `null`, such as `std::variant<std::monostate, V>`, `std::nullptr_t` or `std::optional<V>` | the field gets a value that holds what `U` reads from `null`: `std::monostate`, `nullptr` or `std::nullopt` | the same |
+| a type with a [user-defined caster](conversions.md#user-defined-casters) that may take `null`: a translator whose parameter reads `null`, or a `from_json` that takes a `json_view` or a JSON value | the field gets a value that holds what the caster reads from `null` | the same, since the library cannot tell whether the caster reads `null` |
 | any other type, such as `int` or a type whose translator takes `int` | the field keeps its value in `T()` | `std::optional<U> is not constructible from null under yyjson::strict` |
 
-The value in `T()` is `std::nullopt` unless a default member initializer gives the field another. To accept `null` as a value of a field under `yyjson::strict`, give the field a type that reads `null` itself, such as `std::variant<std::monostate, V>` or `std::shared_ptr<V>`.
+The value in `T()` is `std::nullopt` unless a default member initializer gives the field another; `null` is read as if the key were left out. To accept `null` as a value of a field under `yyjson::strict`, give the field a type that reads `null` itself, such as `std::variant<std::monostate, V>` or `std::shared_ptr<V>`.
 
 Any other `std::optional<U>`, such as the root or an element of an array, reads `null` as `std::nullopt`, with or without `yyjson::strict`.
 
