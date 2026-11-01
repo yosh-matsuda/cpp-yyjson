@@ -3,8 +3,9 @@
 // codegen/alternatives.schema.json, from codegen/patterns.schema.json, from
 // codegen/recursion.schema.json, from codegen/untyped.schema.json (also with INFER_TYPES), from
 // codegen/conditions.schema.json, from codegen/contains.schema.json, from
-// codegen/positions.schema.json, from codegen/rejections.schema.json and from codegen/invoice.schema.json, which
-// references codegen/remote/money.schema.json through URI_MAP and codegen/tax.schema.json through SCHEMAS.
+// codegen/positions.schema.json, from codegen/rejections.schema.json, from codegen/dynamic.schema.json and from
+// codegen/invoice.schema.json, which references codegen/remote/money.schema.json through URI_MAP and
+// codegen/tax.schema.json through SCHEMAS.
 #include <gtest/gtest.h>
 
 #include <cpp_yyjson.hpp>
@@ -26,6 +27,7 @@ struct yyjson::pattern_matcher<>
 #include "constants.hpp"
 #include "contains.hpp"
 #include "defaults.hpp"
+#include "dynamic.hpp"
 #include "invoice.hpp"
 #include "negations.hpp"
 #include "nested_conditions.hpp"
@@ -439,6 +441,21 @@ TEST(CodegenCMake, Contains)
                              R"({"counts":[5,4]})", R"({"codes":[1,99]})", R"({"colors":["green"]})",
                              R"({"codes":[0,100]})"})
         EXPECT_THROW((void)yyjson::read<model::Basket>(json), yyjson::bad_cast) << json;
+}
+
+TEST(CodegenCMake, DynamicReferences)
+{
+    // the list of the root holds numbers, the list of StringList strings, in every list that `next` holds
+    const auto numbers = R"({"items":[1.0,2.5],"next":{"items":[3.0]}})";
+    const auto n = yyjson::read<model::NumberList>(numbers, yyjson::strict);
+    EXPECT_EQ(yyjson::write(n), numbers);
+    const auto strings = R"({"items":["a"],"next":{"items":["bc"]}})";
+    const auto s = yyjson::read<model::StringList>(strings, yyjson::strict);
+    EXPECT_EQ(yyjson::write(s), strings);
+    for (const auto* json : {R"({"items":["a"]})", R"({"items":[1],"next":{"items":[-1]}})"})
+        EXPECT_THROW((void)yyjson::read<model::NumberList>(json), yyjson::bad_cast) << json;
+    for (const auto* json : {R"({"items":[1]})", R"({"items":["a"],"next":{"items":["abcd"]}})"})
+        EXPECT_THROW((void)yyjson::read<model::StringList>(json), yyjson::bad_cast) << json;
 }
 
 TEST(CodegenCMake, RemoteReferences)

@@ -1036,15 +1036,37 @@ namespace cpp_yyjson_codegen
             std::map<const json*, std::pair<const json*, const json*>> contains_nothing_;
             std::set<const json*> containing_;  // merged schemas whose `contains` is being normalized
 
-            // the key that a warning shows for the URI of a document: "" for the root, the path for a file
+            // the key that a warning shows for the URI of a document: "" for the root, the path for a file; for the
+            // key of a copy made for `$dynamicRef`, the location of the schema copied, which replaces the '#' too
             std::map<std::string, std::string> loc_keys_;
+
+            // `$dynamicRef` and `$recursiveRef` (see specialize()): the generator runs again in the dynamic mode when
+            // it finds one, so that a schema without them is read as before
+            bool dynamic_ = false;
+            bool dynamic_found_ = false;
+            using binding = std::map<std::string, const json*>;  // dynamic anchor name -> the resource that binds it
+            std::map<const json*, const json*> resource_of_;      // schema -> its resource
+            std::map<const json*, std::string> resource_keys_;    // resource -> the key of a reference to it
+            std::map<const json*, std::string> loc_of_;           // schema -> its location
+            // (resource, name) -> the schema of `$dynamicAnchor`, or of `$recursiveAnchor: true` under recursive_name
+            std::map<std::pair<const json*, std::string>, const json*> dyn_anchors_;
+            std::map<const json*, std::vector<std::string>> dyn_names_;  // resource -> the names of its anchors
+            std::map<const json*, std::set<std::string>> reach_;  // see specialize()
+            std::map<std::pair<const json*, binding>, const json*> clones_;
+            std::map<const json*, std::string> clone_keys_;  // copy -> its key in resources_
+            std::set<const json*> renamed_;                  // schemas whose name a copy took
+            const json* root_copy_ = nullptr;
+            static constexpr std::string_view recursive_name = "\x01" "rec";
 
             void warn(std::string loc, std::string msg)
             {
                 if (quiet_ > 0) return;
                 ++warn_calls_;
                 if (const auto it = loc_keys_.find(loc.substr(0, loc.find('#'))); it != loc_keys_.end())
-                    loc.replace(0, it->first.size(), it->second);
+                    loc.replace(0,
+                                it->first.size() +
+                                    (it->second.find('#') != std::string::npos && loc.size() > it->first.size()),
+                                it->second);
                 if (warned_.emplace(loc, msg).second) warnings_.push_back({loc, std::move(msg)});
             }
 
@@ -1318,6 +1340,28 @@ namespace cpp_yyjson_codegen
                             for (const auto* kw : {"$anchor", "$dynamicAnchor"})
                                 if (const auto* a = j.find(kw); a != nullptr && a->is_string())
                                     anchors_.emplace(std::pair(resource, a->text), &j);
+                        if (known && !draft07)
+                            for (const auto* kw : {"$dynamicRef", "$recursiveRef"})
+                                if (auto* r = const_cast<json*>(j.find(kw)); r != nullptr && r->is_string())
+                                {
+                                    dynamic_found_ = true;
+                                    if (dynamic_) r->text = canonical_ref(r->text, base);
+                                }
+                        if (known && dynamic_)
+                        {
+                            resource_of_.emplace(&j, resource);
+                            loc_of_.emplace(&j, loc);
+                            if (resource == &j) resource_keys_.emplace(&j, base);
+                            const auto anchor = [&](std::string name) {
+                                if (dyn_anchors_.emplace(std::pair(resource, name), &j).second)
+                                    dyn_names_[resource].push_back(std::move(name));
+                            };
+                            if (const auto* a = j.find("$dynamicAnchor"); a != nullptr && a->is_string())
+                                anchor(a->text);
+                            if (const auto* a = j.find("$recursiveAnchor");
+                                resource == &j && a != nullptr && a->is_bool() && a->b)
+                                anchor(std::string(recursive_name));
+                        }
                         if (auto* r = const_cast<json*>(j.find("$ref")); r != nullptr && r->is_string())
                         {
                             r->text = canonical_ref(r->text, base);
@@ -1410,11 +1454,16 @@ namespace cpp_yyjson_codegen
                 return paths;
             }
 
-            // the schema resource of a key, read from its file when it is not read yet; nullptr with a warning
-            const json* document(const std::string& key, const std::string& r, const std::string& loc)
+            // the schema resource of a key, read from its file when it is not read yet; nullptr with a warning, which
+            // `report` false leaves out
+            const json* document(const std::string& key, const std::string& r, const std::string& loc,
+                                 bool report = true)
             {
                 if (const auto it = resources_.find(key); it != resources_.end()) return it->second;
                 auto error = std::string();
+                const auto warn = [&](const std::string& l, std::string msg) {
+                    if (report) this->warn(l, std::move(msg));
+                };
                 const auto unusable = [&](const std::string& path) {
                     if (!error.empty())
                         warn(loc, "the file \"" + path + "\" is not valid JSON (" + error +
@@ -1490,21 +1539,34 @@ namespace cpp_yyjson_codegen
                 const auto r = hash + 1 == ref.text.size() && hash > 0 ? key : ref.text;
                 const auto* doc = document(key, r, loc);
                 if (doc == nullptr) return nullptr;
-                const auto fragment = hash == std::string::npos
-                                          ? std::string()
-                                          : percent_decode(std::string_view(ref.text).substr(hash + 1));
-                if (!fragment.empty() && fragment[0] != '/')
+                const auto fragment = fragment_of(ref.text);
+                const auto* cur = find_in(doc, fragment);
+                if (cur == nullptr)
                 {
-                    if (const auto it = anchors_.find(std::pair(doc, fragment)); it != anchors_.end())
-                    {
-                        name_target(it->second, key);
-                        return it->second;
-                    }
-                    warn(loc, "the anchor \"" + r + "\" is not found");
+                    warn(loc, (!fragment.empty() && fragment[0] != '/' ? "the anchor \"" : "the reference \"") + r +
+                                  "\" is not found");
                     return nullptr;
                 }
+                name_target(cur, key);
+                return cur;
+            }
+
+            static std::string fragment_of(std::string_view ref)
+            {
+                const auto hash = ref.rfind('#');
+                return hash == std::string_view::npos ? std::string() : percent_decode(ref.substr(hash + 1));
+            }
+
+            // the schema of a fragment, an anchor or a JSON pointer, in a document; nullptr when there is none
+            const json* find_in(const json* doc, const std::string& fragment) const
+            {
+                if (!fragment.empty() && fragment[0] != '/')
+                {
+                    const auto it = anchors_.find(std::pair(doc, fragment));
+                    return it != anchors_.end() ? it->second : nullptr;
+                }
                 const auto* cur = doc;
-                for (std::size_t pos = 1; pos <= fragment.size() && !fragment.empty();)
+                for (std::size_t pos = 1; pos <= fragment.size() && !fragment.empty() && cur != nullptr;)
                 {
                     const auto end = std::min(fragment.find('/', pos), fragment.size());
                     const auto tok = unpointer_token(std::string_view(fragment).substr(pos, end - pos));
@@ -1521,14 +1583,15 @@ namespace cpp_yyjson_codegen
                     }
                     else
                         cur = nullptr;
-                    if (cur == nullptr)
-                    {
-                        warn(loc, "the reference \"" + r + "\" is not found");
-                        return nullptr;
-                    }
                 }
-                name_target(cur, key);
                 return cur;
+            }
+
+            // the target of a reference in its canonical form, without warnings and without naming it
+            const json* lookup(const std::string& ref)
+            {
+                const auto* doc = document(ref.substr(0, ref.rfind('#')), ref, "", false);
+                return doc == nullptr ? nullptr : find_in(doc, fragment_of(ref));
             }
 
             // follows a chain of references that have only metadata beside them
@@ -1548,6 +1611,296 @@ namespace cpp_yyjson_codegen
                 }
                 return s;
             }
+
+            // `$dynamicRef` / `$recursiveRef`.  Their target depends on the resources that the evaluation passed
+            // through (the dynamic scope), while the generator gives a schema one type.  So the schemas from which a
+            // dynamic reference can be reached are copied once per binding of the anchors that they reach, with the
+            // dynamic references of the copies rewritten to `$ref` of their target in that binding, and the copies
+            // refer to each other by keys "dyn:N" of resources_.  A binding takes the outermost resource of the scope
+            // that has an anchor of the name: the first resource entered.
+
+            // calls f with every subschema of a schema, but those of `$defs` / `definitions`
+            template <typename J, typename F>
+            static void for_subschemas(J& j, F&& f)
+            {
+                if (!j.is_object()) return;
+                for (auto& [k, v] : j.members)
+                {
+                    if (!is_subschema_key(k) || k == "$defs" || k == "definitions") continue;
+                    if (k == "properties" || k == "patternProperties" || k == "dependentSchemas" || k == "dependencies")
+                        for (auto& m : v.members) f(m.second);
+                    else if (v.is_array())
+                        for (auto& i : v.items) f(i);
+                    else
+                        f(v);
+                }
+            }
+
+            static void strip_defs(json& j)
+            {
+                j.erase("$defs");
+                j.erase("definitions");
+                for_subschemas(j, [](json& c) { strip_defs(c); });
+            }
+
+            const json* resource_of(const json* s) const
+            {
+                const auto it = resource_of_.find(s);
+                return it != resource_of_.end() ? it->second : nullptr;
+            }
+
+            binding enter(binding c, const json* r) const
+            {
+                if (const auto it = dyn_names_.find(r); it != dyn_names_.end())
+                    for (const auto& n : it->second) c.try_emplace(n, r);
+                return c;
+            }
+
+            // the static target of the reference of `kw` in a schema, and the name of its anchor when the reference
+            // is dynamic: the target has the dynamic anchor of the fragment, or `$recursiveAnchor: true`
+            struct dynamic_ref
+            {
+                const json* target = nullptr;
+                std::string name;
+                bool dynamic = false;
+            };
+            dynamic_ref dynamic_of(const json& j, std::string_view kw)
+            {
+                auto d = dynamic_ref();
+                const auto* r = j.find(kw);
+                if (r == nullptr || !r->is_string() || (d.target = lookup(r->text)) == nullptr) return d;
+                d.name = kw == "$recursiveRef" ? std::string(recursive_name) : fragment_of(r->text);
+                if (d.name.empty() || d.name[0] == '/') return d;
+                const auto it = dyn_anchors_.find(std::pair(resource_of(d.target), d.name));
+                d.dynamic = it != dyn_anchors_.end() && it->second == d.target;
+                return d;
+            }
+
+            // reach_: for every schema reached from `roots`, the names of the dynamic anchors that its type depends
+            // on, with "" for a schema from which a `$dynamicRef` / `$recursiveRef` is reached at all; reading the
+            // files that the references name.  Returns the schemas reached from the first of `roots`.
+            std::set<const json*> compute_reach(const std::vector<const json*>& roots)
+            {
+                auto preds = std::map<const json*, std::vector<const json*>>();
+                auto seen = std::set<const json*>();
+                auto stack = roots;
+                auto dynamic = std::set<std::pair<const json*, std::string>>();  // (schema, name of its reference)
+                auto linked = std::set<std::pair<const json*, const json*>>();
+                const auto edge = [&](const json* from, const json* to) {
+                    if (to != nullptr && linked.emplace(from, to).second)
+                    {
+                        preds[to].push_back(from);
+                        stack.push_back(to);
+                    }
+                };
+                for (auto changed = true; changed;)
+                {
+                    while (!stack.empty())
+                    {
+                        const auto* n = stack.back();
+                        stack.pop_back();
+                        if (!n->is_object() || !seen.insert(n).second) continue;
+                        for_subschemas(*n, [&](const json& c) { edge(n, &c); });
+                        if (const auto* r = n->find("$ref"); r != nullptr && r->is_string()) edge(n, lookup(r->text));
+                        for (const auto* kw : {"$dynamicRef", "$recursiveRef"})
+                        {
+                            if (!n->has(kw)) continue;
+                            reach_[n].insert("");
+                            const auto d = dynamic_of(*n, kw);
+                            edge(n, d.target);
+                            if (!d.dynamic) continue;
+                            reach_[n].insert(d.name);
+                            dynamic.emplace(n, d.name);
+                        }
+                    }
+                    // the anchors that a dynamic reference may resolve to, which may read more files
+                    changed = false;
+                    for (const auto& [n, name] : dynamic)
+                        for (const auto& [key, a] : dyn_anchors_)
+                            if (key.second == name && linked.emplace(n, a).second)
+                            {
+                                preds[a].push_back(n);
+                                stack.push_back(a);
+                                changed = true;
+                            }
+                }
+                auto from_first = std::set<const json*>{roots.front()};
+                for (auto todo = std::vector<const json*>{roots.front()}; !todo.empty();)
+                {
+                    const auto* n = todo.back();
+                    todo.pop_back();
+                    for (auto it = linked.lower_bound(std::pair(n, static_cast<const json*>(nullptr)));
+                         it != linked.end() && it->first == n; ++it)
+                        if (from_first.insert(it->second).second) todo.push_back(it->second);
+                }
+                auto work = std::vector<const json*>();
+                for (const auto& [n, r] : reach_) work.push_back(n);
+                while (!work.empty())
+                {
+                    const auto* n = work.back();
+                    work.pop_back();
+                    const auto it = preds.find(n);
+                    if (it == preds.end()) continue;
+                    const auto names = reach_[n];
+                    for (const auto* p : it->second)
+                    {
+                        auto& r = reach_[p];
+                        const auto size = r.size();
+                        r.insert(names.begin(), names.end());
+                        if (r.size() != size) work.push_back(p);
+                    }
+                }
+                return from_first;
+            }
+
+            // the part of a type name that tells a resource that binds an anchor
+            std::string resource_label(const json* r) const
+            {
+                if (r == &root_)
+                {
+                    if (const auto it = def_names_.find(r); it != def_names_.end()) return it->second;
+                    if (!opts_.root_name.empty()) return opts_.root_name;
+                }
+                if (const auto it = def_entries_.find(r); it != def_entries_.end()) return pascal(it->second);
+                for (const auto* kw : {"$defs", "definitions"})
+                    if (const auto* d = root_.find(kw); d != nullptr && d->is_object())
+                        for (const auto& [k, v] : d->members)
+                            if (&v == r) return pascal(k);
+                if (const auto* t = r->find("title"); t != nullptr && t->is_string() && !pascal(t->text).empty())
+                    return pascal(t->text);
+                const auto it = resource_keys_.find(r);
+                const auto key = it != resource_keys_.end() ? it->second : std::string();
+                const auto path = is_absolute_uri(key) ? parse_uri(key).path : key;
+                const auto stem = std::filesystem::path(path).filename().string();
+                const auto label = pascal(stem.substr(0, stem.find('.')));
+                return !label.empty() || r != &root_ ? label : "Root";
+            }
+
+            // names a copy of a schema that has a name: the first copy whose anchors are bound by the root or by
+            // the resource of the schema keeps the name, the others add "In" and the resources that bind their
+            // anchors
+            void name_copy(const json* s, const json* copy, const binding& c)
+            {
+                auto base = std::string();
+                const auto def = def_entries_.find(s);
+                if (const auto it = def_names_.find(s); it != def_names_.end())
+                    base = it->second;
+                else if (def != def_entries_.end())
+                    base = def->second;
+                else if (resource_roots_.contains(s))
+                {
+                    const auto* title = s->find("title");
+                    base = title != nullptr && title->is_string() && !pascal(title->text).empty()
+                               ? pascal(title->text)
+                               : resource_label(s);
+                }
+                else
+                    return;
+                const auto labels_of = [&](bool all) {
+                    auto labels = std::set<std::string>();
+                    for (const auto& [n, r] : c)
+                        if (all || (r != &root_ && r != resource_of(s)))
+                            if (auto l = resource_label(r); !l.empty()) labels.insert(std::move(l));
+                    return labels;
+                };
+                auto labels = labels_of(false);
+                if (labels.empty() && renamed_.insert(s).second)
+                {
+                    if (const auto it = def_names_.find(s); it != def_names_.end())
+                    {
+                        def_names_[copy] = it->second;
+                        if (const auto k = def_keys_.find(s); k != def_keys_.end()) def_keys_[copy] = k->second;
+                    }
+                    else if (def != def_entries_.end())
+                        name_def(copy, def->second);
+                    else
+                        def_names_[copy] = unique_type_name(base);
+                    return;
+                }
+                if (labels.empty()) labels = labels_of(true);
+                auto suffix = std::string("In");
+                for (const auto& l : labels) suffix += l;
+                def_names_[copy] = unique_type_name(base + suffix);
+            }
+
+            // the schema for `s` in the binding `c`: `s` itself when no dynamic reference is reached from it
+            const json* expand(const json* s, const binding& c)
+            {
+                const auto it = reach_.find(s);
+                if (it == reach_.end() || it->second.empty()) return s;
+                auto key = binding();
+                for (const auto& [n, r] : c)
+                    if (it->second.contains(n)) key.emplace(n, r);
+                if (const auto m = clones_.find(std::pair(s, key)); m != clones_.end()) return m->second;
+                auto& copy = store_.emplace_back(*s);
+                strip_defs(copy);
+                clones_.emplace(std::pair(s, key), &copy);
+                const auto k = "dyn:" + std::to_string(clone_keys_.size());
+                clone_keys_.emplace(&copy, k);
+                resources_.emplace(k, &copy);
+                if (const auto l = loc_of_.find(s); l != loc_of_.end()) loc_keys_.emplace(k, l->second);
+                name_copy(s, &copy, key);
+                rewrite(copy, *s, key);
+                return &copy;
+            }
+
+            // rewrites a copy of `s` in the binding `c`: its subschemas, its `$ref`, and its dynamic references
+            void rewrite(json& copy, const json& s, const binding& c)
+            {
+                auto cs = std::vector<json*>();
+                for_subschemas(copy, [&](json& x) { cs.push_back(&x); });
+                auto ss = std::vector<const json*>();
+                for_subschemas(s, [&](const json& x) { ss.push_back(&x); });
+                for (std::size_t i = 0; i < ss.size() && i < cs.size(); ++i)
+                    if (const auto it = reach_.find(ss[i]); it != reach_.end() && !it->second.empty())
+                        rewrite(*cs[i], *ss[i], resource_roots_.contains(ss[i]) ? enter(c, ss[i]) : c);
+                const auto target = [&](const json* t, std::string text) {
+                    const auto* t2 = expand(t, enter(c, resource_of(t)));
+                    return t2 != t ? clone_keys_.at(t2) + "#" : text;
+                };
+                if (const auto* r = s.find("$ref"); r != nullptr && r->is_string())
+                    if (const auto* t = lookup(r->text))
+                        const_cast<json*>(copy.find("$ref"))->text = target(t, r->text);
+                for (const auto* kw : {"$dynamicRef", "$recursiveRef"})
+                {
+                    const auto d = dynamic_of(s, kw);
+                    if (d.target == nullptr) continue;
+                    auto text = target(d.target, s.find(kw)->text);
+                    if (const auto b = d.dynamic ? c.find(d.name) : c.end(); b != c.end())
+                    {
+                        const auto* f = dyn_anchors_.at(std::pair(b->second, d.name));
+                        text = target(f, resource_keys_.at(b->second) + "#" +
+                                             (d.name == recursive_name ? std::string() : d.name));
+                    }
+                    copy.erase(kw);
+                    if (!copy.has("$ref"))
+                        copy.set("$ref", json::string_of(text));
+                    else
+                    {
+                        auto ref = json::object_of();
+                        ref.set("$ref", json::string_of(text));
+                        if (auto* all = const_cast<json*>(copy.find("allOf")); all != nullptr && all->is_array())
+                            all->items.push_back(std::move(ref));
+                        else
+                            copy.set("allOf", json::array_of({std::move(ref)}));
+                    }
+                }
+            }
+
+            // copies the root and the entries of its `$defs`, and what they reach.  An entry that the root reaches
+            // is in the dynamic scope of the root; another entry starts its own scope.
+            void specialize(bool root_typed, std::vector<std::pair<std::string, const json*>>& defs)
+            {
+                auto roots = std::vector<const json*>{&root_};
+                for (const auto& [loc, v] : defs) roots.push_back(v);
+                const auto from_root = compute_reach(roots);
+                const auto c0 = enter({}, &root_);
+                if (root_typed || is_pure_ref(root_)) root_copy_ = expand(&root_, c0);
+                for (auto& [loc, v] : defs)
+                    v = expand(v, from_root.contains(v) ? enter(c0, resource_of(v)) : enter({}, resource_of(v)));
+            }
+
+            bool is_root(const json* s) const { return s == &root_ || (s != nullptr && s == root_copy_); }
 
             // What the in-place applicators of a schema (the schema, `allOf`, `$ref`) evaluate, for
             // `unevaluatedProperties` (`items` false) or `unevaluatedItems` (`items` true).  The generator merges
@@ -2365,7 +2718,7 @@ namespace cpp_yyjson_codegen
                     // the root and $defs go through type_named(), which gives a struct or an alias the settings;
                     // `true` needs a name only at the root
                     if (!s0->b) return def_names_.contains(s0) ? type_named(s0, loc) : no_value();
-                    return s0 == &root_ ? type_named(s0, loc) : typed{};
+                    return is_root(s0) ? type_named(s0, loc) : typed{};
                 }
                 if (!s0->is_object())
                 {
@@ -2407,7 +2760,7 @@ namespace cpp_yyjson_codegen
                     return cache_[s0] = typed{named_type(it->second), {}};
                 }
                 if (find_decl(name) >= 0) return cache_[s0] = r;
-                if (s0 == &root_ && !r.s.empty())
+                if (is_root(s0) && !r.s.empty())
                 {
                     // the constraints of a root that is not an object have no field to go on: a struct of one field
                     // with yyjson::transparent, which is read and written as the value of the field, takes them
@@ -2499,7 +2852,13 @@ namespace cpp_yyjson_codegen
             void warn_unsupported(const json& s, const std::string& loc)
             {
                 for (const auto k : ignored_keys)
-                    if (s.has(k)) warn(loc, "`" + std::string(k) + "` is not supported and is ignored");
+                {
+                    const auto* v = s.find(k);
+                    if (v == nullptr) continue;
+                    // specialize() replaced the references that it found; resolve() tells why the others are not
+                    if (dynamic_ && v->is_string() && resolve(*v, loc) == nullptr) continue;
+                    warn(loc, "`" + std::string(k) + "` is not supported and is ignored");
+                }
             }
 
             typed type_content(const json* s0, const std::string& loc, const std::string& hint, bool named)
@@ -8998,7 +9357,10 @@ namespace cpp_yyjson_codegen
             }
 
         public:
-            explicit generator(const options& opts) : opts_(opts) {}
+            explicit generator(const options& opts, bool dynamic = false) : opts_(opts), dynamic_(dynamic) {}
+
+            // whether the schema has `$dynamicRef` / `$recursiveRef`, which needs a run in the dynamic mode
+            [[nodiscard]] bool dynamic_found() const { return dynamic_found_; }
 
             result run(std::string_view text)
             {
@@ -9046,6 +9408,7 @@ namespace cpp_yyjson_codegen
                         warn(key + "#", error.empty() ? "the schema cannot be read"
                                                       : "the schema is not valid JSON (" + error + ")");
                 }
+                if (dynamic_found_ && !dynamic_) return {};
                 // a root of metadata and definitions only is a file of definitions and has no type; without
                 // definitions, it accepts any JSON value
                 const auto root_typed =
@@ -9075,23 +9438,26 @@ namespace cpp_yyjson_codegen
                             name_def(&v, k);
                             defs.emplace_back(std::string("#/") + kw + "/" + pointer_token(k), &v);
                         }
+                if (dynamic_) specialize(root_typed, defs);
                 for (const auto& [loc, v] : defs) type_of(v, loc, def_names_.at(v));
+                const auto* root = root_copy_ != nullptr ? root_copy_ : &root_;
                 if (root_typed)
-                    type_of(&root_, "#", root_name);
-                else if (is_pure_ref(root_))
+                    type_of(root, "#", root_name);
+                else if (is_pure_ref(*root))
                 {
                     // a root that only refers to another schema has the type of that schema, under the root name too
-                    const auto* target = resolve(*root_.find("$ref"), "#");
+                    const auto* target = resolve(*root->find("$ref"), "#");
                     const auto it = def_names_.find(target);
-                    if (target != &root_ && (it == def_names_.end() || it->second != root_name))
+                    if (!is_root(target) && (it == def_names_.end() || it->second != root_name))
                     {
                         const auto name = type_names_.contains(root_name) ? unique_type_name(root_name) : root_name;
                         type_names_.insert(name);
-                        def_names_[&root_] = name;
-                        type_named(&root_, "#");
+                        def_names_[root] = name;
+                        type_named(root, "#");
                     }
                 }
                 if (decls_.empty()) warn("#", "the schema defines no type");
+                if (dynamic_found_ && !dynamic_) return {};
                 auto code = render();
                 if (opts_.strict && !warnings_.empty()) throw error(warnings_);
                 return {std::move(code), std::move(warnings_)};
@@ -9099,7 +9465,22 @@ namespace cpp_yyjson_codegen
         };
     }  // namespace detail
 
-    inline result generate(std::string_view schema, const options& opts) { return detail::generator(opts).run(schema); }
+    inline result generate(std::string_view schema, const options& opts)
+    {
+        // a schema with `$dynamicRef` / `$recursiveRef`, which the first run finds while it reads the files, is read
+        // again in the dynamic mode
+        auto g = detail::generator(opts);
+        try
+        {
+            auto r = g.run(schema);
+            if (!g.dynamic_found()) return r;
+        }
+        catch (const error&)
+        {
+            if (!g.dynamic_found()) throw;
+        }
+        return detail::generator(opts, true).run(schema);
+    }
 }  // namespace cpp_yyjson_codegen
 
 #if defined(__GNUC__)

@@ -1,5 +1,6 @@
 // cpp-yyjson-codegen: C++ types with cpp-yyjson annotations from a JSON Schema.
 // This file is part of cpp-yyjson (https://github.com/yosh-matsuda/cpp-yyjson), MIT License.
+#include <algorithm>
 #include <charconv>
 #include <cstddef>
 #include <filesystem>
@@ -164,7 +165,8 @@ int main(int argc, char** argv)
     opts.load = [&read_files](const std::string& path) -> std::optional<std::string> {
         auto in = std::ifstream(path, std::ios::binary);
         if (!in) return std::nullopt;
-        read_files.push_back(path);
+        // a schema with `$dynamicRef` is read twice by `generate`
+        if (std::ranges::find(read_files, path) == read_files.end()) read_files.push_back(path);
         return std::string(std::istreambuf_iterator<char>(in), {});
     };
     if (const auto slash = opts.source.find_last_of("/\\"); slash != std::string::npos)

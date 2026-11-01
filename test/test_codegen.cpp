@@ -2073,6 +2073,106 @@ TEST(Codegen, Ids)
     EXPECT_TRUE(has(unknown.code, "    std::optional<yyjson::value> a;\n"));
 }
 
+TEST(Codegen, DynamicReferences)
+{
+    // a schema that a `$dynamicRef` reaches is typed once per binding of its dynamic anchor; the version reached
+    // from the root keeps the name, the others are named after the resource that binds the anchor
+    const auto list = generate(R"({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "https://example.com/numbers",
+        "title": "NumberList",
+        "$ref": "list",
+        "$defs": {
+            "list": {
+                "$id": "list",
+                "type": "object",
+                "properties": {
+                    "items": {"type": "array", "items": {"$dynamicRef": "#item"}},
+                    "next": {"$ref": "#"},
+                    "note": {"type": "string", "format": "idn-email"}
+                },
+                "$defs": {"item": {"$dynamicAnchor": "item", "not": true}}
+            },
+            "item": {"$dynamicAnchor": "item", "type": "number"},
+            "strings": {"$id": "strings", "$ref": "list",
+                        "$defs": {"item": {"$dynamicAnchor": "item", "type": "string"}}}
+        }
+    })",
+                               {});
+    // the warnings of a copy are reported once, at the schema that it copies
+    EXPECT_EQ(warnings(list), "#/$defs/list/properties/note: the format \"idn-email\" is not supported and is ignored\n");
+    EXPECT_TRUE(has(list.code, "using item = double;\n"));
+    EXPECT_TRUE(has(list.code, "using item2 = std::string;\n"));
+    EXPECT_TRUE(has(list.code, "using NumberList = list;\n"));
+    EXPECT_TRUE(has(list.code, "using strings = listInStrings;\n"));
+    EXPECT_TRUE(has(list.code, "struct list\n{\n    std::optional<std::vector<item>> items;\n"
+                               "    std::optional<yyjson::indirect<list>> next;\n"));
+    EXPECT_TRUE(has(list.code, "struct listInStrings\n{\n    std::optional<std::vector<item2>> items;\n"
+                               "    std::optional<yyjson::indirect<listInStrings>> next;\n"));
+
+    // the outermost resource of the dynamic scope binds the anchor
+    const auto outer = generate(R"({
+        "$id": "https://example.com/root",
+        "$dynamicAnchor": "item",
+        "type": "object",
+        "properties": {"a": {"$ref": "strings"}},
+        "$defs": {
+            "list": {"$id": "list", "type": "array", "items": {"$dynamicRef": "#item"},
+                     "$defs": {"item": {"$dynamicAnchor": "item", "type": "string"}}},
+            "strings": {"$id": "strings", "$ref": "list",
+                        "$defs": {"item": {"$dynamicAnchor": "item", "type": "string"}}}
+        }
+    })",
+                                {});
+    EXPECT_TRUE(has(outer.code, "struct list\n{\n    std::vector<Root> value;\n"));
+    EXPECT_TRUE(has(outer.code, "using strings = list;\n"));
+    EXPECT_FALSE(has(outer.code, "listIn"));
+
+    // a `$dynamicRef` whose first target has no `$dynamicAnchor` of the name is a `$ref`
+    const auto plain = generate(R"({
+        "$id": "https://example.com/root",
+        "type": "object",
+        "properties": {"a": {"$ref": "list"}},
+        "$defs": {
+            "item": {"$dynamicAnchor": "item", "type": "string"},
+            "list": {"$id": "list", "type": "array", "items": {"$dynamicRef": "#item"},
+                     "$defs": {"item": {"$anchor": "item", "type": "integer"}}}
+        }
+    })",
+                                {});
+    EXPECT_EQ(warnings(plain), "");
+    EXPECT_TRUE(has(plain.code, "using item2 = std::int64_t;\n"));
+    EXPECT_TRUE(has(plain.code, "using list = std::vector<item2>;\n"));
+
+    // `$recursiveRef` of 2019-09 refers to the outermost schema with `$recursiveAnchor`
+    const auto recursive = generate(R"({
+        "$schema": "https://json-schema.org/draft/2019-09/schema",
+        "$id": "https://example.com/strict-tree",
+        "$recursiveAnchor": true,
+        "$ref": "tree",
+        "unevaluatedProperties": false,
+        "$defs": {
+            "tree": {"$id": "tree", "$recursiveAnchor": true, "type": "object",
+                     "properties": {"data": true, "children": {"type": "array", "items": {"$recursiveRef": "#"}}}}
+        }
+    })",
+                                    {});
+    EXPECT_EQ(warnings(recursive), "");
+    EXPECT_TRUE(has(recursive.code, "struct Root\n{\n    std::optional<yyjson::value> data;\n"
+                                    "    std::optional<std::vector<Root>> children;\n"));
+    EXPECT_TRUE(has(recursive.code, "yyjson::annotations<Root> = yyjson::annotate(\n"
+                                    "    yyjson::additional_properties(false));\n"));
+
+    // a reference that cannot be followed is warned about as `$ref` is
+    const auto missing = generate(R"({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {"a": {"$dynamicRef": "#nope"}}
+    })",
+                                  {});
+    EXPECT_EQ(warnings(missing), "#/properties/a: the anchor \"#nope\" is not found\n");
+}
+
 TEST(Codegen, RemoteReferences)
 {
     const auto files = std::map<std::string, std::string>{

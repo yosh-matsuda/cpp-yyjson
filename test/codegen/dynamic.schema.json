@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/number-list",
+  "title": "NumberList",
+  "$ref": "generic-list",
+  "$defs": {
+    "GenericList": {
+      "$id": "generic-list",
+      "type": "object",
+      "properties": {
+        "items": {"type": "array", "items": {"$dynamicRef": "#item"}},
+        "next": {"$ref": "#"}
+      },
+      "required": ["items"],
+      "$defs": {"AnyItem": {"$dynamicAnchor": "item", "not": true}}
+    },
+    "NumberItem": {"$dynamicAnchor": "item", "type": "number", "minimum": 0},
+    "StringList": {
+      "$id": "string-list",
+      "$ref": "generic-list",
+      "$defs": {"StringItem": {"$dynamicAnchor": "item", "type": "string", "maxLength": 3}}
+    }
+  }
+}
