@@ -2988,6 +2988,23 @@ TEST(Codegen, ValueConditions)
     EXPECT_TRUE(has(listed.code, "enum class RootE\n{\n    x,\n};\n"));
     EXPECT_TRUE(has(listed.code, "    yyjson::field(\"b\", yyjson::enum_(1, 2, 30)),\n"
                                  "    yyjson::field(\"d\", yyjson::not_(yyjson::is_type<yyjson::value>)));\n"));
+
+    // an `if` that every object or no object satisfies: the branch taken is merged into the object schema
+    const auto objects = generate(R"({
+        "type": "object",
+        "properties": {
+            "a": {"if": {"type": "object"}, "then": {"$ref": "#/$defs/src"}, "else": {"type": "string"}},
+            "b": {"if": {"type": "string"}, "then": {"minLength": 2},
+                  "else": {"properties": {"z": {"type": "boolean"}}, "required": ["z"]}},
+            "c": {"type": "object", "properties": {"k": {"type": "string"}}, "if": {"type": "object"},
+                  "then": {"required": ["k"]}}
+        },
+        "$defs": {"src": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}}
+    })", {});
+    EXPECT_EQ(warnings(objects), "");
+    EXPECT_TRUE(has(objects.code, "struct RootBObject\n{\n    bool z;\n};\n"));
+    EXPECT_TRUE(has(objects.code, "struct RootC\n{\n    std::string k;\n};\n"));
+    EXPECT_TRUE(has(objects.code, "    std::optional<std::variant<std::string, src>> a;\n"));
 }
 
 TEST(Codegen, MaxAlternatives)

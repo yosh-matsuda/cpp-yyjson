@@ -1003,6 +1003,7 @@ namespace cpp_yyjson_codegen
             int quiet_ = 0;
             std::vector<const json*> quiet_normalized_;
             std::set<const json*> conditions_used_;  // normalized schemas whose "$conditions" a struct took
+            int folding_ = 0;                        // the depth of fold_object_if() in type_kind()
             std::vector<variant_note> notes_;
             std::set<std::string> type_names_;
             std::vector<int> position_;  // the place of a struct in definition order, -1 for others
@@ -3551,6 +3552,37 @@ namespace cpp_yyjson_codegen
                 return make_variant(std::move(alts), loc);
             }
 
+            // The object schema `s` with the first `if` of `ifs` that every object or no object satisfies replaced by
+            // the branch that objects take, merged into the schema as a part of `allOf`; nullptr when every `if` tests
+            // the keys of objects
+            const json* fold_object_if(const json& s, const std::vector<value_if>& ifs, const std::string& loc)
+            {
+                if (folding_ > 8) return nullptr;
+                for (const auto& c : ifs)
+                {
+                    const auto ri = reach_in(c.if_, "object", c.loc + "/if");
+                    if (ri == reach::some) continue;
+                    auto rest = s;
+                    for (auto& [k, v] : rest.members)
+                        if (k == "$conditions")
+                        {
+                            const auto& list = s.find("$conditions")->items;
+                            const auto at =
+                                std::ranges::find_if(list, [&](const json& e) { return e.find("if") == c.if_; });
+                            if (at != list.end()) v.items.erase(v.items.begin() + (at - list.begin()));
+                        }
+                    if (const auto* list = rest.find("$conditions"); list != nullptr && list->items.empty())
+                        rest.erase("$conditions");
+                    const auto* branch = ri == reach::all ? c.then_ : c.else_;
+                    if (branch == nullptr) return store_merged(std::move(rest));
+                    auto j = json::object_of();
+                    j.set("allOf", json::array_of({std::move(rest), *branch}));
+                    const auto* f = normalize(store_merged(std::move(j)), loc);
+                    return f->is_object() ? f : nullptr;
+                }
+                return nullptr;
+            }
+
             // `whole`: the type of the kind is the type of the schema, not one alternative of several kinds. `nots`:
             // the value-level `not` of the schema
             typed type_kind(const std::string& kind, const json* s0, const json& s, const std::string& loc,
@@ -3561,6 +3593,26 @@ namespace cpp_yyjson_codegen
                 auto r = typed();
                 if (kind == "object")
                 {
+                    if (const auto* f = fold_object_if(s, ifs, loc))
+                    {
+                        // a branch that refers to a schema of objects alone is the type of that schema
+                        if (is_pure_ref(*f))
+                        {
+                            const auto* n = normalize_full(f, loc);
+                            if (n->is_object() && type_list(*n) == std::vector<std::string>{"object"})
+                            {
+                                conditions_used_.insert(&s);
+                                r = type_of(f, loc, hint);
+                                return nullable ? make_nullable(std::move(r)) : r;
+                            }
+                            f = n;
+                        }
+                        ++folding_;
+                        r = type_kind(kind, s0, *f, loc, hint, named, nullable, whole, nots, value_ifs(*f));
+                        --folding_;
+                        if (conditions_used_.contains(f) || !f->has("$conditions")) conditions_used_.insert(&s);
+                        return r;
+                    }
                     const auto* dep = s.find("dependentRequired");
                     const auto dependent =
                         dep != nullptr && dep->is_object() && std::ranges::any_of(dep->members, [](const auto& m) {
