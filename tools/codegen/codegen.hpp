@@ -889,6 +889,17 @@ namespace cpp_yyjson_codegen
                    k == "unevaluatedProperties";
         }
 
+        // the keywords that apply only to strings, numbers or arrays, which every object satisfies
+        inline bool is_non_object_key(std::string_view k)
+        {
+            static const auto keys = std::set<std::string_view>{
+                "minLength",   "maxLength",   "pattern",          "format",           "minimum",
+                "maximum",     "exclusiveMinimum", "exclusiveMaximum", "multipleOf",  "items",
+                "prefixItems", "additionalItems",  "contains",         "minContains", "maxContains",
+                "minItems",    "maxItems",    "uniqueItems",      "unevaluatedItems"};
+            return keys.contains(k);
+        }
+
         // the keywords from which the generator builds the C++ type; others (vendor keys such as `markdownDescription`)
         // are left out silently
         inline bool is_type_key(std::string_view k)
@@ -4640,9 +4651,15 @@ namespace cpp_yyjson_codegen
                             }
                     }
                 }
+                if (const auto* t = n->find("type"); t != nullptr && !type_has(*t, "object"))
+                {
+                    // a part whose `type` excludes objects rejects every object
+                    never = true;
+                    return out;
+                }
                 for (const auto& [k, v] : n->members)
                 {
-                    if (is_metadata_key(k) || (k == "type" && type_has(v, "object"))) continue;
+                    if (is_metadata_key(k) || k == "type" || is_non_object_key(k)) continue;
                     if (k == "additionalProperties")
                     {
                         // `true` or a schema that accepts anything adds nothing

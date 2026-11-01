@@ -3005,6 +3005,24 @@ TEST(Codegen, ValueConditions)
     EXPECT_TRUE(has(objects.code, "struct RootBObject\n{\n    bool z;\n};\n"));
     EXPECT_TRUE(has(objects.code, "struct RootC\n{\n    std::string k;\n};\n"));
     EXPECT_TRUE(has(objects.code, "    std::optional<std::variant<std::string, src>> a;\n"));
+
+    // in the `then` of an object, keywords of other types hold for every object, and a `type` without "object"
+    // holds for none
+    const auto kinds = generate(R"({
+        "type": "object",
+        "properties": {
+            "a": {"type": "object", "properties": {"k": {"type": "integer"}}, "if": {"properties": {"k": {"const": 1}}},
+                  "then": {"minimum": 5, "minLength": 1, "items": {"type": "string"}}},
+            "b": {"type": "object", "properties": {"k": {"type": "integer"}},
+                  "if": {"properties": {"k": {"const": 1}}, "required": ["k"]}, "then": {"type": ["string", "null"]}}
+        }
+    })", {});
+    EXPECT_EQ(warnings(kinds), "");
+    EXPECT_TRUE(has(kinds.code, "yyjson::annotations<RootA> = yyjson::annotate(\n"
+                                "    yyjson::additional_properties(true));\n"));
+    EXPECT_TRUE(has(kinds.code, "yyjson::annotations<RootB> = yyjson::annotate(\n"
+                                "    yyjson::additional_properties(true),\n"
+                                "    yyjson::not_(yyjson::field(\"k\", yyjson::required, yyjson::const_(1))));\n"));
 }
 
 TEST(Codegen, MaxAlternatives)
