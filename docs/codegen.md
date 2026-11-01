@@ -223,6 +223,7 @@ The subschemas of `allOf`, and the keywords beside `$ref`, merge into one schema
 | `{"allOf": [{"type": "integer"}, {"type": "string"}]}`, types with no value in common | the schema `false`; as a property, `yyjson::not_(yyjson::field(k, yyjson::required))` |
 | `{"allOf": [{"const": 1}, {"const": 2}]}`, values that differ | the schema `false`, as above |
 | `{"type": "string", "allOf": [{"pattern": "^a"}, {"pattern": "z$"}]}` | `yyjson::pattern("^a"), yyjson::pattern("z$")`; a string must match both |
+| `{"type": "number", "allOf": [{"multipleOf": 0.1}, {"multipleOf": 0.15}]}`, values that differ | `yyjson::multiple_of(0.3)`, the least common multiple, computed exactly on the decimal texts; when it does not fit in 64 bits of digits, the first value is kept with a warning |
 
 Two different `contains` in `allOf` ask for an element of each, which may be different elements; one `yyjson::contains` cannot say that. The first `contains` is kept with its own `minContains` and `maxContains`, and the second is left out with a warning, so the code reads more arrays than the schema accepts.
 
@@ -914,7 +915,7 @@ A warning names the location in the schema and what the generated code does inst
 | Group | Example | The generated code |
 | --- | --- | --- |
 | a keyword that is not supported | `oneOf` in `then` of a string | reads more than the schema accepts |
-| a form that is not supported | `contains` that the elements cannot express, two different `contains` in `allOf`, `minItems` or `maxItems` beyond the positions of an [array of positions](#arrays-of-positions), [`unevaluatedProperties` beside `anyOf`](#unevaluatedproperties-and-unevaluateditems) | reads more than the schema accepts |
+| a form that is not supported | `contains` that the elements cannot express, two different `contains` in `allOf`, values of `multipleOf` in `allOf` whose least common multiple does not fit in 64 bits of digits, `minItems` or `maxItems` beyond the positions of an [array of positions](#arrays-of-positions), [`unevaluatedProperties` beside `anyOf`](#unevaluatedproperties-and-unevaluateditems) | reads more than the schema accepts |
 | a type inferred from keywords, with `--infer-types` | "the schema has no `type`; it is read as string from its keywords" | reads only that type |
 | a variant of more alternatives than `--max-alternatives` | "a variant of 447 alternatives is more than 64 (--max-alternatives) ..." | reads any JSON value there |
 | a reference that cannot be followed | a missing file, a URI that is not the `$id` of a schema read and is not mapped to a file, a file of `--schema` that cannot be read | reads any JSON value there |
