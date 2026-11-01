@@ -207,6 +207,7 @@ Each schema maps to one C++ type:
 | `unevaluatedProperties`, `unevaluatedItems` | `additionalProperties` and `items` of the merged schema; see [`unevaluatedProperties` and `unevaluatedItems`](#unevaluatedproperties-and-unevaluateditems) |
 | `if`, `then`, `else`, `not`, `dependentSchemas` of an object | settings of the struct; see [Conditions](#conditions) |
 | `not` of a value that is not read as a struct | `yyjson::not_(...)` among the settings of the value, or the kinds that it rejects left out of the type; see [`not` of a value](#not-of-a-value) |
+| `if`, `then`, `else` of a value that is not read as a struct | `yyjson::if_then_else(...)` among the settings of the value, or the settings of the branch that it always takes; see [`if` of a value](#if-of-a-value) |
 | `$ref` | the named type of the target |
 | no `type`, with keywords that constrain some types, such as `maxLength` or `properties` | a variant of every kind; see [Schemas without `type`](#schemas-without-type) |
 | `{}`, `true`, no keyword of a type | [`yyjson::value`](reference.md#yyjsonvalue) |
@@ -743,13 +744,12 @@ A condition that the settings cannot express is left out with a warning, so the 
 | a keyword of `then` or `else` that no setting of the member expresses | "the schema of the key "k" is not expressed by the settings of its field and is ignored" |
 | `additionalProperties` with a schema in `then` or `else` | "`additionalProperties` other than false is not supported here and is ignored" |
 | `additionalProperties: false` beside `patternProperties` in `then` or `else` | "`additionalProperties` false beside `patternProperties` is not supported here and is ignored" |
-| `if` of a value that is not read as a struct, such as `if` with `maxLength` on a string | "`if` is not supported on a value that is not read as a struct and is ignored" |
 | a nested part that applies when one `if` holds and another fails | "a subschema that applies when one `if` holds and another fails is not supported and is ignored" |
 | `else` of an `if` inside `else` | "`else` of an `if` inside `else` is not supported and is ignored" |
 | a nested `if` or `not` that tests a key that the `if` around it tests by other values | "`if` is not supported here: it tests a key that the `if` around it tests by other values; `then` is ignored", and for `not` "... by other values; it is ignored" |
 | conditions nested more than 8 levels deep | "conditions nested more than 8 levels deep are not supported and are ignored" |
 
-A condition on a value that is not an object holds for every value when it tests only keys, or when its `if` only objects satisfy, and the generator leaves it out without a warning. `not` of a value is described in [`not` of a value](#not-of-a-value).
+A condition that tests only keys holds for every value that is not an object, and the generator leaves it out of the other kinds without a warning. On the other kinds, `if`, `then` and `else` are taken as described in [`if` of a value](#if-of-a-value), so `if` that only objects satisfy applies `else` to them; `not` is described in [`not` of a value](#not-of-a-value).
 
 The struct does not write the keys that no member holds, unless it has a field of [`yyjson::extra_keys`](#keys-that-name-no-property). A condition that counts keys, which the generator left out with a warning, may then reject the written object: with `"dependentSchemas": {"k": {"minProperties": 4}}`, an object of `k` and three other keys is read and written as `k` alone. `--keep-unknown-keys` keeps the other keys.
 
@@ -788,6 +788,46 @@ What the settings cannot express is left out with a warning, so the code reads m
 | a value of `enum` that the generator cannot test, under `pattern` or `format` | "whether `not` rejects the value "ab" of `enum` is not known; the value is kept" |
 
 A subschema that accepts every value that the schema around reads, such as `{"type": "integer", "not": {"type": "number"}}`, leaves no value: the schema [accepts no value](#schemas-that-accept-no-value), with the warning "`not` rejects every value of the type: the schema accepts no value, and reading it always fails".
+
+## `if` of a value
+
+`if`, `then` and `else` of a schema that is not read as a struct become [`yyjson::if_then_else(yyjson::if_(...), yyjson::then(...), yyjson::else_(...))`](reference.md#yyjsonif_then_else-yyjsonnot_) of the value: when all settings of `yyjson::if_` hold for the value, the settings of `yyjson::then` must hold, and otherwise those of `yyjson::else_`. As for `not`, the generator takes the subschemas kind by kind, for each kind of JSON value that the schema around them reads:
+
+*   A kind whose every value satisfies `if` takes the settings of `then` alone, and a kind whose no value satisfies it takes those of `else`. `{"minimum": 3}` holds for every string, so on a string only `then` applies.
+*   `then: false` becomes `yyjson::not_` of the settings of `if` beside the settings of `else`, and `else: false` joins the settings of `if` with those of `then`.
+*   A kind whose every value `then` and `else` both reject is left out of the type.
+*   Otherwise the keywords of the kind become `yyjson::if_then_else`, without a branch that has no settings.
+
+| Schema | Code |
+| --- | --- |
+| `{"type": "integer", "if": {"minimum": 10}, "then": {"multipleOf": 5}, "else": {"maximum": 3}}` | `std::int64_t` with `yyjson::if_then_else(yyjson::if_(yyjson::minimum(10)), yyjson::then(yyjson::multiple_of(5)), yyjson::else_(yyjson::maximum(3)))` |
+| `{"type": "integer", "if": {"minimum": 10}, "then": false, "else": {"multipleOf": 2}}` | `std::int64_t` with `yyjson::multiple_of(2), yyjson::not_(yyjson::minimum(10))` |
+| `{"type": "integer", "if": {"minimum": 10}, "then": {"maximum": 20}, "else": false}` | `std::int64_t` with `yyjson::minimum(10), yyjson::maximum(20)` |
+| `{"type": "string", "if": {"minimum": 3}, "then": {"maxLength": 2}}` | `std::string` with `yyjson::max_length(2)` |
+| `{"type": "string", "if": {"type": "integer"}, "else": {"minLength": 1}}` | `std::string` with `yyjson::min_length(1)` |
+| `{"if": {"maxLength": 4}, "then": {"const": "yes"}, "else": {"const": "other"}}` | `std::string` with `yyjson::if_then_else(yyjson::if_(yyjson::max_length(4)), yyjson::then(yyjson::const_("yes")), yyjson::else_(yyjson::const_("other")))`; other kinds satisfy `if` and fail `then` |
+| `{"if": {"type": "integer"}, "then": {"minimum": 0}, "else": {"type": "string"}}` | `yyjson::value` with `yyjson::if_then_else(yyjson::if_(yyjson::is_type<std::int64_t>), yyjson::then(yyjson::minimum(0)), yyjson::else_(yyjson::is_type<std::string>))` |
+| `{"type": ["integer", "null"], "if": {"minimum": 10}, "then": {"multipleOf": 5}}` | `std::variant<std::monostate, std::int64_t>` with `yyjson::if_then_else(...)`; `null` passes the settings, as it satisfies `if` and `then` |
+| `{"type": "array", "items": {"type": "integer"}, "if": {"minItems": 2}, "then": {"items": {"maximum": 5}}}` | `std::vector<std::int64_t>` with `yyjson::if_then_else(yyjson::if_(yyjson::min_items(2)), yyjson::then(yyjson::items(yyjson::maximum(5))))` |
+| `{"anyOf": [{"type": "integer"}, {"type": "string", "if": {"pattern": "^a"}, "then": {"maxLength": 3}}]}` | `yyjson::any_of<std::int64_t, yyjson::alt<std::string, &...>>`, the alternative with its `yyjson::if_then_else` |
+| `{"enum": ["p", "q", "rr"], "if": {"const": "p"}, "then": {"maxLength": 0}, "else": {"maxLength": 1}}` | an enum class of `q` |
+| `{"type": "integer", "enum": [1, 2, 30, 31], "if": {"minimum": 10}, "then": {"multipleOf": 3}}` | `std::int64_t` with `yyjson::enum_(1, 2, 30)` |
+
+Beside `const` and `enum`, the generator leaves out the values that the branch they take rejects, as it does for `not`. A schema without `type` reads the kinds that are left; one kind is read as its C++ type, and more than one as `yyjson::value`, whose `yyjson::if_` and branches test the type of the value by [`yyjson::is_type<T>`](reference.md#yyjsonis_type). The settings of a value let an empty `std::optional` and `null` through, except `yyjson::const_`, `yyjson::enum_` without `nullptr`, and `yyjson::is_type<T>`; the generator keeps the `if` on a value that may be `null` only when its settings give `null` the answer of the schema.
+
+What the settings cannot express is left out with a warning, so the code reads more than the schema accepts:
+
+| Subschema | Warning |
+| --- | --- |
+| `then` or `else` with keywords that no setting of the value takes, such as `oneOf` | "`then` is not expressed by the settings of a value; the `if` is ignored", and the same for `else` |
+| `if` with keywords that `yyjson::if_` does not take, such as `items` | "`if` is not expressed by the settings that yyjson::if_ takes; the `if` is ignored" |
+| `else: false` with `then` that sets a keyword of `if` to another value | "`then` sets a keyword of `if` to another value; the `if` is ignored" |
+| a branch that the generator puts beside the settings of the value, and that sets one of them to another value | "a branch of `if` sets a keyword of the value to another value; the `if` is ignored" |
+| `if` on a value that may be `null`, whose settings would reject `null` that the schema accepts | "`if` cannot be expressed on a value that may be null; the `if` is ignored" |
+| subschemas that accept some `null` and not all, on a schema without `type` | "`if` cannot be expressed on null; it is ignored for null" |
+| a value of `enum` that the generator cannot test, under `pattern` or `format` | "whether `if` rejects the value "ab" of `enum` is not known; the value is kept" |
+
+`if` with `then` and `else` that reject every value that the schema around reads, such as `{"type": "integer", "if": {"minimum": 3}, "then": false, "else": false}`, leaves no value: the schema [accepts no value](#schemas-that-accept-no-value), with the warning "`if` rejects every value of the type: the schema accepts no value, and reading it always fails". With `const` or `enum` the warning reads "`if` rejects every value of `const`: ...", and beside `not` "`if` and `not` reject every value: ...".
 
 ## Dialects and references
 
@@ -867,7 +907,7 @@ A warning names the location in the schema and what the generated code does inst
 
 | Group | Example | The generated code |
 | --- | --- | --- |
-| a keyword that is not supported | `if` of a string | reads more than the schema accepts |
+| a keyword that is not supported | `oneOf` in `then` of a string | reads more than the schema accepts |
 | a form that is not supported | `contains` that the elements cannot express, two different `contains` in `allOf`, `minItems` or `maxItems` beyond the positions of an [array of positions](#arrays-of-positions), [`unevaluatedProperties` beside `anyOf`](#unevaluatedproperties-and-unevaluateditems) | reads more than the schema accepts |
 | a type inferred from keywords, with `--infer-types` | "the schema has no `type`; it is read as string from its keywords" | reads only that type |
 | a variant of more alternatives than `--max-alternatives` | "a variant of 447 alternatives is more than 64 (--max-alternatives) ..." | reads any JSON value there |
