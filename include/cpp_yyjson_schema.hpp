@@ -2625,6 +2625,27 @@ namespace yyjson
                 if (keys.min != 0) part.emplace("minProperties", keys.min);
                 if (keys.max != bounds().max) part.emplace("maxProperties", keys.max);
             };
+            // `oneOf` or `anyOf` of the groups of `yyjson::one_of_required` and `yyjson::any_of_required` of a
+            // part, in `allOf` when the part has the keyword already
+            const auto groups = [](object_ref part, std::size_t begin, std::size_t end) {
+                for (auto g = begin; g < end;)
+                {
+                    const auto first = g;
+                    const std::string_view keyword = table::groups[first].exactly_one ? "oneOf" : "anyOf";
+                    auto branches = [&] {
+                        if (part.find(keyword) == part.end()) return part.emplace(keyword, empty_array);
+                        const auto all = part.find("allOf");
+                        auto list = all != part.end() ? *all->second.as_array() : part.emplace("allOf", empty_array);
+                        return list.emplace_back(empty_object).emplace(keyword, empty_array);
+                    }();
+                    for (; g < end && table::groups[g].choice == table::groups[first].choice; ++g)
+                    {
+                        auto keys = branches.emplace_back(empty_object).emplace("required", empty_array);
+                        for (auto f = table::groups[g].begin; f < table::groups[g].end; ++f)
+                            keys.emplace_back(yyjson::detail::struct_key_rules<S>::keys[table::group_fields[f]]);
+                    }
+                }
+            };
             for (const auto& rule : table::rules)
             {
                 auto target = [&] {
@@ -2642,17 +2663,21 @@ namespace yyjson
                 auto if_part = target.emplace("if", empty_object);
                 emit_condition_part<S>(if_part, rule.begin, rule.then_begin, entries);
                 count(if_part, rule.if_keys);
-                if (rule.then_begin != rule.else_begin || rule.then_closed || rule.then_keys.bounded())
+                if (rule.then_begin != rule.else_begin || rule.then_closed || rule.then_keys.bounded() ||
+                    rule.then_groups != rule.else_groups)
                 {
                     auto part = target.emplace("then", empty_object);
                     emit_condition_part<S>(part, rule.then_begin, rule.else_begin, entries, closed(rule.then_closed));
                     count(part, rule.then_keys);
+                    groups(part, rule.then_groups, rule.else_groups);
                 }
-                if (rule.else_begin != rule.end || rule.else_closed || rule.else_keys.bounded())
+                if (rule.else_begin != rule.end || rule.else_closed || rule.else_keys.bounded() ||
+                    rule.else_groups != rule.groups_end)
                 {
                     auto part = target.emplace("else", empty_object);
                     emit_condition_part<S>(part, rule.else_begin, rule.end, entries, closed(rule.else_closed));
                     count(part, rule.else_keys);
+                    groups(part, rule.else_groups, rule.groups_end);
                 }
             }
             values_ = outer_values;

@@ -977,6 +977,22 @@ inline constexpr auto yyjson::annotations<AlignedConditions> = yyjson::annotate(
     yyjson::not_(yyjson::field("xs", yyjson::min_items(4)),
                  yyjson::field("kind", yyjson::required, yyjson::const_("few"))));
 
+// `yyjson::one_of_required` and `yyjson::any_of_required` in `yyjson::then` and `yyjson::else_` as `oneOf` and `anyOf`
+// of `required`, beside the `required` of the part.
+struct GroupedConditions
+{
+    std::optional<std::string> kind;
+    std::optional<int> a;
+    std::optional<int> b;
+    std::optional<int> c;
+};
+template <>
+inline constexpr auto yyjson::annotations<GroupedConditions> = yyjson::annotate(yyjson::if_then_else(
+    yyjson::if_(yyjson::field("kind", yyjson::required, yyjson::const_("pair"))),
+    yyjson::then(yyjson::field("c", yyjson::required), yyjson::one_of_required({"a"}, {"b"}),
+                 yyjson::any_of_required({"a"}, {"c"})),
+    yyjson::else_(yyjson::any_of_required({"a", "c"}, {"b"}))));
+
 // `yyjson::prefix_items` in `yyjson::if_` and `yyjson::not_` of values and of fields as `prefixItems`.
 struct PrefixConditions
 {
@@ -2608,6 +2624,28 @@ TEST(Schema, AlignedConditions)
     EXPECT_EQ(xs["minItems"].as<int>(), 2);
     EXPECT_EQ(xs["maxItems"].as<int>(), 3);
     EXPECT_EQ(s["allOf"][1]["not"]["properties"]["xs"]["minItems"].as<int>(), 4);
+}
+
+TEST(Schema, GroupedConditions)
+{
+    check<GroupedConditions>({
+        R"({"kind":"pair","a":1,"c":1})",
+        R"({"kind":"pair","b":1,"c":1})",
+        R"({"kind":"pair","a":1,"b":1,"c":1})",
+        R"({"kind":"pair","a":1})",
+        R"({"kind":"pair","c":1})",
+        R"({"a":1,"c":1})",
+        R"({"b":1})",
+        R"({"a":1,"b":1})",
+        R"({"a":1})",
+        R"({})",
+    });
+    const auto s = to_jsoncons(yyjson::json_schema<GroupedConditions>())["$defs"]["GroupedConditions"];
+    const auto& then = s["then"];
+    EXPECT_EQ(then["required"], json::parse(R"(["c"])"));
+    EXPECT_EQ(then["oneOf"], json::parse(R"([{"required":["a"]},{"required":["b"]}])"));
+    EXPECT_EQ(then["anyOf"], json::parse(R"([{"required":["a"]},{"required":["c"]}])"));
+    EXPECT_EQ(s["else"], json::parse(R"({"anyOf":[{"required":["a","c"]},{"required":["b"]}]})"));
 }
 
 TEST(Schema, PrefixConditions)
