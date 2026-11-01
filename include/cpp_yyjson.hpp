@@ -2695,6 +2695,12 @@ namespace yyjson
         struct is_prefix_items<prefix_items_t<N>> : std::true_type
         {
         };
+        // The settings of the whole array of a struct annotated with `yyjson::as_array`, which count and compare the
+        // elements of the JSON array rather than the fields.
+        template <typename A>
+        concept array_setting = std::same_as<A, min_items> || std::same_as<A, max_items> ||
+                                std::same_as<A, unique_items_t> || is_contains<A>::value ||
+                                std::same_as<A, min_contains> || std::same_as<A, max_contains>;
         // The settings of the values in a field: its elements, the values and the keys of a map, and the elements
         // that `yyjson::contains` counts; and `yyjson::not_` and `yyjson::if_then_else` of the value, which also
         // have nodes of their own.
@@ -2937,6 +2943,8 @@ namespace yyjson
             pattern_with_setting,
             pattern_visitable,
             min_properties_above_max,
+            array_setting_without_as_array,
+            min_items_above_max,
         };
 
         // The constraints of a value, those in `set` by `constraint_bit`.  The values of `yyjson::const_` and
@@ -4214,7 +4222,7 @@ namespace yyjson
                         std::same_as<As, transparent_t> || std::same_as<As, as_array_t> ||
                         std::same_as<As, items<>> || is_dependent_required<As>::value ||
                         std::same_as<As, min_properties> || std::same_as<As, max_properties> ||
-                        is_required_groups<As>::value || is_condition_annotation<As>::value ||
+                        is_required_groups<As>::value || is_condition_annotation<As>::value || array_setting<As> ||
                         internal_tag_annotation<As> || enum_annotation<As> || type_metadata_setting<As>)...> ==
             sizeof...(As);
     }  // namespace detail
@@ -4227,7 +4235,9 @@ namespace yyjson
                       "yyjson::transparent, yyjson::as_array, yyjson::items(bool), yyjson::dependent_required, "
                       "yyjson::one_of_required, "
                       "yyjson::any_of_required, yyjson::if_then_else, yyjson::not_, yyjson::min_properties and "
-                      "yyjson::max_properties for a struct, "
+                      "yyjson::max_properties for a struct, yyjson::min_items, yyjson::max_items, "
+                      "yyjson::unique_items, yyjson::contains, yyjson::min_contains and yyjson::max_contains for a "
+                      "struct annotated with yyjson::as_array, "
                       "yyjson::internal_tag for a variant, yyjson::enumerator(...) and yyjson::enum_format for an "
                       "enumeration, yyjson::schema_name for a struct, an enumeration, a variant or a type with a "
                       "caster, and yyjson::title, "
@@ -4748,6 +4758,10 @@ namespace yyjson
             bool as_array = false;     // whether the struct is annotated with `yyjson::as_array`
             additional_keys items = additional_keys::unset;  // `yyjson::items(bool)` of the struct
             std::size_t extra_items = N;  // the field annotated with `yyjson::extra_items`, or N
+            // whether a struct annotated with `yyjson::as_array` has settings of the whole array, such as
+            // `yyjson::min_items`, and their node
+            bool array_settings = false;
+            std::size_t array_node = 0;
             schema_tree<M, V> schemas = {{}, N};
             bool constrained = false;  // whether a field has a constraint
             // the fields {i, j} where the key of field i requires the key of field j by `yyjson::dependent_required`
@@ -4890,6 +4904,19 @@ namespace yyjson
             {
                 if (table.items != additional_keys::unset) return fail(field_key_error::same_setting_twice);
                 table.items = a.allowed ? additional_keys::allowed : additional_keys::denied;
+            }
+            // A setting of the whole array of a struct annotated with `yyjson::as_array`, such as `yyjson::min_items`.
+            template <typename A>
+            constexpr void constrain_array(const A& a)
+            {
+                if (!table.array_settings)
+                {
+                    const auto node = table.schemas.allocate(1);
+                    if (table.schemas.error != field_key_error::none) return;
+                    table.array_settings = true;
+                    table.array_node = node;
+                }
+                table.schemas.add(table.array_node, a);
             }
             constexpr void receive_extra_items(std::size_t i)
             {
@@ -5040,6 +5067,8 @@ namespace yyjson
                     set_min_properties(a);
                 else if constexpr (std::same_as<A, max_properties>)
                     set_max_properties(a);
+                else if constexpr (array_setting<A>)
+                    constrain_array(a);
                 else if constexpr (!type_metadata_setting<A>)
                     fail(field_key_error::not_a_struct_setting);
             }
@@ -5050,6 +5079,7 @@ namespace yyjson
             {
                 if (!t.as_array)
                 {
+                    if (t.array_settings) return field_key_error::array_setting_without_as_array;
                     if (t.items != additional_keys::unset) return field_key_error::items_without_as_array;
                     if (t.extra_items != N) return field_key_error::extra_items_without_as_array;
                     return field_key_error::none;
@@ -5090,6 +5120,13 @@ namespace yyjson
                 if (result.error == field_key_error::none) result.error = result.schemas.error;
                 if (result.min_properties > result.max_properties && result.error == field_key_error::none)
                     result.error = field_key_error::min_properties_above_max;
+                if (result.array_settings)
+                {
+                    const auto& c = result.schemas.nodes[result.array_node].constraints;
+                    if (c.template has<min_items>() && c.template has<max_items>() && c.min_items > c.max_items &&
+                        result.error == field_key_error::none)
+                        result.error = field_key_error::min_items_above_max;
+                }
                 for (std::size_t i = 0; i < N; ++i)
                 {
                     if (tagged[i] && !result.schemas.nodes[i].empty() && result.error == field_key_error::none)
@@ -5348,6 +5385,27 @@ namespace yyjson
         using condition_annotation_type =
             typename[:std::meta::remove_cvref(std::meta::type_of(condition_annotations<T>[K])):];
 
+        // The annotations `yyjson::contains` of the struct T, which constrain its array with `yyjson::as_array`, and
+        // whether T has a setting of its array.
+        template <typename T>
+        inline constexpr std::span<const std::meta::info> array_contains_annotations = std::define_static_array(
+            template_annotations_of<std::meta::dealias(^^T), false, ^^yyjson::contains>());
+        template <typename T, std::size_t K>
+        using array_contains_annotation_type =
+            typename[:std::meta::remove_cvref(std::meta::type_of(array_contains_annotations<T>[K])):];
+        template <typename T>
+        inline constexpr bool annotated_array = !field_reflection::type_annotations<T, min_items>.empty() ||
+                                                !field_reflection::type_annotations<T, max_items>.empty() ||
+                                                !field_reflection::type_annotations<T, unique_items_t>.empty() ||
+                                                !field_reflection::type_annotations<T, min_contains>.empty() ||
+                                                !field_reflection::type_annotations<T, max_contains>.empty() ||
+                                                !array_contains_annotations<T>.empty();
+        template <typename T>
+        inline constexpr tree_size annotated_array_node_count = []<std::size_t... Ks>(std::index_sequence<Ks...>) {
+            return (tree_size{annotated_array<T> ? 1U : 0U, 0} + ... +
+                    node_count<array_contains_annotation_type<T, Ks>>);
+        }(std::make_index_sequence<array_contains_annotations<T>.size()>{});
+
         // Whether the struct T is annotated with `yyjson::additional_properties`, `yyjson::transparent`,
         // `yyjson::dependent_required`, `yyjson::one_of_required`, `yyjson::any_of_required`,
         // `yyjson::if_then_else` or `yyjson::not_`.
@@ -5359,7 +5417,7 @@ namespace yyjson
                        !field_reflection::type_annotations<T, as_array_t>.empty() ||
                        !field_reflection::type_annotations<T, items<>>.empty() ||
                        !field_reflection::type_annotations<T, min_properties>.empty() ||
-                       !field_reflection::type_annotations<T, max_properties>.empty() ||
+                       !field_reflection::type_annotations<T, max_properties>.empty() || annotated_array<T> ||
                        !dependency_annotations<T>.empty() || !required_group_annotations<T>.empty() ||
                        !condition_annotations<T>.empty();
             else
@@ -5381,6 +5439,19 @@ namespace yyjson
                 builder.set_min_properties(a);
             for (const max_properties& a : field_reflection::type_annotations<T, max_properties>)
                 builder.set_max_properties(a);
+            for (const min_items& a : field_reflection::type_annotations<T, min_items>) builder.constrain_array(a);
+            for (const max_items& a : field_reflection::type_annotations<T, max_items>) builder.constrain_array(a);
+            for (const unique_items_t& a : field_reflection::type_annotations<T, unique_items_t>)
+                builder.constrain_array(a);
+            [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                (builder.constrain_array(
+                     std::meta::extract<array_contains_annotation_type<T, Ks>>(array_contains_annotations<T>[Ks])),
+                 ...);
+            }(std::make_index_sequence<array_contains_annotations<T>.size()>{});
+            for (const min_contains& a : field_reflection::type_annotations<T, min_contains>)
+                builder.constrain_array(a);
+            for (const max_contains& a : field_reflection::type_annotations<T, max_contains>)
+                builder.constrain_array(a);
             [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
                 (builder.add_dependency(
                      std::meta::extract<dependency_annotation_type<T, Ks>>(dependency_annotations<T>[Ks])),
@@ -5461,16 +5532,18 @@ namespace yyjson
         // most.
         template <typename... As>
         inline constexpr tree_size node_count<field_annotation<As...>> = (tree_size{} + ... + node_count<As>);
+        // The node of the settings of the whole array of a struct annotated with `yyjson::as_array` is one more.
         template <typename T>
         inline constexpr tree_size value_node_count = [] {
             auto count = []<typename... As>(std::type_identity<std::tuple<As...>>) {
-                return (tree_size{} + ... + node_count<As>);
+                return (tree_size{(array_setting<As> || ...) ? 1U : 0U, 0} + ... + node_count<As>);
             }(std::type_identity<annotation_values_of<T>>{});
 #if FIELD_RFL_ANNOTATIONS
             if constexpr (!visitable<T> && field_reflection::field_countable<T>)
                 count = count + []<std::size_t... Is>(std::index_sequence<Is...>) {
                     return (tree_size{} + ... + annotated_node_count<T, Is>);
                 }(std::make_index_sequence<field_reflection::field_count<T>>{});
+            if constexpr (std::is_class_v<T>) count = count + annotated_array_node_count<T>;
 #endif
             return count;
         }();
@@ -5551,8 +5624,9 @@ namespace yyjson
                           "a field is given yyjson::skip, yyjson::required, yyjson::optional_key, "
                           "yyjson::omit_default, yyjson::default_from, yyjson::adjacent_tag, a constraint such as "
                           "yyjson::minimum, a setting of the values in it such as yyjson::items, or yyjson::title, "
-                          "yyjson::description, yyjson::examples, yyjson::deprecated or yyjson::schema twice, or a "
-                          "setting of the values in it has a setting twice");
+                          "yyjson::description, yyjson::examples, yyjson::deprecated or yyjson::schema twice, a "
+                          "setting of the values in it has a setting twice, or a struct annotated with "
+                          "yyjson::as_array is given a setting of its array such as yyjson::min_items twice");
             static_assert(table.error != field_key_error::required_optional_key,
                           "a field annotated with yyjson::required may not be left out of the object, which "
                           "yyjson::optional_key lets it: give the field only one of them");
@@ -5681,6 +5755,13 @@ namespace yyjson
             static_assert(table.error != field_key_error::min_properties_above_max,
                           "yyjson::min_properties of a struct is greater than its yyjson::max_properties: no object "
                           "has a number of keys within them");
+            static_assert(table.error != field_key_error::array_setting_without_as_array,
+                          "yyjson::min_items, yyjson::max_items, yyjson::unique_items, yyjson::contains, "
+                          "yyjson::min_contains and yyjson::max_contains annotate a struct annotated with "
+                          "yyjson::as_array, whose array they constrain, or a field");
+            static_assert(table.error != field_key_error::min_items_above_max,
+                          "yyjson::min_items of a struct annotated with yyjson::as_array is greater than its "
+                          "yyjson::max_items: no array has a number of elements within them");
             static constexpr auto value = table.keys;
         };
 
@@ -7588,6 +7669,18 @@ namespace yyjson
         template <typename S>
         using extra_items_level =
             constraint_node<S, no_extra_keys, field_table_of<S>::table.schemas.nodes[extra_items_index<S>].items>;
+
+        // The settings of the whole array of the struct S annotated with `yyjson::as_array`, such as
+        // `yyjson::min_items`, and whether it has any.
+        template <typename S>
+        inline constexpr bool constrained_array = [] {
+            if constexpr (field_table_of<S>::exists)
+                return field_table_of<S>::table.array_settings;
+            else
+                return false;
+        }();
+        template <typename S>
+        using array_level = constraint_node<S, no_extra_keys, field_table_of<S>::table.array_node>;
 
         // The field P of `s` among those annotated with `yyjson::pattern_properties`, in the order of the members.
         template <std::size_t P, typename S>
@@ -17144,7 +17237,7 @@ namespace yyjson
                 return []<std::size_t... Ks>(std::index_sequence<Ks...>) {
                     return any_true({(constrained_field<T, Ks> || omittable<struct_field_type<T, Ks>> ||
                                       omits_default<T, struct_declared_index<T, Ks>>)...}) ||
-                           has_extra_items<T>;
+                           has_extra_items<T> || constrained_array<T>;
                 }(std::make_index_sequence<struct_field_count<T>>{});
             else if constexpr (validated_struct<T>)
                 return []<std::size_t... Ks>(std::index_sequence<Ks...>) {
@@ -17848,6 +17941,15 @@ namespace yyjson
                     });
                     ++j;
                 }
+            }
+            if constexpr (constrained_array<S>)
+            {
+                // the settings of the whole array hold for the elements that the writer writes
+                using level = array_level<S>;
+                const auto written = writer::array(s);
+                if (const auto k = level_violation<level>(written); k != constraint_kind::none) [[unlikely]]
+                    throw_constraint_violation(cast_target{}, {}, type_name<S>(), k, level::constraints, level::values,
+                                               level::patterns);
             }
         }
 
@@ -19388,6 +19490,19 @@ namespace yyjson
                                        level::patterns, constraint_subject::element, true);
         }
 
+        // Throws at `json` unless the elements of the array `arr` that a struct T annotated with `yyjson::as_array`
+        // is read from satisfy the settings of the whole array, such as `yyjson::min_items`.
+        template <typename T, typename Array, typename Json>
+        void check_array_settings(const Array& arr, const Json& json)
+        {
+            using level = array_level<T>;
+            // the settings compare and test the elements as `yyjson::value`, whatever DOM they were read from
+            const auto copy = writer::array(arr);
+            if (const auto k = level_violation<level>(copy); k != constraint_kind::none) [[unlikely]]
+                throw_constraint_violation(target_of(json), {}, type_name<T>(), k, level::constraints, level::values,
+                                           level::patterns);
+        }
+
         // Reads the JSON array `json` into `t`, a struct annotated with `yyjson::as_array`: its fields from the
         // elements in the order of their declarations, and the elements after them into the field annotated with
         // `yyjson::extra_items`.  A field whose key an object could leave out may be missing at the end, as may
@@ -19451,6 +19566,8 @@ namespace yyjson
                     (struct_items<T> == additional_keys::unset && strict_reading))
                     throw_extra_element(target_of(*it), n, type_name<T>());
             }
+            if constexpr (constrained_array<T>)
+                check_array_settings<T>(*arr, json);
         }
 
         // Whether the field K of `t`, a struct annotated with `yyjson::as_array`, by its index among the fields
@@ -26365,7 +26482,13 @@ namespace yyjson
                 }
                 else if constexpr (yyjson::detail::as_array_struct<T> &&
                                    std::derived_from<caster<T>, yyjson::detail::builtin_caster>)
-                    return read_array_fields<T>();
+                {
+                    // the settings of the whole array, such as `yyjson::unique_items`, compare the JSON elements
+                    if constexpr (yyjson::detail::constrained_array<T>)
+                        return read_by_document<T>();
+                    else
+                        return read_array_fields<T>();
+                }
                 else if constexpr (transparent_readable<T>)
                 {
                     auto result = T();

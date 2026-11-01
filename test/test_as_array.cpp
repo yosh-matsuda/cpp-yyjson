@@ -109,6 +109,24 @@ struct DefaultFirst
 template <>
 inline constexpr auto yyjson::annotations<DefaultFirst> =
     yyjson::annotate(yyjson::as_array, yyjson::field("a", yyjson::omit_default));
+// settings of the whole array, which count and compare its JSON elements, those after the positions too
+struct Banner
+{
+    std::string name;
+    std::optional<std::string> tag;
+    std::vector<int> rest;
+    bool operator==(const Banner&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<Banner> = yyjson::annotate(
+    yyjson::as_array, yyjson::field("rest", yyjson::extra_items), yyjson::min_items(2), yyjson::max_items(4),
+    yyjson::unique_items, yyjson::contains(yyjson::is_type<std::string>, yyjson::min_length(2)),
+    yyjson::max_contains(1));
+struct BannerHolder
+{
+    Banner shape;
+    bool operator==(const BannerHolder&) const = default;
+};
 // the struct where other values are
 struct Drawing
 {
@@ -143,6 +161,12 @@ AS_ARRAY_RULE(ExtraItemsCounted, yyjson::as_array, yyjson::field("e", yyjson::ex
 AS_ARRAY_RULE(ExtraItemsConstrained, yyjson::as_array, yyjson::items(true),
               yyjson::field("e", yyjson::extra_items, yyjson::items(yyjson::maximum(9))),
               yyjson::field("a", yyjson::minimum(0)))
+AS_ARRAY_RULE(ArraySettingAlone, yyjson::min_items(1))
+AS_ARRAY_RULE(ArrayItemsReversed, yyjson::as_array, yyjson::min_items(3), yyjson::max_items(2))
+AS_ARRAY_RULE(ArrayItemsTwice, yyjson::as_array, yyjson::min_items(1), yyjson::min_items(2))
+AS_ARRAY_RULE(ArrayCountsAlone, yyjson::as_array, yyjson::max_contains(1))
+AS_ARRAY_RULE(ArraySettings, yyjson::as_array, yyjson::min_items(1), yyjson::max_items(3), yyjson::unique_items,
+              yyjson::contains(yyjson::minimum(0)), yyjson::min_contains(1), yyjson::max_contains(2))
 #undef AS_ARRAY_RULE
 struct NoValue
 {
@@ -174,6 +198,11 @@ namespace as_array_rules
     static_assert(table_error<ExtraItemsRequired> == extra_items_with_setting);
     static_assert(table_error<ExtraItemsCounted> == extra_items_with_setting);
     static_assert(table_error<ExtraItemsConstrained> == none);
+    static_assert(table_error<ArraySettingAlone> == array_setting_without_as_array);
+    static_assert(table_error<ArrayItemsReversed> == min_items_above_max);
+    static_assert(table_error<ArrayItemsTwice> == same_setting_twice);
+    static_assert(table_error<ArrayCountsAlone> != none);
+    static_assert(table_error<ArraySettings> == none);
 
     // a struct of a position that cannot be read or written is neither readable nor writable
     static_assert(!yyjson::readable<ArrayUnconvertible>);
@@ -407,4 +436,25 @@ TEST(AsArray, Validate)
     expect_invalid(Drawing{{}, {}, {}, {{"k", {"s", {-1}}}}, 0},
                    "an element of the value of the field \"values\" of Series is less than the minimum 0",
                    "/series/k/1");
+}
+
+TEST(AsArray, ArraySettings)
+{
+    // the settings of the struct count and compare the elements of the array, those after the positions too
+    expect_read<Banner>(R"(["a","kk"])", {"a", "kk", {}});
+    expect_read<Banner>(R"(["kk","a",1])", {"kk", "a", {1}});
+    expect_rejected<Banner>(R"(["kk"])", "the value of Banner has fewer items than the minimum 2", "");
+    expect_rejected<Banner>(R"(["a","kk",1,2,3])", "the value of Banner has more items than the maximum 4", "");
+    expect_rejected<Banner>(R"(["kk","a",1,1])", "the value of Banner has duplicate items", "");
+    expect_rejected<Banner>(R"(["a","b"])",
+                           "the value of Banner has no item that satisfies the constraints of yyjson::contains", "");
+    expect_rejected<Banner>(R"(["kk","ab"])", "the value of Banner has more than 1 item", "");
+    expect_rejected<BannerHolder>(R"({"shape":["a","b",1]})", "the value of Banner has no item", "/shape");
+
+    expect_valid(Banner{"a", "kk", {1}});
+    expect_invalid(BannerHolder{{"kk", std::nullopt, {}}}, "the value of Banner has fewer items than the minimum 2",
+                   "/shape");
+    expect_invalid(Banner{"a", "b", {}},
+                   "the value of Banner has no item that satisfies the constraints of yyjson::contains", "");
+    expect_invalid(BannerHolder{{"kk", "a", {1, 1}}}, "the value of Banner has duplicate items", "/shape");
 }

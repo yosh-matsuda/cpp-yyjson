@@ -1195,6 +1195,17 @@ struct ASeries
 template <>
 inline constexpr auto yyjson::annotations<ASeries> = yyjson::annotate(
     yyjson::as_array, yyjson::field("values", yyjson::extra_items, yyjson::items(yyjson::minimum(0))));
+// settings of the whole array, which count and compare its elements, those after the positions too
+struct AShape
+{
+    std::string name;
+    std::optional<std::string> tag;
+    std::vector<yyjson::value> rest;
+};
+template <>
+inline constexpr auto yyjson::annotations<AShape> = yyjson::annotate(
+    yyjson::as_array, yyjson::field("rest", yyjson::extra_items), yyjson::min_items(2), yyjson::max_items(4),
+    yyjson::unique_items, yyjson::contains(yyjson::pattern("^k")), yyjson::max_contains(1));
 // a recursive struct
 struct ANode
 {
@@ -2175,6 +2186,17 @@ TEST(Schema, AsArray)
         R"([1,2])",
         R"([1,[]])",
     });
+    check<AShape>({
+        R"(["a","k"])",
+        R"(["a","b","k"])",
+        R"(["a","k",1])",
+        R"(["k"])",
+        R"(["a","b"])",
+        R"(["a","k",1,2,3])",
+        R"(["a","k","k"])",
+        R"(["a","k1","k2"])",
+        R"(["k","a",1])",
+    });
     check<AHolder>({
         R"({"rule":[1],"series":[["a",1]],"tree":[1,[2]]})",
         R"({"rule":[1,"x",0.5,7],"series":[]})",
@@ -2203,6 +2225,13 @@ TEST(Schema, AsArray)
               json::parse(R"({"type":"integer","minimum":0,"maximum":2147483647})"));
     EXPECT_EQ(to_jsoncons(yyjson::json_schema<ANode>())["$defs"]["ANode"]["items"],
               json::parse(R"({"$ref":"#/$defs/ANode"})"));
+    // the settings of the whole array, `minItems` at least as many as the positions that are required
+    const auto shape = to_jsoncons(yyjson::json_schema<AShape>(yyjson::strict))["$defs"]["AShape"];
+    EXPECT_EQ(shape["minItems"], json(2));
+    EXPECT_EQ(shape["maxItems"], json(4));
+    EXPECT_EQ(shape["uniqueItems"], json(true));
+    EXPECT_EQ(shape["contains"], json::parse(R"({"pattern":"^k"})"));
+    EXPECT_EQ(shape["maxContains"], json(1));
 }
 
 TEST(Schema, VecOpt)

@@ -2500,6 +2500,7 @@ namespace yyjson
         // many as `minItems` says: those before the last of them are written too, holding a value or null.  The
         // elements after them are those of the field annotated with `yyjson::extra_items`; a struct without it takes
         // none by `items`, unless `yyjson::items(true)` or a read without `yyjson::strict` takes and drops them.
+        // The settings of the whole array, such as `yyjson::min_items` or `yyjson::contains`, follow.
         template <typename S>
         void generator::emit_array_struct(object_ref out)
         {
@@ -2532,6 +2533,19 @@ namespace yyjson
                                   }(),
                                   true)...};
                 }(std::make_index_sequence<count>{});
+            }
+            if constexpr (yyjson::detail::constrained_array<S>)
+            {
+                // The settings of the whole array, such as `yyjson::unique_items`, which hold for its JSON elements.
+                const auto& a = nodes[yyjson::detail::field_table_of<S>::table.array_node];
+                auto rest = a.constraints;
+                if (rest.template has<yyjson::min_items>())
+                {
+                    min_items = std::max(min_items, rest.min_items);
+                    rest.set &= ~yyjson::detail::constraint_bit<yyjson::min_items>;
+                }
+                emit_constraints(out, rest);
+                if (a.contains != 0) emit<writer::value>(out.emplace("contains", empty_object), nodes, a.contains);
             }
             if (min_items != 0) out.emplace("minItems", min_items);
             if constexpr (yyjson::detail::has_extra_items<S>)
