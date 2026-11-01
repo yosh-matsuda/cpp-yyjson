@@ -1319,9 +1319,7 @@ TEST(Codegen, Conditions)
     })",
                             {});
     EXPECT_EQ(warnings(c), "#/allOf/1/if: `if` is not supported here: the value of the key \"n\" may be null, which "
-                           "the test of its field lets through; `then` and `else` are ignored\n"
-                           "#/allOf/3/not: `not` is not supported here: `minProperties` is not supported in it; it is "
-                           "ignored\n");
+                           "the test of its field lets through; `then` and `else` are ignored\n");
     EXPECT_FALSE(has(c.code, "zz"));
     EXPECT_TRUE(has(c.code, "    yyjson::if_then_else(\n"
                             "        yyjson::if_(yyjson::field(\"t\", yyjson::required, yyjson::const_(\"x\"))),\n"
@@ -1336,10 +1334,87 @@ TEST(Codegen, Conditions)
                             "    yyjson::not_(yyjson::field(\"b\", yyjson::required)),\n"
                             "    yyjson::not_(yyjson::field(\"a\", yyjson::required, yyjson::minimum(10))),\n"
                             "    yyjson::not_(yyjson::field(\"t\", yyjson::required)),\n"
+                            "    yyjson::not_(yyjson::min_properties(2)),\n"
                             // a nullable field whose settings list values rejects null unless they list nullptr
                             "    yyjson::if_then_else(\n"
                             "        yyjson::if_(yyjson::field(\"n\", yyjson::const_(\"z\"))),\n"
                             "        yyjson::then(yyjson::field(\"b\", yyjson::required))));\n"));
+
+    // counts of keys in the parts of conditions; a part whose counts contradict never holds: an `if` that never
+    // holds is dropped, a `then` that never holds rejects the objects that satisfy the `if`; the counts make a key
+    // with a default std::optional, because whether the key is written matters
+    const auto k = generate(R"({
+        "type": "object",
+        "properties": {"kind": {"type": "string"}, "a": {"type": "integer"}, "b": {"type": "integer", "default": 3}},
+        "if": {"properties": {"kind": {"const": "pair"}}, "required": ["kind"]},
+        "then": {"minProperties": 3},
+        "else": {"maxProperties": 2, "minProperties": 0},
+        "not": {"maxProperties": 0},
+        "dependentSchemas": {"a": {"minProperties": 2, "if": {"minProperties": 3}, "then": {"required": ["b"]}}},
+        "allOf": [
+            {"if": {"minProperties": 3, "maxProperties": 1}, "then": {"required": ["a"]}},
+            {"if": {"required": ["b"]}, "then": {"minProperties": 4, "maxProperties": 2}},
+            {"if": {"minProperties": 1}, "then": {"minProperties": 2, "maxProperties": 5}}
+        ]
+    })",
+                            {});
+    EXPECT_EQ(warnings(k), "");
+    EXPECT_TRUE(has(k.code, "    // default: 3\n    std::optional<std::int64_t> b;\n"));
+    EXPECT_TRUE(has(k.code, "    yyjson::if_then_else(\n"
+                            "        yyjson::if_(yyjson::field(\"kind\", yyjson::required, "
+                            "yyjson::const_(\"pair\"))),\n"
+                            "        yyjson::then(yyjson::min_properties(3)),\n"
+                            "        yyjson::else_(yyjson::max_properties(2))),\n"
+                            "    yyjson::not_(yyjson::max_properties(0)),\n"));
+    EXPECT_TRUE(has(k.code, "    yyjson::not_(yyjson::field(\"b\", yyjson::required)),\n"));
+    EXPECT_TRUE(has(k.code, "        yyjson::if_(yyjson::min_properties(1)),\n"
+                            "        yyjson::then(yyjson::min_properties(2), yyjson::max_properties(5))));\n"));
+    EXPECT_TRUE(has(k.code, "    yyjson::if_then_else(\n"
+                            "        yyjson::if_(yyjson::field(\"a\", yyjson::required)),\n"
+                            "        yyjson::then(yyjson::min_properties(2))),\n"
+                            "    yyjson::if_then_else(\n"
+                            "        yyjson::if_(yyjson::field(\"a\", yyjson::required), "
+                            "yyjson::min_properties(3)),\n"
+                            "        yyjson::then(yyjson::field(\"b\", yyjson::required))),\n"));
+    EXPECT_FALSE(has(k.code, "min_properties(3), yyjson::max_properties(1)"));
+
+    // an `else` or an `if` whose counts contradict is written as it is, since yyjson::else_ and yyjson::if_ with such
+    // counts never hold; a `not` of them always holds and is dropped
+    const auto kn = generate(R"({
+        "type": "object",
+        "properties": {"k": {"type": "string"}, "a": {"type": "integer"}},
+        "if": {"required": ["k"]},
+        "then": {"if": {"required": ["a"]}, "then": {"minProperties": 3}},
+        "else": {"minProperties": 2, "maxProperties": 1},
+        "dependentSchemas": {"a": {"if": {"required": ["k"]}, "else": {"maxProperties": 0, "minProperties": 1}}},
+        "allOf": [
+            {"if": {"required": ["a"]}, "then": {"required": ["k"]}, "else": {"minProperties": 3, "maxProperties": 2}},
+            {"not": {"minProperties": 3, "maxProperties": 2}},
+            {"if": {"required": ["k"], "minProperties": 3, "maxProperties": 2}, "then": {"required": ["a"]},
+             "else": {"maxProperties": 5}}
+        ]
+    })",
+                             {});
+    EXPECT_EQ(warnings(kn), "");
+    EXPECT_TRUE(has(kn.code, "    yyjson::if_then_else(\n"
+                             "        yyjson::if_(yyjson::field(\"k\", yyjson::required)),\n"
+                             "        yyjson::else_(yyjson::min_properties(2), yyjson::max_properties(1))),\n"
+                             "    yyjson::if_then_else(\n"
+                             "        yyjson::if_(yyjson::field(\"k\", yyjson::required), "
+                             "yyjson::field(\"a\", yyjson::required)),\n"
+                             "        yyjson::then(yyjson::min_properties(3))),\n"
+                             "    yyjson::if_then_else(\n"
+                             "        yyjson::if_(yyjson::field(\"a\", yyjson::required)),\n"
+                             "        yyjson::then(yyjson::field(\"k\", yyjson::required))),\n"
+                             "    yyjson::if_then_else(\n"
+                             "        yyjson::if_(yyjson::field(\"a\", yyjson::required)),\n"
+                             "        yyjson::then(yyjson::field(\"k\", yyjson::required)),\n"
+                             "        yyjson::else_(yyjson::min_properties(3), yyjson::max_properties(2))),\n"
+                             "    yyjson::if_then_else(\n"
+                             "        yyjson::if_(yyjson::field(\"k\", yyjson::required), yyjson::min_properties(3), "
+                             "yyjson::max_properties(2)),\n"
+                             "        yyjson::else_(yyjson::max_properties(5))));\n"));
+    EXPECT_FALSE(has(kn.code, "yyjson::not_("));
 
     // conditions of values that are not objects: those that test only keys, and those whose `if` only objects
     // satisfy, hold for them

@@ -840,13 +840,15 @@ namespace cpp_yyjson_codegen
         };
 
         // a field of yyjson::if_, yyjson::then, yyjson::else_ or yyjson::not_: the key of the field of the struct,
-        // with settings, yyjson::required (presence) and yyjson::is_type<T>
+        // with settings, yyjson::required (presence) and yyjson::is_type<T>. With `counts`, it is not a field but
+        // yyjson::min_properties / yyjson::max_properties of the part, from min_items / max_items of `set`
         struct cond_field
         {
             std::string key{};
             settings set{};
             bool required = false;
             std::optional<ctype> is_type{};
+            bool counts = false;
         };
 
         // yyjson::if_then_else, or yyjson::not_ of the fields of `if_` when `negated`; `then_closed` and
@@ -4234,7 +4236,8 @@ namespace cpp_yyjson_codegen
                                     !std::regex_search(f.key, re))
                                     continue;
                                 if (std::ranges::any_of(absent, [&](const condition& c) {
-                                        return c.if_.size() == 1 && c.if_.front().key == f.key;
+                                        return c.if_.size() == 1 && !c.if_.front().counts &&
+                                               c.if_.front().key == f.key;
                                     }))
                                     continue;
                                 if (is_required(f.key))
@@ -4583,11 +4586,13 @@ namespace cpp_yyjson_codegen
             // what the subschema of `if` or `not` tests, as the fields of yyjson::if_ / yyjson::not_: `fields` empty
             // when every object satisfies it, `never` when none does, `ok` false with the reason in `why` when C++
             // does not express it. `absent` lists the keys whose schemas no value of their fields satisfies, which
-            // the subschema allows only to be missing
+            // the subschema allows only to be missing; `counts_never` when the counts of keys in `fields` contradict,
+            // which yyjson::if_ expresses as they are
             struct cond_test
             {
                 bool ok = true;
                 bool never = false;
+                bool counts_never = false;
                 std::vector<cond_field> fields{};
                 std::vector<std::string> absent{};
                 std::string why{};
@@ -4605,7 +4610,7 @@ namespace cpp_yyjson_codegen
                 };
                 const auto entry = [&](const std::string& k) -> cond_field& {
                     for (auto& f : r.fields)
-                        if (f.key == k) return f;
+                        if (f.key == k && !f.counts) return f;
                     return r.fields.emplace_back(cond_field{.key = k});
                 };
                 const auto is_rejected = [&](const std::string& k) {
@@ -4704,18 +4709,23 @@ namespace cpp_yyjson_codegen
                                         "\" is not expressed by the settings of its field");
                         }
                     }
+                    else if (k == "minProperties" || k == "maxProperties")
+                    {
+                        if (!add_key_count(r.fields, k, v)) return fail("`" + k + "` is not a non-negative integer");
+                    }
                     else if (k == "$conditions")
                         return fail("`if`, `not` and `dependentSchemas` are not supported in it");
                     else
                         return fail("`" + k + "` is not supported in it");
                 }
+                if (counts_contradict(r.fields)) r.never = r.counts_never = true;
                 // a key that the object has, by the schema of the struct or by `required`, fails the test of absence
                 for (const auto& k : r.absent)
                     if (field_of(fields, k)->required ||
                         std::ranges::any_of(r.fields, [&](const cond_field& f) { return f.key == k && f.required; }))
                         r.never = true;
                 std::erase_if(r.fields, [](const cond_field& f) {
-                    return !f.required && f.set.empty() && !f.is_type;
+                    return !f.counts && !f.required && f.set.empty() && !f.is_type;
                 });
                 return r;
             }
@@ -4737,7 +4747,7 @@ namespace cpp_yyjson_codegen
                 closed = false;
                 const auto entry = [&](const std::string& k) -> cond_field& {
                     for (auto& f : out)
-                        if (f.key == k) return f;
+                        if (f.key == k && !f.counts) return f;
                     return out.emplace_back(cond_field{.key = k});
                 };
                 const auto* n = normalize_full(&sub, sloc);
@@ -4849,12 +4859,53 @@ namespace cpp_yyjson_codegen
                                            "\" is not expressed by the settings of its field and is ignored");
                         }
                     }
+                    else if (k == "minProperties" || k == "maxProperties")
+                    {
+                        if (!add_key_count(out, k, v))
+                            warn(sloc + "/" + k, "`" + k + "` is not a non-negative integer and is ignored");
+                    }
                     else if (k == "$conditions")
                         nested.emplace_back(&v, sloc);
                     else
                         warn(sloc + "/" + k, "`" + k + "` is not supported here and is ignored");
                 }
+                if (counts_contradict(out))
+                {
+                    // no object has fewer keys than `minProperties` and more than `maxProperties` at once; the counts
+                    // are kept, as yyjson::then and yyjson::else_ express them as they are
+                    never = true;
+                    closed = false;
+                    std::erase_if(out, [](const cond_field& f) { return !f.counts; });
+                    nested.clear();
+                }
                 return out;
+            }
+
+            // `minProperties` or `maxProperties` of a part, joined into its entry of the counts of keys; false for a
+            // value that is not a count. `minProperties` of 0 adds nothing
+            static bool add_key_count(std::vector<cond_field>& part, const std::string& keyword, const json& v)
+            {
+                const auto n = as_uint64(v);
+                if (!n) return false;
+                join_key_count(part, keyword == "minProperties", *n);
+                return true;
+            }
+
+            static void join_key_count(std::vector<cond_field>& part, bool is_min, std::uint64_t n)
+            {
+                if (is_min && n == 0) return;
+                auto it = std::ranges::find_if(part, &cond_field::counts);
+                if (it == part.end()) it = part.insert(part.end(), cond_field{.counts = true});
+                auto& bound = is_min ? it->set.min_items : it->set.max_items;
+                bound = !bound ? n : is_min ? std::max(*bound, n) : std::min(*bound, n);
+            }
+
+            // whether the counts of keys of a part leave no number of keys
+            static bool counts_contradict(const std::vector<cond_field>& part)
+            {
+                const auto it = std::ranges::find_if(part, &cond_field::counts);
+                return it != part.end() && it->set.min_items && it->set.max_items &&
+                       *it->set.min_items > *it->set.max_items;
             }
 
             // The guard of a condition nested in `then`, `else` or `dependentSchemas`: the nested condition applies to
@@ -4908,7 +4959,16 @@ namespace cpp_yyjson_codegen
             {
                 for (const auto& f : b)
                 {
-                    const auto it = std::ranges::find(a, f.key, &cond_field::key);
+                    if (f.counts)
+                    {
+                        // both counts hold: the larger minimum and the smaller maximum
+                        if (f.set.min_items) join_key_count(a, true, *f.set.min_items);
+                        if (f.set.max_items) join_key_count(a, false, *f.set.max_items);
+                        continue;
+                    }
+                    const auto it = std::ranges::find_if(a, [&](const cond_field& x) {
+                        return x.key == f.key && !x.counts;
+                    });
                     if (it == a.end())
                     {
                         a.push_back(f);
@@ -4954,7 +5014,9 @@ namespace cpp_yyjson_codegen
                 auto never = false, closed = false;
                 auto nested = std::vector<std::pair<const json*, std::string>>();
                 auto a = assert_of(sub, sloc, fields, rejected, name, suffix, never, closed, nested);
-                if (never)
+                if (never && g.unless && g.when.empty() && !a.empty())
+                    out.push_back(condition{.if_ = *g.unless, .else_ = std::move(a), .loc = sloc});
+                else if (never)
                 {
                     add_guarded_false(g, sloc, out);
                     return;
@@ -5197,7 +5259,7 @@ namespace cpp_yyjson_codegen
                     auto never = false, closed = false;
                     auto nested = std::vector<std::pair<const json*, std::string>>();
                     auto el = assert_of(*last, last_loc, fields, rejected, name, "Else", never, closed, nested);
-                    if (never)
+                    if (never && el.empty())
                         warn(last_loc, "`else` that no object satisfies is not supported and is ignored");
                     else if (!el.empty() || closed || !nested.empty())
                     {
@@ -5253,6 +5315,12 @@ namespace cpp_yyjson_codegen
                     std::swap(tv, ev);
                     std::swap(tloc, eloc);
                 }
+                if (t.counts_never && ev != nullptr && !trivial(ev, eloc))
+                {
+                    // the counts of yyjson::if_ never hold, so `else` applies to every object
+                    t.never = false;
+                    tv = nullptr;
+                }
                 if (t.never || t.fields.empty())
                 {
                     if (trivial(t.never ? ev : tv, t.never ? eloc : tloc)) return;
@@ -5271,7 +5339,7 @@ namespace cpp_yyjson_codegen
                     if (never)
                     {
                         out.push_back(condition{.negated = true, .if_ = t.fields, .loc = tloc});
-                        nested_then.clear();
+                        cond.then_.clear();
                     }
                 }
                 if (ev != nullptr)
@@ -5279,7 +5347,7 @@ namespace cpp_yyjson_codegen
                     auto never = false;
                     cond.else_ = assert_of(*ev, eloc, fields, rejected, name, eloc.ends_with("/else") ? "Else" : "Then",
                                            never, cond.else_closed, nested_else);
-                    if (never)
+                    if (never && cond.else_.empty())
                         warn(eloc, std::string("`") + (eloc.ends_with("/else") ? "else" : "then") +
                                        "` that no object satisfies is not supported and is ignored");
                 }
@@ -5445,7 +5513,14 @@ namespace cpp_yyjson_codegen
                 const auto has = [&](const std::vector<std::string>& keys) {
                     return std::ranges::find(keys, key) != keys.end();
                 };
-                return d.min_properties.has_value() || std::ranges::any_of(d.dependent, [&](const auto& e) { return has(e.second); }) ||
+                // a count of keys in a condition, which may then hold on the object read and fail on the one written
+                const auto counted = std::ranges::any_of(d.conditions, [](const condition& c) {
+                    return std::ranges::any_of(std::array{&c.if_, &c.then_, &c.else_}, [](const auto* part) {
+                        return std::ranges::any_of(*part, &cond_field::counts);
+                    });
+                });
+                return d.min_properties.has_value() || counted ||
+                       std::ranges::any_of(d.dependent, [&](const auto& e) { return has(e.second); }) ||
                        std::ranges::any_of(d.groups, [&](const required_groups& g) {
                            return std::ranges::any_of(g.groups, has);
                        });
@@ -9496,8 +9571,17 @@ namespace cpp_yyjson_codegen
                 const auto q = opts_.cpp26 || opts_.ns.empty() ? std::string() : opts_.ns + "::";
                 const auto fields = [&](std::string_view part, const std::vector<cond_field>& cs, bool closed = false) {
                     auto fs = std::vector<std::string>();
+                    auto counts = std::vector<std::string>();
                     for (const auto& c : cs)
                     {
+                        if (c.counts)
+                        {
+                            if (c.set.min_items)
+                                counts.push_back("yyjson::min_properties(" + std::to_string(*c.set.min_items) + ")");
+                            if (c.set.max_items)
+                                counts.push_back("yyjson::max_properties(" + std::to_string(*c.set.max_items) + ")");
+                            continue;
+                        }
                         auto spec = std::vector<std::string>{cpp_string(member(c.key))};
                         if (c.required) spec.emplace_back("yyjson::required");
                         const auto* f = field_of(d.fields, c.key);
@@ -9506,6 +9590,7 @@ namespace cpp_yyjson_codegen
                         if (c.is_type) spec.push_back("yyjson::is_type<" + spell(*c.is_type, false, q) + ">");
                         fs.push_back("yyjson::field(" + join(spec) + ")");
                     }
+                    fs.insert(fs.end(), counts.begin(), counts.end());
                     if (closed) fs.emplace_back("yyjson::additional_properties(false)");
                     return "yyjson::" + std::string(part) + "(" + join(fs) + ")";
                 };
