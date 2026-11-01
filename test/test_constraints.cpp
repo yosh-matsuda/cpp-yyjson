@@ -946,6 +946,32 @@ template <>
 inline constexpr auto yyjson::annotations<CountedVariant> =
     yyjson::annotate(yyjson::internal_tag("type", {"c", "p"}));
 
+// yyjson::one_of_required and yyjson::any_of_required in the parts of the conditions require the keys of groups
+struct GroupedShape
+{
+    std::optional<std::string> kind;
+    std::optional<int> a;
+    std::optional<int> b;
+    std::optional<int> c;
+};
+template <>
+inline constexpr auto yyjson::annotations<GroupedShape> = yyjson::annotate(yyjson::if_then_else(
+    yyjson::if_(yyjson::field("kind", yyjson::const_("pair"), yyjson::required)),
+    yyjson::then(yyjson::field("c", yyjson::maximum(9)), yyjson::one_of_required({"a"}, {"b"})),
+    yyjson::else_(yyjson::any_of_required({"a", "c"}, {"b"}), yyjson::max_properties(2))));
+// the internal tag of an alternative is not a member of a group
+struct GroupedAlternative
+{
+    std::optional<int> a;
+    std::optional<int> b;
+};
+template <>
+inline constexpr auto yyjson::annotations<GroupedAlternative> = yyjson::annotate(yyjson::if_then_else(
+    yyjson::if_(yyjson::min_properties(2)), yyjson::then(yyjson::any_of_required({"a"}, {"b"}))));
+using GroupedVariant = std::variant<GroupedAlternative, ConditionPoint>;
+template <>
+inline constexpr auto yyjson::annotations<GroupedVariant> = yyjson::annotate(yyjson::internal_tag("type", {"g", "p"}));
+
 // the nodes of the settings are counted from the types, and a struct without settings of the values in its fields
 // takes none
 static_assert(yyjson::detail::node_count<decltype(yyjson::items(yyjson::items(yyjson::minimum(0))))>.nodes == 2);
@@ -1111,6 +1137,23 @@ struct ConditionOnUnknown
 template <>
 inline constexpr auto yyjson::annotations<ConditionOnUnknown> =
     yyjson::annotate(yyjson::not_(yyjson::field("b", yyjson::required)));
+struct GroupInThenOfUnknown
+{
+    std::optional<int> a;
+};
+template <>
+inline constexpr auto yyjson::annotations<GroupInThenOfUnknown> = yyjson::annotate(yyjson::if_then_else(
+    yyjson::if_(yyjson::field("a", yyjson::required)), yyjson::then(yyjson::one_of_required({"a"}, {"b"}))));
+struct GroupInElseOfSkipped
+{
+    std::optional<int> a;
+    std::optional<int> b;
+};
+template <>
+inline constexpr auto yyjson::annotations<GroupInElseOfSkipped> = yyjson::annotate(
+    yyjson::field("b", yyjson::skip),
+    yyjson::if_then_else(yyjson::if_(yyjson::field("a", yyjson::required)), yyjson::then(yyjson::field("a")),
+                         yyjson::else_(yyjson::any_of_required({"a"}, {"b"}))));
 struct ConditionTwice
 {
     std::optional<int> a;
@@ -1160,6 +1203,8 @@ namespace compile_rules
     static_assert(table_error<ConditionWithIsType> == is_type_outside_condition);
     static_assert(table_error<ConditionTransparent> == condition_transparent);
     static_assert(table_error<ConditionOnUnknown> == unknown_member);
+    static_assert(table_error<GroupInThenOfUnknown> == unknown_member);
+    static_assert(table_error<GroupInElseOfSkipped> == condition_field_kind);
     static_assert(table_error<ConditionShape> == none && table_error<Leveled> == none);
     static_assert(yyjson::detail::make_condition_table<ConditionTwice>().tree.error == same_setting_twice);
 
@@ -1453,6 +1498,14 @@ struct [[ = yyjson::if_then_else(yyjson::if_(yyjson::field("kind", yyjson::const
 
 struct [[ = yyjson::if_then_else(yyjson::if_(yyjson::min_properties(2)), yyjson::then(yyjson::max_properties(2))),
            = yyjson::not_(yyjson::max_properties(0)) ]] CountedAnnotated
+{
+    std::optional<int> a;
+    std::optional<int> b;
+    std::optional<int> c;
+};
+
+struct [[ = yyjson::if_then_else(yyjson::if_(yyjson::field("a", yyjson::required)),
+                                 yyjson::then(yyjson::one_of_required({"b"}, {"c"}))) ]] GroupedAnnotated
 {
     std::optional<int> a;
     std::optional<int> b;
@@ -2989,6 +3042,84 @@ TEST(Constraints, CountedConditions)
     EXPECT_EQ(yyjson::write(CountedVariant(CountedAlternative{{}, 1}), yyjson::strict), R"({"type":"c","b":1})");
 }
 
+TEST(Constraints, GroupedConditions)
+{
+    // every read of `json` but merge_into: accepted, or rejected with `message` at the object
+    const auto check = []<typename T>(std::type_identity<T>, const char* json, std::string_view message = "") {
+        const auto reads = std::array<std::function<void()>, 5>{
+            [&] { (void)yyjson::read<T>(json); }, [&] { (void)yyjson::read(json).template cast<T>(); },
+            [&] {
+                auto t = T();
+                yyjson::read_into(json, t);
+            },
+            [&] { (void)yyjson::read<std::vector<T>>(std::format("[{}]", json)); },
+            [&] { (void)yyjson::read<T>(json, yyjson::strict); }};
+        for (std::size_t i = 0; i < reads.size(); ++i)
+        {
+            if (message.empty())
+                EXPECT_NO_THROW(reads[i]()) << json;
+            else
+            {
+                const auto e = bad_cast_of(reads[i]);
+                EXPECT_TRUE(message_of(e).starts_with(message)) << json << "\n" << e.what();
+                EXPECT_EQ(e.path(), i == 3 ? "/0" : "") << json;
+            }
+        }
+#if YYJSON_VERSION_HEX >= 0x000C00
+        EXPECT_EQ(read_directly<T>(json, yyjson::ReadFlag::NoFlag).has_value(), message.empty()) << json;
+#endif
+    };
+    constexpr auto shape = std::type_identity<GroupedShape>{};
+    const auto without = [](std::string_view groups) {
+        return std::format("GroupedShape is not constructible from JSON without all the keys of one of {}, which "
+                           "yyjson::if_then_else requires",
+                           groups);
+    };
+    // in the order of the fields, and out of it
+    check(shape, R"({"kind":"pair","a":1})");
+    check(shape, R"({"b":1,"kind":"pair"})");
+    check(shape, R"({"kind":"pair","a":1,"b":2})",
+          R"(GroupedShape is not constructible from JSON with all the keys of more than one of ["a"], ["b"], of )"
+          R"(which yyjson::if_then_else allows one)");
+    check(shape, R"({"kind":"pair","c":1})", without(R"(["a"], ["b"])"));
+    // the fields of the part come first
+    const auto field = bad_cast_of([] { (void)yyjson::read<GroupedShape>(R"({"kind":"pair","c":10})"); });
+    EXPECT_TRUE(message_of(field).starts_with(R"(the value of the key "c" of GroupedShape is greater than)"))
+        << field.what();
+    EXPECT_EQ(field.path(), "/c");
+    check(shape, R"({"a":1,"c":2})");
+    check(shape, R"({"c":2,"b":1})");
+    check(shape, R"({"a":1})", without(R"(["a", "c"], ["b"])"));
+    check(shape, R"({})", without(R"(["a", "c"], ["b"])"));
+    // the groups come before the number of the keys
+    EXPECT_TRUE(message_of(bad_cast_of([] { (void)yyjson::read<GroupedShape>(R"({"kind":"one","x":1,"y":2})"); }))
+                    .starts_with(without(R"(["a", "c"], ["b"])")));
+    // merge_into does not check the conditions
+    auto merged = GroupedShape{};
+    yyjson::merge_into(R"({"kind":"pair"})", merged);
+    EXPECT_EQ(merged.kind, "pair");
+
+    check(std::type_identity<GroupedVariant>{}, R"({"type":"g"})");
+    check(std::type_identity<GroupedVariant>{}, R"({"type":"g","b":1})");
+    check(std::type_identity<GroupedVariant>{}, R"({"a":1,"type":"g","b":1})");
+
+    // validate and write(strict) test the keys that writing writes
+    const auto rejects = [](const auto& t, std::string_view message) {
+        auto e = bad_cast_of([&] { yyjson::validate(t); });
+        EXPECT_EQ(e.path(), "");
+        EXPECT_TRUE(message_of(e).starts_with(message)) << e.what();
+        e = bad_cast_of([&] { (void)yyjson::write(t, yyjson::strict); });
+        EXPECT_TRUE(message_of(e).starts_with(message)) << e.what();
+    };
+    EXPECT_NO_THROW(yyjson::validate(GroupedShape{"pair", {}, 1, {}}));
+    EXPECT_NO_THROW(yyjson::validate(GroupedShape{{}, 1, {}, 2}));
+    rejects(GroupedShape{"pair", 1, 2, {}}, "GroupedShape is not constructible from JSON with all the keys of more");
+    rejects(GroupedShape{"pair", {}, {}, 1}, without(R"(["a"], ["b"])"));
+    rejects(GroupedShape{{}, 1, {}, {}}, without(R"(["a", "c"], ["b"])"));
+    EXPECT_NO_THROW(yyjson::validate(GroupedVariant(GroupedAlternative{})));
+    EXPECT_EQ(yyjson::write(GroupedVariant(GroupedAlternative{1, {}}), yyjson::strict), R"({"type":"g","a":1})");
+}
+
 TEST(Constraints, IsTypeFunction)
 {
     const auto doc = yyjson::read(R"({"p":{"x":1,"y":2},"n":1.5,"s":"a"})");
@@ -4289,6 +4420,12 @@ TEST(Constraints, Annotations)
                     .starts_with("CountedAnnotated has 3 keys, more than the maximum 2"));
     EXPECT_TRUE(message_of(bad_cast_of([] { (void)yyjson::read<CountedAnnotated>("{}"); }))
                     .starts_with("CountedAnnotated has the keys and the values that yyjson::not_ rejects"));
+
+    EXPECT_NO_THROW((void)yyjson::read<GroupedAnnotated>(R"({"a":1,"c":3})"));
+    EXPECT_NO_THROW((void)yyjson::read<GroupedAnnotated>(R"({"b":1,"c":3})"));
+    EXPECT_TRUE(message_of(bad_cast_of([] { (void)yyjson::read<GroupedAnnotated>(R"({"a":1,"b":2,"c":3})"); }))
+                    .starts_with(R"(GroupedAnnotated is not constructible from JSON with all the keys of more than )"
+                                 R"(one of ["b"], ["c"])"));
 
     expect_accepted<PatternAnnotated>(R"({"ab":10,"ax":1,"xb":10,"zz":1})", {10, {{"ax", 1}}, {{"xb", 10}}});
     expect_rejected<PatternAnnotated>(
