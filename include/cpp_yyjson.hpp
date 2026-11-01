@@ -18070,10 +18070,11 @@ namespace yyjson
                 return;
             }
             // a value left out before a written one is written as the writer writes it, which is null for
-            // `std::nullopt`, also inside a struct annotated with `yyjson::transparent`
+            // `std::nullopt`, also inside a struct annotated with `yyjson::transparent`, and `yyjson::strict`
+            // rejects null there
             if (const auto name = null_hole_type(field); !name.empty()) [[unlikely]]
                 validate_within([] { return index_token(K); }, [name] {
-                    throw_bad_cast_at(cast_target{}, "{} is not constructible from JSON null", name);
+                    throw_bad_cast_at(cast_target{}, "{} is not constructible from null under yyjson::strict", name);
                 });
             if constexpr (needs_validation<F>)
                 validate_within([] { return index_token(K); }, [&] { validate_value(field); });

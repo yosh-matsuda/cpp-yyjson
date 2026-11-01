@@ -349,7 +349,11 @@ TEST(AsArray, Positions)
     // a JSON value other than an array, and a position of another type
     expect_rejected<Point>(R"({"x":1,"y":2})", "Point is not constructible from JSON", "");
     expect_rejected<Point>(R"([1,"2"])", "int is not constructible from JSON", "/1");
-    expect_rejected<Rule>(R"([1,"a",null])", "std::optional<int> is not constructible from JSON null", "/2");
+
+    // null at the index of a `std::optional` field is read as a missing value, which `yyjson::strict` rejects
+    expect_read<Rule>(R"([1,"a",null])", {1, "a", std::nullopt}, false);
+    expect_rejected<Rule>(R"([1,"a",null])", "std::optional<int> is not constructible from null under yyjson::strict",
+                          "/2", true);
 }
 
 TEST(AsArray, Constraints)
@@ -415,10 +419,12 @@ TEST(AsArray, Validate)
     expect_valid(Node{"a", {{"b", {}}}});
     expect_valid(Drawing{{1, 2}, Point{3, 4}, {{0, "a", 1}}, {{"k", {"s", {1}}}}, Point{5, 6}});
 
-    // an empty `std::optional` before a written value is written as null, which reading rejects; a value equal to
-    // the default is written as it is
-    expect_invalid(Gap{std::nullopt, 2}, "std::optional<int> is not constructible from JSON null", "/0");
-    expect_invalid(TransparentGap{{std::nullopt}, 2}, "std::optional<int> is not constructible from JSON null", "/0");
+    // an empty `std::optional` before a written value is written as null, which `yyjson::strict` rejects; a value
+    // equal to the default is written as it is
+    expect_invalid(Gap{std::nullopt, 2},
+                   "std::optional<int> is not constructible from null under yyjson::strict", "/0");
+    expect_invalid(TransparentGap{{std::nullopt}, 2},
+                   "std::optional<int> is not constructible from null under yyjson::strict", "/0");
     expect_valid(TransparentGap{{1}, 2});
     expect_valid(DefaultFirst{1, 5});
     EXPECT_EQ(yyjson::write(DefaultFirst{1, 5}), "[1,5]");
