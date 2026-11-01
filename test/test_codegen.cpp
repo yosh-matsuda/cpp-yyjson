@@ -2659,6 +2659,17 @@ TEST(Codegen, AllOfScopes)
     EXPECT_TRUE(has(arrays.code, "    std::optional<std::vector<std::int64_t>> t;\n"));
     EXPECT_TRUE(has(arrays.code, "    yyjson::field(\"t\", yyjson::max_items(2), "
                                  "yyjson::prefix_items(yyjson::minimum(0), yyjson::maximum(5))));\n"));
+
+    // a subschema of allOf that is itself allOf of one reference merges as the schema referred to
+    const auto nested = generate(R"({
+        "$defs": {"Inner": {"type": "object", "properties": {"bar": {"type": "string"}}}},
+        "type": "object",
+        "properties": {"foo": {"allOf": [{"$ref": "#/$defs/Inner"}]}},
+        "allOf": [{"$ref": "#/properties/foo"}]
+    })", {});
+    EXPECT_EQ(warnings(nested), "");
+    EXPECT_TRUE(
+        has(nested.code, "struct Root\n{\n    std::optional<Inner> foo;\n    std::optional<std::string> bar;\n"));
 }
 
 TEST(Codegen, AllOfValues)

@@ -2636,9 +2636,9 @@ namespace cpp_yyjson_codegen
                     return keep_normalized(s, r);
                 }
                 if (const auto* ref = s->find("$ref"))
-                    if (const auto* t = resolve(*ref, loc)) base = merge(base, *normalize_full(t, loc), loc);
+                    if (const auto* t = resolve(*ref, loc)) base = merge_body(base, normalize_full(t, loc), loc);
                 if (all != nullptr && !all->is_array()) warn(loc, "`allOf` is not an array");
-                for (const auto& [e, l] : parts) base = merge(base, *normalize_full(e, l), l);
+                for (const auto& [e, l] : parts) base = merge_body(base, normalize_full(e, l), l);
                 settle_unevaluated(*s, base, false, loc);
                 settle_unevaluated(*s, base, true, loc);
                 // by text: a reference beside other keywords to a schema that holds it gives a copy of it at every
@@ -2792,6 +2792,25 @@ namespace cpp_yyjson_codegen
                         r.set("prefixItems", std::move(p));
                     }
                 return r;
+            }
+
+            // `merge` of `a` and the normalized schema `n`, whose `$ref`, kept for a named type when `allOf` holds
+            // one reference, is merged as the schema it refers to
+            json merge_body(const json& a, const json* n, const std::string& loc)
+            {
+                auto seen = std::set<const json*>();
+                auto r = a;
+                while (n->is_object())
+                {
+                    const auto* ref = n->find("$ref");
+                    const auto* t = ref != nullptr ? resolve(*ref, loc) : nullptr;
+                    if (t == nullptr || !seen.insert(n).second) break;
+                    auto rest = *n;
+                    rest.erase("$ref");
+                    r = merge(r, rest, loc);
+                    n = normalize_full(t, loc);
+                }
+                return merge(r, *n, loc);
             }
 
             json merge(const json& a0, const json& b0, const std::string& loc)
