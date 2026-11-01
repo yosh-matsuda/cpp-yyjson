@@ -2531,6 +2531,21 @@ TEST(Codegen, AllOfValues)
                             "    yyjson::field(\"d\", yyjson::const_(\"x\")),\n"
                             "    yyjson::field(\"a\", yyjson::contains(yyjson::is_type<std::int64_t>), "
                             "yyjson::min_contains(2)));\n"));
+
+    // differing multipleOf values merge into their least common multiple, computed on the decimal text
+    const auto m = generate(R"({"type": "object", "properties": {
+        "i": {"type": "integer", "allOf": [{"multipleOf": 4}, {"multipleOf": 6}]},
+        "n": {"type": "number", "allOf": [{"multipleOf": 0.1}, {"multipleOf": 0.15}]},
+        "e": {"type": "number", "allOf": [{"multipleOf": 2.5e-3}, {"multipleOf": 4}]},
+        "o": {"type": "number", "allOf": [{"multipleOf": 1e300}, {"multipleOf": 3}]}
+    }})",
+                            {});
+    EXPECT_EQ(warnings(m), "#/properties/o/allOf/1: `allOf` has values of `multipleOf` whose least common multiple "
+                           "is not computed; the first is used\n");
+    EXPECT_TRUE(has(m.code, "    yyjson::field(\"i\", yyjson::multiple_of(12)),\n"
+                            "    yyjson::field(\"n\", yyjson::multiple_of(0.3)),\n"
+                            "    yyjson::field(\"e\", yyjson::multiple_of(4.0)),\n"
+                            "    yyjson::field(\"o\", yyjson::multiple_of(1e300)));\n"));
 }
 
 TEST(Codegen, JsonValues)

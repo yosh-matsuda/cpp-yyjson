@@ -8,11 +8,13 @@
 #include <charconv>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <deque>
 #include <filesystem>
 #include <functional>
 #include <limits>
 #include <map>
+#include <numeric>
 #include <optional>
 #include <ranges>
 #include <regex>
@@ -374,6 +376,81 @@ namespace cpp_yyjson_codegen
             }
             if (j.is_integral() && j.num >= 0 && j.num < 0x1p64) return static_cast<std::uint64_t>(j.num);
             return std::nullopt;
+        }
+
+        // The positive number of the JSON text `text` as m * 10^e, or nullopt for another text or one that m does
+        // not hold.
+        inline std::optional<std::pair<std::uint64_t, int>> decimal_of(std::string_view text)
+        {
+            const auto is_digit = [](char c) { return c >= '0' && c <= '9'; };
+            auto digits = std::string();
+            auto e = 0;
+            auto i = std::size_t();
+            for (; i < text.size() && is_digit(text[i]); ++i) digits += text[i];
+            if (i < text.size() && text[i] == '.')
+                for (++i; i < text.size() && is_digit(text[i]); ++i, --e) digits += text[i];
+            if (i < text.size() && (text[i] == 'e' || text[i] == 'E'))
+            {
+                if (++i < text.size() && text[i] == '+') ++i;
+                auto x = 0;
+                const auto* end = text.data() + text.size();
+                if (const auto [p, ec] = std::from_chars(text.data() + i, end, x); ec != std::errc() || p != end)
+                    return std::nullopt;
+                if (x < -1000 || x > 1000) return std::nullopt;
+                e += x;
+                i = text.size();
+            }
+            if (i != text.size()) return std::nullopt;
+            for (; !digits.empty() && digits.back() == '0'; digits.pop_back()) ++e;
+            const auto first = digits.find_first_not_of('0');
+            if (first == std::string::npos) return std::nullopt;
+            auto m = std::uint64_t();
+            const auto* end = digits.data() + digits.size();
+            if (const auto [p, ec] = std::from_chars(digits.data() + first, end, m); ec != std::errc() || p != end)
+                return std::nullopt;
+            return std::pair{m, e};
+        }
+
+        // The least common multiple of the positive numbers `a` and `b`, whose multiples are the numbers that are
+        // multiples of both, or nullopt when 64 bits do not hold it.
+        inline std::optional<json> decimal_lcm(const json& a, const json& b)
+        {
+            const auto x = decimal_of(a.text), y = decimal_of(b.text);
+            if (!x || !y) return std::nullopt;
+            const auto least = std::min(x->second, y->second);
+            const auto scale = [&](std::uint64_t m, int n) -> std::optional<std::uint64_t> {
+                for (; n > least; --n)
+                {
+                    if (m > std::numeric_limits<std::uint64_t>::max() / 10) return std::nullopt;
+                    m *= 10;
+                }
+                return m;
+            };
+            const auto p = scale(x->first, x->second), q = scale(y->first, y->second);
+            if (!p || !q) return std::nullopt;
+            const auto k = *p / std::gcd(*p, *q);
+            if (k > std::numeric_limits<std::uint64_t>::max() / *q) return std::nullopt;
+            auto l = k * *q;
+            auto e = least;
+            for (; l % 10 == 0; l /= 10) ++e;
+            auto digits = std::to_string(l);
+            auto r = json();
+            r.k = json::kind::number;
+            if (e >= 0 && e <= 19 - static_cast<int>(digits.size()))
+            {
+                r.integer = true;
+                r.text = digits + std::string(static_cast<std::size_t>(e), '0');
+            }
+            else if (e < 0)
+            {
+                const auto n = static_cast<std::size_t>(-e);
+                if (digits.size() <= n) digits.insert(0, n + 1 - digits.size(), '0');
+                r.text = digits.insert(digits.size() - n, ".");
+            }
+            else
+                r.text = digits + "e" + std::to_string(e);
+            r.num = std::strtod(r.text.c_str(), nullptr);
+            return r;
         }
 
         // C++ literals
@@ -2558,6 +2635,15 @@ namespace cpp_yyjson_codegen
                             r.set(k, std::move(list.items[0]));
                         else
                             r.set(k, std::move(list));
+                    }
+                    // the multiples of both numbers are those of their least common multiple
+                    else if (k == "multipleOf" && av->is_number() && bv.is_number() && !equal(*av, bv))
+                    {
+                        if (const auto m = decimal_lcm(*av, bv))
+                            r.set(k, *m);
+                        else
+                            warn(loc, "`allOf` has values of `multipleOf` whose least common multiple is not "
+                                      "computed; the first is used");
                     }
                     // no value equals two different values
                     else if (k == "const" && !equal(*av, bv))
