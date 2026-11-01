@@ -299,7 +299,7 @@ A struct of more than 100 members is registered with [`VISITABLE_STRUCT`](conver
 
 ### Arrays of positions
 
-An array whose positions of `prefixItems` and elements after them do not share one type, such as positions of different types or positions without `items`, and that may end before the last position or go on after it, becomes a struct with [`yyjson::as_array`](conversions.md#a-struct-as-a-json-array): each position is a member, in order, and the struct is read and written as a JSON array. An array of exactly the positions, with `"items": false` and `minItems` of all of them, stays a `std::tuple`.
+An array whose positions of `prefixItems` and elements after them do not share one type, such as positions of different types or positions without `items`, and that may end before the last position or go on after it, becomes a struct with [`yyjson::as_array`](conversions.md#a-struct-as-a-json-array): each position is a member, in order, and the struct is read and written as a JSON array. An array of exactly the positions, with `"items": false` and `minItems` of all of them, stays a `std::tuple`, unless `uniqueItems` or `contains` applies to it.
 
 | Position | Member |
 | --- | --- |
@@ -345,8 +345,8 @@ inline constexpr auto yyjson::annotations<Rule> = yyjson::annotate(
 
 `write` leaves out the members at the end that hold no value or their defaults, as `[2]` for `Rule{2}`, but writes `null` for an empty member before one that holds a value, which the schema rejects; [`yyjson::validate`](reference.md#yyjsonvalidate) and `write(t, yyjson::strict)` reject such a value.
 
-*   `minItems` above the number of positions, and `maxItems` of an array that may go on after the positions, are left out with a warning. `maxItems` up to the number of positions ends the array there, as `"items": false` does.
-*   `uniqueItems` and `contains`, which compare the positions with each other, give `std::vector<yyjson::value>` with a warning, and so do more than 100 positions under C++20, which the reflection of C++20 takes no more; `--cpp26` takes them.
+*   The keywords of the whole array become settings of the struct, which count and compare every element, the positions and the elements after them: `minItems` above the number of positions and `maxItems` of an array that may go on after the positions give `yyjson::min_items` and `yyjson::max_items`, `uniqueItems` gives `yyjson::unique_items`, and `contains`, `minContains` and `maxContains` give `yyjson::contains(...)`, `yyjson::min_contains` and `yyjson::max_contains` as on [elements of `yyjson::value`](#mapping), with `yyjson::is_type<T>` for a subschema that no constraint expresses. `maxItems` up to the number of positions ends the array there, as `"items": false` does.
+*   More than 100 positions under C++20, which the reflection of C++20 takes no more, give `std::vector<yyjson::value>` with a warning; `--cpp26` takes them.
 *   An array of positions that holds itself, such as `{"type": "array", "prefixItems": [{"type": "string"}, {"type": "array", "items": {"$ref": "#"}}]}` as the root, is a struct `Root2` with `yyjson::as_array` inside the struct `Root` with [`yyjson::transparent`](reference.md#yyjsontransparent).
 
 ### Enumerations
@@ -953,7 +953,7 @@ A warning names the location in the schema and what the generated code does inst
 | Group | Example | The generated code |
 | --- | --- | --- |
 | a keyword that is not supported | `oneOf` in `then` of a string | reads more than the schema accepts |
-| a form that is not supported | `contains` that the elements cannot express, two different `contains` in `allOf`, values of `multipleOf` in `allOf` whose least common multiple does not fit in 64 bits of digits, `minItems` or `maxItems` beyond the positions of an [array of positions](#arrays-of-positions), [`unevaluatedProperties` beside `anyOf` that lists no keys](#unevaluatedproperties-and-unevaluateditems), a key that several conditions evaluate | reads more than the schema accepts |
+| a form that is not supported | `contains` that the elements cannot express, two different `contains` in `allOf`, values of `multipleOf` in `allOf` whose least common multiple does not fit in 64 bits of digits, [`unevaluatedProperties` beside `anyOf` that lists no keys](#unevaluatedproperties-and-unevaluateditems), a key that several conditions evaluate | reads more than the schema accepts |
 | a type inferred from keywords, with `--infer-types` | "the schema has no `type`; it is read as string from its keywords" | reads only that type |
 | a variant of more alternatives than `--max-alternatives` | "a variant of 447 alternatives is more than 64 (--max-alternatives) ..." | reads any JSON value there |
 | a reference that cannot be followed | a missing file, a URI that is not the `$id` of a schema read and is not mapped to a file, a file of `--schema` that cannot be read | reads any JSON value there |
