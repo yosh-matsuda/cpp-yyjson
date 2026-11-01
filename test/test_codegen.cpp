@@ -3023,6 +3023,33 @@ TEST(Codegen, ValueConditions)
     EXPECT_TRUE(has(kinds.code, "yyjson::annotations<RootB> = yyjson::annotate(\n"
                                 "    yyjson::additional_properties(true),\n"
                                 "    yyjson::not_(yyjson::field(\"k\", yyjson::required, yyjson::const_(1))));\n"));
+
+    // an `else` that no object satisfies: `if` and `then` are merged into the object schema; an `if` that holds for
+    // every array, or for none, merges its branch into the array schema, so `items` gives the elements their type
+    const auto rejects = generate(R"({
+        "type": "object",
+        "properties": {
+            "a": {"type": "object", "properties": {"k": {"type": "integer"}, "x": {"type": "string"}},
+                  "if": {"properties": {"k": {"const": 1}}, "required": ["k"]}, "then": {"required": ["x"]},
+                  "else": false},
+            "b": {"if": {"type": "object", "properties": {"r": {"type": "string"}}, "required": ["r"]},
+                  "then": {"properties": {"u": {"type": "boolean"}}}, "else": {"$ref": "#/$defs/list"}},
+            "c": {"if": {"type": "array"}, "then": {"items": {"type": "string"}, "maxItems": 3},
+                  "else": {"type": "object", "properties": {"z": {"type": "boolean"}}}}
+        },
+        "$defs": {"list": {"type": "array", "items": {"type": "integer"}}}
+    })", {});
+    EXPECT_EQ(warnings(rejects), "");
+    EXPECT_TRUE(has(rejects.code, "struct RootA\n{\n    std::int64_t k = 1;\n    std::string x;\n};\n"));
+    EXPECT_TRUE(has(rejects.code, "yyjson::annotations<RootA> = yyjson::annotate(\n"
+                                  "    yyjson::additional_properties(true),\n"
+                                  "    yyjson::field(\"k\", yyjson::required, yyjson::const_(1)),\n"
+                                  "    yyjson::field(\"x\", yyjson::required));\n"));
+    EXPECT_TRUE(has(rejects.code, "struct RootBObject\n{\n    std::string r;\n    std::optional<bool> u;\n};\n"));
+    EXPECT_TRUE(has(rejects.code, "    std::optional<std::variant<list, RootBObject>> b;\n"));
+    EXPECT_TRUE(has(rejects.code,
+                    "    std::optional<yyjson::any_of<yyjson::alt<std::vector<std::string>, yyjson::max_items(3)>, "
+                    "RootCObject>> c;\n"));
 }
 
 TEST(Codegen, MaxAlternatives)

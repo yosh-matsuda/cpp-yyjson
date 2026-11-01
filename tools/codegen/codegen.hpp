@@ -1014,7 +1014,7 @@ namespace cpp_yyjson_codegen
             int quiet_ = 0;
             std::vector<const json*> quiet_normalized_;
             std::set<const json*> conditions_used_;  // normalized schemas whose "$conditions" a struct took
-            int folding_ = 0;                        // the depth of fold_object_if() in type_kind()
+            int folding_ = 0;                        // the depth of fold_if() in type_kind()
             std::vector<variant_note> notes_;
             std::set<std::string> type_names_;
             std::vector<int> position_;  // the place of a struct in definition order, -1 for others
@@ -3563,16 +3563,21 @@ namespace cpp_yyjson_codegen
                 return make_variant(std::move(alts), loc);
             }
 
-            // The object schema `s` with the first `if` of `ifs` that every object or no object satisfies replaced by
-            // the branch that objects take, merged into the schema as a part of `allOf`; nullptr when every `if` tests
-            // the keys of objects
-            const json* fold_object_if(const json& s, const std::vector<value_if>& ifs, const std::string& loc)
+            // The schema `s` of the values of the JSON kind `kind` (object or array) with the first `if` of `ifs` that
+            // every value or no value of the kind satisfies replaced by the branch that the values take, merged into
+            // the schema as a part of `allOf`. An `if` whose `else` rejects every value of the kind is replaced by
+            // `if` and `then` in the same way. nullptr when every `if` tests the values
+            const json* fold_if(const json& s, const std::vector<value_if>& ifs, std::string_view kind,
+                                const std::string& loc)
             {
                 if (folding_ > 8) return nullptr;
                 for (const auto& c : ifs)
                 {
-                    const auto ri = reach_in(c.if_, "object", c.loc + "/if");
-                    if (ri == reach::some) continue;
+                    const auto ri = reach_in(c.if_, kind, c.loc + "/if");
+                    const auto all_if = ri == reach::some && c.else_ != nullptr &&
+                                        reach_in(c.else_, kind, c.loc + "/else") == reach::none &&
+                                        reach_in(c.then_, kind, c.loc + "/then") != reach::none;
+                    if (ri == reach::some && !all_if) continue;
                     auto rest = s;
                     for (auto& [k, v] : rest.members)
                         if (k == "$conditions")
@@ -3584,12 +3589,16 @@ namespace cpp_yyjson_codegen
                         }
                     if (const auto* list = rest.find("$conditions"); list != nullptr && list->items.empty())
                         rest.erase("$conditions");
-                    const auto* branch = ri == reach::all ? c.then_ : c.else_;
-                    if (branch == nullptr) return store_merged(std::move(rest));
+                    auto parts = json::array_of({std::move(rest)});
+                    if (all_if) parts.items.push_back(*c.if_);
+                    if (const auto* branch = ri == reach::none ? c.else_ : c.then_) parts.items.push_back(*branch);
+                    if (parts.items.size() == 1) return store_merged(std::move(parts.items[0]));
                     auto j = json::object_of();
-                    j.set("allOf", json::array_of({std::move(rest), *branch}));
+                    j.set("allOf", std::move(parts));
                     const auto* f = normalize(store_merged(std::move(j)), loc);
-                    return f->is_object() ? f : nullptr;
+                    if (!f->is_object()) return nullptr;
+                    const auto types = type_list(*f);
+                    return types.empty() || std::ranges::find(types, kind) != types.end() ? f : nullptr;
                 }
                 return nullptr;
             }
@@ -3604,7 +3613,7 @@ namespace cpp_yyjson_codegen
                 auto r = typed();
                 if (kind == "object")
                 {
-                    if (const auto* f = fold_object_if(s, ifs, loc))
+                    if (const auto* f = fold_if(s, ifs, kind, loc))
                     {
                         // a branch that refers to a schema of objects alone is the type of that schema
                         if (is_pure_ref(*f))
@@ -3639,7 +3648,27 @@ namespace cpp_yyjson_codegen
                     r = type_map(s, loc, hint);
                 }
                 else if (kind == "array")
+                {
+                    if (const auto* f = fold_if(s, ifs, kind, loc))
+                    {
+                        // a branch that refers to a schema of arrays alone is the type of that schema
+                        if (is_pure_ref(*f))
+                        {
+                            const auto* n = normalize_full(f, loc);
+                            if (n->is_object() && type_list(*n) == std::vector<std::string>{"array"})
+                            {
+                                r = type_of(f, loc, hint);
+                                return nullable ? make_nullable(std::move(r)) : r;
+                            }
+                            f = n;
+                        }
+                        ++folding_;
+                        r = type_kind(kind, s0, *f, loc, hint, named, nullable, whole, nots, value_ifs(*f));
+                        --folding_;
+                        return r;
+                    }
                     r = type_array(s0, s, loc, hint, named);
+                }
                 else if (kind == "string")
                     r = {make(tk::string), {}};
                 else if (kind == "integer")
