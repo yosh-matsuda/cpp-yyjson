@@ -380,12 +380,13 @@ The generator compares the alternatives as the library does, by their kinds, bou
 *   `yyjson::any_of` reads the first alternative that accepts a value, so an alternative contained in another one comes first.
 *   An alternative of `oneOf` contained in another one never reads a value alone, so it is dropped with a warning, and an alternative whose settings leave no value is dropped too.
 
-`anyOf` beside `oneOf` applies to each subschema of `oneOf`, as do the other keywords beside it: a value is valid when exactly one subschema of `oneOf` and some subschema of `anyOf` hold, which is when exactly one subschema of `oneOf`, together with the `anyOf`, holds. A subschema that accepts no value together with the keywords beside it is dropped without a warning, as the schema rejects every value there, and a schema none of whose subschemas accepts a value is the schema `false`:
+`anyOf` beside `oneOf` applies to each subschema of `oneOf`, as do the other keywords beside it: a value is valid when exactly one subschema of `oneOf` and some subschema of `anyOf` hold, which is when exactly one subschema of `oneOf`, together with the `anyOf`, holds. A subschema that accepts no value together with the keywords beside it, such as a string beside `"not": {"minimum": 3}`, which rejects every string, is dropped without a warning, as the schema rejects every value there, and a schema none of whose subschemas accepts a value is the schema `false`:
 
 | Schema | Code |
 | --- | --- |
 | `{"anyOf": [{"type": "string"}, {"type": "integer"}], "oneOf": [{"type": "boolean"}, {"type": "integer"}]}` | `std::int64_t` |
 | `{"$ref": "#/$defs/NullableString", "anyOf": [{"type": "string", "format": "uri"}, {"type": "null"}]}` | `std::variant<std::monostate, std::string>`, with `yyjson::format("uri")` |
+| `{"anyOf": [{"type": "integer"}, {"type": "string"}], "not": {"minimum": 3}}` | `std::int64_t`, with `yyjson::not_(yyjson::minimum(3))` |
 | `{"anyOf": [{"allOf": [{"type": "null"}, {"type": "string"}]}, false]}` | the schema `false`; as a property, `yyjson::not_(yyjson::field(k, yyjson::required))` |
 
 `anyOf` or `oneOf` of objects that share a required property with a different `const` string in each becomes a `std::variant` with [`yyjson::internal_tag`](conversions.md#internal-tag), which picks the alternative by the key instead of trying each. When the type of the schema also allows `null`, as `"type": ["object", "null"]` does, `null` is an alternative of its own, `std::monostate`, if the subschemas let it through: for `anyOf` one of them, for `oneOf` exactly one.
