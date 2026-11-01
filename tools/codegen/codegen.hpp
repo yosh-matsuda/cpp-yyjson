@@ -844,7 +844,8 @@ namespace cpp_yyjson_codegen
 
         // a field of yyjson::if_, yyjson::then, yyjson::else_ or yyjson::not_: the key of the field of the struct,
         // with settings, yyjson::required (presence) and yyjson::is_type<T>. With `counts`, it is not a field but
-        // yyjson::min_properties / yyjson::max_properties of the part, from min_items / max_items of `set`
+        // yyjson::min_properties / yyjson::max_properties of the part, from min_items / max_items of `set`; with
+        // `groups`, it is yyjson::one_of_required / yyjson::any_of_required of yyjson::then or yyjson::else_
         struct cond_field
         {
             std::string key{};
@@ -852,6 +853,7 @@ namespace cpp_yyjson_codegen
             bool required = false;
             std::optional<ctype> is_type{};
             bool counts = false;
+            std::optional<required_groups> groups{};
         };
 
         // yyjson::if_then_else, or yyjson::not_ of the fields of `if_` when `negated`; `then_closed` and
@@ -3891,7 +3893,7 @@ namespace cpp_yyjson_codegen
             // The keys that the conditions of the normalized object schema `s` name, with the locations that name
             // them: the keys of `properties`, `required` and `dependentRequired` of `if`, `then`, `else` and `not`
             // (and of the subschemas of `anyOf` of `not`), the keys of `dependentSchemas` and those that their
-            // schemas name
+            // schemas name, and the keys of the groups of `anyOf` and `oneOf` of `then`, `else` and `dependentSchemas`
             std::vector<std::pair<std::string, std::string>> condition_keys(const json& s, int depth = 0)
             {
                 auto out = std::vector<std::pair<std::string, std::string>>();
@@ -3900,9 +3902,14 @@ namespace cpp_yyjson_codegen
                 const auto add = [&](const std::string& k, const std::string& kloc) {
                     if (std::ranges::none_of(out, [&](const auto& e) { return e.first == k; })) out.emplace_back(k, kloc);
                 };
-                const auto names = [&](const json* sub, const std::string& sloc) {
+                const auto names = [&](const json* sub, const std::string& sloc, bool groups = false) {
                     const auto* n = normalize_full(sub, sloc);
                     if (!n->is_object()) return;
+                    if (groups)
+                        for (const auto* kw : {"anyOf", "oneOf"})
+                            if (const auto g = part_groups(*n, kw, nullptr, sloc))
+                                for (const auto& group : g->groups)
+                                    for (const auto& k : group) add(k, sloc + "/" + kw);
                     if (const auto* p = n->find("properties"); p != nullptr && p->is_object())
                         for (const auto& [k, v] : p->members) add(k, sloc + "/properties/" + pointer_token(k));
                     if (const auto* r = n->find("required"); r != nullptr && r->is_array())
@@ -3923,7 +3930,7 @@ namespace cpp_yyjson_codegen
                     const auto* l = c.find("$loc");
                     const auto cloc = l != nullptr && l->is_string() ? l->text : std::string();
                     for (const auto* k : {"if", "then", "else"})
-                        if (const auto* v = c.find(k)) names(v, cloc + "/" + k);
+                        if (const auto* v = c.find(k)) names(v, cloc + "/" + k, std::string_view(k) != "if");
                     if (const auto* v = c.find("not"))
                     {
                         names(v, cloc + "/not");
@@ -3937,7 +3944,7 @@ namespace cpp_yyjson_codegen
                         {
                             const auto dloc = cloc + "/dependentSchemas/" + pointer_token(k);
                             add(k, dloc);
-                            names(&v, dloc);
+                            names(&v, dloc, true);
                         }
                 }
                 return out;
@@ -5138,7 +5145,7 @@ namespace cpp_yyjson_codegen
                 closed = false;
                 const auto entry = [&](const std::string& k) -> cond_field& {
                     for (auto& f : out)
-                        if (f.key == k && !f.counts) return f;
+                        if (f.key == k && !f.counts && !f.groups) return f;
                     return out.emplace_back(cond_field{.key = k});
                 };
                 const auto* n = normalize_full(&sub, sloc);
@@ -5277,6 +5284,14 @@ namespace cpp_yyjson_codegen
                     }
                     else if (k == "$conditions")
                         nested.emplace_back(&v, sloc);
+                    else if (k == "anyOf" || k == "oneOf")
+                    {
+                        // subschemas that only require keys: yyjson::any_of_required or yyjson::one_of_required
+                        if (auto g = closed ? std::nullopt : part_groups(*n, k, fields, rejected, sloc))
+                            out.push_back(cond_field{.groups = std::move(*g)});
+                        else
+                            warn(sloc + "/" + k, "`" + k + "` is not supported here and is ignored");
+                    }
                     else if (k == "dependentRequired" && v.is_object())
                     {
                         // a key requires the others where the part applies
@@ -5307,6 +5322,65 @@ namespace cpp_yyjson_codegen
                     nested.clear();
                 }
                 return out;
+            }
+
+            // `anyOf` or `oneOf` (kw) of the part `n` of a condition whose subschemas only require keys, as
+            // yyjson::any_of_required or yyjson::one_of_required. A subschema may have also `type` with "object" and
+            // `properties` that add nothing to the fields: schemas that accept anything, the schema of the property
+            // of the struct, or a reference to it. Without `fields`, `properties` are not checked, for the keys that
+            // the conditions name before the fields are made
+            std::optional<required_groups> part_groups(const json& n, const std::string& kw,
+                                                       const std::vector<field>* fields, const std::string& loc)
+            {
+                const auto* list = n.find(kw);
+                if (list == nullptr || !list->is_array()) return std::nullopt;
+                auto bare = json::array_of({});
+                for (std::size_t i = 0; i < list->items.size(); ++i)
+                {
+                    const auto& b = list->items[i];
+                    if (!b.is_object()) return std::nullopt;
+                    auto c = b;
+                    if (const auto* t = b.find("type"))
+                    {
+                        if (!type_has(*t, "object")) return std::nullopt;
+                        c.erase("type");
+                    }
+                    if (const auto* props = b.find("properties"))
+                    {
+                        if (!props->is_object()) return std::nullopt;
+                        if (fields != nullptr)
+                            for (const auto& [key, ps] : props->members)
+                            {
+                                const auto ploc = loc + "/" + kw + "/" + std::to_string(i) + "/properties/" +
+                                                  pointer_token(key);
+                                const auto* f = field_of(*fields, key);
+                                if (f == nullptr) return std::nullopt;
+                                const auto* pn = normalize_full(&ps, ploc);
+                                if (accepts_anything(*pn) ||
+                                    (f->ref != nullptr && is_pure_ref(ps) &&
+                                     resolve(*ps.find("$ref"), ploc) == f->ref) ||
+                                    (f->prop != nullptr && same_assertions(*pn, *f->prop)))
+                                    continue;
+                                return std::nullopt;
+                            }
+                        c.erase("properties");
+                    }
+                    bare.items.push_back(std::move(c));
+                }
+                return groups_in(bare, kw == "oneOf", nullptr);
+            }
+
+            std::optional<required_groups> part_groups(const json& n, const std::string& kw,
+                                                       const std::vector<field>& fields,
+                                                       const std::vector<std::string>& rejected, const std::string& loc)
+            {
+                auto g = part_groups(n, kw, &fields, loc);
+                if (!g) return g;
+                for (const auto& group : g->groups)
+                    for (const auto& k : group)
+                        if (field_of(fields, k) == nullptr || std::ranges::find(rejected, k) != rejected.end())
+                            return std::nullopt;
+                return g;
             }
 
             // `minProperties` or `maxProperties` of a part, joined into its entry of the counts of keys; false for a
@@ -5395,7 +5469,7 @@ namespace cpp_yyjson_codegen
                         continue;
                     }
                     const auto it = std::ranges::find_if(a, [&](const cond_field& x) {
-                        return x.key == f.key && !x.counts;
+                        return x.key == f.key && !x.counts && !x.groups;
                     });
                     if (it == a.end())
                     {
@@ -5952,7 +6026,15 @@ namespace cpp_yyjson_codegen
                         return std::ranges::any_of(*part, &cond_field::counts);
                     });
                 });
-                return d.min_properties.has_value() || counted ||
+                // a group of required keys in a condition
+                const auto grouped = std::ranges::any_of(d.conditions, [&](const condition& c) {
+                    return std::ranges::any_of(std::array{&c.then_, &c.else_}, [&](const auto* part) {
+                        return std::ranges::any_of(*part, [&](const cond_field& f) {
+                            return f.groups && std::ranges::any_of(f.groups->groups, has);
+                        });
+                    });
+                });
+                return d.min_properties.has_value() || counted || grouped ||
                        std::ranges::any_of(d.dependent, [&](const auto& e) { return has(e.second); }) ||
                        std::ranges::any_of(d.groups, [&](const required_groups& g) {
                            return std::ranges::any_of(g.groups, has);
@@ -7556,13 +7638,22 @@ namespace cpp_yyjson_codegen
             {
                 if (!is_struct_schema(s)) return std::nullopt;
                 const auto* list = s.find(kw);
-                if (list == nullptr || !list->is_array() || list->items.empty()) return std::nullopt;
+                if (list == nullptr) return std::nullopt;
+                return groups_in(*list, kw == "oneOf", &s);
+            }
+
+            // the groups of the subschemas of `list`, the value of `oneOf` (exactly_one) or `anyOf`, in the forms of
+            // required_groups_of; `parent` is the struct schema whose properties the subschemas may repeat
+            static std::optional<required_groups> groups_in(const json& list0, bool exactly_one, const json* parent)
+            {
+                const auto* list = &list0;
+                if (!list->is_array() || list->items.empty()) return std::nullopt;
                 using group = std::vector<std::string>;
-                auto r = required_groups{.exactly_one = kw == "oneOf"};
+                auto r = required_groups{.exactly_one = exactly_one};
                 auto nots = std::vector<std::optional<std::vector<group>>>();
                 for (const auto& b : list->items)
                 {
-                    auto g = only_required(b, &s);
+                    auto g = only_required(b, parent);
                     if (!g) return std::nullopt;
                     r.groups.push_back(std::move(*g));
                     const auto* n = b.find("not");
@@ -10047,8 +10138,7 @@ namespace cpp_yyjson_codegen
                     for (const auto& x : keys) ms.push_back(cpp_string(member(x)));
                     items.push_back("yyjson::dependent_required(" + cpp_string(member(k)) + ", {" + join(ms) + "})");
                 }
-                for (const auto& g : d.groups)
-                {
+                const auto groups_text = [&](const required_groups& g) {
                     auto gs = std::vector<std::string>();
                     for (const auto& group : g.groups)
                     {
@@ -10056,10 +10146,10 @@ namespace cpp_yyjson_codegen
                         for (const auto& x : group) ms.push_back(cpp_string(member(x)));
                         gs.push_back("{" + join(ms) + "}");
                     }
-                    items.push_back(
-                        std::string(g.exactly_one ? "yyjson::one_of_required(" : "yyjson::any_of_required(") +
-                        join(gs) + ")");
-                }
+                    return std::string(g.exactly_one ? "yyjson::one_of_required(" : "yyjson::any_of_required(") +
+                           join(gs) + ")";
+                };
+                for (const auto& g : d.groups) items.push_back(groups_text(g));
                 if (d.min_properties) items.push_back("yyjson::min_properties(" + std::to_string(*d.min_properties) + ")");
                 if (d.max_properties) items.push_back("yyjson::max_properties(" + std::to_string(*d.max_properties) + ")");
                 // the annotations of C++20 are outside the namespace
@@ -10069,6 +10159,11 @@ namespace cpp_yyjson_codegen
                     auto counts = std::vector<std::string>();
                     for (const auto& c : cs)
                     {
+                        if (c.groups)
+                        {
+                            counts.push_back(groups_text(*c.groups));
+                            continue;
+                        }
                         if (c.counts)
                         {
                             if (c.set.min_items)

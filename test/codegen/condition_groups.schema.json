@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Newsletter",
+  "type": "object",
+  "properties": {
+    "kind": {"enum": ["form", "embed"]},
+    "signup_url": {"type": "string"},
+    "embed_url": {"type": "string"},
+    "embed_code": {"type": "string"},
+    "list": {"type": "integer"}
+  },
+  "if": {"properties": {"kind": {"const": "form"}}, "required": ["kind"]},
+  "then": {"anyOf": [{"required": ["signup_url"]}, {"required": ["list"]}]},
+  "else": {
+    "oneOf": [
+      {"required": ["embed_url"], "not": {"required": ["embed_code"]}},
+      {"required": ["embed_code"], "not": {"required": ["embed_url"]}}
+    ]
+  },
+  "dependentSchemas": {
+    "list": {
+      "anyOf": [
+        {"type": "object", "properties": {"signup_url": {}}, "required": ["signup_url"]},
+        {"required": ["provider"]}
+      ]
+    }
+  }
+}

@@ -31,6 +31,7 @@ struct yyjson::pattern_matcher<>
 #include "dynamic.hpp"
 #include "invoice.hpp"
 #include "negations.hpp"
+#include "condition_groups.hpp"
 #include "nested_conditions.hpp"
 #include "order.hpp"
 #include "patterns.hpp"
@@ -318,6 +319,25 @@ TEST(CodegenCMake, NestedConditions)
     auto attribute = yyjson::read<model::Attribute>(R"({"source":"url"})");
     attribute.source = "git";
     EXPECT_THROW(yyjson::validate(attribute), yyjson::bad_cast);
+}
+
+TEST(CodegenCMake, ConditionGroups)
+{
+    // `anyOf` and `oneOf` of required keys in `then`, `else` and `dependentSchemas` as groups of required keys
+    for (const auto* json : {R"({"kind":"form","signup_url":"u"})", R"({"kind":"form","list":1,"provider":"p"})",
+                             R"({"embed_url":"u"})", R"({"kind":"embed","embed_code":"c"})",
+                             R"({"signup_url":"u","embed_code":"c","list":1})"})
+    {
+        const auto newsletter = yyjson::read<model::Newsletter>(json, yyjson::strict);
+        EXPECT_EQ(yyjson::write(newsletter), json);
+        EXPECT_NO_THROW(yyjson::validate(newsletter)) << json;
+    }
+    for (const auto* json : {R"({"kind":"form"})", R"({"kind":"form","list":1})", R"({})",
+                             R"({"embed_url":"u","embed_code":"c"})", R"({"embed_url":"u","list":1})"})
+        EXPECT_THROW((void)yyjson::read<model::Newsletter>(json), yyjson::bad_cast) << json;
+    auto newsletter = yyjson::read<model::Newsletter>(R"({"embed_url":"u"})");
+    newsletter.embed_code = "c";
+    EXPECT_THROW(yyjson::validate(newsletter), yyjson::bad_cast);
 }
 
 TEST(CodegenCMake, ValueNot)

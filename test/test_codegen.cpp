@@ -1600,6 +1600,56 @@ TEST(Codegen, ConditionsOfNullAndRepeatedReferences)
                             "        yyjson::then(yyjson::field(\"show\", yyjson::const_(nullptr)))),\n"));
 }
 
+TEST(Codegen, ConditionGroups)
+{
+    // `anyOf` and `oneOf` of required keys in `then`, `else` and `dependentSchemas` as groups of required keys: the
+    // exclusive `not` form, subschemas of type object, `properties` that accept anything or repeat the schema of the
+    // property; a key that is not a property is a field of the type that the struct gives to other keys
+    const auto r = generate(R"({
+        "type": "object",
+        "properties": {"t": {"type": "string"}, "a": {"$ref": "#/$defs/A"}, "b": {"type": "string", "maxLength": 3}},
+        "additionalProperties": {"type": "integer"},
+        "if": {"properties": {"t": {"const": "x"}}, "required": ["t"]},
+        "then": {"oneOf": [
+            {"properties": {"a": {"$ref": "#/$defs/A"}}, "required": ["a"]},
+            {"properties": {"b": {"type": "string", "maxLength": 3}}, "required": ["b", "c"]}]},
+        "else": {"anyOf": [{"required": ["a"], "not": {"required": ["b"]}},
+                           {"required": ["b"], "not": {"required": ["a"]}}]},
+        "dependentSchemas": {
+            "c": {"anyOf": [{"type": "object", "properties": {"t": {}}, "required": ["t"]}, {"required": ["a"]}]}
+        },
+        "$defs": {"A": {"type": "object", "properties": {"x": {"type": "integer"}}}}
+    })",
+                            {});
+    EXPECT_EQ(warnings(r), "");
+    EXPECT_TRUE(has(r.code, "    std::optional<std::int64_t> c;\n    std::map<std::string, std::int64_t> extra;\n"));
+    EXPECT_TRUE(has(r.code, "    yyjson::if_then_else(\n"
+                            "        yyjson::if_(yyjson::field(\"t\", yyjson::required, yyjson::const_(\"x\"))),\n"
+                            "        yyjson::then(yyjson::one_of_required({\"a\"}, {\"b\", \"c\"})),\n"
+                            "        yyjson::else_(yyjson::one_of_required({\"a\"}, {\"b\"}))),\n"
+                            "    yyjson::if_then_else(\n"
+                            "        yyjson::if_(yyjson::field(\"c\", yyjson::required)),\n"
+                            "        yyjson::then(yyjson::any_of_required({\"t\"}, {\"a\"}))),\n"));
+
+    // subschemas of other keywords, a narrower schema of a property and a closed part keep the warning
+    const auto w = generate(R"({
+        "type": "object",
+        "properties": {"t": {"type": "string"}, "a": {"type": "integer"}, "b": {"type": "string"}},
+        "if": {"properties": {"t": {"const": "x"}}, "required": ["t"]},
+        "then": {"anyOf": [{"required": ["a"]}, {"enum": [{"b": "x"}]}]},
+        "else": {"oneOf": [{"properties": {"b": {"maxLength": 2}}, "required": ["b"]}, {"required": ["a"]}]},
+        "dependentSchemas": {
+            "a": {"anyOf": [{"required": ["b"]}, {"required": ["t"]}], "additionalProperties": false,
+                  "properties": {"a": {}, "b": {}, "t": {}}}
+        }
+    })",
+                            {});
+    EXPECT_EQ(warnings(w), "#/then/anyOf: `anyOf` is not supported here and is ignored\n"
+                           "#/else/oneOf: `oneOf` is not supported here and is ignored\n"
+                           "#/dependentSchemas/a/anyOf: `anyOf` is not supported here and is ignored\n");
+    EXPECT_FALSE(has(w.code, "_of_required"));
+}
+
 TEST(Codegen, NestedConditions)
 {
     // `not`, `if` and `dependentSchemas` inside `then`, `else` and `dependentSchemas` apply under the tests around
