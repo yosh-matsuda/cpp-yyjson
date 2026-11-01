@@ -704,6 +704,17 @@ namespace yyjson
                         emit_constraints(o, k.constraints, yyjson::detail::multi_kind<T>);
                     emit_written_texts<T>(o, k.constraints);
                     if (k.type_test != nullptr) emit_type_test(o, *k.type_test);
+                    if constexpr (std::same_as<T, writer::array> || std::same_as<T, reader::array>)
+                    {
+                        if (k.contains != 0)
+                            emit<writer::value>(o.emplace("contains", empty_object), nodes, k.contains);
+                    }
+                    else if constexpr (yyjson::detail::constraint_item_range<T>)
+                    {
+                        if (k.contains != 0)
+                            emit<yyjson::detail::array_element_t<T>>(o.emplace("contains", empty_object), nodes,
+                                                                     k.contains);
+                    }
                 };
                 auto target = out;
                 if (out.contains("not")) target = all_of(out).emplace_back(empty_object);

@@ -2611,13 +2611,6 @@ namespace yyjson
         struct is_not_value<not_value_t<As...>> : std::true_type
         {
         };
-        // The settings that `yyjson::not_` of a value takes: the constraints that test one value, other than
-        // `yyjson::satisfies<f>`, and `yyjson::is_type<T>`.
-        template <typename A>
-        concept not_setting = (constraint_setting<A> && !setting_of<A, satisfies_t> &&
-                               !setting_of<A, unique_items_t> && !setting_of<A, min_contains> &&
-                               !setting_of<A, max_contains>) ||
-                              is_type_setting<A>::value;
 
         template <typename A>
         struct is_items : std::false_type
@@ -2645,6 +2638,13 @@ namespace yyjson
         struct is_contains<contains<As...>> : std::true_type
         {
         };
+        // The settings that a condition on a value takes, those of `yyjson::not_` of a value and of a field of
+        // `yyjson::if_` and `yyjson::not_`: the constraints other than `yyjson::satisfies<f>` and
+        // `yyjson::unique_items`, the elements of an array that `yyjson::contains` counts, and `yyjson::is_type<T>`.
+        template <typename A>
+        concept condition_value_setting =
+            (constraint_setting<A> && !setting_of<A, satisfies_t> && !setting_of<A, unique_items_t>) ||
+            is_contains<A>::value || is_type_setting<A>::value;
         template <typename A>
         struct is_property_names : std::false_type
         {
@@ -3775,10 +3775,7 @@ namespace yyjson
         // its key, satisfies, the elements of an array that `yyjson::contains` counts, and the type that the JSON
         // value of a `yyjson::value` or `yyjson::object` is read as.
         template <typename A>
-        concept condition_test_setting =
-            std::same_as<A, required_t> || is_contains<A>::value || is_type_setting<A>::value ||
-            (constraint_setting<A> && !setting_of<A, min_items> && !setting_of<A, max_items> &&
-             !setting_of<A, satisfies_t> && !setting_of<A, unique_items_t>);
+        concept condition_test_setting = std::same_as<A, required_t> || condition_value_setting<A>;
         // The settings that a field of `yyjson::then` and `yyjson::else_` takes.
         template <typename A>
         concept condition_assert_setting =
@@ -3857,8 +3854,9 @@ namespace yyjson
     // whose values, or the presence of whose keys, the condition tests.  `yyjson::if_(yyjson::field("kind",
     // yyjson::const_("circle")))` holds when the object has the key "kind" with the value "circle", or does
     // not have it.  `yyjson::required` in a field makes it hold only with the key.  A field takes
-    // `yyjson::required`, `yyjson::const_`, `yyjson::enum_`, the bounds of a number, the lengths of a
-    // string, `yyjson::pattern`, `yyjson::format`, `yyjson::contains` with `yyjson::min_contains` and
+    // `yyjson::required`, `yyjson::const_`, `yyjson::enum_`, the bounds of a number, `yyjson::multiple_of`,
+    // the lengths of a string, `yyjson::pattern`, `yyjson::format`, `yyjson::min_items`, `yyjson::max_items`,
+    // `yyjson::contains` with `yyjson::min_contains` and
     // `yyjson::max_contains` for an array, and `yyjson::is_type<T>` for a `yyjson::value` or a `yyjson::object`,
     // which holds when the JSON value is read as T: `yyjson::field("auto", yyjson::is_type<yyjson::object>)`.
     template <typename... As>
@@ -3872,8 +3870,8 @@ namespace yyjson
                       "a field of yyjson::if_ takes yyjson::required, yyjson::const_, yyjson::enum_, "
                       "yyjson::minimum, yyjson::maximum, yyjson::exclusive_minimum, yyjson::exclusive_maximum, "
                       "yyjson::multiple_of, yyjson::min_length, yyjson::max_length, yyjson::pattern, "
-                      "yyjson::format, yyjson::contains, yyjson::min_contains, yyjson::max_contains and "
-                          "yyjson::is_type<T>");
+                      "yyjson::format, yyjson::min_items, yyjson::max_items, yyjson::contains, "
+                      "yyjson::min_contains, yyjson::max_contains and yyjson::is_type<T>");
         if constexpr ((detail::condition_settings<As, false> && ...))
             return if_t<typename detail::condition_field_of<As>::type...>{
                 detail::make_setting_list(detail::make_condition_field(fields)...)};
@@ -3943,8 +3941,9 @@ namespace yyjson
     // A setting of a value, as JSON Schema's `not` beside the keywords of the value, when its arguments are
     // settings: the value must not satisfy all of them.  It takes `yyjson::const_`, `yyjson::enum_`,
     // the bounds of a number, `yyjson::multiple_of`, the lengths of a string, `yyjson::pattern`, `yyjson::format`,
-    // `yyjson::min_items`, `yyjson::max_items`, and `yyjson::is_type<T>` for a `yyjson::value` or an
-    // `yyjson::object`; an empty `std::optional` or null passes.  A field, a level of `yyjson::items` and the
+    // `yyjson::min_items`, `yyjson::max_items`, `yyjson::contains` with `yyjson::min_contains` and
+    // `yyjson::max_contains`, and `yyjson::is_type<T>` for a `yyjson::value` or an `yyjson::object`; an empty
+    // `std::optional` or null passes.  A field, a level of `yyjson::items` and the
     // other settings of the values in it, `yyjson::alt`, `yyjson::then` and `yyjson::else_` take several of them.
     template <typename... As>
     consteval auto not_(As... args)
@@ -3958,21 +3957,22 @@ namespace yyjson
                           "a field of yyjson::not_ takes yyjson::required, yyjson::const_, yyjson::enum_, "
                           "yyjson::minimum, yyjson::maximum, yyjson::exclusive_minimum, yyjson::exclusive_maximum, "
                           "yyjson::multiple_of, yyjson::min_length, yyjson::max_length, yyjson::pattern, "
-                          "yyjson::format, yyjson::contains, yyjson::min_contains, yyjson::max_contains and "
-                              "yyjson::is_type<T>");
+                          "yyjson::format, yyjson::min_items, yyjson::max_items, yyjson::contains, "
+                          "yyjson::min_contains, yyjson::max_contains and yyjson::is_type<T>");
             if constexpr ((detail::condition_settings<As, false> && ...))
                 return not_t<typename detail::condition_field_of<As>::type...>{
                     detail::make_setting_list(detail::make_condition_field(args)...)};
         }
         else
         {
-            static_assert((detail::not_setting<As> && ...),
+            static_assert((detail::condition_value_setting<As> && ...),
                           "yyjson::not_ takes yyjson::field(...) as a struct annotation, or, as a setting of a "
                           "value, yyjson::const_, yyjson::enum_, yyjson::minimum, yyjson::maximum, "
                           "yyjson::exclusive_minimum, yyjson::exclusive_maximum, yyjson::multiple_of, "
                           "yyjson::min_length, yyjson::max_length, yyjson::pattern, yyjson::format, "
-                          "yyjson::min_items, yyjson::max_items and yyjson::is_type<T>");
-            if constexpr ((detail::not_setting<As> && ...))
+                          "yyjson::min_items, yyjson::max_items, yyjson::contains, yyjson::min_contains, "
+                          "yyjson::max_contains and yyjson::is_type<T>");
+            if constexpr ((detail::condition_value_setting<As> && ...))
                 return not_value_t<As...>{detail::make_setting_list(args...)};
         }
     }
@@ -9369,6 +9369,8 @@ namespace yyjson
                 all = value_constraint_violation<NotLevel, true>(*value) == constraint_kind::none;
                 if constexpr (NotLevel::node.type_test != nullptr && dom_kind_of<U> != dom_kind::none)
                     all = all && NotLevel::node.type_test->test(value, dom_kind_of<U>);
+                if constexpr (NotLevel::node.structured())
+                    all = all && structure_violation<NotLevel>(*value) == constraint_kind::none;
             }
             else
             {

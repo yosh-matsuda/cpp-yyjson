@@ -1180,23 +1180,26 @@ namespace compile_rules
                   condition_test_setting<yyjson::pattern<>> && condition_test_setting<yyjson::format<>>);
     static_assert(condition_test_setting<decltype(yyjson::contains(yyjson::minimum(0)))> &&
                   condition_test_setting<yyjson::min_contains> && condition_test_setting<yyjson::max_contains>);
-    static_assert(!condition_test_setting<yyjson::min_items> && !condition_test_setting<yyjson::unique_items_t> &&
-                  !condition_test_setting<yyjson::satisfies_t> &&
+    static_assert(condition_test_setting<yyjson::min_items> && condition_test_setting<yyjson::max_items>);
+    static_assert(!condition_test_setting<yyjson::unique_items_t> && !condition_test_setting<yyjson::satisfies_t> &&
                   !condition_test_setting<decltype(yyjson::items(yyjson::minimum(0)))> &&
                   condition_test_setting<yyjson::is_type_t<int>> && !condition_test_setting<yyjson::rename>);
     static_assert(condition_assert_setting<yyjson::min_items> && condition_assert_setting<yyjson::is_type_t<int>> &&
                   condition_assert_setting<decltype(yyjson::items(yyjson::minimum(0)))>);
     static_assert(!condition_assert_setting<yyjson::rename> && !condition_assert_setting<yyjson::skip_t>);
 
-    // not_ of settings holds the settings of one value, without element trees, and stands where they stand except
-    // in the tests of if_ and not_
+    // not_ of settings holds the settings of one value, the same as a field of if_ and not_ without required, and
+    // stands where they stand except in the tests of if_ and not_
     using not_minimum = decltype(yyjson::not_(yyjson::minimum(0)));
-    static_assert(not_setting<yyjson::minimum> && not_setting<decltype(yyjson::const_(3))> &&
-                  not_setting<decltype(yyjson::pattern("^x"))> && not_setting<yyjson::min_items> &&
-                  not_setting<yyjson::is_type_t<int>>);
-    static_assert(!not_setting<yyjson::satisfies_t> && !not_setting<yyjson::unique_items_t> &&
-                  !not_setting<yyjson::min_contains> && !not_setting<not_minimum> &&
-                  !not_setting<decltype(yyjson::items(yyjson::minimum(0)))> && !not_setting<yyjson::rename>);
+    static_assert(condition_value_setting<yyjson::minimum> && condition_value_setting<decltype(yyjson::const_(3))> &&
+                  condition_value_setting<decltype(yyjson::pattern("^x"))> &&
+                  condition_value_setting<yyjson::min_items> && condition_value_setting<yyjson::is_type_t<int>>);
+    static_assert(condition_value_setting<decltype(yyjson::contains(yyjson::minimum(0)))> &&
+                  condition_value_setting<yyjson::min_contains> && condition_value_setting<yyjson::max_contains>);
+    static_assert(!condition_value_setting<yyjson::satisfies_t> && !condition_value_setting<yyjson::unique_items_t> &&
+                  !condition_value_setting<yyjson::required_t> && !condition_value_setting<not_minimum> &&
+                  !condition_value_setting<decltype(yyjson::items(yyjson::minimum(0)))> &&
+                  !condition_value_setting<yyjson::rename>);
     static_assert(element_setting<not_minimum> && condition_assert_setting<not_minimum> &&
                   !condition_test_setting<not_minimum>);
     static_assert(holds_type_test<decltype(yyjson::items(yyjson::not_(yyjson::is_type<int>)))>::value);
@@ -3113,6 +3116,78 @@ TEST(Constraints, ValueNot)
     t.keys = {{"ab", 1}};
     e = bad_cast_of([&] { (void)yyjson::write(t, yyjson::strict); });
     EXPECT_EQ(e.path(), "/keys/ab") << e.what();
+}
+
+// the conditions of if_, not_ of a field and not_ of a value take the same settings: the counts of items and the
+// items that contain counts too
+struct AlignedConditions
+{
+    std::optional<std::string> kind;
+    std::vector<int> xs;
+    std::vector<int> ys;
+    std::vector<std::vector<int>> rows;
+};
+template <>
+inline constexpr auto yyjson::annotations<AlignedConditions> = yyjson::annotate(
+    yyjson::field("ys", yyjson::not_(yyjson::contains(yyjson::minimum(10)), yyjson::min_contains(2))),
+    yyjson::field("rows", yyjson::items(yyjson::not_(yyjson::contains(yyjson::const_(0))))),
+    yyjson::if_then_else(yyjson::if_(yyjson::field("xs", yyjson::min_items(2), yyjson::max_items(3))),
+                         yyjson::then(yyjson::field("kind", yyjson::required, yyjson::const_("few")))),
+    yyjson::not_(yyjson::field("xs", yyjson::min_items(4)),
+                 yyjson::field("kind", yyjson::required, yyjson::const_("few"))));
+
+TEST(Constraints, AlignedConditions)
+{
+    const auto check = [](const char* json, std::string_view message, std::string_view path) {
+        const auto reads = std::array<std::function<void()>, 3>{
+            [&] { (void)yyjson::read<AlignedConditions>(json); },
+            [&] { (void)yyjson::read(json).cast<AlignedConditions>(); },
+            [&] { (void)yyjson::read<AlignedConditions>(json, yyjson::strict); }};
+        for (const auto& read : reads)
+        {
+            if (message.empty())
+                EXPECT_NO_THROW(read()) << json;
+            else
+            {
+                const auto e = bad_cast_of(read);
+                EXPECT_TRUE(message_of(e).starts_with(message)) << json << "\n" << e.what();
+                EXPECT_EQ(e.path(), path) << json;
+            }
+        }
+#if YYJSON_VERSION_HEX >= 0x000C00
+        EXPECT_EQ(read_directly<AlignedConditions>(json, yyjson::ReadFlag::NoFlag).has_value(), message.empty())
+            << json;
+#endif
+    };
+    const auto missing = R"(AlignedConditions is not constructible from JSON without the key "kind", which )"
+                         R"(yyjson::if_then_else requires)";
+    const auto rejected = "AlignedConditions has the keys and the values that yyjson::not_ rejects";
+    const auto ys = R"(the value of the key "ys" of AlignedConditions satisfies the settings of yyjson::not_)";
+    check(R"({"xs":[1],"ys":[],"rows":[]})", "", "");
+    check(R"({"xs":[1,2],"ys":[],"rows":[]})", missing, "");
+    check(R"({"xs":[1,2,3],"kind":"few","ys":[],"rows":[]})", "", "");
+    check(R"({"xs":[1,2,3,4],"ys":[],"rows":[]})", "", "");
+    check(R"({"xs":[1,2,3,4],"kind":"few","ys":[],"rows":[]})", rejected, "");
+    // one item of at least 10 is fewer than min_contains, so the settings of not_ do not all hold
+    check(R"({"xs":[],"ys":[1,10],"rows":[]})", "", "");
+    check(R"({"xs":[],"ys":[11,10,1],"rows":[]})", ys, "/ys");
+    check(R"({"xs":[],"ys":[],"rows":[[1],[2,0]]})",
+          R"(an element of the value of the key "rows" of AlignedConditions satisfies the settings of yyjson::not_)",
+          "/rows/1");
+
+    // validate and write(strict) test the values that writing writes
+    auto t = AlignedConditions{{}, {1, 2}, {}, {}};
+    auto e = bad_cast_of([&] { yyjson::validate(t); });
+    EXPECT_TRUE(message_of(e).starts_with(missing)) << e.what();
+    t.kind = "few";
+    EXPECT_NO_THROW(yyjson::validate(t));
+    t.xs = {1, 2, 3, 4};
+    e = bad_cast_of([&] { (void)yyjson::write(t, yyjson::strict); });
+    EXPECT_TRUE(message_of(e).starts_with(rejected)) << e.what();
+    t.kind.reset();
+    t.ys = {10, 20};
+    e = bad_cast_of([&] { yyjson::validate(t); });
+    EXPECT_EQ(e.path(), "/ys") << e.what();
 }
 
 // not_ of a value that may be null tests null as JSON Schema does: the settings other than const_ and enum_

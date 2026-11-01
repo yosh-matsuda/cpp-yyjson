@@ -930,6 +930,26 @@ inline constexpr auto yyjson::annotations<ContainsConditions> = yyjson::annotate
     yyjson::not_(yyjson::field("deps", yyjson::required, yyjson::contains(yyjson::is_type<CondPoint>),
                                yyjson::min_contains(2))));
 
+// The counts of items in `yyjson::if_` and `yyjson::not_` of a field, and `yyjson::contains` in `yyjson::not_` of a
+// value, also of a DOM array.
+struct AlignedConditions
+{
+    std::optional<std::string> kind;
+    std::vector<int> xs;
+    std::vector<int> ys;
+    std::vector<std::vector<int>> rows;
+    std::optional<yyjson::array> arr;
+};
+template <>
+inline constexpr auto yyjson::annotations<AlignedConditions> = yyjson::annotate(
+    yyjson::field("ys", yyjson::not_(yyjson::contains(yyjson::minimum(10)), yyjson::min_contains(2))),
+    yyjson::field("rows", yyjson::items(yyjson::not_(yyjson::contains(yyjson::const_(0))))),
+    yyjson::field("arr", yyjson::not_(yyjson::contains(yyjson::is_type<CondPoint>))),
+    yyjson::if_then_else(yyjson::if_(yyjson::field("xs", yyjson::min_items(2), yyjson::max_items(3))),
+                         yyjson::then(yyjson::field("kind", yyjson::required, yyjson::const_("few")))),
+    yyjson::not_(yyjson::field("xs", yyjson::min_items(4)),
+                 yyjson::field("kind", yyjson::required, yyjson::const_("few"))));
+
 // `yyjson::not_` of values as `not`, of `anyOf` when a value has several.
 struct NegatedValues
 {
@@ -2425,6 +2445,32 @@ TEST(Schema, ContainsConditions)
     const auto& deps = all[1]["not"]["properties"]["deps"];
     EXPECT_EQ(deps["contains"], json::parse(R"({"$ref":"#/$defs/CondPoint"})"));
     EXPECT_EQ(deps["minContains"].as<int>(), 2);
+}
+
+TEST(Schema, AlignedConditions)
+{
+    check<AlignedConditions>({
+        R"({"xs":[1],"ys":[],"rows":[]})",
+        R"({"xs":[1,2],"ys":[],"rows":[]})",
+        R"({"xs":[1,2,3],"kind":"few","ys":[],"rows":[]})",
+        R"({"xs":[1,2,3,4],"ys":[],"rows":[]})",
+        R"({"xs":[1,2,3,4],"kind":"few","ys":[],"rows":[]})",
+        R"({"xs":[],"ys":[1,10],"rows":[]})",
+        R"({"xs":[],"ys":[11,10,1],"rows":[]})",
+        R"({"xs":[],"ys":[],"rows":[[1],[2,0]]})",
+        R"({"xs":[],"ys":[],"rows":[],"arr":[1,{"x":"a"}]})",
+        R"({"xs":[],"ys":[],"rows":[],"arr":[1,{"x":1}]})",
+    });
+    const auto s = to_jsoncons(yyjson::json_schema<AlignedConditions>())["$defs"]["AlignedConditions"];
+    const auto& p = s["properties"];
+    EXPECT_EQ(p["ys"]["not"]["minContains"].as<int>(), 2);
+    EXPECT_EQ(p["ys"]["not"]["contains"]["minimum"].as<int>(), 10);
+    EXPECT_EQ(p["rows"]["items"]["not"]["contains"]["const"].as<int>(), 0);
+    EXPECT_EQ(p["arr"]["not"], json::parse(R"({"contains":{"$ref":"#/$defs/CondPoint"}})"));
+    const auto& xs = s["allOf"][0]["if"]["properties"]["xs"];
+    EXPECT_EQ(xs["minItems"].as<int>(), 2);
+    EXPECT_EQ(xs["maxItems"].as<int>(), 3);
+    EXPECT_EQ(s["allOf"][1]["not"]["properties"]["xs"]["minItems"].as<int>(), 4);
 }
 
 TEST(Schema, NegatedValues)
