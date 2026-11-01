@@ -828,6 +828,9 @@ namespace cpp_yyjson_codegen
             // a property that is only a `$ref`: its target, which a subschema of `if`, `then` or `else` that refers
             // to it again does not narrow
             const json* ref = nullptr;
+            // the normalized schema of its property, which a subschema of `then` or `else` that repeats it does not
+            // narrow
+            const json* prop = nullptr;
             metadata meta{};
             std::string loc{};
         };
@@ -998,6 +1001,30 @@ namespace cpp_yyjson_codegen
                 "multipleOf",     "allOf",         "anyOf",
                 "oneOf",          "unevaluatedProperties", "unevaluatedItems"};
             return keys.contains(k);
+        }
+
+        // a keyword of JSON Schema; validators ignore the other keys of a schema, such as vendor keys (x-*, _metadata)
+        inline bool is_keyword_key(std::string_view k)
+        {
+            return is_type_key(k) || is_condition_key(k) || is_ignored_key(k) || is_metadata_key(k);
+        }
+
+        // whether the schemas `a` and `b` accept the same values because they differ only in metadata and vendor keys
+        // at the top
+        inline bool same_assertions(const json& a, const json& b)
+        {
+            if (!a.is_object() || !b.is_object()) return equal(a, b);
+            const auto asserts = [](const std::string& k) {
+                return !is_metadata_key(k) && (is_keyword_key(k) || k.starts_with('$'));
+            };
+            const auto covered = [&](const json& x, const json& y) {
+                return std::ranges::all_of(x.members, [&](const auto& m) {
+                    if (!asserts(m.first)) return true;
+                    const auto* w = y.find(m.first);
+                    return w != nullptr && equal(m.second, *w);
+                });
+            };
+            return covered(a, b) && covered(b, a);
         }
 
         // a schema that gives the C++ type nothing: true, or no keyword the generator builds a type from
@@ -2018,8 +2045,9 @@ namespace cpp_yyjson_codegen
             {
                 bool all = false;  // `additionalProperties` / `items`, or another unevaluated keyword, evaluates all
                 bool opaque = false;      // `if`, `dependentSchemas`, `$dynamicRef`, ...: not followed by the generator
+                bool dynamic = false;     // `$dynamicRef` / `$recursiveRef`, of those
                 bool unresolved = false;  // a reference that the generator cannot follow
-                bool contains = false;
+                std::vector<const json*> contains;  // the subschemas of `contains`
                 // `patternProperties`, of which merge keeps one (merge joins `prefixItems` position by position, so
                 // the merged schema evaluates the positions of them all)
                 std::vector<const json*> layouts;
@@ -2092,7 +2120,10 @@ namespace cpp_yyjson_codegen
                                                                      std::ranges::any_of(v.members, [](const auto& m) {
                                                                          return !m.second.is_array();
                                                                      })))))
+                    {
                         sc.opaque = true;
+                        sc.dynamic = sc.dynamic || k == "$dynamicRef" || k == "$recursiveRef";
+                    }
                     else if (items ? k == "additionalItems" || (k == "items" && !v.is_array())
                                    : k == "additionalProperties")
                         sc.all = true;
@@ -2102,7 +2133,10 @@ namespace cpp_yyjson_codegen
                             sc.layouts.push_back(&v);
                     }
                     else if (items && k == "contains")
-                        sc.contains = true;
+                    {
+                        if (std::ranges::none_of(sc.contains, [&](const json* x) { return equal(*x, v); }))
+                            sc.contains.push_back(&v);
+                    }
                     else if (k == "allOf" && v.is_array())
                     {
                         for (const auto& e : v.items) scan_scope(e, items, false, sc, seen, loc);
@@ -2128,6 +2162,184 @@ namespace cpp_yyjson_codegen
                 }
             }
 
+            // the keys that the subschema `x` of a condition or of `anyOf` evaluates, those of its `properties`;
+            // false where it evaluates through other keywords
+            bool evaluated_keys(const json& x, std::vector<std::string>& out, const std::string& loc)
+            {
+                if (x.is_bool()) return true;
+                if (!x.is_object()) return false;
+                auto rest = x;
+                rest.erase("properties");
+                auto seen = std::set<const json*>();
+                if (evaluates(rest, false, seen, loc)) return false;
+                if (const auto* p = x.find("properties"); p != nullptr && p->is_object())
+                    for (const auto& m : p->members) out.push_back(m.first);
+                return true;
+            }
+
+            // `unevaluatedProperties` `u` of `base` beside `if`, `dependentSchemas` or one `anyOf` that evaluate keys
+            // through their `properties`.  A key evaluated only where a subschema `x` holds (`then`, `if`, the
+            // subschema of `dependentSchemas` with its key, an alternative of `anyOf`) is read by `u` where `x`
+            // fails, and one evaluated only by `else` where `x` holds; `u` false makes the key require `x` (or its
+            // negation) through `dependentSchemas`.  The keys become properties, and `u` `additionalProperties`.
+            // False where a subschema evaluates through other keywords or a key pattern cannot be read.
+            bool settle_conditional_keys(json& base, const json& u, const std::string& loc)
+            {
+                struct source
+                {
+                    json test;      // the subschema whose result decides
+                    bool positive;  // the key is evaluated where `test` holds; else where it fails
+                };
+                auto sources = std::map<std::string, std::vector<source>>();
+                auto order = std::vector<std::string>();
+                const auto add = [&](const std::string& k, const json& test, bool positive) {
+                    auto& v = sources[k];
+                    if (v.empty()) order.push_back(k);
+                    v.push_back({test, positive});
+                };
+                auto conds = base.has("$conditions") ? *base.find("$conditions") : json::array_of({});
+                const auto evaluating = static_cast<std::size_t>(std::ranges::count_if(
+                    conds.items, [](const json& c) { return c.has("if") || c.has("dependentSchemas"); }));
+                const auto* any = base.find("anyOf");
+                const auto alone =
+                    u.is_bool() && !u.b && evaluating == 1 && any == nullptr && !base.has("patternProperties");
+                const auto* props = base.find("properties");
+                const auto declared = [&](const std::string& k) { return props != nullptr && props->has(k); };
+                // `if` alone whose subschema constrains only keys that no other keyword names, beside
+                // `unevaluatedProperties: false`: where it fails, a key that it names is not evaluated, so the
+                // object must satisfy it, as a part of allOf
+                for (auto it = conds.items.begin(); alone && it != conds.items.end(); ++it)
+                {
+                    const auto* i = it->find("if");
+                    if (i == nullptr || it->has("then") || it->has("else") || !i->is_object() ||
+                        !std::ranges::all_of(i->members, [](const auto& m) {
+                            return m.first == "properties" || m.first == "patternProperties" ||
+                                   is_metadata_key(m.first);
+                        }))
+                        continue;
+                    if (const auto* p = i->find("properties"); p != nullptr && p->is_object())
+                        if (std::ranges::any_of(p->members, [&](const auto& m) { return declared(m.first); })) break;
+                    if (const auto* pp = i->find("patternProperties"); pp != nullptr && pp->is_object() &&
+                                                                       props != nullptr)
+                        for (const auto& [re, _] : pp->members)
+                            for (const auto& [k, _2] : props->members)
+                                if (const auto m = pattern_matches(re, k); !m || *m) return false;
+                    const auto part = *i;
+                    conds.items.erase(it);
+                    if (conds.items.empty())
+                        base.erase("$conditions");
+                    else
+                        base.set("$conditions", conds);
+                    base = merge(base, part, loc + "/if");
+                    base.set("additionalProperties", u);
+                    base.erase("unevaluatedProperties");
+                    return true;
+                }
+                for (const auto& c : conds.items)
+                {
+                    if (const auto* i = c.find("if"))
+                    {
+                        auto when = std::vector<std::string>();  // `if` and `then`
+                        auto otherwise = std::vector<std::string>();
+                        if (!evaluated_keys(*i, when, loc)) return false;
+                        if (const auto* t = c.find("then"); t != nullptr && !evaluated_keys(*t, when, loc))
+                            return false;
+                        if (const auto* e = c.find("else"); e != nullptr && !evaluated_keys(*e, otherwise, loc))
+                            return false;
+                        for (auto* v : {&when, &otherwise})
+                            for (auto it = v->begin(); it != v->end();)
+                                it = std::find(v->begin(), it, *it) != it ? v->erase(it) : it + 1;
+                        for (const auto& k : when)
+                            if (std::ranges::find(otherwise, k) == otherwise.end()) add(k, *i, true);
+                        for (const auto& k : otherwise)
+                            if (std::ranges::find(when, k) == when.end()) add(k, *i, false);
+                        // a key that both evaluate is always evaluated, which is a source of its own
+                        for (const auto& k : when)
+                            if (std::ranges::find(otherwise, k) != otherwise.end())
+                                add(k, json::boolean_of(true), true);
+                    }
+                    else if (const auto* d = c.find("dependentSchemas"); d != nullptr && d->is_object())
+                    {
+                        for (const auto& [k, x] : d->members)
+                        {
+                            auto keys = std::vector<std::string>();
+                            if (!evaluated_keys(x, keys, loc)) return false;
+                            auto test = json::object_of();
+                            test.set("required", json::array_of({json::string_of(k)}));
+                            for (const auto& m : keys) add(m, test, true);
+                        }
+                    }
+                }
+                if (any != nullptr && any->is_array())
+                    for (const auto& a : any->items)
+                    {
+                        auto keys = std::vector<std::string>();
+                        if (!evaluated_keys(a, keys, loc)) return false;
+                        for (const auto& k : keys) add(k, a, true);
+                    }
+                const auto* patterns = base.find("patternProperties");
+                auto added = json::array_of({});
+                auto properties = props != nullptr && props->is_object() ? *props : json::object_of();
+                const auto ref_loc = loc + "/unevaluatedProperties";
+                for (const auto& k : order)
+                {
+                    if (declared(k)) continue;
+                    if (patterns != nullptr && patterns->is_object())
+                    {
+                        auto matched = false;
+                        for (const auto& [re, _] : patterns->members)
+                        {
+                            const auto m = pattern_matches(re, k);
+                            if (!m) return false;
+                            matched = matched || *m;
+                        }
+                        if (matched) continue;
+                    }
+                    properties.set(k, json::boolean_of(true));
+                    const auto& v = sources[k];
+                    if (std::ranges::any_of(v, [](const source& x) { return x.test.is_bool(); })) continue;
+                    if (v.size() > 1)
+                    {
+                        warn(ref_loc, "the key \"" + k +
+                                          "\" is evaluated by several subschemas of `if`, `dependentSchemas` or "
+                                          "`anyOf`; `unevaluatedProperties` does not apply to it");
+                        continue;
+                    }
+                    const auto& [test, positive] = v.front();
+                    auto entry = json::object_of();
+                    if (u.is_bool() && !u.b)
+                    {
+                        // the key requires the subschema, or its negation
+                        auto x = test;
+                        if (!positive)
+                        {
+                            x = json::object_of();
+                            x.set("not", test);
+                        }
+                        auto dep = json::object_of();
+                        dep.set(k, std::move(x));
+                        entry.set("dependentSchemas", std::move(dep));
+                    }
+                    else
+                    {
+                        auto p = json::object_of();
+                        p.set(k, u);
+                        auto branch = json::object_of();
+                        branch.set("properties", std::move(p));
+                        entry.set("if", test);
+                        entry.set(positive ? "else" : "then", std::move(branch));
+                    }
+                    entry.set("$loc", json::string_of(ref_loc));
+                    added.items.push_back(std::move(entry));
+                }
+                for (auto& e : added.items) conds.items.push_back(std::move(e));
+                if (!conds.items.empty()) base.set("$conditions", std::move(conds));
+                base.set("properties", std::move(properties));
+                base.set("additionalProperties", u);
+                base.erase("unevaluatedProperties");
+                return true;
+            }
+
             // `unevaluatedProperties` / `unevaluatedItems` of `s`, whose in-place applicators are merged into `base`:
             // as `additionalProperties` / `items` of `base` when that reads every valid value, kept for the
             // alternatives of the one `oneOf` whose subschemas evaluate (each alternative settles it again), else
@@ -2149,12 +2361,42 @@ namespace cpp_yyjson_codegen
                 auto seen = std::set<const json*>();
                 scan_scope(s, items, true, sc, seen, loc);
                 if (sc.all) return drop("");
+                if (!sc.dynamic && !sc.unresolved && sc.layouts.size() <= 1 && sc.contains.empty() &&
+                    !items && (sc.lists == 0 ? sc.opaque : sc.lists == 1 && sc.any) &&
+                    settle_conditional_keys(base, *u, loc))
+                    return;
+                const auto kinds = [](const json& x) {
+                    auto t = type_list(x);
+                    std::ranges::sort(t);
+                    return t;
+                };
+                if (items && !sc.contains.empty() && !sc.opaque && !sc.unresolved && sc.lists == 0 &&
+                    ((u->is_bool() && !u->b) ||
+                     std::ranges::all_of(sc.contains, [&](const json* c) { return kinds(*c) == kinds(*u); })))
+                {
+                    // the items that no subschema of `contains` evaluates are read by the unevaluated schema; beside
+                    // a schema of other types, the elements would be of several types, which `contains` cannot test
+                    auto alts = json::array_of({});
+                    for (const auto* c : sc.contains) alts.items.push_back(*c);
+                    if (!(u->is_bool() && !u->b)) alts.items.push_back(*u);
+                    auto v = json();
+                    if (alts.items.size() == 1)
+                        v = alts.items[0];
+                    else
+                    {
+                        v = json::object_of();
+                        v.set("anyOf", std::move(alts));
+                    }
+                    drop("");
+                    base.set("items", std::move(v));
+                    return;
+                }
                 if (sc.opaque)
                     return drop("beside `if`, `then`, `else`, " +
                                 std::string(items ? "" : "`dependentSchemas`, ") +
                                 "`$dynamicRef` or `$recursiveRef` is not supported");
                 if (sc.unresolved) return drop("beside a reference that cannot be read is not supported");
-                if (sc.contains) return drop("beside `contains` is not supported");
+                if (!sc.contains.empty()) return drop("beside `contains` is not supported");
                 if (sc.layouts.size() > 1) return drop("beside several `patternProperties` is not supported");
                 if (sc.lists == 0)
                 {
@@ -2601,7 +2843,7 @@ namespace cpp_yyjson_codegen
                         for (const auto& [pk, pv] : bv.members)
                         {
                             if (const auto* x = props.find(pk))
-                                props.set(pk, all_of(*x, pv));
+                                props.set(pk, both(*x, pv));
                             else
                                 props.members.emplace_back(pk, pv);
                         }
@@ -4325,7 +4567,8 @@ namespace cpp_yyjson_codegen
                         const auto* dflt = own->find("default");
                         if (dflt == nullptr && target->is_object()) dflt = target->find("default");
                         if (dflt == nullptr && is_required(k) && target->is_object()) dflt = target->find("const");
-                        auto f = field{.member = k, .key = k, .ref = ref, .meta = meta_of(*own), .loc = floc};
+                        auto f = field{
+                            .member = k, .key = k, .ref = ref, .prop = target, .meta = meta_of(*own), .loc = floc};
                         f.set = std::move(ft.s);
                         place_default(f, std::move(ft.t), dflt, is_required(k));
                         fields.push_back(std::move(f));
@@ -4532,6 +4775,17 @@ namespace cpp_yyjson_codegen
                     fields.push_back(std::move(f));
                 }
                 auto conditions = conditions_of(s, fields, rejected, decls_[idx].name);
+                // a `then` that asks only for keys the `if` requires holds whenever the `if` does
+                std::erase_if(conditions, [](const condition& c) {
+                    const auto implied = [&](const cond_field& t) {
+                        return t.required && t.set.empty() && !t.is_type && !t.counts &&
+                               std::ranges::any_of(c.if_, [&](const cond_field& i) {
+                                   return i.key == t.key && i.required && !i.counts;
+                               });
+                    };
+                    return !c.negated && !c.if_.empty() && c.else_.empty() && !c.then_closed && !c.else_closed &&
+                           std::ranges::all_of(c.then_, implied);
+                });
                 std::ranges::move(absent, std::back_inserter(conditions));
                 if (s.has("$conditions")) conditions_used_.insert(&s);
                 auto& d = decls_[idx];
@@ -4715,7 +4969,7 @@ namespace cpp_yyjson_codegen
                     }
                     else if (k == "$conditions")
                         return fail("`if`, `not` and `dependentSchemas` are not supported in it");
-                    else
+                    else if (is_keyword_key(k))
                         return fail("`" + k + "` is not supported in it");
                 }
                 if (counts_contradict(r.fields)) r.never = r.counts_never = true;
@@ -4835,6 +5089,7 @@ namespace cpp_yyjson_codegen
                             // the schema of the property, which the field already follows, adds nothing
                             if (f->ref != nullptr && is_pure_ref(ps) && resolve(*ps.find("$ref"), ploc) == f->ref)
                                 continue;
+                            if (f->prop != nullptr && same_assertions(*pn, *f->prop)) continue;
                             if (auto set = settings_for(ps, f->type, ploc))
                             {
                                 if (!set->empty()) entry(key).set = std::move(*set);
@@ -4866,7 +5121,7 @@ namespace cpp_yyjson_codegen
                     }
                     else if (k == "$conditions")
                         nested.emplace_back(&v, sloc);
-                    else
+                    else if (is_keyword_key(k))
                         warn(sloc + "/" + k, "`" + k + "` is not supported here and is ignored");
                 }
                 if (counts_contradict(out))

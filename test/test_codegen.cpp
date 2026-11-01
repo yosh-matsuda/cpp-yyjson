@@ -2497,32 +2497,108 @@ TEST(Codegen, Unevaluated)
     EXPECT_TRUE(has(one.code, "yyjson::annotations<RootOption2> = yyjson::annotate(\n"
                               "    yyjson::additional_properties(false),\n"));
 
-    // anyOf can match several subschemas, whose properties all count: the keyword is dropped
+    // the keys of an anyOf alternative are evaluated only when it holds: a condition per key
     const auto any = generate(alternatives("anyOf"), {});
-    EXPECT_EQ(warnings(any), "#: `unevaluatedProperties` beside `anyOf` whose subschemas evaluate properties is not "
-                             "supported; it is ignored\n");
-    EXPECT_FALSE(has(any.code, "additional_properties(false)"));
-    EXPECT_THROW(generate(alternatives("anyOf"), {.strict = true}), cpp_yyjson_codegen::error);
+    EXPECT_EQ(warnings(any), "");
+    EXPECT_TRUE(has(any.code, "struct RootOption1\n{\n    std::optional<std::int64_t> id;\n    std::int64_t a;\n"
+                              "    std::optional<yyjson::value> b;\n};\n"));
+    EXPECT_TRUE(has(any.code, "yyjson::annotations<RootOption1> = yyjson::annotate(\n"
+                              "    yyjson::additional_properties(false),\n"
+                              "    yyjson::if_then_else(\n"
+                              "        yyjson::if_(yyjson::field(\"b\", yyjson::required)),\n"
+                              "        yyjson::then(yyjson::field(\"b\", yyjson::required, "
+                              "yyjson::is_type<std::string>))),\n"));
 
-    // keywords whose evaluation depends on the value, and references that cannot be read
+    // the alternative's own fields keep their descriptions; a subschema that repeats a key's schema, and vendor keys,
+    // give no warning
+    const auto own = generate(R"({"$defs": {"S": {"type": "string", "minLength": 1}}, "type": "object",
+        "unevaluatedProperties": false, "anyOf": [
+            {"properties": {"a": {"$ref": "#/$defs/S", "description": "key a"},
+                            "r": {"anyOf": [{"type": "string"}, {"type": "null"}]}}, "required": ["a"],
+             "_metadata": {"x": 1}},
+            {"properties": {"f": {"type": "string"}}, "required": ["f"]}]})", {});
+    EXPECT_EQ(warnings(own), "");
+    EXPECT_TRUE(has(own.code, "    /// key a\n    S a;\n"));
+    EXPECT_TRUE(has(own.code, "        yyjson::if_(yyjson::field(\"r\", yyjson::required)),\n"));
+
+    // a key that several subschemas evaluate is evaluated when any of them holds, which a condition cannot express
+    const auto several = generate(R"({"type": "object", "unevaluatedProperties": false, "anyOf": [
+        {"properties": {"a": {"type": "integer"}, "b": true}, "required": ["a"]},
+        {"properties": {"b": {"type": "string"}}, "required": ["b"]}]})", {});
+    EXPECT_EQ(warnings(several), "#/unevaluatedProperties: the key \"b\" is evaluated by several subschemas of `if`, "
+                                 "`dependentSchemas` or `anyOf`; `unevaluatedProperties` does not apply to it\n");
+    EXPECT_FALSE(has(several.code, "yyjson::if_(yyjson::field(\"b\""));
+
+    // if / then / else and dependentSchemas evaluate their keys on one branch: false rejects them on the other
     const auto conditional = generate(R"({"type": "object", "properties": {"id": {"type": "integer"}},
-                                          "unevaluatedProperties": false,
-                                          "if": {"required": ["id"]}, "then": {"properties": {"x": true}}})", {});
-    EXPECT_TRUE(has(warnings(conditional), "#: `unevaluatedProperties` beside `if`, `then`, `else`, "
+        "unevaluatedProperties": false,
+        "if": {"properties": {"kind": {"const": "box"}}, "required": ["kind"]},
+        "then": {"properties": {"size": {"type": "integer"}}},
+        "else": {"properties": {"label": {"type": "string"}}},
+        "dependentSchemas": {"id": {"properties": {"note": {"type": "string"}}}}})", {});
+    EXPECT_EQ(warnings(conditional), "");
+    EXPECT_TRUE(has(conditional.code, "    yyjson::if_then_else(\n"
+                                      "        yyjson::if_(yyjson::field(\"size\", yyjson::required)),\n"
+                                      "        yyjson::then(yyjson::field(\"kind\", yyjson::required, "
+                                      "yyjson::const_(\"box\")))),\n"
+                                      "    yyjson::not_(yyjson::field(\"label\", yyjson::required), "
+                                      "yyjson::field(\"kind\", yyjson::required, yyjson::const_(\"box\"))),\n"
+                                      "    yyjson::if_then_else(\n"
+                                      "        yyjson::if_(yyjson::field(\"note\", yyjson::required)),\n"
+                                      "        yyjson::then(yyjson::field(\"id\", yyjson::required))));\n"));
+
+    // a schema reads the keys on the other branch, and the keys that no subschema names
+    const auto read = generate(R"({"type": "object", "unevaluatedProperties": {"type": "integer"},
+        "if": {"properties": {"kind": {"const": "box"}}, "required": ["kind"]},
+        "then": {"properties": {"size": {"type": "integer"}}},
+        "else": {"properties": {"label": {"type": "string"}}}})", {});
+    EXPECT_EQ(warnings(read), "");
+    EXPECT_TRUE(has(read.code, "    std::map<std::string, std::int64_t> extra;\n"));
+    EXPECT_TRUE(has(read.code, "    yyjson::if_then_else(\n"
+                               "        yyjson::if_(yyjson::field(\"kind\", yyjson::required, "
+                               "yyjson::const_(\"box\"))),\n"
+                               "        yyjson::then(yyjson::field(\"label\", yyjson::is_type<std::int64_t>))),\n"));
+
+    // an if alone whose keys name no property: the keys it evaluates when it holds are all that may appear
+    const auto patterns = generate(R"({"type": "object", "unevaluatedProperties": false,
+                                       "if": {"patternProperties": {"^x-": {"type": "string"}}}})", {});
+    EXPECT_EQ(warnings(patterns), "");
+    EXPECT_TRUE(has(patterns.code, "    std::map<std::string, std::string> value;\n"));
+    EXPECT_TRUE(has(patterns.code, "yyjson::field(\"value\", yyjson::property_names(yyjson::pattern(\"^x-\")))"));
+
+    // keywords whose evaluation cannot be told per key, and references that cannot be read
+    const auto with_one_of = generate(R"({"type": "object", "unevaluatedProperties": false,
+        "if": {"properties": {"a": {"const": 1}}, "required": ["a"]}, "then": {"properties": {"b": true}},
+        "oneOf": [{"properties": {"c": {"type": "integer"}}, "required": ["c"]},
+                  {"properties": {"d": {"type": "integer"}}, "required": ["d"]}]})", {});
+    EXPECT_TRUE(has(warnings(with_one_of), "#: `unevaluatedProperties` beside `if`, `then`, `else`, "
                                            "`dependentSchemas`, `$dynamicRef` or `$recursiveRef` is not supported; "
                                            "it is ignored\n"));
+    EXPECT_THROW(generate(R"({"type": "object", "unevaluatedProperties": {"type": "integer"},
+                              "if": {"patternProperties": {"^f": {"type": "string"}}}})", {.strict = true}),
+                 cpp_yyjson_codegen::error);
     const auto unread = generate(R"({"type": "object", "$ref": "other.json", "unevaluatedProperties": false})", {});
     EXPECT_TRUE(has(warnings(unread), "#: `unevaluatedProperties` beside a reference that cannot be read is not "
                                       "supported; it is ignored\n"));
 
-    // unevaluatedItems ends a tuple, or is dropped beside `contains`
+    // unevaluatedItems ends a tuple; beside `contains`, it reads the items that no subschema of `contains` matches
     const auto items = generate(R"({"type": "object", "properties": {
         "p": {"type": "array", "prefixItems": [{"type": "integer"}, {"type": "integer"}], "unevaluatedItems": false},
         "c": {"type": "array", "prefixItems": [{"type": "integer"}], "contains": {"type": "integer"},
+              "unevaluatedItems": false},
+        "s": {"type": "array", "contains": {"type": "string", "maxLength": 2},
+              "unevaluatedItems": {"type": "string", "pattern": "^x"}},
+        "t": {"type": "array", "contains": {"type": "integer"}, "unevaluatedItems": {"type": "string"}},
+        "o": {"type": "array", "if": {"contains": {"type": "integer"}}, "then": {"maxItems": 3},
               "unevaluatedItems": false}}})", {});
     EXPECT_TRUE(has(items.code, "    yyjson::field(\"p\", yyjson::max_items(2))"));
-    EXPECT_TRUE(has(warnings(items), "#/properties/c: `unevaluatedItems` beside `contains` is not supported; it is "
-                                     "ignored\n"));
+    EXPECT_TRUE(has(items.code, "    std::optional<std::vector<std::int64_t>> c;\n"));
+    EXPECT_TRUE(has(items.code, "    yyjson::field(\"c\", yyjson::min_items(1))"));
+    EXPECT_TRUE(has(items.code, "std::optional<std::vector<yyjson::any_of<yyjson::alt<std::string, "
+                                "yyjson::max_length(2)>, yyjson::alt<std::string, &Root_s_1_pattern>>>> s;\n"));
+    EXPECT_EQ(warnings(items), "#/properties/t: `unevaluatedItems` beside `contains` is not supported; it is ignored\n"
+                               "#/properties/o: `unevaluatedItems` beside `if`, `then`, `else`, `$dynamicRef` or "
+                               "`$recursiveRef` is not supported; it is ignored\n");
 
     // prefixItems of allOf and $ref are joined by position, and unevaluatedItems ends the longest
     const auto joined = generate(R"({"$defs": {"Pair": {"prefixItems": [true, {"type": "number"}]}},
