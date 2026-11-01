@@ -2259,6 +2259,28 @@ TEST(Codegen, RemoteReferences)
     EXPECT_EQ(warnings(located),
               "#/x-lib/E: the format \"idn-email\" is not supported and is ignored\n"
               "remote/types/fmt.json#/$defs/F: the format \"idn-hostname\" is not supported and is ignored\n");
+
+    // the meta-schemas of JSON Schema are held by the generator, with or without the empty fragment
+    const auto meta = generate(R"({"type": "object", "properties": {
+                                  "s": {"$ref": "https://json-schema.org/draft/2020-12/schema"},
+                                  "d": {"$ref": "http://json-schema.org/draft-07/schema#/definitions/simpleTypes"}}})",
+                            {});
+    EXPECT_EQ(warnings(meta), "");
+    EXPECT_TRUE(has(meta.code, "    std::optional<CoreAndValidationSpecificationsMetaSchema> s;\n"));
+    EXPECT_TRUE(has(meta.code, "yyjson::field(\"anchor\", yyjson::rename(\"$anchor\"), "
+                               "yyjson::pattern(\"^[A-Za-z_][-A-Za-z0-9._]*$\"))"));
+    EXPECT_TRUE(has(meta.code, "yyjson::field(\"id\", yyjson::rename(\"$id\"), yyjson::pattern(\"^[^#]*#?$\")"));
+    EXPECT_TRUE(has(meta.code, "    std::optional<simpleTypes2> d;\n"));
+
+    // a schema read for the same URI comes first
+    auto own = options{.load = [](const std::string& path) -> std::optional<std::string> {
+        if (path == "meta/schema") return R"({"type": "string"})";
+        return std::nullopt;
+    }};
+    own.uri_map = {{"https://json-schema.org/draft/2020-12/", "meta"}};
+    const auto o = generate(R"({"$ref": "https://json-schema.org/draft/2020-12/schema"})", own);
+    EXPECT_EQ(warnings(o), "");
+    EXPECT_TRUE(has(o.code, "using Schema = std::string;\n\nusing Root = Schema;\n"));
 }
 
 TEST(Codegen, Cpp26)

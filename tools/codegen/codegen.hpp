@@ -27,6 +27,7 @@
 
 #include <cpp_yyjson.hpp>
 
+#include "meta_schemas.hpp"
 #include "reserved_names.hpp"
 
 // numbers of a schema are compared exactly, and switches over the kinds of a type handle the kinds that matter
@@ -1442,6 +1443,18 @@ namespace cpp_yyjson_codegen
                 return d;
             }
 
+            // a meta-schema of JSON Schema that the generator holds, read for its URI; nullptr when there is none
+            const json* load_meta_schema(const std::string& uri)
+            {
+                const auto it = std::ranges::find(detail::meta_schemas, uri, &detail::meta_schema::uri);
+                if (it == std::ranges::end(detail::meta_schemas)) return nullptr;
+                const auto* d = &files_.emplace_back(to_json(yyjson::read(it->text)));
+                resources_.emplace(uri, d);
+                resource_roots_.insert(d);
+                prepare(files_.back(), uri, d, is_draft07(*d), uri + "#");
+                return d;
+            }
+
             // the files that a URI may name: under a prefix of `uri_map` (the longest), or beside a file read whose
             // base URI has the same scheme and authority
             std::vector<std::string> uri_paths(const std::string& u) const
@@ -1510,6 +1523,7 @@ namespace cpp_yyjson_codegen
                     if (const auto* d = load_file(p, key, error)) return d;
                     if (!error.empty()) return unusable(p);
                 }
+                if (const auto* d = load_meta_schema(key)) return d;
                 if (!paths.empty()) return unusable(paths.front());
                 warn(loc, "the reference \"" + r +
                               "\" is a URI that is not the `$id` of a schema read and is not mapped to a file; it is "
