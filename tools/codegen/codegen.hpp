@@ -2363,6 +2363,80 @@ namespace cpp_yyjson_codegen
                 return true;
             }
 
+            // the number of leading items that the subschema `x` evaluates where it holds, SIZE_MAX for all of them;
+            // nullopt where it evaluates others (`contains`, conditions, `anyOf` / `oneOf` that evaluate, ...)
+            std::optional<std::size_t> evaluated_prefix(const json* x, const std::string& loc)
+            {
+                if (x == nullptr || x->is_bool()) return 0;
+                auto seen = std::set<const json*>();
+                if (evaluates_beyond_prefix(*x, seen, loc)) return std::nullopt;
+                const auto* n = normalize_full(x, loc);
+                if (n->is_bool()) return 0;
+                if (!n->is_object() || n->has("unevaluatedItems")) return std::nullopt;
+                for (const auto* k : {"anyOf", "oneOf"})
+                    if (const auto* l = n->find(k); l != nullptr && l->is_array() &&
+                                                    std::ranges::any_of(l->items, [&](const json& e) {
+                                                        auto visited = std::set<const json*>();
+                                                        return evaluates(e, true, visited, loc);
+                                                    }))
+                        return std::nullopt;
+                if (const auto* i = n->find("items"); (i != nullptr && !i->is_array()) || n->has("additionalItems"))
+                    return SIZE_MAX;
+                const auto* p = n->find("prefixItems");
+                return p != nullptr && p->is_array() ? p->items.size() : 0;
+            }
+
+            // `unevaluatedItems` `u` of `base` beside one `if` whose subschemas evaluate a prefix of the array: the
+            // items that `base` and `if` with `then` evaluate where `if` holds, and those that `base` and `else`
+            // evaluate where it fails, are each a prefix, so `u` goes into `then` and `else` as `items` after the
+            // longer prefix (a failing `if` evaluates nothing).  False where that does not hold.
+            bool settle_conditional_items(json& base, const json& u, const std::string& loc)
+            {
+                const auto* list = base.find("$conditions");
+                if (list == nullptr || !list->is_array()) return false;
+                auto conds = *list;
+                auto* entry = static_cast<json*>(nullptr);
+                for (auto& c : conds.items)
+                    if (c.has("if"))
+                    {
+                        if (entry != nullptr) return false;
+                        entry = &c;
+                    }
+                if (entry == nullptr) return false;
+                const auto* bp = base.find("prefixItems");
+                const auto nb = bp != nullptr && bp->is_array() ? bp->items.size() : std::size_t{0};
+                // stored copies: normalizing caches by address, and the branches of `conds` are rewritten below
+                const auto stable = [&](const char* k) {
+                    const auto* x = entry->find(k);
+                    return x != nullptr ? store(json(*x)) : nullptr;
+                };
+                const auto ni = evaluated_prefix(stable("if"), loc + "/if");
+                const auto nt = evaluated_prefix(stable("then"), loc + "/then");
+                const auto ne = evaluated_prefix(stable("else"), loc + "/else");
+                if (!ni || !nt || !ne) return false;
+                const auto branch = [&](const char* key, std::size_t n) {
+                    if (n == SIZE_MAX) return;
+                    auto rest = json::object_of();
+                    auto prefix = json::array_of({});
+                    for (std::size_t i = 0; i < n; ++i) prefix.items.push_back(json::boolean_of(true));
+                    if (n > 0) rest.set("prefixItems", std::move(prefix));
+                    rest.set("items", u);
+                    if (const auto* b = entry->find(key))
+                    {
+                        auto all = json::object_of();
+                        all.set("allOf", json::array_of({*b, std::move(rest)}));
+                        entry->set(key, std::move(all));
+                    }
+                    else
+                        entry->set(key, std::move(rest));
+                };
+                branch("then", std::max({nb, *ni, *nt}));
+                branch("else", std::max(nb, *ne));
+                base.set("$conditions", std::move(conds));
+                std::erase_if(base.members, [](const auto& m) { return m.first == "unevaluatedItems"; });
+                return true;
+            }
+
             // `unevaluatedProperties` / `unevaluatedItems` of `s`, whose in-place applicators are merged into `base`:
             // as `additionalProperties` / `items` of `base` when that reads every valid value, kept for the
             // alternatives of the one `oneOf` whose subschemas evaluate (each alternative settles it again), else
@@ -2387,6 +2461,9 @@ namespace cpp_yyjson_codegen
                 if (!sc.dynamic && !sc.unresolved && sc.layouts.size() <= 1 && sc.contains.empty() &&
                     !items && (sc.lists == 0 ? sc.opaque : sc.lists == 1 && sc.any) &&
                     settle_conditional_keys(base, *u, loc))
+                    return;
+                if (items && sc.opaque && !sc.dynamic && !sc.unresolved && sc.contains.empty() && sc.lists == 0 &&
+                    settle_conditional_items(base, *u, loc))
                     return;
                 const auto kinds = [](const json& x) {
                     auto t = type_list(x);
@@ -3718,7 +3795,7 @@ namespace cpp_yyjson_codegen
                          bool nullable)
             {
                 const auto testable = [](const settings& s) {
-                    return s.items.empty() && s.prefix.empty() && s.property_names.empty() && s.additional.empty() &&
+                    return s.items.empty() && s.property_names.empty() && s.additional.empty() &&
                            !s.unique && s.negated.empty() && s.conditional.empty();
                 };
                 for (const auto& c : ifs)
@@ -4062,7 +4139,7 @@ namespace cpp_yyjson_codegen
                         --folding_;
                         return r;
                     }
-                    r = type_array(s0, s, loc, hint, named);
+                    r = type_array(s0, s, loc, hint, named, !ifs.empty());
                 }
                 else if (kind == "string")
                     r = {make(tk::string), {}};
@@ -8354,12 +8431,28 @@ namespace cpp_yyjson_codegen
                 if ((t.k == tk::tuple || is_array_struct(t)) && array_keys) return std::nullopt;
                 if (t.k == tk::vector && array_keys)
                 {
-                    if (n->has("prefixItems")) return std::nullopt;
-                    if (const auto* items = n->find("items"))
+                    const auto* prefix = n->find("prefixItems");
+                    if (prefix != nullptr && !prefix->is_array()) return std::nullopt;
+                    if (const auto* items = n->find("items"); items != nullptr && items->is_bool() && !items->b)
+                        out.max_items = prefix != nullptr ? prefix->items.size() : 0;
+                    else if (items != nullptr)
                     {
                         auto e = settings_for(*items, t.args[0], loc + "/items", hint + "Item");
                         if (!e) return std::nullopt;
                         if (!e->empty()) out.items.push_back(std::move(*e));
+                    }
+                    if (prefix != nullptr)
+                    {
+                        auto ps = std::vector<settings>();
+                        for (std::size_t i = 0; i < prefix->items.size(); ++i)
+                        {
+                            auto p = settings_for(prefix->items[i], t.args[0],
+                                                  loc + "/prefixItems/" + std::to_string(i),
+                                                  hint + "Item" + std::to_string(i + 1));
+                            if (!p) return std::nullopt;
+                            ps.push_back(std::move(*p));
+                        }
+                        set_prefix(out, std::move(ps), loc);
                     }
                     if (!array_counts(*n, out, loc)) return std::nullopt;
                     if (n->has("uniqueItems") && n->find("uniqueItems")->is_bool() && n->find("uniqueItems")->b)
@@ -8616,7 +8709,7 @@ namespace cpp_yyjson_codegen
             }
 
             typed type_array(const json* s0, const json& s, const std::string& loc, const std::string& hint,
-                             bool named)
+                             bool named, bool conditional = false)
             {
                 const auto* prefix = s.find("prefixItems");
                 const auto* items = s.find("items");
@@ -8694,6 +8787,14 @@ namespace cpp_yyjson_codegen
                         if (!items_false && !rest.s.empty()) r.s.items.push_back(std::move(rest.s));
                         set_prefix(r.s, std::move(ps), loc);
                     }
+                    // beside a value-level `if`, which tests the positions by settings of yyjson::value
+                    else if (auto vs = conditional && (items_false || (rest.t.k == tk::any && rest.s.empty()))
+                                           ? value_positions(*prefix, n, loc, hint)
+                                           : std::nullopt)
+                    {
+                        r.t = make(tk::vector, {make(tk::any)});
+                        set_prefix(r.s, std::move(*vs), loc);
+                    }
                     else if (!opts_.cpp26 && n + (items_false ? 0 : 1) > max_reflected_fields)
                     {
                         warn(loc, "positions of `prefixItems` of different types are read as yyjson::value without "
@@ -8723,6 +8824,30 @@ namespace cpp_yyjson_codegen
                     warn(loc + "/contains",
                          "`contains` with a type other than the element type is not supported and is ignored");
                 return r;
+            }
+
+            // the settings of yyjson::value that test the first `n` positions of `prefix` exactly, or nullopt
+            std::optional<std::vector<settings>> value_positions(const json& prefix, std::size_t n,
+                                                                 const std::string& loc, const std::string& hint)
+            {
+                auto out = std::vector<settings>();
+                for (std::size_t i = 0; i < n; ++i)
+                {
+                    const auto ploc = loc + "/prefixItems/" + std::to_string(i);
+                    const auto& p = prefix.items[i];
+                    if (const auto* x = normalize_full(&p, ploc); adds_nothing(*x))
+                    {
+                        out.emplace_back();
+                        continue;
+                    }
+                    const auto calls = warn_calls_;
+                    auto set = settings_for(p, make(tk::any), ploc);
+                    if (!set || warn_calls_ != calls)
+                        set = type_test_of(&p, ploc, hint + "Item" + std::to_string(i + 1), {});
+                    if (!set) return std::nullopt;
+                    out.push_back(std::move(*set));
+                }
+                return out;
             }
 
             // a struct of yyjson::as_array for an array whose positions have different types: a field for each

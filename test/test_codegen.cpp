@@ -2640,6 +2640,29 @@ TEST(Codegen, Unevaluated)
     EXPECT_TRUE(has(prefixes.code, "yyjson::annotations<RootPOption2> = yyjson::annotate(\n    yyjson::as_array,\n"
                                    "    yyjson::items(false),\n"));
 
+    // beside an `if` of prefixes: each branch ends at the longest prefix of the base, the `if` and the branch
+    const auto branches = generate(R"({"type": "object", "properties": {
+        "b": {"type": "array", "prefixItems": [{"const": "foo"}], "unevaluatedItems": false,
+              "if": {"prefixItems": [true, {"const": "bar"}]}, "then": {"prefixItems": [true, true, {"const": "then"}]},
+              "else": {"prefixItems": [true, true, true, {"const": "else"}]}}}})",
+                                   {});
+    EXPECT_EQ(warnings(branches), "");
+    EXPECT_TRUE(has(branches.code, "    std::optional<std::vector<yyjson::value>> b;\n"));
+    EXPECT_TRUE(has(branches.code,
+                    "yyjson::field(\"b\", yyjson::prefix_items(yyjson::const_(\"foo\")), yyjson::if_then_else("
+                    "yyjson::if_(yyjson::prefix_items({}, yyjson::const_(\"bar\"))), "
+                    "yyjson::then(yyjson::max_items(3), "
+                    "yyjson::prefix_items({}, {}, yyjson::const_(\"then\"))), yyjson::else_(yyjson::max_items(4), "
+                    "yyjson::prefix_items({}, {}, {}, yyjson::const_(\"else\")))))"));
+    // 2019-09: `items` arrays; an `if` that fails evaluates nothing, so the absent `else` ends at the base
+    const auto legacy = generate(R"({"$schema": "https://json-schema.org/draft/2019-09/schema", "type": "array",
+        "items": [{"const": "foo"}], "if": {"items": [true, {"const": "bar"}]},
+        "then": {"items": [true, true, {"const": "then"}]}, "unevaluatedItems": false})",
+                                 {});
+    EXPECT_EQ(warnings(legacy), "");
+    EXPECT_TRUE(has(legacy.code, "yyjson::then(yyjson::max_items(3), yyjson::prefix_items({}, {}, "
+                                 "yyjson::const_(\"then\"))), yyjson::else_(yyjson::max_items(1))"));
+
     // draft-07 has no unevaluated keywords
     const auto draft7 = generate(R"({"$schema": "http://json-schema.org/draft-07/schema#", "type": "object",
                                      "properties": {"a": {"type": "integer"}}, "unevaluatedProperties": false})", {});
