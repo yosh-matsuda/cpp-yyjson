@@ -1351,8 +1351,9 @@ TEST(Codegen, Conditions)
         "x": {"type": "string", "if": {"type": "object"}, "then": {"type": "object", "minProperties": 1}}
     }})",
                             {});
-    EXPECT_EQ(warnings(v),
-              "#/properties/u: `if` is not supported on a value that is not read as a struct and is ignored\n");
+    EXPECT_EQ(warnings(v), "");
+    EXPECT_TRUE(has(v.code, "    yyjson::field(\"u\", yyjson::if_then_else(yyjson::if_(yyjson::max_length(3)), "
+                            "yyjson::then(yyjson::min_length(1)))));\n"));
     EXPECT_TRUE(has(v.code, "    std::optional<std::string> s;\n    std::optional<std::string> u;\n"
                             "    std::optional<std::int64_t> v;\n"));
     EXPECT_TRUE(has(v.code, "yyjson::annotations<RootWObject> = yyjson::annotate(\n"
@@ -2870,6 +2871,109 @@ TEST(Codegen, ValueNot)
     EXPECT_THROW(generate(R"({"type": "object", "properties": {"a": {"not": {"type": "number"}, "type": "integer"}}})",
                           {.strict = true}),
                  cpp_yyjson_codegen::error);
+}
+
+TEST(Codegen, ValueConditions)
+{
+    // `if` of a value: yyjson::if_then_else with the settings of the value's type, a condition that always or never
+    // holds for the kind replaced by its branch, a branch that rejects every value replaced by yyjson::not_ or joined,
+    // kinds rejected entirely left out, and yyjson::is_type<T> on yyjson::value
+    const auto r = generate(R"({
+        "type": "object",
+        "properties": {
+            "a": {"type": "integer", "if": {"minimum": 10}, "then": {"multipleOf": 5}, "else": {"maximum": 3}},
+            "b": {"if": {"maxLength": 4}, "then": {"const": "yes"}, "else": {"const": "other"}},
+            "c": {"if": {"exclusiveMaximum": 0}, "then": {"minimum": -10}, "else": {"multipleOf": 2}},
+            "d": {"type": "integer", "if": {"minimum": 10}, "then": false, "else": {"multipleOf": 2}},
+            "e": {"type": "integer", "if": {"minimum": 10}, "then": {"maximum": 20}, "else": false},
+            "f": {"type": "string", "if": {"minimum": 3}, "then": {"maxLength": 2}},
+            "g": {"type": "string", "if": {"type": "integer"}, "else": {"minLength": 1}},
+            "h": {"type": ["integer", "null"], "if": {"minimum": 10}, "then": {"multipleOf": 5}},
+            "i": {"if": {"type": "integer"}, "then": {"minimum": 0}, "else": {"type": "string"}},
+            "j": {"type": "array", "items": {"type": "integer"}, "if": {"minItems": 2},
+                  "then": {"items": {"maximum": 5}}},
+            "k": {"anyOf": [{"type": "integer"}, {"type": "string", "if": {"pattern": "^a"}, "then": {"maxLength": 3}}]}
+        }
+    })", {});
+    EXPECT_EQ(warnings(r), "");
+    EXPECT_TRUE(has(r.code, "inline constexpr auto Root_k_1_if_then_else = yyjson::if_then_else("
+                            "yyjson::if_(yyjson::pattern(\"^a\")), yyjson::then(yyjson::max_length(3)));\n"));
+    EXPECT_TRUE(has(r.code, "    std::optional<std::int64_t> a;\n    std::optional<std::string> b;\n"
+                            "    std::optional<yyjson::value> c;\n    std::optional<std::int64_t> d;\n"
+                            "    std::optional<std::int64_t> e;\n    std::optional<std::string> f;\n"
+                            "    std::optional<std::string> g;\n"
+                            "    std::optional<std::variant<std::monostate, std::int64_t>> h;\n"
+                            "    std::optional<yyjson::value> i;\n    std::optional<std::vector<std::int64_t>> j;\n"
+                            "    std::optional<yyjson::any_of<std::int64_t, "
+                            "yyjson::alt<std::string, &Root_k_1_if_then_else>>> k;\n"));
+    EXPECT_TRUE(has(r.code, "    yyjson::field(\"a\", yyjson::if_then_else(yyjson::if_(yyjson::minimum(10)), "
+                            "yyjson::then(yyjson::multiple_of(5)), yyjson::else_(yyjson::maximum(3)))),\n"
+                            "    yyjson::field(\"b\", yyjson::if_then_else(yyjson::if_(yyjson::max_length(4)), "
+                            "yyjson::then(yyjson::const_(\"yes\")), yyjson::else_(yyjson::const_(\"other\")))),\n"
+                            "    yyjson::field(\"c\", yyjson::if_then_else(yyjson::if_(yyjson::exclusive_maximum(0)), "
+                            "yyjson::then(yyjson::minimum(-10)), yyjson::else_(yyjson::multiple_of(2)))),\n"
+                            "    yyjson::field(\"d\", yyjson::multiple_of(2), yyjson::not_(yyjson::minimum(10))),\n"
+                            "    yyjson::field(\"e\", yyjson::minimum(10), yyjson::maximum(20)),\n"
+                            "    yyjson::field(\"f\", yyjson::max_length(2)),\n"
+                            "    yyjson::field(\"g\", yyjson::min_length(1)),\n"
+                            "    yyjson::field(\"h\", yyjson::if_then_else(yyjson::if_(yyjson::minimum(10)), "
+                            "yyjson::then(yyjson::multiple_of(5)))),\n"
+                            "    yyjson::field(\"i\", yyjson::if_then_else(yyjson::if_(yyjson::is_type<std::int64_t>), "
+                            "yyjson::then(yyjson::minimum(0)), yyjson::else_(yyjson::is_type<std::string>))),\n"
+                            "    yyjson::field(\"j\", yyjson::if_then_else(yyjson::if_(yyjson::min_items(2)), "
+                            "yyjson::then(yyjson::items(yyjson::maximum(5))))));\n"));
+
+    // C++26 annotations name the setting directly
+    const auto cpp26 = generate(R"({"type": "object", "properties": {
+        "k": {"anyOf": [{"type": "integer"},
+                        {"type": "string", "if": {"pattern": "^a"}, "then": {"maxLength": 3}}]}}})",
+                                {.cpp26 = true});
+    EXPECT_TRUE(has(cpp26.code, "yyjson::alt<std::string, yyjson::if_then_else(yyjson::if_(yyjson::pattern(\"^a\")), "
+                                "yyjson::then(yyjson::max_length(3)))>"));
+
+    // what the settings cannot express is dropped with a warning
+    const auto dropped = generate(R"({
+        "type": "object",
+        "properties": {
+            "a": {"type": "integer", "minimum": 1, "if": {"maximum": 5}, "then": {"minimum": 3}, "else": false},
+            "b": {"type": "array", "items": {"type": "integer"}, "if": {"items": {"minimum": 0}},
+                  "then": {"maxItems": 2}},
+            "c": {"type": "integer", "if": {"minimum": 3}, "then": false, "else": false}
+        }
+    })", {});
+    EXPECT_EQ(warnings(dropped),
+              "#/properties/a/if: a branch of `if` sets a keyword of the value to another value; the `if` is "
+              "ignored\n"
+              "#/properties/b/if: `if` is not expressed by the settings that yyjson::if_ takes; the `if` is ignored\n"
+              "#/properties/c: `if` rejects every value of the type: the schema accepts no value, and reading it "
+              "always fails\n");
+    EXPECT_TRUE(has(dropped.code, "    yyjson::field(\"a\", yyjson::minimum(1)),\n"));
+    EXPECT_THROW(generate(R"({"type": "integer", "minimum": 1, "if": {"maximum": 5}, "then": {"minimum": 3},
+                              "else": false})",
+                          {.strict = true}),
+                 cpp_yyjson_codegen::error);
+
+    // beside `const` / `enum`, the values that the branch taken rejects are left out
+    const auto listed = generate(R"({
+        "type": "object",
+        "properties": {
+            "a": {"enum": ["p", "q", "rr"], "if": {"const": "p"}, "then": {"maxLength": 0}, "else": {"maxLength": 1}},
+            "b": {"type": "integer", "enum": [1, 2, 30, 31], "if": {"minimum": 10}, "then": {"multipleOf": 3}},
+            "c": {"enum": ["ab", "b"], "if": {"pattern": "^a"}, "then": {"maxLength": 1}},
+            "d": {"const": 5, "if": {"minimum": 3}, "then": {"maximum": 4}},
+            "e": {"enum": [1, "x"], "if": {"type": "integer"}, "then": false}
+        }
+    })", {});
+    EXPECT_EQ(warnings(listed),
+              "#/properties/c/if: whether `if` rejects the value \"ab\" of `enum` is not known; the value is kept\n"
+              "#/properties/c/if: whether `if` rejects the value \"b\" of `enum` is not known; the value is kept\n"
+              "#/properties/d: `if` rejects every value of `const`: the schema accepts no value, and reading it "
+              "always fails\n");
+    EXPECT_TRUE(has(listed.code, "enum class RootA\n{\n    q,\n};\n"));
+    EXPECT_TRUE(has(listed.code, "enum class RootC\n{\n    ab,\n    b,\n};\n"));
+    EXPECT_TRUE(has(listed.code, "enum class RootE\n{\n    x,\n};\n"));
+    EXPECT_TRUE(has(listed.code, "    yyjson::field(\"b\", yyjson::enum_(1, 2, 30)),\n"
+                                 "    yyjson::field(\"d\", yyjson::not_(yyjson::is_type<yyjson::value>)));\n"));
 }
 
 TEST(Codegen, MaxAlternatives)

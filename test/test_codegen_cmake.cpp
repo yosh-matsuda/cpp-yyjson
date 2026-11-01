@@ -3,7 +3,8 @@
 // codegen/alternatives.schema.json, from codegen/patterns.schema.json, from
 // codegen/recursion.schema.json, from codegen/untyped.schema.json (also with INFER_TYPES), from
 // codegen/conditions.schema.json, from codegen/contains.schema.json, from
-// codegen/positions.schema.json, from codegen/rejections.schema.json, from codegen/dynamic.schema.json and from
+// codegen/positions.schema.json, from codegen/rejections.schema.json, from codegen/dynamic.schema.json, from
+// codegen/value_conditions.schema.json and from
 // codegen/invoice.schema.json, which references codegen/remote/money.schema.json through URI_MAP and
 // codegen/tax.schema.json through SCHEMAS.
 #include <gtest/gtest.h>
@@ -38,6 +39,7 @@ struct yyjson::pattern_matcher<>
 #include "rejections.hpp"
 #include "untyped.hpp"
 #include "untyped_inferred.hpp"
+#include "value_conditions.hpp"
 
 TEST(CodegenCMake, ReadWrite)
 {
@@ -343,6 +345,32 @@ TEST(CodegenCMake, ValueNot)
     EXPECT_THROW(yyjson::validate(listing), yyjson::bad_cast);
     listing.ports = {1, 2, 3};
     EXPECT_THROW(yyjson::validate(listing), yyjson::bad_cast);
+}
+
+TEST(CodegenCMake, ValueConditions)
+{
+    // `if` of a value checks `then` or `else`: on numbers, strings, a value that may be null, a value of several kinds,
+    // an array and an alternative; a `then` that rejects every value becomes yyjson::not_ of the condition
+    for (const auto* json :
+         {R"({"value":120,"unit":"mm","limit":15,"level":5,"code":3,"samples":[0.5,0.25,0.75],"label":"xab"})",
+          R"({"value":5,"unit":"kelvin","limit":5,"code":"a","samples":[5.5,6.5],"label":"long label"})",
+          R"({"limit":null,"label":1})"})
+    {
+        const auto reading = yyjson::read<model::Reading>(json, yyjson::strict);
+        EXPECT_EQ(std::string_view(yyjson::write(reading)), std::string_view(json));
+        EXPECT_NO_THROW(yyjson::validate(reading)) << json;
+    }
+    for (const auto* json : {R"({"value":105})", R"({"value":-1})", R"({"unit":"MM"})", R"({"unit":"meters"})",
+                             R"({"limit":30})", R"({"level":10})", R"({"level":0})", R"({"code":-1})",
+                             R"({"code":true})", R"({"code":1.5})", R"({"samples":[2.5,0.5,0.25]})",
+                             R"({"label":"xabcd"})"})
+        EXPECT_THROW((void)yyjson::read<model::Reading>(json), yyjson::bad_cast) << json;
+    auto reading = model::Reading();
+    reading.value = 105;
+    EXPECT_THROW(yyjson::validate(reading), yyjson::bad_cast);
+    reading.value = 110;
+    reading.code = yyjson::value(-1);
+    EXPECT_THROW(yyjson::validate(reading), yyjson::bad_cast);
 }
 
 TEST(CodegenCMake, Rejections)

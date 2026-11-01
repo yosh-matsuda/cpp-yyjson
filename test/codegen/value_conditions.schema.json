@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Reading",
+  "type": "object",
+  "properties": {
+    "value": {"type": "integer", "if": {"minimum": 100}, "then": {"multipleOf": 10}, "else": {"minimum": 0}},
+    "unit": {"type": "string", "if": {"maxLength": 2}, "then": {"pattern": "^[a-z]+$"}, "else": {"enum": ["celsius", "kelvin"]}},
+    "limit": {"type": ["integer", "null"], "if": {"minimum": 10}, "then": {"maximum": 20}},
+    "level": {"type": "integer", "if": {"minimum": 10}, "then": false, "else": {"minimum": 1}},
+    "code": {"if": {"type": "integer"}, "then": {"minimum": 0}, "else": {"type": "string"}},
+    "samples": {"type": "array", "items": {"type": "number"}, "if": {"minItems": 3}, "then": {"items": {"maximum": 1}}},
+    "label": {"anyOf": [{"type": "integer"}, {"type": "string", "if": {"pattern": "^x"}, "then": {"maxLength": 3}}]}
+  }
+}
