@@ -773,6 +773,8 @@ Another `if`, `not` or `dependentSchemas` inside `then`, `else` or a subschema o
 | `else` of `if` `P` | `not` `X`, or `if` `J` with `then: false` | `yyjson::if_then_else(yyjson::if_(X), yyjson::then(P))`, the same with `J` |
 | `else` of `if` `P` | `"dependentSchemas": {"m": false}` | `yyjson::if_then_else(yyjson::if_(yyjson::field("m", yyjson::required)), yyjson::then(P))` |
 
+A key whose schema is `false` in the `properties` of a part that does not close the object, and `dependentRequired` in a part, are read as `"not": {"required": ["k"]}` and `"dependentSchemas": {"a": {"required": ["b", "c"]}}` and follow the same rows: in `then` of `P`, `"properties": {"k": false}` becomes `yyjson::not_(P, yyjson::field("k", yyjson::required))` and `"dependentRequired": {"a": ["b"]}` becomes `yyjson::if_then_else(yyjson::if_(P, yyjson::field("a", yyjson::required)), yyjson::then(yyjson::field("b", yyjson::required)))`; in `else`, a `false` key becomes `yyjson::if_then_else(yyjson::if_(yyjson::field("k", yyjson::required)), yyjson::then(P))`. `dependentRequired` in `else` applies when one `if` holds and another fails, and is left out with a warning, as is a value of `dependentRequired` that is not an array of strings.
+
 The parts nest further in the same way, up to 8 levels. The joined tests are exact, since `yyjson::if_` and `yyjson::not_` test the value of a key only when the object has it. A part that applies when one `if` holds and another fails, such as `else` of an `if` inside `then`, or `then` of an `if` inside `else`, has no settings that express it, and is left out with a warning.
 
 A condition that the settings cannot express is left out with a warning, so the code reads more than the schema accepts:
