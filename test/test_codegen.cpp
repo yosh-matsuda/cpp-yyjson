@@ -2427,6 +2427,22 @@ TEST(Codegen, Unevaluated)
     EXPECT_TRUE(has(warnings(items), "#/properties/c: `unevaluatedItems` beside `contains` is not supported; it is "
                                      "ignored\n"));
 
+    // prefixItems of allOf and $ref are joined by position, and unevaluatedItems ends the longest
+    const auto joined = generate(R"({"$defs": {"Pair": {"prefixItems": [true, {"type": "number"}]}},
+        "type": "object", "properties": {
+        "a": {"type": "array", "prefixItems": [{"type": "string"}], "allOf": [{"prefixItems": [true, {"type": "number"}]}],
+              "unevaluatedItems": false},
+        "r": {"type": "array", "prefixItems": [{"type": "string"}], "$ref": "#/$defs/Pair", "unevaluatedItems": false}}})",
+                                 {});
+    EXPECT_FALSE(has(warnings(joined), "unevaluatedItems"));
+    EXPECT_TRUE(has(joined.code, "struct RootA\n{\n    std::optional<std::string> item1;\n"
+                                 "    std::optional<double> item2;\n};\n"));
+    EXPECT_TRUE(has(joined.code, "struct RootR\n{\n    std::optional<std::string> item1;\n"
+                                 "    std::optional<double> item2;\n};\n"));
+    for (const auto* name : {"RootA", "RootR"})
+        EXPECT_TRUE(has(joined.code, "yyjson::annotations<" + std::string(name) +
+                                         "> = yyjson::annotate(\n    yyjson::as_array,\n    yyjson::items(false));\n"));
+
     // draft-07 has no unevaluated keywords
     const auto draft7 = generate(R"({"$schema": "http://json-schema.org/draft-07/schema#", "type": "object",
                                      "properties": {"a": {"type": "integer"}}, "unevaluatedProperties": false})", {});

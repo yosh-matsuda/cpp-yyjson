@@ -1927,7 +1927,9 @@ namespace cpp_yyjson_codegen
                 bool opaque = false;      // `if`, `dependentSchemas`, `$dynamicRef`, ...: not followed by the generator
                 bool unresolved = false;  // a reference that the generator cannot follow
                 bool contains = false;
-                std::vector<const json*> layouts;  // `patternProperties` / `prefixItems`, of which merge keeps one
+                // `patternProperties`, of which merge keeps one (merge joins `prefixItems` position by position, so
+                // the merged schema evaluates the positions of them all)
+                std::vector<const json*> layouts;
                 std::size_t lists = 0;             // `anyOf` / `oneOf` whose subschemas evaluate
                 bool any = false;                  // one of them is `anyOf`
             };
@@ -2001,7 +2003,7 @@ namespace cpp_yyjson_codegen
                     else if (items ? k == "additionalItems" || (k == "items" && !v.is_array())
                                    : k == "additionalProperties")
                         sc.all = true;
-                    else if (items ? k == "prefixItems" || (k == "items" && v.is_array()) : k == "patternProperties")
+                    else if (!items && k == "patternProperties")
                     {
                         if (std::ranges::none_of(sc.layouts, [&](const json* x) { return equal(*x, v); }))
                             sc.layouts.push_back(&v);
@@ -2060,9 +2062,7 @@ namespace cpp_yyjson_codegen
                                 "`$dynamicRef` or `$recursiveRef` is not supported");
                 if (sc.unresolved) return drop("beside a reference that cannot be read is not supported");
                 if (sc.contains) return drop("beside `contains` is not supported");
-                if (sc.layouts.size() > 1)
-                    return drop(std::string("beside several `") + (items ? "prefixItems" : "patternProperties") +
-                                "` is not supported");
+                if (sc.layouts.size() > 1) return drop("beside several `patternProperties` is not supported");
                 if (sc.lists == 0)
                 {
                     auto v = *u;
