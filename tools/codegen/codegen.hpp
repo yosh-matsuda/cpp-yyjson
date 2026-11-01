@@ -5327,8 +5327,8 @@ namespace cpp_yyjson_codegen
             // `anyOf` or `oneOf` (kw) of the part `n` of a condition whose subschemas only require keys, as
             // yyjson::any_of_required or yyjson::one_of_required. A subschema may have also `type` with "object" and
             // `properties` that add nothing to the fields: schemas that accept anything, the schema of the property
-            // of the struct, or a reference to it. Without `fields`, `properties` are not checked, for the keys that
-            // the conditions name before the fields are made
+            // of the struct, a reference to it, or a schema that the type of the field satisfies. Without `fields`,
+            // `properties` are not checked, for the keys that the conditions name before the fields are made
             std::optional<required_groups> part_groups(const json& n, const std::string& kw,
                                                        const std::vector<field>* fields, const std::string& loc)
             {
@@ -5360,6 +5360,11 @@ namespace cpp_yyjson_codegen
                                     (f->ref != nullptr && is_pure_ref(ps) &&
                                      resolve(*ps.find("$ref"), ploc) == f->ref) ||
                                     (f->prop != nullptr && same_assertions(*pn, *f->prop)))
+                                    continue;
+                                // a schema that the type of the field already satisfies, such as `type`
+                                const auto calls = warn_calls_;
+                                if (const auto set = settings_for(ps, f->type, ploc);
+                                    set && set->empty() && warn_calls_ == calls)
                                     continue;
                                 return std::nullopt;
                             }

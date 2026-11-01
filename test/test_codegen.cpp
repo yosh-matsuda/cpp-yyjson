@@ -1603,8 +1603,9 @@ TEST(Codegen, ConditionsOfNullAndRepeatedReferences)
 TEST(Codegen, ConditionGroups)
 {
     // `anyOf` and `oneOf` of required keys in `then`, `else` and `dependentSchemas` as groups of required keys: the
-    // exclusive `not` form, subschemas of type object, `properties` that accept anything or repeat the schema of the
-    // property; a key that is not a property is a field of the type that the struct gives to other keys
+    // exclusive `not` form, subschemas of type object, `properties` that accept anything, repeat the schema of the
+    // property or hold for its type; a key that is not a property is a field of the type that the struct gives to
+    // other keys
     const auto r = generate(R"({
         "type": "object",
         "properties": {"t": {"type": "string"}, "a": {"$ref": "#/$defs/A"}, "b": {"type": "string", "maxLength": 3}},
@@ -1616,7 +1617,8 @@ TEST(Codegen, ConditionGroups)
         "else": {"anyOf": [{"required": ["a"], "not": {"required": ["b"]}},
                            {"required": ["b"], "not": {"required": ["a"]}}]},
         "dependentSchemas": {
-            "c": {"anyOf": [{"type": "object", "properties": {"t": {}}, "required": ["t"]}, {"required": ["a"]}]}
+            "c": {"anyOf": [{"type": "object", "properties": {"t": {}}, "required": ["t"]},
+                            {"properties": {"a": {"type": "object"}}, "required": ["a"]}]}
         },
         "$defs": {"A": {"type": "object", "properties": {"x": {"type": "integer"}}}}
     })",
@@ -1640,13 +1642,15 @@ TEST(Codegen, ConditionGroups)
         "else": {"oneOf": [{"properties": {"b": {"maxLength": 2}}, "required": ["b"]}, {"required": ["a"]}]},
         "dependentSchemas": {
             "a": {"anyOf": [{"required": ["b"]}, {"required": ["t"]}], "additionalProperties": false,
-                  "properties": {"a": {}, "b": {}, "t": {}}}
+                  "properties": {"a": {}, "b": {}, "t": {}}},
+            "b": {"anyOf": [{"properties": {"b": {"type": "integer"}}, "required": ["b"]}, {"required": ["t"]}]}
         }
     })",
                             {});
     EXPECT_EQ(warnings(w), "#/then/anyOf: `anyOf` is not supported here and is ignored\n"
                            "#/else/oneOf: `oneOf` is not supported here and is ignored\n"
-                           "#/dependentSchemas/a/anyOf: `anyOf` is not supported here and is ignored\n");
+                           "#/dependentSchemas/a/anyOf: `anyOf` is not supported here and is ignored\n"
+                           "#/dependentSchemas/b/anyOf: `anyOf` is not supported here and is ignored\n");
     EXPECT_FALSE(has(w.code, "_of_required"));
 }
 
