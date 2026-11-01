@@ -457,6 +457,18 @@ TEST(CodegenCMake, Positions)
         EXPECT_EQ(e.path(), "/path/2");
     }
 
+    // counts, uniqueness and `contains` of the whole array take the positions and the elements after them
+    const auto labeled = yyjson::read<model::Linter>(R"({"label":["a",1,"bc"]})", yyjson::strict);
+    ASSERT_TRUE(labeled.label.has_value());
+    EXPECT_EQ(labeled.label->extra, (std::vector<std::string>{"bc"}));
+    EXPECT_NO_THROW(yyjson::validate(labeled));
+    for (const auto* in : {R"({"label":["ab",1]})", R"({"label":["ab",1,"c","d","e"]})", R"({"label":["a",1,"a"]})",
+                           R"({"label":["a",1,"b"]})", R"({"label":["ab",1,"cd"]})"})
+        EXPECT_THROW((void)yyjson::read<model::Linter>(in), yyjson::bad_cast) << in;
+    auto twice = labeled;
+    twice.label->extra.push_back("bc");
+    EXPECT_THROW(yyjson::validate(twice), yyjson::bad_cast);
+
     // a position left out before one that is present cannot be read back
     auto holed = model::Linter();
     holed.path.emplace().item2 = 1.5;

@@ -8659,7 +8659,10 @@ namespace cpp_yyjson_codegen
                     if (items_false && mi != nullptr && as_uint64(*mi) && *as_uint64(*mi) > n)
                         warn(loc, "`minItems` is more than the positions of `prefixItems`, and no element may follow "
                                   "them; no array satisfies the schema");
-                    if (items_false && mi != nullptr && as_uint64(*mi) && *as_uint64(*mi) >= n)
+                    // a tuple cannot compare its positions or test them by `contains`; a struct of yyjson::as_array can
+                    const auto* u = s.find("uniqueItems");
+                    const auto whole = (u != nullptr && u->is_bool() && u->b) || s.has("contains");
+                    if (items_false && mi != nullptr && as_uint64(*mi) && *as_uint64(*mi) >= n && !whole)
                     {
                         r.t = make(tk::tuple);
                         auto ps = std::vector<settings>();
@@ -8669,8 +8672,6 @@ namespace cpp_yyjson_codegen
                             ps.push_back(std::move(p.s));
                         }
                         set_prefix(r.s, std::move(ps), loc);
-                        if (s.has("uniqueItems") || s.has("contains"))
-                            warn(loc, "`uniqueItems` and `contains` of a tuple are not supported and are ignored");
                         return r;
                     }
                     auto rest =
@@ -8690,14 +8691,6 @@ namespace cpp_yyjson_codegen
                                   "--cpp26 when there are more than " +
                                       std::to_string(max_reflected_fields) +
                                       " of them; their constraints are dropped");
-                        r.t = make(tk::vector, {make(tk::any)});
-                    }
-                    // a struct cannot compare its positions with each other and with the elements after them
-                    else if (const auto* u = s.find("uniqueItems"); (u != nullptr && u->is_bool() && u->b) ||
-                                                                     s.has("contains"))
-                    {
-                        warn(loc, "positions of `prefixItems` of different types are read as yyjson::value beside "
-                                  "`uniqueItems` or `contains`; their constraints are dropped");
                         r.t = make(tk::vector, {make(tk::any)});
                     }
                     else
@@ -8753,9 +8746,14 @@ namespace cpp_yyjson_codegen
                     place_default(f, std::move(pos[i].t), dflt, required);
                     fields.push_back(std::move(f));
                 }
-                // a closed array with `minItems` of all positions is a std::tuple, so the array here is open
-                if (min > n)
-                    warn(loc, "`minItems` beyond the positions of `prefixItems` is not supported and is ignored");
+                // the settings of the whole array: the numbers of elements beyond the positions, which a closed
+                // array has warned of, and `uniqueItems` and `contains`, which see the elements as JSON values
+                auto whole = settings();
+                if (min > n && !closed) whole.min_items = min;
+                if (const auto* mx = s.find("maxItems"); mx != nullptr && !closed)
+                    if (const auto m = as_uint64(*mx)) whole.max_items = *m;
+                if (const auto* u = s.find("uniqueItems"); u != nullptr && u->is_bool() && u->b) whole.unique = true;
+                (void)add_contains(s, whole, make(tk::any), loc, hint);
                 // the elements after the positions: rejected, accepted and dropped, or kept in the field of
                 // yyjson::extra_items
                 const auto any_rest = rest.t.k == tk::any && rest.s.empty();
@@ -8766,8 +8764,6 @@ namespace cpp_yyjson_codegen
                     if (!rest.s.empty()) f.set.items.push_back(std::move(rest.s));
                     fields.push_back(std::move(f));
                 }
-                if (const auto* mx = s.find("maxItems"); mx != nullptr && !closed)
-                    warn(loc, "`maxItems` beyond the positions of `prefixItems` is not supported and is ignored");
                 // the struct of the schema still being typed is the transparent struct of self_struct(), which holds
                 // this one
                 const auto own_name = named && !self_structs_.contains(s0);
@@ -8777,7 +8773,8 @@ namespace cpp_yyjson_codegen
                               .fields = std::move(fields),
                               .additional = !closed,
                               .filled = true,
-                              .as_array = true};
+                              .as_array = true,
+                              .set = std::move(whole)};
                 if (own_name)
                 {
                     d.meta = meta_of(s);
@@ -9331,7 +9328,8 @@ namespace cpp_yyjson_codegen
                             return fit::no;
                         if (r == fit::no) return r;
                     }
-                    return i < j.items.size() && !d.additional ? fit::no : r;
+                    if (i < j.items.size() && !d.additional) return fit::no;
+                    return d.set.empty() ? r : std::min(r, fits(j, make(tk::vector, {make(tk::any)}), d.set));
                 }
                 if (!j.is_object()) return fit::no;
                 auto r = fit::yes;
@@ -9694,6 +9692,8 @@ namespace cpp_yyjson_codegen
                             warn(d.loc, "`required` names more keys than `maxProperties` allows: the schema accepts no "
                                         "object here, and reading one always fails");
                     }
+                    if (d.kind == decl::kind_t::structure && d.as_array)
+                        check_level(make(tk::vector, {make(tk::any)}), d.set, d.loc);
                     for (const auto& f : d.fields)
                     {
                         check_level(f.type, f.set, f.loc);
@@ -9842,6 +9842,10 @@ namespace cpp_yyjson_codegen
                     items.emplace_back("yyjson::as_array");
                     if (!std::ranges::any_of(d.fields, [](const field& f) { return f.extra; }))
                         items.emplace_back(d.additional ? "yyjson::items(true)" : "yyjson::items(false)");
+                    // the annotations of C++20 are outside the namespace
+                    const auto q = opts_.cpp26 || opts_.ns.empty() ? std::string() : opts_.ns + "::";
+                    for (auto& x : render_settings(d.set, make(tk::vector, {make(tk::any)}), q))
+                        items.push_back(std::move(x));
                     return items;
                 }
                 // explicit, so that a read under yyjson::strict accepts the keys that the schema accepts
@@ -9965,12 +9969,16 @@ namespace cpp_yyjson_codegen
                         for (const auto& e : *v) self(self, e);
                 };
                 for (const auto i : structs)
+                {
                     for (const auto& f : decls_[i].fields)
                     {
                         ctx_ = decls_[i].name + "_" + f.member;
                         (void)spell(f.type);
                         spell_tests(spell_tests, f.set);
                     }
+                    ctx_ = decls_[i].name;
+                    spell_tests(spell_tests, decls_[i].set);
+                }
                 for (const auto i : structs)
                     for (const auto& c : decls_[i].conditions)
                         for (const auto* part : {&c.if_, &c.then_, &c.else_})

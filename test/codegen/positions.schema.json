@@ -17,12 +17,23 @@
       "prefixItems": [{"type": "string"}, {"type": "number"}],
       "items": {"type": "integer", "minimum": 0}
     },
-    "Size": {"type": "array", "prefixItems": [{"type": "number"}, {"type": "string"}], "minItems": 2}
+    "Size": {"type": "array", "prefixItems": [{"type": "number"}, {"type": "string"}], "minItems": 2},
+    "Label": {
+      "type": "array",
+      "prefixItems": [{"type": "string"}, {"type": "integer"}],
+      "items": {"type": "string"},
+      "minItems": 3,
+      "maxItems": 4,
+      "uniqueItems": true,
+      "contains": {"type": "string", "minLength": 2},
+      "maxContains": 1
+    }
   },
   "type": "object",
   "properties": {
     "rule": {"$ref": "#/$defs/Rule", "default": [1]},
     "path": {"$ref": "#/$defs/Path"},
-    "size": {"$ref": "#/$defs/Size"}
+    "size": {"$ref": "#/$defs/Size"},
+    "label": {"$ref": "#/$defs/Label"}
   }
 }

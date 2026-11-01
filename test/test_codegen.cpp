@@ -2984,17 +2984,26 @@ TEST(Codegen, AsArray)
     EXPECT_EQ(counts(R"("items": false, "minItems": 3)"),
               "#: `minItems` is more than the positions of `prefixItems`, and no element may follow them; no array "
               "satisfies the schema\n");
-    EXPECT_EQ(counts(R"("minItems": 3)"), "#: `minItems` beyond the positions of `prefixItems` is not supported and "
-                                          "is ignored\n");
-    EXPECT_EQ(counts(R"("maxItems": 5)"), "#: `maxItems` beyond the positions of `prefixItems` is not supported and "
-                                          "is ignored\n");
-    // a struct cannot compare its positions, so `uniqueItems` and `contains` keep the elements of any JSON value
+    // counts beyond the positions, `uniqueItems` and `contains` are settings of the struct, which count and compare
+    // every element
+    const auto whole = generate(R"({"type": "array", "prefixItems": [{"type": "string"}, {"type": "integer"}],
+                                    "minItems": 3, "maxItems": 5, "uniqueItems": true,
+                                    "contains": {"type": "string", "minLength": 2}, "maxContains": 1})", {});
+    EXPECT_EQ(warnings(whole), "");
+    EXPECT_TRUE(has(whole.code, "struct Root\n{\n    std::string item1;\n    std::int64_t item2;\n};\n"));
+    EXPECT_TRUE(has(whole.code, "    yyjson::as_array,\n    yyjson::items(true),\n    yyjson::min_items(3),\n"
+                                "    yyjson::max_items(5),\n    yyjson::unique_items,\n"
+                                "    yyjson::contains(yyjson::is_type<yyjson::any_of<yyjson::alt<std::string, "
+                                "yyjson::min_length(2)>>>),\n    yyjson::max_contains(1),\n"));
+    // a closed array of required positions becomes a struct when the whole array has settings
     const auto unique = generate(R"({"type": "array", "prefixItems": [{"type": "integer"}, {"type": "string"}],
-                                     "uniqueItems": true})", {});
-    EXPECT_EQ(warnings(unique), "#: positions of `prefixItems` of different types are read as yyjson::value beside "
-                                "`uniqueItems` or `contains`; their constraints are dropped\n");
-    EXPECT_TRUE(has(unique.code, "    std::vector<yyjson::value> value;\n"));
-    EXPECT_TRUE(has(unique.code, "    yyjson::field(\"value\", yyjson::unique_items));\n"));
+                                     "minItems": 2, "items": false, "uniqueItems": true})", {});
+    EXPECT_EQ(warnings(unique), "");
+    EXPECT_TRUE(has(unique.code, "    yyjson::as_array,\n    yyjson::items(false),\n    yyjson::unique_items,\n"));
+    // positions of one type stay a range
+    EXPECT_TRUE(has(generate(R"({"type": "array", "prefixItems": [{"type": "integer"}, {"type": "integer"}],
+                                 "items": false, "contains": {"type": "integer", "minimum": 5}})", {}).code,
+                    "    yyjson::field(\"value\", yyjson::max_items(2), yyjson::contains(yyjson::minimum(5))));\n"));
 
     // more positions than C++20 reflects
     auto many = std::string(R"({"type": "array", "items": false, "prefixItems": [{"type": "string"})");
