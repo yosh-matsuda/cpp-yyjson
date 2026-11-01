@@ -5312,6 +5312,17 @@ namespace yyjson
         template <typename T>
         concept nullable = requires { typename nullable_holder<T>::value_type; };
 
+        // Whether a field of type T reads null as a missing key.
+        template <typename T>
+        constexpr bool null_reads_as_missing = false;
+        template <typename T>
+        constexpr bool null_reads_as_missing<std::optional<T>> = !may_read_null<T>();
+
+        // Whether the constraints of a field of type T are checked after it reads null.  Null leaves a field that
+        // cannot hold it, or that reads it as a missing key, as it is in `T()`, which is not checked.
+        template <typename T>
+        constexpr bool checks_null_field = nullable<T> && !null_reads_as_missing<T>;
+
         // The type of the value that constraints check in a value of the type T: the innermost value of the holders
         // above, or T itself.
         template <typename T>
@@ -6599,9 +6610,8 @@ namespace yyjson
                     else
                     {
                         assign_reflected_field(field, value, reflected_field_replaceable<i>(t));
-                        // null leaves a field that cannot hold it as it is in `T()`, which is not checked
                         if constexpr (constrained_field<T, K>)
-                            if (nullable<std::remove_cvref_t<decltype(field)>> || !value.is_null())
+                            if (checks_null_field<std::remove_cvref_t<decltype(field)>> || !value.is_null())
                                 check_constraints<T, K>(field, value);
                     }
                 });
@@ -6627,7 +6637,7 @@ namespace yyjson
                     {
                         assign_reflected_field(field, value, visitable_field_replaceable<I>(t));
                         if constexpr (constrained_field<T, I>)
-                            if (nullable<std::remove_cvref_t<decltype(field)>> || !value.is_null())
+                            if (checks_null_field<std::remove_cvref_t<decltype(field)>> || !value.is_null())
                                 check_constraints<T, I>(field, value);
                     }
                 });
@@ -13127,12 +13137,6 @@ namespace yyjson
         // Whether `cast<T>` may read null, as `accepted_json_kinds` tells.
         template <typename T>
         consteval bool may_read_null();
-
-        // Whether a field of type T reads null as a missing key.
-        template <typename T>
-        constexpr bool null_reads_as_missing = false;
-        template <typename T>
-        constexpr bool null_reads_as_missing<std::optional<T>> = !may_read_null<T>();
     }  // namespace detail
 
     template <typename T>
@@ -20314,11 +20318,10 @@ namespace yyjson
                     }
                     [[maybe_unused]] const bool null = *cur_ == 'n';
                     std::forward<Read>(read)(struct_field<I>(t));
-                    // `merge_field` checks the constraints of a field that it does not reset, and null leaves a
-                    // field that cannot hold it as it is in `T()`, which is not checked
+                    // `merge_field` checks the constraints of a field that it does not reset
+                    using field_type = std::remove_cvref_t<decltype(struct_field<I>(t))>;
                     if constexpr (!Merge && yyjson::detail::constrained_field<T, I>)
-                        if (yyjson::detail::nullable<std::remove_cvref_t<decltype(struct_field<I>(t))>> || !null)
-                            check_constraints<T, I>(t);
+                        if (yyjson::detail::checks_null_field<field_type> || !null) check_constraints<T, I>(t);
                 }
             }
 
