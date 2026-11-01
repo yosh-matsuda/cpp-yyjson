@@ -709,6 +709,7 @@ inline constexpr auto yyjson::annotations<Root> = yyjson::annotate(
 | `if`, `then`, `else` | `yyjson::if_then_else(yyjson::if_(...), yyjson::then(...), yyjson::else_(...))`, one for each `if`, also in the subschemas of `allOf` |
 | `then: false` | `yyjson::not_` of the fields of `if` |
 | `if` that every object satisfies, such as `{"type": "object"}`, or that no object satisfies | none: `then` or `else`, whichever applies, is merged into the object schema, as a subschema of `allOf` is |
+| `else` that no object satisfies, such as `false` or a schema of arrays, beside an `if` that some objects satisfy | none: `if` and `then` are merged into the object schema, since an object must satisfy `if` |
 | `not` | `yyjson::not_(...)`; `not` of `anyOf` is one `yyjson::not_` for each subschema |
 | `"dependentSchemas": {"k": S}` | `yyjson::if_then_else(yyjson::if_(yyjson::field("k", yyjson::required)), yyjson::then(S))`; `false` is `yyjson::not_(yyjson::field("k", yyjson::required))` |
 | `additionalProperties: false` in `then`, `else` or a subschema of `dependentSchemas` | `yyjson::additional_properties(false)` in `yyjson::then` or `yyjson::else_`, with a `yyjson::field("k")` for each key of `properties` that has a member |
@@ -742,7 +743,7 @@ A condition that the settings cannot express is left out with a warning, so the 
 | `if` that holds only when a key is missing, beside other tests | "`if` is not supported here: it holds only when the key "k" is missing, together with other tests; ..." |
 | `not` of a subschema that holds only when a key is missing | "`not` is not supported here: its subschema holds only when the key "k" is missing; it is ignored" |
 | `if` that every object satisfies, such as `{"type": "object"}`, or that no object satisfies, whose `then` or `else` refers back to the schema around it | "`if` that every object satisfies is not supported; `then` and `else` are ignored" |
-| `else: false` | "`else` that no object satisfies is not supported and is ignored" |
+| `else` that no object satisfies only by its keys, such as a `required` key that `additionalProperties: false` rejects | "`else` that no object satisfies is not supported and is ignored" |
 | a keyword of `then` or `else` that no setting of the member expresses | "the schema of the key "k" is not expressed by the settings of its field and is ignored" |
 | `additionalProperties` with a schema in `then` or `else` | "`additionalProperties` other than false is not supported here and is ignored" |
 | `additionalProperties: false` beside `patternProperties` in `then` or `else` | "`additionalProperties` false beside `patternProperties` is not supported here and is ignored" |
@@ -799,6 +800,8 @@ A subschema that accepts every value that the schema around reads, such as `{"ty
 *   `then: false` becomes `yyjson::not_` of the settings of `if` beside the settings of `else`, and `else: false` joins the settings of `if` with those of `then`.
 *   A kind whose every value `then` and `else` both reject is left out of the type.
 *   Otherwise the keywords of the kind become `yyjson::if_then_else`, without a branch that has no settings.
+
+On arrays, a part that applies to every array, the branch of an `if` that holds for every array or for none, or `if` with `then` beside an `else` that rejects every array, is merged into the array schema, as a subschema of `allOf` is: `items` in it gives the elements their type, and a `$ref` to a schema of arrays gives the type of that schema.
 
 | Schema | Code |
 | --- | --- |
