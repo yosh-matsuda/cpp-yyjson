@@ -3889,8 +3889,9 @@ namespace cpp_yyjson_codegen
             }
 
             // The keys that the conditions of the normalized object schema `s` name, with the locations that name
-            // them: the keys of `properties` and `required` of `if`, `then`, `else` and `not` (and of the
-            // subschemas of `anyOf` of `not`), the keys of `dependentSchemas` and those that their schemas name
+            // them: the keys of `properties`, `required` and `dependentRequired` of `if`, `then`, `else` and `not`
+            // (and of the subschemas of `anyOf` of `not`), the keys of `dependentSchemas` and those that their
+            // schemas name
             std::vector<std::pair<std::string, std::string>> condition_keys(const json& s, int depth = 0)
             {
                 auto out = std::vector<std::pair<std::string, std::string>>();
@@ -3907,6 +3908,14 @@ namespace cpp_yyjson_codegen
                     if (const auto* r = n->find("required"); r != nullptr && r->is_array())
                         for (const auto& e : r->items)
                             if (e.is_string()) add(e.text, sloc + "/required");
+                    if (const auto* d = n->find("dependentRequired"); d != nullptr && d->is_object())
+                        for (const auto& [k, keys] : d->members)
+                        {
+                            const auto dloc = sloc + "/dependentRequired/" + pointer_token(k);
+                            if (!keys.is_array() || !std::ranges::all_of(keys.items, &json::is_string)) continue;
+                            add(k, dloc);
+                            for (const auto& e : keys.items) add(e.text, dloc);
+                        }
                     for (const auto& [k, l] : condition_keys(*n, depth + 1)) add(k, l);
                 };
                 for (const auto& c : list->items)
@@ -5135,6 +5144,21 @@ namespace cpp_yyjson_codegen
                 const auto* n = normalize_full(&sub, sloc);
                 if (n->is_bool()) never = !n->b;
                 if (!n->is_object()) return out;
+                // keys that the part rejects and keys that the part requires beside others, as nested conditions:
+                // `not` of the key and `dependentSchemas` of `required`
+                auto implied = json::array_of({});
+                const auto imply = [&](const char* keyword, json body, const std::string& iloc) {
+                    auto c = json::object_of();
+                    c.set(keyword, std::move(body));
+                    c.set("$loc", json::string_of(sloc));
+                    c.set("$at", json::string_of(iloc));
+                    implied.items.push_back(std::move(c));
+                };
+                const auto required_of = [](std::vector<json> keys) {
+                    auto r = json::object_of();
+                    r.set("required", json::array_of(std::move(keys)));
+                    return r;
+                };
                 if (const auto* r = n->find("required"); r != nullptr && r->is_array())
                     for (const auto& e : r->items)
                         if (e.is_string() && std::ranges::find(rejected, e.text) != rejected.end())
@@ -5208,8 +5232,12 @@ namespace cpp_yyjson_codegen
                                 // a part with yyjson::additional_properties(false) rejects a key that it does not
                                 // name
                                 if (!closed)
-                                    warn(ploc, "the schema `false` of a key that has a field is not supported here "
-                                               "and is ignored");
+                                {
+                                    // the part rejects an object that has the key
+                                    auto x = json::object_of();
+                                    x.set("required", json::array_of({json::string_of(key)}));
+                                    imply("not", std::move(x), ploc);
+                                }
                                 continue;
                             }
                             if (closed) (void)entry(key);
@@ -5249,9 +5277,26 @@ namespace cpp_yyjson_codegen
                     }
                     else if (k == "$conditions")
                         nested.emplace_back(&v, sloc);
+                    else if (k == "dependentRequired" && v.is_object())
+                    {
+                        // a key requires the others where the part applies
+                        auto deps = json::object_of();
+                        for (const auto& [key, keys] : v.members)
+                        {
+                            if (keys.is_array() && std::ranges::all_of(keys.items, &json::is_string))
+                            {
+                                if (!keys.items.empty()) deps.set(key, required_of(keys.items));
+                            }
+                            else
+                                warn(sloc + "/dependentRequired/" + pointer_token(key),
+                                     "`dependentRequired` whose value is not an array of strings is ignored");
+                        }
+                        if (!deps.members.empty()) imply("dependentSchemas", std::move(deps), sloc + "/" + k);
+                    }
                     else if (is_keyword_key(k))
                         warn(sloc + "/" + k, "`" + k + "` is not supported here and is ignored");
                 }
+                if (!implied.items.empty()) nested.emplace_back(store(std::move(implied)), sloc);
                 if (counts_contradict(out))
                 {
                     // no object has fewer keys than `minProperties` and more than `maxProperties` at once; the counts
@@ -5433,18 +5478,23 @@ namespace cpp_yyjson_codegen
                     {
                         const auto* l = c.find("$loc");
                         const auto cloc = l != nullptr && l->is_string() ? l->text : lloc;
+                        // the location of the keyword itself, for an entry that a part of a condition implies
+                        const auto* a = c.find("$at");
+                        const auto at = a != nullptr && a->is_string() ? a->text : std::string();
                         if (c.has("if"))
                             add_nested_if(c, cloc, g, fields, rejected, name, out, depth);
                         else if (const auto* nt = c.find("not"))
                         {
                             // a `not` of values of other kinds holds for every object
-                            if (reach_of(nt, "object", cloc + "/not") != reach::none)
-                                add_not(*nt, cloc + "/not", fields, rejected, name, out, g);
+                            const auto nloc = at.empty() ? cloc + "/not" : at;
+                            if (reach_of(nt, "object", nloc) != reach::none)
+                                add_not(*nt, nloc, fields, rejected, name, out, g);
                         }
                         else if (const auto* d = c.find("dependentSchemas"); d != nullptr && d->is_object())
                             for (const auto& [k, v] : d->members)
                             {
-                                const auto dloc = cloc + "/dependentSchemas/" + pointer_token(k);
+                                const auto dloc = (at.empty() ? cloc + "/dependentSchemas" : at) + "/" +
+                                                  pointer_token(k);
                                 if (std::ranges::find(rejected, k) != rejected.end()) continue;
                                 auto when = join_tests(g.when, {cond_field{.key = k, .required = true}});
                                 add_guarded(v, dloc, guard{std::move(*when), g.unless}, fields, rejected, name,

@@ -1654,6 +1654,46 @@ TEST(Codegen, NestedConditions)
                             "        yyjson::if_(yyjson::field(\"b\", yyjson::required), "
                             "yyjson::field(\"t\", yyjson::required)),\n"
                             "        yyjson::then(yyjson::field(\"a\", yyjson::required))));\n"));
+
+    // a key whose schema is `false` and `dependentRequired` in `then` and `else` apply under the tests around them as
+    // `not: {required: [k]}` and `dependentSchemas` of `required` do
+    const auto keys = generate(R"({
+        "type": "object",
+        "properties": {"t": {"type": "string"}, "a": {"type": "integer"}, "b": {"type": "integer"},
+                       "c": {"type": "integer"}},
+        "allOf": [
+            {"if": {"properties": {"t": {"const": "x"}}, "required": ["t"]},
+             "then": {"properties": {"a": false}, "dependentRequired": {"b": ["c"]}},
+             "else": {"properties": {"c": false}, "dependentRequired": {"a": ["b"]}}},
+            {"dependentSchemas": {"a": {"dependentRequired": {"b": "c"}}}}
+        ]
+    })",
+                               {});
+    EXPECT_EQ(warnings(keys), "#/allOf/0/else/dependentRequired/a: a subschema that applies when one `if` holds and "
+                              "another fails is not supported and is ignored\n"
+                              "#/allOf/1/dependentSchemas/a/dependentRequired/b: `dependentRequired` whose value is "
+                              "not an array of strings is ignored\n");
+    EXPECT_TRUE(has(keys.code, "    yyjson::not_(yyjson::field(\"t\", yyjson::required, yyjson::const_(\"x\")), "
+                               "yyjson::field(\"a\", yyjson::required)),\n"
+                               "    yyjson::if_then_else(\n"
+                               "        yyjson::if_(yyjson::field(\"t\", yyjson::required, yyjson::const_(\"x\")), "
+                               "yyjson::field(\"b\", yyjson::required)),\n"
+                               "        yyjson::then(yyjson::field(\"c\", yyjson::required))),\n"
+                               "    yyjson::if_then_else(\n"
+                               "        yyjson::if_(yyjson::field(\"c\", yyjson::required)),\n"
+                               "        yyjson::then(yyjson::field(\"t\", yyjson::required, "
+                               "yyjson::const_(\"x\")))));\n"));
+
+    // the keys of `dependentRequired` in a part are members although `properties` does not declare them
+    const auto undeclared = generate(R"({
+        "type": "object",
+        "properties": {"t": {"type": "string"}},
+        "if": {"properties": {"t": {"const": "x"}}, "required": ["t"]},
+        "then": {"dependentRequired": {"p": ["q"]}}
+    })",
+                                     {});
+    EXPECT_EQ(warnings(undeclared), "");
+    EXPECT_TRUE(has(undeclared.code, "    std::optional<yyjson::value> p;\n    std::optional<yyjson::value> q;\n"));
 }
 
 TEST(Codegen, ExtraKeys)
