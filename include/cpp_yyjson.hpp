@@ -22158,6 +22158,9 @@ namespace yyjson
                         {
                             if (*cur_ == 'n')
                             {
+                                // the document reports the error of `yyjson::strict`
+                                if (strict_) [[unlikely]]
+                                    fail();
                                 read_literal("null");
                                 on_null();
                                 return;
