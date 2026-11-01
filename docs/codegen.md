@@ -664,14 +664,48 @@ struct RootOption1
 
 A closed alternative rejects the keys of the other alternatives, so a document that matches two subschemas of `oneOf`, which the schema rejects, may match only one alternative and be read.
 
+`if`, `then`, `else`, `dependentSchemas` and the subschemas of `anyOf` evaluate their properties only when they apply: the properties of `if` and `then` when `if` holds, those of `else` when it fails, those of a subschema of `dependentSchemas` when its key is present, and those of a subschema of `anyOf` when it holds. Each such key that the base does not declare becomes a field (as in [Conditions](#conditions)), and the struct is closed as before; the keyword then becomes a [condition](#conditions) per key on the branch where the key is not evaluated. With `false`, the key is rejected there; with a schema, its value must satisfy that schema there:
+
+```json
+{
+    "type": "object",
+    "properties": {"id": {"type": "integer"}},
+    "unevaluatedProperties": false,
+    "if": {"properties": {"kind": {"const": "box"}}, "required": ["kind"]},
+    "then": {"properties": {"size": {"type": "integer"}}},
+    "else": {"properties": {"label": {"type": "string"}}}
+}
+```
+
+```cpp
+template <>
+inline constexpr auto yyjson::annotations<Root> = yyjson::annotate(
+    yyjson::additional_properties(false),
+    yyjson::if_then_else(
+        yyjson::if_(yyjson::field("kind", yyjson::required, yyjson::const_("box"))),
+        yyjson::then(yyjson::field("size", yyjson::is_type<std::int64_t>)),
+        yyjson::else_(yyjson::field("label", yyjson::is_type<std::string>))),
+    // "size" may appear only where `if` holds, "label" only where it fails
+    yyjson::if_then_else(
+        yyjson::if_(yyjson::field("size", yyjson::required)),
+        yyjson::then(yyjson::field("kind", yyjson::required, yyjson::const_("box")))),
+    yyjson::not_(yyjson::field("label", yyjson::required), yyjson::field("kind", yyjson::required, yyjson::const_("box"))),
+    ...);
+```
+
+A key of `dependentSchemas` gives `yyjson::if_then_else(yyjson::if_(yyjson::field(key, yyjson::required)), yyjson::then(yyjson::field(trigger, yyjson::required)))`. Beside `anyOf`, every alternative of the [variant](#mapping) gets the conditions. With `false`, an `if` alone (no `then`, `else`, other condition or `anyOf`) that has only `properties` and `patternProperties`, none of which matches a property of the base, and a base without `patternProperties`, is merged into the base: an object that the `if` does not satisfy has a key that nothing else evaluates.
+
+`unevaluatedItems` beside `contains` constrains the elements that no subschema of `contains` matches, so every element after `prefixItems` matches a subschema of `contains` or, when the keyword is a schema of the same types, that schema. The elements are read as that one schema, or as `yyjson::any_of` of an alternative per schema (`yyjson::any_of<yyjson::alt<std::string, yyjson::max_length(2)>, yyjson::alt<std::string, ...>>`), and `contains` counts them as before.
+
 The keyword is left out with a warning, and the code reads the other keys or elements, where the keys or elements that count depend on the value in a way that the generated types do not follow:
 
 | Beside | Warning |
 | --- | --- |
-| `anyOf` whose subschemas evaluate properties or items, since several of them can match | "`unevaluatedProperties` beside `anyOf` whose subschemas evaluate properties is not supported; it is ignored" |
+| a key that several subschemas of `if`, `dependentSchemas` and `anyOf` evaluate, since any of them may hold; the other keys are constrained | "the key "k" is evaluated by several subschemas of `if`, `dependentSchemas` or `anyOf`; `unevaluatedProperties` does not apply to it" |
+| `anyOf` whose subschemas evaluate items, or evaluate properties in a way that keys cannot list (`patternProperties`, `additionalProperties`, a nested condition) | "`unevaluatedProperties` beside `anyOf` whose subschemas evaluate properties is not supported; it is ignored" |
 | `oneOf` beside an `anyOf` that does more than list `required` keys, or two `oneOf`, one of them in a subschema of `allOf` | "... beside several `anyOf` / `oneOf` is not supported ..." |
-| `if`, `then`, `else`, `dependentSchemas`, a `$dynamicRef` or `$recursiveRef` that cannot be followed | "... beside `if`, `then`, `else`, `dependentSchemas`, `$dynamicRef` or `$recursiveRef` is not supported ..." |
-| `contains`, for `unevaluatedItems` | "`unevaluatedItems` beside `contains` is not supported; it is ignored" |
+| `if`, `then`, `else` or `dependentSchemas` beside `oneOf`, or whose properties cannot be listed (`patternProperties`, except an `if` alone with `false`; `additionalProperties`; a nested condition), `if`, `then` or `else` for `unevaluatedItems`, a `$dynamicRef` or `$recursiveRef` that cannot be followed | "... beside `if`, `then`, `else`, `dependentSchemas`, `$dynamicRef` or `$recursiveRef` is not supported ..." |
+| `contains` beside `anyOf` or `oneOf` whose subschemas evaluate items, or beside an `unevaluatedItems` schema of other types, for `unevaluatedItems` | "`unevaluatedItems` beside `contains` is not supported; it is ignored" |
 | `patternProperties` that differ between the schema and its subschemas, for `unevaluatedProperties` | "`unevaluatedProperties` beside several `patternProperties` is not supported; it is ignored" |
 | a `$ref` that cannot be read | "... beside a reference that cannot be read is not supported ..." |
 
@@ -917,7 +951,7 @@ A warning names the location in the schema and what the generated code does inst
 | Group | Example | The generated code |
 | --- | --- | --- |
 | a keyword that is not supported | `oneOf` in `then` of a string | reads more than the schema accepts |
-| a form that is not supported | `contains` that the elements cannot express, two different `contains` in `allOf`, values of `multipleOf` in `allOf` whose least common multiple does not fit in 64 bits of digits, `minItems` or `maxItems` beyond the positions of an [array of positions](#arrays-of-positions), [`unevaluatedProperties` beside `anyOf`](#unevaluatedproperties-and-unevaluateditems) | reads more than the schema accepts |
+| a form that is not supported | `contains` that the elements cannot express, two different `contains` in `allOf`, values of `multipleOf` in `allOf` whose least common multiple does not fit in 64 bits of digits, `minItems` or `maxItems` beyond the positions of an [array of positions](#arrays-of-positions), [`unevaluatedProperties` beside `anyOf` that lists no keys](#unevaluatedproperties-and-unevaluateditems), a key that several conditions evaluate | reads more than the schema accepts |
 | a type inferred from keywords, with `--infer-types` | "the schema has no `type`; it is read as string from its keywords" | reads only that type |
 | a variant of more alternatives than `--max-alternatives` | "a variant of 447 alternatives is more than 64 (--max-alternatives) ..." | reads any JSON value there |
 | a reference that cannot be followed | a missing file, a URI that is not the `$id` of a schema read and is not mapped to a file, a file of `--schema` that cannot be read | reads any JSON value there |
