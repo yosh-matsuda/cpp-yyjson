@@ -285,6 +285,33 @@ using CondClosedVariant = std::variant<CondClosedAlternative, CondPoint>;
 template <>
 inline constexpr auto yyjson::annotations<CondClosedVariant> =
     yyjson::annotate(yyjson::internal_tag("type", {"c", "p"}));
+// numbers of keys in the parts of conditions, counting the keys of no field and the tags of alternatives
+struct CondCounted
+{
+    std::optional<std::string> kind;
+    std::optional<int> a;
+    std::map<std::string, int> rest;
+};
+template <>
+inline constexpr auto yyjson::annotations<CondCounted> = yyjson::annotate(
+    yyjson::field("rest", yyjson::extra_keys),
+    yyjson::if_then_else(yyjson::if_(yyjson::field("kind", yyjson::const_("pair"), yyjson::required)),
+                         yyjson::then(yyjson::min_properties(3)), yyjson::else_(yyjson::max_properties(2))),
+    yyjson::if_then_else(yyjson::if_(yyjson::min_properties(2), yyjson::max_properties(2)),
+                         yyjson::then(yyjson::field("a", yyjson::required))),
+    yyjson::not_(yyjson::min_properties(5)));
+struct CondCountedAlternative
+{
+    std::optional<int> a;
+    std::optional<int> b;
+};
+template <>
+inline constexpr auto yyjson::annotations<CondCountedAlternative> = yyjson::annotate(
+    yyjson::if_then_else(yyjson::if_(yyjson::min_properties(2)), yyjson::then(yyjson::field("b", yyjson::required))));
+using CondCountedVariant = std::variant<CondCountedAlternative, CondPoint>;
+template <>
+inline constexpr auto yyjson::annotations<CondCountedVariant> =
+    yyjson::annotate(yyjson::internal_tag("type", {"c", "p"}));
 
 // keys of no field kept in a map, whose values are constrained, also in an alternative of an internally tagged variant
 struct Extra
@@ -1942,6 +1969,29 @@ TEST(Schema, Conditions)
         R"({"type":"c","b":2})",
         R"({"type":"p","x":1})",
     });
+    check<CondCounted>({
+        R"({})",
+        R"({"kind":"pair","a":1,"x":2})",
+        R"({"kind":"pair","a":1})",
+        R"({"kind":"one","a":1,"x":2})",
+        R"({"x":1,"y":2,"z":3})",
+        R"({"a":1,"x":2})",
+        R"({"kind":"one","x":2})",
+        R"({"kind":"pair","a":1,"x":2,"y":3,"z":4})",
+    });
+    check<CondCountedVariant>({
+        R"({"type":"c","b":1})",
+        R"({"type":"c"})",
+        R"({"type":"c","a":1})",
+        R"({"type":"p","x":1})",
+    });
+    {
+        const auto c = to_jsoncons(yyjson::json_schema<CondCounted>())["$defs"]["CondCounted"];
+        ASSERT_EQ(c["allOf"].size(), 3);
+        EXPECT_EQ(c["allOf"][0]["then"], json::parse(R"({"minProperties":3})"));
+        EXPECT_EQ(c["allOf"][1]["if"], json::parse(R"({"minProperties":2,"maxProperties":2})"));
+        EXPECT_EQ(c["allOf"][2]["not"], json::parse(R"({"minProperties":5})"));
+    }
     {
         const auto c = to_jsoncons(yyjson::json_schema<CondClosed>())["$defs"]["CondClosed"];
         EXPECT_EQ(c["then"]["additionalProperties"], json(false));

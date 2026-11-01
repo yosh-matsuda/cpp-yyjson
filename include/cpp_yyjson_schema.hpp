@@ -233,7 +233,7 @@ namespace yyjson
         // The annotations `yyjson::examples` of the entity R, which is a template and not looked up by its type.
         template <std::meta::info R>
         inline constexpr std::span<const std::meta::info> examples_annotations =
-            std::define_static_array(yyjson::detail::template_annotations_of<R, ^^yyjson::examples_t>());
+            std::define_static_array(yyjson::detail::template_annotations_of<R, false, ^^yyjson::examples_t>());
         template <std::meta::info R, std::size_t K>
         using examples_annotation_type =
             typename[:std::meta::remove_cvref(std::meta::type_of(examples_annotations<R>[K])):];
@@ -2581,6 +2581,12 @@ namespace yyjson
                 return tag_keys.empty() ? std::span<const std::string_view>(none, 0)
                                         : std::span<const std::string_view>(tag_keys);
             };
+            using bounds = yyjson::detail::condition_rule::key_bounds;
+            // `yyjson::min_properties` and `yyjson::max_properties` of a part
+            const auto count = [](object_ref part, const bounds& keys) {
+                if (keys.min != 0) part.emplace("minProperties", keys.min);
+                if (keys.max != bounds().max) part.emplace("maxProperties", keys.max);
+            };
             for (const auto& rule : table::rules)
             {
                 auto target = [&] {
@@ -2590,16 +2596,26 @@ namespace yyjson
                 }();
                 if (rule.negated)
                 {
-                    emit_condition_part<S>(target.emplace("not", empty_object), rule.begin, rule.then_begin, entries);
+                    auto part = target.emplace("not", empty_object);
+                    emit_condition_part<S>(part, rule.begin, rule.then_begin, entries);
+                    count(part, rule.if_keys);
                     continue;
                 }
-                emit_condition_part<S>(target.emplace("if", empty_object), rule.begin, rule.then_begin, entries);
-                if (rule.then_begin != rule.else_begin || rule.then_closed)
-                    emit_condition_part<S>(target.emplace("then", empty_object), rule.then_begin, rule.else_begin,
-                                           entries, closed(rule.then_closed));
-                if (rule.else_begin != rule.end || rule.else_closed)
-                    emit_condition_part<S>(target.emplace("else", empty_object), rule.else_begin, rule.end, entries,
-                                           closed(rule.else_closed));
+                auto if_part = target.emplace("if", empty_object);
+                emit_condition_part<S>(if_part, rule.begin, rule.then_begin, entries);
+                count(if_part, rule.if_keys);
+                if (rule.then_begin != rule.else_begin || rule.then_closed || rule.then_keys.bounded())
+                {
+                    auto part = target.emplace("then", empty_object);
+                    emit_condition_part<S>(part, rule.then_begin, rule.else_begin, entries, closed(rule.then_closed));
+                    count(part, rule.then_keys);
+                }
+                if (rule.else_begin != rule.end || rule.else_closed || rule.else_keys.bounded())
+                {
+                    auto part = target.emplace("else", empty_object);
+                    emit_condition_part<S>(part, rule.else_begin, rule.end, entries, closed(rule.else_closed));
+                    count(part, rule.else_keys);
+                }
             }
             values_ = outer_values;
             nodes_ = outer_nodes;

@@ -917,6 +917,35 @@ using ClosedVariant = std::variant<ClosedAlternative, ConditionPoint>;
 template <>
 inline constexpr auto yyjson::annotations<ClosedVariant> = yyjson::annotate(yyjson::internal_tag("type", {"c", "p"}));
 
+// yyjson::min_properties and yyjson::max_properties in the parts of the conditions count the keys of the object
+struct CountedShape
+{
+    std::optional<std::string> kind;
+    std::optional<int> a;
+    std::map<std::string, int> rest;
+};
+template <>
+inline constexpr auto yyjson::annotations<CountedShape> = yyjson::annotate(
+    yyjson::field("rest", yyjson::extra_keys),
+    yyjson::if_then_else(yyjson::if_(yyjson::field("kind", yyjson::const_("pair"), yyjson::required)),
+                         yyjson::then(yyjson::min_properties(3)), yyjson::else_(yyjson::max_properties(2))),
+    yyjson::if_then_else(yyjson::if_(yyjson::min_properties(2), yyjson::max_properties(2)),
+                         yyjson::then(yyjson::field("a", yyjson::required))),
+    yyjson::not_(yyjson::min_properties(5)));
+// the internal tag of an alternative is a key of its object
+struct CountedAlternative
+{
+    std::optional<int> a;
+    std::optional<int> b;
+};
+template <>
+inline constexpr auto yyjson::annotations<CountedAlternative> = yyjson::annotate(
+    yyjson::if_then_else(yyjson::if_(yyjson::min_properties(2)), yyjson::then(yyjson::field("b", yyjson::required))));
+using CountedVariant = std::variant<CountedAlternative, ConditionPoint>;
+template <>
+inline constexpr auto yyjson::annotations<CountedVariant> =
+    yyjson::annotate(yyjson::internal_tag("type", {"c", "p"}));
+
 // the nodes of the settings are counted from the types, and a struct without settings of the values in its fields
 // takes none
 static_assert(yyjson::detail::node_count<decltype(yyjson::items(yyjson::items(yyjson::minimum(0))))>.nodes == 2);
@@ -1420,6 +1449,14 @@ struct [[ = yyjson::if_then_else(yyjson::if_(yyjson::field("kind", yyjson::const
     std::optional<std::string> kind;
     std::optional<double> r;
     std::optional<double> w;
+};
+
+struct [[ = yyjson::if_then_else(yyjson::if_(yyjson::min_properties(2)), yyjson::then(yyjson::max_properties(2))),
+           = yyjson::not_(yyjson::max_properties(0)) ]] CountedAnnotated
+{
+    std::optional<int> a;
+    std::optional<int> b;
+    std::optional<int> c;
 };
 
 struct ConstrainedAnnotated
@@ -2874,6 +2911,84 @@ TEST(Constraints, ClosedConditions)
     EXPECT_EQ(yyjson::write(ClosedVariant(ClosedAlternative{1, {}}), yyjson::strict), R"({"type":"c","a":1})");
 }
 
+TEST(Constraints, CountedConditions)
+{
+    // every read of `json` but merge_into: accepted, or rejected with `message` at the object
+    const auto check = []<typename T>(std::type_identity<T>, const char* json, std::string_view message = "") {
+        const auto reads = std::array<std::function<void()>, 5>{
+            [&] { (void)yyjson::read<T>(json); }, [&] { (void)yyjson::read(json).template cast<T>(); },
+            [&] {
+                auto t = T();
+                yyjson::read_into(json, t);
+            },
+            [&] { (void)yyjson::read<std::vector<T>>(std::format("[{}]", json)); },
+            [&] { (void)yyjson::read<T>(json, yyjson::strict); }};
+        for (std::size_t i = 0; i < reads.size(); ++i)
+        {
+            if (message.empty())
+                EXPECT_NO_THROW(reads[i]()) << json;
+            else
+            {
+                const auto e = bad_cast_of(reads[i]);
+                EXPECT_TRUE(message_of(e).starts_with(message)) << json << "\n" << e.what();
+                EXPECT_EQ(e.path(), i == 3 ? "/0" : "") << json;
+            }
+        }
+#if YYJSON_VERSION_HEX >= 0x000C00
+        EXPECT_EQ(read_directly<T>(json, yyjson::ReadFlag::NoFlag).has_value(), message.empty()) << json;
+#endif
+    };
+    constexpr auto shape = std::type_identity<CountedShape>{};
+    check(shape, R"({})");
+    check(shape, R"({"kind":"pair","a":1,"x":2})");
+    check(shape, R"({"x":2,"kind":"pair","a":1,"y":3})");
+    check(shape, R"({"kind":"one"})");
+    check(shape, R"({"kind":"pair","a":1})",
+          "CountedShape has 2 keys, fewer than the minimum 3 that yyjson::if_then_else requires");
+    check(shape, R"({"kind":"one","a":1,"x":2})",
+          "CountedShape has 3 keys, more than the maximum 2 that yyjson::if_then_else allows");
+    // the keys that are not keys of fields count too
+    check(shape, R"({"x":1,"y":2,"z":3})",
+          "CountedShape has 3 keys, more than the maximum 2 that yyjson::if_then_else allows");
+    // the condition of two keys
+    check(shape, R"({"a":1,"x":2})");
+    check(shape, R"({"kind":"one","x":2})",
+          R"(CountedShape is not constructible from JSON without the key "a", which yyjson::if_then_else requires)");
+    check(shape, R"({"kind":"pair","a":1,"x":2,"y":3,"z":4})",
+          "CountedShape has the keys and the values that yyjson::not_ rejects");
+    // merge_into does not check the conditions
+    auto merged = CountedShape{};
+    yyjson::merge_into(R"({"kind":"pair"})", merged);
+    EXPECT_EQ(merged.kind, "pair");
+
+    check(std::type_identity<CountedVariant>{}, R"({"type":"c","b":1})");
+    check(std::type_identity<CountedVariant>{}, R"({"type":"c"})");
+    check(std::type_identity<CountedVariant>{}, R"({"type":"c","a":1})",
+          R"(CountedAlternative is not constructible from JSON without the key "b", which yyjson::if_then_else )"
+          R"(requires)");
+    EXPECT_NO_THROW((void)yyjson::read<CountedAlternative>(R"({"a":1})"));
+
+    // validate and write(strict) count the keys that writing writes
+    const auto rejects = [](const auto& t, std::string_view message) {
+        auto e = bad_cast_of([&] { yyjson::validate(t); });
+        EXPECT_EQ(e.path(), "");
+        EXPECT_TRUE(message_of(e).starts_with(message)) << e.what();
+        e = bad_cast_of([&] { (void)yyjson::write(t, yyjson::strict); });
+        EXPECT_TRUE(message_of(e).starts_with(message)) << e.what();
+    };
+    EXPECT_NO_THROW(yyjson::validate(CountedShape{}));
+    EXPECT_NO_THROW(yyjson::validate(CountedShape{"pair", 1, {{"x", 2}}}));
+    rejects(CountedShape{"pair", 1, {}}, "CountedShape has 2 keys, fewer than the minimum 3");
+    rejects(CountedShape{{}, {}, {{"x", 1}, {"y", 2}, {"z", 3}}}, "CountedShape has 3 keys, more than the maximum 2");
+    rejects(CountedShape{"pair", 1, {{"x", 2}, {"y", 3}, {"z", 4}}},
+            "CountedShape has the keys and the values that yyjson::not_ rejects");
+    EXPECT_NO_THROW(yyjson::validate(CountedAlternative{1, {}}));
+    EXPECT_NO_THROW(yyjson::validate(CountedVariant(CountedAlternative{{}, {}})));
+    rejects(CountedVariant(CountedAlternative{1, {}}),
+            R"(CountedAlternative is not constructible from JSON without the key "b")");
+    EXPECT_EQ(yyjson::write(CountedVariant(CountedAlternative{{}, 1}), yyjson::strict), R"({"type":"c","b":1})");
+}
+
 TEST(Constraints, IsTypeFunction)
 {
     const auto doc = yyjson::read(R"({"p":{"x":1,"y":2},"n":1.5,"s":"a"})");
@@ -4090,6 +4205,13 @@ TEST(Constraints, Annotations)
                                                R"(yyjson::additional_properties(false) of yyjson::if_then_else rejects)"))
         << closed.what();
     EXPECT_EQ(closed.path(), "/w");
+
+    EXPECT_NO_THROW((void)yyjson::read<CountedAnnotated>(R"({"a":1})"));
+    EXPECT_NO_THROW((void)yyjson::read<CountedAnnotated>(R"({"a":1,"c":3})"));
+    EXPECT_TRUE(message_of(bad_cast_of([] { (void)yyjson::read<CountedAnnotated>(R"({"a":1,"b":2,"c":3})"); }))
+                    .starts_with("CountedAnnotated has 3 keys, more than the maximum 2"));
+    EXPECT_TRUE(message_of(bad_cast_of([] { (void)yyjson::read<CountedAnnotated>("{}"); }))
+                    .starts_with("CountedAnnotated has the keys and the values that yyjson::not_ rejects"));
 
     expect_accepted<PatternAnnotated>(R"({"ab":10,"ax":1,"xb":10,"zz":1})", {10, {{"ax", 1}}, {{"xb", 10}}});
     expect_rejected<PatternAnnotated>(
