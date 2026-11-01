@@ -2833,6 +2833,20 @@ TEST(Codegen, ValueNot)
     EXPECT_TRUE(has(unevaluated.code, "struct Root\n{\n    std::optional<std::string> foo;\n};\n"));
     EXPECT_TRUE(has(unevaluated.code, "yyjson::additional_properties(false)"));
 
+    // an alternative of anyOf / oneOf that `not` beside it leaves without a value is dropped without a warning
+    const auto beside = generate(R"({"type": "object", "properties": {
+        "a": {"anyOf": [{"type": "integer"}, {"type": "string"}], "not": {"minimum": 3}},
+        "b": {"oneOf": [{"type": "integer", "maximum": 10}, {"type": "string"}, {"type": "null"}],
+              "not": {"minimum": 3}},
+        "c": {"anyOf": [{"type": "string"}, {"type": "boolean"}], "not": {"minimum": 3}}}})", {});
+    EXPECT_EQ(warnings(beside), "#/properties/c: no subschema of `anyOf` accepts a value with the keywords beside "
+                                "it; reading it always fails\n");
+    EXPECT_TRUE(has(beside.code, "    std::optional<std::int64_t> a;\n    std::optional<std::int64_t> b;\n"
+                                 "    std::optional<yyjson::value> c;\n"));
+    EXPECT_TRUE(has(beside.code, "    yyjson::field(\"a\", yyjson::not_(yyjson::minimum(3))),\n"
+                                 "    yyjson::field(\"b\", yyjson::maximum(10), yyjson::not_(yyjson::minimum(3))),\n"
+                                 "    yyjson::field(\"c\", yyjson::not_(yyjson::is_type<yyjson::value>)));\n"));
+
     // C++26 annotations name the setting directly
     const auto cpp26 = generate(R"({"type": "object", "properties": {
         "k": {"anyOf": [{"type": "integer"}, {"type": "string", "not": {"const": ""}}]}}})", {.cpp26 = true});

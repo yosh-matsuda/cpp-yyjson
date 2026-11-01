@@ -3106,6 +3106,18 @@ namespace cpp_yyjson_codegen
                 return r;
             }
 
+            // whether `t` is the type of no_value()
+            bool is_no_value(const typed& t) const
+            {
+                if (t.t.k != tk::any || t.s.negated.size() != 1) return false;
+                auto rest = t.s;
+                auto n = std::move(rest.negated.front());
+                rest.negated.clear();
+                const auto test = std::exchange(n.type_test, -1);
+                return rest.empty() && n.empty() && test >= 0 &&
+                       type_tests_[static_cast<std::size_t>(test)].k == tk::any;
+            }
+
             // yyjson::is_type<T>, with T the type of `sub` for values of `kind` (any kind when empty); nullopt when T
             // reads more than `sub` accepts
             std::optional<settings> type_test_of(const json* sub, const std::string& nloc, const std::string& hint,
@@ -6972,7 +6984,20 @@ namespace cpp_yyjson_codegen
                     const auto h = title != nullptr && title->is_string() && !pascal(title->text).empty()
                                        ? pascal(title->text)
                                        : hint + "Option" + std::to_string(i + 1);
-                    alts.push_back(type_of(schemas[i], locs[i], h));
+                    // an alternative that the keywords of the base leave without a value, such as a string beside
+                    // `not: {minimum: 3}`, is dropped with the warnings that typing it gave
+                    const auto warned = warnings_.size();
+                    const auto calls = warn_calls_;
+                    auto a = type_of(schemas[i], locs[i], h);
+                    if (is_no_value(a))
+                    {
+                        for (auto j = warned; j < warnings_.size(); ++j)
+                            warned_.erase({warnings_[j].location, warnings_[j].message});
+                        warnings_.resize(warned);
+                        warn_calls_ = calls;
+                        continue;
+                    }
+                    alts.push_back(std::move(a));
                     adopt_metadata(alts.back().t, *n);
                     // the metadata of the alternative, unless its named type has the same
                     auto m = meta_of(*n);
@@ -6980,6 +7005,12 @@ namespace cpp_yyjson_codegen
                     const auto& t = alts.back().t;
                     if (t.k == tk::named && same_metadata(decls_[t.decl].meta, m)) m = metadata();
                     metas.push_back(std::move(m));
+                }
+                if (alts.empty())
+                {
+                    warn(loc, "no subschema of `" + kw + "` accepts a value with the keywords beside it; reading it "
+                              "always fails");
+                    return no_value();
                 }
                 return make_variant(std::move(alts), loc, parts.any ? combination::any_of : combination::one_of,
                                     std::move(metas));
