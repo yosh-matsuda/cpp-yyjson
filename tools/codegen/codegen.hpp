@@ -3143,13 +3143,17 @@ namespace cpp_yyjson_codegen
                         add_type_test(r, sub, nloc, hint, kind);
                         continue;
                     }
-                    // element trees are not settings of yyjson::not_
+                    // element trees are not settings of yyjson::not_; contains is, but not on a tuple
                     const auto* n = normalize_full(sub, nloc);
                     const auto any_key = [&](std::initializer_list<std::string_view> keys) {
                         return n->is_object() && std::ranges::any_of(keys, [&](auto k) { return n->has(k); });
                     };
-                    if ((t.k == tk::vector || t.k == tk::tuple) &&
-                        any_key({"items", "prefixItems", "contains", "uniqueItems", "minContains", "maxContains"}))
+                    if ((t.k == tk::vector || t.k == tk::tuple) && any_key({"items", "prefixItems", "uniqueItems"}))
+                    {
+                        drop();
+                        continue;
+                    }
+                    if (t.k == tk::tuple && any_key({"contains", "minContains", "maxContains"}))
                     {
                         drop();
                         continue;
@@ -4237,8 +4241,9 @@ namespace cpp_yyjson_codegen
                                     if (!is_metadata_key(pk) && pk != "type" && pk != "const" && pk != "enum" &&
                                         pk != "minimum" && pk != "maximum" && pk != "exclusiveMinimum" &&
                                         pk != "exclusiveMaximum" && pk != "multipleOf" && pk != "minLength" &&
-                                        pk != "maxLength" && pk != "pattern" && pk != "format" &&
-                                        pk != "contains" && pk != "minContains" && pk != "maxContains")
+                                        pk != "maxLength" && pk != "pattern" && pk != "format" && pk != "minItems" &&
+                                        pk != "maxItems" && pk != "contains" && pk != "minContains" &&
+                                        pk != "maxContains")
                                     {
                                         if (!dom)
                                             return fail("`" + pk + "` of the key \"" + key +
@@ -4249,8 +4254,7 @@ namespace cpp_yyjson_codegen
                             const auto calls = warn_calls_;
                             auto set = by_settings ? settings_for(ps, f->type, ploc, hint + pascal(key))
                                                    : std::optional<settings>();
-                            if (set && (warn_calls_ != calls || set->min_items || set->max_items))
-                                set.reset();
+                            if (set && warn_calls_ != calls) set.reset();
                             else if (set)
                             {
                                 // the settings of a field let null through unless they list values, so a schema

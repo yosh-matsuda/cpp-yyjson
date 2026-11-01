@@ -901,6 +901,21 @@ TEST(Codegen, Contains)
                                     "by the settings of its field; it is ignored\n"));
     EXPECT_TRUE(has(cond.code, "yyjson::field(\"pair\", yyjson::prefix_items(yyjson::contains("
                                "yyjson::const_(1))))"));
+    // counts of items in `if` and `contains` in `not` of a value
+    const auto counts = generate(R"({
+        "type": "object",
+        "properties": {"xs": {"type": "array", "items": {"type": "integer"},
+                              "not": {"contains": {"minimum": 10}, "minContains": 2}},
+                       "n": {"type": "integer"}},
+        "if": {"properties": {"xs": {"minItems": 2, "maxItems": 3}}},
+        "then": {"required": ["n"]},
+        "not": {"properties": {"xs": {"maxItems": 0}}, "required": ["xs"]}
+    })",
+                                 {});
+    EXPECT_EQ(warnings(counts), "");
+    EXPECT_TRUE(has(counts.code, "yyjson::not_(yyjson::contains(yyjson::minimum(10)), yyjson::min_contains(2))"));
+    EXPECT_TRUE(has(counts.code, "yyjson::if_(yyjson::field(\"xs\", yyjson::min_items(2), yyjson::max_items(3)))"));
+    EXPECT_TRUE(has(counts.code, "yyjson::not_(yyjson::field(\"xs\", yyjson::required, yyjson::max_items(0)))"));
     const auto typed = generate(R"({
         "type": "object",
         "properties": {"pair": {"type": "array", "prefixItems": [{"type": "array", "contains": {"$ref": "#/$defs/P"}}],

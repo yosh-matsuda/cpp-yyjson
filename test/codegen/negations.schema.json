@@ -11,6 +11,9 @@
     "id": {"type": ["string", "integer"], "not": {"type": "string"}},
     "tags": {"type": "array", "items": {"type": "string", "not": {"const": ""}}},
     "price": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "string", "not": {"pattern": "^-"}}]},
-    "owner": {"not": {"required": ["banned"]}}
-  }
+    "owner": {"not": {"required": ["banned"]}},
+    "ports": {"type": "array", "items": {"type": "integer"}, "not": {"contains": {"minimum": 1000}, "minContains": 2}}
+  },
+  "if": {"properties": {"ports": {"minItems": 3}}, "required": ["ports"]},
+  "then": {"required": ["name"]}
 }

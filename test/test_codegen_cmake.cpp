@@ -321,9 +321,10 @@ TEST(CodegenCMake, NestedConditions)
 TEST(CodegenCMake, ValueNot)
 {
     // `not` of a value rejects the values that its subschema accepts, removes the kinds that it rejects entirely and
-    // filters `enum`
+    // filters `enum`; `contains` in `not` and `minItems` in `if`
     for (const auto* json : {R"({"name":"main","port":80,"level":9,"note":[1],"status":"draft","id":1})",
-                             R"({"tags":["a"],"price":5,"owner":{}})", R"({"price":"5"})", R"({"note":0})"})
+                             R"({"tags":["a"],"price":5,"owner":{}})", R"({"price":"5"})", R"({"note":0})",
+                             R"({"ports":[1000,80]})", R"({"name":"a","ports":[1,2,3]})"})
     {
         const auto listing = yyjson::read<model::Listing>(json, yyjson::strict);
         EXPECT_EQ(std::string_view(yyjson::write(listing)), std::string_view(json));
@@ -331,10 +332,16 @@ TEST(CodegenCMake, ValueNot)
     }
     for (const auto* json : {R"({"name":"tmp1"})", R"({"port":22})", R"({"level":10})", R"({"level":null})",
                              R"({"note":null})", R"({"status":"deleted"})", R"({"id":"1"})", R"({"tags":["a",""]})",
-                             R"({"price":"-5"})", R"({"price":-5})", R"({"owner":{"banned":false}})", R"({"owner":1})"})
+                             R"({"price":"-5"})", R"({"price":-5})", R"({"owner":{"banned":false}})", R"({"owner":1})",
+                             R"({"ports":[1000,2000]})", R"({"ports":[1,2,3]})"})
         EXPECT_THROW((void)yyjson::read<model::Listing>(json), yyjson::bad_cast) << json;
     auto listing = model::Listing();
     listing.name = "tmp";
+    EXPECT_THROW(yyjson::validate(listing), yyjson::bad_cast);
+    listing.name.reset();
+    listing.ports = {1000, 2000};
+    EXPECT_THROW(yyjson::validate(listing), yyjson::bad_cast);
+    listing.ports = {1, 2, 3};
     EXPECT_THROW(yyjson::validate(listing), yyjson::bad_cast);
 }
 
