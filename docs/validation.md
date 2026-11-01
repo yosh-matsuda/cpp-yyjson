@@ -732,9 +732,9 @@ The tables below list the keywords of [JSON Schema 2020-12](https://json-schema.
 | --- | --- | --- |
 | `items` | `yyjson::items(settings...)` | `items: false` is a tuple or a `std::array`, which have a fixed number of elements, `yyjson::max_items`, or `yyjson::items(false)` on a struct with [`yyjson::as_array`](conversions.md#a-struct-as-a-json-array). `items` beside `prefixItems` is `yyjson::items(settings...)` on the field of `yyjson::extra_items` of such a struct. |
 | `prefixItems` | `yyjson::prefix_items(...)`, or the fields of a struct with [`yyjson::as_array`](conversions.md#a-struct-as-a-json-array) | a tuple or a `std::array` reads only an array of exactly as many elements as it has, as `prefixItems` with `minItems` and `maxItems` of that number does. A struct with `yyjson::as_array` reads an array that ends early or goes on after its fields; `minItems` is the number of elements up to the last field that [`yyjson::strict`](#strict-reading) or `yyjson::required` needs. |
-| `contains`, `minContains`, `maxContains` | `yyjson::contains(settings...)`, `yyjson::min_contains(n)`, `yyjson::max_contains(n)` | `contains: {}` is `yyjson::min_items` and `yyjson::max_items`. A `$ref` in `contains` is `yyjson::is_type<T>` on a range of values of the DOM. |
-| `minItems`, `maxItems` | `yyjson::min_items(n)`, `yyjson::max_items(n)` | |
-| `uniqueItems` | `yyjson::unique_items`, or a set | the elements are compared as the JSON values that they are written as, by their fields, elements and the values that they hold. A set keeps the first of equal elements, and [`yyjson::strict`](#strict-reading) rejects the repetition. |
+| `contains`, `minContains`, `maxContains` | `yyjson::contains(settings...)`, `yyjson::min_contains(n)`, `yyjson::max_contains(n)`, also on a struct with [`yyjson::as_array`](conversions.md#a-struct-as-a-json-array) | `contains: {}` is `yyjson::min_items` and `yyjson::max_items`. A `$ref` in `contains` is `yyjson::is_type<T>` on a range of values of the DOM. |
+| `minItems`, `maxItems` | `yyjson::min_items(n)`, `yyjson::max_items(n)`, also on a struct with `yyjson::as_array` | |
+| `uniqueItems` | `yyjson::unique_items`, also on a struct with `yyjson::as_array`, or a set | the elements are compared as the JSON values that they are written as, by their fields, elements and the values that they hold. A set keeps the first of equal elements, and [`yyjson::strict`](#strict-reading) rejects the repetition. |
 | `unevaluatedItems` | none | `yyjson::max_items`, or a tuple. |
 
 ### Objects
