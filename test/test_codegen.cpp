@@ -833,6 +833,13 @@ TEST(Codegen, Arrays)
     EXPECT_TRUE(has(r.code, "yyjson::field(\"counts\", yyjson::additional_properties(yyjson::minimum(0)))"));
     EXPECT_TRUE(has(r.code, "    std::optional<yyjson::object> obj;\n"));
     EXPECT_TRUE(has(r.code, "    std::optional<yyjson::value> any;\n"));
+
+    // positions without constraints before `items` are kept: the constraints of `items` start after them
+    const auto rest = generate(R"({"type": "array", "prefixItems": [{"type": "integer"}],
+                                   "items": {"type": "integer", "minimum": 5}})",
+                               {});
+    EXPECT_EQ(warnings(rest), "");
+    EXPECT_TRUE(has(rest.code, "yyjson::field(\"value\", yyjson::prefix_items({}), yyjson::items(yyjson::minimum(5)))"));
 }
 
 TEST(Codegen, Contains)

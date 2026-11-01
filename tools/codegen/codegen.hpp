@@ -8572,14 +8572,23 @@ namespace cpp_yyjson_codegen
                     for (auto& c : *v) view_strings(c);
             }
 
-            // prefix_items settings within the limits of the library
+            // prefix_items settings within the limits of the library; call it after the settings of `items` are in
+            // `out`: they apply only after the positions, so a prefix without settings is kept to start them there
             void set_prefix(settings& out, std::vector<settings> prefix, const std::string& loc)
             {
-                if (std::ranges::all_of(prefix, [](const auto& p) { return p.empty(); })) return;
+                const auto empty = [](const auto& p) { return p.empty(); };
+                if (out.items.empty() && std::ranges::all_of(prefix, empty)) return;
                 if (prefix.size() > 16)
                 {
-                    warn(loc,
-                         "constraints of more than 16 positions of `prefixItems` are not supported; they are dropped");
+                    if (out.items.empty())
+                        warn(loc, "constraints of more than 16 positions of `prefixItems` are not supported; they are "
+                                  "dropped");
+                    else
+                    {
+                        warn(loc, "constraints of more than 16 positions of `prefixItems` are not supported; they are "
+                                  "dropped with the constraints of `items`");
+                        out.items.clear();
+                    }
                     return;
                 }
                 for (auto& p : prefix)
@@ -8602,7 +8611,7 @@ namespace cpp_yyjson_codegen
                     }
                     else if (chars > 256 && !opts_.cpp26)
                         view_strings(p);
-                if (std::ranges::all_of(prefix, [](const auto& p) { return p.empty(); })) return;
+                if (out.items.empty() && std::ranges::all_of(prefix, empty)) return;
                 out.prefix = std::move(prefix);
             }
 
@@ -8682,8 +8691,8 @@ namespace cpp_yyjson_codegen
                         r.t = make(tk::vector, {pos[0].t});
                         auto ps = std::vector<settings>();
                         for (auto& p : pos) ps.push_back(std::move(p.s));
-                        set_prefix(r.s, std::move(ps), loc);
                         if (!items_false && !rest.s.empty()) r.s.items.push_back(std::move(rest.s));
+                        set_prefix(r.s, std::move(ps), loc);
                     }
                     else if (!opts_.cpp26 && n + (items_false ? 0 : 1) > max_reflected_fields)
                     {
@@ -9731,6 +9740,9 @@ namespace cpp_yyjson_codegen
                     return v.k == tk::vector || v.k == tk::map ? v.args[0] : make(tk::any);
                 };
                 if (s.unique) out.emplace_back("yyjson::unique_items");
+                // positions without settings are written when `items` follows them: it applies only after them
+                const auto items =
+                    s.items.empty() ? std::vector<std::string>() : render_settings(s.items[0], elem(), q);
                 if (!s.prefix.empty())
                 {
                     auto parts = std::vector<std::string>();
@@ -9739,12 +9751,10 @@ namespace cpp_yyjson_codegen
                         const auto p = render_settings(s.prefix[i], v.k == tk::tuple ? v.args[i] : elem(), q);
                         parts.push_back(p.empty() ? "{}" : p.size() == 1 ? p[0] : "{" + join(p) + "}");
                     }
-                    if (std::ranges::any_of(parts, [](const auto& p) { return p != "{}"; }))
+                    if (!items.empty() || std::ranges::any_of(parts, [](const auto& p) { return p != "{}"; }))
                         out.push_back("yyjson::prefix_items(" + join(parts) + ")");
                 }
-                if (!s.items.empty())
-                    if (const auto p = render_settings(s.items[0], elem(), q); !p.empty())
-                        out.push_back("yyjson::items(" + join(p) + ")");
+                if (!items.empty()) out.push_back("yyjson::items(" + join(items) + ")");
                 if (!s.contains.empty())
                     if (const auto p = render_settings(s.contains[0], elem(), q); !p.empty())
                     {
