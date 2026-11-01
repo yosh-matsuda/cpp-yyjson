@@ -1937,7 +1937,9 @@ namespace cpp_yyjson_codegen
                 for (const auto& [e, l] : parts) base = merge(base, *normalize_full(e, l), l);
                 settle_unevaluated(*s, base, false, loc);
                 settle_unevaluated(*s, base, true, loc);
-                const auto* r = store(std::move(base));
+                // by text: a reference beside other keywords to a schema that holds it gives a copy of it at every
+                // level, which would be typed without end
+                const auto* r = store_merged(std::move(base));
                 normalizing_.erase(s);
                 return keep_normalized(s, r);
             }

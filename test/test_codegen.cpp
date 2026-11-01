@@ -3034,6 +3034,14 @@ TEST(Codegen, RecursiveAlternatives)
     EXPECT_EQ(warnings(member), "#/$defs/A/properties/k/oneOf/1: the alternative refers to a schema that holds it; it "
                                 "is read without the keywords beside it\n");
     EXPECT_TRUE(has(member.code, "    std::optional<yyjson::indirect<yyjson::one_of<AKOption1, A>>> k;\n"));
+
+    // a reference beside keywords to a schema that holds it merges to the same schema at every level
+    const auto beside = generate(R"({
+        "$ref": "#/$defs/tree",
+        "$defs": {"tree": {"type": "array", "prefixItems": [{"type": "number"}, {"minItems": 1, "$ref": "#"}]}}
+    })", {});
+    EXPECT_EQ(warnings(beside), "");
+    EXPECT_TRUE(has(beside.code, "    std::optional<yyjson::indirect<treeItem2Item2>> item2;\n"));
 }
 
 TEST(Codegen, ReferenceRoot)
