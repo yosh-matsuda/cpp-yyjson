@@ -2616,6 +2616,23 @@ TEST(Codegen, Unevaluated)
         EXPECT_TRUE(has(joined.code, "yyjson::annotations<" + std::string(name) +
                                          "> = yyjson::annotate(\n    yyjson::as_array,\n    yyjson::items(false));\n"));
 
+    // anyOf alternatives that evaluate prefixes: each alternative ends at its own prefix; contains is not a prefix
+    const auto prefixes = generate(R"({"type": "object", "properties": {
+        "s": {"type": "array", "unevaluatedItems": {"type": "boolean"}, "anyOf": [{"items": {"type": "string"}}, true]},
+        "p": {"type": "array", "prefixItems": [{"const": "foo"}], "unevaluatedItems": false,
+              "anyOf": [{"prefixItems": [true, {"const": "bar"}]}, {"prefixItems": [true, true, {"const": "baz"}]}]},
+        "c": {"type": "array", "unevaluatedItems": false,
+              "anyOf": [{"prefixItems": [true]}, {"contains": {"type": "string"}}]}}})",
+                                   {});
+    EXPECT_EQ(warnings(prefixes), "#/properties/c: `unevaluatedItems` beside `anyOf` whose subschemas evaluate items "
+                                  "is not supported; it is ignored\n");
+    EXPECT_TRUE(has(prefixes.code,
+                    "    std::optional<yyjson::any_of<std::vector<std::string>, std::vector<bool>>> s;\n"));
+    EXPECT_TRUE(has(prefixes.code, "std::optional<yyjson::any_of<yyjson::alt<std::vector<std::string>, "
+                                   "yyjson::max_items(2), &Root_p_0_prefix_items>, RootPOption2>> p;\n"));
+    EXPECT_TRUE(has(prefixes.code, "yyjson::annotations<RootPOption2> = yyjson::annotate(\n    yyjson::as_array,\n"
+                                   "    yyjson::items(false),\n"));
+
     // draft-07 has no unevaluated keywords
     const auto draft7 = generate(R"({"$schema": "http://json-schema.org/draft-07/schema#", "type": "object",
                                      "properties": {"a": {"type": "integer"}}, "unevaluatedProperties": false})", {});

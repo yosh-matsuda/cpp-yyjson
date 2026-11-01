@@ -2103,6 +2103,29 @@ namespace cpp_yyjson_codegen
                 return false;
             }
 
+            // whether a schema evaluates items that are not a prefix of the array: through `contains`, conditions,
+            // `$dynamicRef` / `$recursiveRef`, or a reference that the generator cannot follow
+            bool evaluates_beyond_prefix(const json& s, std::set<const json*>& seen, const std::string& loc)
+            {
+                if (!s.is_object() || !seen.insert(&s).second) return false;
+                for (const auto& [k, v] : s.members)
+                {
+                    if (k == "contains" || k == "if" || k == "then" || k == "else" || k == "$dynamicRef" ||
+                        k == "$recursiveRef" || (k == "$conditions" && evaluating_conditions(v, true)))
+                        return true;
+                    if ((k == "allOf" || k == "anyOf" || k == "oneOf") && v.is_array() &&
+                        std::ranges::any_of(v.items,
+                                            [&](const json& e) { return evaluates_beyond_prefix(e, seen, loc); }))
+                        return true;
+                    if (k == "$ref")
+                    {
+                        const auto* t = resolve(v, loc);
+                        if (t == nullptr || evaluates_beyond_prefix(*t, seen, loc)) return true;
+                    }
+                }
+                return false;
+            }
+
             void scan_scope(const json& s, bool items, bool top, evaluation_scope& sc, std::set<const json*>& seen,
                             const std::string& loc)
             {
@@ -2412,6 +2435,15 @@ namespace cpp_yyjson_codegen
                 if (sc.lists == 1 && !sc.any && one != nullptr && one->is_array() &&
                     std::ranges::any_of(one->items, evaluating) &&
                     (any == nullptr || required_groups_of(base, "anyOf")))
+                    return;
+                // the items that a subschema evaluates without `contains` and conditions are a prefix of the array,
+                // so those of the alternatives that hold are the longest of their prefixes, which is what the
+                // alternative of that prefix evaluates: the keyword is kept for each alternative as for `oneOf`
+                if (items && sc.lists == 1 && sc.any && any != nullptr && any->is_array() &&
+                    std::ranges::none_of(any->items, [&](const json& e) {
+                        auto visited = std::set<const json*>();
+                        return evaluates_beyond_prefix(e, visited, loc);
+                    }))
                     return;
                 drop(sc.any && sc.lists == 1 ? "beside `anyOf` whose subschemas evaluate " +
                                                    std::string(items ? "items" : "properties") + " is not supported"
