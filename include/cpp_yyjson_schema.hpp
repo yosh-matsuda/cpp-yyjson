@@ -713,6 +713,30 @@ namespace yyjson
                         emit<yyjson::detail::array_element_t<T>>(o.emplace("contains", empty_object), nodes,
                                                                  k.contains);
                 }
+                if constexpr (yyjson::detail::constraint_prefix_target<T> || std::same_as<T, writer::array> ||
+                              std::same_as<T, reader::array>)
+                    if (k.prefix_count != 0) emit_test_prefix<T>(o, nodes, k);
+            }
+            // Writes the positions of `yyjson::prefix_items` of the node `k` of a test on a value of T as
+            // `prefixItems`, each the schema of the element at it with its settings.
+            template <typename T>
+            void emit_test_prefix(object_ref o, const schema_node* nodes, const schema_node& k)
+            {
+                auto prefix = o.emplace("prefixItems", empty_array);
+                if constexpr (yyjson::detail::constraint_tuple<T>)
+                    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                        ((Is < k.prefix_count ? emit<std::tuple_element_t<Is, T>>(prefix.emplace_back(empty_object),
+                                                                                  nodes, k.prefix + Is)
+                                              : void()),
+                         ...);
+                    }(std::make_index_sequence<std::tuple_size_v<T>>{});
+                else
+                {
+                    using E = std::conditional_t<std::same_as<T, writer::array> || std::same_as<T, reader::array>,
+                                                 writer::value, yyjson::detail::array_element_t<T>>;
+                    for (std::size_t i = 0; i < k.prefix_count; ++i)
+                        emit<E>(prefix.emplace_back(empty_object), nodes, k.prefix + i);
+                }
             }
             // Writes the `yyjson::not_` of a value of T from the node `first` on as `not`: of the schema of the
             // settings of one, or of `anyOf` those of several.  A value that has `not` already takes it in `allOf`.

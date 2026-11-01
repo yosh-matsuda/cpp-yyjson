@@ -977,6 +977,25 @@ inline constexpr auto yyjson::annotations<AlignedConditions> = yyjson::annotate(
     yyjson::not_(yyjson::field("xs", yyjson::min_items(4)),
                  yyjson::field("kind", yyjson::required, yyjson::const_("few"))));
 
+// `yyjson::prefix_items` in `yyjson::if_` and `yyjson::not_` of values and of fields as `prefixItems`.
+struct PrefixConditions
+{
+    std::vector<int> v;
+    std::vector<std::string> w;
+    std::tuple<int, std::string> t;
+    std::optional<std::vector<yyjson::value>> d;
+    std::optional<int> n;
+};
+template <>
+inline constexpr auto yyjson::annotations<PrefixConditions> = yyjson::annotate(
+    yyjson::field("v", yyjson::if_then_else(yyjson::if_(yyjson::prefix_items(yyjson::minimum(10))),
+                                            yyjson::then(yyjson::max_items(2)))),
+    yyjson::field("w", yyjson::not_(yyjson::min_items(2), yyjson::prefix_items({}, yyjson::const_("x")))),
+    yyjson::field("t", yyjson::not_(yyjson::prefix_items(yyjson::const_(1), yyjson::const_("y")))),
+    yyjson::if_then_else(
+        yyjson::if_(yyjson::field("d", yyjson::required, yyjson::prefix_items(yyjson::const_("a")))),
+        yyjson::then(yyjson::field("n", yyjson::required))));
+
 // `yyjson::not_` of values as `not`, of `anyOf` when a value has several.
 struct NegatedValues
 {
@@ -2589,6 +2608,30 @@ TEST(Schema, AlignedConditions)
     EXPECT_EQ(xs["minItems"].as<int>(), 2);
     EXPECT_EQ(xs["maxItems"].as<int>(), 3);
     EXPECT_EQ(s["allOf"][1]["not"]["properties"]["xs"]["minItems"].as<int>(), 4);
+}
+
+TEST(Schema, PrefixConditions)
+{
+    check<PrefixConditions>({
+        R"({"v":[],"w":[],"t":[0,""]})",
+        R"({"v":[10,1,2],"w":[],"t":[0,""]})",
+        R"({"v":[9,1,2],"w":[],"t":[0,""]})",
+        R"({"v":[10,1],"w":["a","x"],"t":[0,""]})",
+        R"({"v":[],"w":["x"],"t":[1,"z"]})",
+        R"({"v":[],"w":["a","y"],"t":[1,"y"]})",
+        R"({"v":[],"w":[],"t":[0,""],"d":["a"]})",
+        R"({"v":[],"w":[],"t":[0,""],"d":[]})",
+        R"({"v":[],"w":[],"t":[0,""],"d":["b"]})",
+        R"({"v":[],"w":[],"t":[0,""],"d":["a"],"n":1})",
+    });
+    const auto s = to_jsoncons(yyjson::json_schema<PrefixConditions>())["$defs"]["PrefixConditions"];
+    const auto& p = s["properties"];
+    EXPECT_EQ(p["v"]["if"]["prefixItems"][0]["minimum"].as<int>(), 10);
+    EXPECT_EQ(p["w"]["not"]["prefixItems"][0], json::parse(R"({"type":"string"})"));
+    EXPECT_EQ(p["w"]["not"]["prefixItems"][1]["const"].as<std::string>(), "x");
+    EXPECT_EQ(p["t"]["not"]["prefixItems"][0]["const"].as<int>(), 1);
+    EXPECT_EQ(p["t"]["not"]["prefixItems"][1]["const"].as<std::string>(), "y");
+    EXPECT_EQ(s["if"]["properties"]["d"]["prefixItems"][0]["const"].as<std::string>(), "a");
 }
 
 TEST(Schema, NegatedValues)

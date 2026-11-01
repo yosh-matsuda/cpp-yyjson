@@ -3305,6 +3305,83 @@ TEST(Constraints, AlignedConditions)
     EXPECT_EQ(e.path(), "/ys") << e.what();
 }
 
+// prefix_items in the conditions: the elements at the positions satisfy the settings, and an array shorter than
+// the positions satisfies them too
+struct PrefixConditions
+{
+    std::vector<int> v;
+    std::vector<std::string> w;
+    std::tuple<int, std::string> t;
+    std::optional<std::vector<yyjson::value>> d;
+    std::optional<int> n;
+};
+template <>
+inline constexpr auto yyjson::annotations<PrefixConditions> = yyjson::annotate(
+    yyjson::field("v", yyjson::if_then_else(yyjson::if_(yyjson::prefix_items(yyjson::minimum(10))),
+                                            yyjson::then(yyjson::max_items(2)))),
+    yyjson::field("w", yyjson::not_(yyjson::min_items(2), yyjson::prefix_items({}, yyjson::const_("x")))),
+    yyjson::field("t", yyjson::not_(yyjson::prefix_items(yyjson::const_(1), yyjson::const_("y")))),
+    yyjson::if_then_else(
+        yyjson::if_(yyjson::field("d", yyjson::required, yyjson::prefix_items(yyjson::const_("a")))),
+        yyjson::then(yyjson::field("n", yyjson::required))));
+
+TEST(Constraints, PrefixConditions)
+{
+    const auto check = [](const char* json, std::string_view message, std::string_view path) {
+        const auto reads = std::array<std::function<void()>, 3>{
+            [&] { (void)yyjson::read<PrefixConditions>(json); },
+            [&] { (void)yyjson::read(json).cast<PrefixConditions>(); },
+            [&] { (void)yyjson::read<PrefixConditions>(json, yyjson::strict); }};
+        for (const auto& read : reads)
+        {
+            if (message.empty())
+                EXPECT_NO_THROW(read()) << json;
+            else
+            {
+                const auto e = bad_cast_of(read);
+                EXPECT_TRUE(message_of(e).starts_with(message)) << json << "\n" << e.what();
+                EXPECT_EQ(e.path(), path) << json;
+            }
+        }
+#if YYJSON_VERSION_HEX >= 0x000C00
+        EXPECT_EQ(read_directly<PrefixConditions>(json, yyjson::ReadFlag::NoFlag).has_value(), message.empty())
+            << json;
+#endif
+    };
+    const auto v = R"(the value of the key "v" of PrefixConditions satisfies the settings of yyjson::if_ and not )"
+                   R"(those of yyjson::then)";
+    const auto w = R"(the value of the key "w" of PrefixConditions satisfies the settings of yyjson::not_)";
+    const auto t = R"(the value of the key "t" of PrefixConditions satisfies the settings of yyjson::not_)";
+    const auto n = R"(PrefixConditions is not constructible from JSON without the key "n", which )"
+                   R"(yyjson::if_then_else requires)";
+    check(R"({"v":[],"w":[],"t":[0,""]})", "", "");
+    check(R"({"v":[10,1,2],"w":[],"t":[0,""]})", v, "/v");
+    check(R"({"v":[9,1,2],"w":[],"t":[0,""]})", "", "");
+    check(R"({"v":[10,1],"w":["a","x"],"t":[0,""]})", w, "/w");
+    check(R"({"v":[],"w":["x"],"t":[1,"z"]})", "", "");
+    check(R"({"v":[],"w":["a","y"],"t":[1,"y"]})", t, "/t");
+    check(R"({"v":[],"w":[],"t":[0,""],"d":["a"]})", n, "");
+    check(R"({"v":[],"w":[],"t":[0,""],"d":[]})", n, "");
+    check(R"({"v":[],"w":[],"t":[0,""],"d":["b"]})", "", "");
+    check(R"({"v":[],"w":[],"t":[0,""],"d":["a"],"n":1})", "", "");
+
+    // validate and write(strict) test the values that writing writes
+    auto p = PrefixConditions{{10, 1, 2}, {}, {0, ""}, {}, {}};
+    auto e = bad_cast_of([&] { yyjson::validate(p); });
+    EXPECT_TRUE(message_of(e).starts_with(v)) << e.what();
+    EXPECT_EQ(e.path(), "/v");
+    p.v = {10, 1};
+    p.w = {"a", "x"};
+    e = bad_cast_of([&] { (void)yyjson::write(p, yyjson::strict); });
+    EXPECT_EQ(e.path(), "/w") << e.what();
+    p.w.clear();
+    p.d = std::vector<yyjson::value>{yyjson::value("a")};
+    e = bad_cast_of([&] { yyjson::validate(p); });
+    EXPECT_TRUE(message_of(e).starts_with(n)) << e.what();
+    p.n = 0;
+    EXPECT_NO_THROW(yyjson::validate(p));
+}
+
 // not_ of a value that may be null tests null as JSON Schema does: the settings other than const_ and enum_
 // hold for it, and is_type<T> reads it
 struct NullNot
