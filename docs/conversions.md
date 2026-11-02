@@ -31,7 +31,7 @@ auto map = cast<std::map<std::string, double>>(obj);
 The sections of this document:
 
 1.  [Conversion rules](#conversion-rules): numbers, strings, containers, maps and sets, and the types that do not convert.
-2.  [Standard library types](#standard-library-types): `std::optional`, smart pointers, `std::variant` and tuples.
+2.  [Standard library types](#standard-library-types): `std::optional`, smart pointers, `std::variant` and tuples, and how an [untagged variant](#untagged-variants) chooses its alternative.
 3.  [Structs](#structs): converted by [reflection](#reflection) with no registration, or registered with [`VISITABLE_STRUCT`](#visitable_struct).
 4.  [Annotations](#annotations): JSON keys other than the field names, and skipped fields.
 5.  [Enumerations](#enumerations), by the names of their enumerators or by their integers.
@@ -78,7 +78,7 @@ Booleans and numbers do not mix, although C++ converts between them:
 
 Some conversions succeed where one might expect them to fail, or give JSON that their types do not suggest:
 
-*   A `std::variant` takes the first alternative that accepts the value, after the structs whose keys a JSON object [has](#pre-defined-stl-casters), and an integer accepts a real number without a fractional part. `std::variant<int, double>` therefore reads `1.5` as `double` but `2.0` as the `int` `2`. With `double` first, every number is read as `double`.
+*   A `std::variant` takes the first alternative that accepts the value, after the structs whose keys a JSON object [has](#untagged-variants), and an integer accepts a real number without a fractional part. `std::variant<int, double>` therefore reads `1.5` as `double` but `2.0` as the `int` `2`. With `double` first, every number is read as `double`.
 *   A class that is constructible from a number, such as `struct Count { Count(int); };`, reads every JSON number that C++ converts to the parameter of its constructor, so `1.5` gives `Count(1)`. Only the integer and enumeration types themselves reject a real number with a fractional part.
 *   `char`, `signed char`, `unsigned char`, `std::int8_t` and `std::uint8_t` are numbers, and `std::u8string`, `std::u16string`, `std::u32string` and `std::wstring` are arrays of numbers. Only ranges of `char` are JSON strings.
 *   A struct that is read ignores a key that it does not have, and a field whose key is missing keeps its value in `T()`. [Unknown and missing keys](validation.md#unknown-and-missing-keys) and [Repeated keys](validation.md#repeated-keys) give the full rules, and how to reject such keys.
@@ -174,21 +174,7 @@ auto str_var = cast<Variant>(str_json);                                   // des
 // -> "a"
 ```
 
-A `std::variant` is deserialized into the first of its alternatives, in the order of the template arguments, that the JSON value converts to. An alternative that never converts from the kind of the JSON value, such as `std::vector<double>` from a number, is skipped without trying it, while an alternative with a user-defined `from_json` is always tried. A `std::bad_alloc` thrown while an alternative is tried propagates out of the read, rather than passing the value to the next alternative. A variant whose alternatives a member of the JSON object names is read by that member instead, as a [tagged variant](#tagged-variants).
-
-A JSON object is tried first as the alternatives that are structs read by the [compile-time reflection](#automatic-casting-with-compile-time-reflection) or `VISITABLE_STRUCT`, if the variant has such a struct and another alternative that reads objects. Those structs are candidates that have at least one of their keys in the object and whose required keys the object all has, where the required keys are those that [`yyjson::strict`](validation.md#strict-reading) requires, also when the read is not strict: every field that is neither `std::optional` nor annotated with `yyjson::optional_key`, a renamed field counts by its JSON key and a [skipped field](#skipped-fields) has no key. The candidates are tried with the one that has the most of its keys in the object first, and in the order of the template arguments among those with as many; then the other alternatives are tried in order. A candidate that does not read the object, such as one that a [constraint](validation.md#constraints) or `yyjson::strict` rejects, passes it to the next, as any alternative does. The keys of the object are looked up once, and a key that appears twice counts once.
-
-```cpp
-struct Ok { int code; };
-struct Err { int code; std::string msg; };
-using Result = std::variant<Ok, Err>;
-
-auto err = yyjson::read<Result>(R"({"code":1,"msg":"x"})");  // -> Err{1, "x"}, as written from it
-auto ok = yyjson::read<Result>(R"({"code":1})");             // -> Ok{1}
-auto other = yyjson::read<Result>(R"({"msg":"x"})");         // -> Ok{0}: no candidate, so the first that reads it
-```
-
-Since the other alternatives are still tried in order after the candidates, every JSON value that a variant read without this rule is still read; only the alternative that the variant holds may differ. A struct none of whose keys the object has, such as an empty struct, is not a candidate and keeps its place in the order, so an empty object is read as the first alternative that reads it, and a map or a `yyjson::value` before a struct of `std::optional` fields only holds an object that has none of the keys of the struct. A struct with a user-defined caster or translator is not a candidate, and is tried in order with the others.
+A `std::variant` is read by trying its alternatives, as [Untagged variants](#untagged-variants) describes, or by a member of the JSON object that names the alternative, as a [tagged variant](#tagged-variants).
 
 A `std::tuple` converts to a JSON array whose elements have different types. A tuple of `std::pair`s of a key and a value converts to a JSON object of fixed keys:
 
@@ -209,6 +195,43 @@ auto tpl_obj2 = cast<decltype(tpl_obj)>(json_obj);          // deserialize
 ```
 
 A JSON array or object with more or fewer elements than the tuple throws `yyjson::bad_cast`, as it does for a `std::array`.
+
+### Untagged variants
+
+A `std::variant` is read by trying its alternatives, unless a member of the JSON object names the alternative, as in a [tagged variant](#tagged-variants).
+
+A JSON value is read as the first of the alternatives, in the order of the template arguments, that it converts to. An alternative that never converts from the kind of the JSON value, such as `std::vector<double>` from a number, is skipped without trying it, while an alternative with a user-defined `from_json` is always tried. A `std::bad_alloc` thrown while an alternative is tried propagates out of the read, rather than passing the value to the next alternative.
+
+A JSON object is read in three steps when the variant has a struct read by the [compile-time reflection](#reflection) or `VISITABLE_STRUCT` and another alternative that reads objects:
+
+1.  The candidates are those structs that have at least one of their keys in the object and whose required keys the object all has. The required keys are those that [`yyjson::strict`](validation.md#strict-reading) requires, also when the read is not strict: every field that is neither `std::optional` nor annotated with `yyjson::optional_key`. A renamed field counts by its JSON key, and a [skipped field](#skipped-fields) has no key.
+2.  The candidates are tried first: the one that has the most of its keys in the object first, and in the order of the template arguments among those with as many.
+3.  Then the other alternatives are tried in the order of the template arguments.
+
+The keys of the object are looked up once, and a key that appears twice counts once. A candidate that does not read the object, such as one that a [constraint](validation.md#constraints) or `yyjson::strict` rejects, passes it to the next, as any alternative does. A struct with a user-defined caster or translator is not a candidate and is tried in step 3 with the others.
+
+```cpp
+struct Ok { int code; };
+struct Err { int code; std::string msg; };
+using Result = std::variant<Ok, Err>;
+
+auto err = yyjson::read<Result>(R"({"code":1,"msg":"x"})");
+auto ok = yyjson::read<Result>(R"({"code":1})");
+auto other = yyjson::read<Result>(R"({"msg":"x"})");
+```
+
+| JSON | Result | Reason |
+| --- | --- | --- |
+| `{"code":1,"msg":"x"}` | `Err{1, "x"}` | Both are candidates, and `Err` has more of its keys in the object. |
+| `{"code":1}` | `Ok{1}` | `Err` lacks `msg`, so only `Ok` is a candidate. |
+| `{"msg":"x"}` | `Ok{0}` | `Ok` has none of its keys in the object and `Err` lacks `code`, so there is no candidate. Step 3 reads the object as `Ok`, whose missing field keeps its value in `Ok()`. |
+
+"Required" decides only which structs are candidates. A struct that lacks a required key is still read in step 3 when the read is not strict, with the field left at its value in `T()`, as the last row shows. Since step 3 tries every alternative, every JSON value that a variant read without steps 1 and 2 is still read; only the alternative that the variant holds may differ.
+
+Two cases need care:
+
+*   A struct none of whose keys the object has, such as an empty struct, is not a candidate and keeps its place in the order, so an empty object is read as the first alternative that reads it.
+*   A catch-all alternative, such as a map or a `yyjson::value`, placed before a struct of `std::optional` fields, holds every object that has none of the keys of the struct. Put catch-all alternatives last, or use a [tagged variant](#tagged-variants) when objects must be told apart reliably.
 
 ## Structs
 
@@ -530,7 +553,7 @@ auto json2 = yyjson::write(Event{2, Rect{1, 2}});
 // -> {"id":2,"kind":"rect","data":{"w":1,"h":2}}
 ```
 
-These are the internally and the adjacently tagged representations of [serde](https://serde.rs/enum-representations.html). A variant without a tag tries its alternatives in turn, as described in [Standard library types](#standard-library-types).
+These are the internally and the adjacently tagged representations of [serde](https://serde.rs/enum-representations.html). A variant without a tag tries its alternatives in turn, as [Untagged variants](#untagged-variants) describes.
 
 Both kinds of tag follow these rules:
 
@@ -668,7 +691,7 @@ Some rules apply to all forms:
 
 *   A caster needs only the functions that are used: `from_json` to read the type, `to_json` to write it. The two do not have to be symmetric.
 *   The casters apply recursively. The value that a translator returns and the values given to an emitter are converted with their own casters.
-*   `to_json` may take a parameter pack `Ts... ts` after the value. It receives `yyjson::copy_string` when a document is told to copy the strings that it is given; see [Lifetimes](reference.md#lifetimes). Pass it on to the values given to an emitter. A translator can leave it out.
+*   `to_json` may take a parameter pack `Ts... ts` after the value. It receives `yyjson::copy_string` when a document is told to copy the strings that it is given; see [Lifetimes](reference.md#lifetimes). Only a `to_json` that [fills a JSON value](#writing-into-a-json-value-in-a-caster) needs it. A translator and an emitter can leave it out: the value that a translator returns is converted with the `copy_string` of the call, and an emitter copies the strings that it is given.
 
 ### Translator
 
@@ -803,13 +826,12 @@ struct Shape
 template <>
 struct yyjson::caster<Shape>
 {
-    template <typename... Ts>
-    static void to_json(yyjson::object_emitter& out, const Shape& s, Ts... ts)
+    static void to_json(yyjson::object_emitter& out, const Shape& s)
     {
-        out.emplace("kind", s.kind, ts...);
-        if (s.radius) out.emplace("r", *s.radius, ts...);
+        out.emplace("kind", s.kind);
+        if (s.radius) out.emplace("r", *s.radius);
         out.emplace_array("tags", [&](yyjson::array_emitter& tags) {
-            for (const auto& t : s.tags) tags.emplace_back(t, ts...);
+            for (const auto& t : s.tags) tags.emplace_back(t);
         });
     }
 };
@@ -820,14 +842,14 @@ auto json = write(Shape{"circle", 1.5, {"a", "b"}});
 
 | `object_emitter` | `array_emitter` |
 | --- | --- |
-| `emplace(key, value, ts...)` | `emplace_back(value, ts...)` |
-| `emplace_object(key, [](object_emitter&) {...}, ts...)` | `emplace_back_object([](object_emitter&) {...})` |
-| `emplace_array(key, [](array_emitter&) {...}, ts...)` | `emplace_back_array([](array_emitter&) {...})` |
-| `emplace_members(value, ts...)` | |
+| `emplace(key, value)` | `emplace_back(value)` |
+| `emplace_object(key, [](object_emitter&) {...})` | `emplace_back_object([](object_emitter&) {...})` |
+| `emplace_array(key, [](array_emitter&) {...})` | `emplace_back_array([](array_emitter&) {...})` |
+| `emplace_members(value)` | |
 
 The value is anything that `yyjson::value` can be constructed from, so the casters apply to it recursively. The function given to `emplace_object` or `emplace_array` fills the nested object or array.
 
-The same emitter works with both APIs. With [`yyjson::write`](reference.md#yyjsonwrite), it writes the members straight to the string. With `yyjson::value`, `yyjson::object` and the other ways to build a document, it adds them to the document. `yyjson::copy_string` in `ts...` makes the document copy the strings that it is given; `yyjson::write` copies them anyway.
+The same emitter works with both APIs. With [`yyjson::write`](reference.md#yyjsonwrite), it writes the members straight to the string. With `yyjson::value`, `yyjson::object` and the other ways to build a document, it adds them to the document. Either way, the emitter copies every key and string that it is given, so a caster may emplace a local string. `emplace`, `emplace_object`, `emplace_array`, `emplace_members` and `emplace_back` accept `yyjson::copy_string` as a last argument, which changes nothing.
 
 `emplace_members` appends the members of the JSON object that its value is written as, instead of one member whose value it is. The value is a struct that the [compile-time reflection](#reflection) or the `VISITABLE_STRUCT` macro writes, a type whose caster writes through `object_emitter`, or a range of key-value pairs such as `std::map`. The fields of a struct are written as in any other object of it: a field that holds no value is [omitted](#omitting-a-field-with-no-value), and `yyjson::field` renames, skips and tags them. Any other type, such as a number, an array, a type whose caster takes `yyjson::writer::object_ref&` or a translator, does not compile:
 
@@ -847,12 +869,11 @@ struct Request
 template <>
 struct yyjson::caster<Request>
 {
-    template <typename... Ts>
-    static void to_json(yyjson::object_emitter& out, const Request& r, Ts... ts)
+    static void to_json(yyjson::object_emitter& out, const Request& r)
     {
-        out.emplace_members(r.params, ts...);
+        out.emplace_members(r.params);
         out.emplace_array("sparse_objective", [&](yyjson::array_emitter& a) {
-            for (const auto& t : r.terms) a.emplace_back(t, ts...);
+            for (const auto& t : r.terms) a.emplace_back(t);
         });
     }
 };
@@ -981,6 +1002,33 @@ static void from_json(X& field, const Json& json);
 `to_json` can also fill a JSON value of the DOM API that it takes as its first parameter: `writer::object_ref&`, `writer::array_ref&` or `writer::value_ref&`. `yyjson::write` then builds a temporary document for each value that the caster fills. Prefer an [emitter](#writing-members-with-an-emitter) for a JSON object or array, and a [translator](#translator) for any other value, which both APIs use without a document.
 
 A caster is given an emitter only when its `to_json` takes none of these three reference types. A template such as `template <typename V> static void to_json(V& out, const X& x)` is therefore given `writer::object_ref&`.
+
+The document that such a `to_json` fills refers to the strings that it is given as lvalues, unless it is told to copy them; it copies a `std::string` given as an rvalue. Pass `ts...` on with the strings of the value, so that they are copied when the caller asks for `copy_string`, and move a local string or give it `copy_string`, because the local is destroyed when `to_json` returns:
+
+```cpp
+struct Account
+{
+    std::string name;
+    std::string domain;
+    int id;
+};
+
+template <>
+struct yyjson::caster<Account>
+{
+    template <typename... Ts>
+    static void to_json(yyjson::writer::object_ref& obj, const Account& a, Ts... ts)
+    {
+        obj.emplace("name", a.name, ts...);              // a string of the value
+        auto label = a.name + "@" + a.domain;
+        obj.emplace("label", std::move(label));          // a local string, moved
+        auto id = std::to_string(a.id);
+        obj.emplace(id, a.domain, yyjson::copy_string);  // a local key, copied
+    }
+};
+```
+
+The same applies to a translator that returns a `yyjson::value`, `yyjson::object` or `yyjson::array`: the strings it refers to must outlive the return, so move or copy a local string into it. The strings of the value it returns are copied into the document of the caller, so a translator does not need `ts...`.
 
 ## Recursive types
 

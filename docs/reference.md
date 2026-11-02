@@ -1137,7 +1137,7 @@ std::cout << point.write() << " " << doc.write() << std::endl;
 
 Two classes derived from `std::string_view`:
 
-*   `yyjson::json_string` holds the JSON text that a `write` function returns. It owns the buffer, and its copies share it, so the text stays valid as long as one copy exists. A `json_string` written with a `dynamic_allocator` or a `pool_allocator` keeps the allocator alive; one written with a `stack_pool_allocator` or a `yyjson_alc` does not ([Lifetimes](#lifetimes)).
+*   `yyjson::json_string` holds the JSON text that a `write` function returns. It owns the buffer, and its copies share it, so the text stays valid as long as one copy exists. It converts implicitly to `std::string`, so the result can initialize a `std::string`, be assigned to one, or be passed where a `std::string` is expected; each conversion copies the text. A `json_string` written with a `dynamic_allocator` or a `pool_allocator` keeps the allocator alive; one written with a `stack_pool_allocator` or a `yyjson_alc` does not ([Lifetimes](#lifetimes)).
 *   `yyjson::key_string` is the key of an object member, the first element of the pairs that iterating an object gives. It does not own the string, which ends with a NUL character; `explicit operator const char*()` returns it. `std::format` formats it with the same options as `std::string_view` ([`std::format` support](#stdformat-support)).
 
 ```cpp
@@ -1793,7 +1793,7 @@ A specialization has static member functions of one or more of these forms, and 
 | --- | --- | --- |
 | [Translator](conversions.md#translator) | `T from_json(U)` and `U to_json(const T&)` | read and write |
 | [In-place translator](conversions.md#reading-into-an-existing-field) | `void from_json(T&, U)` | read |
-| [Emitter](conversions.md#writing-members-with-an-emitter) | `void to_json(yyjson::object_emitter&, const T&, Ts...)` or `void to_json(yyjson::array_emitter&, const T&, Ts...)` | write |
+| [Emitter](conversions.md#writing-members-with-an-emitter) | `void to_json(yyjson::object_emitter&, const T&)` or `void to_json(yyjson::array_emitter&, const T&)` | write |
 | [`should_omit`](conversions.md#omitting-a-field-with-no-value) | `bool should_omit(const T&)` | write |
 | [JSON view](conversions.md#reading-a-json-value-in-a-caster) | `T from_json(yyjson::json_view)` or `void from_json(T&, yyjson::json_view)` | read |
 | [DOM value](conversions.md#reading-a-json-value-in-a-caster) | `T from_json(const Json&)` or `void from_json(T&, const Json&)`, a template of `Json` | read |
@@ -1840,7 +1840,7 @@ The library constructs the emitter and passes it to `to_json`.
 *   `emplace` and `emplace_back` write one member or element, converted by its own caster. `Key` is a type that converts to `const char*`, `std::string` or `std::string_view`.
 *   `emplace_object`, `emplace_array`, `emplace_back_object` and `emplace_back_array` write a nested object or array, which `func` fills through the emitter that it is given.
 *   `emplace_members` writes the members of the JSON object that `t` is written as, not nested in a member of its own. `T` is a struct that the default caster writes, a type whose caster writes through `object_emitter`, or a range of key-value pairs; any other type does not compile. It does not check for a key that the object already has.
-*   `ts` is the parameter pack that `to_json` receives; pass it on, so that [`yyjson::copy_string`](#yyjsoncopy_string-yyjsonempty_array-yyjsonempty_object) reaches the values.
+*   The emitter copies every key and string that it is given, so a caster may emplace a local string. `ts` accepts [`yyjson::copy_string`](#yyjsoncopy_string-yyjsonempty_array-yyjsonempty_object), which changes nothing.
 
 See [Writing members with an emitter](conversions.md#writing-members-with-an-emitter).
 

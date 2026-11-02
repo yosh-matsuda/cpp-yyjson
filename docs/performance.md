@@ -8,7 +8,7 @@ This document describes how to choose between the APIs and how to set up a build
 
 When the JSON has a C++ type, `yyjson::read<T>` and `yyjson::write` are the fastest way to convert it. They skip the document that the DOM API builds. In the [benchmark](benchmark/README.md#data-binding-api):
 
-*   `read<T>` takes 70% to 94% of the time of `read(json).cast<T>()`;
+*   `read<T>` takes 72% to 95% of the time of `read(json).cast<T>()`;
 *   `write` takes 29% to 85% of the time of `value(t).write()`.
 
 `read<T>` reads the string directly with most read flags; the [flag table](reference.md#flags-of-yyjsonreadt) tells which flags make it read a document instead. A flag that allows more than strict JSON, such as `ReadFlag::AllowComments` or `ReadFlag::Json5`, costs nothing while the string is strict JSON. A string that uses the extended syntax is read directly up to that syntax and then again into a document. When most of the strings use it, `read(json, flag).cast<T>()` is faster.
@@ -25,7 +25,7 @@ See [Installation](../README.md#installation) and [Build configuration](referenc
 
 ## Reuse the result object and the output string
 
-A program that reads documents of the same shape over and over can read them into one object with `yyjson::read_into`. It reuses the capacity of the strings and vectors in the object and the nodes of its maps. In the benchmark, this saves 8% to 44% on the documents that have strings. `yyjson::merge_into` is as fast; use it when the fields that a document does not have should keep their values.
+A program that reads documents of the same shape over and over can read them into one object with `yyjson::read_into`. It reuses the capacity of the strings and vectors in the object and the nodes of its maps. In the benchmark, this saves 9% to 45% on the documents that have strings. `yyjson::merge_into` is as fast; use it when the fields that a document does not have should keep their values.
 
 ```cpp
 auto config = Config();
