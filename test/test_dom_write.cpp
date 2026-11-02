@@ -2614,4 +2614,25 @@ TEST(Writer, EmptyStringViewWithoutData)
     EXPECT_EQ((*doc.as_object())[e].write(), "1");
 }
 
+TEST(Writer, CopyStringKeysOfValues)
+{
+    using namespace yyjson;
+
+    // `copy_string` copies the key also when the value is a JSON value
+    auto keys = std::vector<std::string>{std::string(40, 'a'), std::string(40, 'b'), std::string(40, 'c'),
+                                         std::string(40, 'd'), std::string(40, 'e')};
+    const auto doc = read(R"([3])");
+    auto obj = object();
+    obj.emplace(keys[0], value(1), copy_string);
+    auto two = value(2);
+    obj.emplace(keys[1], two, copy_string);
+    obj.emplace(keys[2], (*doc.as_array())[0], copy_string);
+    obj.try_emplace(keys[3], value(4), copy_string);
+    obj.try_emplace(keys[4], (*doc.as_array())[0], copy_string);
+    const auto expected = std::string(R"({")") + keys[0] + R"(":1,")" + keys[1] + R"(":2,")" + keys[2] + R"(":3,")" +
+                          keys[3] + R"(":4,")" + keys[4] + R"(":3})";
+    for (auto& k : keys) k.assign(k.size(), 'x');
+    EXPECT_EQ(std::string(obj.write()), expected);
+}
+
 // NOLINTEND
