@@ -515,6 +515,138 @@ TEST(Reader, VariantSkipsAlternatives)
     EXPECT_THROW((void)read("1").cast<array_or_map>(), bad_cast);
 }
 
+// alternatives of untagged variants that a JSON object selects by its keys
+struct KeyedOk
+{
+    int code = 0;
+    bool operator==(const KeyedOk&) const = default;
+};
+struct KeyedErr
+{
+    int code = 0;
+    std::string msg;
+    bool operator==(const KeyedErr&) const = default;
+};
+struct KeyedOptional
+{
+    std::optional<int> x;
+    std::optional<int> y;
+    bool operator==(const KeyedOptional&) const = default;
+};
+struct KeyedOther
+{
+    std::optional<int> x;
+    std::optional<int> z;
+    bool operator==(const KeyedOther&) const = default;
+};
+struct KeyedRenamed
+{
+    int code = 0;
+    std::string message;
+    int cache = 0;
+    bool operator==(const KeyedRenamed&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<KeyedRenamed> =
+    yyjson::annotate(yyjson::field("message", yyjson::rename("msg")), yyjson::field("cache", yyjson::skip));
+struct KeyedVisitable
+{
+    int code = 0;
+    std::string msg;
+    bool operator==(const KeyedVisitable&) const = default;
+};
+VISITABLE_STRUCT(KeyedVisitable, code, msg);
+struct KeyedWide
+{
+    int a = 0, b = 0, c = 0, d = 0, e = 0, f = 0, g = 0, h = 0, i = 0;
+    bool operator==(const KeyedWide&) const = default;
+};
+struct KeyedWider
+{
+    int a = 0, b = 0, c = 0, d = 0, e = 0, f = 0, g = 0, h = 0, i = 0, j = 0;
+    bool operator==(const KeyedWider&) const = default;
+};
+
+TEST(Reader, UntaggedStructAlternatives)
+{
+    using yyjson::read;
+    // an object is read as the struct whose required keys it has and which has the most of its keys, which is
+    // the struct that writes it
+    using ok_or_err = std::variant<KeyedOk, KeyedErr>;
+    const auto err = std::string(yyjson::write(ok_or_err(KeyedErr{1, "x"})));
+    EXPECT_EQ(err, R"({"code":1,"msg":"x"})");
+    EXPECT_EQ(read<ok_or_err>(err), ok_or_err(KeyedErr{1, "x"}));
+    EXPECT_EQ(read(err).cast<ok_or_err>(), ok_or_err(KeyedErr{1, "x"}));
+    EXPECT_EQ(read<ok_or_err>(R"({"code":1})"), ok_or_err(KeyedOk{1}));
+    EXPECT_EQ(read(R"({"code":1})").cast<ok_or_err>(), ok_or_err(KeyedOk{1}));
+    // an escaped key is the key that it spells, and a repeated key counts once
+    EXPECT_EQ(read<ok_or_err>(R"({"code":1,"m\u0073g":"x"})").index(), 1);
+    EXPECT_EQ(read(R"({"code":1,"m\u0073g":"x"})").cast<ok_or_err>().index(), 1);
+    using optional_or_other = std::variant<KeyedOptional, KeyedOther>;
+    EXPECT_EQ(read<optional_or_other>(R"({"z":1,"z":2,"y":1})").index(), 0);
+    EXPECT_EQ(read(R"({"z":1,"z":2,"y":1})").cast<optional_or_other>().index(), 0);
+    EXPECT_EQ(read<optional_or_other>(R"({"x":1,"z":2})").index(), 1);
+    // the declaration order breaks a tie, and a struct without required keys is a candidate with any of its keys
+    EXPECT_EQ(read<optional_or_other>(R"({"x":1})").index(), 0);
+    // a struct none of whose keys an object has is not a candidate, but keeps its place in the order
+    using ok_or_optional = std::variant<KeyedOk, KeyedOptional>;
+    EXPECT_EQ(read<ok_or_optional>(R"({"a":1})").index(), 0);
+    using map_or_optional = std::variant<std::map<std::string, int>, KeyedOptional>;
+    EXPECT_EQ(read<map_or_optional>(R"({"x":1})").index(), 1);
+    EXPECT_EQ(read(R"({"x":1})").cast<map_or_optional>().index(), 1);
+    EXPECT_EQ(read<map_or_optional>(R"({"q":1})").index(), 0);
+    EXPECT_EQ(read(R"({"q":1})").cast<map_or_optional>().index(), 0);
+    EXPECT_EQ(read<map_or_optional>("{}").index(), 0);
+    EXPECT_EQ(read("{}").cast<map_or_optional>().index(), 0);
+    // a renamed field counts by its JSON key, and a skipped one does not count
+    using ok_or_renamed = std::variant<KeyedOk, KeyedRenamed>;
+    EXPECT_EQ(read<ok_or_renamed>(R"({"code":1,"msg":"x"})").index(), 1);
+    EXPECT_EQ(read<ok_or_renamed>(R"({"code":1,"message":"x","cache":2})").index(), 0);
+    using ok_or_visitable = std::variant<KeyedOk, KeyedVisitable>;
+    EXPECT_EQ(read<ok_or_visitable>(R"({"code":1,"msg":"x"})").index(), 1);
+
+    // a candidate that fails gives way to the next, and then the other alternatives are tried in order
+    using with_map = std::variant<KeyedOk, KeyedErr, std::map<std::string, std::string>>;
+    EXPECT_EQ(read<with_map>(R"({"code":1,"msg":2})"), with_map(KeyedOk{1}));
+    EXPECT_EQ(read(R"({"code":1,"msg":2})").cast<with_map>(), with_map(KeyedOk{1}));
+    EXPECT_EQ(read<with_map>(R"({"code":"1","msg":"x"})").index(), 2);
+    // an object without the required keys is read as before
+    EXPECT_EQ(read<with_map>(R"({"msg":"x"})"), with_map(KeyedOk{0}));
+    EXPECT_THROW((void)read<with_map>(R"({"code":"1","msg":2})"), yyjson::bad_cast);
+    EXPECT_THROW((void)read(R"({"code":"1","msg":2})").cast<with_map>(), yyjson::bad_cast);
+    // a map or a JSON value before a struct holds an object that the struct does not read
+    using map_or_ok = std::variant<std::map<std::string, int>, KeyedOk>;
+    EXPECT_EQ(read<map_or_ok>(R"({"code":1})").index(), 1);
+    EXPECT_EQ(read<map_or_ok>(R"({"x":1})").index(), 0);
+    using value_or_ok = std::variant<yyjson::value, KeyedOk>;
+    EXPECT_EQ(read<value_or_ok>(R"({"code":1})").index(), 1);
+    EXPECT_EQ(read(R"({"code":1})").cast<value_or_ok>().index(), 1);
+    EXPECT_EQ(read<value_or_ok>(R"({"code":"x"})").index(), 0);
+
+    // the reader without a document reads as the document does
+    EXPECT_TRUE(expect_direct_read<std::vector<ok_or_err>>(
+        R"([{"code":1,"msg":"x"},{"code":1},{"msg":"x"},{"code":1,"m\u0073g":"x"},{}])"));
+    EXPECT_TRUE(expect_direct_read<std::vector<with_map>>(
+        R"([{"code":1,"msg":2},{"code":"1","msg":"x"},{"msg":"x"},{"code":2,"msg":"y","z":{"a":[1]}}])"));
+    expect_direct_read<std::vector<with_map>>(R"([{"code":1},{"code":"1","msg":2}])");
+    EXPECT_TRUE(expect_direct_read<std::vector<optional_or_other>>(R"([{"z":1,"z":2,"y":1},{"x":1,"z":2},{}])"));
+    EXPECT_TRUE(expect_direct_read<std::vector<map_or_ok>>(R"([{"code":1},{"x":1},{"code":1,"x":2}])"));
+    EXPECT_TRUE(expect_direct_read<std::vector<map_or_optional>>(R"([{"x":1},{"q":1},{}])"));
+    // the reader reads the first struct first and keeps it unless another ranks higher, with the keys that it
+    // does not have, or that it fails before
+    EXPECT_TRUE(expect_direct_read<std::vector<ok_or_err>>(R"([{"code":1,"z":[1,{"msg":2}]},{"msg":"x","code":1}])"));
+    using err_or_ok = std::variant<KeyedErr, KeyedOk>;
+    EXPECT_EQ(read<err_or_ok>(R"({"msg":2,"code":1})"), err_or_ok(KeyedOk{1}));
+    EXPECT_TRUE(expect_direct_read<std::vector<err_or_ok>>(R"([{"msg":2,"code":1},{"code":1,"msg":"x"},{"code":1}])"));
+    using wide = std::variant<KeyedWide, KeyedWider>;
+    EXPECT_EQ(read<wide>(R"({"i":9,"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8,"j":10})"),
+              wide(KeyedWider{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}));
+    EXPECT_EQ(read<wide>(R"({"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8,"i":9,"x":0})").index(), 0);
+    EXPECT_TRUE(expect_direct_read<std::vector<wide>>(
+        R"([{"i":9,"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8,"j":10},)"
+        R"({"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8,"i":9,"x":0}])"));
+}
+
 TEST(Reader, FixedSizeShorterJson)
 {
     using namespace yyjson;

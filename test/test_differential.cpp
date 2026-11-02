@@ -11,6 +11,13 @@ struct DiffInner
     std::vector<bool> flags;
 };
 
+// a few of the fields of `DiffInner`, which `DiffRecord::var` reads an object as unless it has more of the others
+struct DiffSmall
+{
+    int i = 0;
+    std::optional<std::int64_t> o;
+};
+
 struct DiffRecord
 {
     std::uint64_t u = 0;
@@ -20,7 +27,7 @@ struct DiffRecord
     std::string name;
     std::vector<DiffInner> items;
     std::map<std::string, std::vector<double>> table;
-    std::variant<int, std::string, std::vector<int>> var;
+    std::variant<int, std::string, std::vector<int>, DiffSmall, DiffInner> var;
     std::optional<DiffInner> maybe;
     std::tuple<int, std::string> pair;
     std::vector<std::vector<std::string>> grid;
@@ -111,13 +118,20 @@ namespace
                 auto& v = t.table[string()];
                 for (auto j = below(4); j > 0; --j) v.push_back(number());
             }
-            switch (below(3))
+            switch (below(5))
             {
                 case 0:
                     t.var = static_cast<int>(rng_());
                     break;
                 case 1:
                     t.var = string();
+                    break;
+                case 2:
+                    t.var = DiffSmall{static_cast<int>(rng_()), std::nullopt};
+                    if (one_in(2)) std::get<DiffSmall>(t.var).o = static_cast<std::int64_t>(rng_()) >> below(64);
+                    break;
+                case 3:
+                    t.var = inner();
                     break;
                 default:
                     t.var = std::vector<int>(below(4), static_cast<int>(below(100)));
@@ -175,6 +189,12 @@ TEST(Differential, RandomValuesAndTexts)
         const auto pretty = std::string(yyjson::write(t, yyjson::WriteFlag::AllowInfAndNan |
                                                              yyjson::WriteFlag::AllowInvalidUnicode |
                                                              yyjson::WriteFlag::Pretty));
+        // the alternative of the variant is read back as it was written
+        EXPECT_EQ(yyjson::read<DiffRecord>(json, yyjson::ReadFlag::AllowInfAndNan |
+                                                     yyjson::ReadFlag::AllowInvalidUnicode)
+                      .var.index(),
+                  t.var.index())
+            << json;
         for (const auto flag : {yyjson::ReadFlag::NoFlag, yyjson::ReadFlag::AllowInfAndNan |
                                                               yyjson::ReadFlag::AllowInvalidUnicode})
         {

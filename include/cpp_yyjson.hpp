@@ -9209,6 +9209,327 @@ namespace yyjson
                 "another",
                 type_name<Variant>(), type_name<Alternative>());
         }
+
+        // A struct that `cast` reads field by field from a JSON object, whose keys are known at compile time: a
+        // reflected struct or a `VISITABLE_STRUCT` that neither a caster nor a translator of its own reads.
+        template <typename T>
+        concept keyed_struct = (!reader::detail::from_json_val_usr_defined<T>) && (!from_json_unusable<T>) &&
+                               ((visitable<T> && requires {
+                                    visit_struct<T>::key_matcher;
+                                    visit_struct<T>::members;
+                                }) ||
+                                reflected_object_castable<T, reader::const_object_ref>);
+
+        // N bits, which `std::bitset` does not set in a constant expression before C++23.
+        template <std::size_t N>
+        struct bit_array
+        {
+            std::array<std::uint64_t, (N + 63) / 64> words = {};
+
+            constexpr void set(std::size_t i) noexcept { words[i / 64] |= std::uint64_t{1} << (i % 64); }
+            [[nodiscard]] constexpr bool test(std::size_t i) const noexcept
+            {
+                return ((words[i / 64] >> (i % 64)) & 1) != 0;
+            }
+            [[nodiscard]] bool any() const noexcept
+            {
+                auto set = std::uint64_t{0};
+                for (const auto word : words) set |= word;
+                return set != 0;
+            }
+            [[nodiscard]] constexpr std::size_t count() const noexcept
+            {
+                auto result = 0;
+                for (const auto word : words) result += std::popcount(word);
+                return static_cast<std::size_t>(result);
+            }
+            // The number of bits set in both.
+            [[nodiscard]] std::size_t count_common(const bit_array& other) const noexcept
+            {
+                auto result = 0;
+                for (std::size_t w = 0; w < words.size(); ++w) result += std::popcount(words[w] & other.words[w]);
+                return static_cast<std::size_t>(result);
+            }
+            // Whether every bit set in `other` is set.
+            [[nodiscard]] bool covers(const bit_array& other) const noexcept
+            {
+                auto lacking = std::uint64_t{0};
+                for (std::size_t w = 0; w < words.size(); ++w) lacking |= other.words[w] & ~words[w];
+                return lacking == 0;
+            }
+        };
+
+        // The keys of the fields of a keyed struct that are read, and whether an object has to have each, which
+        // it need not for a `std::optional` field.  None for any other type.
+        template <typename T>
+        struct struct_key_list
+        {
+            static constexpr std::array<std::string_view, 0> keys = {};
+            static constexpr std::array<bool, 0> required = {};
+        };
+        template <keyed_struct S>
+        struct struct_key_list<S>
+        {
+            static constexpr auto keys = []<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                return std::array<std::string_view, sizeof...(Ks)>{struct_field_key<S, Ks>...};
+            }(std::make_index_sequence<struct_field_count<S>>{});
+            static constexpr auto required = []<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                return std::array<bool, sizeof...(Ks)>{!is_std_optional<struct_field_type<S, Ks>>::value...};
+            }(std::make_index_sequence<struct_field_count<S>>{});
+        };
+
+        // Whether an untagged variant ranks its alternatives for a JSON object as `untagged_key_ranking` does,
+        // which may give another alternative than trying all in order only if one is a keyed struct and another
+        // reads objects as well.  Any other variant is read as before, by the same code.
+        template <typename Variant>
+        inline constexpr bool ranks_keyed_alternatives = false;
+        template <typename... Ts>
+        inline constexpr bool ranks_keyed_alternatives<std::variant<Ts...>> = [] {
+            if constexpr (count_true<((accepted_json_kinds<Ts, reader::const_value_ref>() & json_kind_object) !=
+                                      0)...> < 2)
+                return false;
+            else
+                return count_true<keyed_struct<std::remove_cv_t<Ts>>...> != 0;
+        }();
+
+        // How an untagged variant ranks its alternatives that are keyed structs for a JSON object, which it tries
+        // before the others: those whose object has one of their keys and every key that they require, those with
+        // more of their keys first, and in the order of the variant among those with as many.  The keys of the
+        // object are looked up once among the keys of all of them.
+        template <typename Variant>
+        struct untagged_key_ranking;
+        template <typename... Ts>
+        struct untagged_key_ranking<std::variant<Ts...>>
+        {
+            static constexpr std::size_t n = sizeof...(Ts);
+            static constexpr std::size_t size = count_true<keyed_struct<std::remove_cv_t<Ts>>...>;
+
+        private:
+            static constexpr std::array<bool, n> reads_objects = {
+                ((accepted_json_kinds<Ts, reader::const_value_ref>() & json_kind_object) != 0)...};
+            static constexpr std::array<bool, n> keyed = {keyed_struct<std::remove_cv_t<Ts>>...};
+            static constexpr std::array<std::span<const std::string_view>, n> alternative_keys = {
+                std::span<const std::string_view>(struct_key_list<std::remove_cv_t<Ts>>::keys)...};
+            static constexpr std::array<std::span<const bool>, n> alternative_required = {
+                std::span<const bool>(struct_key_list<std::remove_cv_t<Ts>>::required)...};
+            static constexpr std::size_t entry_count = (struct_key_list<std::remove_cv_t<Ts>>::keys.size() + ... + 0);
+
+            // The keys of the fields of the keyed alternatives, each with the index of the alternative among them
+            // and the index of the key among the distinct keys.
+            struct entries
+            {
+                std::array<std::string_view, entry_count> distinct_keys = {};
+                std::size_t distinct = 0;
+                std::array<std::size_t, entry_count> key = {};
+                std::array<std::size_t, entry_count> alternative = {};
+                std::array<bool, entry_count> required = {};
+            };
+            // A function rather than a lambda, as in `field_keys`.  The keys are told apart by a hash table, which
+            // takes fewer constant evaluation steps than comparing each with all before it.
+            static consteval entries make_entries()
+            {
+                auto result = entries{};
+                constexpr auto slots = std::bit_ceil(2 * entry_count + 1);
+                std::array<std::uint64_t, slots> hashes = {};
+                std::array<std::size_t, slots> indices = {};  // the index of a distinct key and one, or zero
+                for (std::size_t i = 0, e = 0, k = 0; i < n; ++i)
+                {
+                    if (!keyed[i]) continue;
+                    for (std::size_t f = 0; f < alternative_keys[i].size(); ++f, ++e)
+                    {
+                        const auto name = alternative_keys[i][f];
+                        auto hash = std::uint64_t{14695981039346656037ULL};
+                        for (const char c : name) hash = (hash ^ static_cast<unsigned char>(c)) * 1099511628211ULL;
+                        auto s = static_cast<std::size_t>(hash) & (slots - 1);
+                        while (indices[s] != 0 &&
+                               (hashes[s] != hash || result.distinct_keys[indices[s] - 1] != name))
+                            s = (s + 1) & (slots - 1);
+                        if (indices[s] == 0)
+                        {
+                            hashes[s] = hash;
+                            result.distinct_keys[result.distinct] = name;
+                            indices[s] = ++result.distinct;
+                        }
+                        result.key[e] = indices[s] - 1;
+                        result.alternative[e] = k;
+                        result.required[e] = alternative_required[i][f];
+                    }
+                    ++k;
+                }
+                return result;
+            }
+            static constexpr auto table = make_entries();
+            // The keys of the first keyed alternative come first, at the indices of its fields, which
+            // `key_watching_read` relies on
+            static_assert([] {
+                for (std::size_t e = 0; e < entry_count && table.alternative[e] == 0; ++e)
+                {
+                    if (table.key[e] != e) return false;
+                }
+                return true;
+            }());
+
+        public:
+            static constexpr std::size_t key_count = table.distinct;
+            // the keys of all keyed alternatives, each once
+            static constexpr auto keys = [] {
+                auto result = std::array<std::string_view, key_count>{};
+                for (std::size_t i = 0; i < key_count; ++i) result[i] = table.distinct_keys[i];
+                return result;
+            }();
+            static constexpr auto matcher = field_key_matcher<key_count>(keys);
+
+            // The keys of `keys` that an object has.
+            using seen_keys = bit_array<key_count>;
+
+        private:
+            // the keys that each keyed alternative has, and those that it requires
+            static constexpr auto declared = [] {
+                auto result = std::array<seen_keys, size>{};
+                for (std::size_t e = 0; e < entry_count; ++e) result[table.alternative[e]].set(table.key[e]);
+                return result;
+            }();
+            static constexpr auto required = [] {
+                auto result = std::array<seen_keys, size>{};
+                for (std::size_t e = 0; e < entry_count; ++e)
+                {
+                    if (table.required[e]) result[table.alternative[e]].set(table.key[e]);
+                }
+                return result;
+            }();
+            // the index among the keyed alternatives of each alternative, or `size`
+            static constexpr auto keyed_index = [] {
+                auto result = std::array<std::size_t, n>{};
+                for (std::size_t i = 0, k = 0; i < n; ++i) result[i] = keyed[i] ? k++ : size;
+                return result;
+            }();
+
+        public:
+            // the index in the variant of each keyed alternative
+            static constexpr auto alternatives = [] {
+                auto result = std::array<std::size_t, size>{};
+                for (std::size_t i = 0, k = 0; i < n; ++i)
+                {
+                    if (keyed[i]) result[k++] = i;
+                }
+                return result;
+            }();
+
+            // The number of members below which an object is read into the alternatives in their order, as no keyed
+            // alternative but the first that reads objects can be ranked for it: each needs one of its keys and
+            // those that it requires.
+            static constexpr std::size_t members_to_rank = [] {
+                auto result = std::numeric_limits<std::size_t>::max();
+                auto first = n;
+                for (std::size_t i = 0; i < n && first == n; ++i)
+                {
+                    if (reads_objects[i]) first = i;
+                }
+                for (std::size_t k = 0; k < size; ++k)
+                {
+                    if (alternatives[k] != first)
+                        result = std::min(result, std::max(required[k].count(), std::size_t{1}));
+                }
+                return result;
+            }();
+
+            // Whether the first keyed alternative is the first alternative that reads objects.
+            static constexpr bool first_in_order = [] {
+                for (std::size_t i = 0; i < n; ++i)
+                {
+                    if (reads_objects[i]) return i == alternatives[0];
+                }
+                return false;
+            }();
+
+            // Whether the first keyed alternative ranks first for the keys `seen`, as it does when it has one of
+            // them, all of them, and every key that it requires: no other has more of them.
+            [[nodiscard]] static bool first_leads(const seen_keys& seen) noexcept
+            {
+                return seen.any() && declared[0].covers(seen) && seen.covers(required[0]);
+            }
+
+            // The keyed alternatives that an object can be read into first, by their index among them, best first.
+            struct ranking
+            {
+                std::array<std::size_t, size> order = {};
+                std::size_t count = 0;
+                bit_array<size> ranked = {};
+
+                // Whether the alternative i is one of them.
+                [[nodiscard]] bool has(std::size_t i) const noexcept
+                {
+                    return keyed[i] && ranked.test(keyed_index[i]);
+                }
+                // Whether an alternative after i that reads objects is not one of them, which may be tried after
+                // i when all of them have failed.
+                [[nodiscard]] bool others_after(std::size_t i) const noexcept
+                {
+                    for (auto j = i + 1; j < n; ++j)
+                    {
+                        if (reads_objects[j] && !has(j)) return true;
+                    }
+                    return false;
+                }
+            };
+
+            // Ranks the keyed alternatives that have at least one of the keys `seen` and require none that it lacks.
+            static ranking rank(const seen_keys& seen)
+            {
+                auto present = std::array<std::size_t, size>{};
+                auto result = ranking{};
+                for (std::size_t k = 0; k < size; ++k)
+                {
+                    present[k] = seen.count_common(declared[k]);
+                    if (present[k] == 0 || !seen.covers(required[k])) continue;
+                    // after those with as many keys, which keeps them in the order of the variant
+                    auto pos = result.count++;
+                    for (; pos > 0 && present[result.order[pos - 1]] < present[k]; --pos)
+                        result.order[pos] = result.order[pos - 1];
+                    result.order[pos] = k;
+                    result.ranked.set(k);
+                }
+                return result;
+            }
+
+            // Ranks the alternatives for the JSON object `obj` of a document.
+            template <typename Object>
+            static ranking rank_object(const Object& obj)
+            {
+                auto seen = seen_keys{};
+                auto hint = std::size_t{0};
+                for (auto&& kv : obj)
+                {
+                    const auto i = matcher.find(kv.first, hint);
+                    if (i < key_count)
+                    {
+                        seen.set(i);
+                        hint = i + 1;
+                    }
+                }
+                return rank(seen);
+            }
+        };
+
+        // A function that reads the fields of the first keyed alternative of the variant that `Ranking` ranks,
+        // which also records in `seen` the keys of the object, by their index in `Ranking::keys`.  The keys of that
+        // alternative come first there, in the order of its fields, so the index of each of its keys is the index
+        // of its field.
+        template <typename Ranking, typename Read>
+        struct key_watching_read
+        {
+            using ranking = Ranking;
+            const Read& read;
+            typename Ranking::seen_keys* seen;
+
+            template <typename... Args>
+            CPPYYJSON_ALWAYS_INLINE void operator()(Args&&... args) const
+            {
+                read(std::forward<Args>(args)...);
+            }
+        };
+        template <typename F>
+        concept key_watching = requires { typename F::ranking; };
     }  // namespace detail
 
     namespace detail
@@ -9265,11 +9586,24 @@ namespace yyjson
         template <typename Json>
         static constexpr auto later_kinds = make_later_kinds<Json>();
 
+        // the alternatives that are keyed structs, which are tried first for an object
+        using key_ranking = detail::untagged_key_ranking<std::variant<Ts...>>;
+
         template <typename Json>
         static std::variant<Ts...> from_untagged(const Json& json)
         {
             const auto kind = detail::json_kind_of(json);
             const auto rereads = detail::variant_reread_guard<std::variant<Ts...>, Json>(kind);
+            if constexpr (detail::json_value_of_document<Json> &&
+                          detail::ranks_keyed_alternatives<std::variant<Ts...>>)
+            {
+                if (kind == detail::json_kind_object)
+                {
+                    const auto obj = *json.as_object();
+                    if (obj.size() >= key_ranking::members_to_rank)
+                        return from_ranked(json, key_ranking::rank_object(obj), 0, rereads);
+                }
+            }
             return from_alternative<0>(json, kind, rereads);
         }
 
@@ -9345,19 +9679,64 @@ namespace yyjson
             return std::variant<Ts...>(std::in_place_index<I>, cast<T>(json));
         }
 
+        // Casts the JSON object to the keyed alternative ranked at `pos` in `ranked`, or to the first after it that
+        // reads the object, and then to the first other alternative that does as `from_alternative` does.
+        template <typename Json, typename Ranking, typename Guard>
+        static std::variant<Ts...> from_ranked(const Json& json, const Ranking& ranked, std::size_t pos,
+                                               const Guard& rereads)
+        {
+            if (pos == ranked.count) return from_alternative<0>(json, detail::json_kind_object, rereads, ranked);
+            return from_keyed<0>(json, ranked, pos, rereads);
+        }
+
+        // `from_ranked` for the keyed alternative K, by its index among them, if `ranked` has it at `pos`.  A keyed
+        // struct is not checked with `may_cast`, which checks nothing in a struct.
+        template <std::size_t K, typename Json, typename Ranking, typename Guard>
+        static std::variant<Ts...> from_keyed(const Json& json, const Ranking& ranked, std::size_t pos,
+                                              const Guard& rereads)
+        {
+            if constexpr (K + 1 < key_ranking::size)
+            {
+                if (ranked.order[pos] != K) return from_keyed<K + 1>(json, ranked, pos, rereads);
+            }
+            constexpr auto i = key_ranking::alternatives[K];
+            using T = std::variant_alternative_t<i, std::variant<Ts...>>;
+            auto limit = std::exception_ptr();
+            try
+            {
+                return cast_alternative<i>(json);
+            }
+            catch (const detail::recursion_limit_error&)
+            {
+                limit = std::current_exception();
+            }
+            catch (const std::bad_alloc&)
+            {
+                limit = std::current_exception();
+            }
+            catch (...)
+            {
+            }
+            if (limit) std::rethrow_exception(limit);
+            if (rereads.template stops_after<i>()) detail::throw_variant_reread_limit<std::variant<Ts...>, T>();
+            return from_ranked(json, ranked, pos + 1, rereads);
+        }
+
         // Casts the JSON value to the alternative I, or to the first alternative after it that accepts the value.
         // The variant is returned as it is constructed: one held in a `std::optional` until the end made GCC warn
-        // with `-Wmaybe-uninitialized` where it was moved out.
-        template <std::size_t I, typename Json, typename Guard>
-        static std::variant<Ts...> from_alternative(const Json& json, std::uint16_t kind, const Guard& rereads)
+        // with `-Wmaybe-uninitialized` where it was moved out.  With `ranked`, the alternatives that it ranked
+        // have been tried and failed already, and the others are tried for the object.
+        template <std::size_t I, typename Json, typename Guard, typename... Ranked>
+        static std::variant<Ts...> from_alternative(const Json& json, std::uint16_t kind, const Guard& rereads,
+                                                    const Ranked&... ranked)
         {
             if constexpr (I == sizeof...(Ts))
                 detail::throw_bad_cast("{} is not constructible from JSON", detail::type_name<std::variant<Ts...>>());
             else
             {
                 using T = std::variant_alternative_t<I, std::variant<Ts...>>;
-                if ((alternative_kinds<Json>[I] & kind) != 0 &&
-                    ((later_kinds<Json>[I] & kind) == 0 || may_cast<I>(json, kind, rereads)))
+                if ((alternative_kinds<Json>[I] & kind) != 0 && !(ranked.has(I) || ...) &&
+                    (!may_follow<I, Json>(kind, ranked...) || may_cast<I>(json, kind, rereads)))
                 {
                     // The limit is thrown again after the handler.  On Windows a handler runs on top of the frames
                     // that threw, so a throw from the handler at every level of a nested value keeps all of those
@@ -9381,8 +9760,18 @@ namespace yyjson
                     if (limit) std::rethrow_exception(limit);
                     if (rereads.template stops_after<I>()) detail::throw_variant_reread_limit<std::variant<Ts...>, T>();
                 }
-                return from_alternative<I + 1>(json, kind, rereads);
+                return from_alternative<I + 1>(json, kind, rereads, ranked...);
             }
+        }
+
+        // Whether an alternative after I may be tried for a value of `kind` if I fails.
+        template <std::size_t I, typename Json, typename... Ranked>
+        static bool may_follow(std::uint16_t kind, const Ranked&... ranked) noexcept
+        {
+            if constexpr (sizeof...(Ranked) == 0)
+                return (later_kinds<Json>[I] & kind) != 0;
+            else
+                return (ranked.others_after(I) && ...);
         }
     };
 
@@ -15309,6 +15698,14 @@ namespace yyjson
                     }
                 }
                 const auto rereads = yyjson::detail::variant_reread_guard<std::remove_cv_t<T>, const_value_ref>(kind);
+                if constexpr (yyjson::detail::ranks_keyed_alternatives<std::remove_cv_t<T>>)
+                {
+                    if (kind == yyjson::detail::json_kind_object)
+                    {
+                        read_ranked_variant<T>(make, start, rereads);
+                        return;
+                    }
+                }
                 const auto found = [&]<std::size_t... Is>(std::index_sequence<Is...>) {
                     constexpr auto& kinds = alternative_kinds<T>;
                     constexpr auto& later = later_alternative_kinds<T>;
@@ -15317,6 +15714,170 @@ namespace yyjson
                             ...);
                 }(std::make_index_sequence<std::variant_size_v<T>>{});
                 if (!found) fail();
+            }
+
+            // Ranks the keys of the object at `cur_` as `untagged_key_ranking` does, and moves past the object.
+            template <typename Ranking>
+            typename Ranking::ranking rank_members()
+            {
+                auto seen = typename Ranking::seen_keys{};
+                auto hint = std::size_t{0};
+                read_members([&] {
+                    auto i = expected_field(Ranking::matcher, hint);
+                    if (i == Ranking::key_count) i = find_field(Ranking::matcher, hint);
+                    read_colon();
+                    if (i < Ranking::key_count)
+                    {
+                        seen.set(i);
+                        hint = i + 1;
+                    }
+                    skip_brackets();
+                });
+                return Ranking::rank(seen);
+            }
+
+            // Moves past the value at `cur_` by its brackets and strings alone, to the comma or the bracket after
+            // it.  The alternatives that are read after the ranking check the value.
+            void skip_brackets()
+            {
+                auto depth = std::size_t{0};
+                for (const char* p = cur_;; ++p)
+                {
+                    switch (*p)
+                    {
+                        case '"': p = skip_plain_string(p) - 1; break;
+                        case '{':
+                        case '[': ++depth; break;
+                        case '}':
+                        case ']':
+                            if (depth == 0)
+                            {
+                                cur_ = p;
+                                return;
+                            }
+                            if (--depth == 0)
+                            {
+                                // a value that ends at the root's closing bracket leaves the object unclosed
+                                if (p >= last_) fail();
+                                cur_ = p + 1;
+                                return;
+                            }
+                            break;
+                        case ',':
+                            if (depth == 0)
+                            {
+                                cur_ = p;
+                                return;
+                            }
+                            break;
+                        default: break;
+                    }
+                    if (p >= last_) fail();
+                }
+            }
+
+            // Reads the object at `start` into the variant T as `caster<std::variant>::from_ranked` casts it: into the
+            // keyed alternatives that `untagged_key_ranking` ranks for its keys, in their order, and then into the
+            // other alternatives in order.  The first keyed alternative is read first, recording the keys of the
+            // object, and is kept if it ranks first, as it does for an object of its own keys; the object is
+            // read again into the others otherwise.  The keys are looked up on their own if it fails, or if it
+            // may hold the variant again: reading it twice at each depth would take time exponential in the depth.
+            template <typename T, typename Make, typename Guard>
+            void read_ranked_variant(Make& make, const char* start, const Guard& rereads)
+            {
+                using ranking = yyjson::detail::untagged_key_ranking<std::remove_cv_t<T>>;
+                constexpr auto first = ranking::alternatives[0];
+                using first_type = std::remove_cv_t<std::variant_alternative_t<first, T>>;
+                if constexpr (!yyjson::detail::type_reaches<std::remove_cv_t<T>, first_type>)
+                {
+                    auto seen = typename ranking::seen_keys{};
+                    if (read_watched_alternative<T, first, ranking>(make, &seen))
+                    {
+                        if (ranking::first_leads(seen)) return;
+                        const auto ranked = ranking::rank(seen);
+                        if (ranked.count == 0 ? ranking::first_in_order : ranked.order[0] == 0) return;
+                        cur_ = start;
+                        read_ranked_alternatives<T>(make, start, rereads, ranked, false);
+                        return;
+                    }
+                    cur_ = start;
+                    const auto ranked = rank_members<ranking>();
+                    cur_ = start;
+                    read_ranked_alternatives<T>(make, start, rereads, ranked, true);
+                }
+                else
+                {
+                    const auto ranked = rank_members<ranking>();
+                    cur_ = start;
+                    read_ranked_alternatives<T>(make, start, rereads, ranked, false);
+                }
+            }
+
+            // Reads the object at `start` into the alternatives that `ranked` ranks, in their order, and then into
+            // the other alternatives that read objects in order, but for the first keyed alternative if it has
+            // `failed`.
+            template <typename T, typename Make, typename Guard, typename Ranking>
+            void read_ranked_alternatives(Make& make, const char* start, const Guard& rereads, const Ranking& ranked,
+                                          bool failed)
+            {
+                using ranking = yyjson::detail::untagged_key_ranking<std::remove_cv_t<T>>;
+                for (std::size_t pos = 0; pos < ranked.count; ++pos)
+                {
+                    const auto k = ranked.order[pos];
+                    if (k == 0 && failed) continue;
+                    const auto read = [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                        return ((k == Ks && read_alternative<T, ranking::alternatives[Ks]>(make, start, false, rereads)) ||
+                                ...);
+                    }(std::make_index_sequence<ranking::size>{});
+                    if (read) return;
+                }
+                const auto found = [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                    constexpr auto& kinds = alternative_kinds<T>;
+                    return (((kinds[Is] & yyjson::detail::json_kind_object) != 0 && !ranked.has(Is) &&
+                             (Is != ranking::alternatives[0] || !failed) &&
+                             read_alternative<T, Is>(make, start, ranked.others_after(Is), rereads)) ||
+                            ...);
+                }(std::make_index_sequence<std::variant_size_v<T>>{});
+                if (!found) fail();
+            }
+
+            // Reads the object at `cur_` into the keyed alternative I of the variant T, recording its keys in
+            // `seen` as `read_watched_fields` does, and as `read_alternative` does without its checks.  Gives
+            // whether it has been read; if not, the caller goes on.
+            template <typename T, std::size_t I, typename Ranking, typename Make>
+            bool read_watched_alternative(Make& make, typename Ranking::seen_keys* seen)
+            {
+                using alternative = std::remove_cv_t<std::variant_alternative_t<I, T>>;
+                auto pass_on = std::exception_ptr();
+                try
+                {
+                    if constexpr (yyjson::detail::reflected_assignable_in_place<alternative, const_value_ref>)
+                        read_watched_fields<Ranking>(std::get<I>(make(std::in_place_index<I>)), seen);
+                    else
+                    {
+                        auto result = alternative();
+                        read_watched_fields<Ranking>(result, seen);
+                        make(std::in_place_index<I>, std::move(result));
+                    }
+                    return true;
+                }
+                catch (const direct_read_unsupported&)
+                {
+                    pass_on = std::current_exception();
+                }
+                catch (const yyjson::detail::recursion_limit_error&)
+                {
+                    pass_on = std::current_exception();
+                }
+                catch (const std::bad_alloc&)
+                {
+                    pass_on = std::current_exception();
+                }
+                catch (...)
+                {
+                }
+                if (pass_on) std::rethrow_exception(pass_on);
+                return false;
             }
 
             // A number read once for the alternatives of a variant, with its precise kind.
@@ -16831,15 +17392,35 @@ namespace yyjson
                 return index;
             }
 
-            // Reads the members of an object, assigning those that `matcher` finds with `assign(index)`.
+            // Finds the key at `cur_` among the keys that `watch` records, records it, and gives the index of its
+            // field among the N fields of the struct being read, or N.
+            template <std::size_t N, typename Watch>
+            CPPYYJSON_ALWAYS_INLINE std::size_t find_watched_field(const Watch& watch, std::size_t hint)
+            {
+                using ranking = typename Watch::ranking;
+                auto index = expected_field(ranking::matcher, hint);
+                if (index == ranking::key_count) index = find_field(ranking::matcher, hint);
+                if (index == ranking::key_count) return N;
+                watch.seen->set(index);
+                return index < N ? index : N;
+            }
+
+            // Reads the members of an object, assigning those that `matcher` finds with `assign(index)`, and
+            // recording their keys if `assign` is `key_watching`.
             template <std::size_t N, typename Assign>
             CPPYYJSON_ALWAYS_INLINE void read_fields(const yyjson::detail::field_key_matcher<N>& matcher,
                                                      Assign&& assign)
             {
                 auto hint = std::size_t{0};
                 read_members([&]() CPPYYJSON_LAMBDA_ALWAYS_INLINE {
-                    auto index = expected_field(matcher, hint);
-                    if (index == N) index = find_field(matcher, hint);
+                    auto index = N;
+                    if constexpr (yyjson::detail::key_watching<std::remove_cvref_t<Assign>>)
+                        index = find_watched_field<N>(assign, hint);
+                    else
+                    {
+                        index = expected_field(matcher, hint);
+                        if (index == N) index = find_field(matcher, hint);
+                    }
                     read_colon();
                     if (index < N)
                     {
@@ -16862,8 +17443,14 @@ namespace yyjson
                 {
                     if (*cur_ != '"') [[unlikely]]
                         fail();
-                    auto index = expected_field(Matcher, hint);
-                    if (index == n) index = find_field(Matcher, hint);
+                    auto index = n;
+                    if constexpr (yyjson::detail::key_watching<ReadField>)
+                        index = find_watched_field<n>(read_field, hint);
+                    else
+                    {
+                        index = expected_field(Matcher, hint);
+                        if (index == n) index = find_field(Matcher, hint);
+                    }
                     read_colon();
                     if (index < n)
                     {
@@ -16926,6 +17513,7 @@ namespace yyjson
                         return false;
                     }
                     cur_ += size + 2;
+                    if constexpr (yyjson::detail::key_watching<ReadField>) read_field.seen->set(K);
                     read_colon();
                     read_field(std::integral_constant<std::size_t, K>{});
                     skip_ws();
@@ -16953,7 +17541,7 @@ namespace yyjson
             static constexpr std::size_t ordered_fields_max = 8;
 
             // Reads the members of a struct with `read_one(std::integral_constant<std::size_t, K>)` for the field K
-            // that `Matcher` finds.
+            // that `Matcher` finds, recording their keys if `read_one` is `key_watching`.
             template <const auto& Matcher, typename ReadOne>
             CPPYYJSON_ALWAYS_INLINE void read_struct_fields(const ReadOne& read_one)
             {
@@ -16961,11 +17549,20 @@ namespace yyjson
                 if constexpr (n <= ordered_fields_max)
                     read_fields_in_order<Matcher>(read_one);
                 else
-                    read_fields(Matcher, [&](std::size_t index) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                {
+                    const auto assign = [&](std::size_t index) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
                         [&]<std::size_t... Ks>(std::index_sequence<Ks...>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
                             (void)((index == Ks && (read_one(std::integral_constant<std::size_t, Ks>{}), true)) || ...);
                         }(std::make_index_sequence<n>{});
-                    });
+                    };
+                    if constexpr (yyjson::detail::key_watching<ReadOne>)
+                    {
+                        using watching = yyjson::detail::key_watching_read<typename ReadOne::ranking, decltype(assign)>;
+                        read_fields(Matcher, watching{assign, read_one.seen});
+                    }
+                    else
+                        read_fields(Matcher, assign);
+                }
             }
 
             template <typename T>
@@ -17005,6 +17602,49 @@ namespace yyjson
                         read_struct_field<T, I>(t, adjacent, read);
                     };
                 read_struct_fields<visit_struct<T>::key_matcher>(read_one);
+                read_skipped_adjacent_fields(t, adjacent);
+                check_adjacent_tags_without_values(t, adjacent);
+            }
+
+            // Reads the fields of the keyed struct `t` as `read_reflected_fields` or `read_visitable_fields` does,
+            // recording the keys of the object in `seen` for the variant that `Ranking` ranks.  A function of its
+            // own, as calling it from those would change how the compiler inlines them for every other struct.
+            template <typename Ranking, typename T>
+            void read_watched_fields(T& t, typename Ranking::seen_keys* seen)
+            {
+                [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<T>();
+                auto adjacent = adjacent_fields_of<T>{cur_};
+                if constexpr (yyjson::detail::visitable<T>)
+                {
+                    constexpr auto& members = visit_struct<T>::members;
+                    const auto read_one =
+                        [&]<std::size_t I>(std::integral_constant<std::size_t, I>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                            constexpr auto size = std::tuple_size_v<std::remove_cvref_t<decltype(members)>>;
+                            const auto replaceable = [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                                return yyjson::detail::has_own_bytes<I>(t.*std::get<Is>(members)...);
+                            };
+                            const auto read = [&](auto& field) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                                read_field(field, replaceable(std::make_index_sequence<size>{}));
+                            };
+                            read_struct_field<T, I>(t, adjacent, read);
+                        };
+                    read_struct_fields<visit_struct<T>::key_matcher>(
+                        yyjson::detail::key_watching_read<Ranking, decltype(read_one)>{read_one, seen});
+                }
+                else
+                {
+                    const auto read_one =
+                        [&]<std::size_t K>(std::integral_constant<std::size_t, K>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                            using yyjson::detail::reflected_field_index;
+                            using yyjson::detail::reflected_field_replaceable;
+                            const auto read = [&](auto& field) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                                read_field(field, reflected_field_replaceable<reflected_field_index<T, K>>(t));
+                            };
+                            read_struct_field<T, K>(t, adjacent, read);
+                        };
+                    read_struct_fields<yyjson::detail::reflected_key_matcher<T>>(
+                        yyjson::detail::key_watching_read<Ranking, decltype(read_one)>{read_one, seen});
+                }
                 read_skipped_adjacent_fields(t, adjacent);
                 check_adjacent_tags_without_values(t, adjacent);
             }

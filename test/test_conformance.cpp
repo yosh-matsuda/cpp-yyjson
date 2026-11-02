@@ -84,6 +84,17 @@ namespace conformance
         std::vector<ConfInner> ins;
         std::vector<ConfRecord> kids;
     };
+
+    // the alternatives of a variant that ranks them by the keys of an object
+    struct ConfOk
+    {
+        int code = 0;
+    };
+    struct ConfErr
+    {
+        int code = 0;
+        std::string msg;
+    };
 }  // namespace conformance
 
 namespace
@@ -808,5 +819,22 @@ TEST(Conformance, GeneratedRecords)
         expect_same<ConfRecord>(text);
         expect_same<ConfJson>(text);
         expect_same<std::vector<ConfRecord>>(std::format("[{}, {}]", text, text));
+        expect_same<std::variant<ConfInner, ConfRecord>>(text);
+    }
+}
+
+// Every prefix of objects whose keys a variant ranks, where a value may end at the last byte of the text.
+TEST(Conformance, RankedVariantPrefixes)
+{
+    using conformance::ConfErr;
+    using conformance::ConfOk;
+    for (const std::string_view text : {R"({"msg":{},"code":1})", R"({"v":{"msg":[1,[2]],"code":{"a":{}}}})"})
+    {
+        for (std::size_t n = 0; n <= text.size(); ++n)
+        {
+            const auto prefix = text.substr(0, n);
+            expect_same<std::variant<ConfOk, ConfErr>>(prefix);
+            expect_same<std::map<std::string, std::variant<ConfOk, ConfErr>>>(prefix);
+        }
     }
 }
