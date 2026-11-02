@@ -334,6 +334,8 @@ find_package(cpp_yyjson CONFIG REQUIRED)
 target_link_libraries(my_app PRIVATE cpp_yyjson::cpp_yyjson)
 ```
 
+Without CMake, copy `cpp_yyjson.hpp`, `field_reflection.hpp` and `yyjson.h` from `include`, and compile `src/yyjson.c` as C together with your program; MSVC also needs `/Zc:preprocessor`. cpp-yyjson has no vcpkg or Conan package. To use the upstream yyjson instead of the bundled backend, install it, for example with `vcpkg install yyjson`, and configure with `-DCPPYYJSON_USE_BUNDLED_YYJSON=OFF`; without CMake, copy only the two cpp-yyjson headers.
+
 ### CMake options
 
 | Option | Effect |
