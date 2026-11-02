@@ -1777,7 +1777,7 @@ Every form gives the same result with both APIs. Some rules apply to all of them
 
 *   A caster needs only the functions that are used: `from_json` to read the type, `to_json` to write it. The two do not have to be symmetric.
 *   The casters apply recursively. The value that a translator returns and the values given to an emitter are converted with their own casters.
-*   `to_json` may take a parameter pack `Ts... ts` after the value, which receives `copy_string` when a document is told to copy strings. Pass it on to the values given to an emitter. A translator can leave it out.
+*   `to_json` may take a parameter pack `Ts... ts` after the value, which receives `copy_string` when a document is told to copy strings. Only a `to_json` that [fills a JSON value](#writing-into-a-json-value-in-a-caster) needs it. A translator and an emitter can leave it out: the value that a translator returns is converted with the `copy_string` of the call, and an emitter copies the strings that it is given.
 
 #### Translator
 
@@ -1902,13 +1902,12 @@ struct Shape
 template <>
 struct yyjson::caster<Shape>
 {
-    template <typename... Ts>
-    static void to_json(yyjson::object_emitter& out, const Shape& s, Ts... ts)
+    static void to_json(yyjson::object_emitter& out, const Shape& s)
     {
-        out.emplace("kind", s.kind, ts...);
-        if (s.radius) out.emplace("r", *s.radius, ts...);
+        out.emplace("kind", s.kind);
+        if (s.radius) out.emplace("r", *s.radius);
         out.emplace_array("tags", [&](yyjson::array_emitter& tags) {
-            for (const auto& t : s.tags) tags.emplace_back(t, ts...);
+            for (const auto& t : s.tags) tags.emplace_back(t);
         });
     }
 };
@@ -1919,12 +1918,12 @@ auto json = write(Shape{"circle", 1.5, {"a", "b"}});
 
 | `object_emitter` | `array_emitter` |
 | --- | --- |
-| `emplace(key, value, ts...)` | `emplace_back(value, ts...)` |
-| `emplace_object(key, [](object_emitter&) {...}, ts...)` | `emplace_back_object([](object_emitter&) {...})` |
-| `emplace_array(key, [](array_emitter&) {...}, ts...)` | `emplace_back_array([](array_emitter&) {...})` |
-| `emplace_members(value, ts...)` | |
+| `emplace(key, value)` | `emplace_back(value)` |
+| `emplace_object(key, [](object_emitter&) {...})` | `emplace_back_object([](object_emitter&) {...})` |
+| `emplace_array(key, [](array_emitter&) {...})` | `emplace_back_array([](array_emitter&) {...})` |
+| `emplace_members(value)` | |
 
-The value is anything that `yyjson::value` can be constructed from, so the casters apply to it recursively, and the function given to `emplace_object` or `emplace_array` fills the nested object or array. The emitter is used with [`yyjson::write`](#writing-a-c-object-to-a-json-string-directly), where it writes the members straight to the string, and with `yyjson::value`, `yyjson::object` and the other ways to build a document, where it adds them to the document. `copy_string` in `ts...` makes the document copy the strings it is given; `yyjson::write` copies them anyway.
+The value is anything that `yyjson::value` can be constructed from, so the casters apply to it recursively, and the function given to `emplace_object` or `emplace_array` fills the nested object or array. The emitter is used with [`yyjson::write`](#writing-a-c-object-to-a-json-string-directly), where it writes the members straight to the string, and with `yyjson::value`, `yyjson::object` and the other ways to build a document, where it adds them to the document. Either way, the emitter copies every key and string that it is given, so a caster may emplace a local string. `emplace`, `emplace_object`, `emplace_array`, `emplace_members` and `emplace_back` accept `copy_string` as a last argument, which changes nothing.
 
 `emplace_members` appends the members of the JSON object that its value is written as, instead of one member whose value it is. The value is a struct that the [compile-time reflection](#automatic-casting-with-compile-time-reflection) or the `VISITABLE_STRUCT` macro writes, a type whose caster writes through `object_emitter`, or a range of key-value pairs such as `std::map`. The fields of a struct are written as in any other object of it: a field that holds no value is [omitted](#omitting-a-field-with-no-value), and `yyjson::field` renames, skips and tags them. Any other type, such as a number, an array, a type whose caster takes `yyjson::writer::object_ref&` or a translator, does not compile:
 
@@ -1944,12 +1943,11 @@ struct Request
 template <>
 struct yyjson::caster<Request>
 {
-    template <typename... Ts>
-    static void to_json(yyjson::object_emitter& out, const Request& r, Ts... ts)
+    static void to_json(yyjson::object_emitter& out, const Request& r)
     {
-        out.emplace_members(r.params, ts...);
+        out.emplace_members(r.params);
         out.emplace_array("sparse_objective", [&](yyjson::array_emitter& a) {
-            for (const auto& t : r.terms) a.emplace_back(t, ts...);
+            for (const auto& t : r.terms) a.emplace_back(t);
         });
     }
 };
@@ -2055,6 +2053,33 @@ static void from_json(X& field, const Json& json);
 The casters of v1.1.0 and earlier write a type by filling a JSON value of the DOM API that `to_json` takes as its first parameter: `writer::object_ref&`, `writer::array_ref&` or `writer::value_ref&`. These forms remain supported, and `yyjson::write` builds a temporary document for each value that they fill. For a new caster, write a JSON object or array with an [emitter](#writing-members-with-an-emitter), and any other value with a [translator](#translator), which both APIs use without a document.
 
 A caster is given an emitter only when its `to_json` takes none of these three reference types. A template such as `template <typename V> static void to_json(V& out, const X& x)` is therefore given `writer::object_ref&`.
+
+The document that such a `to_json` fills refers to the strings that it is given as lvalues, unless it is told to copy them; it copies a `std::string` given as an rvalue. Pass `ts...` on with the strings of the value, so that they are copied when the caller asks for `copy_string`, and move a local string or give it `copy_string`, because the local is destroyed when `to_json` returns:
+
+```cpp
+struct Account
+{
+    std::string name;
+    std::string domain;
+    int id;
+};
+
+template <>
+struct yyjson::caster<Account>
+{
+    template <typename... Ts>
+    static void to_json(yyjson::writer::object_ref& obj, const Account& a, Ts... ts)
+    {
+        obj.emplace("name", a.name, ts...);              // a string of the value
+        auto label = a.name + "@" + a.domain;
+        obj.emplace("label", std::move(label));          // a local string, moved
+        auto id = std::to_string(a.id);
+        obj.emplace(id, a.domain, yyjson::copy_string);  // a local key, copied
+    }
+};
+```
+
+The same applies to a translator that returns a `yyjson::value`, `yyjson::object` or `yyjson::array`: the strings it refers to must outlive the return, so move or copy a local string into it. The strings of the value it returns are copied into the document of the caller, so a translator does not need `ts...`.
 
 ### Recursive types
 

@@ -239,8 +239,7 @@ struct yyjson::caster<Color>
         };
         return {byte(1), byte(3), byte(5)};
     }
-    template <typename... Ts>
-    static std::string to_json(const Color& c, Ts...)
+    static std::string to_json(const Color& c)
     {
         return std::format("#{:02x}{:02x}{:02x}", c.r, c.g, c.b);
     }
