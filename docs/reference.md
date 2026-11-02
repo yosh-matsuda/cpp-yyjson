@@ -239,7 +239,7 @@ A `yyjson::bad_cast` thrown while reading names the C++ type and the kind of the
 
 Some conversions succeed where one might expect them to fail, or give JSON that their types do not suggest:
 
-*   A `std::variant` takes the first alternative that accepts the value, and an integer accepts a real number without a fractional part. `std::variant<int, double>` therefore reads `1.5` as `double` but `2.0` as the `int` `2`; with `double` first, every number is read as `double`.
+*   A `std::variant` takes the first alternative that accepts the value, after the structs whose keys a JSON object [has](#untagged-variants), and an integer accepts a real number without a fractional part. `std::variant<int, double>` therefore reads `1.5` as `double` but `2.0` as the `int` `2`; with `double` first, every number is read as `double`.
 *   A class that is constructible from a number, such as `struct Count { Count(int); };`, reads every JSON number that C++ converts to the parameter of its constructor, so `1.5` gives `Count(1)`. Only the integer and enumeration types themselves reject a real number with a fractional part.
 *   A map whose keys are neither strings nor [enumerations](#enumerations), such as `std::map<int, int>`, is a JSON array of `[key, value]` pairs, `[[1,2]]`, which the map is read back from, not an object with its keys in strings. A key that appears twice keeps its first value, and a `std::multimap` keeps them all. `merge_into` replaces such a map as it replaces a range. Convert the map to `std::map<std::string, int>` with a [translator](#translator) to have a JSON object.
 *   `char`, `signed char`, `unsigned char`, `std::int8_t` and `std::uint8_t` are numbers, and `std::u8string`, `std::u16string`, `std::u32string` and `std::wstring` are arrays of numbers. Only ranges of `char` are JSON strings.
@@ -370,7 +370,7 @@ auto str_var = cast<Variant>(str_json);                                   // des
 // -> "a"
 ```
 
-A `std::variant` is deserialized into the first of its alternatives, in the order of the template arguments, that the JSON value converts to. An alternative that never converts from the kind of the JSON value, such as `std::vector<double>` from a number, is skipped without trying it, while an alternative with a user-defined `from_json` is always tried. A `std::bad_alloc` thrown while an alternative is tried propagates out of the read, rather than passing the value to the next alternative. A variant whose alternatives a member of the JSON object names is read by that member instead, as a [tagged variant](#tagged-variants).
+A `std::variant` is read by trying its alternatives, as [untagged variants](#untagged-variants) describes, or by a member of the JSON object that names the alternative, as a [tagged variant](#tagged-variants).
 
 For a multi-type JSON array or object, using the caster for `std::tuple` is valuable and efficient.
 
@@ -619,6 +619,43 @@ auto json = yyjson::write(project);
 *   The annotations apply to the structs that the compile-time reflection converts. An annotation of this library on a member of a struct that `VISITABLE_STRUCT` registers fails to compile; use the pairs of the macro or `yyjson::annotations` there.
 *   The annotations are read when the macro `FIELD_RFL_ANNOTATIONS` is `1`. `yyjson::rename`, `yyjson::skip` and the tags are always available for `yyjson::annotations`.
 
+### Untagged variants
+
+A `std::variant` is read by trying its alternatives, unless a member of the JSON object names the alternative, as in a [tagged variant](#tagged-variants).
+
+A JSON value is read as the first of the alternatives, in the order of the template arguments, that it converts to. An alternative that never converts from the kind of the JSON value, such as `std::vector<double>` from a number, is skipped without trying it, while an alternative with a user-defined `from_json` is always tried. A `std::bad_alloc` thrown while an alternative is tried propagates out of the read, rather than passing the value to the next alternative.
+
+A JSON object is read in three steps when the variant has a struct read by the [compile-time reflection](#automatic-casting-with-compile-time-reflection) or `VISITABLE_STRUCT` and another alternative that reads objects:
+
+1.  The candidates are those structs that have at least one of their keys in the object and whose required keys the object all has. Every field that is not `std::optional` is required here. A renamed field counts by its JSON key, and a [skipped field](#skipped-fields) has no key.
+2.  The candidates are tried first: the one that has the most of its keys in the object first, and in the order of the template arguments among those with as many.
+3.  Then the other alternatives are tried in the order of the template arguments.
+
+The keys of the object are looked up once, and a key that appears twice counts once. A struct with a user-defined caster or translator is not a candidate and is tried in step 3 with the others.
+
+```cpp
+struct Ok { int code; };
+struct Err { int code; std::string msg; };
+using Result = std::variant<Ok, Err>;
+
+auto err = yyjson::read<Result>(R"({"code":1,"msg":"x"})");
+auto ok = yyjson::read<Result>(R"({"code":1})");
+auto other = yyjson::read<Result>(R"({"msg":"x"})");
+```
+
+| JSON | Result | Reason |
+| --- | --- | --- |
+| `{"code":1,"msg":"x"}` | `Err{1, "x"}` | Both are candidates, and `Err` has more of its keys in the object. |
+| `{"code":1}` | `Ok{1}` | `Err` lacks `msg`, so only `Ok` is a candidate. |
+| `{"msg":"x"}` | `Ok{0}` | `Ok` has none of its keys in the object and `Err` lacks `code`, so there is no candidate. Step 3 reads the object as `Ok`, whose missing field keeps its value in `Ok()`. |
+
+"Required" decides only which structs are candidates. A struct that lacks a required key is still read in step 3, with the field left at its value in `T()`, as the last row shows. Since step 3 tries every alternative, every JSON value that a variant read without steps 1 and 2 is still read; only the alternative that the variant holds may differ.
+
+Two cases need care:
+
+*   A struct none of whose keys the object has, such as an empty struct, is not a candidate and keeps its place in the order, so an empty object is read as the first alternative that reads it.
+*   A catch-all alternative, such as a map or a `yyjson::value`, placed before a struct of `std::optional` fields, holds every object that has none of the keys of the struct. Put catch-all alternatives last, or use a [tagged variant](#tagged-variants) when objects must be told apart reliably.
+
 ### Tagged variants
 
 JSON often tells the kind of an object by a member that names it, such as `"type": "circle"`, rather than by its shape. A `std::variant` can read and write its alternatives by such a member, which is called the tag. `yyjson::internal_tag(key, ids)` puts the tag in the object of the alternative itself, and annotates the variant type in `yyjson::annotations<V>`. `yyjson::adjacent_tag(key, ids)` puts it in the object of the struct that holds the variant, next to the field of the variant, and annotates that field by `yyjson::field` or by a [C++26 annotation](#c26-annotations) of the member. `ids` names the alternatives other than `std::monostate`, in the order of the template arguments:
@@ -660,7 +697,7 @@ auto json2 = yyjson::write(Event{2, Rect{1, 2}});
 // -> {"id":2,"kind":"rect","data":{"w":1,"h":2}}
 ```
 
-These are the internally and the adjacently tagged representations of [serde](https://serde.rs/enum-representations.html). A variant without a tag tries its alternatives in turn, as [above](#pre-defined-stl-casters).
+These are the internally and the adjacently tagged representations of [serde](https://serde.rs/enum-representations.html). A variant without a tag tries its alternatives in turn, as [described above](#untagged-variants).
 
 *   The tag may be anywhere in its object, before or after the other members. When the object has more than one member of the key, the first one names the alternative. A tag that is not a string or that names no alternative throws `yyjson::bad_cast`, and so does a missing one, also in a variant that has `std::monostate`, except for the cases of `adjacent_tag` below.
 *   `std::monostate` is written as JSON null without a tag, and only JSON null reads as `std::monostate`, in a variant that has it. Any other alternative is written with its tag first: the first member of its object for `internal_tag`, and the member right before the field of the variant for `adjacent_tag`.
@@ -750,7 +787,7 @@ Each level of a recursive type is read by a call of its own, so a JSON string ne
 *   A type is recognized as recursive through the fields that the compile-time reflection or the `VISITABLE_STRUCT` macro finds, and through the template arguments of a class. A class with a user-defined caster whose fields are not visible this way is not counted, even if its caster reads values of its own type, so that caster has to limit the depth itself.
 *   Writing is not limited, because the depth of the output is that of the C++ object. The values must not form a cycle, such as a `std::shared_ptr` that points back to an object that holds it: writing such a value recurses until the stack overflows.
 
-A `std::variant` tries its alternatives in order, and reads the value again with the next one when one fails. If two or more of its alternatives hold the variant again and accept the same kind of JSON value, such as two structs that both read a JSON object, each level of nesting could double the time to read a value whose innermost part fails. Reading therefore multiplies, over the variants nested one inside the other, the number of such alternatives that accept the value, and limits the product to 256: 8 levels of variants with two such alternatives, or 5 with three. Beyond that, the variant throws `yyjson::bad_cast` as soon as one of those alternatives fails, without trying the next one, while a value that the first of them reads is read at any depth up to `CPPYYJSON_RECURSION_DEPTH_LIMIT`. To read deeper values of such a variant, tell its alternatives apart in a user-defined caster, for example by a member that names the alternative.
+A `std::variant` tries its alternatives in turn, and reads the value again with the next one when one fails. If two or more of its alternatives hold the variant again and accept the same kind of JSON value, such as two structs that both read a JSON object, each level of nesting could double the time to read a value whose innermost part fails. Reading therefore multiplies, over the variants nested one inside the other, the number of such alternatives that accept the value, and limits the product to 256: 8 levels of variants with two such alternatives, or 5 with three. Beyond that, the variant throws `yyjson::bad_cast` as soon as one of those alternatives fails, without trying the next one, while a value that the first of them to be tried reads is read at any depth up to `CPPYYJSON_RECURSION_DEPTH_LIMIT`. To read deeper values of such a variant, tell its alternatives apart in a user-defined caster, for example by a member that names the alternative.
 
 To change the limit, define `CPPYYJSON_RECURSION_DEPTH_LIMIT` before including `cpp_yyjson.hpp`, or set the CMake variable of the same name, which defines it for every target that links cpp-yyjson. `0` removes both limits. Every translation unit of a program must see the same value.
 
