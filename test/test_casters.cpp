@@ -821,7 +821,7 @@ TEST(Writer, Emitter)
     obj.emplace("pair", EmittedPair{1, 2});
     EXPECT_EQ(std::string(obj.write()), std::string(R"({"shape":)") + shape_json + R"(,"pair":[1,2.0]})");
 
-    // `copy_string` reaches the emitter, so that the document outlives the strings it was given
+    // `copy_string` reaches a caster that takes it
     auto copied =
         yyjson::value(EmittedShape{std::string(40, 'k'), {}, {std::string(40, 't')}, {}}, yyjson::copy_string);
     const auto json = std::string(copied.write());
@@ -998,7 +998,7 @@ TEST(Writer, EmitterMembers)
     empty.params.timeout = 3;
     expect_direct_write(empty);
 
-    // `copy_string` reaches the members, so that the document outlives the strings it was given
+    // `copy_string` reaches the casters of the members
     auto copied = yyjson::value(
         MemberRequest{{1, {}, {}, 0, std::string(40, 'n')}, {std::string(40, 's'), {}, {}}, {}, {{std::string(40, 'k'), 1}}, {}},
         yyjson::copy_string);
@@ -1042,6 +1042,50 @@ struct yyjson::caster<TranslatedTree>
 };
 static_assert(yyjson::writable<TranslatedTree>);
 static_assert(!yyjson::writer::detail::members_emplaceable<TranslatedTree>);
+
+// A caster that emits the strings of its object and strings that it makes, without `copy_string`.
+struct EmittedStrings
+{
+    struct Inner
+    {
+        std::string s;
+    };
+    std::string key;
+    std::string value;
+    Inner inner;
+};
+template <>
+struct yyjson::caster<EmittedStrings>
+{
+    static void to_json(yyjson::object_emitter& out, const EmittedStrings& e)
+    {
+        out.emplace(e.key, e.value);
+        const auto local = e.key + "-local";
+        out.emplace(local, local);
+        out.emplace_object(e.key + "-object", [&](yyjson::object_emitter& o) { o.emplace(e.value, e.key); });
+        out.emplace_array(e.value, [&](yyjson::array_emitter& a) {
+            a.emplace_back(e.key);
+            a.emplace_back(e.key + "-element");
+            a.emplace_back_object([&](yyjson::object_emitter& o) { o.emplace(e.key, e.value); });
+        });
+        out.emplace_members(e.inner);
+    }
+};
+
+TEST(Writer, EmitterCopiesStrings)
+{
+    // a document copies every string and key that an emitter is given, with or without `copy_string`
+    auto src = EmittedStrings{std::string(40, 'k'), std::string(40, 'v'), {std::string(40, 's')}};
+    const auto expected = std::string(yyjson::write(src));
+    auto as_value = yyjson::value(src);
+    auto as_object = yyjson::object(src);
+    auto holder = yyjson::object();
+    holder.emplace("e", src);
+    for (auto* str : {&src.key, &src.value, &src.inner.s}) str->assign(str->size(), 'x');
+    EXPECT_EQ(std::string(as_value.write()), expected);
+    EXPECT_EQ(std::string(as_object.write()), expected);
+    EXPECT_EQ(std::string(holder.write()), R"({"e":)" + expected + "}");
+}
 
 TEST(Writer, TranslatorOfUncheckedFields)
 {

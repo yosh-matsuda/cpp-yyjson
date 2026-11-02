@@ -18243,19 +18243,21 @@ namespace yyjson
 #endif
             return *object_;
         }
-        template <typename Key, typename T, typename... Ts>
-        void emplace_in_document(Key&& key, T&& t, Ts... ts)
+        // The document copies every string and key that an emitter is given: a caster that emits a member of a
+        // local string would otherwise leave the document referring to it once the caster returns.
+        template <typename Key, typename T>
+        void emplace_in_document(Key&& key, T&& t)
         {
-            document_object().emplace_no_iter(std::forward<Key>(key), std::forward<T>(t), ts...);
+            document_object().emplace_no_iter(std::forward<Key>(key), std::forward<T>(t), copy_string);
         }
         // Builds T in the document, as `emplace` does, and moves its members to the end of the object.
-        template <typename T, typename... Ts>
-        void emplace_members_in_document(T&& t, Ts... ts)
+        template <typename T>
+        void emplace_members_in_document(T&& t)
         {
             using access = writer::detail::json_value_access;
             auto& obj = document_object();
             auto* const dst = const_cast<yyjson_mut_val*>(access::get(obj));
-            auto* const src = access::builder(obj).create_value(std::forward<T>(t), ts...);
+            auto* const src = access::builder(obj).create_value(std::forward<T>(t), copy_string);
             if (src == nullptr) [[unlikely]]
                 throw std::bad_alloc();
             const auto n = yyjson_mut_obj_size(src);
@@ -18278,11 +18280,11 @@ namespace yyjson
         object_emitter(const object_emitter&) = delete;
         object_emitter& operator=(const object_emitter&) = delete;
 
-        // Appends the member of `key` and `t`, written as `yyjson::value(t, ts...)`.  Without `copy_string`, a
-        // document refers to the strings of `key` and `t`, as it does in `writer::object_ref::emplace`.
+        // Appends the member of `key` and `t`, written as `yyjson::value(t)`.  A document copies `key` and the
+        // strings of `t`, so `copy_string` is accepted and changes nothing.
         template <typename Key, writer::detail::emplaceable T, detail::copy_string_args... Ts>
         requires detail::key_type<std::remove_cvref_t<Key>>
-        void emplace(Key&& key, T&& t, Ts... ts)
+        void emplace(Key&& key, T&& t, Ts...)
         {
 #if YYJSON_VERSION_HEX >= 0x000C00
             if (direct_ != nullptr)
@@ -18292,9 +18294,9 @@ namespace yyjson
                 return;
             }
 #endif
-            emplace_in_document(std::forward<Key>(key), std::forward<T>(t), ts...);
+            emplace_in_document(std::forward<Key>(key), std::forward<T>(t));
         }
-        // Appends the members of the JSON object that `t` is written as, `yyjson::object(t, ts...)`, instead of
+        // Appends the members of the JSON object that `t` is written as, `yyjson::object(t)`, instead of
         // one member whose value it is: the fields of a struct, omitted and renamed as in any other object, the
         // members that the caster of T appends through `object_emitter`, or the elements of a map.
         template <typename T, detail::copy_string_args... Ts>
@@ -18319,7 +18321,7 @@ namespace yyjson
                     return;
                 }
 #endif
-                emplace_members_in_document(std::forward<T>(t), ts...);
+                emplace_members_in_document(std::forward<T>(t));
             }
         }
         // Appends the member of `key` and an object, whose members `func(object_emitter&)` appends.
@@ -18360,9 +18362,10 @@ namespace yyjson
         array_emitter(const array_emitter&) = delete;
         array_emitter& operator=(const array_emitter&) = delete;
 
-        // Appends `t`, written as `yyjson::value(t, ts...)`.
+        // Appends `t`, written as `yyjson::value(t)`.  A document copies the strings of `t`, so `copy_string` is
+        // accepted and changes nothing.
         template <writer::detail::emplaceable T, detail::copy_string_args... Ts>
-        void emplace_back(T&& t, Ts... ts)
+        void emplace_back(T&& t, Ts...)
         {
 #if YYJSON_VERSION_HEX >= 0x000C00
             if (direct_ != nullptr)
@@ -18372,7 +18375,7 @@ namespace yyjson
                 return;
             }
 #endif
-            document_array().emplace_back_no_iter(std::forward<T>(t), ts...);
+            document_array().emplace_back_no_iter(std::forward<T>(t), copy_string);
         }
         // Appends an object, whose members `func(object_emitter&)` appends.
         template <std::invocable<object_emitter&> Func>
@@ -18422,7 +18425,7 @@ namespace yyjson
 
     template <typename Key, std::invocable<object_emitter&> Func, detail::copy_string_args... Ts>
     requires detail::key_type<std::remove_cvref_t<Key>>
-    void object_emitter::emplace_object(Key&& key, Func&& func, Ts... ts)
+    void object_emitter::emplace_object(Key&& key, Func&& func, Ts...)
     {
 #if YYJSON_VERSION_HEX >= 0x000C00
         if (direct_ != nullptr)
@@ -18438,13 +18441,13 @@ namespace yyjson
             return;
         }
 #endif
-        auto obj = document_object().emplace(std::forward<Key>(key), empty_object, ts...);
+        auto obj = document_object().emplace(std::forward<Key>(key), empty_object, copy_string);
         auto child = object_emitter(obj);
         std::forward<Func>(func)(child);
     }
     template <typename Key, std::invocable<array_emitter&> Func, detail::copy_string_args... Ts>
     requires detail::key_type<std::remove_cvref_t<Key>>
-    void object_emitter::emplace_array(Key&& key, Func&& func, Ts... ts)
+    void object_emitter::emplace_array(Key&& key, Func&& func, Ts...)
     {
 #if YYJSON_VERSION_HEX >= 0x000C00
         if (direct_ != nullptr)
@@ -18460,7 +18463,7 @@ namespace yyjson
             return;
         }
 #endif
-        auto arr = document_object().emplace(std::forward<Key>(key), empty_array, ts...);
+        auto arr = document_object().emplace(std::forward<Key>(key), empty_array, copy_string);
         auto child = array_emitter(arr);
         std::forward<Func>(func)(child);
     }
