@@ -21,7 +21,7 @@ The `yyjson` namespace includes the following functions and classes. Typically, 
 | `yyjson::enum_format`, `yyjson::enumerator`        | Read and write an enumeration [by names or integers](#formats-and-renamed-enumerators), and the settings of an enumerator |
 | `yyjson::internal_tag`, `yyjson::adjacent_tag`     | Name the alternatives of a `std::variant` by a [member of the object](#tagged-variants) |
 | `yyjson::json_view`                                | Read-only view of a JSON value for a caster's [`from_json`](#reading-a-json-value-in-a-caster) |
-| `VISITABLE_STRUCT`                                 | Macro to [register the fields](#registration-of-field-names-of-structclass) of a struct |
+| `VISITABLE_STRUCT`                                 | Macro to [register the fields](#registering-fields-with-visitable_struct) of a struct |
 | `yyjson::readable<T>`, `yyjson::writable<T>`, `yyjson::castable<Json, T>` | Concepts that tell whether a type [can be read or written](#conversion-rules) |
 
 | DOM API          |                                                                                                            |
@@ -311,7 +311,7 @@ In addition to the above, the following methods are provided for converting *arb
 1.  [Pre-defined STL casters](#pre-defined-stl-casters).
 2.  [Enumerations](#enumerations) by the names of their enumerators.
 3.  [Conversion using compile-time reflection](#automatic-casting-with-compile-time-reflection).
-4.  [Registration of field names with the `VISITABLE_STRUCT` macro](#registration-of-field-names-of-structclass).
+4.  [Registering fields with `VISITABLE_STRUCT`](#registering-fields-with-visitable_struct).
 5.  [JSON keys other than field names](#json-keys-other-than-field-names) with `yyjson::annotations` or C++26 annotations.
 6.  [User-defined casters](#user-defined-casters).
 
@@ -480,7 +480,7 @@ The other conditions depend on the C++ standard. C++26 static reflection is used
 | Enumerators converted by [name](#enumerations) | values in [-128, 128] unless widened | all |
 | Keys and skipped fields given on the members | no, use [`yyjson::annotations`](#json-keys-other-than-field-names) | [annotations](#c26-annotations) |
 
-A struct that is written but not read fails to compile when it is read, by `cast<T>`, `yyjson::read<T>` or any other function. A struct that also has `begin()` and `end()` is still a JSON object of its fields; only `std::array` among the aggregates is a JSON array. With C++26, `yyjson::annotations` of a derived class can rename the fields of its base classes as well. A struct with a constructor of its own and public fields can be registered with [`VISITABLE_STRUCT`](#registration-of-field-names-of-structclass) instead, and one with private fields needs a [user-defined caster](#user-defined-casters).
+A struct that is written but not read fails to compile when it is read, by `cast<T>`, `yyjson::read<T>` or any other function. A struct that also has `begin()` and `end()` is still a JSON object of its fields; only `std::array` among the aggregates is a JSON array. With C++26, `yyjson::annotations` of a derived class can rename the fields of its base classes as well. A struct with a constructor of its own and public fields can be registered with [`VISITABLE_STRUCT`](#registering-fields-with-visitable_struct) instead, and one with private fields needs a [user-defined caster](#user-defined-casters).
 
 Example:
 
@@ -519,7 +519,7 @@ auto json = write(Matrix{{'a', 'b'}, {{1.0, 2.0}, {3.0, 4.0}}});
 
 An empty struct, such as `struct Tag {};`, converts to and from `{}`, and the members of a JSON object read into it are ignored. The empty classes of the standard library and of cpp-yyjson keep their own meanings: `std::monostate` is JSON null, for example.
 
-### Registration of field names of struct/class
+### Registering fields with `VISITABLE_STRUCT`
 
 Even if the compile-time reflection is *NOT* available for a C++ type or you want to partially select the fields to be converted, it is possible to register the field names of the C++ type with the `VISITABLE_STRUCT` macro:
 
@@ -1160,7 +1160,7 @@ enum class yyjson::ReadFlag : yyjson_read_flag
 
 The `read` function takes a JSON string and returns an immutable JSON value. The function argument may optionally specify a string length and an allocator to be described [later](#allocator-classes). Otherwise, the length of the JSON string is determined and the yyjson default allocator is used.
 
-If the read option has the [`ReadInsitu`](https://ibireme.github.io/yyjson/doc/doxygen/html/md_doc__a_p_i.html#autotoc_md34) flag, You must specify the JSON string as writable (`std::string&` or `char*`) and its length. This writable string must be padded at least [`YYJSON_PADDING_SIZE`](https://ibireme.github.io/yyjson/doc/doxygen/html/yyjson_8h.html#abbe8e69f634b1a5a78c1dae08b88e0ef) bytes to the end. The length of the JSON string should be unpadded.
+If the read option has the [`ReadInsitu`](https://ibireme.github.io/yyjson/doc/doxygen/html/md_doc__a_p_i.html#autotoc_md34) flag, you must specify the JSON string as writable (`std::string&` or `char*`) and its length. This writable string must be padded at least [`YYJSON_PADDING_SIZE`](https://ibireme.github.io/yyjson/doc/doxygen/html/yyjson_8h.html#abbe8e69f634b1a5a78c1dae08b88e0ef) bytes to the end. The length of the JSON string should be unpadded.
 
 To read a JSON string into a C++ object without the immutable JSON value, see [`yyjson::read<T>`](#reading-a-json-string-into-a-c-object-directly).
 
@@ -1392,7 +1392,7 @@ std::cout << val.write(WriteFlag::Pretty) << std::endl;
 
 #### `yyjson::reader::array`, `yyjson::reader::const_array_ref`
 
-The immutable JSON array class is created by the `value::as_array` member function. This class adapts `std::ranges::input_range` concept.
+The immutable JSON array class is created by the `value::as_array` member function. This class satisfies the `std::ranges::input_range` concept.
 
 **Constructor**
 
@@ -1453,7 +1453,7 @@ std::string_view json_str = R"([0, "1", 2.0])";
 auto val = read(json_str);
 assert(val.is_array());
 
-// NOTE: Prior to C++23 (P2644R1), range-based for loop for temporal std::optional
+// NOTE: Prior to C++23 (P2644R1), range-based for loop for temporary std::optional
 // instance requires initializer because std::optional<T>::value() returns T&&.
 // for (const auto& v : *val.as_array()) { ... }             // 💀 UB
 for (const auto arr = *val.as_array(); const auto& v : arr)  // ✅ OK
@@ -1467,7 +1467,7 @@ for (const auto arr = *val.as_array(); const auto& v : arr)  // ✅ OK
 
 #### `yyjson::reader::object`, `yyjson::reader::const_object_ref`
 
-The immutable JSON object class is created by the `value::as_object` member function. This class adapts `std::ranges::input_range` concept.
+The immutable JSON object class is created by the `value::as_object` member function. This class satisfies the `std::ranges::input_range` concept.
 
 **Constructor**
 
@@ -1583,8 +1583,8 @@ template <object_constructible T>
 yyjson::value(T&&, [yyjson::copy_string_t]);
 
 // std::initializer_list
-yyjson::value(std::initialize_list<yyjson::value>);
-yyjson::value(std::initialize_list<yyjson::writer::key_value_pair>, [yyjson::copy_string_t]);
+yyjson::value(std::initializer_list<yyjson::value>);
+yyjson::value(std::initializer_list<yyjson::writer::key_value_pair>, [yyjson::copy_string_t]);
 
 // Copy from other JSON classes
 using reference_types = yyjson::{reader,writer}::[const_]{value,array,object}[_ref];
@@ -1707,7 +1707,7 @@ auto v_moved = value(std::move(stdstr));
 
 #### `yyjson::array`
 
-The mutable JSON array class is created by the *range of JSON value constructible* or the `yyjson::value::as_array` member function. This class adapts `std::ranges::input_range` concept. A range whose elements are of its own type, such as `nanobind::handle`, is not converted to an array, which would nest without end.
+The mutable JSON array class is created by the *range of JSON value constructible* or the `yyjson::value::as_array` member function. This class satisfies the `std::ranges::input_range` concept. A range whose elements are of its own type, such as `nanobind::handle`, is not converted to an array, which would nest without end.
 
 **Constructor**
 
@@ -1717,7 +1717,7 @@ template <array_constructible T>
 yyjson::array(array_constructible, [yyjson::copy_string]);
 
 // std::initializer_list
-yyjson::array(std::initialize_list<value>);
+yyjson::array(std::initializer_list<value>);
 
 // Copy from other JSON classes
 // throw yyjson::bad_cast if the JSON value is not convertible to a JSON array
@@ -1837,7 +1837,7 @@ std::cout << arr.write() << std::endl;
 
 #### `yyjson::object`
 
-The mutable JSON object class is created by the *key-value range of JSON value constructible* or the `yyjson::value::as_object` member function. This class adapts `std::ranges::input_range` concept.
+The mutable JSON object class is created by the *key-value range of JSON value constructible* or the `yyjson::value::as_object` member function. This class satisfies the `std::ranges::input_range` concept.
 
 **Constructor**
 
@@ -1847,7 +1847,7 @@ template <object_constructible T>
 yyjson::object(object_constructible, [yyjson::copy_string]);
 
 // std::initializer_list
-yyjson::object(std::initialize_list<yyjson::writer::key_value_pair>);
+yyjson::object(std::initializer_list<yyjson::writer::key_value_pair>);
 
 // Copy from other JSON classes
 // throw yyjson::bad_cast if the JSON value is not convertible to a JSON object
@@ -1930,7 +1930,7 @@ std::ranges::range_value_t<const yyjson::object&> -> yyjson::writer::const_key_v
 
 The `yyjson::object` is also designed to be implemented like STL map containers and to allow easy insertion of an empty array and object with `yyjson::empty_array` and `yyjson::empty_object` tag type values, respectively. These special modifiers also have a different return type, which is not an object iterator but a reference to a newly inserted empty array/object of type `yyjson::writer::array_ref` or `yyjson::writer::object_ref`. These are introduced to optimize the performance by not creating a new JSON array/object; see also the [performance best practices](#performance-best-practices) section.
 
-Iterator classes are not exposed. They are tentatively described as `obejct_iter` and `const_object_iter` in the above.
+Iterator classes are not exposed. They are tentatively described as `object_iter` and `const_object_iter` in the above.
 
 > [!NOTE]
 > The `emplace` member functions do **NOT** check for key duplication.

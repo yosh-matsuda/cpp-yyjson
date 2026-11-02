@@ -175,7 +175,7 @@ TEST(Readme, Example)
         auto val = read(json_str);
         assert(val.is_array());
 
-        // NOTE: Prior to C++23 (P2644R1), range-based for loop for temporal std::optional
+        // NOTE: Prior to C++23 (P2644R1), range-based for loop for temporary std::optional
         // instance requires initializer because std::optional<T>::value() returns T&&
         // for (const auto& v : *val.as_array())                     // 💀 UB
         for (const auto arr = *val.as_array(); const auto& v : arr)  // ✅ OK
