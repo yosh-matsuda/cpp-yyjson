@@ -2166,7 +2166,7 @@ bool check_capacity(std::string_view json, ReadFlag = ReadFlag::NoFlag) const
 
 ### Read and write C++ types with the data binding API
 
-When the JSON has a C++ type, `yyjson::read<T>` and `yyjson::write` are the fastest way to convert it. They skip the document that `read(json).cast<T>()` and `value(t).write()` build, and in the [benchmark](benchmark/README.md#data-binding-api) they take 71% to 94% and 28% to 85% of the time of those, respectively.
+When the JSON has a C++ type, `yyjson::read<T>` and `yyjson::write` are the fastest way to convert it. They skip the document that `read(json).cast<T>()` and `value(t).write()` build, and in the [benchmark](benchmark/README.md#data-binding-api) they take 72% to 95% and 29% to 85% of the time of those, respectively.
 
 ### When the data binding API builds a document
 
@@ -2180,7 +2180,7 @@ The string is read without a document when its root is an array or an object and
 
 ### Reuse the result object and the output string
 
-A program that reads documents of the same shape over and over can read them into one object with `yyjson::read_into`, which reuses the capacity of the strings and vectors and the nodes of the maps in it. In the benchmark this saves 10% to 40% on the documents that have strings. `yyjson::merge_into` is as fast, for the case where the fields that a document does not have should keep their values.
+A program that reads documents of the same shape over and over can read them into one object with `yyjson::read_into`, which reuses the capacity of the strings and vectors and the nodes of the maps in it. In the [benchmark](benchmark/README.md#data-binding-api) this saves 9% to 45% on the documents that have strings. `yyjson::merge_into` is as fast, for the case where the fields that a document does not have should keep their values.
 
 ```cpp
 auto config = Config();
