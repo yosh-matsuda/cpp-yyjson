@@ -206,12 +206,15 @@ namespace yyjson
 #endif
     };
 
-    // equivalent to C++23 std::to_underlying
-    template <class T>
-    constexpr std::underlying_type_t<T> to_underlying(T value) noexcept
+    namespace detail
     {
-        return static_cast<std::underlying_type_t<T>>(value);
-    }
+        // equivalent to C++23 std::to_underlying
+        template <class T>
+        constexpr std::underlying_type_t<T> to_underlying(T value) noexcept
+        {
+            return static_cast<std::underlying_type_t<T>>(value);
+        }
+    }  // namespace detail
 
     template <class... Ts>
     struct overloaded : Ts...
@@ -232,21 +235,21 @@ namespace yyjson
 
     inline constexpr yyjson::WriteFlag operator|(yyjson::WriteFlag lhs, yyjson::WriteFlag rhs)
     {
-        return static_cast<yyjson::WriteFlag>(to_underlying(lhs) | to_underlying(rhs));
+        return static_cast<yyjson::WriteFlag>(detail::to_underlying(lhs) | detail::to_underlying(rhs));
     }
 
     inline constexpr yyjson::ReadFlag operator|(yyjson::ReadFlag lhs, yyjson::ReadFlag rhs)
     {
-        return static_cast<yyjson::ReadFlag>(to_underlying(lhs) | to_underlying(rhs));
+        return static_cast<yyjson::ReadFlag>(detail::to_underlying(lhs) | detail::to_underlying(rhs));
     }
     inline constexpr yyjson::WriteFlag operator&(yyjson::WriteFlag lhs, yyjson::WriteFlag rhs)
     {
-        return static_cast<yyjson::WriteFlag>(to_underlying(lhs) & to_underlying(rhs));
+        return static_cast<yyjson::WriteFlag>(detail::to_underlying(lhs) & detail::to_underlying(rhs));
     }
 
     inline constexpr yyjson::ReadFlag operator&(yyjson::ReadFlag lhs, yyjson::ReadFlag rhs)
     {
-        return static_cast<yyjson::ReadFlag>(to_underlying(lhs) & to_underlying(rhs));
+        return static_cast<yyjson::ReadFlag>(detail::to_underlying(lhs) & detail::to_underlying(rhs));
     }
 
 #if YYJSON_VERSION_HEX >= 0x000D00
@@ -486,36 +489,36 @@ namespace yyjson
     };
     inline constexpr skip_t skip{};
 
-    // How JSON names the alternative of a `std::variant`: by trying the alternatives in turn, by a member of the
-    // object of the alternative (`internal_tag`), or by a member of the object that holds the variant as a field
-    // next to it (`adjacent_tag`).
-    enum class variant_tagging : std::uint8_t
-    {
-        untagged,
-        internal,
-        adjacent
-    };
-
-    // The key of the member that names the alternative of a variant, and the names of its alternatives other than
-    // `std::monostate` in their order, as `internal_tag` and `adjacent_tag` give them.  With C++26 it is a
-    // structural type, which annotates a field as `[[=yyjson::adjacent_tag(...)]]`, and holds the strings in
-    // static storage.
-#if defined(__cpp_lib_define_static)
-    template <variant_tagging Tagging>
-    struct variant_tag_spec
-    {
-        static constexpr auto tagging = Tagging;
-        const char* key_data = nullptr;
-        std::size_t key_size = 0;
-        const char* const* ids_data = nullptr;
-        std::size_t ids_size = 0;
-
-        [[nodiscard]] constexpr std::string_view key() const noexcept { return {key_data, key_size}; }
-        [[nodiscard]] constexpr std::size_t size() const noexcept { return ids_size; }
-        [[nodiscard]] constexpr std::string_view id(std::size_t i) const noexcept { return ids_data[i]; }
-    };
     namespace detail
     {
+        // How JSON names the alternative of a `std::variant`: by trying the alternatives in turn, by a member of the
+        // object of the alternative (`internal_tag`), or by a member of the object that holds the variant as a field
+        // next to it (`adjacent_tag`).
+        enum class variant_tagging : std::uint8_t
+        {
+            untagged,
+            internal,
+            adjacent
+        };
+
+        // The key of the member that names the alternative of a variant, and the names of its alternatives other than
+        // `std::monostate` in their order, as `internal_tag` and `adjacent_tag` give them.  With C++26 it is a
+        // structural type, which annotates a field as `[[=yyjson::adjacent_tag(...)]]`, and holds the strings in
+        // static storage.
+#if defined(__cpp_lib_define_static)
+        template <variant_tagging Tagging>
+        struct variant_tag_spec
+        {
+            static constexpr auto tagging = Tagging;
+            const char* key_data = nullptr;
+            std::size_t key_size = 0;
+            const char* const* ids_data = nullptr;
+            std::size_t ids_size = 0;
+
+            [[nodiscard]] constexpr std::string_view key() const noexcept { return {key_data, key_size}; }
+            [[nodiscard]] constexpr std::size_t size() const noexcept { return ids_size; }
+            [[nodiscard]] constexpr std::string_view id(std::size_t i) const noexcept { return ids_data[i]; }
+        };
         template <variant_tagging Tagging, std::size_t N>
         consteval variant_tag_spec<Tagging> make_variant_tag(std::string_view key, const std::string_view (&ids)[N])
         {
@@ -523,21 +526,18 @@ namespace yyjson
             for (std::size_t i = 0; i < N; ++i) pointers[i] = std::define_static_string(ids[i]);
             return {std::define_static_string(key), key.size(), std::define_static_array(pointers).data(), N};
         }
-    }  // namespace detail
 #else
-    template <variant_tagging Tagging, std::size_t N>
-    struct variant_tag_spec
-    {
-        static constexpr auto tagging = Tagging;
-        std::string_view key_;
-        std::array<std::string_view, N> ids_ = {};
+        template <variant_tagging Tagging, std::size_t N>
+        struct variant_tag_spec
+        {
+            static constexpr auto tagging = Tagging;
+            std::string_view key_;
+            std::array<std::string_view, N> ids_ = {};
 
-        [[nodiscard]] constexpr std::string_view key() const noexcept { return key_; }
-        [[nodiscard]] static constexpr std::size_t size() noexcept { return N; }
-        [[nodiscard]] constexpr std::string_view id(std::size_t i) const noexcept { return ids_[i]; }
-    };
-    namespace detail
-    {
+            [[nodiscard]] constexpr std::string_view key() const noexcept { return key_; }
+            [[nodiscard]] static constexpr std::size_t size() noexcept { return N; }
+            [[nodiscard]] constexpr std::string_view id(std::size_t i) const noexcept { return ids_[i]; }
+        };
         template <variant_tagging Tagging, std::size_t N>
         consteval variant_tag_spec<Tagging, N> make_variant_tag(std::string_view key, const std::string_view (&ids)[N])
         {
@@ -545,15 +545,15 @@ namespace yyjson
             std::ranges::copy(ids, spec.ids_.begin());
             return spec;
         }
-    }  // namespace detail
 #endif
+    }  // namespace detail
 
     // `{"type": "circle", "radius": 1}`: the member `key` of the object that the alternative is written as.  It
     // annotates a variant type: `yyjson::annotations<V> = yyjson::annotate(yyjson::internal_tag(...))`.
     template <std::size_t N>
     consteval auto internal_tag(std::string_view key, const std::string_view (&ids)[N])
     {
-        return detail::make_variant_tag<variant_tagging::internal>(key, ids);
+        return detail::make_variant_tag<detail::variant_tagging::internal>(key, ids);
     }
 
     // `{"type": "circle", "shape": {"radius": 1}}`: the member `key` of the object of a struct, next to the field
@@ -562,7 +562,7 @@ namespace yyjson
     template <std::size_t N>
     consteval auto adjacent_tag(std::string_view key, const std::string_view (&ids)[N])
     {
-        return detail::make_variant_tag<variant_tagging::adjacent>(key, ids);
+        return detail::make_variant_tag<detail::variant_tagging::adjacent>(key, ids);
     }
 
     namespace detail
@@ -590,18 +590,18 @@ namespace yyjson
         // The settings that `yyjson::field` takes for a field.
         template <typename A>
         concept field_setting = std::same_as<A, rename> || std::same_as<A, skip_t> || adjacent_tag_annotation<A>;
+
+        // The settings of the field `member` of a struct, which `yyjson::annotate` takes.
+        template <typename... As>
+        struct field_annotation
+        {
+            std::string_view member;
+            std::tuple<As...> values;
+        };
     }  // namespace detail
 
-    // The settings of the field `member` of a struct, which `yyjson::annotate` takes.
     template <typename... As>
-    struct field_annotation
-    {
-        std::string_view member;
-        std::tuple<As...> values;
-    };
-
-    template <typename... As>
-    consteval field_annotation<As...> field(std::string_view member, As... values)
+    consteval detail::field_annotation<As...> field(std::string_view member, As... values)
     {
         static_assert(sizeof...(As) != 0, "yyjson::field needs a setting of the field");
         static_assert((detail::field_setting<As> && ...),
@@ -620,16 +620,19 @@ namespace yyjson
         name_or_integer
     };
 
-    // The settings of the enumerator `name` of an enumeration, which `yyjson::annotate` takes.
-    template <typename... As>
-    struct enumerator_annotation
+    namespace detail
     {
-        std::string_view name;
-        std::tuple<As...> values;
-    };
+        // The settings of the enumerator `name` of an enumeration, which `yyjson::annotate` takes.
+        template <typename... As>
+        struct enumerator_annotation
+        {
+            std::string_view name;
+            std::tuple<As...> values;
+        };
+    }  // namespace detail
 
     template <typename... As>
-    consteval enumerator_annotation<As...> enumerator(std::string_view name, As... values)
+    consteval detail::enumerator_annotation<As...> enumerator(std::string_view name, As... values)
     {
         static_assert(sizeof...(As) != 0, "yyjson::enumerator needs a setting of the enumerator");
         static_assert((std::same_as<As, rename> && ...), "yyjson::enumerator takes yyjson::rename");
@@ -681,19 +684,16 @@ namespace yyjson
         {
             return std::forward<F>(f)(static_cast<const annotation_leaf<Is, As>&>(v).value...);
         }
-    }  // namespace detail
 
-    // The settings of the conversion of a type, which `yyjson::annotations<T>` holds.
-    template <typename... As>
-    struct annotation_list
-    {
-        // the types of the settings
-        using types = std::tuple<As...>;
-        detail::annotation_values<std::index_sequence_for<As...>, As...> values;
-    };
+        // The settings of the conversion of a type, which `yyjson::annotations<T>` holds.
+        template <typename... As>
+        struct annotation_list
+        {
+            // the types of the settings
+            using types = std::tuple<As...>;
+            annotation_values<std::index_sequence_for<As...>, As...> values;
+        };
 
-    namespace detail
-    {
         template <typename A>
         struct is_field_annotation : std::false_type
         {
@@ -721,12 +721,13 @@ namespace yyjson
     }  // namespace detail
 
     template <typename... As>
-    consteval annotation_list<As...> annotate(As... values)
+    consteval detail::annotation_list<As...> annotate(As... values)
     {
         static_assert(detail::annotate_settings<As...>,
                       "yyjson::annotate takes yyjson::field(...) for a struct, yyjson::internal_tag for a variant, "
                       "and yyjson::enumerator(...) and yyjson::enum_format for an enumeration");
-        return annotation_list<As...>{detail::annotation_values<std::index_sequence_for<As...>, As...>(values...)};
+        return detail::annotation_list<As...>{
+            detail::annotation_values<std::index_sequence_for<As...>, As...>(values...)};
     }
 
     // The settings of the conversion of T.  A specialization, which comes before the first use of T, is
@@ -872,7 +873,7 @@ namespace yyjson
         pool_allocator(pool_allocator&&) noexcept = default;
         explicit pool_allocator(std::size_t size_byte) : alc_(init(size_byte)) {}
         explicit pool_allocator(std::string_view json, ReadFlag flag = ReadFlag::NoFlag)
-            : alc_(init(yyjson_read_max_memory_usage(json.size(), to_underlying(flag))))
+            : alc_(init(yyjson_read_max_memory_usage(json.size(), detail::to_underlying(flag))))
         {
         }
         auto& ptr() & { return alc_; }
@@ -882,7 +883,7 @@ namespace yyjson
         void reset(std::size_t size_byte = 0) { alc_ = init(size_byte); }
         void reset(std::string_view json, ReadFlag flag = ReadFlag::NoFlag)
         {
-            alc_ = init(yyjson_read_max_memory_usage(json.size(), to_underlying(flag)));
+            alc_ = init(yyjson_read_max_memory_usage(json.size(), detail::to_underlying(flag)));
         }
         void reserve(std::size_t size_byte)
         {
@@ -890,11 +891,11 @@ namespace yyjson
         }
         void reserve(std::string_view json, ReadFlag flag = ReadFlag::NoFlag)
         {
-            reserve(yyjson_read_max_memory_usage(json.size(), to_underlying(flag)));
+            reserve(yyjson_read_max_memory_usage(json.size(), detail::to_underlying(flag)));
         }
         [[nodiscard]] bool check_capacity(std::string_view json, ReadFlag flag = ReadFlag::NoFlag) const
         {
-            return size() >= yyjson_read_max_memory_usage(json.size(), to_underlying(flag));
+            return size() >= yyjson_read_max_memory_usage(json.size(), detail::to_underlying(flag));
         }
 
         pool_allocator& operator=(const pool_allocator& r) = default;
@@ -929,7 +930,7 @@ namespace yyjson
         void reset() noexcept { alc_ = init(); }
         [[nodiscard]] bool check_capacity(std::string_view json, ReadFlag flag = ReadFlag::NoFlag) const
         {
-            return size() >= yyjson_read_max_memory_usage(json.size(), to_underlying(flag));
+            return size() >= yyjson_read_max_memory_usage(json.size(), detail::to_underlying(flag));
         }
     };
 
@@ -4785,7 +4786,7 @@ namespace yyjson
 
                     auto err = yyjson_write_err();
                     auto len = static_cast<std::size_t>(0);
-                    auto result = write_func(to_underlying(write_flag), nullptr, &len, &err);
+                    auto result = write_func(detail::to_underlying(write_flag), nullptr, &len, &err);
                     if (result != nullptr) [[likely]]
                     {
                         return json_string(result, len);
@@ -4804,7 +4805,8 @@ namespace yyjson
 
                     auto err = yyjson_write_err();
                     auto len = static_cast<std::size_t>(0);
-                    auto result = write_func(to_underlying(write_flag), detail::get_allocator_pointer(alc), &len, &err);
+                    auto result =
+                        write_func(detail::to_underlying(write_flag), detail::get_allocator_pointer(alc), &len, &err);
 
                     if constexpr (std::same_as<std::shared_ptr<yyjson_alc>, std::remove_cvref_t<decltype(alc.ptr())>>)
                     {
@@ -4828,9 +4830,9 @@ namespace yyjson
 
                     auto err = yyjson_write_err();
                     const auto len = write_doc ? yyjson_mut_write_buf(buffer.data(), buffer.size(), doc_.ptrs->self,
-                                                                      to_underlying(write_flag), &err)
+                                                                      detail::to_underlying(write_flag), &err)
                                                : yyjson_mut_val_write_buf(buffer.data(), buffer.size(), val_,
-                                                                          to_underlying(write_flag), &err);
+                                                                          detail::to_underlying(write_flag), &err);
                     if (len != 0) [[likely]]
                     {
                         return {buffer.data(), len};
@@ -6502,7 +6504,7 @@ namespace yyjson
             {
                 auto err = yyjson_write_err();
                 auto len = static_cast<std::size_t>(0);
-                auto result = yyjson_val_write_opts(val_, to_underlying(write_flag), nullptr, &len, &err);
+                auto result = yyjson_val_write_opts(val_, detail::to_underlying(write_flag), nullptr, &len, &err);
                 if (result != nullptr)
                 {
                     return json_string(result, len);
@@ -6514,8 +6516,8 @@ namespace yyjson
             {
                 auto err = yyjson_write_err();
                 auto len = static_cast<std::size_t>(0);
-                auto result = yyjson_val_write_opts(val_, to_underlying(write_flag), detail::get_allocator_pointer(alc),
-                                                    &len, &err);
+                auto result = yyjson_val_write_opts(val_, detail::to_underlying(write_flag),
+                                                    detail::get_allocator_pointer(alc), &len, &err);
                 if constexpr (std::same_as<std::shared_ptr<yyjson_alc>, std::remove_cvref_t<decltype(alc.ptr())>>)
                 {
                     if (result != nullptr) [[likely]]
@@ -6534,7 +6536,7 @@ namespace yyjson
             {
                 auto err = yyjson_write_err();
                 const auto len =
-                    yyjson_val_write_buf(buffer.data(), buffer.size(), val_, to_underlying(write_flag), &err);
+                    yyjson_val_write_buf(buffer.data(), buffer.size(), val_, detail::to_underlying(write_flag), &err);
                 if (len != 0) [[likely]]
                 {
                     return {buffer.data(), len};
@@ -6993,7 +6995,7 @@ namespace yyjson
             {
                 auto err = yyjson_write_err();
                 auto len = static_cast<std::size_t>(0);
-                auto result = yyjson_write_opts(doc_.get(), to_underlying(write_flag), nullptr, &len, &err);
+                auto result = yyjson_write_opts(doc_.get(), detail::to_underlying(write_flag), nullptr, &len, &err);
                 if (result != nullptr)
                 {
                     return json_string(result, len);
@@ -7006,7 +7008,7 @@ namespace yyjson
             {
                 auto err = yyjson_write_err();
                 auto len = static_cast<std::size_t>(0);
-                auto result = yyjson_write_opts(doc_.get(), to_underlying(write_flag),
+                auto result = yyjson_write_opts(doc_.get(), detail::to_underlying(write_flag),
                                                 detail::get_allocator_pointer(alc), &len, &err);
                 if constexpr (std::same_as<std::shared_ptr<yyjson_alc>, std::remove_cvref_t<decltype(alc.ptr())>>)
                 {
@@ -7027,7 +7029,7 @@ namespace yyjson
             {
                 auto err = yyjson_write_err();
                 const auto len =
-                    yyjson_write_buf(buffer.data(), buffer.size(), doc_.get(), to_underlying(write_flag), &err);
+                    yyjson_write_buf(buffer.data(), buffer.size(), doc_.get(), detail::to_underlying(write_flag), &err);
                 if (len != 0) [[likely]]
                 {
                     return {buffer.data(), len};
@@ -7153,7 +7155,8 @@ namespace yyjson
                         YYJSON_READ_ERROR_MEMORY_ALLOCATION);
                 }
             }
-            result = yyjson_read_opts(str, len, to_underlying(read_flag), detail::get_allocator_pointer(alc), &err);
+            result =
+                yyjson_read_opts(str, len, detail::to_underlying(read_flag), detail::get_allocator_pointer(alc), &err);
 
             if constexpr (std::same_as<std::shared_ptr<yyjson_alc>, std::remove_cvref_t<decltype(alc.ptr())>>)
             {
@@ -7231,7 +7234,7 @@ namespace yyjson
         inline value read(char* str, std::size_t len, ReadFlag read_flag = ReadFlag::NoFlag)
         {
             auto err = yyjson_read_err();
-            auto* result = yyjson_read_opts(str, len, to_underlying(read_flag), nullptr, &err);
+            auto* result = yyjson_read_opts(str, len, detail::to_underlying(read_flag), nullptr, &err);
             if (result != nullptr) return value(result);
             throw make_read_error(str, len, err);
         }
@@ -12546,7 +12549,7 @@ namespace yyjson
         buf.grow = writer::detail::grow_malloc_buffer;
         try
         {
-            writer::detail::direct_writer(buf, to_underlying(write_flag)).write_root(t);
+            writer::detail::direct_writer(buf, detail::to_underlying(write_flag)).write_root(t);
             if (buf.cur == buf.end) buf.grow(buf, 1);
         }
         catch (...)
@@ -12571,7 +12574,7 @@ namespace yyjson
         buf.grow = writer::detail::grow_string_buffer;
         try
         {
-            writer::detail::direct_writer(buf, to_underlying(write_flag)).write_root(t);
+            writer::detail::direct_writer(buf, detail::to_underlying(write_flag)).write_root(t);
         }
         catch (...)
         {
@@ -13341,7 +13344,8 @@ namespace yyjson
             CPPYYJSON_ALWAYS_INLINE static bool find_root(std::string_view json, ReadFlag flg, const char*& first,
                                                           const char*& last) noexcept
             {
-                if ((to_underlying(flg) & ~yyjson_read_flag{YYJSON_READ_ALLOW_INVALID_UNICODE}) != 0) [[unlikely]]
+                if ((detail::to_underlying(flg) & ~yyjson_read_flag{YYJSON_READ_ALLOW_INVALID_UNICODE}) != 0)
+                    [[unlikely]]
                     return false;
                 first = json.data();
                 last = json.data() + json.size();
@@ -14863,8 +14867,8 @@ namespace yyjson
                     const auto len = static_cast<std::size_t>(local_to_ - p);
                     auto err = yyjson_read_err();
                     auto* const doc = yyjson_read_opts(
-                        copy, len, to_underlying(flg_) | YYJSON_READ_INSITU | YYJSON_READ_STOP_WHEN_DONE, alc_.get(),
-                        &err);
+                        copy, len, detail::to_underlying(flg_) | YYJSON_READ_INSITU | YYJSON_READ_STOP_WHEN_DONE,
+                        alc_.get(), &err);
                     if (doc != nullptr)
                     {
                         const auto read = yyjson_doc_get_read_size(doc);
