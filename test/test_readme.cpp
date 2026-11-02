@@ -1,285 +1,218 @@
 #include "test_common.hpp"
 
-// the snippets are those of README.md, which declare variables only to show their types
-#if defined(__GNUC__) || defined(__clang__)
-#pragma GCC diagnostic ignored "-Wunused-variable"
-#elif defined(_MSC_VER)
-#pragma warning(disable : 4189)
-#endif
+// The examples of README.md, with the results that it states in comments checked.
 
 // NOLINTBEGIN
 
-TEST(Readme, Example)
+namespace readme
+{
+    struct Release
+    {
+        std::string version;
+        std::optional<std::string> notes;  // left out of the JSON when empty
+        std::map<std::string, int> downloads;
+    };
+
+    struct Project
+    {
+        std::string name;
+        std::vector<std::string> tags;
+        std::vector<Release> releases;
+    };
+
+    struct Config
+    {
+        std::string name;
+        int retries = 3;
+        std::map<std::string, int> limits;
+    };
+
+    struct Thing
+    {
+        std::string context;
+        std::string name;
+    };
+
+    struct Color
+    {
+        std::uint8_t r, g, b;
+    };
+}  // namespace readme
+
+template <>
+inline constexpr auto yyjson::annotations<readme::Thing> =
+    yyjson::annotate(yyjson::field("context", yyjson::rename("@context")));
+
+template <>
+struct yyjson::caster<readme::Color>
+{
+    // "#rrggbb"
+    static readme::Color from_json(std::string_view hex)
+    {
+        if (hex.size() != 7 || hex[0] != '#') throw yyjson::bad_cast("Color is not constructible from JSON");
+        const auto byte = [&](std::size_t i)
+        {
+            const auto* first = hex.data() + i;
+            auto v = std::uint8_t();
+            const auto [end, ec] = std::from_chars(first, first + 2, v, 16);
+            if (ec != std::errc() || end != first + 2) throw yyjson::bad_cast("Color is not constructible from JSON");
+            return v;
+        };
+        return {byte(1), byte(3), byte(5)};
+    }
+    static std::string to_json(const readme::Color& c) { return std::format("#{:02x}{:02x}{:02x}", c.r, c.g, c.b); }
+};
+
+TEST(Readme, ReadingAndWritingTypes)
 {
     using namespace yyjson;
+    using namespace readme;
+
+    auto project = read<Project>(R"({
+    "name": "cpp-yyjson",
+    "tags": ["json", "c++20"],
+    "releases": [{"version": "1.2.0", "downloads": {"linux": 10, "windows": 5}}]
+})");
+    EXPECT_EQ(project.name, "cpp-yyjson");
+    EXPECT_EQ(project.tags, (std::vector<std::string>{"json", "c++20"}));
+    ASSERT_EQ(project.releases.size(), 1);
+    EXPECT_EQ(project.releases[0].version, "1.2.0");
+    EXPECT_EQ(project.releases[0].notes, std::nullopt);
+    EXPECT_EQ(project.releases[0].downloads, (std::map<std::string, int>{{"linux", 10}, {"windows", 5}}));
+
+    auto json = write(project);
+    EXPECT_EQ(std::string_view(json),
+              R"({"name":"cpp-yyjson","tags":["json","c++20"],"releases":[{"version":"1.2.0","downloads":{"linux":10,"windows":5}}]})");
+
+    auto pretty = write(project, WriteFlag::Pretty);
+    EXPECT_EQ(std::string_view(write(read(pretty))), std::string_view(json));
+
+    auto out = std::string();
+    write(project, out);
+    EXPECT_EQ(out, std::string_view(json));
+}
+
+TEST(Readme, ReadingIntoAnExistingObject)
+{
+    using namespace yyjson;
+    using namespace readme;
+
+    const auto messages = std::vector<std::string>{R"({"name": "a", "limits": {"memory": 1, "cpu": 2}})",
+                                                   R"({"name": "b", "retries": 7})"};
+    auto applied = std::vector<std::string>();
+    const auto apply = [&](const Config& c) { applied.push_back(write(c)); };
+
+    auto config = Config();
+    for (const auto& message : messages)
     {
-        auto json_str = R"(
-        {
-            "id": 1,
-            "pi": 3.141592,
-            "name": "🫠",
-            "array": [0, 1, 2, 3, 4],
-            "currency": {
-                "USD": 129.66,
-                "EUR": 140.35,
-                "GBP": 158.72
-            },
-            "success": true
-        })";
-
-        // Read JSON string and cast as object class
-        auto obj = *read(json_str).as_object();
-
-        // Key access to the JSON object class and cast
-        auto id = *obj["id"].as_int();
-        auto pi = *obj["pi"].as_real();
-        auto name = *obj["name"].as_string();
-        auto success = *obj["success"].as_bool();
-
-        // JSON array/object classes adapt the range concept
-        auto list = *obj["array"].as_array();
-        for (const auto& v : list)
-        {
-            // write memner function returns serialized string as shared_ptr<std::string_view>
-            std::cout << v.write() << std::endl;
-        }
-
-        // The value type of object class is a key-value pair
-        auto dict = *obj["currency"].as_object();
-        for (const auto& [k, v] : dict)
-        {
-            std::cout << "{" << k << ": " << v.write() << "}" << std::endl;
-        }
-
-        // JSON array/object to container conversion
-        auto numbers = cast<std::vector<int>>(list);
-        auto currency = cast<std::map<std::string_view, double>>(dict);
-        std::cout << std::format("{}\n", obj);
+        read_into(message, config);  // the same result as config = read<Config>(message)
+        apply(config);
     }
-    {
-        // Create a new JSON value from primitive types
-        auto v_null = value();  // Set initial value to null
-        auto v_bool = value(true);
-        auto v_num = value(3.141592);
-        auto v_str = value("example");
+    EXPECT_EQ(applied, (std::vector<std::string>{R"({"name":"a","retries":3,"limits":{"cpu":2,"memory":1}})",
+                                                 R"({"name":"b","retries":7,"limits":{}})"}));
 
-        // Create a new empty JSON array
-        auto arr = array();
-        arr.emplace_back(1);
-        arr.emplace_back("string");
+    config.limits = {{"memory", 1}, {"cpu", 2}};
+    merge_into(R"({"retries": 5, "limits": {"memory": null}})", config);
+    EXPECT_EQ(config.name, "b");
+    EXPECT_EQ(config.retries, 5);
+    EXPECT_EQ(config.limits, (std::map<std::string, int>{{"cpu", 2}}));
+}
 
-        // Create a new empty JSON object
-        auto obj = object();
-        obj.emplace("USD", 129.66);
-        obj.emplace("date", "Wed Feb 1 2023");
+TEST(Readme, ReadingJson)
+{
+    using namespace yyjson;
 
-        // Conversion from range to JSON array class
-        array arr_vec = std::vector{1, 2, 3};                           // -> [1,2,3]
-        array arr_nst = std::vector<std::vector<int>>{{1, 2}, {3, 4}};  // -> [[1,2],[3,4]]
-#if (!defined(__clang__) || __clang_major__ >= 16) || (__GNUC__ >= 12)
-        array arr_rng =
-            std::vector{1, 2, 3} | std::ranges::views::transform([](auto x) { return x * x; });  // -> [1,4,9]
-#endif
-        // Conversion from key-value range to JSON object class
-        auto kv_map = std::map<std::string_view, double>{{"first", 1.0}, {"second", 2.0}, {"third", 3.0}};
-        auto val_map = std::map<std::string_view, value>{{"number", 1.5}, {"error", nullptr}, {"text", "abc"}};
-        auto obj_map = object(kv_map);
-        auto obj_kv = object(val_map);
+    auto val = read(R"({
+    "id": 1,
+    "name": "example",
+    "array": [0, 1, 2, 3, 4],
+    "currency": {"USD": 129.66, "EUR": 140.35, "GBP": 158.72}
+})");
 
-        // Construction by std::initializer_list
-        auto init_arr = array{nullptr, true, "2", 3.0, {4.0, "5", false}, {{"7", 8}, {"9", {0}}}};
-        auto init_obj = object{{"id", 1},
-                               {"pi", 3.141592},
-                               {"name", "example"},
-                               {"array", {0, 1, 2, 3, 4}},
-                               {"currency", {{"USD", 129.66}, {"EUR", 140.35}, {"GBP", 158.72}}},
-                               {"success", true}};
-    }
-    {
-        // Cast JSON value from/to std::optional
-        auto nullable = std::optional<int>(3);
-        auto serialized = value(nullable);                         // serialize std::optional to JSON value
-        auto deserialized = cast<decltype(nullable)>(serialized);  // deserialize JSON value into std::optional
+    auto obj = *val.as_object();
+    auto id = *obj["id"].as_int();
+    auto name = *obj["name"].as_string();
+    EXPECT_EQ(id, 1);
+    EXPECT_EQ(name, "example");
 
-        // Cast JSON value from/to std::variant
-        auto variant = std::variant<std::monostate, int, std::string>("example");
-        auto serialized2 = value(variant);                          // serialize std::variant to JSON value
-        auto deserialized2 = cast<decltype(variant)>(serialized2);  // deserialize JSON value into std::variant
+    auto list = *obj["array"].as_array();
+    auto elements = std::string();
+    for (const auto& v : list) elements += std::string_view(v.write());
+    EXPECT_EQ(elements, "01234");
+    auto currency = *obj["currency"].as_object();
+    auto pairs = std::string();
+    for (const auto& [k, v] : currency) pairs += std::format("{}: {};", k, std::string_view(v.write()));
+    EXPECT_EQ(pairs, "USD: 129.66;EUR: 140.35;GBP: 158.72;");
 
-        // Cast JSON array class from/to tuple-like array type
-        auto tpl_arr = std::tuple{nullptr, true, "2", 3.0, std::tuple{4.0, "5", false}};
-        auto serialized3 = array(tpl_arr);                          // serialize tuple-like array to JSON array
-        auto deserialized3 = cast<decltype(tpl_arr)>(serialized3);  // deserialize JSON array into tuple-like
+    auto visited = std::string();
+    std::visit(overloaded{[&](std::string_view s) { visited = s; }, [](const auto&) {}}, obj["name"].inspect());
+    EXPECT_EQ(visited, "example");
 
-        // Cast JSON object class from/to tuple-like object type
-        std::tuple tpl_obj = {std::pair{"number", 1.5}, std::pair{"error", nullptr}, std::pair{"text", "abc"}};
-        auto serialized4 = object(tpl_obj);                         // serialize tuple-like object to JSON object
-        auto deserialized4 = cast<decltype(tpl_obj)>(serialized4);  // deserialize JSON object into tuple-like
+    EXPECT_EQ(std::string_view(obj.write()),
+              R"({"id":1,"name":"example","array":[0,1,2,3,4],"currency":{"USD":129.66,"EUR":140.35,"GBP":158.72}})");
+}
 
-        // reflection
-        auto reflectable = X{1, std::nullopt, "x"};
-        auto serialized5 = object(reflectable);
-        auto deserialized5 = cast<X>(serialized5);
+TEST(Readme, BuildingJson)
+{
+    using namespace yyjson;
 
-        // visitable
-        auto visitable = Z{1, std::nullopt, "z"};
-        auto serialized6 = object(visitable);
-        auto deserialized6 = cast<Z>(serialized6);
+    auto arr = array();
+    arr.emplace_back(1);
+    arr.emplace_back("string");
+    EXPECT_EQ(std::string_view(arr.write()), R"([1,"string"])");
 
-        // defined caster
-        auto castable = Y{1, std::nullopt, "y"};
-        auto serialized7 = value(castable);
-    }
-    {
-        using namespace yyjson;
+    auto obj = object();
+    obj.emplace("USD", 129.66);
+    obj.emplace("date", "Wed Feb 1 2023");
+    EXPECT_EQ(std::string_view(obj.write()), R"({"USD":129.66,"date":"Wed Feb 1 2023"})");
 
-        std::string_view json_str = R"(
-        {
-            "id": 1,
-            "pi": 3.141592,
-            "name": "🫠",
-            "array": [0, 1, 2, 3, 4],
-            "currency": {
-                "USD": 129.66,
-                "EUR": 140.35,
-                "GBP": 158.72
-            },
-            "success": true
-        })";
+    auto squares = array(std::vector{1, 2, 3} | std::views::transform([](int x) { return x * x; }));
+    EXPECT_EQ(std::string_view(squares.write()), "[1,4,9]");
+    auto prices = object(std::map<std::string, double>{{"USD", 129.66}, {"EUR", 140.35}});
+    EXPECT_EQ(std::string_view(prices.write()), R"({"EUR":140.35,"USD":129.66})");
 
-        auto val = read(json_str);
-        std::cout << val.write(WriteFlag::Pretty) << std::endl;
-        // {
-        //     "id": 1,
-        //     "pi": 3.141592,
-        //     "name": "🫠",
-        //     "array": [
-        //         0,
-        //         1,
-        //         2,
-        //         3,
-        //         4
-        //     ],
-        //     "currency": {
-        //         "USD": 129.66,
-        //         "EUR": 140.35,
-        //         "GBP": 158.72
-        //     },
-        //     "success": true
-        // }
-    }
-    {
-        using namespace yyjson;
+    auto doc = object{{"id", 1}, {"array", {0, 1, 2}}, {"currency", {{"USD", 129.66}}}, {"success", true}};
+    EXPECT_EQ(std::string_view(doc.write()), R"({"id":1,"array":[0,1,2],"currency":{"USD":129.66},"success":true})");
 
-        std::string_view json_str = R"([0, "1", 2.0])";
-        auto val = read(json_str);
-        assert(val.is_array());
+    auto editable = object(read(R"({"a": 1})"));
+    editable.emplace("b", 2);
+    EXPECT_EQ(std::string_view(editable.write()), R"({"a":1,"b":2})");
+}
 
-        // NOTE: Prior to C++23 (P2644R1), range-based for loop for temporary std::optional
-        // instance requires initializer because std::optional<T>::value() returns T&&
-        // for (const auto& v : *val.as_array())                     // 💀 UB
-        for (const auto arr = *val.as_array(); const auto& v : arr)  // ✅ OK
-        {
-            std::cout << v.write() << std::endl;
-        }
-    }
-    {
-        using namespace yyjson;
+TEST(Readme, BetweenDomAndTypes)
+{
+    using namespace yyjson;
+    using namespace readme;
 
-        std::string_view json_str = R"({"USD": 129.66, "EUR": 140.35, "GBP": 158.72})";
-        auto val = read(json_str);
-        assert(val.is_object());
+    auto doc = read(R"({"project": {"name": "cpp-yyjson", "tags": [], "releases": []}, "extra": [1, 2]})");
+    auto project = cast<Project>((*doc.as_object())["project"]);
+    auto numbers = cast<std::vector<int>>((*doc.as_object())["extra"]);
+    EXPECT_EQ(project.name, "cpp-yyjson");
+    EXPECT_EQ(numbers, (std::vector{1, 2}));
 
-        auto obj = *val.as_object();
-        std::cout << *obj["USD"].as_real() << std::endl;
-        std::cout << *obj["EUR"].as_real() << std::endl;
-        std::cout << *obj["GBP"].as_real() << std::endl;
-    }
-    {
-        using namespace std::literals;
+    auto obj = object(project);
+    obj.emplace("stars", 1000);
+    EXPECT_EQ(std::string_view(obj.write()), R"({"name":"cpp-yyjson","tags":[],"releases":[],"stars":1000})");
+}
 
-        // Conversion constructors
-        auto v_bool = value(true);
-        auto v_null = value(nullptr);
-        auto v_int = value(-1);
-        auto v_real = value(3.14);
+TEST(Readme, KeysAndCasters)
+{
+    using namespace readme;
 
-        // String conversion
-        auto strlit = "string literal";
-        auto stdstr = "string example"s;
-        auto strviw = std::string_view(stdstr);
+    auto thing = yyjson::read<Thing>(R"({"@context":"https://schema.org","name":"x"})");
+    EXPECT_EQ(thing.context, "https://schema.org");
+    EXPECT_EQ(thing.name, "x");
+    EXPECT_EQ(std::string_view(yyjson::write(thing)), R"({"@context":"https://schema.org","name":"x"})");
 
-        // Explicit copy
-        auto v_lit_cp = value(strlit, copy_string);
-        auto v_str_cp = value(stdstr, copy_string);
-        auto v_viw_cp = value(strviw, copy_string);
-
-        // No copy: the life time of a string must be managed
-        auto v_lit = value(strlit);
-        auto v_str = value(stdstr);
-        auto v_viw = value(strviw);
-
-        // If the original string is modified, the uncopied JSON string is also modified.
-        // (but string length is not)
-        stdstr = "modified string";
-        EXPECT_EQ("\"string example\"", v_str_cp.write());
-        EXPECT_EQ("\"modified strin\"", v_str.write());
-
-        // Implicitly copy string if the argument type is `std::string&&`
-        auto v_str_cp2 = value(std::move(stdstr));
-    }
-    {
-        using namespace yyjson;
-
-        // Create new JSON array from range
-        auto arr = array(std::vector{1, 2, 3});
-
-        // Insert a new value
-        arr.emplace_back("4");
-
-        // Insert an empty array and insert values into it
-        auto nested = arr.emplace_back(empty_array);
-        nested.emplace_back(5.0);
-        nested.emplace_back("6");
-        nested.emplace_back(7);
-    }
-    {
-        using namespace yyjson;
-
-        // Create a new mutable JSON object from key-value like range
-        auto obj = object(std::map<std::string, std::map<std::string, int>>{{"key0", {{"a", 0}, {"b", 1}}},
-                                                                            {"key1", {{"c", 2}, {"d", 3}}}});
-
-        // Insert a new key-value pair
-        obj.emplace("key2", std::vector{4, 5});
-
-        // Insert an empty array and insert values into it
-        auto nested = obj.emplace("key3", empty_object);
-        nested.emplace("e", 6);
-        nested.emplace("f", 7);
-
-        std::cout << obj.write() << std::endl;
-
-        obj["key2"] = std::map<std::string, int>{{"e", 4}, {"f", 5}};
-
-        std::cout << obj.write() << std::endl;
-    }
-    {
-        using namespace yyjson;
-
-        std::tuple tpl_arr = {nullptr, true, "2", 3.0, std::tuple{4.0, "5", false}};
-        auto json_arr = array(tpl_arr);
-        auto tpl_arr2 = cast<decltype(tpl_arr)>(json_arr);
-        std::cout << json_arr.write() << std::endl;
-    }
-    {
-        using namespace yyjson;
-
-        std::tuple tpl_obj = {std::pair{"number", 1.5}, std::pair{"error", nullptr}, std::pair{"text", "abc"}};
-        auto json_obj = object(tpl_obj);
-        auto tpl_obj2 = cast<decltype(tpl_obj)>(json_obj);
-        std::cout << json_obj.write() << std::endl;
-    }
+    auto colors = yyjson::read<std::vector<readme::Color>>(R"(["#ff8000","#000000"])");
+    ASSERT_EQ(colors.size(), 2);
+    EXPECT_EQ(colors[0].r, 0xff);
+    EXPECT_EQ(colors[0].g, 0x80);
+    EXPECT_EQ(colors[0].b, 0x00);
+    auto json = yyjson::write(colors);
+    EXPECT_EQ(std::string_view(json), R"(["#ff8000","#000000"])");
+    EXPECT_THROW((void)yyjson::read<readme::Color>(R"("#ff80")"), yyjson::bad_cast);
+    EXPECT_THROW((void)yyjson::read<readme::Color>(R"("#gg8000")"), yyjson::bad_cast);
 }
 
 // NOLINTEND
