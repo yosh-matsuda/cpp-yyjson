@@ -662,6 +662,27 @@ TEST(Strict, Variants)
     using Untagged = std::variant<StrictCircle, StrictRect, std::string>;
     EXPECT_EQ(yyjson::read<Untagged>(R"({"w":1,"h":2})", yyjson::strict), Untagged(StrictRect{1, 2}));
     EXPECT_EQ(yyjson::read<Untagged>(R"({"w":1,"h":2})"), Untagged(StrictRect{1, 2}));
+
+    // a struct is a candidate of an untagged variant without the keys that `yyjson::strict` lets the object leave out,
+    // also when the read is not strict, and a candidate that the read rejects passes the object to the next
+    using Defaulted = std::variant<StrictOpen, StrictDefaulted>;
+    const auto defaulted = [](std::string_view json, const Defaulted& expected) {
+        EXPECT_EQ(yyjson::read<Defaulted>(json), expected) << json;
+        EXPECT_EQ(yyjson::read(json).cast<Defaulted>(), expected) << json;
+    };
+    defaulted(R"({"a":1,"b":2})", Defaulted(StrictDefaulted{1, 2, {1}}));
+    defaulted(R"({"a":1,"c":[]})", Defaulted(StrictDefaulted{1, 7, {}}));
+    defaulted(R"({"a":1,"c":[1,2]})", Defaulted(StrictOpen{1}));
+    EXPECT_EQ(yyjson::read<Defaulted>(R"({"a":1,"b":2})", yyjson::strict), Defaulted(StrictDefaulted{1, 2, {1}}));
+    using Closed = std::variant<StrictOpen, StrictClosed>;
+    EXPECT_EQ(yyjson::read<Closed>(R"({"a":1,"b":2})"), Closed(StrictClosed{1, 2}));
+    EXPECT_EQ(yyjson::read(R"({"a":1,"b":2})").cast<Closed>(), Closed(StrictClosed{1, 2}));
+    EXPECT_EQ(yyjson::read<Closed>(R"({"a":1,"b":2,"c":3})"), Closed(StrictOpen{1}));
+    EXPECT_EQ(yyjson::read(R"({"a":1,"b":2,"c":3})").cast<Closed>(), Closed(StrictOpen{1}));
+    using Required = std::variant<StrictOpen, StrictRequired>;
+    EXPECT_EQ(yyjson::read<Required>(R"({"a":1,"b":2})"), Required(StrictRequired{1, 2}));
+    EXPECT_EQ(yyjson::read<Required>(R"({"a":1})"), Required(StrictOpen{1}));
+    EXPECT_EQ(yyjson::read(R"({"a":1})").cast<Required>(), Required(StrictOpen{1}));
 }
 
 TEST(Strict, Merge)

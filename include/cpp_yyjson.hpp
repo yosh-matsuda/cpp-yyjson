@@ -13624,8 +13624,9 @@ namespace yyjson
             }
         };
 
-        // The keys of the fields of a keyed struct that are read, and whether an object has to have each, which
-        // it need not for a `std::optional` field.  None for any other type.
+        // The keys of the fields of a keyed struct that are read, and whether an object has to have each, as it
+        // has to under `yyjson::strict`, also when the read is not strict: it need not have the key of a
+        // `std::optional` field or of one annotated with `yyjson::optional_key`.  None for any other type.
         template <typename T>
         struct struct_key_list
         {
@@ -13638,9 +13639,12 @@ namespace yyjson
             static constexpr auto keys = []<std::size_t... Ks>(std::index_sequence<Ks...>) {
                 return std::array<std::string_view, sizeof...(Ks)>{struct_field_key<S, Ks>...};
             }(std::make_index_sequence<struct_field_count<S>>{});
-            static constexpr auto required = []<std::size_t... Ks>(std::index_sequence<Ks...>) {
-                return std::array<bool, sizeof...(Ks)>{!is_std_optional<struct_field_type<S, Ks>>::value...};
-            }(std::make_index_sequence<struct_field_count<S>>{});
+            static constexpr auto required = [] {
+                using rules = struct_key_rules<S>;
+                auto result = std::array<bool, rules::n>{};
+                for (std::size_t i = 0; i < rules::n; ++i) result[i] = rules::required[i] || !rules::optional[i];
+                return result;
+            }();
         };
 
         // Whether an untagged variant ranks its alternatives for a JSON object as `untagged_key_ranking` does,
