@@ -81,9 +81,7 @@ auto points = read<std::vector<Point>>(R"([{"x":1,"y":2},{"x":3,"y":4}])");
 // -> {{1, 2}, {3, 4}}
 ```
 
-Most types are read straight from the string: numbers, strings, `bool`, `nullptr`, ranges, maps, the pre-defined STL casters, and structs that the compile-time reflection or the `VISITABLE_STRUCT` macro converts. A `std::variant` tries its alternatives on the string in the same order as the cast tries them on a value, and a [tagged variant](#tagged-variants) reads the alternative that its tag names. A tuple-like type, such as `std::tuple` or `std::pair`, is read from an array or an object as its caster reads it from a value; only a tuple of key-value pairs whose keys are not `std::string` is read like a user-defined `from_json` below. A [translator `from_json`](#translator) is read as its parameter type and then converted, and a `from_json` that takes a [`yyjson::json_view`](#reading-a-json-value-in-a-caster) is given a view of the string. A user-defined `from_json` that takes a JSON value of the DOM API is given one, so the value that it converts is read into a temporary document, while the values around it are still read directly. When `T` holds such values as the elements of a range or a map, also as an alternative of a `std::variant`, a temporary document for each element would cost more than one document for the whole string, so `read<T>` then reads the string into a document and casts it, as `read(json_string, flag).cast<T>()` does.
-
-The string is read without a document when its root is an array or an object and `flag` is `NoFlag` or `AllowInvalidUnicode`. Otherwise, and whenever the direct read fails, `read<T>` reads the string into a document and casts it, which is how it gives the result and the exception of `cast<T>` in every case. A user-defined `from_json` may therefore be called twice for the same JSON value, when the direct read fails after calling it. Do not rely on the number of calls.
+`read<T>` reads most types straight from the string. It reads a document and casts it instead when the root is not an array or an object, when `flag` is neither `NoFlag` nor `AllowInvalidUnicode`, when a direct read fails, and around the values that a user-defined `from_json` takes as a JSON value of the DOM API. The result is the same either way; [when the data binding API builds a document](#when-the-data-binding-api-builds-a-document) lists the cases. A user-defined `from_json` may be called more than once for the same JSON value, so do not rely on the number of calls.
 
 A `T` that would refer to the JSON value, such as `std::string_view`, `const char*` or a struct or a range that holds one, is a compile error for `read<T>`, `read_into` and `merge_into`, because the string or the document that it would point into does not outlive the call. Use `std::string`, or cast such types from a `yyjson::reader::value` that outlives them. The parameter of a [translator `from_json`](#translator) may still be a `std::string_view`, which is valid during the call.
 
@@ -170,7 +168,7 @@ for (const auto& points : batches)
 }
 ```
 
-Most types are written straight to the string: numbers, strings, `bool`, `nullptr`, ranges, maps, the pre-defined STL casters, structs that the compile-time reflection or the `VISITABLE_STRUCT` macro converts, and the values of `yyjson::reader` and `yyjson::value`. The value that a user-defined `to_json` returns is written directly as well, and so is the output of a `to_json` that takes an [emitter](#writing-members-with-an-emitter). A user-defined `to_json` that [fills](#writing-into-a-json-value-in-a-caster) a `writer::value_ref`, `writer::array_ref` or `writer::object_ref` needs a document, so the object that it converts is written through a temporary one, while the objects around it are still written directly. The writer builds them in one document, which it frees and starts again once the document holds a megabyte, so that the memory of a large write does not grow with the number of such objects. The elements of a range or a map of such objects are built in it together and written at once.
+`write` writes most types straight to the string. Only the objects that a user-defined `to_json` [fills](#writing-into-a-json-value-in-a-caster) as a `writer::value_ref`, `writer::array_ref` or `writer::object_ref` are built in a temporary document first, with the same result; [when the data binding API builds a document](#when-the-data-binding-api-builds-a-document) gives the details.
 
 With an external yyjson older than 0.12.0, `write` always builds a document and writes it, as `yyjson::value(t).write(flag)` does. The bundled backend is newer and writes directly.
 
@@ -178,7 +176,21 @@ With an external yyjson older than 0.12.0, `write` always builds a document and 
 
 This chapter describes which C++ types convert to and from JSON, and how.
 
-The conversions in this chapter are shared by both APIs: `yyjson::read<T>`, `yyjson::read_into`, `yyjson::merge_into` and `yyjson::write` of the [data binding API](#data-binding-api) convert between JSON text and C++ types with them, and the [DOM API](#dom-api) converts between JSON values and C++ types with them. In the DOM API, the constructors of `yyjson::value`, `yyjson::array` and `yyjson::object` convert a C++ object to JSON, and `yyjson::cast<T>` converts a JSON value to `T`:
+The conversions in this chapter are shared by both APIs. `yyjson::read<T>`, `yyjson::read_into`, `yyjson::merge_into` and `yyjson::write` of the [data binding API](#data-binding-api) convert between JSON text and C++ types with them:
+
+```cpp
+using namespace yyjson;
+
+auto vec = read<std::vector<std::vector<int>>>("[[1, 2], [3, 4]]");
+// -> {{1, 2}, {3, 4}}
+auto map = read<std::unordered_map<std::string, double>>(R"({"first": 1.5, "second": 2.5})");
+// -> {{"first", 1.5}, {"second", 2.5}}
+
+auto json = write(vec);
+// -> [[1,2],[3,4]]
+```
+
+The [DOM API](#dom-api) converts between JSON values and C++ types with the same rules. The constructors of `yyjson::value`, `yyjson::array` and `yyjson::object` convert a C++ object to JSON, and `yyjson::cast<T>` converts a JSON value to `T`:
 
 ```cpp
 using namespace yyjson;
@@ -198,6 +210,8 @@ auto obj = object(std::unordered_map<std::string, double>{{"first", 1.5}, {"seco
 auto map = cast<std::unordered_map<std::string, double>>(obj);
 // -> {{"first", 1.5}, {"second", 2.5}, {"third", 3.5}}
 ```
+
+The rest of this chapter shows each rule with one of the two APIs.
 
 ### Conversion rules
 
@@ -2117,7 +2131,15 @@ bool check_capacity(std::string_view json, ReadFlag = ReadFlag::NoFlag) const
 
 When the JSON has a C++ type, `yyjson::read<T>` and `yyjson::write` are the fastest way to convert it. They skip the document that `read(json).cast<T>()` and `value(t).write()` build, and in the [benchmark](benchmark/README.md#data-binding-api) they take 71% to 94% and 28% to 85% of the time of those, respectively.
 
-`read<T>` reads the string directly when its root is an array or an object and the read flag is `NoFlag` or `AllowInvalidUnicode`. With any other flag, such as `ReadFlag::AllowComments`, it reads a document and casts it, which gives the same result more slowly.
+### When the data binding API builds a document
+
+`read<T>` reads most types straight from the string: numbers, strings, `bool`, `nullptr`, ranges, maps, the pre-defined STL casters, and structs that the compile-time reflection or the `VISITABLE_STRUCT` macro converts. A `std::variant` tries its alternatives on the string in the same order as the cast tries them on a value, and a [tagged variant](#tagged-variants) reads the alternative that its tag names. A tuple-like type, such as `std::tuple` or `std::pair`, is read from an array or an object as its caster reads it from a value; only a tuple of key-value pairs whose keys are not `std::string` is read like a user-defined `from_json` below. A [translator `from_json`](#translator) is read as its parameter type and then converted, and a `from_json` that takes a [`yyjson::json_view`](#reading-a-json-value-in-a-caster) is given a view of the string.
+
+A user-defined `from_json` that takes a JSON value of the DOM API is given one, so the value that it converts is read into a temporary document, while the values around it are still read directly. When `T` holds such values as the elements of a range or a map, also as an alternative of a `std::variant`, a temporary document for each element would cost more than one document for the whole string, so `read<T>` then reads the string into a document and casts it, as `read(json_string, flag).cast<T>()` does.
+
+The string is read without a document when its root is an array or an object and the read flag is `NoFlag` or `AllowInvalidUnicode`. With any other flag, such as `ReadFlag::AllowComments`, and whenever the direct read fails, `read<T>` reads the string into a document and casts it, which gives the result and the exception of `cast<T>` in every case, more slowly. A user-defined `from_json` may therefore be called twice for the same JSON value, when the direct read fails after calling it. `read_into` and `merge_into` follow the same rules.
+
+`write` writes most types straight to the string as well: numbers, strings, `bool`, `nullptr`, ranges, maps, the pre-defined STL casters, structs that the compile-time reflection or the `VISITABLE_STRUCT` macro converts, and the values of `yyjson::reader` and `yyjson::value`. The value that a user-defined `to_json` returns is written directly, and so is the output of a `to_json` that takes an [emitter](#writing-members-with-an-emitter). A user-defined `to_json` that [fills](#writing-into-a-json-value-in-a-caster) a `writer::value_ref`, `writer::array_ref` or `writer::object_ref` needs a document, so the object that it converts is written through a temporary one, while the objects around it are still written directly. The writer builds them in one document, which it frees and starts again once the document holds a megabyte, so that the memory of a large write does not grow with the number of such objects. The elements of a range or a map of such objects are built in it together and written at once.
 
 ### Reuse the result object and the output string
 
@@ -2136,7 +2158,7 @@ Writing many objects into one `std::string` with `yyjson::write(t, out)` stops a
 
 ### Write casters that convert C++ values
 
-The forms of a [user-defined caster](#user-defined-casters) that take or fill a JSON value need a document. `read<T>` reads each value that a [`from_json(const Json&)`](#reading-a-json-value-in-a-caster) converts into a temporary document, and reads the whole string into a document when such values are the elements of a range or a map or an alternative of a `std::variant`. `write` builds a temporary document for each value that a `to_json` with `writer::object_ref&`, `writer::array_ref&` or `writer::value_ref&` [fills](#writing-into-a-json-value-in-a-caster), the forms kept for the casters of v1.1.0. The results are the same, but the data binding API loses most of its advantage. A caster that reads the JSON value can take a [`yyjson::json_view`](#reading-a-json-value-in-a-caster) instead, which `read<T>` gives without a document, a caster that keeps it can be a translator from [`yyjson::value`](#json-values-as-fields), and a `std::variant` whose alternatives a member names needs no caster with a [tag](#tagged-variants) in `yyjson::annotations`.
+The forms of a [user-defined caster](#user-defined-casters) that take or fill a JSON value need a document, as [the section above](#when-the-data-binding-api-builds-a-document) describes; the `to_json` forms with `writer::object_ref&`, `writer::array_ref&` or `writer::value_ref&` are kept for the casters of v1.1.0. The results are the same, but the data binding API loses most of its advantage. A caster that reads the JSON value can take a [`yyjson::json_view`](#reading-a-json-value-in-a-caster) instead, which `read<T>` gives without a document, a caster that keeps it can be a translator from [`yyjson::value`](#json-values-as-fields), and a `std::variant` whose alternatives a member names needs no caster with a [tag](#tagged-variants) in `yyjson::annotations`.
 
 Write casters in the forms that convert C++ values instead, which both APIs use without a document: a [translator](#translator) `from_json(U)` and a `to_json` that returns a value, the [in-place](#reading-into-an-existing-field) `from_json(X&, U)`, a `to_json` with an [emitter](#writing-members-with-an-emitter) and [`should_omit`](#omitting-a-field-with-no-value). A struct whose keys differ from its field names needs no caster at all with [`yyjson::annotations`](#json-keys-other-than-field-names).
 
