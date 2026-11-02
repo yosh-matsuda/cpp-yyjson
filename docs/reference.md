@@ -303,7 +303,7 @@ enum class yyjson::WriteFlag : yyjson_write_flag
 };
 ```
 
-The `write` function returns a read-only string which is inherited from `std::string_view`.
+The `write` function returns a read-only string, `yyjson::json_string`, which derives from `std::string_view` and owns its buffer. It converts implicitly to `std::string`, so the result can initialize a `std::string`, be assigned to one, or be passed where a `std::string` is expected; each conversion copies the text.
 
 See the reference of yyjson for the information on [writer flags](https://ibireme.github.io/yyjson/doc/doxygen/html/md_doc__a_p_i.html#autotoc_md40).
 

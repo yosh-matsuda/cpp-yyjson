@@ -766,6 +766,9 @@ namespace yyjson
               }))
         {
         }
+
+        // Implicit, so that the result of `write` can initialize or be passed as a `std::string`.
+        operator std::string() const { return std::string(data(), size()); }
     };
 
     namespace detail

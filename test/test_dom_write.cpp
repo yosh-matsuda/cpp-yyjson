@@ -2635,4 +2635,20 @@ TEST(Writer, CopyStringKeysOfValues)
     EXPECT_EQ(std::string(obj.write()), expected);
 }
 
+TEST(Writer, JsonStringToString)
+{
+    using namespace yyjson;
+
+    // the result of `write` converts implicitly to `std::string`
+    std::string s = write(std::vector{1, 2});
+    EXPECT_EQ(s, "[1,2]");
+    s = value(3).write();
+    EXPECT_EQ(s, "3");
+    auto strings = std::vector<std::string>{write(4)};
+    strings.push_back(read("[5]").write());
+    EXPECT_EQ(strings, (std::vector<std::string>{"4", "[5]"}));
+    const auto by_ref = [](const std::string& str) { return str; };
+    EXPECT_EQ(by_ref(object{{"a", 6}}.write()), R"({"a":6})");
+}
+
 // NOLINTEND
