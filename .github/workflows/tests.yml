@@ -122,7 +122,8 @@ jobs:
         - { name: "LLVM 18 - x86-64-v3 + AVX2", os: "ubuntu-24.04", triplet: "x64-linux", c: "clang-18", cxx: "clang++-18", packages: "clang-18", flags: "-march=x86-64-v3", avx2: "ON" }
         - { name: "GCC 14 - SSSE3", os: "ubuntu-24.04", triplet: "x64-linux", c: "gcc-14", cxx: "g++-14", packages: "gcc-14 g++-14", flags: "-mssse3", avx2: "OFF" }
         - { name: "LLVM 18 - SSSE3", os: "ubuntu-24.04", triplet: "x64-linux", c: "clang-18", cxx: "clang++-18", packages: "clang-18", flags: "-mssse3", avx2: "OFF" }
-        - { name: "GCC 14 - x86-64-v3 + AVX2 - ASan/UBSan", os: "ubuntu-24.04", triplet: "x64-linux", c: "gcc-14", cxx: "g++-14", packages: "gcc-14 g++-14", flags: "-march=x86-64-v3 -fsanitize=address,undefined -fno-sanitize-recover=all", avx2: "ON" }
+        # ASan + UBSan at -O3 take up to 9 GB per translation unit; two at a time fit in the 16 GB of the runner
+        - { name: "GCC 14 - x86-64-v3 + AVX2 - ASan/UBSan", os: "ubuntu-24.04", triplet: "x64-linux", c: "gcc-14", cxx: "g++-14", packages: "gcc-14 g++-14", flags: "-march=x86-64-v3 -fsanitize=address,undefined -fno-sanitize-recover=all", avx2: "ON", parallel: "2" }
         - { name: "GCC 14 - arm64", os: "ubuntu-24.04-arm", triplet: "arm64-linux", c: "gcc-14", cxx: "g++-14", packages: "gcc-14 g++-14", flags: "", avx2: "OFF" }
         - { name: "LLVM 18 - arm64", os: "ubuntu-24.04-arm", triplet: "arm64-linux", c: "clang-18", cxx: "clang++-18", packages: "clang-18", flags: "", avx2: "OFF" }
     name: Ubuntu - ${{ matrix.config.name }}
@@ -155,7 +156,7 @@ jobs:
         export CC=${{ matrix.config.c }} CXX=${{ matrix.config.cxx }}
         rm -rf ${{ github.workspace }}/build
         cmake -B ${{ github.workspace }}/build -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=${{ matrix.config.triplet }} -DCMAKE_C_COMPILER=${{ matrix.config.c }} -DCMAKE_CXX_COMPILER=${{ matrix.config.cxx }} -DCMAKE_C_FLAGS="${{ matrix.config.flags }}" -DCMAKE_CXX_FLAGS="${{ matrix.config.flags }}" -DCMAKE_EXE_LINKER_FLAGS="${{ matrix.config.flags }}" -DCPPYYJSON_ENABLE_AVX2=${{ matrix.config.avx2 }} -G "Ninja Multi-Config"
-        cmake --build ${{ github.workspace }}/build --config Release
+        cmake --build ${{ github.workspace }}/build --config Release ${{ matrix.config.parallel && format('--parallel {0}', matrix.config.parallel) || '' }}
         ctest --test-dir ${{ github.workspace }}/build -C Release --output-on-failure --timeout 900
 
   upstream-yyjson-build:
