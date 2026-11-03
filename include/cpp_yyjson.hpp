@@ -17444,8 +17444,7 @@ namespace yyjson
         // Whether `yyjson::validate` checks something of a value of the type T or of the values in it, which the
         // types that T leads to tell, as for `yyjson::writable`.
         template <typename T>
-        inline constexpr bool needs_validation =
-            graph_search(&graph_node<validation_node<std::remove_cvref_t<T>>>, nullptr);
+        inline constexpr bool needs_validation = graph_search(&graph_node<validation_node<std::remove_cvref_t<T>>>);
 
         inline std::string index_token(std::size_t i) { return "/" + std::to_string(i); }
         inline std::string key_token(std::string_view key) { return "/" + bad_cast_access::escape(key); }
