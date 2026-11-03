@@ -179,9 +179,9 @@ namespace
         EXPECT_TRUE(expect_read_into(T(), json)) << json;
         auto merged_directly = false;
         EXPECT_EQ(expect_merge_into(T(), json, &merged_directly), result) << json;
+#if YYJSON_VERSION_HEX >= 0x000C00
         // the reader without a document merges objects and arrays
         EXPECT_EQ(merged_directly, json.starts_with('{') || json.starts_with('[')) << json;
-#if YYJSON_VERSION_HEX >= 0x000C00
         const auto direct = read_directly<T>(json, yyjson::ReadFlag::NoFlag);
         ASSERT_TRUE(direct.has_value()) << json;
         EXPECT_EQ(*direct, result) << json;
