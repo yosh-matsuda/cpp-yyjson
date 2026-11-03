@@ -353,6 +353,15 @@ namespace yyjson
                 }
             }
 
+            // Makes the mutable value `to` the target of `e` in the place of the immutable value `from`, which is a
+            // copy of it, so that the path goes on to the value in the copy.
+            static void move_target(bad_cast& e, const yyjson_val* from, const yyjson_mut_val* to) noexcept
+            {
+                if (e.state_ == nullptr || e.state_->value != from || e.state_->mutable_value) return;
+                e.state_->value = to;
+                e.state_->mutable_value = true;
+            }
+
             // Called by a cast of `v` that `e` leaves.  The path is left as it is if it cannot be extended.
             template <typename Val>
             CPPYYJSON_COLD static void add_path(bad_cast& e, const Val* v) noexcept
@@ -19688,7 +19697,21 @@ namespace yyjson
                     &yyjson_doc_free);
                 if (doc == nullptr) [[unlikely]]
                     throw std::bad_alloc();
-                return std::forward<F>(f)(json_view(yyjson_doc_get_root(doc.get())));
+                const auto* const original = writer::detail::json_value_access::get(json);
+                auto* const root = yyjson_doc_get_root(doc.get());
+                auto failure = std::exception_ptr();
+                try
+                {
+                    return std::forward<F>(f)(json_view(root));
+                }
+                catch (bad_cast& e)
+                {
+                    // the path to the value in the copy is the path to it in `json`
+                    bad_cast_access::add_path(e, root);
+                    bad_cast_access::move_target(e, root, original);
+                    failure = std::current_exception();
+                }
+                std::rethrow_exception(failure);
             }
         };
     }  // namespace detail
