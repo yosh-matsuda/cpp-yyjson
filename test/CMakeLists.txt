@@ -126,6 +126,8 @@ if(TARGET cpp_yyjson_codegen)
   add_executable("${PROJECT_NAME}_test_codegen_cmake" test_codegen_cmake.cpp)
   target_link_libraries("${PROJECT_NAME}_test_codegen_cmake"
                         PRIVATE ${PROJECT_NAME} GTest::gtest GTest::gtest_main)
+  target_compile_options("${PROJECT_NAME}_test_codegen_cmake"
+                         PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
   cpp_yyjson_generate("${PROJECT_NAME}_test_codegen_cmake" codegen/order.schema.json
                       NAMESPACE model)
   cpp_yyjson_generate("${PROJECT_NAME}_test_codegen_cmake" codegen/defaults.schema.json
