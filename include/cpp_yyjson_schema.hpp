@@ -2585,6 +2585,15 @@ namespace yyjson
             nodes_ = outer_nodes;
         }
 
+        // Adds the key of the adjacent tag that field K of S writes, if any.  A function rather than a lambda in the
+        // fold of the caller: clang 18 and 19 crash on that lambda.
+        template <typename S, std::size_t K>
+        void add_adjacent_tag_key(std::vector<std::string_view>& keys)
+        {
+            using T = yyjson::detail::struct_field_tags<S, K>;
+            if constexpr (yyjson::detail::writes_adjacent_tag<S, T>) keys.push_back(T::key);
+        }
+
         // Writes the conditions of S, `yyjson::if_then_else` as `if`, `then` and `else`, and `yyjson::not_` as
         // `not`, each in a branch of `allOf` when S has more than one.  `tags` are the tags of `yyjson::internal_tag`
         // that the object of S has.
@@ -2605,12 +2614,7 @@ namespace yyjson
                 for (const auto& tag : tags) tag_keys.push_back(tag.key);
                 if constexpr (yyjson::detail::has_adjacent_fields<S>)
                     [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
-                        (
-                            [&] {
-                                using T = yyjson::detail::struct_field_tags<S, Ks>;
-                                if constexpr (yyjson::detail::writes_adjacent_tag<S, T>) tag_keys.push_back(T::key);
-                            }(),
-                            ...);
+                        (add_adjacent_tag_key<S, Ks>(tag_keys), ...);
                     }(std::make_index_sequence<yyjson::detail::struct_field_count<S>>{});
             }
             const auto closed = [&](bool c) {
