@@ -197,6 +197,13 @@ TEST(ReadInto, Roots)
     expect_read_into(std::map<std::string, int, std::greater<>>{{"a", 1}, {"b", 2}}, R"({"b":3,"a":4,"c":5})");
     expect_read_into(std::map<std::string, int, std::greater<>>{{"a", 1}, {"b", 2}}, R"({"c":3,"b":4,"a":5})");
     expect_read_into(std::array<int, 2>{1, 2}, "[3,4]");
+    // ranges of fixed size in a reused vector are read over in place, and one of another length fails
+    for (const auto* json : {"[[5,6],[7,8],[9,10]]", "[[5,6]]", "[[5,6],[7]]", "[[5,6],[7,8,9]]", "[[5,6],null]",
+                             "[[5,6],[]]", "[[5,6],[7,\"8\"]]"})
+    {
+        expect_read_into(std::vector<std::array<float, 2>>{{1, 2}, {3, 4}}, json);
+        expect_merge_into(std::vector<std::array<float, 2>>{{1, 2}, {3, 4}}, json);
+    }
     expect_read_into(std::tuple<int, std::string>{1, "a"}, R"([2])");
     expect_read_into(5, " 6 ");
     expect_read_into(std::string("old"), R"("new")");
