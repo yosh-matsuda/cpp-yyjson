@@ -28891,15 +28891,10 @@ namespace yyjson
                 auto adjacent = adjacent_fields_of<T>{cur_};
                 if constexpr (yyjson::detail::visitable<T>)
                 {
-                    constexpr auto& members = visit_struct<T>::members;
                     const auto read_one =
                         [&]<std::size_t I>(std::integral_constant<std::size_t, I>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
-                            constexpr auto size = std::tuple_size_v<std::remove_cvref_t<decltype(members)>>;
-                            const auto replaceable = [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                                return yyjson::detail::has_own_bytes<I>(t.*std::get<Is>(members)...);
-                            };
                             const auto read = [&](auto& field) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
-                                read_field(field, replaceable(std::make_index_sequence<size>{}));
+                                read_field(field, yyjson::detail::visitable_field_replaceable<I>(t));
                             };
                             read_struct_field<T, I>(t, adjacent, read);
                         };

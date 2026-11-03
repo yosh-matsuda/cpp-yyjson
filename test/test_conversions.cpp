@@ -608,6 +608,10 @@ TEST(Reader, UntaggedStructAlternatives)
     EXPECT_EQ(read<ok_or_renamed>(R"({"code":1,"message":"x","cache":2})").index(), 0);
     using ok_or_visitable = std::variant<KeyedOk, KeyedVisitable>;
     EXPECT_EQ(read<ok_or_visitable>(R"({"code":1,"msg":"x"})").index(), 1);
+    // a VISITABLE_STRUCT read first while the keys are recorded
+    using visitable_or_ok = std::variant<KeyedVisitable, KeyedOk>;
+    EXPECT_EQ(read<visitable_or_ok>(R"({"msg":"x","code":1})"), visitable_or_ok(KeyedVisitable{1, "x"}));
+    EXPECT_EQ(read<visitable_or_ok>(R"({"code":1})"), visitable_or_ok(KeyedOk{1}));
 
     // a candidate that fails gives way to the next, and then the other alternatives are tried in order
     using with_map = std::variant<KeyedOk, KeyedErr, std::map<std::string, std::string>>;
