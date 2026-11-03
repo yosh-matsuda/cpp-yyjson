@@ -2320,6 +2320,9 @@ namespace yyjson
         std::size_t held_size = 0;
 
         [[nodiscard]] constexpr std::string_view held() const noexcept { return {held_data, held_size}; }
+        // Whether `yyjson::default_from` made it.  The name of a type is never empty; comparing `construct` with
+        // null is not a constant expression under GCC's `-fsanitize=undefined`.
+        [[nodiscard]] constexpr bool has_value() const noexcept { return held_size != 0; }
     };
 
     namespace detail
@@ -3035,6 +3038,9 @@ namespace yyjson
             std::size_t prefix = 0;
             std::size_t prefix_count = 0;
             const type_test_info* type_test = nullptr;
+            // whether `type_test` is set: comparing it with null is not a constant expression under GCC's
+            // `-fsanitize=undefined`
+            bool tests_type = false;
             std::size_t negated = 0;
             std::size_t conditional = 0;
             std::size_t then_branch = 0;
@@ -3049,7 +3055,7 @@ namespace yyjson
             }
             [[nodiscard]] constexpr bool empty() const noexcept
             {
-                return constraints.set == 0 && !structured() && type_test == nullptr && negated == 0 &&
+                return constraints.set == 0 && !structured() && !tests_type && negated == 0 &&
                        conditional == 0;
             }
         };
@@ -3270,8 +3276,9 @@ namespace yyjson
             {
                 if constexpr (is_type_setting<A>::value)
                 {
-                    if (nodes[node].type_test != nullptr) return fail(field_key_error::same_setting_twice);
+                    if (nodes[node].tests_type) return fail(field_key_error::same_setting_twice);
                     nodes[node].type_test = &type_test_info_of<typename is_type_setting<A>::type>;
+                    nodes[node].tests_type = true;
                 }
                 else
                     add(node, list.first);
@@ -4875,7 +4882,7 @@ namespace yyjson
             }
             constexpr void omit_default_value(std::size_t i)
             {
-                if (table.defaults[i].construct != nullptr)
+                if (table.defaults[i].has_value())
                     return fail(field_key_error::default_from_with_omit_default);
                 if (table.omit_default[i]) return fail(field_key_error::same_setting_twice);
                 if (table.skipped[i]) return fail(field_key_error::skipped_with_setting);
@@ -4886,7 +4893,7 @@ namespace yyjson
             // `yyjson::default_from`, which leaves out the key of the field i as `yyjson::omit_default` does.
             constexpr void default_from_value(std::size_t i, const default_from_t& d)
             {
-                if (table.defaults[i].construct != nullptr) return fail(field_key_error::same_setting_twice);
+                if (table.defaults[i].has_value()) return fail(field_key_error::same_setting_twice);
                 if (table.omit_default[i]) return fail(field_key_error::default_from_with_omit_default);
                 omit_default_value(i);
                 table.defaults[i] = d;
@@ -5142,7 +5149,7 @@ namespace yyjson
                     if (t.required[e] || t.optional_key[e] || t.omit_default[e] || described[e] != 0 ||
                         node.constraints.set != 0 || node.values != 0 || node.keys != 0 || node.contains != 0 ||
                         node.prefix_count != 0 || node.negated != 0 || node.conditional != 0 ||
-                        node.type_test != nullptr)
+                        node.tests_type)
                         return field_key_error::extra_items_with_setting;
                     if (t.items == additional_keys::denied) return field_key_error::extra_items_denied;
                 }
@@ -7050,8 +7057,8 @@ namespace yyjson
                 return false;
         }();
 
-        // The setting `yyjson::default_from` of the field R of S, by its index among all the fields, whose
-        // `construct` is null if the field has none.
+        // The setting `yyjson::default_from` of the field R of S, by its index among all the fields, which has no
+        // value if the field has none.
         template <typename S, std::size_t R>
         inline constexpr default_from_t field_default_from = [] {
             if constexpr (visitable<S>)
@@ -7067,7 +7074,7 @@ namespace yyjson
                 return default_from_t{};
         }();
         template <typename S, std::size_t R>
-        inline constexpr bool has_default_from = field_default_from<S, R>.construct != nullptr;
+        inline constexpr bool has_default_from = field_default_from<S, R>.has_value();
         // The value of the field R of S, by its index among all the fields, that `yyjson::default_from` makes;
         // defined after the holders of values.
         template <typename S, std::size_t R, typename F>
@@ -9845,7 +9852,7 @@ namespace yyjson
                           "yyjson::const_(nullptr) and yyjson::enum_ with nullptr in yyjson::not_ and yyjson::if_ "
                           "constrain a value that can be null: std::optional, a smart pointer, std::variant of "
                           "std::monostate, or yyjson::value");
-            if constexpr (TestLevel::node.type_test != nullptr)
+            if constexpr (TestLevel::node.tests_type)
                 static_assert(dom_kind_of<U> != dom_kind::none,
                               "yyjson::is_type<T> in yyjson::not_ and yyjson::if_ tests a value of yyjson::value, "
                               "yyjson::array or yyjson::object");
@@ -9857,14 +9864,14 @@ namespace yyjson
             if (value != nullptr)
             {
                 if (value_constraint_violation<TestLevel, true>(*value) != constraint_kind::none) return false;
-                if constexpr (TestLevel::node.type_test != nullptr && dom_kind_of<U> != dom_kind::none)
+                if constexpr (TestLevel::node.tests_type && dom_kind_of<U> != dom_kind::none)
                     if (!TestLevel::node.type_test->test(value, dom_kind_of<U>)) return false;
                 if constexpr (TestLevel::node.structured())
                     return structure_violation<TestLevel>(*value) == constraint_kind::none;
                 return true;
             }
             if (null_violation<TestLevel>() != constraint_kind::none) return false;
-            if constexpr (TestLevel::node.type_test != nullptr)
+            if constexpr (TestLevel::node.tests_type)
                 return TestLevel::node.type_test->test(nullptr, dom_kind::none);
             return true;
         }
@@ -9951,7 +9958,7 @@ namespace yyjson
             }
             if constexpr (validates_field)
                 if (!c.predicate.check(std::addressof(field))) return constraint_kind::satisfies;
-            if constexpr (Level::node.type_test != nullptr)
+            if constexpr (Level::node.tests_type)
             {
                 static_assert(dom_kind_of<U> != dom_kind::none,
                               "yyjson::is_type<T> in yyjson::contains, yyjson::then and yyjson::else_ tests a value "
@@ -20665,7 +20672,7 @@ namespace yyjson
                 using N = typename Level::template at<Negated>;
                 const auto rest = null_extent<Level, N::node.next>();
                 if (rest == bound_extent::none || null_violation<N>() != constraint_kind::none) return rest;
-                return N::node.type_test != nullptr ? bound_extent::partial : bound_extent::none;
+                return N::node.tests_type ? bound_extent::partial : bound_extent::none;
             }
         }
 
