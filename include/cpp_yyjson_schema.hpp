@@ -2127,11 +2127,12 @@ namespace yyjson
             using rules = yyjson::detail::struct_key_rules<S>;
             using additional = yyjson::detail::additional_keys;
             constexpr auto count = yyjson::detail::struct_field_count<S>;
-            constexpr const schema_node* nodes = [] {
+            // Not constexpr: MSVC 19.44 does not find a constexpr local inside the generic lambda below (C2065).
+            const schema_node* const nodes = [] {
                 if constexpr (yyjson::detail::field_table_of<S>::exists)
                     return yyjson::detail::field_table_of<S>::table.schemas.nodes.data();
                 else
-                    return nullptr;
+                    return static_cast<const schema_node*>(nullptr);
             }();
 
             const auto* const outer_values = std::exchange(values_, [] {
