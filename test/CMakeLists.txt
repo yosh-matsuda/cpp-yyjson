@@ -37,6 +37,38 @@ endif()
 find_package(GTest REQUIRED)
 include_directories(${GTEST_INCLUDE_DIRS})
 
+# With GCC, each of the heaviest test files takes 7-9 GB to compile and the others up to 4.5 GB.
+# Ninja runs as many jobs as there are cores, which exceeds the memory of a CI runner (16 GB), so
+# the test files are compiled in two job pools whose depths follow the physical memory: the
+# heaviest files in one, everything else in this directory and the generator in the other.
+cmake_host_system_information(RESULT CPPYYJSON_MEMORY_MIB QUERY TOTAL_PHYSICAL_MEMORY)
+math(EXPR CPPYYJSON_HEAVY_TEST_JOBS "${CPPYYJSON_MEMORY_MIB} / 24576")
+if(CPPYYJSON_HEAVY_TEST_JOBS LESS 1)
+  set(CPPYYJSON_HEAVY_TEST_JOBS 1)
+endif()
+math(EXPR CPPYYJSON_TEST_JOBS
+     "(${CPPYYJSON_MEMORY_MIB} - 2048 - 9216 * ${CPPYYJSON_HEAVY_TEST_JOBS}) / 4608")
+if(CPPYYJSON_TEST_JOBS LESS 1)
+  set(CPPYYJSON_TEST_JOBS 1)
+endif()
+set_property(
+  GLOBAL APPEND
+  PROPERTY JOB_POOLS cpp_yyjson_heavy_test=${CPPYYJSON_HEAVY_TEST_JOBS}
+           cpp_yyjson_test=${CPPYYJSON_TEST_JOBS})
+set(CMAKE_JOB_POOL_COMPILE cpp_yyjson_test)
+if(TARGET cpp_yyjson_codegen)
+  set_target_properties(cpp_yyjson_codegen PROPERTIES JOB_POOL_COMPILE cpp_yyjson_test)
+endif()
+
+add_library("${PROJECT_NAME}_test_heavy" OBJECT test_constraints.cpp
+                                                test_many_fields.cpp)
+target_link_libraries("${PROJECT_NAME}_test_heavy" PRIVATE ${PROJECT_NAME}
+                                                           GTest::gtest)
+target_compile_options("${PROJECT_NAME}_test_heavy"
+                       PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+set_target_properties("${PROJECT_NAME}_test_heavy"
+                      PROPERTIES JOB_POOL_COMPILE cpp_yyjson_heavy_test)
+
 # executables
 add_executable(
   "${PROJECT_NAME}_test"
@@ -59,11 +91,10 @@ add_executable(
   test_strict.cpp
   test_transparent.cpp
   test_as_array.cpp
-  test_constraints.cpp
-  test_validate.cpp
-  test_many_fields.cpp)
-target_link_libraries("${PROJECT_NAME}_test"
-                      PRIVATE ${PROJECT_NAME} GTest::gtest GTest::gtest_main)
+  test_validate.cpp)
+target_link_libraries(
+  "${PROJECT_NAME}_test" PRIVATE ${PROJECT_NAME} "${PROJECT_NAME}_test_heavy"
+                                 GTest::gtest GTest::gtest_main)
 # a test file can exceed the sections of an object file that MSVC writes by default
 target_compile_options("${PROJECT_NAME}_test"
                        PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
@@ -80,6 +111,8 @@ target_link_libraries("${PROJECT_NAME}_test_schema"
                       PRIVATE ${PROJECT_NAME} jsoncons::jsoncons GTest::gtest GTest::gtest_main)
 target_compile_options("${PROJECT_NAME}_test_schema"
                        PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
+set_target_properties("${PROJECT_NAME}_test_schema"
+                      PROPERTIES JOB_POOL_COMPILE cpp_yyjson_heavy_test)
 
 # the generator of tools/codegen, tested as a library
 add_executable("${PROJECT_NAME}_test_codegen" test_codegen.cpp)
