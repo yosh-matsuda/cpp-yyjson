@@ -10654,7 +10654,7 @@ namespace yyjson
                 if (const auto i = Matcher.find(k, 0); i < seen.size()) seen.set(i);
             });
             const auto present = [&](std::size_t k) { return seen[k]; };
-            const auto count = [keys] { return unsafe_yyjson_get_len(keys); };
+            const auto count = [keys] { return unsafe_yyjson_get_len(const_cast<Val*>(keys)); };
             if (const auto f = failed_condition(s, present, condition_keys_of<S>(keys), count); f.rule != no_condition)
                 throw_condition_failure(s, obj, f, present, count);
         }
@@ -10668,7 +10668,7 @@ namespace yyjson
             if (!in_order) [[unlikely]]
                 return check_irregular_conditions<S, Matcher>(s, obj, keys);
             constexpr auto present = [](std::size_t) { return true; };
-            const auto count = [keys] { return unsafe_yyjson_get_len(keys); };
+            const auto count = [keys] { return unsafe_yyjson_get_len(const_cast<Val*>(keys)); };
             if (const auto f = failed_condition(s, present, condition_keys_of<S>(keys), count); f.rule != no_condition)
                 [[unlikely]]
                 throw_condition_failure(s, obj, f, present, count);
@@ -11266,7 +11266,7 @@ namespace yyjson
                 }
                 check_required_groups<T>(target_of(obj), [&](std::size_t i) { return seen[i]; });
                 // the members of the object, a repeated key each time
-                if constexpr (rules::bounded) check_property_count<T>(target_of(obj), unsafe_yyjson_get_len(obj));
+                if constexpr (rules::bounded) check_property_count<T>(target_of(obj), unsafe_yyjson_get_len(const_cast<Val*>(obj)));
             }
         }
 
