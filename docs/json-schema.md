@@ -114,6 +114,7 @@ The guarantee has exceptions, where valid JSON is not read:
 *   A [declared schema](#declared-schemas), which the library does not check.
 *   The depth limit of [recursive types](conversions.md#recursive-types).
 *   A tuple of key-value pairs whose values differ in type, such as `std::tuple<std::pair<std::string, int>, std::pair<std::string, double>>`. No value has all the types, so the read schema checks every value by the schemas of any of the positions (`anyOf`), while the read checks the value of each key by the type of its position: `{"a": 2.5, "b": 1}` is valid and is not read.
+*   A bound, `yyjson::const_` or `yyjson::enum_` of a `float` with an external yyjson older than 0.11.0. That yyjson [writes a `float` as its `double`](conversions.md#conversion-rules), so the schema gives `0.10000000149011612` for `0.1f`, while the read compares the value rounded to `float`: `0.1` is rejected by `yyjson::not_(yyjson::const_(0.1))` although the schema accepts it. The other way, the read takes `3.4028235e38` for a `float`, above the `maximum` of `3.4028234663852886e38`.
 *   The keys of a map whose key type is an enumeration: the schema allows the names of the enumerators and any integer, while the read rejects an integer out of the range of the underlying type.
 *   A `yyjson::one_of` whose alternative reads one of the lenient forms above. With `yyjson::one_of<std::vector<std::pair<std::string, int>>, std::vector<yyjson::value>>`, `[["a", 1]]` is valid against the second subschema only, while the read reads it by both alternatives and rejects it.
 
@@ -146,7 +147,7 @@ The [constraints](validation.md#constraints) are in both schemas. A plain `write
 | --- | --- |
 | `bool` | `{"type": "boolean"}` |
 | integer types, including `char` | `{"type": "integer"}` with `minimum` and `maximum` of the type, also for 64-bit types |
-| `float` | `{"type": "number"}` with `minimum` and `maximum` of `float`, written as `write` writes a `float` (`3.4028235e38`) |
+| `float` | `{"type": "number"}` with `minimum` and `maximum` of `float`, written as `write` writes a `float` (`3.4028235e38`; `3.4028234663852886e38` with an external yyjson older than 0.11.0) |
 | `double`, `long double` | `{"type": "number"}` |
 | strings | `{"type": "string"}` |
 | `std::nullptr_t`, `std::monostate` | `{"type": "null"}` |
