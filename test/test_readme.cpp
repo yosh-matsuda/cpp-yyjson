@@ -9,7 +9,7 @@ namespace readme
     struct Release
     {
         std::string version;
-        std::optional<std::string> notes;  // left out of the JSON when empty
+        std::optional<std::string> notes;  // left out of the JSON when it has no value
         std::map<std::string, int> downloads;
     };
 
