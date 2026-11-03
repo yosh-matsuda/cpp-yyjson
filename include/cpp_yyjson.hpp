@@ -19313,9 +19313,11 @@ namespace yyjson
                     (detail::emplace_struct_field<T, Is, detail::is_plain_key(detail::field_key<T, Is>)>(
                          emitter, detail::field_key<T, Is>, detail::forward_field<Is>(t), ts...),
                      ...);
+                    // In this lambda, not after it: MSVC 19.44 declares the captured `ts` twice when the
+                    // outer lambda uses them both directly and through this one.
+                    if constexpr (detail::has_extra_keys<T> || detail::has_pattern_fields<T>)
+                        detail::emplace_extra_keys(emitter, t, ts...);
                 }(detail::reflected_fields<T>{});
-                if constexpr (detail::has_extra_keys<T> || detail::has_pattern_fields<T>)
-                    detail::emplace_extra_keys(emitter, t, ts...);
             });
         }
         template <typename... Ts>
@@ -19334,9 +19336,11 @@ namespace yyjson
                     (detail::emplace_struct_field<T, Is, detail::is_plain_key(detail::field_key<T, Is>)>(
                          emitter, detail::field_key<T, Is>, detail::forward_field<Is>(std::move(t)), ts...),
                      ...);
+                    // In this lambda, not after it: MSVC 19.44 declares the captured `ts` twice when the
+                    // outer lambda uses them both directly and through this one.
+                    if constexpr (detail::has_extra_keys<T> || detail::has_pattern_fields<T>)
+                        detail::emplace_extra_keys(emitter, std::move(t), ts...);
                 }(detail::reflected_fields<T>{});
-                if constexpr (detail::has_extra_keys<T> || detail::has_pattern_fields<T>)
-                    detail::emplace_extra_keys(emitter, std::move(t), ts...);
             });
         }
     };
