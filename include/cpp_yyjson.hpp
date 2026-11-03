@@ -19309,15 +19309,15 @@ namespace yyjson
             if constexpr (detail::has_adjacent_fields<T>) detail::check_adjacent_tags(t);
             if constexpr (detail::has_extra_keys<T> || detail::has_pattern_fields<T>) detail::check_extra_keys(t);
             obj.assign_reflected_fields(detail::reflected_field_count(t), [&](auto& emitter) {
-                [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                // `ts` are passed, not captured: MSVC 19.44 declares a captured pack twice when a lambda
+                // expands it more than once.
+                [&]<std::size_t... Is, typename... As>(std::index_sequence<Is...>, As... as) {
                     (detail::emplace_struct_field<T, Is, detail::is_plain_key(detail::field_key<T, Is>)>(
-                         emitter, detail::field_key<T, Is>, detail::forward_field<Is>(t), ts...),
+                         emitter, detail::field_key<T, Is>, detail::forward_field<Is>(t), as...),
                      ...);
-                    // In this lambda, not after it: MSVC 19.44 declares the captured `ts` twice when the
-                    // outer lambda uses them both directly and through this one.
                     if constexpr (detail::has_extra_keys<T> || detail::has_pattern_fields<T>)
-                        detail::emplace_extra_keys(emitter, t, ts...);
-                }(detail::reflected_fields<T>{});
+                        detail::emplace_extra_keys(emitter, t, as...);
+                }(detail::reflected_fields<T>{}, ts...);
             });
         }
         template <typename... Ts>
@@ -19332,15 +19332,15 @@ namespace yyjson
             if constexpr (detail::has_extra_keys<T> || detail::has_pattern_fields<T>) detail::check_extra_keys(t);
             const auto field_count = detail::reflected_field_count(t);
             obj.assign_reflected_fields(field_count, [&](auto& emitter) {
-                [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                // `ts` are passed, not captured: MSVC 19.44 declares a captured pack twice when a lambda
+                // expands it more than once.
+                [&]<std::size_t... Is, typename... As>(std::index_sequence<Is...>, As... as) {
                     (detail::emplace_struct_field<T, Is, detail::is_plain_key(detail::field_key<T, Is>)>(
-                         emitter, detail::field_key<T, Is>, detail::forward_field<Is>(std::move(t)), ts...),
+                         emitter, detail::field_key<T, Is>, detail::forward_field<Is>(std::move(t)), as...),
                      ...);
-                    // In this lambda, not after it: MSVC 19.44 declares the captured `ts` twice when the
-                    // outer lambda uses them both directly and through this one.
                     if constexpr (detail::has_extra_keys<T> || detail::has_pattern_fields<T>)
-                        detail::emplace_extra_keys(emitter, std::move(t), ts...);
-                }(detail::reflected_fields<T>{});
+                        detail::emplace_extra_keys(emitter, std::move(t), as...);
+                }(detail::reflected_fields<T>{}, ts...);
             });
         }
     };
