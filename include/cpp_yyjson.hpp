@@ -2333,7 +2333,7 @@ namespace yyjson
         template <auto F>
         void construct_default(void* storage)
         {
-            ::new (storage) default_result_t<F>(F());
+            ::new (storage) default_result_t<F>(call_constant<F>());
         }
 
         template <auto F>
