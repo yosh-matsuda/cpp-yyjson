@@ -393,6 +393,15 @@ TEST(DirectReader, Containers)
     EXPECT_TRUE((expect_direct_read<std::vector<std::optional<int>>>("[null,1]")));
     EXPECT_TRUE((expect_direct_read<std::vector<std::shared_ptr<int>>>("[null,1]")));
     EXPECT_TRUE((expect_direct_read<std::vector<std::variant<std::monostate, int, std::string>>>(R"([null,1,"s"])")));
+    // the alternatives of the elements of a fixed-size range are emplaced into them
+    using Number = std::variant<std::int64_t, double>;
+    EXPECT_TRUE((expect_direct_read<std::array<Number, 2>>("[1,2.5]")));
+    EXPECT_TRUE((expect_direct_read<std::vector<std::array<Number, 2>>>("[[1.5,-2],[3,4]]")));
+    expect_direct_read<std::array<Number, 2>>("[1]");
+    expect_direct_read<std::array<Number, 2>>("[1,2,3]");
+    expect_direct_read<std::array<Number, 2>>(R"([1,"a"])");
+    EXPECT_TRUE((expect_read_into(std::array<Number, 2>{Number(0.5), Number(std::int64_t{7})}, "[1,2.5]")));
+    expect_read_into(std::array<Number, 2>{Number(0.5), Number(std::int64_t{7})}, "[1]");
     EXPECT_TRUE((expect_direct_read<std::vector<ReadPoint>>("[[1,2],[3,4]]")));
     expect_direct_read<std::vector<ReadPoint>>("[[1,2],[3]]");
     EXPECT_TRUE((expect_direct_read<ReadRecord>(

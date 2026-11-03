@@ -18340,6 +18340,16 @@ namespace yyjson
                         auto kv = read_element<value_type>();
                         result.emplace(std::move(kv.first), std::move(kv.second));
                     }
+                    else if constexpr (builtin_variant<value_type>)
+                    {
+                        // the alternative is emplaced into the element, as a field's is; returning the variant
+                        // and copying it loads what the read has just stored
+                        if (count++ == std::ranges::size(result)) fail();
+                        read_variant<value_type>([&](auto index, auto&&... args) -> value_type& {
+                            return emplace_alternative(*out, index, std::forward<decltype(args)>(args)...);
+                        });
+                        ++out;
+                    }
                     else
                     {
                         if (count++ == std::ranges::size(result)) fail();
