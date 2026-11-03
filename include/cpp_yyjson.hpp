@@ -18360,6 +18360,14 @@ namespace yyjson
                     { t.emplace_back() } -> std::same_as<std::ranges::range_value_t<T>&>;
                 };
 
+            // A range of fixed size, such as `std::array`, whose elements are read over in place.  Returning a
+            // `std::array<float, 2>` instead packs it into one register, a load that waits for the stores of both
+            // elements.
+            template <typename T>
+            static constexpr bool array_fillable =
+                !builtin_variant<T> && !builtin_tuple<T> && !yyjson::detail::from_json_translator<T>::castable &&
+                !from_json_val_usr_defined<T> && from_json_def_arr_defined<T> && yyjson::detail::fixed_size_range<T>;
+
             // A map with unique keys whose nodes `read_into` moves from the old map to the new one, keeping the
             // values to be read over.
             template <typename T>
@@ -18392,6 +18400,14 @@ namespace yyjson
                     if (*cur_ == '[')
                     {
                         read_array_over(t);
+                        return;
+                    }
+                }
+                else if constexpr (array_fillable<T>)
+                {
+                    if (*cur_ == '[')
+                    {
+                        read_array_into(t);
                         return;
                     }
                 }
