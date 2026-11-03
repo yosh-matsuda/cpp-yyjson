@@ -5562,13 +5562,18 @@ namespace yyjson
         }
 #endif
 
+        // Whether a tuple of annotations holds a setting other than the metadata of a type.  A variable, not a
+        // lambda in the condition below: MSVC 19.51 resolves such a lambda to another one of the header.
+        template <typename Tuple>
+        inline constexpr bool has_field_setting = false;
+        template <typename... As>
+        inline constexpr bool has_field_setting<std::tuple<As...>> = (!type_metadata_setting<As> || ...);
+
         // Whether `annotations<T>` or the annotations of the fields of the reflected struct T give the fields keys,
         // skip them or tag them.
         template <typename T>
         inline constexpr bool annotated_fields = [] {
-            if constexpr ([]<typename... As>(std::type_identity<std::tuple<As...>>) {
-                              return (!type_metadata_setting<As> || ...);
-                          }(std::type_identity<annotation_values_of<T>>{}))
+            if constexpr (has_field_setting<annotation_values_of<T>>)
                 return true;
 #if FIELD_RFL_ANNOTATIONS
             else if constexpr (!visitable<T>)
