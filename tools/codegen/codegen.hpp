@@ -3152,7 +3152,7 @@ namespace cpp_yyjson_codegen
                     warn(loc, "`type` is not a string or an array of strings");
                 if (!t.empty())
                 {
-                    if (std::ranges::find(t, "number") != t.end()) std::erase(t, "integer");
+                    if (std::ranges::find(t, std::string_view("number")) != t.end()) std::erase(t, "integer");
                     for (const auto& x : t)
                         if (x != "null" && x != "boolean" && x != "object" && x != "array" && x != "number" &&
                             x != "string" && x != "integer")
@@ -7850,7 +7850,7 @@ namespace cpp_yyjson_codegen
                         (base.find("type") != nullptr && base_types.empty()))
                         return std::nullopt;
                     if (base.find("type") != nullptr)
-                        base_null = std::ranges::find(base_types, "null") != base_types.end();
+                        base_null = std::ranges::find(base_types, std::string_view("null")) != base_types.end();
                 }
                 if (!listed(json())) base_null = false;
                 auto values = std::vector<std::string>();
@@ -7965,7 +7965,7 @@ namespace cpp_yyjson_codegen
                 const auto allowed = type_list(base);
                 return !have.empty() && std::ranges::all_of(have, [&](const auto& x) {
                     return std::ranges::find(allowed, x) != allowed.end() ||
-                           (x == "integer" && std::ranges::find(allowed, "number") != allowed.end());
+                           (x == "integer" && std::ranges::find(allowed, std::string_view("number")) != allowed.end());
                 });
             }
 
@@ -7976,7 +7976,8 @@ namespace cpp_yyjson_codegen
                                                          const std::vector<std::string>& locs, const std::string& loc)
             {
                 auto types = type_list(base);
-                if (types.size() < 2 || std::ranges::find(types, "null") == types.end()) return std::nullopt;
+                if (types.size() < 2 || std::ranges::find(types, std::string_view("null")) == types.end())
+                    return std::nullopt;
                 auto taking_null = std::size_t();
                 for (const auto& b : list.items)
                 {
@@ -7984,7 +7985,7 @@ namespace cpp_yyjson_codegen
                         b.has("anyOf") || b.has("oneOf") || b.has("not"))
                         return std::nullopt;
                     const auto t = type_list(b);
-                    if (t.empty() || std::ranges::find(t, "null") != t.end()) ++taking_null;
+                    if (t.empty() || std::ranges::find(t, std::string_view("null")) != t.end()) ++taking_null;
                 }
                 std::erase(types, "null");
                 auto stripped = base;
