@@ -5816,10 +5816,11 @@ namespace yyjson
         // `reflected_field_index<T, K>` is the K-th.
         template <typename T>
         inline constexpr auto unskipped_field_indices = [] {
-            constexpr auto& table = field_keys<T, reflected_field_names<T>>::table;
-            constexpr auto& skipped = table.skipped;
+            using keys = field_keys<T, reflected_field_names<T>>;
+            constexpr auto& skipped = keys::table.skipped;
             constexpr auto read = [](std::size_t i) {
-                return !table.skipped[i] && i != table.extra && i != table.extra_items && !table.pattern[i];
+                return !keys::table.skipped[i] && i != keys::table.extra && i != keys::table.extra_items &&
+                       !keys::table.pattern[i];
             };
             constexpr auto count = [&] {
                 std::size_t n = 0;
