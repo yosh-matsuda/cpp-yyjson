@@ -20,7 +20,11 @@ struct yyjson::caster<ValidateMaybe<T>>
 {
     static bool should_omit(const ValidateMaybe<T>& m) { return !m.has; }
     static T to_json(const ValidateMaybe<T>& m) { return m.value; }
+#if YYJSON_VERSION_HEX >= 0x000C00
     static ValidateMaybe<T> from_json(const yyjson::json_view& v) { return {true, v.cast<T>()}; }
+#else
+    static ValidateMaybe<T> from_json(const yyjson::reader::const_value_ref& v) { return {true, v.cast<T>()}; }
+#endif
 };
 
 struct ValidateFields

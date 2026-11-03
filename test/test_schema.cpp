@@ -1184,7 +1184,7 @@ struct yyjson::caster<MaybeInt>
 {
     static bool should_omit(const MaybeInt& m) { return !m.has; }
     static int to_json(const MaybeInt& m) { return m.value; }
-    static MaybeInt from_json(const yyjson::json_view& v) { return {true, v.cast<int>()}; }
+    static MaybeInt from_json(any_value v) { return {true, v.cast<int>()}; }
 };
 struct MaybeInner { MaybeInt m; };
 struct MaybeOuter { MaybeInner in; };
