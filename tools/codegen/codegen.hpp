@@ -2208,7 +2208,8 @@ namespace cpp_yyjson_codegen
             // fails, and one evaluated only by `else` where `x` holds; `u` false makes the key require `x` (or its
             // negation) through `dependentSchemas`.  The keys become properties, and `u` `additionalProperties`.
             // False where a subschema evaluates through other keywords or a key pattern cannot be read.
-            bool settle_conditional_keys(json& base, const json& u, const std::string& loc)
+            // `u` is a copy: it may be a member of `base`, which the function changes
+            bool settle_conditional_keys(json& base, const json u, const std::string& loc)
             {
                 struct source
                 {
@@ -2392,7 +2393,8 @@ namespace cpp_yyjson_codegen
             // items that `base` and `if` with `then` evaluate where `if` holds, and those that `base` and `else`
             // evaluate where it fails, are each a prefix, so `u` goes into `then` and `else` as `items` after the
             // longer prefix (a failing `if` evaluates nothing).  False where that does not hold.
-            bool settle_conditional_items(json& base, const json& u, const std::string& loc)
+            // `u` is a copy: it may be a member of `base`, which the function changes
+            bool settle_conditional_items(json& base, const json u, const std::string& loc)
             {
                 const auto* list = base.find("$conditions");
                 if (list == nullptr || !list->is_array()) return false;
