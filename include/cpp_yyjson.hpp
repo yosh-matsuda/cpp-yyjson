@@ -1329,11 +1329,25 @@ namespace yyjson
         {
         };
 
+        // Calls the function `F` that a template argument gives.  A lambda without captures is called on an object
+        // of its own, not on the template parameter object: Clang 20 and older put that object of a closure type
+        // with internal linkage, named `yyjson::$_0` and so on, in a COMDAT group of the same name in every
+        // translation unit, and the linker keeps the group of one of them and rejects the references of the others.
+        template <auto F, typename... Args>
+        constexpr decltype(auto) call_constant(Args&&... args)
+        {
+            using function = std::remove_cvref_t<decltype(F)>;
+            if constexpr (std::is_empty_v<function> && std::is_default_constructible_v<function>)
+                return function{}(std::forward<Args>(args)...);
+            else
+                return F(std::forward<Args>(args)...);
+        }
+
         template <auto F>
         bool call_predicate(const void* value)
         {
             using parameter = typename predicate_parameter<decltype(F)>::type;
-            return static_cast<bool>(F(*static_cast<const parameter*>(value)));
+            return static_cast<bool>(call_constant<F>(*static_cast<const parameter*>(value)));
         }
 
         // Clang 18 and older reject `static_string` in the initializer of a variable template as taking the
