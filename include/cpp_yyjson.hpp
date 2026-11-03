@@ -15464,6 +15464,8 @@ namespace yyjson
             static constexpr double pow10_f64[] = {1e0,  1e1,  1e2,  1e3,  1e4,  1e5,  1e6,  1e7,
                                                    1e8,  1e9,  1e10, 1e11, 1e12, 1e13, 1e14, 1e15,
                                                    1e16, 1e17, 1e18, 1e19, 1e20, 1e21, 1e22};
+            static constexpr double pow10_neg_f64[] = {1e0,  1e-1,  1e-2,  1e-3,  1e-4,  1e-5,  1e-6,  1e-7,  1e-8,
+                                                       1e-9, 1e-10, 1e-11, 1e-12, 1e-13, 1e-14, 1e-15, 1e-16};
 
             // Reads the digits among the 8 characters at `p` up to the first other character into `v`, moves `p`
             // past them and returns their count.  The characters are loaded in little-endian order.
@@ -15494,10 +15496,10 @@ namespace yyjson
 
 #if defined(__AVX2__) || defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
 #define CPPYYJSON_READ_DECIMAL 1
-            // Reads the number at `cur_` into `d` if it is a decimal fraction without exponent, of up to 8 digits
-            // before the point, 16 after it and 19 in all, and returns whether it did.  Every position is taken
-            // from one load of 32 characters, so that the end of the number, which the next value waits for,
-            // does not wait for its digits.
+            // Reads into `d` the number at `cur_` if it has a point, no exponent and at most 8 + 16 digits, 19 in all.
+            // One load of 32 characters gives every position, so the end of the number does not wait for its digits.
+            // With `ToFloat`, `d` need only round to the same `float` as the double nearest to the number.
+            template <bool ToFloat = false>
             CPPYYJSON_ALWAYS_INLINE bool read_decimal(double& d)
             {
                 const char* const s = cur_;
@@ -15553,6 +15555,21 @@ namespace yyjson
                 {
                     if (v <= std::uint64_t{1} << 53)
                         d = static_cast<double>(v) / pow10_f64[n2];
+                    else if constexpr (ToFloat)
+                    {
+                        // Three roundings put the product within a few units in the last place of the nearest
+                        // double, and both round to the same float unless a float lies halfway between them,
+                        // where the 29 bits that a float drops are 2^28, or the float is not normal.
+                        const auto a =
+                            static_cast<double>(static_cast<std::int64_t>(v & ~(std::uint64_t{1} << 63))) *
+                            pow10_neg_f64[n2];
+                        const auto bits = std::bit_cast<std::uint64_t>(a);
+                        const auto dropped = static_cast<std::uint32_t>(bits) & 0x1FFFFFFFu;
+                        const auto exponent = static_cast<std::uint32_t>(bits >> 52) - (1023u - 125u);
+                        d = (dropped - ((1u << 28) - 16u) >= 32u && exponent <= 250u && v >> 63 == 0)
+                                ? a
+                                : eisel_lemire(v, -n2);
+                    }
                     else
                         d = eisel_lemire(v, -n2);
                 }
@@ -17950,7 +17967,7 @@ namespace yyjson
                             if constexpr (std::floating_point<T>)
                             {
                                 auto d = 0.0;
-                                if (read_decimal(d)) [[likely]]
+                                if (read_decimal<std::same_as<T, float>>(d)) [[likely]]
                                     return number(d);
                             }
 #endif
