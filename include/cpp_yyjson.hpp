@@ -979,8 +979,10 @@ namespace yyjson
         constexpr void swap(indirect& other) noexcept { std::swap(p_, other.p_); }
         friend constexpr void swap(indirect& lhs, indirect& rhs) noexcept { lhs.swap(rhs); }
 
+        // Not constrained on `*lhs == *rhs`, as with std::indirect: checking it while the defaulted `operator==` of
+        // a struct that holds itself through indirect is declared needs the exception specification of that
+        // operator, which clang rejects as depending on itself with the standard library of MSVC.
         template <typename U>
-        requires requires(const T& t, const U& u) { t == u; }
         friend constexpr bool operator==(const indirect& lhs, const indirect<U>& rhs)
         {
             if (lhs.valueless_after_move() || rhs.valueless_after_move())
