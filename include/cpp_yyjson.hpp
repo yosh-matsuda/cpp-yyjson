@@ -5823,23 +5823,28 @@ namespace yyjson
         // positions in an array, which are all but those annotated with `yyjson::skip`, `yyjson::extra_keys`,
         // `yyjson::extra_items` and `yyjson::pattern_properties`, as a `std::index_sequence`.
         // `reflected_field_index<T, K>` is the K-th.
+        // Function templates rather than lambdas nested in the initializer, which make MSVC 19.51 crash (C1001).
+        template <typename T>
+        constexpr bool unskipped_field(std::size_t i) noexcept
+        {
+            using keys = field_keys<T, reflected_field_names<T>>;
+            return !keys::table.skipped[i] && i != keys::table.extra && i != keys::table.extra_items &&
+                   !keys::table.pattern[i];
+        }
+        template <typename T>
+        constexpr std::size_t unskipped_field_count() noexcept
+        {
+            std::size_t n = 0;
+            for (std::size_t i = 0; i < field_keys<T, reflected_field_names<T>>::table.skipped.size(); ++i)
+                n += unskipped_field<T>(i) ? 1 : 0;
+            return n;
+        }
         template <typename T>
         inline constexpr auto unskipped_field_indices = [] {
-            using keys = field_keys<T, reflected_field_names<T>>;
-            constexpr auto& skipped = keys::table.skipped;
-            constexpr auto read = [](std::size_t i) {
-                return !keys::table.skipped[i] && i != keys::table.extra && i != keys::table.extra_items &&
-                       !keys::table.pattern[i];
-            };
-            constexpr auto count = [&] {
-                std::size_t n = 0;
-                for (std::size_t i = 0; i < skipped.size(); ++i) n += read(i) ? 1 : 0;
-                return n;
-            }();
-            auto indices = std::array<std::size_t, count>{};
-            for (std::size_t i = 0, k = 0; i < skipped.size(); ++i)
+            auto indices = std::array<std::size_t, unskipped_field_count<T>()>{};
+            for (std::size_t i = 0, k = 0; i < field_keys<T, reflected_field_names<T>>::table.skipped.size(); ++i)
             {
-                if (read(i)) indices[k++] = i;
+                if (unskipped_field<T>(i)) indices[k++] = i;
             }
             return indices;
         }();
