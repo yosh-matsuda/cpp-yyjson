@@ -2531,7 +2531,8 @@ namespace yyjson
         {
             using additional = yyjson::detail::additional_keys;
             constexpr auto count = yyjson::detail::struct_field_count<S>;
-            constexpr const schema_node* nodes = yyjson::detail::field_table_of<S>::table.schemas.nodes.data();
+            // Not constexpr, as in `emit_struct`.
+            const schema_node* const nodes = yyjson::detail::field_table_of<S>::table.schemas.nodes.data();
             const auto* const outer_values =
                 std::exchange(values_, yyjson::detail::field_table_of<S>::table.schemas.values.data());
             const auto* const outer_nodes = std::exchange(nodes_, nodes);
