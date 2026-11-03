@@ -3273,7 +3273,7 @@ namespace yyjson
         };
 
         // A graph of types that a constant expression walks, in which the node of a type `N` that has the
-        // `type_list` `typename N::edges` is the function `graph_node<N>`, identified by its address, and is marked
+        // `type_list` `typename N::edges` is the function `graph_node<N>`, identified by its address or its signature, and is marked
         // if `N::marked` is true.  Each node is instantiated once, however many walks pass through it, and a walk
         // keeps the nodes that it visited in a hash table of the names of their types, so that it takes as many
         // steps as the part of the graph that it visits has edges.  The closures above were folded again for every
@@ -3284,15 +3284,28 @@ namespace yyjson
         {
             graph_node_fn node;
             std::uint64_t hash;
+            bool used;
         };
         struct graph_node_info
         {
             const graph_edge* edges;
             std::size_t size;
             bool marked;
+            std::string_view name;
         };
         template <typename N>
         constexpr graph_node_info graph_node() noexcept;
+        // GCC does not compare the address of a function with that of another or with null in a constant expression
+        // under `-fno-delete-null-pointer-checks`, which `-fsanitize=null` and so `-fsanitize=undefined` imply.  The
+        // nodes are then told apart by the signatures of their functions, which name their types, and the walk never
+        // compares an address with null.
+        template <int>
+        constexpr void graph_address_probe() noexcept
+        {
+        }
+        template <int I = 0>
+        inline constexpr bool graph_node_addresses_compare =
+            requires { typename std::bool_constant<(&graph_address_probe<I> != &graph_address_probe<I + 1>)>; };
         // A hash of the signature of this function, which names `T`. Only a sample of its characters is hashed: the
         // names of the nodes run to thousands of characters, and the walk needs no more than a spread of the slots.
         // The tail is taken in full because the names of two nodes often differ only there.
@@ -3324,7 +3337,7 @@ namespace yyjson
         struct graph_edges<type_list<Ns...>>
         {
             static constexpr std::size_t size = sizeof...(Ns);
-            static constexpr graph_edge nodes[sizeof...(Ns) + 1] = {{&graph_node<Ns>, type_name_hash<Ns>}..., {}};
+            static constexpr graph_edge nodes[sizeof...(Ns) + 1] = {{&graph_node<Ns>, type_name_hash<Ns>, true}..., {}};
         };
         template <typename N>
         constexpr graph_node_info graph_node() noexcept
@@ -3336,15 +3349,36 @@ namespace yyjson
                     return false;
             }();
             using edges = graph_edges<typename N::edges>;
-            return {edges::nodes, edges::size, marked};
+            if constexpr (graph_node_addresses_compare<>)
+                return {edges::nodes, edges::size, marked, {}};
+            else
+            {
+#if defined(__clang__) || defined(__GNUC__)
+                return {edges::nodes, edges::size, marked, __PRETTY_FUNCTION__};
+#elif defined(_MSC_VER)
+                return {edges::nodes, edges::size, marked, __FUNCSIG__};
+#endif
+            }
         }
+        constexpr bool same_graph_node(graph_node_fn a, graph_node_fn b)
+        {
+            if constexpr (graph_node_addresses_compare<>)
+                return a == b;
+            else
+                return a().name == b().name;
+        }
+        // The target of a walk that looks only for a marked node, which no edge leads to.
+        struct no_graph_target
+        {
+            using edges = type_list<>;
+        };
 
         // Whether the walk from the node `from` reaches `target` along one edge or more, or a marked node along none
         // or more.  A constant expression may take only so many steps, about a million under clang, which counts
         // every statement and every turn of a loop, including those of the standard library with its checks: the
         // walk keeps its table and its stack in plain arrays and looks for a slot in place, in about twelve steps
         // an edge, where a `std::vector` took more than a hundred.
-        constexpr bool graph_search(graph_node_fn from, graph_node_fn target)
+        constexpr bool graph_search(graph_node_fn from, graph_node_fn target = &graph_node<no_graph_target>)
         {
             // An open addressing table of the visited nodes, at most half full, and a stack of the nodes to visit,
             // which holds each of them once and `from`, and so never more than half the slots and one.
@@ -3371,9 +3405,9 @@ namespace yyjson
                     stack = new graph_node_fn[(mask + 1) / 2 + 1]{};
                     for (auto e = old_slots; e != old_end; ++e)
                     {
-                        if (e->node == nullptr) continue;
+                        if (!e->used) continue;
                         auto k = static_cast<std::size_t>(e->hash) & mask;
-                        while (slots[k].node != nullptr) k = (k + 1) & mask;
+                        while (slots[k].used) k = (k + 1) & mask;
                         slots[k] = *e;
                     }
                     for (auto i = std::size_t{0}; i != top; ++i) stack[i] = old_stack[i];
@@ -3390,10 +3424,12 @@ namespace yyjson
                 if (node.marked) return true;
                 for (auto e = node.edges, end = node.edges + node.size; e != end; ++e)
                 {
-                    if (e->node == target) return true;
+                    if (same_graph_node(e->node, target)) return true;
                     auto k = static_cast<std::size_t>(e->hash) & w.mask;
-                    while (w.slots[k].node != nullptr && w.slots[k].node != e->node) k = (k + 1) & w.mask;
-                    if (w.slots[k].node == nullptr)
+                    while (w.slots[k].used &&
+                           (w.slots[k].hash != e->hash || !same_graph_node(w.slots[k].node, e->node)))
+                        k = (k + 1) & w.mask;
+                    if (!w.slots[k].used)
                     {
                         w.slots[k] = *e;
                         w.stack[top++] = e->node;
@@ -11623,7 +11659,7 @@ namespace yyjson
         // Every type that is read for a value of T, which a `caster` of the user reads or this library does, has a
         // `from_json` that can be called if its caster names one.
         template <typename T>
-        constexpr bool reads_with_usable_from_json = !graph_search(&graph_node<usable_read_type_node<T>>, nullptr);
+        constexpr bool reads_with_usable_from_json = !graph_search(&graph_node<usable_read_type_node<T>>);
         template <typename T>
         constexpr void assert_reads_through_casters() noexcept
         {
@@ -11936,7 +11972,7 @@ namespace yyjson
         // are checked once for every recursive type that T leads to, which finds every field on a cycle, since
         // every cycle of types passes through one.
         template <typename P, typename T>
-        concept converts_recursive_types = !graph_search(&graph_node<conversion_node<P, T>>, nullptr);
+        concept converts_recursive_types = !graph_search(&graph_node<conversion_node<P, T>>);
 
         // `yyjson::castable<yyjson::reader::const_value_ref, T>` that also checks the fields of recursive types.
         // Those are checked first: a type that holds a recursive type which cannot be converted can make the
@@ -18390,7 +18426,7 @@ namespace yyjson
         public:
             template <typename T>
             static constexpr bool reads_documents_in_loop =
-                yyjson::detail::graph_search(&yyjson::detail::graph_node<value_node<T, false>>, nullptr);
+                yyjson::detail::graph_search(&yyjson::detail::graph_node<value_node<T, false>>);
 
             template <typename T>
             T read_root()
