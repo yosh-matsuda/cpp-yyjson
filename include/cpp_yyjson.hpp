@@ -3459,6 +3459,12 @@ namespace yyjson
             {
             }
         };
+
+        template <typename A>
+        inline constexpr bool is_alt = false;
+        template <typename T, auto... Settings>
+        inline constexpr bool is_alt<alt<T, Settings...>> = true;
+
         template <typename T, auto... Settings>
         struct alternative_traits<alt<T, Settings...>>
         {
@@ -3473,11 +3479,10 @@ namespace yyjson
                           "yyjson::if_then_else(yyjson::if_(settings...), ...), and yyjson::title, "
                           "yyjson::description, "
                           "yyjson::examples and yyjson::deprecated; not the settings of a key");
-            static_assert(!requires { typename alternative_traits<T>::alt_type; },
+            static_assert(!is_alt<T>,
                           "yyjson::alt takes the type of a value, and not another yyjson::alt");
 
             using type = T;
-            using alt_type = alt<T, Settings...>;
             static constexpr tree_size size = (tree_size{} + ... + node_count<alternative_setting_t<Settings>>);
             template <typename F>
             static constexpr void for_each(F&& f)
@@ -20257,9 +20262,13 @@ namespace yyjson
         }
         constexpr json_bound partial_bound(json_bound b) noexcept
         {
-            for (bound_extent* e :
-                 {&b.null, &b.boolean, &b.number.extent, &b.string.extent, &b.array.extent, &b.object.extent})
-                make_partial(*e);
+            // one by one: MSVC 19.44 cannot evaluate a loop over a list of pointers into b as a constant
+            make_partial(b.null);
+            make_partial(b.boolean);
+            make_partial(b.number.extent);
+            make_partial(b.string.extent);
+            make_partial(b.array.extent);
+            make_partial(b.object.extent);
             return b;
         }
         // All the integers that a JSON number can be read as, or all the numbers.
@@ -20751,11 +20760,12 @@ namespace yyjson
         consteval json_bound counted_bound(json_bound b)
         {
             constexpr auto r = level_counts<Level, min_items, max_items>();
-            for (container_bound* c : {&b.array, &b.object})
-            {
-                c->counts = {std::max(c->counts.low, r.low), std::min(c->counts.high, r.high)};
-                if (c->counts.high < c->counts.low) *c = {};
-            }
+            const auto count = [&r](container_bound& c) {
+                c.counts = {std::max(c.counts.low, r.low), std::min(c.counts.high, r.high)};
+                if (c.counts.high < c.counts.low) c = {};
+            };
+            count(b.array);
+            count(b.object);
             return b;
         }
 
