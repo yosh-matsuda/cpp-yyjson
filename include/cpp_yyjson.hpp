@@ -6430,10 +6430,10 @@ namespace yyjson
                     return yyjson::detail::reflectable<T>;
                 else
                     return yyjson::detail::reflectable<T>&&
-                    requires (const T& t)
+                    requires
                     {
                         (std::declval<object_ref&>().emplace(yyjson::detail::field_key<T, Is>,
-                                                             field_reflection::get_field<Is>(t)),
+                                                             field_reflection::get_field<Is>(std::declval<const T&>())),
                          ...);
                     };
             }
@@ -9789,11 +9789,15 @@ namespace yyjson
     {
         template <typename Json>
         requires std::default_initializable<Tuple<Ts...>> &&
-                 ((requires(const Json& json) { (cast<Ts>(json), ...); }) ||
+                 ((requires { (cast<Ts>(std::declval<const Json&>()), ...); }) ||
                   ((detail::key_value_like<Ts> && ...) &&
-                   requires(const Json& json) {
-                       (static_cast<std::tuple_element_t<0, Ts>>(std::get<0>(*(json.as_object()->begin()))), ...);
-                       (cast<std::tuple_element_t<1, Ts>>(std::get<1>(*(json.as_object()->begin()))), ...);
+                   requires {
+                       (static_cast<std::tuple_element_t<0, Ts>>(
+                            std::get<0>(*(std::declval<const Json&>().as_object()->begin()))),
+                        ...);
+                       (cast<std::tuple_element_t<1, Ts>>(
+                            std::get<1>(*(std::declval<const Json&>().as_object()->begin()))),
+                        ...);
                    }))
         static Tuple<Ts...> from_json(const Json& json)
         {
@@ -9848,7 +9852,7 @@ namespace yyjson
         }
 
         template <detail::copy_string_args... Args>
-        requires requires(writer::array_ref& arr) { (arr.emplace_back(std::declval<Ts>()), ...); }
+        requires requires { (std::declval<writer::array_ref&>().emplace_back(std::declval<Ts>()), ...); }
         static auto to_json(writer::array_ref& arr, const Tuple<Ts...>& t, Args... args)
         {
             using indices = std::make_index_sequence<std::tuple_size_v<Tuple<Ts...>>>;
@@ -9857,7 +9861,7 @@ namespace yyjson
             }(indices{});
         }
         template <detail::copy_string_args... Args>
-        requires requires(writer::array_ref& arr) { (arr.emplace_back(std::declval<Ts>()), ...); }
+        requires requires { (std::declval<writer::array_ref&>().emplace_back(std::declval<Ts>()), ...); }
         static auto to_json(writer::array_ref& arr, Tuple<Ts...>&& t, Args... args)
         {
             using indices = std::make_index_sequence<std::tuple_size_v<Tuple<Ts...>>>;
@@ -9867,8 +9871,10 @@ namespace yyjson
         }
 
         template <detail::copy_string_args... Args>
-        requires (detail::key_value_like<Ts> && ...) && requires(writer::object_ref& obj) {
-            (obj.emplace(std::get<0>(std::declval<Ts>()), std::get<1>(std::declval<Ts>())), ...);
+        requires (detail::key_value_like<Ts> && ...) && requires {
+            (std::declval<writer::object_ref&>().emplace(std::get<0>(std::declval<Ts>()),
+                                                         std::get<1>(std::declval<Ts>())),
+             ...);
         }
         static auto to_json(writer::object_ref& obj, const Tuple<Ts...>& t, Args... args)
         {
@@ -9878,8 +9884,10 @@ namespace yyjson
             }(indices{});
         }
         template <detail::copy_string_args... Args>
-        requires (detail::key_value_like<Ts> && ...) && requires(writer::object_ref& obj) {
-            (obj.emplace(std::get<0>(std::declval<Ts>()), std::get<1>(std::declval<Ts>())), ...);
+        requires (detail::key_value_like<Ts> && ...) && requires {
+            (std::declval<writer::object_ref&>().emplace(std::get<0>(std::declval<Ts>()),
+                                                         std::get<1>(std::declval<Ts>())),
+             ...);
         }
         static auto to_json(writer::object_ref& obj, Tuple<Ts...>&& t, Args... args)
         {
@@ -13240,16 +13248,20 @@ namespace yyjson
         template <typename T>
         constexpr bool tuple_from_object = []<std::size_t... I>(std::index_sequence<I...>) {
             if constexpr ((yyjson::detail::key_value_like<std::tuple_element_t<I, T>> && ...))
-                return requires(const const_object_ref& obj) {
-                    (static_cast<std::tuple_element_t<0, std::tuple_element_t<I, T>>>(std::get<0>(*obj.begin())), ...);
-                    (cast<std::tuple_element_t<1, std::tuple_element_t<I, T>>>(std::get<1>(*obj.begin())), ...);
+                return requires {
+                    (static_cast<std::tuple_element_t<0, std::tuple_element_t<I, T>>>(
+                         std::get<0>(*std::declval<const const_object_ref&>().begin())),
+                     ...);
+                    (cast<std::tuple_element_t<1, std::tuple_element_t<I, T>>>(
+                         std::get<1>(*std::declval<const const_object_ref&>().begin())),
+                     ...);
                 };
             else
                 return false;
         }(std::make_index_sequence<std::tuple_size_v<T>>{});
         template <typename T>
         constexpr bool tuple_from_array = []<std::size_t... I>(std::index_sequence<I...>) {
-            return requires(const const_value_ref& v) { (cast<std::tuple_element_t<I, T>>(v), ...); };
+            return requires { (cast<std::tuple_element_t<I, T>>(std::declval<const const_value_ref&>()), ...); };
         }(std::make_index_sequence<std::tuple_size_v<T>>{});
         // Whether the keys of the members that the tuple T takes are copied, so that the reader can give them
         // from the text, which does not outlive the result.

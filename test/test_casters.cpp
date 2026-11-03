@@ -1093,4 +1093,32 @@ TEST(Writer, TranslatorOfUncheckedFields)
     EXPECT_EQ(std::string(yyjson::write(TranslatedTree{{}, 3})), "3");
 }
 
+// MSVC 19.44 and 19.51 looked up a parameter of a requires-expression used in a fold as the entity of the same name
+// at namespace scope, so that a name `json` in the program made the casters of tuples unusable.
+namespace
+{
+    struct json
+    {
+    };
+    struct WithTuples
+    {
+        std::tuple<short, std::string, bool> values;
+        std::tuple<std::pair<std::string, short>, std::pair<std::string, bool>> members;
+    };
+}  // namespace
+
+TEST(Caster, TuplesBesideNameJson)
+{
+    static_assert(std::is_empty_v<json>);
+    constexpr auto text = R"({"values":[1,"a",true],"members":{"x":2,"y":false}})";
+    const auto t = yyjson::read<WithTuples>(text);
+    EXPECT_EQ(t.values, std::make_tuple(short{1}, std::string("a"), true));
+    EXPECT_EQ(std::get<0>(t.members), std::make_pair(std::string("x"), short{2}));
+    EXPECT_EQ(std::get<1>(t.members), std::make_pair(std::string("y"), false));
+    using values_type = std::tuple<short, std::string, bool>;
+    EXPECT_EQ(yyjson::read(R"([1,"a",true])").cast<values_type>(), t.values);
+    EXPECT_EQ(std::string(yyjson::write(t)), text);
+    EXPECT_EQ(std::string(yyjson::object(t).write()), text);
+}
+
 // NOLINTEND
