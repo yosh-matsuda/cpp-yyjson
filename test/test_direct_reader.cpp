@@ -212,6 +212,39 @@ TEST(DirectReader, Numbers)
     }
 }
 
+TEST(DirectReader, FloatsNearHalfway)
+{
+    // a `float` is the double nearest to the number rounded to `float`, also for numbers of many digits that lie
+    // next to the point halfway between two floats, where rounding the number directly may differ
+    auto texts = std::vector<std::string>{};
+    for (auto f = 1e-3F; f < 1e8F; f *= 1.0013F)
+    {
+        const auto half = (static_cast<double>(f) + static_cast<double>(std::nextafter(f, 2 * f))) / 2;
+        char buffer[64];
+        const auto integer_digits = std::snprintf(buffer, sizeof(buffer), "%.0f", std::floor(half));
+        std::snprintf(buffer, sizeof(buffer), "%.*f", std::min(16, 19 - integer_digits), half);
+        auto text = std::string(buffer);
+        for (const auto delta : {0, 1, -1})
+        {
+            auto t = text;
+            auto& last = t.back();
+            if (last + delta >= '0' && last + delta <= '9') last = static_cast<char>(last + delta);
+            texts.push_back(t);
+            texts.push_back("-" + t);
+        }
+    }
+    auto json = std::string("[");
+    for (const auto& t : texts) json += t + ",";
+    json.back() = ']';
+    expect_direct_read<std::vector<float>>(json + std::string(40, ' '));
+    const auto floats = yyjson::read<std::vector<float>>(json + std::string(40, ' '));
+    ASSERT_EQ(floats.size(), texts.size());
+    for (std::size_t i = 0; i < texts.size(); ++i)
+    {
+        EXPECT_EQ(floats[i], static_cast<float>(std::strtod(texts[i].c_str(), nullptr))) << texts[i];
+    }
+}
+
 TEST(DirectReader, Strings)
 {
     using namespace yyjson;
