@@ -4266,7 +4266,7 @@ namespace yyjson
                       "enumeration, yyjson::schema_name for a struct, an enumeration, a variant or a type with a "
                       "caster, and yyjson::title, "
                       "yyjson::description, yyjson::examples, yyjson::deprecated and yyjson::schema for any type");
-        static_assert(!(detail::empty_field_annotation<As> || ...),
+        static_assert(detail::count_true<detail::empty_field_annotation<As>...> == 0,
                       "yyjson::field needs a setting of the field, except in yyjson::then and yyjson::else_");
         return detail::annotation_list<As...>{
             detail::annotation_values<std::index_sequence_for<As...>, As...>(values...)};
