@@ -1424,7 +1424,7 @@ namespace yyjson
             std::size_t f = 0;
             std::size_t g = 0;
             (
-                [&](const auto& group) {
+                [&](const auto& group) consteval {
                     for (const auto member : group)
                     {
                         result.member_data[f] = static_string(member);
@@ -1772,7 +1772,7 @@ namespace yyjson
         auto result = examples_t<sizeof...(Ss), detail::literal_sizes<Ss...>>{};
         std::size_t i = 0;
         (
-            [&]<typename S>(const S& text) {
+            [&]<typename S>(const S& text) consteval {
                 if constexpr (detail::literal_size<S> != 0)
                     result.texts[i++] = result.chars.add(detail::setting_string(text).view());
                 else
@@ -3918,7 +3918,7 @@ namespace yyjson
         consteval auto make_condition_part(As... args)
         {
             const auto values = std::tuple<As...>(args...);
-            auto part = [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+            auto part = [&]<std::size_t... Is>(std::index_sequence<Is...>) consteval {
                 return Part<typename condition_field_of<
                     std::tuple_element_t<part_field_positions<As...>[Is], std::tuple<As...>>>::type...>{
                     make_setting_list(make_condition_field(std::get<part_field_positions<As...>[Is]>(values))...)};
@@ -9354,7 +9354,7 @@ namespace yyjson
         // The index in `field_reflection::enum_values<E>` of the enumerator whose JSON name is `name`, or
         // `enum_count<E>` if none has it.
         template <typename E>
-        consteval std::size_t enum_index_of_name(std::string_view name)
+        constexpr std::size_t enum_index_of_name(std::string_view name)
         {
             const auto& names = enum_conversion<E>::names;
             for (std::size_t i = 0; i < names.size(); ++i)
@@ -20749,7 +20749,7 @@ namespace yyjson
         inline constexpr double float_rounding_limit = 340282356779733661637539395458142568448.0;
         // The float that the bound rounds to, as `compare_bound` and `equals_scalar` round it, with infinity beyond
         // the finite floats.
-        consteval float float_of(const bound_number& b) noexcept
+        constexpr float float_of(const bound_number& b) noexcept
         {
             using kind = bound_number::kind_t;
             if (b.kind == kind::sint) return static_cast<float>(b.sint);
@@ -20759,14 +20759,14 @@ namespace yyjson
             return static_cast<float>(b.real);
         }
         // The next float above x, and infinity above infinity.
-        consteval float float_above(float x) noexcept
+        constexpr float float_above(float x) noexcept
         {
             if (x == std::numeric_limits<float>::infinity()) return x;
             if (x == 0.0F) return std::numeric_limits<float>::denorm_min();
             const auto bits = std::bit_cast<std::uint32_t>(x);
             return std::bit_cast<float>(x > 0.0F ? bits + 1 : bits - 1);
         }
-        consteval float float_below(float x) noexcept { return -float_above(-x); }
+        constexpr float float_below(float x) noexcept { return -float_above(-x); }
         // The doubles that round to the finite floats from `low` to `high`. A double half-way between two floats
         // rounds to the one whose significand is even.
         consteval number_bound doubles_of_floats(float low, float high, bound_extent extent) noexcept
