@@ -1113,7 +1113,7 @@ template <>
 inline constexpr auto yyjson::annotations<GroupOfSkipped> =
     yyjson::annotate(yyjson::any_of_required({"a"}, {"b"}), yyjson::field("b", yyjson::skip));
 // a field that a condition names has a key of its own, and is_type is a setting of then and else_
-#define CONDITION_RULE(NAME, SETTING, ...)                                                                        \
+#define CONDITION_RULE(NAME, ...)                                                                                 \
     struct NAME                                                                                                   \
     {                                                                                                             \
         std::optional<int> a;                                                                                     \
@@ -1121,14 +1121,14 @@ inline constexpr auto yyjson::annotations<GroupOfSkipped> =
     };                                                                                                            \
     template <>                                                                                                   \
     inline constexpr auto yyjson::annotations<NAME> =                                                             \
-        yyjson::annotate(yyjson::field("a", SETTING), __VA_ARGS__ __VA_OPT__(, )                                  \
-                         yyjson::if_then_else(yyjson::if_(yyjson::field("a", yyjson::required)),                  \
-                                              yyjson::then(yyjson::field("a", yyjson::minimum(1)))));
-CONDITION_RULE(ConditionOnSkipped, yyjson::skip)
-CONDITION_RULE(ConditionOnExtraKeys, yyjson::rename("b"), yyjson::field("m", yyjson::extra_keys),
+        yyjson::annotate(__VA_ARGS__, yyjson::if_then_else(yyjson::if_(yyjson::field("a", yyjson::required)),      \
+                                                           yyjson::then(yyjson::field("a", yyjson::minimum(1)))));
+CONDITION_RULE(ConditionOnSkipped, yyjson::field("a", yyjson::skip))
+CONDITION_RULE(ConditionOnExtraKeys, yyjson::field("a", yyjson::rename("b")), yyjson::field("m", yyjson::extra_keys),
                yyjson::not_(yyjson::field("m", yyjson::required)))
-CONDITION_RULE(ConditionWithIsType, yyjson::is_type<int>)
-CONDITION_RULE(ConditionTransparent, yyjson::minimum(0), yyjson::field("m", yyjson::skip), yyjson::transparent)
+CONDITION_RULE(ConditionWithIsType, yyjson::field("a", yyjson::is_type<int>))
+CONDITION_RULE(ConditionTransparent, yyjson::field("a", yyjson::minimum(0)), yyjson::field("m", yyjson::skip),
+               yyjson::transparent)
 #undef CONDITION_RULE
 struct ConditionOnUnknown
 {
