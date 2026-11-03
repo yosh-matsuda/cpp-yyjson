@@ -2428,6 +2428,9 @@ TEST(Schema, TagField)
 
 TEST(Schema, Floats)
 {
+#if YYJSON_VERSION_HEX < 0x000B00
+    GTEST_SKIP() << "yyjson older than 0.11.0 writes a float as its double";
+#endif
     check<Floats>({
         R"({"tenth":0.1,"positive":1e-45,"below":0.099999994,"large":3.4028235e38,"pick":0.2})",
         R"({"tenth":0.10000001})",
@@ -2691,7 +2694,10 @@ TEST(Schema, NegatedValues)
         R"({"n":0,"v":[3,2],"any":0,"f":0,"mp":{},"nv":null,"u":0})",
         R"({"n":0,"v":[],"any":null,"f":0,"mp":{},"nv":null,"u":0})",
         R"({"n":0,"v":[],"any":[null],"f":0,"mp":{},"nv":null,"u":0})",
+#if YYJSON_VERSION_HEX >= 0x000B00
+        // yyjson older than 0.11.0 writes the constant as the double of 0.1f, which 0.1 does not equal
         R"({"n":0,"v":[],"any":0,"f":0.1,"mp":{},"nv":null,"u":0})",
+#endif
         R"({"n":0,"v":[],"any":0,"f":0.2,"mp":{},"nv":null,"u":0})",
         R"({"n":0,"v":[],"any":0,"f":0,"mp":{"a":1},"nv":null,"u":0})",
         R"({"n":0,"v":[],"any":0,"f":0,"mp":{"a":1,"b":2},"nv":null,"u":0})",
@@ -2708,7 +2714,9 @@ TEST(Schema, NegatedValues)
     EXPECT_EQ(p["v"]["items"]["not"], json::parse(R"({"enum":[1,2]})"));
     EXPECT_EQ(p["any"]["not"], json::parse(R"({"type":"null"})"));
     EXPECT_EQ(p["point"]["not"], json::parse(R"({"$ref":"#/$defs/CondPoint"})"));
+#if YYJSON_VERSION_HEX >= 0x000B00
     EXPECT_EQ(p["f"]["not"]["const"].as<double>(), 0.1);
+#endif
     EXPECT_EQ(p["mp"]["not"], json::parse(R"({"minProperties":2})"));
     EXPECT_EQ(p["mp"]["propertyNames"], json::parse(R"({"not":{"const":"z"}})"));
     EXPECT_EQ(p["nv"]["anyOf"][1]["not"], json::parse(R"({"const":3})"));
