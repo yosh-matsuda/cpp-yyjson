@@ -417,18 +417,18 @@ inline constexpr auto yyjson::annotations<Counted> = yyjson::annotate(
     yyjson::field("unique", yyjson::unique_items), yyjson::field("head", yyjson::prefix_items(yyjson::minimum(0))),
     yyjson::field("some", yyjson::contains(yyjson::minimum(10))));
 
-struct Point
+struct CastPoint
 {
     int x = 0;
     int y = 0;
-    bool operator==(const Point&) const = default;
+    bool operator==(const CastPoint&) const = default;
 };
 template <>
-struct yyjson::caster<Point>
+struct yyjson::caster<CastPoint>
 {
-    static Point from_json(std::array<int, 2> a) { return {a[0], a[1]}; }
+    static CastPoint from_json(std::array<int, 2> a) { return {a[0], a[1]}; }
     template <typename... Ts>
-    static std::array<int, 2> to_json(const Point& p, Ts...)
+    static std::array<int, 2> to_json(const CastPoint& p, Ts...)
     {
         return {p.x, p.y};
     }
@@ -471,7 +471,7 @@ struct yyjson::caster<Csv>
 };
 struct Unusual
 {
-    std::vector<Point> pts;
+    std::vector<CastPoint> pts;
     std::map<Side, int> sides;
     std::multimap<std::string, int> mm;
     std::vector<std::pair<std::string, int>> kv;
