@@ -227,10 +227,10 @@ cpp-yyjson, [Glaze](https://github.com/stephenberry/glaze) and [reflect-cpp](htt
 
 | cpp-yyjson | vs. Glaze | vs. reflect-cpp |
 | --- | --- | --- |
-| Read into a new object: `read<T>` | 1.06 - 1.58x | 1.66 - 5.97x |
-| Read into a reused object: `merge_into` | 1.04 - 1.71x | - |
-| Write into a new string: `write(t)` | 1.16 - 2.52x | 1.71 - 5.52x |
-| Write into a reused string: `write(t, out)` | 1.06 - 1.52x | - |
+| Read into a new object: `read<T>` | 1.09 - 1.61x | 1.68 - 5.95x |
+| Read into a reused object: `merge_into` | 1.05 - 1.64x | - |
+| Write into a new string: `write(t)` | 1.15 - 2.53x | 1.70 - 5.73x |
+| Write into a reused string: `write(t, out)` | 1.05 - 1.53x | - |
 
 ![Read throughput into C++ types](docs/benchmark/images/typed_read_throughput.svg)
 
