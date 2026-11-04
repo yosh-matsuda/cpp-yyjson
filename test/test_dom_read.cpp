@@ -182,6 +182,12 @@ TEST(Reader, ReadLength)
     const auto json = std::string("[1]xyz");
     EXPECT_EQ(read(json, 3).write(), "[1]");
     EXPECT_EQ(read(std::string_view(json), 3).write(), "[1]");
+
+    // without `len`, the padding of `ReadInsitu` cannot be checked
+    auto insitu = std::string("[1]");
+    EXPECT_THROW(std::ignore = read(insitu, ReadFlag::ReadInsitu), std::invalid_argument);
+    auto alloc = pool_allocator();
+    EXPECT_THROW(std::ignore = read(insitu, alloc, ReadFlag::ReadInsitu), std::invalid_argument);
 }
 
 TEST(Reader, Constructor)

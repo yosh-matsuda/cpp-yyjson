@@ -7233,6 +7233,10 @@ namespace yyjson
         template <yyjson_allocator Alloc>
         value read(std::string& str, Alloc& alc, const ReadFlag read_flag = ReadFlag::NoFlag)
         {
+            if ((read_flag & ReadFlag::ReadInsitu) != ReadFlag::NoFlag)
+            {
+                throw std::invalid_argument("ReadInsitu flag requires the JSON length, which excludes the padding");
+            }
             return read(str.data(), str.size(), alc, read_flag);
         }
         template <yyjson_allocator Alloc>
@@ -7297,6 +7301,10 @@ namespace yyjson
         }
         inline value read(std::string& str, const ReadFlag read_flag = ReadFlag::NoFlag)
         {
+            if ((read_flag & ReadFlag::ReadInsitu) != ReadFlag::NoFlag)
+            {
+                throw std::invalid_argument("ReadInsitu flag requires the JSON length, which excludes the padding");
+            }
             return read(str.data(), str.size(), read_flag);
         }
         inline value read(const std::string& str, const ReadFlag read_flag = ReadFlag::NoFlag)
