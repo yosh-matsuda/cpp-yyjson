@@ -174,6 +174,16 @@ TEST(Reader, Allocator)
     EXPECT_EQ(1, h_alloc.ptr().use_count());
 }
 
+TEST(Reader, ReadLength)
+{
+    using namespace yyjson;  // NOLINT
+
+    // `len` limits the JSON also in a string that is longer
+    const auto json = std::string("[1]xyz");
+    EXPECT_EQ(read(json, 3).write(), "[1]");
+    EXPECT_EQ(read(std::string_view(json), 3).write(), "[1]");
+}
+
 TEST(Reader, Constructor)
 {
     using namespace yyjson::reader;  // NOLINT

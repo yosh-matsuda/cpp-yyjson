@@ -7282,13 +7282,13 @@ namespace yyjson
         {
             if (str.size() < len)
                 throw std::invalid_argument("The specified JSON length is greater than the string size");
-            return read(str.c_str(), str.size(), read_flag);
+            return read(str.c_str(), len, read_flag);
         }
         inline value read(std::string_view str, std::size_t len, const ReadFlag read_flag = ReadFlag::NoFlag)
         {
             if (str.size() < len)
                 throw std::invalid_argument("The specified JSON length is greater than the string size");
-            return read(str.data(), str.size(), read_flag);
+            return read(str.data(), len, read_flag);
         }
 
         inline value read(char* str, const ReadFlag read_flag = ReadFlag::NoFlag)
