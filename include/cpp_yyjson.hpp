@@ -2230,6 +2230,24 @@ namespace yyjson
                           ...),
                         "the field of the key of yyjson::adjacent_tag holds the name of an alternative, which "
                         "an enumeration of yyjson::enum_format::integer cannot");
+                    // clang before 22 cannot evaluate a lambda that captures in the condition of the static_assert
+                    constexpr auto distinct_keys = [] {
+                        auto keys = std::array<std::string_view, sizeof...(Ks)>{};
+                        auto n = std::size_t{0};
+                        (
+                            [&] {
+                                if constexpr (adjacent_field<S, Ks>)
+                                {
+                                    if constexpr (writes_adjacent_tag<S, struct_field_tags<S, Ks>>)
+                                        keys[n++] = struct_field_tags<S, Ks>::key;
+                                }
+                            }(),
+                            ...);
+                        return distinct_names(keys, [n](std::size_t i) { return i < n; });
+                    }();
+                    static_assert(distinct_keys,
+                                  "two fields tagged by yyjson::adjacent_tag with the same key need a field of that "
+                                  "key");
                     return (adjacent_field<S, Ks> || ...);
                 }(std::make_index_sequence<struct_field_count<S>>{});
             else
@@ -2281,23 +2299,7 @@ namespace yyjson
                 return struct_field_count<S>;
             else
                 return []<std::size_t... Ks>(std::index_sequence<Ks...>) {
-                    // the number of the tags and whether their keys are distinct; clang before 22 cannot evaluate a
-                    // lambda that captures in the condition of the static_assert
-                    constexpr auto keys = [] {
-                        auto result = std::array<std::string_view, sizeof...(Ks)>{};
-                        auto n = std::size_t{0};
-                        (
-                            [&] {
-                                if constexpr (writes_adjacent_tag<S, struct_field_tags<S, Ks>>)
-                                    result[n++] = struct_field_tags<S, Ks>::key;
-                            }(),
-                            ...);
-                        return std::pair(n, distinct_names(result, [n](std::size_t i) { return i < n; }));
-                    }();
-                    static_assert(keys.second,
-                                  "two fields tagged by yyjson::adjacent_tag with the same key need a field of that "
-                                  "key");
-                    return sizeof...(Ks) + keys.first;
+                    return sizeof...(Ks) + (std::size_t{writes_adjacent_tag<S, struct_field_tags<S, Ks>>} + ...);
                 }(std::make_index_sequence<struct_field_count<S>>{});
         }();
 
