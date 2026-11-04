@@ -534,6 +534,8 @@ TEST(Reader, ObjectExamples)
     EXPECT_EQ("first_key", iter->first);
     EXPECT_EQ("first_key", std::format("{}", iter->first));
     EXPECT_EQ("[ first_key]", std::format("[{:>10}]", iter->first));
+    const auto& const_key = iter->first;
+    EXPECT_STREQ("first_key", static_cast<const char*>(const_key));
     EXPECT_TRUE(iter->second.is_array());
     ++iter;
     EXPECT_EQ("second_key", iter->first);

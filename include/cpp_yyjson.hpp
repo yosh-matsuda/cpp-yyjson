@@ -814,7 +814,7 @@ namespace yyjson
         key_string(const std::string_view& v) noexcept : std::string_view(v) {}        // NOLINT
         key_string(std::string_view&& v) noexcept : std::string_view(std::move(v)) {}  // NOLINT
         key_string(std::string&&) = delete;
-        explicit operator const char*() { return base::data(); }
+        explicit operator const char*() const noexcept { return base::data(); }
     };
 
     template <typename T, typename U = std::remove_cv_t<T>>
