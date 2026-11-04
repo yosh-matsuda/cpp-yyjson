@@ -968,6 +968,12 @@ namespace yyjson
             requires std::same_as<std::shared_ptr<yyjson_alc>, std::remove_cvref_t<decltype(alc.ptr())>>;
         };
 
+        // A temporary allocator is accepted only when the document keeps its state alive.
+        template <typename Alloc>
+        concept allocator_argument =
+            yyjson_allocator<std::remove_cvref_t<Alloc>> &&
+            (std::is_lvalue_reference_v<Alloc> || owning_allocator<std::remove_cvref_t<Alloc>>);
+
         template <yyjson_allocator Alloc>
         auto* get_allocator_pointer(Alloc& alc) noexcept
         {
@@ -4821,8 +4827,8 @@ namespace yyjson
                     }
                     throw write_error(std::format("write JSON error: {}", err.msg), err.code);
                 }
-                template <yyjson_allocator Alloc>
-                [[nodiscard]] auto write(Alloc& alc, WriteFlag write_flag = WriteFlag::NoFlag) const
+                template <detail::allocator_argument Alloc>
+                [[nodiscard]] auto write(Alloc&& alc, WriteFlag write_flag = WriteFlag::NoFlag) const
                 {
                     const auto write_func = [this]<typename... Args>(Args&&... args) {
                         const auto write_doc =
@@ -6539,8 +6545,8 @@ namespace yyjson
                 }
                 throw write_error(std::format("write JSON error: {}", err.msg), err.code);
             }
-            template <yyjson_allocator Alloc>
-            [[nodiscard]] auto write(Alloc& alc, const WriteFlag write_flag = WriteFlag::NoFlag) const
+            template <detail::allocator_argument Alloc>
+            [[nodiscard]] auto write(Alloc&& alc, const WriteFlag write_flag = WriteFlag::NoFlag) const
             {
                 auto err = yyjson_write_err();
                 auto len = static_cast<std::size_t>(0);
@@ -6992,8 +6998,8 @@ namespace yyjson
             return *this;
         }
 
-        template <yyjson_allocator Alloc>
-        value read(char*, std::size_t, Alloc&, ReadFlag = ReadFlag::NoFlag);
+        template <detail::allocator_argument Alloc>
+        value read(char*, std::size_t, Alloc&&, ReadFlag = ReadFlag::NoFlag);
 
         class value final : public const_value_ref
         {
@@ -7031,8 +7037,8 @@ namespace yyjson
                 throw write_error(std::format("write JSON error: {}", err.msg), err.code);
             }
 
-            template <yyjson_allocator Alloc>
-            [[nodiscard]] auto write(Alloc& alc, const WriteFlag write_flag = WriteFlag::NoFlag) const
+            template <detail::allocator_argument Alloc>
+            [[nodiscard]] auto write(Alloc&& alc, const WriteFlag write_flag = WriteFlag::NoFlag) const
             {
                 auto err = yyjson_write_err();
                 auto len = static_cast<std::size_t>(0);
@@ -7070,8 +7076,8 @@ namespace yyjson
             }
 #endif
 
-            template <yyjson_allocator Alloc>
-            friend value read(char*, std::size_t, Alloc&, ReadFlag);
+            template <detail::allocator_argument Alloc>
+            friend value read(char*, std::size_t, Alloc&&, ReadFlag);
             friend value read(char* str, std::size_t len, ReadFlag);
             friend class array;
             friend class object;
@@ -7164,8 +7170,8 @@ namespace yyjson
             return read_error(std::format("Read JSON error: {} at pos {}", err.msg, err.pos), err.code);
         }
 
-        template <yyjson_allocator Alloc>
-        value read(char* str, std::size_t len, Alloc& alc, ReadFlag read_flag)
+        template <detail::allocator_argument Alloc>
+        value read(char* str, std::size_t len, Alloc&& alc, ReadFlag read_flag)
         {
             auto err = yyjson_read_err();
             yyjson_doc* result;
@@ -7179,7 +7185,7 @@ namespace yyjson
                 if (!alc.check_capacity({str, len}, read_flag))
                 {
                     throw read_error(
-                        std::format("Insufficient capacity in the pool allocator for {}", detail::type_name<Alloc>()),
+                        std::format("Insufficient capacity in the pool allocator for {}", detail::type_name<std::remove_cvref_t<Alloc>>()),
                         YYJSON_READ_ERROR_MEMORY_ALLOCATION);
                 }
             }
@@ -7196,8 +7202,8 @@ namespace yyjson
             }
             throw make_read_error(str, len, err);
         }
-        template <yyjson_allocator Alloc>
-        value read(const char* str, std::size_t len, Alloc& alc, const ReadFlag read_flag = ReadFlag::NoFlag)
+        template <detail::allocator_argument Alloc>
+        value read(const char* str, std::size_t len, Alloc&& alc, const ReadFlag read_flag = ReadFlag::NoFlag)
         {
             if ((read_flag & ReadFlag::ReadInsitu) != ReadFlag::NoFlag)
             {
@@ -7205,8 +7211,8 @@ namespace yyjson
             }
             return read(const_cast<char*>(str), len, alc, read_flag);
         }
-        template <yyjson_allocator Alloc>
-        value read(std::string& str, std::size_t len, Alloc& alc, const ReadFlag read_flag = ReadFlag::NoFlag)
+        template <detail::allocator_argument Alloc>
+        value read(std::string& str, std::size_t len, Alloc&& alc, const ReadFlag read_flag = ReadFlag::NoFlag)
         {
             if ((read_flag & ReadFlag::ReadInsitu) != ReadFlag::NoFlag)
             {
@@ -7218,28 +7224,28 @@ namespace yyjson
                 throw std::invalid_argument("The specified JSON length is greater than the string size");
             return read(str.data(), len, alc, read_flag);
         }
-        template <yyjson_allocator Alloc>
-        value read(const std::string& str, std::size_t len, Alloc& alc, const ReadFlag read_flag = ReadFlag::NoFlag)
+        template <detail::allocator_argument Alloc>
+        value read(const std::string& str, std::size_t len, Alloc&& alc, const ReadFlag read_flag = ReadFlag::NoFlag)
         {
             if (str.size() < len)
                 throw std::invalid_argument("The specified JSON length is greater than the string size");
             return read(str.c_str(), len, alc, read_flag);
         }
-        template <yyjson_allocator Alloc>
-        value read(std::string_view str, std::size_t len, Alloc& alc, const ReadFlag read_flag = ReadFlag::NoFlag)
+        template <detail::allocator_argument Alloc>
+        value read(std::string_view str, std::size_t len, Alloc&& alc, const ReadFlag read_flag = ReadFlag::NoFlag)
         {
             if (str.size() < len)
                 throw std::invalid_argument("The specified JSON length is greater than the string size");
             return read(str.data(), len, alc, read_flag);
         }
 
-        template <yyjson_allocator Alloc>
-        value read(char* str, Alloc& alc, const ReadFlag read_flag = ReadFlag::NoFlag)
+        template <detail::allocator_argument Alloc>
+        value read(char* str, Alloc&& alc, const ReadFlag read_flag = ReadFlag::NoFlag)
         {
             return read(str, std::strlen(str), alc, read_flag);
         }
-        template <yyjson_allocator Alloc>
-        value read(std::string& str, Alloc& alc, const ReadFlag read_flag = ReadFlag::NoFlag)
+        template <detail::allocator_argument Alloc>
+        value read(std::string& str, Alloc&& alc, const ReadFlag read_flag = ReadFlag::NoFlag)
         {
             if ((read_flag & ReadFlag::ReadInsitu) != ReadFlag::NoFlag)
             {
@@ -7247,18 +7253,18 @@ namespace yyjson
             }
             return read(str.data(), str.size(), alc, read_flag);
         }
-        template <yyjson_allocator Alloc>
-        value read(const std::string& str, Alloc& alc, const ReadFlag read_flag = ReadFlag::NoFlag)
+        template <detail::allocator_argument Alloc>
+        value read(const std::string& str, Alloc&& alc, const ReadFlag read_flag = ReadFlag::NoFlag)
         {
             return read(str.c_str(), str.size(), alc, read_flag);
         }
-        template <yyjson_allocator Alloc>
-        value read(std::string_view str, Alloc& alc, const ReadFlag read_flag = ReadFlag::NoFlag)
+        template <detail::allocator_argument Alloc>
+        value read(std::string_view str, Alloc&& alc, const ReadFlag read_flag = ReadFlag::NoFlag)
         {
             return read(str.data(), str.size(), alc, read_flag);
         }
-        template <yyjson_allocator Alloc>
-        value read(const char* str, Alloc& alc, const ReadFlag read_flag = ReadFlag::NoFlag)
+        template <detail::allocator_argument Alloc>
+        value read(const char* str, Alloc&& alc, const ReadFlag read_flag = ReadFlag::NoFlag)
         {
             return read(std::string_view{str}, alc, read_flag);
         }

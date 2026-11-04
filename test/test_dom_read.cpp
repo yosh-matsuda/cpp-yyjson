@@ -2,6 +2,10 @@
 
 // NOLINTBEGIN
 
+template <typename Alloc>
+concept reads_with_allocator =
+    requires(Alloc&& alc) { yyjson::read(std::string_view{}, std::forward<Alloc>(alc)); };
+
 TEST(Reader, Allocator)
 {
     using namespace yyjson;  // NOLINT
@@ -58,6 +62,20 @@ TEST(Reader, Allocator)
         EXPECT_EQ(json_str, json.write(alc));
         EXPECT_EQ(json_str, yyjson::value(json).write(alc));
     }
+    {
+        // a temporary allocator, which the result keeps alive
+        auto json = read(json_str, reader::pool_allocator(json_str));
+        EXPECT_EQ(json_str, json.write());
+#if YYJSON_VERSION_HEX >= 0x000800
+        EXPECT_EQ(json_str, read(json_str, dynamic_allocator()).write(dynamic_allocator()));
+        EXPECT_EQ("1"sv, (*json.as_array())[0].write(dynamic_allocator()));
+        EXPECT_EQ(json_str, yyjson::value(json).write(dynamic_allocator()));
+#endif
+    }
+    static_assert(reads_with_allocator<reader::stack_pool_allocator<512>&>);
+    static_assert(!reads_with_allocator<reader::stack_pool_allocator<512>>);
+    static_assert(reads_with_allocator<yyjson_alc&>);
+    static_assert(!reads_with_allocator<yyjson_alc>);
 
     {
         auto json = read(json_str, h_alloc);
