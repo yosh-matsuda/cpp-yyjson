@@ -8007,6 +8007,14 @@ namespace yyjson
         struct is_basic_string<std::basic_string<Ts...>> : std::true_type
         {
         };
+        template <typename T>
+        struct is_basic_string_view : std::false_type
+        {
+        };
+        template <typename... Ts>
+        struct is_basic_string_view<std::basic_string_view<Ts...>> : std::true_type
+        {
+        };
 
         // A set, whose elements are its keys, is not an output range and is filled with `insert`.  A map has
         // key-value pairs as its elements and is read from a JSON object.
@@ -8128,11 +8136,13 @@ namespace yyjson
                  ? std::same_as<T, bool> || (std::is_class_v<T> && scalar_constructible<T, bool_probe>)
                  : !std::same_as<T, bool> && !bool_only_class<T> && scalar_constructible<T, Arg>);
 
-        // `default_caster<T>::from_json_null` gives a T.
+        // `default_caster<T>::from_json_null` gives a T.  A string of any character type takes `nullptr` as a
+        // pointer to characters, which it must not be given.
         template <typename T>
         concept json_null_constructible =
             (!json_aggregate<T>) && (!std::same_as<T, bool>) && (!accepts_any_type<T>) &&
-            ((std::constructible_from<T, std::nullptr_t> && !std::constructible_from<T, std::string_view>) ||
+            ((std::constructible_from<T, std::nullptr_t> && !std::constructible_from<T, std::string_view> &&
+              !is_basic_string<T>::value && !is_basic_string_view<T>::value) ||
              std::constructible_from<T, std::nullopt_t> || std::constructible_from<T, std::monostate>);
 
         // `default_caster<T>::from_json_string` gives a T.

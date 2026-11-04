@@ -1118,6 +1118,10 @@ static_assert(!readable_in_any_way<SkippedMutex> && !yyjson::readable<std::vecto
 static_assert(!yyjson::readable<std::atomic<int>> &&
               yyjson::castable<yyjson::reader::const_value_ref, std::atomic<int>>);
 static_assert(!yyjson::readable<int[3]> && !yyjson::readable<std::shared_ptr<int[]>>);
+// a string of another character type takes `nullptr` as a pointer, which no JSON value gives
+static_assert(!yyjson::readable<std::u8string> && !yyjson::readable<std::wstring> &&
+              !yyjson::readable<std::u16string_view> && yyjson::writable<std::u8string>);
+static_assert(yyjson::readable<const char8_t*> && !yyjson::readable<std::optional<std::u32string>>);
 
 // The C++20 backend does not reflect a struct with a reference member, and its fields are not checked: the check of
 // `children` would depend on itself. The C++26 backend reflects it and writes it.
