@@ -11,7 +11,7 @@ Full results for the benchmarks summarised in the [README](../../README.md#perfo
 
 ## Method
 
-**Environment.** Ubuntu 26.04.1 LTS with Linux 7.0.0, Intel Core i9-12900K with 8 logical CPUs (E-cores and Turbo Boost disabled), compiled with GCC 15.2.0. Each result is the median of at least 11 repetitions on [google benchmark](https://github.com/google/benchmark) v1.9.5, repeated up to 101 times until the relative standard error of the median is below 0.5%. Every benchmark runs in its own process.
+**Environment.** Ubuntu 26.04.1 LTS with Linux 7.0.0, Intel Core i9-12900K with its 8 P-cores only (E-cores, Hyper-Threading and Turbo Boost disabled), compiled with GCC 15.2.0. Each result is the median of at least 11 repetitions on [google benchmark](https://github.com/google/benchmark) v1.9.5, repeated up to 101 times until the relative standard error of the median is below 0.5%. Every benchmark runs in its own process.
 
 **Libraries.** The vcpkg manifest (baseline `cd61e1e`) provides [yyjson](https://github.com/ibireme/yyjson) 0.12.0, [simdjson](https://github.com/simdjson/simdjson) 4.6.4, [rapidjson](https://github.com/Tencent/rapidjson/) 2025-02-26, [nlohmann-json](https://github.com/nlohmann/json) 3.12.0#2, [Glaze](https://github.com/stephenberry/glaze) 7.8.3 and [reflect-cpp](https://github.com/getml/reflect-cpp) 0.25.0. The datasets are those of [yyjson_benchmark](https://github.com/ibireme/yyjson_benchmark#json-datasets).
 
