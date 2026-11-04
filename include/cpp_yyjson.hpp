@@ -7436,9 +7436,10 @@ namespace yyjson
                     { caster<T>::from_json(v) } -> std::same_as<T>;
                 }) && (returns || (in_place && std::default_initializable<T> && std::move_constructible<T>));
 
-            // Converts the value that `cast<source>` has read.
-            template <typename S>
-            static T convert(S&& s)
+            // Converts the value that `cast<source>` has read.  `R` defers the return type, which is invalid for an
+            // array `T`, to a call.
+            template <typename S, typename R = T>
+            static R convert(S&& s)
             {
                 if constexpr (returns)
                 {
@@ -7575,11 +7576,12 @@ namespace yyjson
             reads_with_usable_from_json(closure_t<type_list<read_type_node<T>>>{});
     }  // namespace detail
 
-    // `yyjson::read<T>(json)` reads a T from JSON text: `yyjson::castable<yyjson::reader::const_value_ref, T>`
-    // holds and the value owns its strings.  `yyjson::read_into` and `yyjson::merge_into` also need T to be
-    // move-assignable and not const.
+    // `yyjson::read<T>(json)` reads a T from JSON text: T is move-constructible,
+    // `yyjson::castable<yyjson::reader::const_value_ref, T>` holds and the value owns its strings.
+    // `yyjson::read_into` and `yyjson::merge_into` also need T to be move-assignable and not const.
     template <typename T>
-    concept readable = (!std::is_reference_v<T>) && castable<reader::const_value_ref, std::remove_cv_t<T>> &&
+    concept readable = (!std::is_reference_v<T>) && std::move_constructible<std::remove_cv_t<T>> &&
+                       castable<reader::const_value_ref, std::remove_cv_t<T>> &&
                        detail::reads_owned_values<std::remove_cv_t<T>>;
 
     // `yyjson::write(t)` writes a T as JSON text.
@@ -7803,8 +7805,9 @@ namespace yyjson
 
         // The cause that a call names when T cannot be converted, computed only then.
         template <typename T>
-        using read_cause = typename std::conditional_t<castable<reader::const_value_ref, T>, std::type_identity<void>,
-                                                       conversion_cause<read_cause_policy, T>>::type;
+        using read_cause = typename std::conditional_t<
+            castable<reader::const_value_ref, T> && std::move_constructible<std::remove_cv_t<T>>,
+            std::type_identity<void>, conversion_cause<read_cause_policy, T>>::type;
         template <typename T>
         using write_cause = typename std::conditional_t<writable<T>, std::type_identity<void>,
                                                         conversion_cause<write_cause_policy, T>>::type;
@@ -8141,7 +8144,7 @@ namespace yyjson
 
         template <typename T, typename Json>
         concept reflected_object_castable =
-            std::default_initializable<T> && (!visitable<T>) &&
+            std::default_initializable<T> && std::move_constructible<T> && (!visitable<T>) &&
             (!std::ranges::input_range<T> || reflected_range_aggregate<T>) && all_fields_castable<Json, T>;
 
         // `cast<T>` of a value of a read document builds `T()` and assigns the fields from the object,
@@ -8234,7 +8237,8 @@ namespace yyjson
     struct detail::default_caster
     {
         template <json_object Json>
-        requires std::default_initializable<T> && visitable<T> && (visitable_fields_assignable<T, Json>())
+        requires std::default_initializable<T> && std::move_constructible<T> && visitable<T> &&
+                 (visitable_fields_assignable<T, Json>())
         static dependent_t<T, Json> from_json(const Json& obj)
         {
             return visit_struct<T>::from_json_impl(obj);
@@ -18114,7 +18118,8 @@ namespace yyjson
     // when T holds them in a range or a map, the whole text is read into one document first.  If reading without
     // a document fails, the text is read into a document for the exception, unless it is `std::bad_alloc`.
     template <typename T>
-    requires (!std::is_reference_v<T>) && castable<reader::const_value_ref, T>
+    requires (!std::is_reference_v<T>) && std::move_constructible<std::remove_cv_t<T>> &&
+             castable<reader::const_value_ref, T>
     [[nodiscard]] T read(std::string_view json, ReadFlag read_flag = ReadFlag::NoFlag)
     {
         yyjson::detail::assert_reads_owned_strings<T>();
@@ -18217,7 +18222,8 @@ namespace yyjson
     }
 #else
     template <typename T>
-    requires (!std::is_reference_v<T>) && castable<reader::const_value_ref, T>
+    requires (!std::is_reference_v<T>) && std::move_constructible<std::remove_cv_t<T>> &&
+             castable<reader::const_value_ref, T>
     [[nodiscard]] T read(std::string_view json, ReadFlag read_flag = ReadFlag::NoFlag)
     {
         yyjson::detail::assert_reads_owned_strings<T>();
@@ -18247,7 +18253,8 @@ namespace yyjson
     // A type that cannot be read is rejected by name, along with the field or the element of it that cannot be
     // read, in `cannot_be_read`.  See `yyjson::diagnostic`.
     template <typename T, typename cannot_be_read = detail::read_cause<T>>
-    requires (!std::is_reference_v<T>) && (!castable<reader::const_value_ref, T>)
+    requires (!std::is_reference_v<T>) &&
+             (!std::move_constructible<std::remove_cv_t<T>> || !castable<reader::const_value_ref, T>)
     T read(std::string_view json, ReadFlag read_flag = ReadFlag::NoFlag) = CPPYYJSON_DELETED_FUNCTION(
         "T cannot be read from JSON: `cannot_be_read` names the field or element that cannot be");
     template <typename T, typename cannot_be_read = detail::read_cause<T>>

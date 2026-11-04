@@ -1106,6 +1106,19 @@ static_assert(yyjson::readable<std::unique_ptr<int>> && yyjson::writable<std::un
 static_assert(yyjson::readable<yyjson::value> && yyjson::writable<yyjson::value>);
 static_assert(yyjson::writable<yyjson::reader::const_value_ref>);
 
+// `read<T>` returns a T, so a T that cannot be moved is not readable, even when a skipped field is the reason
+struct SkippedMutex
+{
+    int a = 0;
+    std::mutex m;
+};
+template <>
+inline constexpr auto yyjson::annotations<SkippedMutex> = yyjson::annotate(yyjson::field("m", yyjson::skip));
+static_assert(!readable_in_any_way<SkippedMutex> && !yyjson::readable<std::vector<SkippedMutex>>);
+static_assert(!yyjson::readable<std::atomic<int>> &&
+              yyjson::castable<yyjson::reader::const_value_ref, std::atomic<int>>);
+static_assert(!yyjson::readable<int[3]> && !yyjson::readable<std::shared_ptr<int[]>>);
+
 // The C++20 backend does not reflect a struct with a reference member, and its fields are not checked: the check of
 // `children` would depend on itself. The C++26 backend reflects it and writes it.
 struct RecursiveWithReference
