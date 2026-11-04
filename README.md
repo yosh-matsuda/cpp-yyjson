@@ -225,7 +225,7 @@ The numbers below were measured on an Intel Core i9-12900K with GCC 15.2. The be
 
 cpp-yyjson, [Glaze](https://github.com/stephenberry/glaze) and [reflect-cpp](https://github.com/getml/reflect-cpp) read seven documents of [yyjson_benchmark](https://github.com/ibireme/yyjson_benchmark#json-datasets) and two short messages into the same C++ structs and write them back. The table gives how many times faster cpp-yyjson is:
 
-| cpp-yyjson | vs. Glaze | vs. reflect-cpp |
+| Operation | vs. Glaze | vs. reflect-cpp |
 | --- | --- | --- |
 | Read into a new object: `read<T>` | 1.09 - 1.61x | 1.68 - 5.95x |
 | Read into a reused object: `merge_into` | 1.05 - 1.64x | - |
@@ -240,9 +240,9 @@ For a reused object, cpp-yyjson's `merge_into` is compared with Glaze, because b
 
 ### DOM API vs. other libraries
 
-cpp-yyjson is compared with [yyjson](https://github.com/ibireme/yyjson), [simdjson](https://github.com/simdjson/simdjson), [rapidjson](https://github.com/Tencent/rapidjson/) and [nlohmann-json](https://github.com/nlohmann/json) on the ten documents of [yyjson_benchmark](https://github.com/ibireme/yyjson_benchmark#json-datasets), from 0.1 MB to 66 MB. Reading parses a document and visits every element; writing turns a parsed document back into JSON text. The table gives how many times faster cpp-yyjson is. Each cell is the range of the speed-ups over the documents:
+cpp-yyjson is compared with [yyjson](https://github.com/ibireme/yyjson), [simdjson](https://github.com/simdjson/simdjson), [RapidJSON](https://github.com/Tencent/rapidjson/) and [nlohmann-json](https://github.com/nlohmann/json) on the ten documents of [yyjson_benchmark](https://github.com/ibireme/yyjson_benchmark#json-datasets), from 0.1 MB to 66 MB. Reading parses a document and visits every element; writing turns a parsed document back into JSON text. The table gives how many times faster cpp-yyjson is. Each cell is the range of the speed-ups over the documents:
 
-|       | vs. yyjson 0.12.0 | vs. simdjson | vs. rapidjson | vs. nlohmann-json |
+|       | vs. yyjson 0.12.0 | vs. simdjson | vs. RapidJSON | vs. nlohmann-json |
 | ----- | ----------------- | ------------ | ------------- | ----------------- |
 | Read  | 1.0 - 1.8x | 1.0 - 1.6x   | 1.4 - 4.6x    | 8.7 - 24x         |
 | Write | 1.2 - 2.5x | 2.5 - 6.0x   | 3.2 - 10x     | 3.8 - 34x         |
