@@ -11253,6 +11253,11 @@ namespace yyjson
         {
             return {yyjson_mut_get_str(v), yyjson_mut_get_len(v)};
         }
+        inline std::string_view raw_of(yyjson_val* v) noexcept { return {yyjson_get_raw(v), yyjson_get_len(v)}; }
+        inline std::string_view raw_of(yyjson_mut_val* v) noexcept
+        {
+            return {yyjson_mut_get_raw(v), yyjson_mut_get_len(v)};
+        }
         inline std::size_t size_of(yyjson_val* v) noexcept { return yyjson_get_len(v); }
         inline std::size_t size_of(yyjson_mut_val* v) noexcept { return yyjson_mut_get_len(v); }
 
@@ -11344,8 +11349,9 @@ namespace yyjson
                 case YYJSON_TYPE_NUM:
                     return numbers_equal(a, b);
                 case YYJSON_TYPE_STR:
-                case YYJSON_TYPE_RAW:
                     return text_of(a) == text_of(b);
+                case YYJSON_TYPE_RAW:
+                    return raw_of(a) == raw_of(b);
                 case YYJSON_TYPE_ARR:
                 {
                     if (size_of(a) != size_of(b)) return false;

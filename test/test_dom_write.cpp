@@ -2751,6 +2751,13 @@ TEST(Writer, Equality)
     EXPECT_FALSE(eq("1", "1.5"));
     EXPECT_FALSE(eq("1", R"("1")"));
 
+    // raw numbers by their text, in both kinds of documents
+    const auto raw = [](std::string_view json) { return read(json, ReadFlag::NumberAsRaw); };
+    EXPECT_TRUE(raw("[1.50]") == raw("[1.50]"));
+    EXPECT_FALSE(raw("[1.50]") == raw("[1.5]"));
+    EXPECT_TRUE(value(raw("[1.50]")) == raw("[1.50]"));
+    EXPECT_FALSE(value(raw("[1.50]")) == value(raw("[1.5]")));
+
     // the same keys, the same number of members and elements
     EXPECT_FALSE(eq(R"({"a":1})", R"({"b":1})"));
     EXPECT_FALSE(eq(R"({"a":1})", R"({"a":1,"b":1})"));
