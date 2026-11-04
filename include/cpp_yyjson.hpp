@@ -1396,12 +1396,15 @@ namespace yyjson
 
         // The JSON key of field I of a reflected struct.
         template <typename T, std::size_t I>
-        inline constexpr std::string_view field_key = [] {
+        consteval std::string_view make_field_key()
+        {
             if constexpr (annotated_fields<T>)
                 return std::string_view(field_keys<T, reflected_field_names<T>>::value[I]);
             else
                 return std::string_view(field_reflection::field_name<T, I>);
-        }();
+        }
+        template <typename T, std::size_t I>
+        inline constexpr std::string_view field_key = make_field_key<T, I>();
 
         // The indices of the fields of a reflected struct that are read and written, which are all but those
         // annotated with `yyjson::skip`, as a `std::index_sequence`.  `reflected_field_index<T, K>` is the K-th.
@@ -2939,6 +2942,23 @@ namespace yyjson
             return true;
         }
 
+        // The key of field I of a reflected struct in storage of its own, for a document that keeps a pointer to it.
+        // In a Release build of MSVC, a pointer into `field_key` can resolve to the key of another struct.
+        template <std::size_t N>
+        consteval std::array<char, N + 1> copy_key(std::string_view key)
+        {
+            auto result = std::array<char, N + 1>{};
+            for (std::size_t i = 0; i < N; ++i) result[i] = key[i];
+            return result;
+        }
+        template <typename T, std::size_t I>
+        struct reflected_field_key
+        {
+            static constexpr auto chars = copy_key<field_key<T, I>.size()>(field_key<T, I>);
+            static constexpr auto name = std::string_view(chars.data(), chars.size() - 1);
+            static constexpr bool plain = is_plain_key(name);
+        };
+
         // The integers, and the enumerations that are read from integers: those of `enum_format::integer` and
         // `name_or_integer`.
         template <typename T>
@@ -4399,9 +4419,8 @@ namespace yyjson
                                     if constexpr (yyjson::detail::has_adjacent_fields<value_type>)
                                         yyjson::detail::check_adjacent_tags(element);
                                     (yyjson::detail::emplace_struct_field<
-                                         value_type, Is,
-                                         yyjson::detail::is_plain_key(yyjson::detail::field_key<value_type, Is>)>(
-                                         emitter, yyjson::detail::field_key<value_type, Is>,
+                                         value_type, Is, yyjson::detail::reflected_field_key<value_type, Is>::plain>(
+                                         emitter, yyjson::detail::reflected_field_key<value_type, Is>::name,
                                          yyjson::detail::forward_field<Is>(std::forward<decltype(element)>(element)),
                                          ts...),
                                      ...);
@@ -8749,8 +8768,8 @@ namespace yyjson
             if constexpr (detail::has_adjacent_fields<T>) detail::check_adjacent_tags(t);
             obj.assign_reflected_fields(detail::reflected_field_count(t), [&](auto& emitter) {
                 [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                    (detail::emplace_struct_field<T, Is, detail::is_plain_key(detail::field_key<T, Is>)>(
-                         emitter, detail::field_key<T, Is>, detail::forward_field<Is>(t), ts...),
+                    (detail::emplace_struct_field<T, Is, detail::reflected_field_key<T, Is>::plain>(
+                         emitter, detail::reflected_field_key<T, Is>::name, detail::forward_field<Is>(t), ts...),
                      ...);
                 }(detail::reflected_fields<T>{});
             });
@@ -8766,8 +8785,9 @@ namespace yyjson
             const auto field_count = detail::reflected_field_count(t);
             obj.assign_reflected_fields(field_count, [&](auto& emitter) {
                 [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-                    (detail::emplace_struct_field<T, Is, detail::is_plain_key(detail::field_key<T, Is>)>(
-                         emitter, detail::field_key<T, Is>, detail::forward_field<Is>(std::move(t)), ts...),
+                    (detail::emplace_struct_field<T, Is, detail::reflected_field_key<T, Is>::plain>(
+                         emitter, detail::reflected_field_key<T, Is>::name,
+                         detail::forward_field<Is>(std::move(t)), ts...),
                      ...);
                 }(detail::reflected_fields<T>{});
             });
