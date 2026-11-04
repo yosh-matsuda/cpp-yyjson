@@ -17,7 +17,7 @@ When the JSON has a C++ type, `yyjson::read<T>` and `yyjson::write` are the fast
 
 These options apply to the bundled backend only:
 
-*   `-DCPPYYJSON_ENABLE_AVX2=ON` lets the backend scan and copy strings 32 bytes at a time instead of 16. The binary then requires a CPU with AVX2. In the benchmark, which uses this option, the SIMD string paths of the backend are most of the reason why cpp-yyjson reads the string-heavy documents in 56% to 66% of the time of yyjson, and builds arrays of long strings 53% to 75% faster.
+*   `-DCPPYYJSON_ENABLE_AVX2=ON` lets the backend scan and copy strings 32 bytes at a time instead of 16. The binary then requires a CPU with AVX2. The option does not reach `cpp_yyjson.hpp`, which uses AVX2 only when your own code is compiled with it, for example with `-march=x86-64-v3`. In the benchmark, which uses this option, the SIMD string paths of the backend are most of the reason why cpp-yyjson reads the string-heavy documents in 56% to 66% of the time of yyjson, and builds arrays of long strings 53% to 75% faster.
 *   `cpp_yyjson_enable_lto(<target>)` optimizes the backend together with your code. It gains a few percent on every document.
 *   On Linux with glibc, the backend asks for transparent huge pages for blocks of 32 MiB or more, which avoids most of the page faults of large documents. It needs no action; `-DCPPYYJSON_DISABLE_HUGE_PAGES=ON` turns it off.
 
