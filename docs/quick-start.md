@@ -119,6 +119,8 @@ stars = 42
 topics = ["json","cpp"]
 ```
 
+`obj["name"]` throws `std::out_of_range` when the object has no such key. `obj.contains("name")` tells whether the key is there.
+
 ## Build JSON
 
 A mutable value is built from C++ values and initializer lists, and modified like a standard container:
@@ -135,6 +137,8 @@ Output:
 ```text
 {"name":"cpp-yyjson","stars":43,"topics":["json","cpp"],"archived":false}
 ```
+
+`repo["stars"]` adds the key when the object does not have it.
 
 ## Convert between the DOM and a struct
 

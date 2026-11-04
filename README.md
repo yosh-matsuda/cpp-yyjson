@@ -122,6 +122,8 @@ add_subdirectory(<PATH_TO_CLONE_DIR>/cpp-yyjson ${CMAKE_CURRENT_BINARY_DIR}/cpp-
 find_package(cpp_yyjson CONFIG REQUIRED)
 ```
 
+Only `FetchContent` and `add_subdirectory` define `cpp_yyjson_enable_lto()`. It enables link-time optimization in the `Release` and `RelWithDebInfo` configurations only.
+
 Without CMake, copy `cpp_yyjson.hpp`, `field_reflection.hpp` and `yyjson.h` from `include`, and compile `src/yyjson.c` as C together with your program; MSVC also needs `/Zc:preprocessor`. cpp-yyjson has no vcpkg or Conan package. To use the upstream yyjson instead of the bundled backend, install it, for example with `vcpkg install yyjson`, and configure with `-DCPPYYJSON_USE_BUNDLED_YYJSON=OFF`; without CMake, copy only the two cpp-yyjson headers.
 
 ### Requirements
@@ -140,8 +142,8 @@ Without CMake, copy `cpp_yyjson.hpp`, `field_reflection.hpp` and `yyjson.h` from
 | --- | --- |
 | `CPPYYJSON_ENABLE_AVX2=ON` | Compiles the backend with AVX2 in addition to SSE2; the binary then requires an AVX2-capable CPU. |
 | `CPPYYJSON_USE_BUNDLED_YYJSON=OFF` | Uses an external yyjson package instead of the bundled backend. |
-| `CPPYYJSON_READER_DEPTH_LIMIT`, `CPPYYJSON_WRITER_DEPTH_LIMIT`, `CPPYYJSON_DISABLE_FILE` | Set the yyjson [compile-time options](https://ibireme.github.io/yyjson/doc/doxygen/html/building-and-testing.html#compile-time-options) `YYJSON_READER_DEPTH_LIMIT`, `YYJSON_WRITER_DEPTH_LIMIT` and `YYJSON_DISABLE_FILE`. |
-| `CPPYYJSON_DISABLE_HUGE_PAGES=ON` | Turns off the huge pages of the bundled backend. |
+| `CPPYYJSON_READER_DEPTH_LIMIT`, `CPPYYJSON_WRITER_DEPTH_LIMIT`, `CPPYYJSON_DISABLE_FILE` | Set the yyjson [compile-time options](https://ibireme.github.io/yyjson/doc/doxygen/html/building-and-testing.html#compile-time-options) `YYJSON_READER_DEPTH_LIMIT`, `YYJSON_WRITER_DEPTH_LIMIT` and `YYJSON_DISABLE_FILE` of the bundled backend. With `CPPYYJSON_USE_BUNDLED_YYJSON=OFF`, these options stop the configuration with an error. |
+| `CPPYYJSON_DISABLE_HUGE_PAGES=ON` | Turns off the huge pages of the bundled backend. With `CPPYYJSON_USE_BUNDLED_YYJSON=OFF`, this option stops the configuration with an error. |
 | `CPPYYJSON_RECURSION_DEPTH_LIMIT` | Limits how deeply values of [recursive types](docs/conversions.md#recursive-types) are read. |
 
 [Build configuration](docs/reference.md#build-configuration) covers link-time optimization, the options with an external yyjson and building this repository.
@@ -200,7 +202,7 @@ std::cout << repo.write() << '\n';
 // -> {"name":"cpp-yyjson","stars":43,"topics":["json","cpp","c++20"],"archived":false}
 ```
 
-A mutable value refers to the strings it is built from instead of copying them, so `repo` must not outlive `topics`; see [Lifetimes](docs/reference.md#lifetimes). For a whole object, prefer `read<T>` and `write`: they skip the document and are faster than `read(json).cast<T>()` and `value(t).write()`. The Guide covers [JSON of any shape](docs/guide.md#json-of-any-shape), and the [API reference](docs/reference.md#dom-classes) describes the classes.
+`obj["topics"]` throws `std::out_of_range` when the object has no member `"topics"`, and `obj.contains("topics")` tells whether it has one. On a `yyjson::object` that is not const, `operator[]` adds a member that is not there. A mutable value refers to the strings it is built from instead of copying them, so `repo` must not outlive `topics`; see [Lifetimes](docs/reference.md#lifetimes). For a whole object, prefer `read<T>` and `write`: they skip the document and are faster than `read(json).cast<T>()` and `value(t).write()`. The Guide covers [JSON of any shape](docs/guide.md#json-of-any-shape), and the [API reference](docs/reference.md#dom-classes) describes the classes.
 
 ## Conversions and customization
 
