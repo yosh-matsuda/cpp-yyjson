@@ -74,7 +74,7 @@ Config load_config(const std::filesystem::path& path)
 
 ### Write JSON to a file
 
-`write` returns a string view, which any output stream takes:
+`write` returns a `yyjson::json_string`, a `std::string_view` that owns its buffer. Any output stream takes it:
 
 ```cpp
 struct Config
@@ -189,9 +189,11 @@ auto options = yyjson::read<Options>(R"({"verbose":true})");
 // -> Options{3, true}
 ```
 
+A `null` does not give the default. For `null` in a field that is not optional, such as `retries`, `yyjson::read<T>` throws `yyjson::bad_cast`.
+
 ### Write a field only when it has a value
 
-A `std::optional` field without a value is left out of the object. A missing key reads as `std::nullopt`, and so does `null`:
+A `std::optional` field without a value is left out of the object. When `yyjson::read<T>` finds no key, the field gets its value in `T()`, which is `std::nullopt` unless a default member initializer gives another value. A `null` does the same, unless the type in the optional reads `null` itself. [Keep null as a value](#keep-null-as-a-value) gives the details. Only a field is left out. An empty `std::optional` in an array, in a map or at the root is written as `null`:
 
 ```cpp
 struct Profile
@@ -208,19 +210,23 @@ To leave out a value of your own type, give its caster a [`should_omit`](convers
 
 ### Keep null as a value
 
-A `std::optional` field does not tell a missing key from `null`. A type that reads `null` as a value keeps it: `std::shared_ptr`, `std::unique_ptr`, or a `std::variant` with `std::monostate`, which are written as `null` when empty:
+A field of type `std::optional`, `std::shared_ptr`, `std::unique_ptr`, or `std::variant` with `std::monostate` reads a missing key and `null` the same way. To tell them apart in a field, put a type that reads `null` in a `std::optional`, such as `std::optional<std::variant<std::monostate, T>>` or `std::optional<std::shared_ptr<T>>`. A missing key then gives `std::nullopt`, and `null` gives an optional that holds `std::monostate` or an empty pointer:
 
 ```cpp
 struct Patch
 {
-    std::variant<std::monostate, std::string> nickname;
+    std::optional<std::variant<std::monostate, std::string>> nickname;
 };
 
-auto patch = yyjson::read<Patch>(R"({"nickname":null})");
+auto missing = yyjson::read<Patch>("{}");
+// -> nickname is std::nullopt
+auto cleared = yyjson::read<Patch>(R"({"nickname":null})");
 // -> nickname holds std::monostate
-auto json = yyjson::write(patch);
+auto json = yyjson::write(cleared);
 // -> {"nickname":null}
 ```
+
+`write` leaves out the field when it is `std::nullopt`. [`yyjson::merge_into`](#apply-a-partial-update) reads `null` as a reset, and gives the field its value in `T()`.
 
 ### Map every key to another naming convention
 
@@ -299,7 +305,7 @@ auto shapes = yyjson::read<std::vector<Shape>>(R"([{"type":"circle","r":1.5},{"t
 // -> {Circle{1.5}, Rect{2, 3}}
 ```
 
-When the tag is a sibling of the variant field, as in `{"kind":"circle","data":{"r":1.5}}`, annotate the field with `yyjson::adjacent_tag`. Without a tag, a variant takes the first alternative that accepts the value. Details: [Tagged variants](conversions.md#tagged-variants).
+When the tag is a sibling of the variant field, as in `{"kind":"circle","data":{"r":1.5}}`, annotate the field with `yyjson::adjacent_tag`. Without a tag, a variant takes the first alternative that accepts the value, after the structs whose keys a JSON object has. Details: [Tagged variants](conversions.md#tagged-variants) and [Untagged variants](conversions.md#untagged-variants).
 
 ### Read a struct from an array or a string
 
@@ -362,7 +368,7 @@ auto json = yyjson::write(account);
 // -> {"owner":"Ann","balance":100}
 ```
 
-A class with public members and a constructor of its own can be registered with [`VISITABLE_STRUCT`](conversions.md#visitable_struct) instead.
+A class with public members and a constructor of its own can be registered with [`VISITABLE_STRUCT`](conversions.md#visitable_struct) instead. The macro needs a default constructor, also when the program only writes the class.
 
 ### Convert dates and times
 
@@ -458,7 +464,7 @@ A call with a type that does not convert fails to compile with a message that na
 
 ### Look up values in JSON of unknown shape
 
-`yyjson::read` without a type returns a document. The `as_*` member functions return a `std::optional` that is empty when the value has another type:
+`yyjson::read` without a type returns a document. The `as_*` member functions return a `std::optional` that is empty when the value has another type. `as_int()` does not check the range, so it reads `18446744073709551615` as `-1`. `as_sint()` and `as_uint()` return an empty optional for a value out of their range:
 
 ```cpp
 auto doc = yyjson::read(R"({"name":"Ann","tags":["a","b"],"age":30})");
@@ -469,7 +475,7 @@ if (auto age = obj["age"].as_int()) std::cout << *age << '\n';
 for (const auto tags = *obj["tags"].as_array(); const auto& tag : tags) std::cout << *tag.as_string() << '\n';
 ```
 
-`operator[]` of an object throws `std::out_of_range` for a missing key, and `find` returns `end()` instead. Both take time linear in the number of members. The DOM classes are listed in the [Reference](reference.md#dom-classes).
+`operator[]` of an immutable object throws `std::out_of_range` for a missing key, and `find` returns `end()` instead. Both take time linear in the number of members. `operator[]` of a mutable `yyjson::object` adds the missing key. The DOM classes are listed in the [Reference](reference.md#dom-classes).
 
 ### Read only a few members of a large document
 
@@ -539,7 +545,7 @@ auto json = doc.write();
 // -> {"ok":true,"ids":[1,2,3],"meta":{"page":1}}
 ```
 
-A mutable value refers to the strings that it is built from instead of copying them; see [Lifetimes](reference.md#lifetimes).
+A mutable value copies the strings of a temporary `std::string`, container or struct. It refers to the other strings that it is built from, which must outlive it. Give `yyjson::copy_string` to copy them too. [Lifetimes](reference.md#lifetimes) gives the rules.
 
 ### Compare two JSON values
 
@@ -601,7 +607,7 @@ auto json = yyjson::write(values, yyjson::WriteFlag::InfAndNanAsNull);
 
 ### Read JSON Lines
 
-The library reads one JSON value per string. Split the text at its newlines and read each line, into the same object to reuse its memory:
+The library reads one JSON value per string. Split the text at its newlines and read each line, into the same object to reuse its memory. Skip a line that holds only white space, such as the `\r` of an empty line that ends in CRLF, because it is not JSON:
 
 ```cpp
 struct Event
@@ -614,8 +620,9 @@ auto text = std::string_view("{\"type\":\"a\",\"id\":1}\n{\"type\":\"b\",\"id\":
 auto event = Event();
 for (const auto line : text | std::views::split('\n'))
 {
-    if (line.empty()) continue;
-    yyjson::read_into(std::string_view(line.begin(), line.end()), event);
+    const auto json = std::string_view(line.begin(), line.end());
+    if (json.find_first_not_of(" \t\r") == std::string_view::npos) continue;
+    yyjson::read_into(json, event);
     std::cout << event.type << ' ' << event.id << '\n';
 }
 ```

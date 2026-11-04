@@ -20,7 +20,7 @@ Short answers to questions about behavior that is not a single task, with links 
 
 ### Why does a `std::optional` field not tell `null` from a missing key?
 
-A `std::optional<int>` field reads `null` as if the key were left out, so both leave the field at its value in `T()`. [`null` in a `std::optional`](validation.md#null-in-a-stdoptional) gives the rule. To keep `null` as a value, use a type that reads it, such as `std::variant<std::monostate, int>` or `std::shared_ptr<int>`; see [Keep null as a value](guide.md#keep-null-as-a-value).
+A `std::optional<int>` field reads `null` as if the key were left out, so both leave the field at its value in `T()`. [`null` in a `std::optional`](validation.md#null-in-a-stdoptional) gives the rule. A `std::variant<std::monostate, int>` or `std::shared_ptr<int>` field reads `null`, but it reads a missing key in the same way. To tell the two apart, put such a type in a `std::optional`, for example `std::optional<std::variant<std::monostate, int>>`. A missing key then leaves the field empty, and `null` gives it a value that holds `std::monostate`. `write` leaves out an empty field and writes `null` for `std::monostate`. See [Keep null as a value](guide.md#keep-null-as-a-value).
 
 ### Why is `2.0` read as the `int` of a `std::variant<int, double>`?
 
@@ -32,7 +32,7 @@ A type reads only the JSON kinds that the [Conversion rules](conversions.md#conv
 
 ### Why can a struct not hold a `std::string_view`?
 
-The strings that `read<T>` reads point into buffers that it frees before it returns, such as the unescaped copy of the text or a temporary document. A `std::string_view` or `const char*` in `T` would therefore point to freed memory. The read fails to compile with a `static_assert` that says so. Use `std::string`, or keep a document and read its strings through the [DOM classes](reference.md#dom-classes).
+`read<T>`, `read_into` and `merge_into` free some buffers before they return, such as the unescaped copy of the text or a temporary document. The strings that they read point into these buffers. A `std::string_view` or `const char*` in `T` would therefore point to freed memory. These functions fail to compile with a `static_assert` that says so. Use `std::string`, or keep a document and read its strings through the [DOM classes](reference.md#dom-classes). `write` and `cast<T>` accept such a struct. A struct that `cast<T>` fills refers to the strings of the document, so keep the document while you use the struct.
 
 ## Writing
 
@@ -63,7 +63,6 @@ diagnostic::not_writable<std::chrono::duration<long int> > >]'
 The usual causes:
 
 *   The type has no conversion, such as a `std::chrono` type: add a [translator](guide.md#convert-dates-and-times).
-*   A container's header is not included: `cpp_yyjson.hpp` does not include `<map>`, `<set>`, `<unordered_map>`, `<unordered_set>`, `<list>` or `<deque>`.
 *   The struct is not an aggregate, for example because it has private members: see [Convert a class with private members](guide.md#convert-a-class-with-private-members).
 *   An annotation is wrong, such as a field renamed twice; these fail with a `static_assert` that names the problem.
 
@@ -71,7 +70,7 @@ The usual causes:
 
 ### Can I use cpp-yyjson without exceptions?
 
-No. Errors are reported by `yyjson::read_error`, `yyjson::bad_cast` and `yyjson::write_error`, which derive from `std::runtime_error`, and the library does not build with `-fno-exceptions`. To return an error code instead, catch the exceptions in a function of your own; see [Handle errors](guide.md#handle-errors) and the [Errors](validation.md#errors) table.
+No. The library reports errors with exceptions, and it does not build with `-fno-exceptions`. Most errors are `yyjson::read_error`, `yyjson::bad_cast` or `yyjson::write_error`, which derive from `std::runtime_error`. Some functions also throw `std::invalid_argument`, `std::logic_error` or `std::out_of_range`, and the standard library can throw `std::bad_alloc` or `std::format_error`. The [Errors](validation.md#errors) table tells which function throws which exception. To return an error code instead, catch `std::exception` in a function of your own; see [Handle errors](guide.md#handle-errors).
 
 ## Threads and lifetimes
 
