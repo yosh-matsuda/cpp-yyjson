@@ -49,6 +49,15 @@ TEST(Reader, Allocator)
         auto result = json.write();
         EXPECT_EQ(json_str, result);
     }
+    {
+        // a `yyjson_alc` of the C API, which the caller keeps alive
+        char buf[1024];
+        yyjson_alc alc;
+        ASSERT_TRUE(yyjson_alc_pool_init(&alc, buf, sizeof(buf)));
+        auto json = read(json_str, alc);
+        EXPECT_EQ(json_str, json.write(alc));
+        EXPECT_EQ(json_str, yyjson::value(json).write(alc));
+    }
 
     {
         auto json = read(json_str, h_alloc);

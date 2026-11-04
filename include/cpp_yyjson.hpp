@@ -962,6 +962,12 @@ namespace yyjson
 #endif
         }
 
+        // An allocator whose state the document keeps alive.
+        template <typename Alloc>
+        concept owning_allocator = requires(Alloc& alc) {
+            requires std::same_as<std::shared_ptr<yyjson_alc>, std::remove_cvref_t<decltype(alc.ptr())>>;
+        };
+
         template <yyjson_allocator Alloc>
         auto* get_allocator_pointer(Alloc& alc) noexcept
         {
@@ -4830,7 +4836,7 @@ namespace yyjson
                     auto result =
                         write_func(detail::to_underlying(write_flag), detail::get_allocator_pointer(alc), &len, &err);
 
-                    if constexpr (std::same_as<std::shared_ptr<yyjson_alc>, std::remove_cvref_t<decltype(alc.ptr())>>)
+                    if constexpr (detail::owning_allocator<Alloc>)
                     {
                         if (result != nullptr) [[likely]]
                             return json_string(result, len, alc.ptr());
@@ -6540,7 +6546,7 @@ namespace yyjson
                 auto len = static_cast<std::size_t>(0);
                 auto result = yyjson_val_write_opts(val_, detail::to_underlying(write_flag),
                                                     detail::get_allocator_pointer(alc), &len, &err);
-                if constexpr (std::same_as<std::shared_ptr<yyjson_alc>, std::remove_cvref_t<decltype(alc.ptr())>>)
+                if constexpr (detail::owning_allocator<Alloc>)
                 {
                     if (result != nullptr) [[likely]]
                         return json_string(result, len, alc.ptr());
@@ -7032,7 +7038,7 @@ namespace yyjson
                 auto len = static_cast<std::size_t>(0);
                 auto result = yyjson_write_opts(doc_.get(), detail::to_underlying(write_flag),
                                                 detail::get_allocator_pointer(alc), &len, &err);
-                if constexpr (std::same_as<std::shared_ptr<yyjson_alc>, std::remove_cvref_t<decltype(alc.ptr())>>)
+                if constexpr (detail::owning_allocator<Alloc>)
                 {
                     if (result != nullptr) [[likely]]
                         return json_string(result, len, alc.ptr());
@@ -7180,7 +7186,7 @@ namespace yyjson
             result =
                 yyjson_read_opts(str, len, detail::to_underlying(read_flag), detail::get_allocator_pointer(alc), &err);
 
-            if constexpr (std::same_as<std::shared_ptr<yyjson_alc>, std::remove_cvref_t<decltype(alc.ptr())>>)
+            if constexpr (detail::owning_allocator<Alloc>)
             {
                 if (result != nullptr) return value(result, alc.ptr());
             }
