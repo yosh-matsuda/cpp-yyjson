@@ -3792,11 +3792,20 @@ namespace yyjson
                         {
                             if constexpr (is_initializer_list<Range&&> && value_type::is_value_type)
                             {
-                                // NOTE: Must be value literal in initializer_list; value must not have a parent
-                                assert(!v.get_has_parent());
-                                [[maybe_unused]] auto success = yyjson_mut_arr_add_val(result, v.val_);
-                                assert(success);
-                                if (ptrs != v.doc_.ptrs) children.emplace_back(v.doc_.ptrs);
+                                // The list holds copies that share the flag of the original value, so a value
+                                // named twice is linked once and copied after that.
+                                if (v.get_has_parent())
+                                {
+                                    [[maybe_unused]] auto success = yyjson_mut_arr_add_val(result, copy_value(v));
+                                    assert(success);
+                                }
+                                else
+                                {
+                                    [[maybe_unused]] auto success = yyjson_mut_arr_add_val(result, v.val_);
+                                    assert(success);
+                                    *v.has_parent_ = true;
+                                    if (ptrs != v.doc_.ptrs) children.emplace_back(v.doc_.ptrs);
+                                }
                             }
                             else
                             {
@@ -3900,13 +3909,24 @@ namespace yyjson
                         {
                             if constexpr (is_initializer_list<Range&&> && value_type::is_value_type)
                             {
-                                // NOTE: Must be value literal in initializer_list; value must not have a parent
-                                assert(!value.get_has_parent());
-                                [[maybe_unused]] auto success = yyjson_mut_obj_add(
-                                    result, create_key(std::forward<decltype(key)>(key), ts...), value.val_);
-                                assert(success);
-                                if (ptrs != value.doc_.ptrs)
-                                    children.emplace_back(std::forward<decltype(value)>(value).doc_.ptrs);
+                                // The list holds copies that share the flag of the original value, so a value
+                                // named twice is linked once and copied after that.
+                                if (value.get_has_parent())
+                                {
+                                    [[maybe_unused]] auto success = yyjson_mut_obj_add(
+                                        result, create_key(std::forward<decltype(key)>(key), ts...),
+                                        copy_value(value));
+                                    assert(success);
+                                }
+                                else
+                                {
+                                    [[maybe_unused]] auto success = yyjson_mut_obj_add(
+                                        result, create_key(std::forward<decltype(key)>(key), ts...), value.val_);
+                                    assert(success);
+                                    *value.has_parent_ = true;
+                                    if (ptrs != value.doc_.ptrs)
+                                        children.emplace_back(std::forward<decltype(value)>(value).doc_.ptrs);
+                                }
                             }
                             else
                             {

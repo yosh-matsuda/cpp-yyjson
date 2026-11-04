@@ -2635,6 +2635,22 @@ TEST(Writer, CopyStringKeysOfValues)
     EXPECT_EQ(std::string(obj.write()), expected);
 }
 
+TEST(Writer, InitializerListNamesValueTwice)
+{
+    using namespace yyjson;
+
+    // the first element shares the node of the value, and the second one is a copy
+    auto v = value(1);
+    auto arr = array{v, v};
+    v = 2;
+    EXPECT_EQ(arr.write(), "[2,1]");
+
+    auto w = value(1);
+    auto obj = object{{"a", w}, {"b", w}};
+    w = 2;
+    EXPECT_EQ(obj.write(), R"({"a":2,"b":1})");
+}
+
 TEST(Writer, JsonStringToString)
 {
     using namespace yyjson;
