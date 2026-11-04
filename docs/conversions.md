@@ -54,7 +54,7 @@ A set such as `std::set<int>` or `std::unordered_set<std::string>` converts to a
 
 A `float` is written with the shortest digits that read back as the same `float`: `0.1f` becomes `0.1`, while the `double` of the same value becomes `0.10000000149011612`. With an external yyjson older than 0.11.0, a `float` is written as that `double`.
 
-A conversion that fails throws `yyjson::bad_cast`, which [names the value](validation.md#conversion-errors) that failed. A type that cannot be converted at all is a [compile error](validation.md#compile-errors).
+A conversion that fails throws `yyjson::bad_cast`, which [names the value](validation.md#conversion-errors) that failed. A field of `yyjson::object` or `yyjson::array` that gets another kind of JSON value is an exception: the message does not tell where that value is. A type that cannot be converted at all is a [compile error](validation.md#compile-errors).
 
 ### Values that do not convert
 
@@ -65,7 +65,8 @@ Each of the following throws `yyjson::bad_cast`:
 *   A JSON number into `float` when it rounds to infinity, such as `1e39`. A number that rounds to the largest `float` or underflows to zero converts, and so do the infinities and NaN that `ReadFlag::AllowInfAndNan` reads.
 *   A JSON number or boolean into a container such as `std::vector<int>`, although C++ constructs the container from an integer as its size.
 *   A JSON array into a string type such as `std::string`. Another range of characters, such as `std::vector<char>`, converts from an array.
-*   A JSON array or object into a type of a fixed number of elements, such as `std::array`, a C array, `std::pair` or `std::tuple`, unless it has exactly that many elements. Both `[1]` and `[1, 2, 3]` fail to convert to `std::array<int, 2>`.
+*   A JSON array into a type of a fixed number of elements, such as `std::array`, a C array, `std::pair` or `std::tuple`, unless it has exactly that many elements. Both `[1]` and `[1, 2, 3]` fail to convert to `std::array<int, 2>`.
+*   A JSON object into a type of a fixed number of elements. The only exception is a `std::tuple` of [key-value pairs](#standard-library-types), which reads an object of exactly that many members. A `std::pair` or a `std::array` does not read a JSON object.
 *   A JSON value other than an object into a struct that the [reflection](#reflection) or `VISITABLE_STRUCT` converts, although C++20 can initialize the first field of an aggregate from a single value. To read a struct from another JSON value, define a [translator](#translator).
 
 Booleans and numbers do not mix, although C++ converts between them:
@@ -80,7 +81,8 @@ Some conversions succeed where one might expect them to fail, or give JSON that 
 
 *   A `std::variant` takes the first alternative that accepts the value, after the structs whose keys a JSON object [has](#untagged-variants), and an integer accepts a real number without a fractional part. `std::variant<int, double>` therefore reads `1.5` as `double` but `2.0` as the `int` `2`. With `double` first, every number is read as `double`.
 *   A class that is constructible from a number, such as `struct Count { Count(int); };`, reads every JSON number that C++ converts to the parameter of its constructor, so `1.5` gives `Count(1)`. Only the integer and enumeration types themselves reject a real number with a fractional part.
-*   `char`, `signed char`, `unsigned char`, `std::int8_t` and `std::uint8_t` are numbers, and `std::u8string`, `std::u16string`, `std::u32string` and `std::wstring` are arrays of numbers. Only ranges of `char` are JSON strings.
+*   `char`, `signed char`, `unsigned char`, `std::int8_t` and `std::uint8_t` are numbers, and `std::u8string`, `std::u16string`, `std::u32string` and `std::wstring` are written as arrays of numbers. Only ranges of `char` are JSON strings.
+*   These four string types cannot be read back, and `yyjson::readable` is false for them. To read such an array of numbers, use a `std::vector` of the character type, such as `std::vector<char8_t>`.
 *   A struct that is read ignores a key that it does not have, and a field whose key is missing keeps its value in `T()`. [Unknown and missing keys](validation.md#unknown-and-missing-keys) and [Repeated keys](validation.md#repeated-keys) give the full rules.
 
 A map whose keys are neither strings nor [enumerations](#enumerations), such as `std::map<int, int>`, is not a JSON object:
@@ -127,10 +129,12 @@ Besides the strings, ranges, maps and sets described above, the library has cast
 
 A `std::optional` field of a struct marks a key that may be absent:
 
-*   A field that holds no value is left out when the struct is written.
-*   A key that the object does not have leaves the field as it is. JSON null in the field is read as a missing key, unless `T` reads null, such as `std::shared_ptr`, `std::unique_ptr`, a `std::variant` with `std::monostate`, `yyjson::value` or another `std::optional`: the field then holds the value read from null, as `explicit_limit` below does, which tells a null from a missing key. [`null` in a `std::optional`](validation.md#null-in-a-stdoptional) gives the full rule.
+*   A field that holds no value is left out when the struct is written. Elsewhere, an empty `std::optional` is written as null. Examples are an element of an array, a value of a map and the root.
+*   When the key is missing, `yyjson::read<T>` and `read_into` leave the field at its value in `T()`. `merge_into` keeps the value that the field has.
+*   `yyjson::read<T>` and `read_into` read JSON null in a `std::optional<U>` field as a missing key, unless `U` reads null. Examples of such a `U` are `std::shared_ptr`, `std::unique_ptr`, a `std::variant` with `std::monostate`, `yyjson::value` and another `std::optional`. The field then holds the value that `U` reads from null, as `explicit_limit` below does. This type tells a null from a missing key. [`null` in a `std::optional`](validation.md#null-in-a-stdoptional) gives the full rule.
+*   When the JSON gives null, `merge_into` sets the field to its value in `T()`, for every `U`. It does the same for a field of any other type, such as `int` or `std::string`.
 
-Any other `std::optional<T>`, such as the root or an element of an array, reads JSON null as `std::nullopt` and any other value as `T` does. To keep JSON null as a value of a field, use `std::shared_ptr`, `std::unique_ptr` or a `std::variant` with `std::monostate`: an empty pointer and `std::monostate` are written as null, and null is read as them.
+Outside a field of a struct, `std::optional<U>` reads JSON null as `std::nullopt`. This applies at the root, in an element of an array, in a value of a map and with `cast<std::optional<U>>`. The rule holds also for a `U` that reads null, such as a `std::variant` with `std::monostate`. Only a `U` of `std::shared_ptr` or `std::unique_ptr` is different: the optional then holds an empty pointer. The optional reads any other value as `U` does. To keep JSON null as a value of a field, use `std::shared_ptr`, `std::unique_ptr` or a `std::variant` with `std::monostate`: an empty pointer and `std::monostate` are written as null, and null is read as them.
 
 ```cpp
 using namespace yyjson;
@@ -176,7 +180,7 @@ auto str_var = cast<Variant>(str_json);                                   // des
 
 A `std::variant` is read by trying its alternatives, as [Untagged variants](#untagged-variants) describes, or by a member of the JSON object that names the alternative, as a [tagged variant](#tagged-variants).
 
-A `std::tuple` converts to a JSON array whose elements have different types. A tuple of `std::pair`s of a key and a value converts to a JSON object of fixed keys:
+A `std::tuple` converts to a JSON array whose elements have different types. A tuple of `std::pair`s of a key and a value converts to a JSON object, with one member for each pair. Reading takes the members in their order and gives each pair the key and the value of its member. It does not compare the keys with the keys of the tuple. The tuple also reads a JSON array of two-element arrays:
 
 ```cpp
 using namespace yyjson;
@@ -301,7 +305,7 @@ An empty struct, such as `struct Tag {};`, converts to and from `{}`, and the me
 
 ### `VISITABLE_STRUCT`
 
-The `VISITABLE_STRUCT` macro registers the fields of a struct or a class by name. Use it when the compile-time reflection does not apply to the type, such as a class with a constructor of its own or, with C++20, a struct of more than 100 fields, or to convert only some of the fields. The macro takes up to 1365 fields. A registered type converts only the fields that the macro lists, and the registration takes precedence over the reflection:
+The `VISITABLE_STRUCT` macro registers the fields of a struct or a class by name. Use it when the compile-time reflection does not apply to the type, such as a class with a constructor of its own or, with C++20, a struct of more than 100 fields, or to convert only some of the fields. The macro takes up to 1365 fields. A registered type converts only the fields that the macro lists, and the registration takes precedence over the reflection. The type needs a default constructor, also when the program only writes it. Without one, the registration fails to compile with a `static_assert`:
 
 ```cpp
 // register the fields except `c`
@@ -574,13 +578,13 @@ With `internal_tag`, each alternative other than `std::monostate` is written as 
 The alternative reads the whole object, its tag included:
 
 *   A struct takes the tag as a key of its own that no field reads, and ignores it as it ignores an unknown key.
-*   A map holds the tag as an element.
+*   A map holds the tag as an element. The type of its values must therefore read the tag, which is a JSON string. `std::map<std::string, int>` throws `yyjson::bad_cast` for the tag, while `std::map<std::string, std::string>` or `std::map<std::string, yyjson::value>` reads it.
 
 ### Adjacent tag
 
 With `adjacent_tag`, the tag belongs to the field rather than to the variant type. The struct that holds the field may be one that the compile-time reflection converts or one that `VISITABLE_STRUCT` registers. The same variant type is untagged elsewhere, such as at the root, as an element of a range or as another field, where it tries its alternatives in turn. Another field may tag it with another key.
 
-Two variants with the same key of the tag in one struct need a [field that holds the tag](#a-field-that-holds-the-tag), and fail to compile without one.
+Two variants with the same key of the tag in one struct need a [field that holds the tag](#a-field-that-holds-the-tag). Without one, they fail to compile with a `static_assert`.
 
 The tag and the member of the variant are two members of one object, and either may be missing:
 
@@ -652,6 +656,7 @@ auto json = write(request);
 *   `yyjson::object` and `yyjson::array` accept only a JSON object and a JSON array, and throw `yyjson::bad_cast` for any other value. A `std::variant` can therefore choose them by the kind of the value.
 *   Writing writes the value as it is.
 *   These types convert in every place and with every function that reads or writes a type: as an element of a range or a value of a map, in a `std::optional`, with `cast`, `read<T>`, `read_into` and `merge_into`, and with `cast<yyjson::value>()` of a [`json_view`](#reading-a-json-value-in-a-caster).
+*   `merge_into` replaces such a field as a whole. It does not merge the JSON into the value that the field has.
 *   `yyjson::read<T>` reads such a value into a temporary document of that value alone and copies it, and reads the rest of the string directly.
 
 A [translator](#translator) can take one of these types as its parameter and return one from `to_json`, to convert a type that holds a JSON value.
@@ -679,7 +684,7 @@ The forms of a caster are listed below in the order to choose them:
 | Decide how to read a value from its content, such as an object of keys known only at run time | [`from_json` that takes a `json_view`](#reading-a-json-value-in-a-caster) | read |
 | The same, with the DOM API | [`from_json` that takes a JSON value](#reading-a-json-value-in-a-caster) | read |
 
-Every form but the last converts C++ values or reads a [`yyjson::json_view`](#reading-a-json-value-in-a-caster), and both APIs use it without a document. The last form takes a JSON value of the DOM API; the data binding API accepts it too, but reads each such value into a temporary document. Every form gives the same result with both APIs, for JSON whose objects have no key twice.
+Every form but the last converts C++ values or reads a [`yyjson::json_view`](#reading-a-json-value-in-a-caster), and both APIs use it without a document. The last form takes a JSON value of the DOM API; the data binding API accepts it too, but reads each such value into a temporary document. Every form gives the same result with both APIs, for JSON whose objects have no key twice and for an emitter that obeys its [rules](#writing-members-with-an-emitter).
 
 Some rules apply to all forms:
 
@@ -879,7 +884,7 @@ auto json = yyjson::write(Request{{.timeout = 500}, {{1.5, 0, 1}, {2.0, 1}}});
 A member is written when it is emplaced:
 
 *   An emitter cannot remove, replace or read what it wrote, and it does not check for a duplicate key, also between the members that `emplace_members` appends and the others. Decide what to write before emplacing it.
-*   Inside the function passed to `emplace_object` or `emplace_array`, append only through that function's parameter (`tags` in the example), not through the outer emitter (`out`). `yyjson::write` throws `std::logic_error` if the outer emitter is used before the function returns.
+*   Inside the function passed to `emplace_object` or `emplace_array`, append only through that function's parameter (`tags` in the example), not through the outer emitter (`out`). `yyjson::write` throws `std::logic_error` if the outer emitter is used before the function returns. The DOM API does not detect this misuse, and writes the members in another order.
 
 An emitter writes a JSON object or a JSON array. To write a value whose JSON kind depends on the value, such as a string or an object, use a translator that returns a `std::variant` instead.
 

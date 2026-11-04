@@ -24,7 +24,7 @@ The library checks only the values that it converts. A value that a program look
 A struct that is read:
 
 *   ignores a key that names no field of it;
-*   leaves a field whose key is missing at its value in `T()`, its default member initializer included.
+*   gives a field whose key is missing its value in `T()`, its default member initializer included. `merge_into` keeps the current value of such a field.
 
 To reject such keys, read the text into a document, check the keys of its objects, and cast it, as in [Keep the keys that the struct does not have](guide.md#keep-the-keys-that-the-struct-does-not-have).
 
@@ -49,9 +49,29 @@ A `std::optional` field may be left out of the object. JSON `null` as its value 
 | a type with a [user-defined caster](conversions.md#user-defined-casters) that may take `null`: a translator whose parameter reads `null`, or a `from_json` that takes a `json_view` or a JSON value | the field gets a value that holds what the caster reads from `null` |
 | any other type, such as `int` or a type whose translator takes `int` | the field keeps its value in `T()` |
 
-The value in `T()` is `std::nullopt` unless a default member initializer gives the field another; `null` is read as if the key were left out. To tell `null` from a missing key, give the field a type that reads `null` itself, such as `std::variant<std::monostate, V>` or `std::shared_ptr<V>`.
+The value in `T()` is `std::nullopt`, unless a default member initializer gives the field another value. In the last row, `null` is read as if the key were left out.
 
-Any other `std::optional<U>`, such as the root or an element of an array, reads `null` as `std::nullopt`.
+To tell `null` from a missing key, give the field a type of the first three rows, such as `std::optional<std::shared_ptr<V>>` or `std::optional<std::variant<std::monostate, V>>`. A missing key gives the field its value in `T()`. `null` gives the field a value that holds what `U` reads from `null`. `yyjson::write` leaves out a field without a value. It writes an empty pointer and `std::monostate` as `null`:
+
+```cpp
+struct Patch
+{
+    std::optional<std::shared_ptr<int>> limit;
+};
+
+auto a = yyjson::read<Patch>(R"({})");              // a.limit is std::nullopt
+auto b = yyjson::read<Patch>(R"({"limit":null})");  // b.limit holds an empty pointer
+yyjson::write(a);  // {}
+yyjson::write(b);  // {"limit":null}
+```
+
+Without `std::optional`, a field of type `std::shared_ptr<V>` or `std::variant<std::monostate, V>` cannot tell `null` from a missing key. Both give it an empty pointer or `std::monostate`, unless a default member initializer gives it another value.
+
+`yyjson::read<T>`, `read_into` and `cast<T>` throw `yyjson::bad_cast` for `null` in a field that is not a `std::optional` and does not read `null`. For example, `int retries = 3;` with `{"retries":null}` gives `int is not constructible from JSON null at /retries (line 1, column 12, pos 11)`.
+
+`merge_into` keeps the current value of a field whose key is missing. `null` gives a field its value in `T()`, whatever the type of the field is. `null` as the whole text throws `yyjson::bad_cast` when `T` is a struct.
+
+Any other `std::optional<U>`, such as the root, an element of an array or a value of a map, reads `null` as `std::nullopt`. When `U` is `std::shared_ptr` or `std::unique_ptr`, the optional holds an empty pointer instead.
 
 ## Errors
 
@@ -61,11 +81,16 @@ The functions of the library report a failure with one of these exceptions:
 | --- | --- | --- |
 | `yyjson::read_error` | `yyjson::read`, `read<T>`, `read_into`, `merge_into` | The text is not JSON, or not as the `ReadFlag`s relax it, or memory cannot be allocated. `what()` tells the position, such as `at line 1, column 7, pos 6`, and `code()` returns the `yyjson_read_code`. |
 | `yyjson::bad_cast` | `cast<T>`, `read<T>`, `read_into`, `merge_into`, the constructors of `yyjson::array` and `yyjson::object` from a value | A JSON value does not convert to the C++ type, or exceeds the [recursion limit](conversions.md#recursive-types). It tells the [path and the position](#conversion-errors) of the value. |
+| `yyjson::bad_cast` | `write`, the constructors of mutable values | A value of an enum that is written by its names has no name. This `bad_cast` has no path and no position. |
 | `yyjson::write_error` | `write`, the `write` member functions | The value cannot be written, such as NaN without `WriteFlag::AllowInfAndNan`, a buffer is too small, or memory cannot be allocated. `code()` returns the `yyjson_write_code`. |
-| `std::invalid_argument` | `yyjson::read` | The length given is longer than the string, or `ReadFlag::ReadInsitu` is given with a string that is const or has no room for the padding. |
+| `std::invalid_argument` | `yyjson::read` | The length given is longer than a `std::string` or a `std::string_view`. The library cannot check the length given with a `char*` or a `const char*`. |
+| `std::invalid_argument` | `yyjson::read` | `ReadFlag::ReadInsitu` is given with a string that is const. With a `std::string`, the length is not given, or the string does not hold `YYJSON_PADDING_SIZE` bytes after the length. The library cannot check the padding of a `char*`. |
+| `std::invalid_argument` | `read<T>`, `read_into`, `merge_into` | `ReadFlag::ReadInsitu` is given. These functions read a const string. |
 | `std::invalid_argument` | `write`, the constructors of mutable values | A [tagged variant](conversions.md#tagged-variants) cannot be written with its tag: an alternative of an internal tag is not a JSON object, or a [field that holds the tag](conversions.md#a-field-that-holds-the-tag) names another alternative. |
 | `std::logic_error` | `write` | A caster appends to an outer [emitter](conversions.md#writing-members-with-an-emitter) while the function given to `emplace_object` or `emplace_array` runs. |
-| `std::out_of_range` | `operator[]` of an object; `operator[]` of a `json_view` | The key is not there, or, for a `json_view`, the key or the index. |
+| `std::out_of_range` | `operator[]` of an object, except an object of the DOM API that is mutable and not const; `operator[]` of a `json_object_view` or a `json_array_view` | The key or the index is not there. In a caster, this exception goes to the caller of `read<T>` or `cast<T>` as `std::out_of_range`. |
+| `std::format_error` | `std::vformat` with a JSON value or a `yyjson::json_string` | The format specification is not empty, such as `{:q}`. With `std::format`, such a specification is a compile error. |
+| `std::bad_alloc` | the functions that allocate memory | Memory cannot be allocated. A read can also report this as a `read_error`, and a write as a `write_error`. |
 
 The next sections describe the errors of reading and converting:
 
