@@ -219,7 +219,7 @@ Both APIs share the same conversions. They cover the following types, nested in 
 
 ## Performance
 
-The numbers below were measured on an Intel Core i9-12900K with GCC 15.2, with cpp-yyjson using the bundled backend with AVX2 and link-time optimization. [docs/benchmark](docs/benchmark/README.md) gives the full environment and the library versions.
+The numbers below were measured on an Intel Core i9-12900K with GCC 15.2. The benchmarks were compiled with `-march=x86-64-v3` and link-time optimization, and cpp-yyjson used the bundled backend with AVX2. `CPPYYJSON_ENABLE_AVX2` gives AVX2 to the backend only: `cpp_yyjson.hpp` uses AVX2 only when you compile your own code with it, for example with `-march=x86-64-v3`. [docs/benchmark](docs/benchmark/README.md) gives the full environment and the library versions.
 
 ### Data binding API vs. Glaze and reflect-cpp
 
