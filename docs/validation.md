@@ -6,6 +6,7 @@ This document describes:
 
 *   what a read checks, and what it does with unknown, missing and repeated keys and with `null` in a `std::optional` field;
 *   the [read policies](#read-policies) that make a read reject such JSON;
+*   the [constraints](#constraints) that restrict the values of a field, the [combinators](#combining-constraints) and the [conditions between fields](#conditions-between-fields), and the [JSON Schema keywords](#json-schema-keywords) that they correspond to;
 *   the [errors](#errors) that the library reports at run time, with the path and the position of a value that does not convert;
 *   the [compile errors](#compile-errors) of types that cannot be converted.
 
@@ -54,7 +55,7 @@ A `std::optional` field may be left out of the object. JSON `null` as its value 
 | a type with a [user-defined caster](conversions.md#user-defined-casters) that may take `null`: a translator whose parameter reads `null`, or a `from_json` that takes a `json_view` or a JSON value | the field gets a value that holds what the caster reads from `null` |
 | any other type, such as `int` or a type whose translator takes `int` | the field is read as if its key were left out: it keeps its value in `T()`, or gets the value of its `yyjson::default_from<f>` |
 
-The value in `T()` is `std::nullopt`, unless a default member initializer gives the field another value. The [read policy](#read-policies) `yyjson::reject_null_as_missing` rejects `null` in the last row.
+The value in `T()` is `std::nullopt`, unless a default member initializer gives the field another value. The [read policy](#read-policies) `yyjson::reject_null_as_missing` rejects `null` in the last row. A field of a struct with [`yyjson::as_array`](conversions.md#a-struct-as-a-json-array) is an element of an array, and an array cannot leave out an element before a later one. Thus every read rejects `null` in the last row for such a field, with or without the policy.
 
 To tell `null` from a missing key, give the field a type of the first three rows, such as `std::optional<yyjson::nullable<V>>` or `std::optional<std::shared_ptr<V>>`. A missing key gives the field its value in `T()`. `null` gives the field a value that holds what `U` reads from `null`. `yyjson::write` leaves out a field without a value. It writes an empty `yyjson::nullable`, an empty pointer and `std::monostate` as `null`:
 
@@ -137,7 +138,7 @@ A [user-defined caster](conversions.md#user-defined-casters) that casts a value 
 
 *   `reject_unknown_keys`: the keys of the fields and the key of a [tag](conversions.md#tagged-variants) are known. The key of a [skipped field](conversions.md#skipped-fields) is unknown. A map accepts every key.
 *   `reject_missing_keys`: only a field with a default may be left out. These fields have a default: a `std::optional` field, a field with [`yyjson::default_` or `yyjson::default_from<f>`](conversions.md#default-values-and-required-keys), and a field of a struct with `yyjson::default_`. A [transparent](conversions.md#a-struct-as-the-value-of-its-field) struct over a `std::optional` has one too. A pointer, a `std::variant` with `std::monostate`, a `yyjson::nullable` and a [`yyjson::indirect`](reference.md#yyjsonindirect) need their keys. An untagged `std::variant` with a struct alternative no longer falls back to the first alternative that reads the object. It throws instead.
-*   `reject_null_as_missing`: `null` in a field of the other rows of the table is still read as before. An element of an array, a value of a map and the root are not affected.
+*   `reject_null_as_missing`: `null` in a field of the other rows of the table is still read as before. An element of an array, a value of a map and the root are not affected. A field of a struct with `yyjson::as_array` rejects `null` of the last row also without the policy.
 *   `reject_duplicates`: a struct, a map, a multimap and the object of a tagged variant reject a repeated key. A `std::set` and a `std::unordered_set` reject a repeated element. A `std::multiset` accepts it.
 
 `merge_into` applies the policies to the JSON patch:
@@ -462,7 +463,7 @@ yyjson::read<Shipment>(R"({"method":"post","address":""})");
 *   A constraint is checked when the read reads its key into the field: by `yyjson::read<T>`, `read_into`, `merge_into` and `cast<T>`, with or without the [read policies](#read-policies). The policies do not change the constraints.
 *   A field that gets no value from the JSON is not checked. It keeps a value that the constraints can reject:
     *   A key that the object leaves out. Use `yyjson::required` or `yyjson::reject_missing_keys` to require the key.
-    *   `null` as the value of a `std::optional` field that is read as a missing key, as in [`null` in a `std::optional`](#null-in-a-stdoptional). A `std::optional<int>` field that is `5` in `T()` keeps `5` under `yyjson::maximum(3)`. Reject such a `null` with `yyjson::reject_null_as_missing`.
+    *   `null` as the value of a `std::optional` field that is read as a missing key, as in [`null` in a `std::optional`](#null-in-a-stdoptional). A `std::optional<int>` field that is `5` in `T()` keeps `5` under `yyjson::maximum(3)`. Every check takes such a key as missing, also the [conditions between fields](#conditions-between-fields) and `yyjson::required` in them. A field of a struct with [`yyjson::as_array`](conversions.md#a-struct-as-a-json-array) does not read such a `null`: every read rejects it. Reject such a `null` with `yyjson::reject_null_as_missing`.
     *   `null` in `merge_into`, which gives a field its default.
 *   A constraint of a `std::optional`, a smart pointer or a `std::variant` of `std::monostate` and one type applies to the value that it holds. An empty value satisfies it, except `yyjson::const_` and `yyjson::enum_` without `nullptr`.
 *   A constraint checks the value after the conversion to the type of the field. A `std::set<int>` reads `[1,1]` as one element, which `yyjson::max_items(1)` accepts.
@@ -651,7 +652,7 @@ The functions of the library report a failure with one of these exceptions:
 | `yyjson::read_error` | `yyjson::read`, `read<T>`, `read_into`, `merge_into` | The text is not JSON, or not as the `ReadFlag`s relax it, or memory cannot be allocated. `what()` tells the position, such as `at line 1, column 7, pos 6`, and `code()` returns the `yyjson_read_code`. |
 | `yyjson::bad_cast` | `cast<T>`, `read<T>`, `read_into`, `merge_into`, the constructors of `yyjson::array` and `yyjson::object` from a value | A JSON value does not convert to the C++ type, or exceeds the [recursion limit](conversions.md#recursive-types). It tells the [path and the position](#conversion-errors) of the value. |
 | `yyjson::bad_cast` | `write`, the constructors of mutable values | A value of an enum that is written by its names has no name. This `bad_cast` has no path and no position. |
-| `yyjson::write_error` | `write`, the `write` member functions | The value cannot be written, such as NaN without `WriteFlag::AllowInfAndNan`, a buffer is too small, or memory cannot be allocated. `code()` returns the `yyjson_write_code`. |
+| `yyjson::write_error` | `write`, the `write` member functions, the conversion of a struct with `yyjson::as_array` into a document | The value cannot be written, such as NaN without `WriteFlag::AllowInfAndNan` or a struct with [`yyjson::as_array`](conversions.md#a-struct-as-a-json-array) that has an empty `std::optional` before a value. Or a buffer is too small, or memory cannot be allocated. `code()` returns the `yyjson_write_code`. |
 | `std::invalid_argument` | `yyjson::read` | The length given is longer than a `std::string` or a `std::string_view`. The library cannot check the length given with a `char*` or a `const char*`. |
 | `std::invalid_argument` | `yyjson::read` | `ReadFlag::ReadInsitu` is given with a string that is const. With a `std::string`, the length is not given, or the string does not hold `YYJSON_PADDING_SIZE` bytes after the length. The library cannot check the padding of a `char*`. |
 | `std::invalid_argument` | `read<T>`, `read_into`, `merge_into` | `ReadFlag::ReadInsitu` is given. These functions read a const string. |

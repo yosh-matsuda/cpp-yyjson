@@ -1145,6 +1145,27 @@ inline constexpr auto yyjson::annotations<MultiKind> = yyjson::annotate(
     yyjson::field("elements", yyjson::items(yyjson::exclusive_maximum(2), yyjson::min_length(1))),
     yyjson::field("c", yyjson::max_items(1), yyjson::min_properties(1)),
     yyjson::field("u", yyjson::not_(yyjson::const_(1)), yyjson::enum_(1, 2.5, "a")));
+// the keywords of arrays on a struct read as an array count and check the elements of the JSON array
+struct MultiKindPair
+{
+    int a;
+    std::optional<int> b;
+    std::vector<int> rest;
+    bool operator==(const MultiKindPair&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<MultiKindPair> =
+    yyjson::annotate(yyjson::as_array, yyjson::field("rest", yyjson::extra_items));
+struct MultiKindWritten
+{
+    std::variant<MultiKindPair, std::string> p;
+    MultiKindPair q;
+    bool operator==(const MultiKindWritten&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<MultiKindWritten> =
+    yyjson::annotate(yyjson::field("p", yyjson::min_items(2), yyjson::max_items(3)),
+                     yyjson::field("q", yyjson::max_items(2), yyjson::contains(yyjson::minimum(5))));
 
 namespace struct_condition_rules
 {
@@ -1252,9 +1273,9 @@ namespace
         return yyjson::bad_cast("no exception");
     }
 
-    // every read of `json` gives `expected`, and the reader without a document reads it
+    // every read of `json` gives `expected`, and the reader without a document reads it unless `direct_read` is false
     template <typename T>
-    void expect_accepted(std::string_view json, const T& expected)
+    void expect_accepted(std::string_view json, const T& expected, bool direct_read = true)
     {
         EXPECT_EQ(yyjson::read<T>(json), expected) << json;
         EXPECT_EQ(yyjson::read(json).cast<T>(), expected) << json;
@@ -1267,9 +1288,12 @@ namespace
         EXPECT_EQ(merged, expected) << json;
 #if YYJSON_VERSION_HEX >= 0x000C00
         const auto direct = read_directly<T>(json, yyjson::ReadFlag::NoFlag);
-        ASSERT_TRUE(direct.has_value()) << json;
-        EXPECT_EQ(*direct, read_or_error([&]() -> const T& { return expected; })) << json;
-        EXPECT_TRUE(expect_read_into(T(), json)) << json;
+        ASSERT_EQ(direct.has_value(), direct_read) << json;
+        if (direct)
+        {
+            EXPECT_EQ(*direct, read_or_error([&]() -> const T& { return expected; })) << json;
+        }
+        EXPECT_EQ(expect_read_into(T(), json), direct_read) << json;
 #endif
     }
 
@@ -2916,6 +2940,25 @@ TEST(Constraints, MultiKindValues)
     expect_conditions<MultiKind>(json(R"("u":1)"), key("u", "satisfies"), "/u");
     expect_conditions<MultiKind>(json(R"("u":2)"), key("u", "is not one of"), "/u");
     expect_conditions<MultiKind>(json(R"("u":"b")"), key("u", "is not one of"), "/u");
+}
+
+TEST(Constraints, MultiKindWrittenForms)
+{
+    // the reader without a document leaves the elements of the JSON array to the document
+    expect_accepted<MultiKindWritten>(R"({"p":"x","q":[5]})", {"x", {5, {}, {}}}, false);
+    expect_accepted<MultiKindWritten>(R"({"p":[1,2],"q":[1,5]})", {MultiKindPair{1, 2, {}}, {1, 5, {}}}, false);
+    expect_accepted<MultiKindWritten>(R"({"p":[1,4,3],"q":[5,6]})", {MultiKindPair{1, 4, {3}}, {5, 6, {}}}, false);
+    // null at the position of a std::optional is an error, also in an alternative of a variant
+    expect_rejected<MultiKindWritten>(R"({"p":"x","q":[5,null]})",
+                                      "std::optional<int> is not constructible from JSON null", "/q/1");
+    expect_rejected<MultiKindWritten>(R"({"p":[1,null],"q":[5]})", "std::variant<MultiKindPair, ", "/p");
+    const auto message = [](std::string_view key, std::string_view text) {
+        return std::format(R"(the value of the key "{}" of MultiKindWritten {})", key, text);
+    };
+    expect_rejected<MultiKindWritten>(R"({"p":[1],"q":[5]})", message("p", "has fewer"), "/p");
+    expect_rejected<MultiKindWritten>(R"({"p":[1,2,3,4],"q":[5]})", message("p", "has more"), "/p");
+    expect_rejected<MultiKindWritten>(R"({"p":"x","q":[5,1,2]})", message("q", "has more"), "/q");
+    expect_rejected<MultiKindWritten>(R"({"p":"x","q":[1,2]})", message("q", "has no item"), "/q");
 }
 
 #if FIELD_RFL_ANNOTATIONS

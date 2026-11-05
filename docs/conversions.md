@@ -335,7 +335,12 @@ The annotations of a type change how the type converts, with no caster. Speciali
 | `yyjson::required` | a field | rejects an object without the key, also without `yyjson::strict` | [Default values and required keys](#default-values-and-required-keys) |
 | `yyjson::default_`, `yyjson::default_from<f>` | a field, or a struct for `default_` | gives the field a default: its key may be left out, and a value equal to the default is not written | [Default values and required keys](#default-values-and-required-keys) |
 | `yyjson::emit_defaults` | a field with a default | writes the field also when it is equal to its default | [Default values and required keys](#default-values-and-required-keys) |
+| the [constraints](validation.md#constraints), such as `yyjson::minimum(m)` and `yyjson::items(s...)` | a field | rejects a value that does not satisfy them | [Constraints](validation.md#constraints) |
+| `yyjson::not_`, `yyjson::if_then_else`, `yyjson::all_of`, `yyjson::any_of`, `yyjson::one_of` | a field, or a struct | rejects a value, or an object of the struct, that does not satisfy the combined subschemas | [Combining constraints](validation.md#combining-constraints), [Conditions between fields](validation.md#conditions-between-fields) |
 | `yyjson::transparent` | a struct | reads and writes the struct as the value of its one field | [A struct as the value of its field](#a-struct-as-the-value-of-its-field) |
+| `yyjson::as_array` | a struct | reads and writes the struct as a JSON array of its fields | [A struct as a JSON array](#a-struct-as-a-json-array) |
+| `yyjson::extra_items` | the last field of a struct with `yyjson::as_array` | receives the elements after those of the other fields | [A struct as a JSON array](#a-struct-as-a-json-array) |
+| `yyjson::items(false)`, `yyjson::min_items(n)` and the other settings of the whole array | a struct with `yyjson::as_array` | rejects an array with elements after the fields, or an array that does not satisfy the settings | [A struct as a JSON array](#a-struct-as-a-json-array) |
 | `yyjson::adjacent_tag(key, ids)` | a field of a `std::variant` | tells the alternative by a sibling member | [Tagged variants](#tagged-variants) |
 | `yyjson::internal_tag(key, ids)` | a `std::variant` | tells the alternative by a member of its object | [Tagged variants](#tagged-variants) |
 | `yyjson::enum_format::...`, `yyjson::enumerator("name", s...)` | an enumeration | chooses names or integers, and renames enumerators | [Enumerations](#formats-and-renamed-enumerators) |
@@ -509,7 +514,8 @@ A [translator](#translator) to `std::int64_t` gives the same JSON, but it needs 
 *   The following fail to compile with a `static_assert`:
     *   `yyjson::transparent` given twice
     *   no field, or more than one field that is not skipped
-    *   a setting on the field, such as `yyjson::rename` or `yyjson::adjacent_tag`
+    *   a setting on the field, such as `yyjson::rename` or `yyjson::adjacent_tag`. The field takes the [constraints](validation.md#constraints), which then apply to the struct at each position
+    *   `yyjson::not_`, `yyjson::if_then_else`, `yyjson::all_of`, `yyjson::any_of` or `yyjson::one_of` on the struct, which has no keys of its own. Give them to the field
 
 The field may hold the struct itself through a range, a map, a `yyjson::indirect`, a `std::unique_ptr`, a `std::shared_ptr` or a `std::variant`. Each level counts toward the limit of [Recursive types](#recursive-types):
 
@@ -547,14 +553,14 @@ auto rule = yyjson::read<Rule>(R"([2,"always"])");
 auto json = yyjson::write(rule);
 // -> [2,"always"]
 yyjson::read<Rule>("[-1]");
-// throws: the value of the key "level" of Rule is less than the minimum 0 at /0 (line 1, column 2, pos 1)
+// throws: an element of the value of Rule is less than the minimum 0 at /0 (line 1, column 2, pos 1)
 ```
 
 A [`std::tuple`](#standard-library-types) also converts to an array of elements of different types. But it reads only an array of exactly as many elements as it has, and its elements have no names.
 
 *   **Positions.** Each field that is not [skipped](#skipped-fields) is an element of the array. The first one is at the index 0. A skipped field is no element, and it keeps its value in `T()`.
 *   **Missing elements.** An array can end before the last fields. A field whose element is missing follows the rules of a missing key. It keeps its value in `T()`, or gets its [default](#default-values-and-required-keys). `yyjson::reject_missing_keys` and `yyjson::strict` reject a missing element of a field without a default, and `yyjson::required` rejects a missing element always. The message names the element and its field, as in `Rule is not constructible from JSON without the element 0 of the field "level"`.
-*   **`null`.** `null` at the element of a `std::optional` field is read as a missing value, as in an object. `yyjson::reject_null_as_missing` and `yyjson::strict` reject it.
+*   **`null`.** An object can leave out a key, but an array cannot leave out an element before a later one. Thus `null` at the element of a field that cannot hold `null` is an error in every read, also without `yyjson::reject_null_as_missing`. `yyjson::read<Rule>(R"([2,"always",null])")` throws `std::optional<int> is not constructible from JSON null at /2`. A field of a type that holds `null` reads it as its value. These types are `yyjson::nullable<U>`, a smart pointer, a `std::variant` with `std::monostate` and a `std::optional` of one of them. An element of the field of `yyjson::extra_items` reads `null` as an element of a range does. Thus a `std::optional<U>` element reads it as `std::nullopt`.
 *   **Elements after the fields.** An array can have more elements than the struct has fields. The read ignores them. `yyjson::strict` does not reject them. `yyjson::reject_unknown_keys` rejects them, with the message `Point has no field of the element 2` at `/2`. `yyjson::items(false)` on the struct rejects them in every read, as `items: false` does in JSON Schema.
 *   **A field for the elements after the others.** `yyjson::field("member", yyjson::extra_items)` gives the last field that is not skipped the elements after those of the other fields. The write writes them after the other fields. The field is a range with `push_back` and `clear`, such as `std::vector<double>` or `std::vector<yyjson::value>`. `yyjson::items(settings...)` on the field constrains these elements. A struct that holds a range of its own type in such a field reads a tree of arrays:
 
@@ -572,7 +578,7 @@ A [`std::tuple`](#standard-library-types) also converts to an array of elements 
     auto series = yyjson::read<Series>(R"(["cpu",0.5,0.75])");
     // -> Series{"cpu", {0.5, 0.75}}
     yyjson::read<Series>(R"(["cpu",0.5,-1])");
-    // throws: an element of the value of the key "values" of Series is less than the minimum 0 at /2 (line 1, column 12, pos 11)
+    // throws: an element of the value of Series is less than the minimum 0 at /2 (line 1, column 12, pos 11)
 
     struct Node
     {
@@ -588,10 +594,63 @@ A [`std::tuple`](#standard-library-types) also converts to an array of elements 
     // -> tree.children.size() == 2
     ```
 
-*   **Writing.** The write writes the fields in order. It leaves out the empty `std::optional` fields at the end of the array. The write writes an empty `std::optional` before a written value as `null`. The array has no other way to put the later value at its index. Thus `yyjson::write(Rule{1, std::nullopt, 3})` gives `[1,null,3]`. A plain read reads it back, and `yyjson::strict` rejects the `null`. A value equal to its default is written. When the field of `yyjson::extra_items` has elements, the write leaves out no field.
+*   **Writing.** The write writes the fields in order. It leaves out the empty `std::optional` fields at the end of the array. In an array whose length varies, make the fields from the first one that may be left out to the last one `std::optional`. Only an optional with no later value may be empty. An empty optional before a value makes the write throw `yyjson::write_error`, because the array has no place for the missing element. Thus `yyjson::write(Rule{1, std::nullopt, 3})` throws `Rule cannot be written as an array: the field "mode" at the element 1 has no value and a later element has one`. The elements of the field of `yyjson::extra_items` are later values too. To write `null`, use `yyjson::nullable<U>`. A smart pointer and a `std::variant` with `std::monostate` also write `null`. A field of `std::optional<yyjson::nullable<int>>` is left out when it is empty, and it is written as `null` when it holds an empty `yyjson::nullable`. A value equal to its default is written.
+*   **Settings of the whole array.** The struct takes `yyjson::min_items(n)`, `yyjson::max_items(n)`, `yyjson::unique_items`, `yyjson::contains(settings...)`, `yyjson::min_contains(n)` and `yyjson::max_contains(n)`. They are the keywords `minItems`, `maxItems`, `uniqueItems`, `contains`, `minContains` and `maxContains` beside `prefixItems` in JSON Schema. The read checks them after it reads the fields. The message is `the value of T`, and then the text of the [constraint](validation.md#constraints), at the path of the struct. For `yyjson::unique_items`, the message is `an element of the value of T is equal to an earlier element`, at the path of the later element, as for a `std::vector`.
+*   **What they count.** The read checks these settings on the elements of the JSON array, as JSON Schema does. A missing element is no element, also when its field gets the value in `T()` or a default. A `null` is an element. Its value is the value that the field reads from it, such as an empty `yyjson::nullable<U>`. An element after the fields that the read ignores counts for `yyjson::min_items` and `yyjson::max_items`:
+
+    ```cpp
+    struct Banner
+    {
+        std::string name;
+        std::optional<std::string> tag;
+        std::vector<std::string> rest;
+    };
+
+    template <>
+    inline constexpr auto yyjson::annotations<Banner> =
+        yyjson::annotate(yyjson::as_array, yyjson::field("rest", yyjson::extra_items), yyjson::min_items(2));
+
+    yyjson::read<Banner>(R"(["kk","a"])");  // -> accepted
+    yyjson::read<Banner>(R"(["kk"])");
+    // throws: the value of Banner has fewer items than the minimum 2 (line 1, column 1, pos 0)
+
+    struct Ranks
+    {
+        int a = 0;
+        int b = 0;
+        std::vector<int> rest;
+    };
+
+    template <>
+    inline constexpr auto yyjson::annotations<Ranks> =
+        yyjson::annotate(yyjson::as_array, yyjson::field("rest", yyjson::extra_items), yyjson::unique_items);
+
+    yyjson::read<Ranks>("[0]");  // -> accepted
+    yyjson::read<Ranks>("[1,2,1]");
+    // throws: an element of the value of Ranks is equal to an earlier element at /2 (line 1, column 6, pos 5)
+    ```
+
+    `["kk","a"]` has two elements. `[0]` gives `Ranks{0, 0, {}}`, but it has only one element, so the read compares no `0` with another.
+
+    Another struct can give these settings to a field of such a struct, as in `yyjson::field("p", yyjson::min_items(2))`. They also apply to its elements, its values and its alternatives through `yyjson::items` and the other settings of elements. The same rules apply there. The message then names the field, at the path of the field.
+*   `yyjson::unique_items`, `yyjson::contains`, `yyjson::min_contains` and `yyjson::max_contains` on the struct or on a field of its type check every element of the array. Thus the struct must have a field of `yyjson::extra_items` or `yyjson::items(false)`, so that the read reads every element. `yyjson::unique_items` also needs one type for all the fields and the elements of the field of `yyjson::extra_items`.
+*   **Errors.** A message about the value of a field names it as an element of the struct, as `an element of the value of Rule` above. The JSON array has no key for a field, so the message does not name the field. This applies also to an element of the field of `yyjson::extra_items`, as `an element of the value of Series` above. The path is the index of the element, such as `/0` above and `/rules/1/0` for the struct in the element 1 of a field `rules`. A JSON value that is not an array, such as an object, throws `Rule is not constructible from JSON`.
+*   **Where it applies.** The struct is an array everywhere: as a field of another struct, an element, a value of a map, an alternative of a `std::variant` and the root. An untagged `std::variant` chooses it for a JSON array, as it chooses a `std::vector`. `read_into` and `merge_into` read the whole array into the struct. `merge_into` does not merge an array into the fields that the struct has: `yyjson::merge_into("[7]", point)` gives `Point{7, 0}` when `point` was `Point{5, 6}`.
+*   **Settings of the fields.** The fields take the [constraints](validation.md#constraints), `yyjson::required`, `yyjson::default_`, `yyjson::default_from<f>` and `yyjson::skip`. The struct takes the [read policies](validation.md#read-policies), `yyjson::items(false)` and the settings of the whole array. `VISITABLE_STRUCT` registers such a struct too.
+*   The following fail to compile with a `static_assert`:
+    *   `yyjson::as_array` given twice, or together with `yyjson::transparent`.
+    *   `yyjson::rename`, a `(member, "key")` pair or `yyjson::adjacent_tag` on a field, because the elements have no keys.
+    *   `yyjson::not_`, `yyjson::if_then_else`, `yyjson::all_of`, `yyjson::any_of` and `yyjson::one_of` on the struct. Give them to its fields.
+    *   A field that the write can leave out, such as a `std::optional`, before a field that the write always writes. An `int` and a `yyjson::nullable<U>` are always written. The optional fields must come after the fields that are always written, as the default arguments of a C++ function do. A skipped field and the field of `yyjson::extra_items` are not counted.
+    *   `yyjson::unique_items`, `yyjson::contains`, `yyjson::min_contains` or `yyjson::max_contains` on a struct without a field of `yyjson::extra_items` and without `yyjson::items(false)`. A field of the type of such a struct cannot take them either.
+    *   A constraint of the whole array that no array of the struct can satisfy. With `yyjson::items(false)`, `yyjson::min_items` cannot be greater than the number of fields. `yyjson::max_items` cannot be less than the number of fields up to the last one that every array must have.
+    *   `yyjson::items(false)` or the settings of the whole array on a struct without `yyjson::as_array`, and `yyjson::items(false)` given twice.
+    *   `yyjson::extra_items` on a field of a struct without `yyjson::as_array`, on two fields, or on a field other than the last one that is not skipped.
+    *   `yyjson::extra_items` together with `yyjson::items(false)` on the struct, or together with another setting than `yyjson::items(settings...)`.
+
 ### C++26 annotations
 
-With C++26 static reflection, such as GCC 16 with `-std=c++26 -freflection`, the settings of a field can be written on the member itself as an [annotation](https://wg21.link/p3394). Every setting that `yyjson::field` takes is also an annotation: `[[=yyjson::rename("key")]]`, `[[=yyjson::skip]]` and `[[=yyjson::adjacent_tag(key, ids)]]`.
+With C++26 static reflection, such as GCC 16 with `-std=c++26 -freflection`, the settings of a field can be written on the member itself as an [annotation](https://wg21.link/p3394). Every setting that `yyjson::field` takes is also an annotation: `[[=yyjson::rename("key")]]`, `[[=yyjson::skip]]`, `[[=yyjson::adjacent_tag(key, ids)]]`, `[[=yyjson::extra_items]]` and the [constraints](validation.md#constraints), such as `[[=yyjson::minimum(0)]]` and `[[=yyjson::items(yyjson::maximum(9))]]`.
 
 ```cpp
 struct Project
@@ -608,7 +667,7 @@ auto json = yyjson::write(project);
 ```
 
 *   The annotations of the members and a `yyjson::annotations` specialization can be combined, as long as no field gets the same setting twice; that fails to compile.
-*   On the struct itself, `yyjson::transparent`, `yyjson::default_` and the [read policies](validation.md#read-policies) are read, as in `struct [[=yyjson::transparent]] UserId { ... };`.
+*   On the struct itself, `yyjson::transparent`, `yyjson::default_` and the [read policies](validation.md#read-policies) are read, as in `struct [[=yyjson::transparent]] UserId { ... };`. So are `yyjson::as_array`, `yyjson::items(false)`, the settings of the whole array and the [conditions between fields](validation.md#conditions-between-fields).
 *   An enumeration takes a [format](#formats-and-renamed-enumerators) on its declaration, as in `enum class [[=yyjson::enum_format::integer]] Permission : unsigned { ... };`. An enumerator takes a new name, as in `in_progress [[=yyjson::rename("in-progress")]],`. These combine with `yyjson::annotations<E>` as the settings of fields do. An annotation on an alias, that is, an enumerator with the value of one declared before it, is not read.
 *   The annotations apply to the structs that the compile-time reflection converts. An annotation of this library on a member of a struct that `VISITABLE_STRUCT` registers fails to compile; use the pairs of the macro or `yyjson::annotations` there.
 *   The annotations are read when the macro `FIELD_RFL_ANNOTATIONS` is `1`. Every setting is always available for `yyjson::annotations`.

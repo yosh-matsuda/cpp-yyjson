@@ -43,6 +43,7 @@ This page lists the functions, classes and other entities of cpp-yyjson, grouped
     *   [`yyjson::rename`](#yyjsonrename)
     *   [`yyjson::skip`](#yyjsonskip)
     *   [`yyjson::transparent`](#yyjsontransparent)
+    *   [`yyjson::as_array`, `yyjson::extra_items`](#yyjsonas_array-yyjsonextra_items)
     *   [`yyjson::required`](#yyjsonrequired)
     *   [`yyjson::default_`, `yyjson::default_from`](#yyjsondefault_-yyjsondefault_from)
     *   [`yyjson::emit_defaults`](#yyjsonemit_defaults)
@@ -1415,7 +1416,7 @@ Specialize `annotations<T>` before the first use of `T`. `annotate` takes these 
 
 | `T` | Settings |
 | --- | --- |
-| a struct | [`yyjson::field`](#yyjsonfield), [`yyjson::transparent`](#yyjsontransparent), [`yyjson::default_`](#yyjsondefault_-yyjsondefault_from), the [read policies](#read-policies) |
+| a struct | [`yyjson::field`](#yyjsonfield), [`yyjson::transparent`](#yyjsontransparent), [`yyjson::as_array` and `yyjson::items(false)`](#yyjsonas_array-yyjsonextra_items), [`yyjson::default_`](#yyjsondefault_-yyjsondefault_from), the [read policies](#read-policies), the [combinators](#yyjsonnot_-yyjsonif_then_else-yyjsonall_of-yyjsonany_of-yyjsonone_of), and with `yyjson::as_array` the [settings of the whole array](#constraints-of-elements) |
 | a `std::variant` | [`yyjson::internal_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag) |
 | an enumeration | [`yyjson::enumerator` and `yyjson::enum_format`](#yyjsonenum_format-yyjsonenumerator) |
 
@@ -1446,7 +1447,7 @@ template <typename... As>
 consteval field_annotation<As...> field(std::string_view member, As... values);
 ```
 
-`values` are one or more of [`yyjson::rename`](#yyjsonrename), [`yyjson::skip`](#yyjsonskip), [`yyjson::required`](#yyjsonrequired), [`yyjson::default_`, `yyjson::default_from<f>`](#yyjsondefault_-yyjsondefault_from), [`yyjson::emit_defaults`](#yyjsonemit_defaults) and [`yyjson::adjacent_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag). Any other setting is a compile error.
+`values` are one or more of [`yyjson::rename`](#yyjsonrename), [`yyjson::skip`](#yyjsonskip), [`yyjson::required`](#yyjsonrequired), [`yyjson::default_`, `yyjson::default_from<f>`](#yyjsondefault_-yyjsondefault_from), [`yyjson::emit_defaults`](#yyjsonemit_defaults), [`yyjson::adjacent_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag), [`yyjson::extra_items`](#yyjsonas_array-yyjsonextra_items), the [constraints](#constraints), the [constraints of elements](#constraints-of-elements) and the [combinators](#yyjsonnot_-yyjsonif_then_else-yyjsonall_of-yyjsonany_of-yyjsonone_of). Any other setting is a compile error.
 
 ### `yyjson::rename`
 
@@ -1488,7 +1489,7 @@ It is a setting of the struct for [`yyjson::annotate`](#yyjsonannotationst-yyjso
 *   Let the field be a `std::optional<U>`, where `U` is not a pointer. When the struct is a field of another struct, the field follows the rules of a `std::optional` field. Elsewhere, `null` empties it, and an empty value is written as `null`.
 *   `yyjson::object(t)` takes the struct only when its field is written as an object.
 
-The setting given twice, no field or more than one field that is not skipped, and a setting on the field are compile errors. See [A struct as the value of its field](conversions.md#a-struct-as-the-value-of-its-field).
+The setting given twice is a compile error. So are no field or more than one field that is not skipped, and a setting on the field other than the [constraints](#constraints). The combinators on the struct are compile errors too: give them to the field. See [A struct as the value of its field](conversions.md#a-struct-as-the-value-of-its-field).
 
 ```cpp
 struct UserId
@@ -1516,12 +1517,12 @@ consteval explicit items(bool allowed);  // items<bool>, as yyjson::items(false)
 `yyjson::as_array` and `yyjson::items(false)` are settings of the struct, given to [`yyjson::annotate`](#yyjsonannotationst-yyjsonannotate). `yyjson::extra_items` is a setting of a field. With the reflection of C++26, they can also be written on the declarations, as `struct [[=yyjson::as_array]] Rule`.
 
 *   Each field that is not skipped is an element of the array, in the order of the declarations.
-*   A missing element follows the rules of a missing key. `null` at the element of a `std::optional` field is read as a missing value.
+*   A missing element follows the rules of a missing key. Every read rejects `null` at the element of a field that cannot hold `null`, such as a `std::optional<int>`.
 *   The read ignores the elements after the fields. `yyjson::reject_unknown_keys` and `yyjson::items(false)` reject them, and `yyjson::strict` does not. `items(true)` is a compile error.
 *   The field of `yyjson::extra_items` receives the elements after the fields. It is the last field that is not skipped, a range with `push_back` and `clear`. It takes [`yyjson::items(settings...)`](#constraints-of-elements) for its elements, and no other setting.
-*   `write` leaves out the empty `std::optional` fields at the end of the array. It writes an empty `std::optional` before a value that it writes as `null`. It leaves out no field when the field of `yyjson::extra_items` has elements.
+*   `write` leaves out the empty `std::optional` fields at the end of the array. An empty `std::optional` before a written value makes every write of the struct throw [`yyjson::write_error`](#yyjsonwrite_error). The elements of the field of `yyjson::extra_items` are written values too. Use `yyjson::nullable<U>` to write `null`.
 *   `read_into` and `merge_into` replace the whole value, as for an array.
-*   The struct takes [`yyjson::min_items`, `yyjson::max_items`, `yyjson::unique_items`, `yyjson::contains`, `yyjson::min_contains` and `yyjson::max_contains`](#constraints-of-elements). They count and compare the array that `write` gives for the value that the read gives.
+*   The struct takes [`yyjson::min_items`, `yyjson::max_items`, `yyjson::unique_items`, `yyjson::contains`, `yyjson::min_contains` and `yyjson::max_contains`](#constraints-of-elements). The read checks them on the elements of the JSON array: a `null` is an element, a missing element is not, and an element that the read ignores counts for `yyjson::min_items` and `yyjson::max_items`. The same rules apply when a field of the type of the struct takes these settings.
 
 These are compile errors:
 
@@ -1530,6 +1531,8 @@ These are compile errors:
 *   `yyjson::items(false)` or the settings of the whole array without `yyjson::as_array`.
 *   `yyjson::extra_items` without `yyjson::as_array`, twice, or on a field that is not the last.
 *   `yyjson::extra_items` with another setting than `yyjson::items(settings...)`, or with `yyjson::items(false)`.
+*   A field that the write can leave out, such as a `std::optional`, before a field that the write always writes.
+*   `yyjson::unique_items` or the settings of `contains` on a struct without a field of `yyjson::extra_items` and without `yyjson::items(false)`, or on a field of its type.
 
 See [A struct as a JSON array](conversions.md#a-struct-as-a-json-array).
 
@@ -1547,7 +1550,8 @@ inline constexpr auto yyjson::annotations<Rule> =
 
 auto rule = yyjson::read<Rule>(R"([2,"always"])");  // -> Rule{2, "always", std::nullopt}
 auto json = yyjson::write(rule);                     // -> [2,"always"]
-yyjson::write(Rule{1, std::nullopt, 80});            // -> [1,null,80]
+yyjson::write(Rule{1, std::nullopt, 80});
+// throws yyjson::write_error: Rule cannot be written as an array: the field "mode" at the element 1 has no value and a later element has one
 yyjson::read<Rule>("[1,null,80,4]");
 // throws yyjson::bad_cast: Rule has no field of the element 3 at /3 (line 1, column 12, pos 11)
 ```
@@ -2064,7 +2068,7 @@ With an external yyjson older than 0.10.0, the position is given as `at pos 3` o
 
 ### `yyjson::write_error`
 
-Thrown when a value cannot be written as JSON, such as NaN without `WriteFlag::AllowInfAndNan`, when the allocator cannot supply the memory, or when the buffer given to `write(std::span<char>)` is too small.
+Thrown when a value cannot be written as JSON. NaN without `WriteFlag::AllowInfAndNan` is such a value, and so is a struct with [`yyjson::as_array`](#yyjsonas_array-yyjsonextra_items) that has an empty `std::optional` before a value. It is also thrown when the allocator cannot supply the memory, or when the buffer given to `write(std::span<char>)` is too small.
 
 ```cpp
 yyjson_write_code code() const noexcept;

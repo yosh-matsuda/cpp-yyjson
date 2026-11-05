@@ -2735,6 +2735,12 @@ namespace yyjson
             setting_of<A, not_<>> || setting_of<A, if_then_else_t<void, void, void>> || setting_of<A, all_of_t<0>> ||
             setting_of<A, any_of_t<0>> || setting_of<A, one_of_t<0>>;
 
+        // The keywords of the whole array that a struct annotated with `yyjson::as_array` takes.
+        template <typename A>
+        concept array_struct_setting =
+            setting_of<A, min_items> || setting_of<A, max_items> || setting_of<A, unique_items_t> ||
+            setting_of<A, contains<>> || setting_of<A, min_contains> || setting_of<A, max_contains>;
+
         // The keywords that a key of a JSON object can take, which is a string.
         template <typename A>
         concept key_setting = setting_of<A, min_length> || setting_of<A, max_length> || setting_of<A, pattern<>> ||
@@ -3157,8 +3163,8 @@ namespace yyjson
         inline constexpr bool annotate_settings =
             count_true<(is_field_annotation<As>::value || std::same_as<As, transparent_t> ||
                         std::same_as<As, as_array_t> || std::same_as<As, items<bool>> || std::same_as<As, default_t> ||
-                        read_policy<As> || combinator_setting<As> || internal_tag_annotation<As> ||
-                        enum_annotation<As>)...> == sizeof...(As);
+                        read_policy<As> || combinator_setting<As> || array_struct_setting<As> ||
+                        internal_tag_annotation<As> || enum_annotation<As>)...> == sizeof...(As);
     }  // namespace detail
 
     template <typename... As>
@@ -3168,8 +3174,9 @@ namespace yyjson
                       "yyjson::annotate takes yyjson::field(...), yyjson::transparent, yyjson::as_array, "
                       "yyjson::items(false), yyjson::default_ and the read policies yyjson::reject_unknown_keys, "
                       "yyjson::reject_missing_keys, yyjson::reject_null_as_missing, yyjson::reject_duplicates and "
-                      "yyjson::strict, and "
-                      "yyjson::not_, if_then_else, all_of, any_of and one_of for a struct, "
+                      "yyjson::strict, and yyjson::not_, if_then_else, all_of, any_of and one_of for a struct, "
+                      "yyjson::min_items, max_items, unique_items, contains, min_contains and max_contains for a "
+                      "struct annotated with yyjson::as_array, "
                       "yyjson::internal_tag for a variant, and yyjson::enumerator(...) and yyjson::enum_format for an "
                       "enumeration");
         return detail::annotation_list<As...>{
@@ -3704,6 +3711,7 @@ namespace yyjson
             items_twice,
             items_without_as_array,
             extra_items_without_as_array,
+            array_keywords_without_as_array,
             extra_items_twice,
             extra_items_not_last,
             extra_items_with_setting,
@@ -3743,6 +3751,7 @@ namespace yyjson
             std::array<bool, N> constrained = {};  // whether a field has a keyword of its value
             std::array<bool, N> constrained_value = {};  // whether it has one other than `yyjson::items`
             bool extra_items_twice = false;
+            bool array_keywords = false;                 // whether the struct has a keyword of the whole array
             // where the search for the member of the next `yyjson::field` starts: after the previous one, so that
             // settings in the order of the members are found at once
             std::size_t next = 0;
@@ -3886,6 +3895,8 @@ namespace yyjson
                     policies = true;
                 else if constexpr (combinator_setting<A>)
                     conditions = true;
+                else if constexpr (array_struct_setting<A>)
+                    array_keywords = true;
                 else if constexpr (constraint_setting<A>)
                     fail(field_key_error::struct_constraint);
                 else
@@ -3897,6 +3908,7 @@ namespace yyjson
             {
                 if (result.items_denied && !result.as_array) return field_key_error::items_without_as_array;
                 if (result.extra_items != N && !result.as_array) return field_key_error::extra_items_without_as_array;
+                if (array_keywords && !result.as_array) return field_key_error::array_keywords_without_as_array;
                 if (!result.as_array) return field_key_error::none;
                 if (conditions) return field_key_error::as_array_struct_setting;
                 for (std::size_t i = 0; i < N; ++i)
@@ -4129,6 +4141,43 @@ namespace yyjson
         template <typename T, std::size_t K>
         using type_condition_type = typename[:std::meta::remove_cvref(std::meta::type_of(type_conditions<T>[K])):];
 
+        // The annotations of the class T of `yyjson::contains`.
+        template <typename T>
+        consteval std::vector<std::meta::info> type_contains_of()
+        {
+            auto result = std::vector<std::meta::info>{};
+            for (const auto a : std::meta::annotations_of(std::meta::dealias(^^T)))
+            {
+                const auto type = std::meta::remove_cvref(std::meta::type_of(a));
+                if (std::meta::has_template_arguments(type) && std::meta::template_of(type) == ^^yyjson::contains)
+                    result.push_back(a);
+            }
+            return result;
+        }
+        template <typename T>
+        inline constexpr std::span<const std::meta::info> type_contains = [] {
+            if constexpr (std::is_class_v<T>)
+                return std::span<const std::meta::info>(std::define_static_array(type_contains_of<T>()));
+            else
+                return std::span<const std::meta::info>{};
+        }();
+        template <typename T, std::size_t K>
+        using type_contains_type = typename[:std::meta::remove_cvref(std::meta::type_of(type_contains<T>[K])):];
+
+        // Whether the class T is annotated with a keyword of the whole array of a struct annotated with
+        // `yyjson::as_array`.
+        template <typename T>
+        inline constexpr bool type_array_keywords_annotated = [] {
+            if constexpr (!std::is_class_v<T>)
+                return false;
+            else
+                return !field_reflection::type_annotations<T, min_items>.empty() ||
+                       !field_reflection::type_annotations<T, max_items>.empty() ||
+                       !field_reflection::type_annotations<T, unique_items_t>.empty() ||
+                       !field_reflection::type_annotations<T, min_contains>.empty() ||
+                       !field_reflection::type_annotations<T, max_contains>.empty() || !type_contains<T>.empty();
+        }();
+
         // The read policies that annotate the class T under C++26.
         template <typename T>
         inline constexpr std::uint8_t type_annotated_policies = [] {
@@ -4212,7 +4261,8 @@ namespace yyjson
 #if FIELD_RFL_ANNOTATIONS
             else if constexpr (transparent_annotated<T> || !field_reflection::type_annotations<T, default_t>.empty() ||
                                !field_reflection::type_annotations<T, as_array_t>.empty() ||
-                               !field_reflection::type_annotations<T, items<bool>>.empty())
+                               !field_reflection::type_annotations<T, items<bool>>.empty() ||
+                               type_array_keywords_annotated<T>)
                 return true;
             else if constexpr (!visitable<T>)
                 return annotated_members<T>;
@@ -4261,6 +4311,7 @@ namespace yyjson
                     builder.deny_items();
                 if (type_annotated_policies<T> != 0) builder.policies = true;
                 if (!type_conditions<T>.empty()) builder.conditions = true;
+                if (type_array_keywords_annotated<T>) builder.array_keywords = true;
 #endif
                 return builder.result();
             }
@@ -4334,6 +4385,10 @@ namespace yyjson
             static_assert(table.error != field_key_error::items_without_as_array,
                           "yyjson::items(false) denies the elements after the fields of a struct annotated with "
                           "yyjson::as_array: annotate the struct with yyjson::as_array too");
+            static_assert(table.error != field_key_error::array_keywords_without_as_array,
+                          "yyjson::min_items, max_items, unique_items, contains, min_contains and max_contains of a "
+                          "struct constrain the array of a struct annotated with yyjson::as_array: annotate the "
+                          "struct with yyjson::as_array too, or give them to a field in yyjson::field");
             static_assert(table.error != field_key_error::extra_items_without_as_array,
                           "yyjson::extra_items receives the elements after the fields of a struct annotated with "
                           "yyjson::as_array: annotate the struct with yyjson::as_array too");
@@ -5686,6 +5741,20 @@ namespace yyjson
         {
             using type = field_keys<S, reflected_field_names<S>>;
         };
+
+        // The settings of a struct annotated with `yyjson::as_array` that are told by its `field_keys`.
+        template <typename S>
+        inline constexpr auto array_struct_table = [] {
+            using keys = typename presence_keys<S>::type;
+            constexpr auto& table = keys::table;
+            return std::pair<bool, bool>{table.extra_items != table.keys.size(), table.items_denied};
+        }();
+        // Whether the last field of S receives the elements after the others, by `yyjson::extra_items`.
+        template <typename S>
+        inline constexpr bool has_extra_items = array_struct_table<S>.first;
+        // The number of the fields of S that are read from and written to the elements at their positions.
+        template <typename S>
+        inline constexpr std::size_t array_position_count = struct_field_count<S> - (has_extra_items<S> ? 1 : 0);
 
         // How the presence of the key of a field is declared.
         struct field_presence
@@ -7806,30 +7875,51 @@ namespace yyjson
             return constraint_kind::none;
         }
 
-        // The keyword of `Schema` on the elements, the values or the keys of `v`, or on their number, that `v` does
-        // not satisfy.  Defined after the concepts of ranges.
-        template <typename Schema, typename V>
-        constraint_kind structure_violation(const V& v);
+        // The input of a check that has only the value of a read, and not the JSON value that the read took.
+        struct no_input
+        {
+        };
+
+        // Whether `Schema` on F checks the JSON value that F was read from: a keyword of the whole array on a struct
+        // annotated with `yyjson::as_array`, at any depth, counts the elements of the input.  Defined after the
+        // concepts of ranges.
+        template <typename Schema, typename F>
+        consteval bool counts_input();
+
+        // `input`, a pointer to the JSON value of F, if `Schema` on F checks it, or else `no_input`.
+        template <typename Schema, typename F, typename Input>
+        CPPYYJSON_ALWAYS_INLINE inline auto input_for(Input input)
+        {
+            if constexpr (std::same_as<Input, no_input> || !counts_input<Schema, F>())
+                return no_input{};
+            else
+                return input;
+        }
+
+        // The keyword of `Schema` on the elements, the values or the keys of `v`, or on their number, that `v`, read
+        // from `input` unless it is `no_input`, does not satisfy.  Defined after the concepts of ranges.
+        template <typename Schema, typename V, typename Input = no_input>
+        constraint_kind structure_violation(const V& v, Input input = {});
 
         // The keyword of the combinator R of `Schema`, or of a later one, that `field` does not satisfy.
-        template <typename Schema, std::size_t R, typename F>
-        constraint_kind combinator_violation(const F& field);
+        template <typename Schema, std::size_t R, typename F, typename Input = no_input>
+        constraint_kind combinator_violation(const F& field, Input input = {});
 
         // The keyword of `Schema` that the value of the DOM `v` does not satisfy, but `yyjson::const_` and
         // `yyjson::enum_` unless `Listed`.  Defined after the DOM.
         template <typename Schema, bool Listed = true, typename V>
         constraint_kind dom_violation(const V& v);
         // The keyword of `Schema` that the variant `v` does not satisfy.  Defined after the DOM.
-        template <typename Schema, typename V>
-        constraint_kind variant_violation(const V& v);
+        template <typename Schema, typename V, typename Input = no_input>
+        constraint_kind variant_violation(const V& v, Input input = {});
         // Whether a value of the DOM that refers into a document, such as an element, satisfies `yyjson::matches`.
         template <typename Schema, typename V>
         bool dom_reference_matches(const V& v);
 
         // The keyword of `Schema` that the field `field` does not satisfy.  An empty `std::optional` is a missing
         // key, which no keyword checks, but an element that is one is null.
-        template <typename Schema, bool Element = false, typename F>
-        constraint_kind constraint_violation(const F& field)
+        template <typename Schema, bool Element = false, typename F, typename Input = no_input>
+        constraint_kind constraint_violation(const F& field, Input input = {})
         {
             using V = constrained_value_t<F>;
             constexpr const field_constraints& c = Schema::constraints;
@@ -7847,13 +7937,14 @@ namespace yyjson
             }
             else if constexpr (variant_value<V>)
             {
-                if (const auto kind = variant_violation<Schema>(*value); kind != constraint_kind::none) return kind;
+                if (const auto kind = variant_violation<Schema>(*value, input); kind != constraint_kind::none)
+                    return kind;
             }
             else if (const auto kind = value_violation<Schema>(*value); kind != constraint_kind::none)
                 return kind;
             if constexpr ((c.bits & structure_constraints) != 0 && !dom_checked<V> && !variant_value<V>)
                 if (value != nullptr)
-                    if (const auto kind = structure_violation<Schema>(*value); kind != constraint_kind::none)
+                    if (const auto kind = structure_violation<Schema>(*value, input); kind != constraint_kind::none)
                         return kind;
             if constexpr (c.template has<satisfies_t>())
             {
@@ -7882,16 +7973,17 @@ namespace yyjson
                     return constraint_kind::matches;
             }
             if constexpr (Schema::node.combinators != 0)
-                return combinator_violation<Schema, Schema::node.combinators>(field);
+                return combinator_violation<Schema, Schema::node.combinators>(field, input);
             return constraint_kind::none;
         }
 
-        template <typename Schema, std::size_t R, typename F>
-        constraint_kind combinator_violation(const F& field)
+        template <typename Schema, std::size_t R, typename F, typename Input>
+        constraint_kind combinator_violation(const F& field, Input input)
         {
             using N = typename Schema::template at<R>;
-            const auto holds = [&field]<std::size_t J>(std::integral_constant<std::size_t, J>) {
-                return constraint_violation<typename Schema::template at<N::node.operands_first + J>, true>(field) ==
+            const auto holds = [&field, input]<std::size_t J>(std::integral_constant<std::size_t, J>) {
+                using operand = typename Schema::template at<N::node.operands_first + J>;
+                return constraint_violation<operand, true>(field, input_for<operand, F>(input)) ==
                        constraint_kind::none;
             };
             const auto count = [&holds]<std::size_t... J>(std::index_sequence<J...>) {
@@ -7931,16 +8023,33 @@ namespace yyjson
                 if (held != 1) kind = held == 0 ? constraint_kind::one_of_none : constraint_kind::one_of_many;
             }
             if constexpr (N::node.next != 0)
-                if (kind == constraint_kind::none) return combinator_violation<Schema, N::node.next>(field);
+                if (kind == constraint_kind::none) return combinator_violation<Schema, N::node.next>(field, input);
             return kind;
         }
 
         // The keyword of the field K of S, by its index among the fields that are read, that `field` does not
         // satisfy.
-        template <typename S, std::size_t K, typename F>
-        CPPYYJSON_ALWAYS_INLINE inline constraint_kind field_violation(const F& field)
+        template <typename S, std::size_t K, typename F, typename Input = no_input>
+        CPPYYJSON_ALWAYS_INLINE inline constraint_kind field_violation(const F& field, Input input = {})
         {
-            return constraint_violation<field_schema<S, struct_declared_index<S, K>>>(field);
+            using schema = field_schema<S, struct_declared_index<S, K>>;
+            return constraint_violation<schema>(field, input_for<schema, F>(input));
+        }
+
+        // Whether the keywords of the field K of S check the JSON value that the field F was read from, which a
+        // check of the value alone cannot do.
+        template <typename S, std::size_t K, typename F>
+        inline constexpr bool field_counts_input = counts_input<field_schema<S, struct_declared_index<S, K>>, F>();
+
+        // Whether a read that has only the value `field` of the field K of S leaves its keywords to the document: if
+        // they reject the value, or if they check the JSON value.
+        template <typename S, std::size_t K, typename F>
+        CPPYYJSON_ALWAYS_INLINE inline bool field_value_rejected(const F& field)
+        {
+            if constexpr (field_counts_input<S, K, F>)
+                return true;
+            else
+                return field_violation<S, K>(field) != constraint_kind::none;
         }
 
         // What a violation is found in: the value of a field, an element at any depth in it, or a key of a map in it.
@@ -7962,6 +8071,21 @@ namespace yyjson
                                                                              : "the value";
             if constexpr (transparent_struct<S>)
                 throw_bad_cast_at(target_of(json), "{} of {} {}", subject_text, type_name<S>(), what);
+            else if constexpr (as_array_struct<S> && K < array_position_count<S>)
+            {
+                // a position is an element of the array of S, as an element of a range is
+                const auto position_subject = subject == constraint_subject::value     ? "an element"
+                                              : subject == constraint_subject::element ? "an element of an element"
+                                                                                       : "a key of an element";
+                throw_bad_cast_at(target_of(json), "{} of the value of {} {}", position_subject, type_name<S>(), what);
+            }
+            else if constexpr (as_array_struct<S>)
+            {
+                // the JSON array has no key for the elements of `yyjson::extra_items`, which are its elements
+                const auto extra_subject =
+                    subject == constraint_subject::key ? "a key of an element of the value" : subject_text;
+                throw_bad_cast_at(target_of(json), "{} of {} {}", extra_subject, type_name<S>(), what);
+            }
             else
                 throw_bad_cast_at(target_of(json), "{} of the key \"{}\" of {} {}", subject_text,
                                   struct_field_key<S, K>, type_name<S>(), what);
@@ -7991,7 +8115,7 @@ namespace yyjson
         {
             if constexpr (null_reads_as_missing<F>)
                 if (json.is_null()) return;
-            if (const auto kind = field_violation<S, K>(field); kind != constraint_kind::none) [[unlikely]]
+            if (const auto kind = field_violation<S, K>(field, &json); kind != constraint_kind::none) [[unlikely]]
                 throw_field_violation<S, K, F>(json, kind);
         }
 
@@ -8080,31 +8204,87 @@ namespace yyjson
             assign_missing_defaults(t, seen);
         }
 
-        template <typename T, std::size_t I, typename Seen>
-        bool struct_node_holds(const T& t, const Seen& seen);
+        template <typename T, std::size_t I>
+        consteval bool struct_node_counts_input();
 
-        // Whether the `yyjson::field` M of the conditions of T, and the later ones, hold for `t`, whose fields of the
-        // keys in `seen` were read.  A key that was not read satisfies the keywords of its value.
-        template <typename T, std::size_t M, typename Seen>
-        bool struct_members_hold(const T& t, const Seen& seen)
+        // Whether the `yyjson::field` M of the conditions of T, or a later one, checks the JSON value of its field.
+        template <typename T, std::size_t M>
+        consteval bool struct_members_count_input()
         {
             using N = node_schema<struct_tree<T>, M>;
             constexpr auto k = struct_field_of_key<T>(N::node.key.view());
-            const bool holds =
-                seen[k] ? constraint_violation<N>(struct_field<k>(t)) == constraint_kind::none : !N::node.required;
             if constexpr (N::node.next != 0)
-                return holds && struct_members_hold<T, N::node.next>(t, seen);
+                return counts_input<N, struct_field_type<T, k>>() || struct_members_count_input<T, N::node.next>();
+            else
+                return counts_input<N, struct_field_type<T, k>>();
+        }
+
+        // Whether the combinator R of the conditions of T, or a later one, checks the JSON value of a field.
+        template <typename T, std::size_t R>
+        consteval bool struct_combinators_count_input()
+        {
+            using N = node_schema<struct_tree<T>, R>;
+            const bool operands = []<std::size_t... J>(std::index_sequence<J...>) {
+                return (struct_node_counts_input<T, N::node.operands_first + J>() || ...);
+            }(std::make_index_sequence<N::node.operands_count>());
+            if constexpr (N::node.next != 0)
+                return operands || struct_combinators_count_input<T, N::node.next>();
+            else
+                return operands;
+        }
+
+        template <typename T, std::size_t I>
+        consteval bool struct_node_counts_input()
+        {
+            using N = node_schema<struct_tree<T>, I>;
+            if constexpr (N::node.members != 0)
+                if (struct_members_count_input<T, N::node.members>()) return true;
+            if constexpr (N::node.combinators != 0)
+                return struct_combinators_count_input<T, N::node.combinators>();
+            else
+                return false;
+        }
+
+        // Whether the conditions of T check the JSON value of a field, which a check of the values alone cannot do.
+        template <typename T>
+        inline constexpr bool struct_conditions_count_input = struct_node_counts_input<T, 0>();
+
+        template <typename T, std::size_t I, typename Seen, typename Obj = no_input>
+        bool struct_node_holds(const T& t, const Seen& seen, Obj obj = {});
+
+        // Whether the `yyjson::field` M of the conditions of T, and the later ones, hold for `t`, whose fields of the
+        // keys in `seen` were read from the object `*obj`.  A key that was not read satisfies the keywords of its
+        // value.
+        template <typename T, std::size_t M, typename Seen, typename Obj>
+        bool struct_members_hold(const T& t, const Seen& seen, Obj obj)
+        {
+            using N = node_schema<struct_tree<T>, M>;
+            constexpr auto k = struct_field_of_key<T>(N::node.key.view());
+            const bool holds = [&] {
+                if (!seen[k]) return !N::node.required;
+                if constexpr (!std::same_as<Obj, no_input> && counts_input<N, struct_field_type<T, k>>())
+                {
+                    for (auto&& [key, value] : *obj)
+                        if (key == struct_field_key<T, k>)
+                            return constraint_violation<N>(struct_field<k>(t), &value) == constraint_kind::none;
+                    return true;
+                }
+                else
+                    return constraint_violation<N>(struct_field<k>(t)) == constraint_kind::none;
+            }();
+            if constexpr (N::node.next != 0)
+                return holds && struct_members_hold<T, N::node.next>(t, seen, obj);
             else
                 return holds;
         }
 
         // Whether the combinator R of the conditions of T holds for `t`.
-        template <typename T, std::size_t R, typename Seen>
-        bool struct_combinator_holds(const T& t, const Seen& seen)
+        template <typename T, std::size_t R, typename Seen, typename Obj>
+        bool struct_combinator_holds(const T& t, const Seen& seen, Obj obj)
         {
             using N = node_schema<struct_tree<T>, R>;
             const auto holds = [&]<std::size_t J>(std::integral_constant<std::size_t, J>) {
-                return struct_node_holds<T, N::node.operands_first + J>(t, seen);
+                return struct_node_holds<T, N::node.operands_first + J>(t, seen, obj);
             };
             const auto each = [&]<std::size_t... J>(std::index_sequence<J...>) {
                 return std::array<bool, sizeof...(J)>{holds(std::integral_constant<std::size_t, J>())...};
@@ -8128,24 +8308,25 @@ namespace yyjson
             }
         }
 
-        template <typename T, std::size_t R, typename Seen>
-        bool struct_combinators_hold(const T& t, const Seen& seen)
+        template <typename T, std::size_t R, typename Seen, typename Obj>
+        bool struct_combinators_hold(const T& t, const Seen& seen, Obj obj)
         {
             using N = node_schema<struct_tree<T>, R>;
             if constexpr (N::node.next != 0)
-                return struct_combinator_holds<T, R>(t, seen) && struct_combinators_hold<T, N::node.next>(t, seen);
+                return struct_combinator_holds<T, R>(t, seen, obj) &&
+                       struct_combinators_hold<T, N::node.next>(t, seen, obj);
             else
-                return struct_combinator_holds<T, R>(t, seen);
+                return struct_combinator_holds<T, R>(t, seen, obj);
         }
 
-        template <typename T, std::size_t I, typename Seen>
-        bool struct_node_holds(const T& t, const Seen& seen)
+        template <typename T, std::size_t I, typename Seen, typename Obj>
+        bool struct_node_holds(const T& t, const Seen& seen, Obj obj)
         {
             using N = node_schema<struct_tree<T>, I>;
             if constexpr (N::node.members != 0)
-                if (!struct_members_hold<T, N::node.members>(t, seen)) return false;
+                if (!struct_members_hold<T, N::node.members>(t, seen, obj)) return false;
             if constexpr (N::node.combinators != 0)
-                return struct_combinators_hold<T, N::node.combinators>(t, seen);
+                return struct_combinators_hold<T, N::node.combinators>(t, seen, obj);
             else
                 return true;
         }
@@ -8168,11 +8349,14 @@ namespace yyjson
                                       "requires",
                                       type_name<T>(), struct_field_key<T, k>, via);
             }
-            else if (const auto kind = constraint_violation<N>(struct_field<k>(t)); kind != constraint_kind::none)
+            else
             {
                 for (auto&& [key, value] : obj)
                 {
                     if (key != struct_field_key<T, k>) continue;
+                    using F = struct_field_type<T, k>;
+                    const auto kind = constraint_violation<N>(struct_field<k>(t), input_for<N, F>(&value));
+                    if (kind == constraint_kind::none) break;
                     if constexpr ((N::constraints.bits & structure_constraints) != 0)
                         throw_located_violation<T, k, N, constrained_value_t<struct_field_type<T, k>>>(value, kind);
                     throw_constraint_violation<T, k, N>(value, kind, constraint_subject::value);
@@ -8186,7 +8370,7 @@ namespace yyjson
         void throw_struct_combinators(const T& t, const Seen& seen, const Json& obj)
         {
             using N = node_schema<struct_tree<T>, R>;
-            if (!struct_combinator_holds<T, R>(t, seen))
+            if (!struct_combinator_holds<T, R>(t, seen, &obj))
             {
                 constexpr auto name = N::node.combinator == combinator_kind::not_           ? "not_"
                                       : N::node.combinator == combinator_kind::if_then_else ? "if_then_else"
@@ -8196,7 +8380,7 @@ namespace yyjson
                 constexpr auto first = N::node.operands_first;
                 if constexpr (N::node.combinator == combinator_kind::if_then_else)
                 {
-                    if (struct_node_holds<T, first>(t, seen))
+                    if (struct_node_holds<T, first>(t, seen, &obj))
                         throw_struct_node<T, first + 1>(t, seen, obj, name);
                     else
                         throw_struct_node<T, first + 2>(t, seen, obj, name);
@@ -8213,7 +8397,7 @@ namespace yyjson
                 else if constexpr (N::node.combinator == combinator_kind::one_of)
                 {
                     const bool none = ![&]<std::size_t... J>(std::index_sequence<J...>) {
-                        return (struct_node_holds<T, first + J>(t, seen) || ...);
+                        return (struct_node_holds<T, first + J>(t, seen, &obj) || ...);
                     }(std::make_index_sequence<N::node.operands_count>());
                     throw_bad_cast_at(target_of(obj), "{} satisfies {} of yyjson::one_of", type_name<T>(),
                                       none ? "none of the subschemas" : "more than one subschema");
@@ -8266,7 +8450,13 @@ namespace yyjson
             {
                 if (!null_absent_field<T, K> || *value != 'n') keys.set(K);
             }
-            bool hold(const T& t) const { return struct_node_holds<T, 0>(t, keys); }
+            bool hold(const T& t) const
+            {
+                if constexpr (struct_conditions_count_input<T>)
+                    return false;
+                else
+                    return struct_node_holds<T, 0>(t, keys);
+            }
         };
 
         // Checks the conditions of T on `t`, which the object `obj` was read into, or merged into if `merge`: the
@@ -8282,7 +8472,7 @@ namespace yyjson
                 if (const auto k = matcher.find(key, 0);
                     k < n && !(value.is_null() && (merge || null_absent_fields<T>[k])))
                     seen.set(k);
-            if (!struct_node_holds<T, 0>(t, seen)) [[unlikely]]
+            if (!struct_node_holds<T, 0>(t, seen, &obj)) [[unlikely]]
             {
                 throw_struct_node<T, 0>(t, seen, obj, {});
                 throw_bad_cast_at(target_of(obj), "{} does not satisfy its conditions", type_name<T>());
@@ -8853,6 +9043,12 @@ namespace yyjson
         [[noreturn]] CPPYYJSON_COLD inline void throw_null_as_missing(cast_target at, std::string_view type)
         {
             throw_bad_cast_at(at, "{} is not constructible from JSON null under yyjson::reject_null_as_missing", type);
+        }
+        // Null at a position of a struct annotated with `yyjson::as_array` for a field F that cannot hold null.
+        template <typename F>
+        [[noreturn]] CPPYYJSON_NOINLINE CPPYYJSON_COLD void throw_null_position(cast_target at)
+        {
+            throw_bad_cast_at(at, "{} is not constructible from JSON null", null_missing_type_name<F>());
         }
         // Null in a merge patch for a field that may not be left out, which null would give its value in `T()`.
         [[noreturn]] CPPYYJSON_COLD inline void throw_null_for_required_key(cast_target at, std::string_view key,
@@ -15109,9 +15305,148 @@ namespace yyjson
                 return constraint_violation<Schema, true>(std::string_view(key));
         }
 
-        // The keyword of `Schema` that a value written as a JSON array does not satisfy.
-        template <typename Schema, typename V>
-        constraint_kind array_violation(const V& v)
+        // The type of the element J of V, a tuple or a range written as a JSON array, and the type that reads it.
+        template <typename V, std::size_t J, bool = array_written_tuple<V>>
+        struct array_element_of
+        {
+            using type = constrained_element_t<V>;
+            using read = array_element_t<V>;
+        };
+        template <typename V, std::size_t J>
+        struct array_element_of<V, J, true>
+        {
+            using type = std::remove_cv_t<std::tuple_element_t<J, V>>;
+            using read = type;
+        };
+
+        // Whether the subschema at `Sub` of `Schema`, or for 0 the subschemas of its `yyjson::prefix_items`, check
+        // the JSON values of the elements of V, a tuple or a range written as a JSON array.
+        template <typename Schema, typename V, std::size_t Sub>
+        consteval bool elements_count_input()
+        {
+            constexpr auto size = [] {
+                if constexpr (Sub == 0)
+                    return Schema::node.prefix_count;
+                else if constexpr (array_written_tuple<V>)
+                    return std::tuple_size_v<V>;
+                else
+                    return std::size_t{1};
+            }();
+            return []<std::size_t... J>(std::index_sequence<J...>) {
+                return (counts_input<typename Schema::template at<(Sub == 0 ? Schema::node.prefix_first + J : Sub)>,
+                                     typename array_element_of<V, J>::type>() ||
+                        ...);
+            }(std::make_index_sequence<size>{});
+        }
+
+        // Whether a combinator R of `Schema`, or a later one, checks the JSON value of F.
+        template <typename Schema, std::size_t R, typename F>
+        consteval bool combinators_count_input()
+        {
+            using N = typename Schema::template at<R>;
+            const bool operands = []<std::size_t... J>(std::index_sequence<J...>) {
+                return (counts_input<typename Schema::template at<N::node.operands_first + J>, F>() || ...);
+            }(std::make_index_sequence<N::node.operands_count>());
+            if constexpr (N::node.next != 0)
+                return operands || combinators_count_input<Schema, N::node.next, F>();
+            else
+                return operands;
+        }
+
+        template <typename Schema, typename F>
+        consteval bool counts_input()
+        {
+            using V = constrained_value_t<F>;
+            constexpr const schema_node& n = Schema::node;
+            if constexpr (n.combinators != 0)
+                if (combinators_count_input<Schema, n.combinators, F>()) return true;
+            if constexpr (dom_checked<V>)
+                return false;
+            else if constexpr (as_array_struct<V>)
+                return (n.constraints.bits & array_constraints) != 0;
+            else if constexpr (variant_value<V>)
+                return []<typename... As>(std::type_identity<std::variant<As...>>) {
+                    return (counts_input<Schema, As>() || ...);
+                }(std::type_identity<V>{});
+            else if constexpr (array_written_tuple<V> || array_written_range<V>)
+                return (n.prefix_count != 0 && elements_count_input<Schema, V, 0>()) ||
+                       (n.items != 0 && elements_count_input<Schema, V, n.items>()) ||
+                       (n.contains != 0 && elements_count_input<Schema, V, n.contains>());
+            else if constexpr (object_written_range<V>)
+            {
+                if constexpr (n.properties != 0)
+                    return counts_input<
+                        typename Schema::template at<n.properties>,
+                        std::remove_cv_t<std::tuple_element_t<1, std::ranges::range_value_t<const V>>>>();
+                else
+                    return false;
+            }
+            else
+                return false;
+        }
+
+        // The elements of the JSON array `*arr` from the index `from`, which the field of `yyjson::extra_items` is
+        // read from.
+        template <typename Array>
+        struct input_tail
+        {
+            const Array* arr;
+            std::size_t from;
+        };
+
+        // Whether f(j, e) holds for an element e at the index j of the JSON array `*input`.
+        template <typename Json, typename F>
+        bool any_input_element(const Json* input, F&& f)
+        {
+            const auto a = input->as_array();
+            if (!a.has_value()) return false;
+            auto j = std::size_t{0};
+            for (const auto& e : *a)
+                if (f(j++, e)) return true;
+            return false;
+        }
+        template <typename Array, typename F>
+        bool any_input_element(input_tail<Array> input, F&& f)
+        {
+            auto j = std::size_t{0};
+            for (const auto& e : *input.arr)
+                if (j++ >= input.from && f(j - 1 - input.from, e)) return true;
+            return false;
+        }
+
+        // The keyword of the subschema at `Sub` of `Schema`, or for 0 of its `yyjson::prefix_items` at j, that the
+        // element `e` at the index j of the JSON array that V was read from does not satisfy, read again.
+        template <typename Schema, typename V, std::size_t Sub, typename Json>
+        constraint_kind input_element_violation(std::size_t j, const Json& e)
+        {
+            const auto check = [&e]<std::size_t J>(std::integral_constant<std::size_t, J>) {
+                using E = typename array_element_of<V, J>::type;
+                using S = typename Schema::template at<(Sub == 0 ? Schema::node.prefix_first + J : Sub)>;
+                const E value(cast_nested<typename array_element_of<V, J>::read>(e));
+                return constraint_violation<S, true>(value, input_for<S, E>(&e));
+            };
+            if constexpr (Sub == 0 || array_written_tuple<V>)
+            {
+                constexpr auto size = [] {
+                    if constexpr (Sub == 0)
+                        return Schema::node.prefix_count;
+                    else
+                        return std::tuple_size_v<V>;
+                }();
+                auto kind = constraint_kind::none;
+                [&]<std::size_t... J>(std::index_sequence<J...>) {
+                    ((j == J ? (kind = check(std::integral_constant<std::size_t, J>()), true) : false) || ...);
+                }(std::make_index_sequence<size>{});
+                return kind;
+            }
+            else
+                return check(std::integral_constant<std::size_t, 0>());
+        }
+
+        // The keyword of `Schema` that a value written as a JSON array does not satisfy.  The keywords on the
+        // elements that check the JSON value of an element read the elements of `input` again.
+        template <typename Schema, typename V, typename Input = no_input>
+        constraint_kind array_violation(const V& v, Input input = {})
         {
             constexpr const schema_node& n = Schema::node;
             constexpr const field_constraints& c = n.constraints;
@@ -15157,7 +15492,15 @@ namespace yyjson
                 static_assert(tuple || ordered_array_range<V>,
                               "yyjson::prefix_items constrains the elements of a tuple, or of a range that keeps the "
                               "order of the JSON array: not a set nor a map");
-                if constexpr (tuple)
+                if constexpr (!std::same_as<Input, no_input> && elements_count_input<Schema, V, 0>())
+                {
+                    if (any_input_element(input, [](std::size_t j, const auto& e) {
+                            return j < Schema::node.prefix_count &&
+                                   input_element_violation<Schema, V, 0>(j, e) != constraint_kind::none;
+                        }))
+                        return constraint_kind::prefix_items;
+                }
+                else if constexpr (tuple)
                 {
                     static_assert(n.prefix_count <= std::tuple_size_v<V>,
                                   "yyjson::prefix_items has more positions than the tuple has elements");
@@ -15187,7 +15530,16 @@ namespace yyjson
             if constexpr (n.items != 0)
             {
                 using items = typename Schema::template at<Schema::node.items>;
-                if constexpr (tuple)
+                if constexpr (!std::same_as<Input, no_input> && elements_count_input<Schema, V, n.items>())
+                {
+                    if (any_input_element(input, [](std::size_t j, const auto& e) {
+                            return j >= Schema::node.prefix_count &&
+                                   input_element_violation<Schema, V, Schema::node.items>(j, e) !=
+                                       constraint_kind::none;
+                        }))
+                        return constraint_kind::items;
+                }
+                else if constexpr (tuple)
                 {
                     if (any_tuple_element(v, [](auto j, const auto& e) {
                             if constexpr (j >= Schema::node.prefix_count)
@@ -15221,7 +15573,11 @@ namespace yyjson
                 };
                 if constexpr (has_max || min != 0)
                 {
-                    if constexpr (tuple)
+                    if constexpr (!std::same_as<Input, no_input> && elements_count_input<Schema, V, n.contains>())
+                        any_input_element(input, [&counts](std::size_t j, const auto& e) {
+                            return counts(input_element_violation<Schema, V, Schema::node.contains>(j, e));
+                        });
+                    else if constexpr (tuple)
                         any_tuple_element(v, [&counts](auto, const auto& e) {
                             return counts(constraint_violation<contained, true>(e));
                         });
@@ -15238,9 +15594,10 @@ namespace yyjson
             return constraint_kind::none;
         }
 
-        // The keyword of `Schema` that a map written as a JSON object does not satisfy.
-        template <typename Schema, typename V>
-        constraint_kind object_violation(const V& v)
+        // The keyword of `Schema` that a map written as a JSON object does not satisfy.  The keywords on the values
+        // that check the JSON value of a value read the values of `input` again.
+        template <typename Schema, typename V, typename Input = no_input>
+        constraint_kind object_violation(const V& v, Input input = {})
         {
             constexpr const schema_node& n = Schema::node;
             constexpr const field_constraints& c = n.constraints;
@@ -15253,10 +15610,25 @@ namespace yyjson
                     if (size > c.max_properties) return constraint_kind::max_properties;
             }
             if constexpr (n.properties != 0)
-                for (const auto& e : v)
-                    if (constraint_violation<typename Schema::template at<Schema::node.properties>, true>(
-                            std::get<1>(e)) != constraint_kind::none)
-                        return constraint_kind::additional_properties;
+            {
+                using properties = typename Schema::template at<Schema::node.properties>;
+                using E = std::remove_cv_t<std::tuple_element_t<1, std::ranges::range_value_t<const V>>>;
+                if constexpr (!std::same_as<Input, no_input> && counts_input<properties, E>())
+                {
+                    if (const auto o = input->as_object(); o.has_value())
+                        for (const auto& kv : *o)
+                        {
+                            const auto& json = std::get<1>(kv);
+                            const E value(cast_nested<E>(json));
+                            if (constraint_violation<properties, true>(value, &json) != constraint_kind::none)
+                                return constraint_kind::additional_properties;
+                        }
+                }
+                else
+                    for (const auto& e : v)
+                        if (constraint_violation<properties, true>(std::get<1>(e)) != constraint_kind::none)
+                            return constraint_kind::additional_properties;
+            }
             if constexpr (n.keys != 0)
                 for (const auto& e : v)
                     if (key_violation<typename Schema::template at<Schema::node.keys>>(std::get<0>(e)) !=
@@ -15265,14 +15637,17 @@ namespace yyjson
             return constraint_kind::none;
         }
 
-        template <typename Schema, typename V>
-        constraint_kind structure_violation(const V& v)
+        template <typename Schema, typename S, typename Input>
+        constraint_kind array_struct_violation(const S& t, Input input);
+
+        template <typename Schema, typename V, typename Input>
+        constraint_kind structure_violation(const V& v, Input input)
         {
             constexpr const schema_node& n = Schema::node;
             constexpr const field_constraints& c = n.constraints;
             constexpr bool array_keywords = (c.bits & array_constraints) != 0;
             constexpr bool object_keywords = (c.bits & object_constraints) != 0;
-            constexpr bool as_array = array_written_range<V> || array_written_tuple<V>;
+            constexpr bool as_array = array_written_range<V> || array_written_tuple<V> || as_array_struct<V>;
             constexpr bool as_object = object_written_range<V>;
             if constexpr (as_object)
             {
@@ -15297,9 +15672,11 @@ namespace yyjson
                           "yyjson::min_properties, max_properties, additional_properties and property_names "
                           "constrain a map written as a JSON object, whose keys are strings or enumerations");
             if constexpr (as_object && !array_keywords)
-                return object_violation<Schema>(v);
+                return object_violation<Schema>(v, input);
+            else if constexpr (as_array_struct<V> && !object_keywords)
+                return array_struct_violation<Schema>(v, input);
             else if constexpr (as_array && !object_keywords)
-                return array_violation<Schema>(v);
+                return array_violation<Schema>(v, input);
             else
                 return constraint_kind::none;
         }
@@ -15519,8 +15896,8 @@ namespace yyjson
 
         // The keyword of `Schema` that the alternative `a` of a variant does not satisfy, of the keywords of its kind
         // but `yyjson::const_` and `yyjson::enum_`.
-        template <typename Schema, typename A>
-        constraint_kind alternative_violation(const A& a)
+        template <typename Schema, typename A, typename Input>
+        constraint_kind alternative_violation(const A& a, Input input)
         {
             using V = constrained_value_t<A>;
             constexpr const field_constraints& c = Schema::constraints;
@@ -15535,10 +15912,13 @@ namespace yyjson
             {
                 if (const auto kind = value_violation<Schema, false>(*value); kind != constraint_kind::none)
                     return kind;
-                if constexpr ((c.bits & array_constraints) != 0 && (array_written_range<V> || array_written_tuple<V>))
-                    return array_violation<Schema>(*value);
+                if constexpr ((c.bits & array_constraints) != 0 && as_array_struct<V>)
+                    return array_struct_violation<Schema>(*value, input);
+                else if constexpr ((c.bits & array_constraints) != 0 &&
+                                   (array_written_range<V> || array_written_tuple<V>))
+                    return array_violation<Schema>(*value, input);
                 else if constexpr ((c.bits & object_constraints) != 0 && object_written_range<V>)
-                    return object_violation<Schema>(*value);
+                    return object_violation<Schema>(*value, input);
                 else
                     return constraint_kind::none;
             }
@@ -15559,7 +15939,8 @@ namespace yyjson
             template <typename T, typename U = constrained_value_t<T>>
             static constexpr bool string = any<T> || constraint_string<U>;
             template <typename T, typename U = constrained_value_t<T>>
-            static constexpr bool array = any<T> || array_written_range<U> || array_written_tuple<U>;
+            static constexpr bool array =
+                any<T> || array_written_range<U> || array_written_tuple<U> || as_array_struct<U>;
             template <typename T, typename U = constrained_value_t<T>>
             static constexpr bool object = any<T> || object_written_range<U>;
 
@@ -15569,8 +15950,8 @@ namespace yyjson
             static constexpr bool objects = count_true<object<Ts>...> != 0;
         };
 
-        template <typename Schema, typename V>
-        constraint_kind variant_violation(const V& v)
+        template <typename Schema, typename V, typename Input>
+        constraint_kind variant_violation(const V& v, Input input)
         {
             constexpr const field_constraints& c = Schema::constraints;
             using kinds = alternative_kinds<V>;
@@ -15598,7 +15979,9 @@ namespace yyjson
                 if (std::ranges::none_of(equals, [&v](const auto f) { return f(v); })) return constraint_kind::enum_;
             }
             if (v.valueless_by_exception()) return constraint_kind::none;
-            return std::visit([](const auto& a) { return alternative_violation<Schema>(a); }, v);
+            return std::visit([input]<typename A>(
+                                  const A& a) { return alternative_violation<Schema>(a, input_for<Schema, A>(input)); },
+                              v);
         }
 
         // Reads the JSON value `e` again as E, through Read, and throws at it, or at a value in it, if it does not
@@ -15613,7 +15996,7 @@ namespace yyjson
                 try
                 {
                     value.emplace(cast_nested<Read>(e));
-                    kind = constraint_violation<Schema, true>(*value);
+                    kind = constraint_violation<Schema, true>(*value, input_for<Schema, E>(&e));
                 }
                 catch (const bad_cast&)
                 {
@@ -15649,11 +16032,35 @@ namespace yyjson
             }
         }
 
+        template <typename S>
+        std::size_t array_struct_duplicate(const S& t, std::size_t count);
+
         template <typename S, std::size_t K, typename Schema, typename V, typename Json>
         void throw_located_violation(const Json& json, constraint_kind kind)
         {
             constexpr const schema_node& n = Schema::node;
-            if constexpr (array_written_tuple<V>)
+            if constexpr (as_array_struct<V>)
+            {
+                if constexpr (Schema::constraints.template has<unique_items_t>())
+                {
+                    const auto a = json.as_array();
+                    if (kind != constraint_kind::unique_items || !a.has_value()) return;
+                    auto value = std::optional<V>();
+                    try
+                    {
+                        value.emplace(cast_nested<V>(json));
+                    }
+                    catch (const bad_cast&)
+                    {
+                        return;
+                    }
+                    const auto j = array_struct_duplicate(*value, std::min(a->size(), array_position_count<V>));
+                    if (j != no_duplicate)
+                        throw_constraint_violation<S, K, Schema>((*a)[j], constraint_kind::duplicate_item,
+                                                                 constraint_subject::element);
+                }
+            }
+            else if constexpr (array_written_tuple<V>)
             {
                 const auto a = json.as_array();
                 if (!a.has_value()) return;
@@ -15765,6 +16172,11 @@ namespace yyjson
                                 if (j++ >= n.prefix_count)
                                     throw_if_violated<S, K, typename Schema::template at<Schema::node.items>, E, E>(e);
                         }
+                    if constexpr (Schema::constraints.template has<unique_items_t>())
+                        if (kind == constraint_kind::unique_items)
+                            if (const auto j = first_duplicate(*a); j != no_duplicate)
+                                throw_constraint_violation<S, K, Schema>((*a)[j], constraint_kind::duplicate_item,
+                                                                         constraint_subject::element);
                 }
                 else if (const auto o = json.as_object(); o.has_value())
                 {
@@ -16947,19 +17359,6 @@ namespace yyjson
 
     namespace detail
     {
-        // The settings of a struct annotated with `yyjson::as_array` that are told by its `field_keys`.
-        template <typename S>
-        inline constexpr auto array_struct_table = [] {
-            using keys = typename presence_keys<S>::type;
-            constexpr auto& table = keys::table;
-            return std::pair<bool, bool>{table.extra_items != table.keys.size(), table.items_denied};
-        }();
-        // Whether the last field of S receives the elements after the others, by `yyjson::extra_items`.
-        template <typename S>
-        inline constexpr bool has_extra_items = array_struct_table<S>.first;
-        // The number of the fields of S that are read from and written to the elements at their positions.
-        template <typename S>
-        inline constexpr std::size_t array_position_count = struct_field_count<S> - (has_extra_items<S> ? 1 : 0);
         template <typename S>
         using extra_items_type = struct_field_type<S, struct_field_count<S> - 1>;
 
@@ -17003,26 +17402,387 @@ namespace yyjson
             throw_constraint_violation<S, K, schema>(json, kind, constraint_subject::element);
         }
 
+        // Whether the position K of `t`, a struct annotated with `yyjson::as_array`, holds a value that an object
+        // would leave out.
+        template <std::size_t K, typename T>
+        bool position_omitted(const T& t)
+        {
+            if constexpr (omittable<struct_field_type<T, K>>)
+                return should_omit_field(struct_field<K>(t));
+            else
+                return false;
+        }
+
+        // Throws for `t`, a struct annotated with `yyjson::as_array`, whose position K has no value before a
+        // position or an element of `yyjson::extra_items` that has one: no array puts the later value at its index.
+        template <typename T>
+        [[noreturn]] CPPYYJSON_NOINLINE CPPYYJSON_COLD void throw_array_position_gap(std::size_t k)
+        {
+            const auto keys = []<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                return std::array<std::string_view, sizeof...(Ks)>{struct_field_key<T, Ks>...};
+            }(std::make_index_sequence<array_position_count<T>>{});
+            throw write_error(std::format("{} cannot be written as an array: the field \"{}\" at the element {} has no "
+                                          "value and a later element has one",
+                                          type_name<T>(), keys[k], k),
+                              YYJSON_WRITE_ERROR_INVALID_VALUE_TYPE);
+        }
+
+        // The number of the positions of `t`, a struct annotated with `yyjson::as_array`, that the write writes: all
+        // but those at the end whose value an object would leave out, such as an empty `std::optional`.
+        template <typename T>
+        std::size_t written_position_count(const T& t)
+        {
+            constexpr auto n = array_position_count<T>;
+            const auto omitted = [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                return std::array<bool, n + 1>{position_omitted<Ks>(t)..., false};
+            }(std::make_index_sequence<n>{});
+            auto count = std::size_t{0};
+            while (count != n && !omitted[count]) ++count;
+            for (auto k = count + 1; k < n; ++k)
+                if (!omitted[k]) [[unlikely]]
+                    throw_array_position_gap<T>(count);
+            if constexpr (has_extra_items<T>)
+                if (count != n && !std::ranges::empty(struct_field<n>(t))) [[unlikely]]
+                    throw_array_position_gap<T>(count);
+            return count;
+        }
+
+        // f(setting) for each keyword of the whole array of S, a struct annotated with `yyjson::as_array`, in
+        // `annotations<S>` and then on the type.
+        template <typename S, typename F>
+        constexpr void for_each_array_struct_keyword(const F& f)
+        {
+            for_each_annotation(
+                [&]<typename A>(const A& a) {
+                    if constexpr (array_struct_setting<A>) f(a);
+                },
+                annotations<S>.values);
+#if FIELD_RFL_ANNOTATIONS
+            for (const auto& a : field_reflection::type_annotations<S, min_items>) f(a);
+            for (const auto& a : field_reflection::type_annotations<S, max_items>) f(a);
+            for (const auto& a : field_reflection::type_annotations<S, unique_items_t>) f(a);
+            for (const auto& a : field_reflection::type_annotations<S, min_contains>) f(a);
+            for (const auto& a : field_reflection::type_annotations<S, max_contains>) f(a);
+            [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                (f(std::meta::extract<type_contains_type<S, Ks>>(type_contains<S>[Ks])), ...);
+            }(std::make_index_sequence<type_contains<S>.size()>{});
+#endif
+        }
+
+        // Whether S, a struct annotated with `yyjson::as_array`, has a keyword of its whole array.
+        template <typename S>
+        inline constexpr bool has_array_struct_keywords = [] {
+            constexpr bool annotated = []<typename... As>(std::type_identity<std::tuple<As...>>) {
+                return count_true<array_struct_setting<As>...> != 0;
+            }(std::type_identity<annotation_values_of<S>>{});
+#if FIELD_RFL_ANNOTATIONS
+            return annotated || type_array_keywords_annotated<S>;
+#else
+            return annotated;
+#endif
+        }();
+
+        template <typename S>
+        constexpr tree_builder build_array_struct_tree()
+        {
+            auto b = tree_builder{};
+            build_schema_node(
+                b, [](const auto& f) { for_each_array_struct_keyword<S>(f); },
+                [](std::string_view s) { return tree_string{s.data(), s.size()}; });
+            return b;
+        }
+        template <typename S>
+        struct array_struct_tree : checked_tree<&build_array_struct_tree<S>>
+        {
+        };
+        // The schema of the whole array of S, a struct annotated with `yyjson::as_array`.
+        template <typename S>
+        using array_struct_schema = node_schema<array_struct_tree<S>, 0>;
+
+        // The type of the elements of S, a struct annotated with `yyjson::as_array`, when its positions and the
+        // elements of its `yyjson::extra_items` have one type, which `yyjson::unique_items` compares, or void.
+        template <typename S, bool = has_extra_items<S>>
+        struct extra_items_value
+        {
+            using type = void;
+        };
+        template <typename S>
+        struct extra_items_value<S, true>
+        {
+            using type = std::remove_cv_t<std::ranges::range_value_t<extra_items_type<S>>>;
+        };
+        template <typename S, typename = std::make_index_sequence<array_position_count<S>>>
+        struct uniform_array_struct;
+        template <typename S, std::size_t... Ks>
+        struct uniform_array_struct<S, std::index_sequence<Ks...>>
+        {
+            using extra = typename extra_items_value<S>::type;
+            using element = std::remove_cv_t<std::tuple_element_t<0, std::tuple<struct_field_type<S, Ks>..., extra>>>;
+            static constexpr bool uniform =
+                count_true<std::same_as<element, struct_field_type<S, Ks>>...> == sizeof...(Ks) &&
+                (std::same_as<extra, void> || std::same_as<extra, element>);
+            using type = std::conditional_t<uniform, element, void>;
+        };
+        template <typename S>
+        using uniform_array_struct_t = typename uniform_array_struct<S>::type;
+
+        // Whether S, a struct annotated with `yyjson::as_array`, has a position that the write may leave out before
+        // one that it always writes, which no array of S could give a value without the earlier one.
+        template <typename S>
+        consteval bool array_struct_omits_early()
+        {
+            constexpr auto n = array_position_count<S>;
+            const auto omittable_at = []<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                return std::array<bool, n + 1>{omittable<struct_field_type<S, Ks>>..., false};
+            }(std::make_index_sequence<n>{});
+            auto omittable_seen = false;
+            for (std::size_t k = 0; k < n; ++k)
+            {
+                if (omittable_at[k])
+                    omittable_seen = true;
+                else if (omittable_seen)
+                    return true;
+            }
+            return false;
+        }
+
+        // The number of the positions of S, a struct annotated with `yyjson::as_array`, up to the last one that
+        // every array read into S has: the last one of `yyjson::required`, or under `yyjson::reject_missing_keys`
+        // of the struct the last one that may not be missing.
+        template <typename S>
+        consteval std::size_t required_positions()
+        {
+            auto count = array_position_count<S>;
+            const auto required = [&](std::size_t k) {
+                return (struct_policies<S> & missing_keys_policy) != 0 ? !struct_field_absence<S>[k]
+                                                                       : struct_field_required<S>[k];
+            };
+            while (count != 0 && !required(count - 1)) --count;
+            return count;
+        }
+
+        // Whether the keywords of the whole array of S, a struct annotated with `yyjson::as_array`, can hold.
+        template <typename S>
+        consteval bool array_struct_keywords_apply()
+        {
+            if constexpr (has_array_struct_keywords<S>)
+            {
+                using schema = array_struct_schema<S>;
+                constexpr const field_constraints& c = schema::constraints;
+                constexpr bool extras_denied = array_struct_table<S>.second;
+                static_assert(!extras_denied || !c.has<min_items>() || c.min_items <= array_position_count<S>,
+                              "yyjson::min_items of a struct annotated with yyjson::as_array and yyjson::items(false) "
+                              "is greater than the number of its fields");
+                static_assert(!c.has<max_items>() || c.max_items >= required_positions<S>(),
+                              "yyjson::max_items of a struct annotated with yyjson::as_array is less than the number "
+                              "of its fields up to the last one that every array must have");
+                static_assert(
+                    (!c.has<unique_items_t>() && schema::node.contains == 0) || has_extra_items<S> || extras_denied,
+                    "yyjson::unique_items and yyjson::contains of a struct annotated with yyjson::as_array "
+                    "check every element of the array, also those after the fields: give the struct a "
+                    "field of yyjson::extra_items, or yyjson::items(false)");
+                static_assert(!c.has<unique_items_t>() || !std::same_as<uniform_array_struct_t<S>, void>,
+                              "yyjson::unique_items constrains a struct annotated with yyjson::as_array whose fields "
+                              "and elements of yyjson::extra_items have one type");
+            }
+            return true;
+        }
+
+        // Whether `yyjson::contains` of `Schema` on S, a struct annotated with `yyjson::as_array`, checks the JSON
+        // value of a position or of an element of `yyjson::extra_items`.
+        template <typename Schema, typename S>
+        consteval bool array_struct_elements_count_input()
+        {
+            if constexpr (Schema::node.contains != 0)
+            {
+                using contained = typename Schema::template at<Schema::node.contains>;
+                const bool extra = [] {
+                    if constexpr (has_extra_items<S>)
+                        return counts_input<contained, constrained_element_t<extra_items_type<S>>>();
+                    else
+                        return false;
+                }();
+                return extra || []<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                    return (counts_input<contained, struct_field_type<S, Ks>>() || ...);
+                }(std::make_index_sequence<array_position_count<S>>{});
+            }
+            else
+                return false;
+        }
+
+        // The index in the JSON array of the element of `t`, a struct annotated with `yyjson::as_array`, that equals
+        // an earlier one, or `no_duplicate`.  `t` holds the first `count` elements.
+        template <typename S>
+        std::size_t array_struct_duplicate(const S& t, std::size_t count)
+        {
+            using E = uniform_array_struct_t<S>;
+            constexpr auto n = array_position_count<S>;
+            if constexpr (std::same_as<E, void>)
+                return no_duplicate;
+            else
+            {
+                const auto positions = [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                    return std::array<const E*, n>{std::addressof(struct_field<Ks>(t))...};
+                }(std::make_index_sequence<n>{});
+                auto elements = std::vector<std::pair<const E*, std::size_t>>();
+                for (std::size_t k = 0; k < count; ++k) elements.emplace_back(positions[k], k);
+                if constexpr (has_extra_items<S>)
+                {
+                    auto index = n;
+                    for (const auto& e : struct_field<n>(t)) elements.emplace_back(std::addressof(e), index++);
+                }
+                for (std::size_t j = 1; j < elements.size(); ++j)
+                    for (std::size_t i = 0; i < j; ++i)
+                        if (json_equal<E>(*elements[i].first, *elements[j].first)) return elements[j].second;
+                return no_duplicate;
+            }
+        }
+
+        // The keyword of `Schema` that an array of `size` elements does not satisfy; `t` holds its first `count`
+        // elements and those of its `yyjson::extra_items`, and the read ignores the rest. `elements` is the JSON
+        // array, or `no_input` if no keyword checks the JSON value of an element.
+        template <typename Schema, typename S, typename Elements = no_input>
+        constraint_kind array_struct_violation(const S& t, std::size_t count, std::size_t size, Elements elements = {})
+        {
+            constexpr const schema_node& node = Schema::node;
+            static_assert(node.items == 0 && node.prefix_count == 0,
+                          "yyjson::items and yyjson::prefix_items constrain the elements of a range or a tuple; the "
+                          "positions of a struct annotated with yyjson::as_array take the settings of its fields");
+            constexpr const field_constraints& c = node.constraints;
+            constexpr auto n = array_position_count<S>;
+            if constexpr (c.has<min_items>())
+                if (size < c.min_items) return constraint_kind::min_items;
+            if constexpr (c.has<max_items>())
+                if (size > c.max_items) return constraint_kind::max_items;
+            if constexpr (c.has<unique_items_t>())
+                if (array_struct_duplicate(t, count) != no_duplicate) return constraint_kind::unique_items;
+            if constexpr (node.contains != 0)
+            {
+                using contained = typename Schema::template at<node.contains>;
+                constexpr bool has_min = c.has<yyjson::min_contains>();
+                constexpr bool has_max = c.has<yyjson::max_contains>();
+                constexpr std::size_t min = has_min ? c.min_contains : 1;
+                auto found = std::size_t{0};
+                if constexpr (!std::same_as<Elements, no_input> && array_struct_elements_count_input<Schema, S>())
+                {
+                    [[maybe_unused]] auto extra = [&] {
+                        if constexpr (has_extra_items<S>)
+                            return std::ranges::begin(struct_field<n>(t));
+                        else
+                            return 0;
+                    }();
+                    auto j = std::size_t{0};
+                    for (const auto& e : *elements)
+                    {
+                        const auto held = [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                            auto kind = constraint_kind::none;
+                            if (j >= n)
+                            {
+                                if constexpr (has_extra_items<S>)
+                                {
+                                    using E = constrained_element_t<extra_items_type<S>>;
+                                    kind = constraint_violation<contained, true>(static_cast<const E&>(*extra++),
+                                                                                 input_for<contained, E>(&e));
+                                }
+                                else
+                                    return false;
+                            }
+                            else
+                                ((j == Ks
+                                      ? (kind = constraint_violation<contained, true>(
+                                             struct_field<Ks>(t), input_for<contained, struct_field_type<S, Ks>>(&e)),
+                                         true)
+                                      : false) ||
+                                 ...);
+                            return kind == constraint_kind::none;
+                        }(std::make_index_sequence<n>{});
+                        found += held ? 1 : 0;
+                        ++j;
+                    }
+                }
+                else
+                {
+                    const auto hits = [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                        return std::array<bool, n + 1>{
+                            (Ks < count &&
+                             constraint_violation<contained, true>(struct_field<Ks>(t)) == constraint_kind::none)...,
+                            false};
+                    }(std::make_index_sequence<n>{});
+                    found = static_cast<std::size_t>(std::ranges::count(hits, true));
+                    if constexpr (has_extra_items<S>)
+                    {
+                        using V = extra_items_type<S>;
+                        for (const auto& e : struct_field<n>(t))
+                            if (constraint_violation<contained, true>(
+                                    static_cast<const constrained_element_t<V>&>(e)) == constraint_kind::none)
+                                ++found;
+                    }
+                }
+                if constexpr (has_max)
+                    if (found > c.max_contains) return constraint_kind::max_contains;
+                if (found < min) return has_min ? constraint_kind::min_contains : constraint_kind::contains;
+            }
+            return constraint_kind::none;
+        }
+
+        // The keyword of `Schema` that `t`, a struct annotated with `yyjson::as_array` read from `*input`, does not
+        // satisfy.  The keywords count the elements of the JSON array, as those of the whole array of S do.
+        template <typename Schema, typename S, typename Input>
+        constraint_kind array_struct_violation(const S& t, Input input)
+        {
+            constexpr const field_constraints& c = Schema::constraints;
+            static_assert((!c.has<unique_items_t>() && Schema::node.contains == 0) || has_extra_items<S> ||
+                              array_struct_table<S>.second,
+                          "yyjson::unique_items and yyjson::contains on a struct annotated with yyjson::as_array "
+                          "check every element of the array, also those after the fields: give the struct a field "
+                          "of yyjson::extra_items, or yyjson::items(false)");
+            static_assert(!c.has<unique_items_t>() || !std::same_as<uniform_array_struct_t<S>, void>,
+                          "yyjson::unique_items constrains a struct annotated with yyjson::as_array whose fields and "
+                          "elements of yyjson::extra_items have one type");
+            static_assert(!std::same_as<Input, no_input>,
+                          "the keywords of the array on a struct annotated with yyjson::as_array count the JSON array "
+                          "that it was read from");
+            if constexpr (!std::same_as<Input, no_input>)
+            {
+                const auto arr = input->as_array();
+                if (!arr.has_value()) return constraint_kind::none;
+                const auto size = arr->size();
+                return array_struct_violation<Schema>(t, std::min(size, array_position_count<S>), size, &*arr);
+            }
+            else
+                return constraint_kind::none;
+        }
+
+        // Throws at the JSON array `json`, read into a struct S annotated with `yyjson::as_array`, that does not
+        // satisfy the keyword `kind` of the whole array.
+        template <typename S, typename Json>
+        [[noreturn]] CPPYYJSON_NOINLINE CPPYYJSON_COLD void throw_array_struct_violation(const Json& json,
+                                                                                         constraint_kind kind,
+                                                                                         const S& t)
+        {
+            using schema = array_struct_schema<S>;
+            if constexpr (schema::constraints.template has<unique_items_t>())
+                if (const auto arr = json.as_array(); kind == constraint_kind::unique_items && arr.has_value())
+                {
+                    const auto j = array_struct_duplicate(t, std::min(arr->size(), array_position_count<S>));
+                    if (j != no_duplicate)
+                        throw_bad_cast_at(target_of((*arr)[j]), "an element of the value of {} {}", type_name<S>(),
+                                          constraint_what<schema>(constraint_kind::duplicate_item));
+                }
+            throw_bad_cast_at(target_of(json), "the value of {} {}", type_name<S>(), constraint_what<schema>(kind));
+        }
+
         // Reads the field K of `t`, a struct annotated with `yyjson::as_array`, from the element `e` at its position.
-        // Null is read as a missing key of an object is.
+        // A position cannot be left out, so null is an error for a field that cannot hold it, under every policy.
         template <typename T, std::size_t K, typename Json>
-        CPPYYJSON_ALWAYS_INLINE inline void assign_array_field(T& t, const Json& e, std::uint8_t policies)
+        CPPYYJSON_ALWAYS_INLINE inline void assign_array_field(T& t, const Json& e)
         {
             using F = struct_field_type<T, K>;
-            constexpr auto r = struct_declared_index<T, K>;
             auto& field = struct_field<K>(t);
             if constexpr (null_missing_field<F>)
             {
-                if ((policies & null_as_missing_policy) != 0 && e.is_null()) [[unlikely]]
-                    throw_null_as_missing(target_of(e), null_missing_type_name<F>());
-            }
-            if constexpr (null_takes_default<T, r>)
-            {
-                if (e.is_null())
-                {
-                    field = default_field_value<T, r>();
-                    return;
-                }
+                if (e.is_null()) [[unlikely]]
+                    throw_null_position<F>(target_of(e));
             }
             assign_reflected_field(field, e, array_field_replaceable<K>(t));
             if constexpr (constrained_field<T, K>) check_field_constraints<T, K>(field, e);
@@ -17048,7 +17808,7 @@ namespace yyjson
                               [&] {
                                   if (Ks < size)
                                   {
-                                      assign_array_field<T, Ks>(t, *it, policies);
+                                      assign_array_field<T, Ks>(t, *it);
                                       ++it;
                                       return;
                                   }
@@ -17072,39 +17832,17 @@ namespace yyjson
                 extra.clear();
                 for (; it != arr->end(); ++it) extra.push_back(cast_nested<E>(*it));
                 if constexpr (constrained_field<T, n>)
-                    if (const auto kind = field_violation<T, n>(extra); kind != constraint_kind::none) [[unlikely]]
+                    if (const auto kind =
+                            field_violation<T, n>(extra, input_tail<std::remove_cvref_t<decltype(*arr)>>{&*arr, n});
+                        kind != constraint_kind::none) [[unlikely]]
                         throw_extra_items_violation<T, n>(*arr, json, kind);
             }
             else if (size > n && ((policies & unknown_keys_policy) != 0 || array_struct_table<T>.second)) [[unlikely]]
                 throw_bad_cast_at(target_of(*it), "{} has no field of the element {}", type_name<T>(), n);
-        }
-
-        // Whether the position K of `t`, a struct annotated with `yyjson::as_array`, holds a value that an object
-        // would leave out.
-        template <std::size_t K, typename T>
-        bool position_omitted(const T& t)
-        {
-            if constexpr (omittable<struct_field_type<T, K>>)
-                return should_omit_field(struct_field<K>(t));
-            else
-                return false;
-        }
-
-        // The number of the positions of `t`, a struct annotated with `yyjson::as_array`, that are written: all but
-        // those at the end whose value an object would leave out, such as an empty `std::optional`, unless
-        // elements of `yyjson::extra_items` follow.
-        template <typename T>
-        std::size_t written_position_count(const T& t)
-        {
-            constexpr auto n = array_position_count<T>;
-            if constexpr (has_extra_items<T>)
-                if (!std::ranges::empty(struct_field<n>(t))) return n;
-            const auto omitted = [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
-                return std::array<bool, n + 1>{position_omitted<Ks>(t)..., false};
-            }(std::make_index_sequence<n>{});
-            auto count = n;
-            while (count != 0 && omitted[count - 1]) --count;
-            return count;
+            if constexpr (has_array_struct_keywords<T>)
+                if (const auto kind = array_struct_violation<array_struct_schema<T>>(t, std::min(size, n), size, &*arr);
+                    kind != constraint_kind::none) [[unlikely]]
+                    throw_array_struct_violation<T>(json, kind, t);
         }
 
         // Writes the fields of `t`, a struct annotated with `yyjson::as_array`, as the elements of `arr`, and then
@@ -17195,6 +17933,11 @@ namespace yyjson
                 },
             "the field of yyjson::extra_items is a range that clear() empties and push_back adds to, such as "
             "std::vector");
+        static_assert(!detail::array_struct_omits_early<T>(),
+                      "the optional fields of a struct annotated with yyjson::as_array must come after the fields "
+                      "that are always written: a std::optional or another field that the write may leave out "
+                      "precedes a field that the write always writes");
+        static_assert(detail::array_struct_keywords_apply<T>());
 
         template <typename Json>
         requires (detail::array_fields_castable<T, Json>())
@@ -24990,8 +25733,7 @@ namespace yyjson
                             (yyjson::detail::null_takes_default<T, yyjson::detail::struct_declared_index<T, I>> ||
                              yyjson::detail::null_reads_as_missing<field_type>))
                             return;
-                        if (yyjson::detail::field_violation<T, I>(struct_field<I>(t)) !=
-                            yyjson::detail::constraint_kind::none) [[unlikely]]
+                        if (yyjson::detail::field_value_rejected<T, I>(struct_field<I>(t))) [[unlikely]]
                             fail();
                     }
                     else
@@ -25853,6 +26595,7 @@ namespace yyjson
                 auto result = T();
                 const auto policies = policies_of<T>();
                 auto more = *cur_ != ']';
+                auto size = std::size_t{0};  // of the elements read so far
                 // moves to the next element, and tells whether there is one
                 const auto next = [&] {
                     skip_ws();
@@ -25885,27 +26628,16 @@ namespace yyjson
                                               field = d::default_field_value<T, r>();
                                           return;
                                       }
-                                      const bool null = *cur_ == 'n';
                                       if constexpr (d::null_missing_field<F>)
                                       {
-                                          if (null && (policies & d::null_as_missing_policy) != 0) [[unlikely]]
+                                          if (*cur_ == 'n') [[unlikely]]
                                               fail();
                                       }
-                                      if constexpr (d::null_takes_default<T, r>)
-                                      {
-                                          if (null)
-                                          {
-                                              read_literal("null");
-                                              field = d::default_field_value<T, r>();
-                                              more = next();
-                                              return;
-                                          }
-                                      }
+                                      ++size;
                                       read_field(field, d::array_field_replaceable<Ks>(result));
                                       if constexpr (d::constrained_field<T, Ks>)
                                       {
-                                          if (!(null && d::null_reads_as_missing<F>) &&
-                                              d::field_violation<T, Ks>(field) != d::constraint_kind::none) [[unlikely]]
+                                          if (d::field_value_rejected<T, Ks>(field)) [[unlikely]]
                                               fail();
                                       }
                                       more = next();
@@ -25918,9 +26650,10 @@ namespace yyjson
                     auto& extra = struct_field<n>(result);
                     extra.clear();
                     for (; more; more = next()) extra.push_back(read_element<E>());
+                    size += static_cast<std::size_t>(std::ranges::distance(extra));
                     if constexpr (d::constrained_field<T, n>)
                     {
-                        if (d::field_violation<T, n>(extra) != d::constraint_kind::none) [[unlikely]]
+                        if (d::field_value_rejected<T, n>(extra)) [[unlikely]]
                             fail();
                     }
                 }
@@ -25928,7 +26661,15 @@ namespace yyjson
                 {
                     if ((policies & d::unknown_keys_policy) != 0 || d::array_struct_table<T>.second) [[unlikely]]
                         fail();
-                    for (; more; more = next()) skip_value();
+                    for (; more; more = next(), ++size) skip_value();
+                }
+                if constexpr (d::array_struct_elements_count_input<d::array_struct_schema<T>, T>())
+                    fail();
+                else if constexpr (d::has_array_struct_keywords<T>)
+                {
+                    if (d::array_struct_violation<d::array_struct_schema<T>>(result, std::min(size, n), size) !=
+                        d::constraint_kind::none) [[unlikely]]
+                        fail();
                 }
                 close(open);
                 return result;
@@ -26670,7 +27411,10 @@ namespace yyjson
                 }
                 check_adjacent_tags_without_values(t, adjacent);
                 if constexpr (yyjson::detail::has_struct_conditions<T>)
-                    if (!yyjson::detail::struct_node_holds<T, 0>(t, seen)) fail();
+                {
+                    if (!keys.hold(t)) [[unlikely]]
+                        fail();
+                }
             }
 
             // Reads a field as `read_field` does, but on its first key in the object puts back its value in `T()`
@@ -26867,8 +27611,7 @@ namespace yyjson
             {
                 if constexpr (yyjson::detail::constrained_field<S, K>)
                 {
-                    if (yyjson::detail::field_violation<S, K>(field) != yyjson::detail::constraint_kind::none)
-                        [[unlikely]]
+                    if (yyjson::detail::field_value_rejected<S, K>(field)) [[unlikely]]
                         fail();
                 }
             }

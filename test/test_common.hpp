@@ -135,6 +135,10 @@ namespace
         {
             return std::format("read error {}: {}", static_cast<int>(e.code()), e.what());
         }
+        catch (const yyjson::write_error& e)
+        {
+            return std::format("write error {}: {}", static_cast<int>(e.code()), e.what());
+        }
         catch (const yyjson::bad_cast& e)
         {
             // a document cast knows no text, so the position that `yyjson::read<T>` adds is left out

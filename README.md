@@ -93,6 +93,7 @@ auto table = rates.cast<std::map<std::string, double>>();  // the whole object a
 *   **Fast with both APIs.** The data binding API reads the text straight into your types, and the DOM API runs on a faster fork of yyjson. [Performance](#performance) compares both APIs with other JSON libraries.
 *   **Most standard types, nested in any combination.** `read<T>` and `write` convert structs, containers, maps, `std::optional`, `std::variant`, smart pointers, enumerations and recursive types. `read_into` and `merge_into` read into an existing object, and `merge_into` applies the JSON as a [JSON Merge Patch](https://www.rfc-editor.org/rfc/rfc7396).
 *   **Tolerant reading.** Unknown keys are ignored, and missing keys keep their defaults. Values that do not fit throw `yyjson::bad_cast`, with the [path and the position](docs/validation.md#conversion-errors) of the value.
+*   **Constraints with the keywords of JSON Schema.** Settings such as `yyjson::minimum`, `yyjson::pattern`, `yyjson::items` and `yyjson::one_of` make a read reject the values that a field must not hold. Only the fields that have them pay the cost of the checks. See [Constraints](docs/validation.md#constraints).
 *   **A DOM that builds JSON from C++ values.** `yyjson::object` and `yyjson::array` are built from containers and initializer lists. `emplace` adds a member to an object, and `emplace_back` adds an element to an array.
 
 ## Installation
