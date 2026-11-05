@@ -353,13 +353,16 @@ namespace yyjson
                 }
             }
 
-            // Makes the mutable value `to` the target of `e` in the place of the immutable value `from`, which is a
-            // copy of it, so that the path goes on to the value in the copy.
-            static void move_target(bad_cast& e, const yyjson_val* from, const yyjson_mut_val* to) noexcept
+            // Makes the value `to` the target of `e` in the place of the value `from`, which is a copy of it in a
+            // document of the other API, so that the path goes on to the value in the copy.
+            template <typename From, typename To>
+            static void move_target(bad_cast& e, const From* from, const To* to) noexcept
             {
-                if (e.state_ == nullptr || e.state_->value != from || e.state_->mutable_value) return;
+                if (e.state_ == nullptr || e.state_->value != from ||
+                    e.state_->mutable_value != std::same_as<From, yyjson_mut_val>)
+                    return;
                 e.state_->value = to;
-                e.state_->mutable_value = true;
+                e.state_->mutable_value = std::same_as<To, yyjson_mut_val>;
             }
 
             // Called by a cast of `v` that `e` leaves.  The path is left as it is if it cannot be extended.
@@ -2378,6 +2381,26 @@ namespace yyjson
             { default_caster<T>::from_json(v) } -> std::same_as<T>;
         };
 
+        // A copy of a JSON value in a document of the other API, for a caster whose `from_json` takes only the
+        // value of that API.  `other` is the reference that the copy is given as.
+        template <typename Json>
+        struct json_value_of_copy
+        {
+        };
+        // `caster<T>::from_json(t, json)` with the JSON value `json` or with its copy.
+        template <typename T, typename Json>
+        concept caster_assigns_from_json =
+            requires(T& t, const Json& v) { caster<T>::from_json(t, v); } ||
+            requires(T& t, const typename json_value_of_copy<Json>::other& v) { caster<T>::from_json(t, v); };
+        template <typename T, typename Json>
+        void caster_assign_from_json(T& t, const Json& json)
+        {
+            if constexpr (requires { caster<T>::from_json(t, json); })
+                caster<T>::from_json(t, json);
+            else
+                json_value_of_copy<Json>::apply(json, [&](const auto& copy) { caster<T>::from_json(t, copy); });
+        }
+
         // The translator forms of `caster<T>::from_json`, which take a C++ value rather than a JSON value.
         template <typename T>
         struct from_json_translator;
@@ -3165,7 +3188,7 @@ namespace yyjson
             {
                 assign_c_array(field, value);
             }
-            else if constexpr (requires { caster<field_type>::from_json(field, value); })
+            else if constexpr (caster_assigns_from_json<field_type, Json>)
             {
                 // A field that cannot be returned by value, such as a proxy or a non-movable type,
                 // is assigned in place. The caster decides which type it casts the JSON value to.
@@ -3174,7 +3197,7 @@ namespace yyjson
                     caster<field_type>::from_json(field, value);
                 else
                     with_cast_path(dependent_t<writer::detail::json_value_access, Json>::get(value),
-                                   [&] { caster<field_type>::from_json(field, value); });
+                                   [&] { caster_assign_from_json(field, value); });
             }
             else if constexpr (from_json_translator<field_type>::in_place)
             {
@@ -3206,8 +3229,7 @@ namespace yyjson
         template <typename Field, typename Json>
         concept usual_type_assignable_field =
             std::is_arithmetic_v<Field> && std::same_as<Field, std::remove_cv_t<Field>> &&
-            !requires(Field& f, const Json& v) { caster<Field>::from_json(f, v); } &&
-            !from_json_translator<Field>::in_place &&
+            !caster_assigns_from_json<Field, Json> && !from_json_translator<Field>::in_place &&
             requires(Field& f, const Json& v) { default_caster<Field>::assign_usual_type(f, v); };
 
         template <typename Field, typename Json>
@@ -3969,6 +3991,14 @@ namespace yyjson
         }
     }  // namespace detail
 
+    class json_view;
+    namespace writer::detail
+    {
+        struct mutable_document;
+        template <typename DocType>
+        class const_value_base;
+    }  // namespace writer::detail
+
     namespace reader
     {
         class abstract_value_ref;
@@ -3993,9 +4023,12 @@ namespace yyjson
         {
             using namespace yyjson::detail;  // NOLINT
 
+            // A `from_json` that takes only the value of the DOM API that builds a document is given a copy.
             template <typename T>
             concept from_json_val_usr_defined =
-                caster_from_json<T, const_value_ref> || yyjson::detail::from_json_translator<T>::castable;
+                caster_from_json<T, const_value_ref> ||
+                caster_from_json<T, writer::detail::const_value_base<const writer::detail::mutable_document&>> ||
+                yyjson::detail::from_json_translator<T>::castable;
             template <typename T>
             concept from_json_def_val_defined = default_caster_from_json<T, const_value_ref>;
             template <typename T>
@@ -4273,9 +4306,13 @@ namespace yyjson
                 }
             }
 
+            // A `from_json` that takes only the value of the DOM API that reads JSON is given a copy.  A
+            // `json_view` would view that copy after its release, so it is not.
             template <typename T>
-            concept from_json_val_usr_defined =
-                caster_from_json<T, const_value_ref> || yyjson::detail::from_json_translator<T>::castable;
+            concept from_json_val_usr_defined = caster_from_json<T, const_value_ref> ||
+                                                (caster_from_json<T, reader::const_value_ref> &&
+                                                 !std::same_as<T, yyjson::json_view>) ||
+                                                yyjson::detail::from_json_translator<T>::castable;
             template <typename T>
             concept from_json_def_val_defined = default_caster_from_json<T, const_value_ref>;
             template <typename T>
@@ -5798,6 +5835,8 @@ namespace yyjson
                 friend class object_iter;
                 template <typename D>
                 friend class mutable_object_base;
+                template <typename Json>
+                friend struct yyjson::detail::json_value_of_copy;
 
             public:
                 const_value_base(const const_value_base&) = default;
@@ -7581,6 +7620,8 @@ namespace yyjson
             friend class yyjson::json_array_view;
             template <typename T>
             friend struct yyjson::detail::default_caster;
+            template <typename Json>
+            friend struct yyjson::detail::json_value_of_copy;
 
         protected:
             const_value_ref& operator=(const const_value_ref&) = default;
@@ -8988,7 +9029,13 @@ namespace yyjson
         {
             [[maybe_unused]] const auto guard = recursion_guard<T>();
             if constexpr (!from_json_translator<T>::castable)
-                return caster<T>::from_json(json);
+            {
+                if constexpr (requires { caster<T>::from_json(json); })
+                    return caster<T>::from_json(json);
+                else
+                    return json_value_of_copy<Json>::apply(
+                        json, [](const auto& copy) { return caster<T>::from_json(copy); });
+            }
             else if constexpr (views_copy<from_json_source<T>, Json>)
                 return json_view_of_copy<Json>::apply(
                     json, [](auto view) { return from_json_translator<T>::convert(view); });
@@ -9006,9 +9053,9 @@ namespace yyjson
         ((detail::c_array<T> && castable<Json, std::remove_all_extents_t<std::remove_cvref_t<T>>> &&
           std::is_move_assignable_v<std::remove_all_extents_t<T>>) ||
          (!detail::c_array<T> &&
-          ((castable<Json, T> && std::is_move_assignable_v<T>) || requires(T& field, const Json& json) {
-              caster<std::remove_cvref_t<T>>::from_json(field, json);
-          } || detail::from_json_translator<std::remove_cvref_t<T>>::in_place)));
+          ((castable<Json, T> && std::is_move_assignable_v<T>) ||
+           detail::caster_assigns_from_json<std::remove_cvref_t<T>, Json> ||
+           detail::from_json_translator<std::remove_cvref_t<T>>::in_place)));
 
     // `CheckRecursive` checks the fields of a recursive struct as well, which `yyjson::readable` does once for each
     // such struct that a type leads to.
@@ -14118,7 +14165,7 @@ namespace yyjson
         concept reads_over_old_value =
             (!std::is_array_v<Field>) &&
             (yyjson::detail::from_json_translator<Field>::in_place ||
-             (requires(Field& field, const const_value_ref& v) { caster<Field>::from_json(field, v); } &&
+             (yyjson::detail::caster_assigns_from_json<Field, const_value_ref> &&
               !(yyjson::detail::is_std_optional<Field>::value &&
                 std::derived_from<caster<Field>, yyjson::detail::builtin_caster>)));
 
@@ -15166,7 +15213,7 @@ namespace yyjson
                 using yyjson::detail::type_list;
                 if constexpr (std::is_array_v<F>)
                     return node<false, type_list<value_node<std::remove_cv_t<std::remove_all_extents_t<F>>, true>>>{};
-                else if constexpr (requires(F& field, const const_value_ref& v) { caster<F>::from_json(field, v); })
+                else if constexpr (yyjson::detail::caster_assigns_from_json<F, const_value_ref>)
                 {
                     if constexpr (is_std_optional<F>::value &&
                                   std::derived_from<caster<F>, yyjson::detail::builtin_caster>)
@@ -18937,7 +18984,7 @@ namespace yyjson
                 using field_type = std::remove_cvref_t<Field>;
                 if constexpr (std::is_array_v<field_type>)
                     read_c_array(field);
-                else if constexpr (requires(const const_value_ref& v) { caster<field_type>::from_json(field, v); })
+                else if constexpr (yyjson::detail::caster_assigns_from_json<field_type, const_value_ref>)
                 {
                     if constexpr (is_std_optional<field_type>::value &&
                                   std::derived_from<caster<field_type>, yyjson::detail::builtin_caster>)
@@ -18995,7 +19042,8 @@ namespace yyjson
                     else
                     {
                         [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<field_type>();
-                        with_document([&](const const_value_ref& v) { caster<field_type>::from_json(field, v); });
+                        with_document(
+                            [&](const const_value_ref& v) { yyjson::detail::caster_assign_from_json(field, v); });
                     }
                 }
                 else if constexpr (yyjson::detail::from_json_translator<field_type>::in_place)
@@ -19756,6 +19804,72 @@ namespace yyjson
 
     namespace detail
     {
+        // Calls `f` with `root`, the root of a copy of the value `original` in a document of the other API.  The
+        // path to a value in the copy that a `bad_cast` from `f` names is the path to it in `original`.
+        template <typename Val, typename Copy, typename F>
+        decltype(auto) with_copy_of(const Val* original, Copy* root, F&& f)
+        {
+            auto failure = std::exception_ptr();
+            try
+            {
+                return std::forward<F>(f)(root);
+            }
+            catch (bad_cast& e)
+            {
+                bad_cast_access::add_path(e, root);
+                bad_cast_access::move_target(e, root, original);
+                failure = std::current_exception();
+            }
+            std::rethrow_exception(failure);
+        }
+
+        template <writer::detail::base_of_value Json>
+        struct json_value_of_copy<Json>
+        {
+            using other = reader::const_value_ref;
+
+            // Calls `f` with the root of a copy of `json` in an immutable document, which lives until `f` returns.
+            template <typename F>
+            static decltype(auto) with_root(const Json& json, F&& f)
+            {
+                const auto* const original = writer::detail::json_value_access::get(json);
+                const auto doc = std::unique_ptr<yyjson_doc, decltype(&yyjson_doc_free)>(
+                    // the value is const from yyjson 0.13, and not modified before
+                    yyjson_mut_val_imut_copy(const_cast<yyjson_mut_val*>(original), nullptr), &yyjson_doc_free);
+                if (doc == nullptr) [[unlikely]]
+                    throw std::bad_alloc();
+                return with_copy_of(original, yyjson_doc_get_root(doc.get()), std::forward<F>(f));
+            }
+            template <typename F>
+            static decltype(auto) apply(const Json& json, F&& f)
+            {
+                return with_root(json, [&](yyjson_val* root) -> decltype(auto) {
+                    return std::forward<F>(f)(other(root));
+                });
+            }
+        };
+
+        template <reader::detail::base_of_value_ref Json>
+        struct json_value_of_copy<Json>
+        {
+            using other = writer::detail::const_value_ref;
+
+            // Calls `f` with a copy of `json` in a mutable document, which lives until `f` returns.
+            template <typename F>
+            static decltype(auto) apply(const Json& json, F&& f)
+            {
+                const auto doc = writer::detail::mutable_document();
+                const auto* const original = writer::detail::json_value_access::get(json);
+                // the value is const from yyjson 0.13, and not modified before
+                auto* const root = yyjson_val_mut_copy(doc.ptrs->self, const_cast<yyjson_val*>(original));
+                if (root == nullptr) [[unlikely]]
+                    throw std::bad_alloc();
+                return with_copy_of(original, root, [&](yyjson_mut_val* copy) -> decltype(auto) {
+                    return std::forward<F>(f)(other(doc, copy));
+                });
+            }
+        };
+
         template <typename Json>
         struct json_view_of_copy
         {
@@ -19763,28 +19877,9 @@ namespace yyjson
             template <typename F>
             static decltype(auto) apply(const Json& json, F&& f)
             {
-                const auto doc = std::unique_ptr<yyjson_doc, decltype(&yyjson_doc_free)>(
-                    // the value is const from yyjson 0.13, and not modified before
-                    yyjson_mut_val_imut_copy(const_cast<yyjson_mut_val*>(writer::detail::json_value_access::get(json)),
-                                             nullptr),
-                    &yyjson_doc_free);
-                if (doc == nullptr) [[unlikely]]
-                    throw std::bad_alloc();
-                const auto* const original = writer::detail::json_value_access::get(json);
-                auto* const root = yyjson_doc_get_root(doc.get());
-                auto failure = std::exception_ptr();
-                try
-                {
+                return json_value_of_copy<Json>::with_root(json, [&](yyjson_val* root) -> decltype(auto) {
                     return std::forward<F>(f)(json_view(root));
-                }
-                catch (bad_cast& e)
-                {
-                    // the path to the value in the copy is the path to it in `json`
-                    bad_cast_access::add_path(e, root);
-                    bad_cast_access::move_target(e, root, original);
-                    failure = std::current_exception();
-                }
-                std::rethrow_exception(failure);
+                });
             }
         };
     }  // namespace detail

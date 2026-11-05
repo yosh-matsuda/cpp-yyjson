@@ -986,6 +986,8 @@ static X from_json(const Json& json);
 
 The result is the same as with `cast`, but `yyjson::read<T>` reads each value that this form converts into a temporary document; see [Write casters that convert C++ values](performance.md#write-casters-that-convert-c-values). Prefer a `json_view` or a [translator](#translator). A caster that keeps the JSON value can be a translator from [`yyjson::value`](#json-values-as-fields).
 
+The parameter can also be the value of one DOM API only, such as `const yyjson::reader::const_value_ref&` or `const yyjson::writer::const_value_ref&`. If the other API casts, the caster gets a copy of the value in a document of its own API. The copy is freed when the caster returns, so the result must not refer to it. The path of a `yyjson::bad_cast` from the copy names the value in the original document. `yyjson::read<T>` gives such a caster a value of the reader API.
+
 Both forms have an in-place form that fills a field, as the [in-place translator](#reading-into-an-existing-field) does:
 
 ```cpp
