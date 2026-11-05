@@ -46,6 +46,39 @@ struct WithJsonForm
 {
     int a = 0;
 };
+struct WithMutableJsonForm
+{
+    int a = 0;
+};
+// read by the casters that take the value of one DOM API, which return the value or fill it in place
+struct FromReaderValue
+{
+    int x = 0;
+    bool operator==(const FromReaderValue&) const = default;
+};
+struct FromMutableValue
+{
+    int x = 0;
+    bool operator==(const FromMutableValue&) const = default;
+};
+struct IntoReaderValue
+{
+    int x = 0;
+    bool operator==(const IntoReaderValue&) const = default;
+};
+struct IntoMutableValue
+{
+    int x = 0;
+    bool operator==(const IntoMutableValue&) const = default;
+};
+struct BothDomApis
+{
+    FromReaderValue a;
+    FromMutableValue b;
+    IntoReaderValue c;
+    IntoMutableValue d;
+    bool operator==(const BothDomApis&) const = default;
+};
 struct Theme
 {
     Rgb accent;
@@ -166,6 +199,43 @@ struct yyjson::caster<WithJsonForm>
     }
 };
 template <>
+struct yyjson::caster<WithMutableJsonForm>
+{
+    static WithMutableJsonForm from_json(const yyjson::writer::const_value_ref& v) { return {v.cast<int>() + 300}; }
+};
+template <>
+struct yyjson::caster<FromReaderValue>
+{
+    static FromReaderValue from_json(const yyjson::reader::const_value_ref& v)
+    {
+        return {(*v.as_object())["x"].cast<int>() + 100};
+    }
+};
+template <>
+struct yyjson::caster<FromMutableValue>
+{
+    static FromMutableValue from_json(const yyjson::writer::const_value_ref& v)
+    {
+        return {(*v.as_object())["x"].cast<int>() + 300};
+    }
+};
+template <>
+struct yyjson::caster<IntoReaderValue>
+{
+    static void from_json(IntoReaderValue& t, const yyjson::reader::const_value_ref& v)
+    {
+        t.x = (*v.as_object())["x"].cast<int>() + 100;
+    }
+};
+template <>
+struct yyjson::caster<IntoMutableValue>
+{
+    static void from_json(IntoMutableValue& t, const yyjson::writer::const_value_ref& v)
+    {
+        t.x = (*v.as_object())["x"].cast<int>() + 300;
+    }
+};
+template <>
 struct yyjson::caster<Theme>
 {
     static Theme from_json(const Rgb& accent) { return {accent}; }
@@ -188,6 +258,7 @@ static_assert(std::same_as<yyjson::detail::from_json_source<Polyline>, std::vect
 static_assert(std::same_as<yyjson::detail::from_json_in_place_source<BothForms>, int>);
 static_assert(!yyjson::detail::from_json_translator<std::optional<int>>::castable);
 static_assert(!yyjson::detail::from_json_translator<std::tuple<int>>::castable);
+static_assert(!yyjson::castable<yyjson::writer::const_value_ref, yyjson::json_view>);
 
 TEST(Reader, TranslatorFromJson)
 {
@@ -233,6 +304,21 @@ TEST(Reader, TranslatorFromJson)
     EXPECT_EQ(yyjson::read<std::vector<TakesLvalue>>(R"(["a string longer than the small string buffer"])")[0].name,
               "a string longer than the small string buffer");
     EXPECT_EQ(yyjson::read("1").cast<WithJsonForm>().a, 101);
+    // a caster that takes the value of one DOM API is given a copy of the value of the other
+    EXPECT_EQ(yyjson::value(yyjson::read("1")).cast<WithJsonForm>().a, 101);
+    EXPECT_EQ(yyjson::read("1").cast<WithMutableJsonForm>().a, 301);
+    EXPECT_EQ(yyjson::value(yyjson::read("1")).cast<WithMutableJsonForm>().a, 301);
+    EXPECT_EQ(yyjson::read<WithMutableJsonForm>("1").a, 301);
+    {
+        const auto* json = R"({"a":{"x":1},"b":{"x":2},"c":{"x":3},"d":{"x":4}})";
+        const auto expected = BothDomApis{{101}, {302}, {103}, {304}};
+        EXPECT_EQ(yyjson::read(json).cast<BothDomApis>(), expected);
+        EXPECT_EQ(yyjson::value(yyjson::read(json)).cast<BothDomApis>(), expected);
+        EXPECT_EQ(yyjson::read<BothDomApis>(json), expected);
+        auto into = BothDomApis();
+        yyjson::read_into(json, into);
+        EXPECT_EQ(into, expected);
+    }
     EXPECT_EQ(yyjson::read("1").cast<TemplateJsonForm>().a, 201);
     EXPECT_EQ(yyjson::read<std::vector<TemplateJsonForm>>("[1]")[0].a, 201);
     EXPECT_EQ(yyjson::read<std::vector<WithJsonForm>>("[1]")[0].a, 101);

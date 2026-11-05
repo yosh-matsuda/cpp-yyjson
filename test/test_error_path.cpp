@@ -31,6 +31,20 @@ struct PathUser
     PathPoint p;
     PathScale s;
 };
+// read by a caster that takes the value of a mutable document, in both forms
+struct PathMutablePoint
+{
+    int x = 0;
+};
+struct PathMutableScale
+{
+    int value = 0;
+};
+struct PathMutableUser
+{
+    PathMutablePoint p;
+    PathMutableScale s;
+};
 
 // the values of nested casts that fail, which name themselves as they throw
 struct PathCArray
@@ -77,6 +91,19 @@ template <>
 struct yyjson::caster<PathScale>
 {
     static void from_json(PathScale& s, double v) noexcept { s.value = v; }
+};
+template <>
+struct yyjson::caster<PathMutablePoint>
+{
+    static PathMutablePoint from_json(const yyjson::writer::const_value_ref& v)
+    {
+        return {(*v.as_object())["x"].cast<int>()};
+    }
+};
+template <>
+struct yyjson::caster<PathMutableScale>
+{
+    static void from_json(PathMutableScale& s, const yyjson::writer::const_value_ref& v) { s.value = v.cast<int>(); }
 };
 
 namespace
@@ -141,6 +168,9 @@ TEST(ErrorPath, NamesThePath)
     expect_path<PathUser>(R"({"p":{"x":1,"y":"a"},"s":1})", "/p/y", R"("a")");
     expect_path<PathUser>(R"({"p":{"x":1,"y":2},"s":"a"})", "/s", R"("a")");
     expect_path<PathUser>(R"({"p":[],"s":1})", "/p", "[]");
+    // the same through the copy that a caster of the other DOM API is given
+    expect_path<PathMutableUser>(R"({"p":{"x":"a"},"s":1})", "/p/x", R"("a")");
+    expect_path<PathMutableUser>(R"({"p":{"x":1},"s":"a"})", "/s", R"("a")");
 #if YYJSON_VERSION_HEX >= 0x000C00
     expect_path<std::vector<PathViewed>>(R"([{"x":1},{"x":"a"}])", "/1/x", R"("a")");
 #endif
