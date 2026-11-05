@@ -68,6 +68,7 @@ This page lists the functions, classes and other entities of cpp-yyjson, grouped
     *   [Strings that a mutable document is built from](#strings-that-a-mutable-document-is-built-from)
     *   [Written strings and allocators](#written-strings-and-allocators)
 *   [Utilities](#utilities)
+    *   [`yyjson::nullable`](#yyjsonnullable)
     *   [`yyjson::indirect`](#yyjsonindirect)
     *   [`yyjson::overloaded`](#yyjsonoverloaded)
 *   [Build configuration](#build-configuration)
@@ -1957,6 +1958,71 @@ A [`yyjson::json_string`](#yyjsonjson_string-yyjsonkey_string) owns its buffer a
 | `stack_pool_allocator`, a `yyjson_alc` | No: the program must keep the allocator alive and unchanged while they are in use |
 
 ## Utilities
+
+### `yyjson::nullable`
+
+A value of `T` or nothing, read from `null` and written as `null`. See [Default values and required keys](conversions.md#default-values-and-required-keys).
+
+```cpp
+template <typename T>
+class nullable
+{
+public:
+    using value_type = T;
+
+    constexpr nullable() noexcept;                    // empty
+    constexpr nullable(std::nullopt_t) noexcept;      // empty
+    template <typename U = T>
+    constexpr explicit(!std::is_convertible_v<U, T>) nullable(U&& u);
+    template <typename... Us>
+    constexpr explicit nullable(std::in_place_t, Us&&... us);
+
+    constexpr nullable& operator=(std::nullopt_t) noexcept;
+    template <typename U = T>
+    constexpr nullable& operator=(U&& u);
+
+    constexpr bool has_value() const noexcept;
+    constexpr explicit operator bool() const noexcept;
+    constexpr const T& operator*() const& noexcept;   // and the overloads for T&, const T&& and T&&
+    constexpr const T* operator->() const noexcept;
+    constexpr T* operator->() noexcept;
+    constexpr const T& value() const&;                // throws std::bad_optional_access when empty; and the other overloads
+    template <typename U>
+    constexpr T value_or(U&& u) const&;               // and the overload for &&
+
+    constexpr void reset() noexcept;
+    template <typename... Us>
+    constexpr T& emplace(Us&&... us);
+    constexpr void swap(nullable& other) noexcept(std::is_nothrow_swappable_v<std::optional<T>>);
+    friend constexpr void swap(nullable& lhs, nullable& rhs) noexcept(noexcept(lhs.swap(rhs)));
+};
+template <typename T>
+nullable(T) -> nullable<T>;
+
+// == and <=> with std::nullopt and with nullable<U>: an empty nullable is equal to an empty one and less than a value
+// == with a value of U
+```
+
+The interface is a part of that of `std::optional<T>`. The difference is the conversion:
+
+*   `null` gives an empty `nullable`, and an empty `nullable` is written as `null`. This is the same at every position: the root, a field, an element, a value of a map and an element of a tuple.
+*   As a field of a struct, the key is not optional. Under [`yyjson::reject_missing_keys`](#read-policies), an object without the key is rejected, as for a field of `T`. Without the policy, the field keeps its initializer.
+*   `std::optional<yyjson::nullable<T>>` as a field tells three states: the key is absent (`std::nullopt`), the value is `null` (an empty `nullable`), and the value is a `T`.
+
+`nullable<std::optional<U>>` and `nullable<nullable<U>>` are compile errors.
+
+```cpp
+struct Profile
+{
+    std::string name;
+    yyjson::nullable<std::string> email;
+    std::optional<yyjson::nullable<int>> age;
+};
+
+auto p = yyjson::read<Profile>(R"({"name":"Ann","email":null,"age":null})");
+// -> p.email is empty, p.age holds an empty nullable
+yyjson::write(Profile{"Bob", std::nullopt, std::nullopt});  // -> {"name":"Bob","email":null}
+```
 
 ### `yyjson::indirect`
 

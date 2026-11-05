@@ -48,27 +48,27 @@ A `std::optional` field may be left out of the object. JSON `null` as its value 
 | `U` | `null` as the value of the field |
 | --- | --- |
 | `std::shared_ptr` or `std::unique_ptr` | the field gets a value that holds an empty pointer |
-| another type that reads `null`, such as `std::variant<std::monostate, V>`, `std::nullptr_t` or `std::optional<V>` | the field gets a value that holds what `U` reads from `null`: `std::monostate`, `nullptr` or `std::nullopt` |
+| another type that reads `null`, such as `yyjson::nullable<V>`, `std::variant<std::monostate, V>`, `std::nullptr_t` or `std::optional<V>` | the field gets a value that holds what `U` reads from `null`: an empty `yyjson::nullable`, `std::monostate`, `nullptr` or `std::nullopt` |
 | a type with a [user-defined caster](conversions.md#user-defined-casters) that may take `null`: a translator whose parameter reads `null`, or a `from_json` that takes a `json_view` or a JSON value | the field gets a value that holds what the caster reads from `null` |
 | any other type, such as `int` or a type whose translator takes `int` | the field keeps its value in `T()` |
 
 The value in `T()` is `std::nullopt`, unless a default member initializer gives the field another value. In the last row, `null` is read as if the key were left out. The [read policy](#read-policies) `yyjson::reject_null_as_missing` rejects `null` in the last row.
 
-To tell `null` from a missing key, give the field a type of the first three rows, such as `std::optional<std::shared_ptr<V>>` or `std::optional<std::variant<std::monostate, V>>`. A missing key gives the field its value in `T()`. `null` gives the field a value that holds what `U` reads from `null`. `yyjson::write` leaves out a field without a value. It writes an empty pointer and `std::monostate` as `null`:
+To tell `null` from a missing key, give the field a type of the first three rows, such as `std::optional<yyjson::nullable<V>>` or `std::optional<std::shared_ptr<V>>`. A missing key gives the field its value in `T()`. `null` gives the field a value that holds what `U` reads from `null`. `yyjson::write` leaves out a field without a value. It writes an empty `yyjson::nullable`, an empty pointer and `std::monostate` as `null`:
 
 ```cpp
 struct Patch
 {
-    std::optional<std::shared_ptr<int>> limit;
+    std::optional<yyjson::nullable<int>> limit;
 };
 
 auto a = yyjson::read<Patch>(R"({})");              // a.limit is std::nullopt
-auto b = yyjson::read<Patch>(R"({"limit":null})");  // b.limit holds an empty pointer
+auto b = yyjson::read<Patch>(R"({"limit":null})");  // b.limit holds an empty yyjson::nullable
 yyjson::write(a);  // {}
 yyjson::write(b);  // {"limit":null}
 ```
 
-Without `std::optional`, a field of type `std::shared_ptr<V>` or `std::variant<std::monostate, V>` cannot tell `null` from a missing key. Both give it an empty pointer or `std::monostate`, unless a default member initializer gives it another value.
+Without `std::optional`, a field of type `yyjson::nullable<V>`, `std::shared_ptr<V>` or `std::variant<std::monostate, V>` cannot tell `null` from a missing key. Both leave it empty or give it `std::monostate`, unless a default member initializer gives it another value. A missing key of a `yyjson::nullable<V>` field keeps its value in `T()`, as for a field of `V`, and `yyjson::reject_missing_keys` rejects the missing key.
 
 `yyjson::read<T>`, `read_into` and `cast<T>` throw `yyjson::bad_cast` for `null` in a field that is not a `std::optional` and does not read `null`. For example, `int retries = 3;` with `{"retries":null}` gives `int is not constructible from JSON null at /retries (line 1, column 12, pos 11)`.
 

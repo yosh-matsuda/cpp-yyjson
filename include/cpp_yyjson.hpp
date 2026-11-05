@@ -1267,6 +1267,139 @@ namespace yyjson
     template <typename T>
     indirect(T) -> indirect<T>;
 
+    template <typename T>
+    class nullable;
+
+    namespace detail
+    {
+        template <typename T>
+        struct is_std_optional : std::false_type
+        {
+        };
+        template <typename T>
+        struct is_std_optional<std::optional<T>> : std::true_type
+        {
+        };
+
+        template <typename T>
+        struct is_nullable : std::false_type
+        {
+        };
+        template <typename T>
+        struct is_nullable<yyjson::nullable<T>> : std::true_type
+        {
+        };
+        template <typename T>
+        concept nullable_value = is_nullable<std::remove_cvref_t<T>>::value;
+    }  // namespace detail
+
+    // A value of T or nothing, read from and written as JSON null.  Unlike `std::optional<T>` as a field of a
+    // struct, it does not let the key of the field be left out of an object.
+    template <typename T>
+    class nullable
+    {
+        static_assert(!detail::is_std_optional<std::remove_cv_t<T>>::value && !detail::is_nullable<std::remove_cv_t<T>>::value,
+                      "yyjson::nullable takes no std::optional or yyjson::nullable: use std::optional<yyjson::nullable<T>> "
+                      "for a key that may be absent, null, or a value");
+        std::optional<T> o_;
+
+    public:
+        using value_type = T;
+
+        constexpr nullable() noexcept = default;
+        constexpr nullable(std::nullopt_t) noexcept {}
+        template <typename U = T>
+        requires (!detail::nullable_value<U>) && (!std::same_as<std::remove_cvref_t<U>, std::in_place_t>) &&
+                 (!std::same_as<std::remove_cvref_t<U>, std::nullopt_t>) && std::is_constructible_v<T, U>
+        constexpr explicit(!std::is_convertible_v<U, T>) nullable(U&& u) : o_(std::in_place, std::forward<U>(u))
+        {
+        }
+        template <typename... Us>
+        requires std::is_constructible_v<T, Us...>
+        constexpr explicit nullable(std::in_place_t, Us&&... us) : o_(std::in_place, std::forward<Us>(us)...)
+        {
+        }
+
+        constexpr nullable& operator=(std::nullopt_t) noexcept
+        {
+            o_.reset();
+            return *this;
+        }
+        template <typename U = T>
+        requires (!detail::nullable_value<U>) && (!std::same_as<std::remove_cvref_t<U>, std::nullopt_t>) &&
+                 std::is_constructible_v<T, U> && std::is_assignable_v<T&, U>
+        constexpr nullable& operator=(U&& u)
+        {
+            o_ = std::forward<U>(u);
+            return *this;
+        }
+
+        [[nodiscard]] constexpr bool has_value() const noexcept { return o_.has_value(); }
+        constexpr explicit operator bool() const noexcept { return o_.has_value(); }
+        constexpr const T& operator*() const& noexcept { return *o_; }
+        constexpr T& operator*() & noexcept { return *o_; }
+        constexpr const T&& operator*() const&& noexcept { return *std::move(o_); }
+        constexpr T&& operator*() && noexcept { return *std::move(o_); }
+        constexpr const T* operator->() const noexcept { return std::addressof(*o_); }
+        constexpr T* operator->() noexcept { return std::addressof(*o_); }
+        constexpr const T& value() const& { return o_.value(); }
+        constexpr T& value() & { return o_.value(); }
+        constexpr const T&& value() const&& { return std::move(o_).value(); }
+        constexpr T&& value() && { return std::move(o_).value(); }
+        template <typename U>
+        constexpr T value_or(U&& u) const&
+        {
+            return o_.value_or(std::forward<U>(u));
+        }
+        template <typename U>
+        constexpr T value_or(U&& u) &&
+        {
+            return std::move(o_).value_or(std::forward<U>(u));
+        }
+
+        constexpr void reset() noexcept { o_.reset(); }
+        template <typename... Us>
+        constexpr T& emplace(Us&&... us)
+        {
+            return o_.emplace(std::forward<Us>(us)...);
+        }
+        constexpr void swap(nullable& other) noexcept(std::is_nothrow_swappable_v<std::optional<T>>)
+        {
+            o_.swap(other.o_);
+        }
+        friend constexpr void swap(nullable& lhs, nullable& rhs) noexcept(noexcept(lhs.swap(rhs))) { lhs.swap(rhs); }
+
+        friend constexpr bool operator==(const nullable& lhs, std::nullopt_t) noexcept { return !lhs.has_value(); }
+        friend constexpr std::strong_ordering operator<=>(const nullable& lhs, std::nullopt_t) noexcept
+        {
+            return lhs.has_value() <=> false;
+        }
+        // Not constrained on `*lhs == *rhs`, as `indirect` is not.
+        template <typename U>
+        friend constexpr bool operator==(const nullable& lhs, const nullable<U>& rhs)
+        {
+            if (lhs.has_value() != rhs.has_value()) return false;
+            return !lhs.has_value() || *lhs == *rhs;
+        }
+        template <typename U>
+        friend constexpr detail::synth_three_way_result<T, U> operator<=>(const nullable& lhs, const nullable<U>& rhs)
+        {
+            if (!lhs.has_value() || !rhs.has_value()) return lhs.has_value() <=> rhs.has_value();
+            return detail::synth_three_way(*lhs, *rhs);
+        }
+        // The left operand is deduced, as for `indirect`, so that a reversed candidate fails in deduction before the
+        // recursive constraint is checked.
+        template <typename U, std::same_as<T> V>
+        requires (!detail::nullable_value<U>) && (!std::same_as<U, std::nullopt_t>) &&
+                 requires(const T& t, const U& u) { t == u; }
+        friend constexpr bool operator==(const nullable<V>& lhs, const U& rhs)
+        {
+            return lhs.has_value() && *lhs == rhs;
+        }
+    };
+    template <typename T>
+    nullable(T) -> nullable<T>;
+
     template <typename...>
     class visit_struct : public std::false_type
     {
@@ -2120,15 +2253,6 @@ namespace yyjson
         };
         template <typename T>
         concept owning_pointer = is_owning_pointer<std::remove_cvref_t<T>>::value;
-
-        template <typename T>
-        struct is_std_optional : std::false_type
-        {
-        };
-        template <typename T>
-        struct is_std_optional<std::optional<T>> : std::true_type
-        {
-        };
 
         // `std::array` is an aggregate as well as a range.  The writer has to treat it as a range, the
         // way the reader does, rather than reflect it into an object of its members.
@@ -3904,6 +4028,21 @@ namespace yyjson
                     assign_reflected_field_impl(*field, value,
                                                 std::is_class_v<V> && std::is_aggregate_v<V> &&
                                                     std::is_nothrow_default_constructible_v<V>);
+            }
+            else if constexpr (nullable_value<field_type> && std::derived_from<caster<field_type>, builtin_caster>)
+            {
+                // null empties the field, and any other value is read in the place of the value that it holds
+                using V = typename field_type::value_type;
+                constexpr auto replaceable_value =
+                    std::is_class_v<V> && std::is_aggregate_v<V> && std::is_nothrow_default_constructible_v<V>;
+                if (value.is_null())
+                    field.reset();
+                else if (field.has_value())
+                    assign_reflected_field_impl(*field, value, replaceable_value);
+                else if constexpr (std::is_nothrow_default_constructible_v<V>)
+                    assign_reflected_field_impl(field.emplace(), value, replaceable_value);
+                else
+                    field = cast_nested<field_type>(value);
             }
             else if constexpr (caster_assigns_from_json<field_type, Json>)
             {
@@ -9924,7 +10063,7 @@ namespace yyjson
                         std::remove_reference_t<decltype(std::declval<T&>().*yyjson::detail::member_pointer<Is>(
                                                                                  visit_struct<T>::members))>>...>{};
                 }(std::make_index_sequence<std::tuple_size_v<std::remove_cv_t<decltype(visit_struct<T>::members)>>>{});
-            else if constexpr (is_std_optional<T>::value)
+            else if constexpr (is_std_optional<T>::value || nullable_value<T>)
                 return type_list<cause_child<element_label<T>, typename T::value_type>>{};
             else if constexpr (owning_pointer<T>)
                 return type_list<cause_child<element_label<T>, typename is_owning_pointer<T>::value_type>>{};
@@ -11347,6 +11486,53 @@ namespace yyjson
         }
     };
 
+    // Null is an empty `yyjson::nullable`, and any other JSON value is read as `cast<T>` reads it.  An empty
+    // value is written as null, also as a field of a struct.
+    template <typename T>
+    struct caster<nullable<T>> : detail::builtin_caster
+    {
+        static_assert(!detail::may_read_null<T>(),
+                      "yyjson::nullable<T> takes no T that reads null itself, such as a std::shared_ptr, a "
+                      "std::unique_ptr, std::monostate or yyjson::value");
+
+        template <typename Json>
+        requires castable<Json, T>
+        static nullable<T> from_json(const Json& json)
+        {
+            if (json.is_null()) return {};
+            return nullable<T>(std::in_place, detail::cast_nested<T>(json));
+        }
+
+        template <typename... Ts>
+        requires detail::copy_string_args<Ts...> && requires(writer::value_ref& v, const T& t) {
+            v = t;
+            v = std::pair<const T&, copy_string_t>(t, copy_string);
+        }
+        static void to_json(writer::value_ref& v, const nullable<T>& t, Ts...)
+        {
+            if (!t.has_value())
+                v = nullptr;
+            else if constexpr (sizeof...(Ts) != 0)
+                v = std::pair<const T&, copy_string_t>(*t, copy_string);
+            else
+                v = *t;
+        }
+        template <typename... Ts>
+        requires detail::copy_string_args<Ts...> && requires(writer::value_ref& v, T&& t) {
+            v = std::move(t);
+            v = std::pair<T&&, copy_string_t>(std::move(t), copy_string);
+        }
+        static void to_json(writer::value_ref& v, nullable<T>&& t, Ts...)
+        {
+            if (!t.has_value())
+                v = nullptr;
+            else if constexpr (sizeof...(Ts) != 0)
+                v = std::pair<T&&, copy_string_t>(std::move(*t), copy_string);
+            else
+                v = std::move(*t);
+        }
+    };
+
     namespace detail
     {
         template <typename T>
@@ -11545,7 +11731,7 @@ namespace yyjson
                            accepted_json_kinds<typename is_owning_pointer<T>::value_type, Json, Seen...>();
                 else if constexpr (indirect_value<T>)
                     return accepted_json_kinds<typename T::value_type, Json, Seen...>();
-                else if constexpr (is_std_optional<T>::value)
+                else if constexpr (is_std_optional<T>::value || nullable_value<T>)
                     return json_kind_null | accepted_json_kinds<typename T::value_type, Json, Seen...>();
                 else if constexpr (tuple_like<T>)
                     return json_kind_array | json_kind_object;
@@ -11635,7 +11821,8 @@ namespace yyjson
             using json = reader::const_value_ref;
             static constexpr bool builtin_cast = caster_from_json_or_copy<T, json>;
             static constexpr bool inner = builtin_cast && std::derived_from<caster<T>, builtin_caster> &&
-                                          (owning_pointer<T> || is_std_optional<T>::value || indirect_value<T>);
+                                          (owning_pointer<T> || is_std_optional<T>::value || indirect_value<T> ||
+                                           nullable_value<T>);
             // a struct annotated with `yyjson::transparent`, whose field is the value
             static constexpr bool transparent =
                 builtin_cast && std::derived_from<caster<T>, builtin_caster> && transparent_struct<T>;
@@ -15271,7 +15458,7 @@ namespace yyjson
                     return !(to_json_inp_def<V, T> || to_json_emit_usr<V, T> ||
                              (builtin &&
                               (yyjson::detail::owning_pointer<U> || is_optional<U>::value ||
-                               yyjson::detail::indirect_value<U>) &&
+                               yyjson::detail::indirect_value<U> || yyjson::detail::nullable_value<U>) &&
                               std::same_as<V, value_ref>) ||
                              (builtin && is_variant<U>::value && std::same_as<V, value_ref>) ||
                              (builtin && yyjson::detail::transparent_struct<U> && std::same_as<V, value_ref>) ||
@@ -15364,7 +15551,8 @@ namespace yyjson
                     close('}', first);
                 }
                 else if constexpr (std::derived_from<caster<U>, yyjson::detail::builtin_caster> &&
-                                   (yyjson::detail::owning_pointer<U> || is_optional<U>::value) &&
+                                   (yyjson::detail::owning_pointer<U> || is_optional<U>::value ||
+                                    yyjson::detail::nullable_value<U>) &&
                                    std::same_as<V, value_ref>)
                 {
                     if (t)
@@ -15643,7 +15831,8 @@ namespace yyjson
             else if constexpr (struct_mergeable<T> || map_mergeable<T> || tagged_mergeable<T> ||
                                transparent_mergeable<T>)
                 return true;
-            else if constexpr ((yyjson::detail::is_std_optional<T>::value || yyjson::detail::indirect_value<T>) &&
+            else if constexpr ((yyjson::detail::is_std_optional<T>::value || yyjson::detail::indirect_value<T> ||
+                                yyjson::detail::nullable_value<T>) &&
                                std::derived_from<caster<T>, yyjson::detail::builtin_caster>)
                 return struct_mergeable<typename T::value_type> || map_mergeable<typename T::value_type> ||
                        tagged_mergeable<typename T::value_type> || transparent_mergeable<typename T::value_type>;
@@ -16789,7 +16978,8 @@ namespace yyjson
                     if constexpr (yyjson::detail::owning_pointer<T> &&
                                   std::derived_from<caster<T>, yyjson::detail::builtin_caster>)
                         return node<false, type_list<value_node<std::remove_cv_t<typename T::element_type>, Loop>>>{};
-                    else if constexpr ((is_std_optional<T>::value || yyjson::detail::indirect_value<T>) &&
+                    else if constexpr ((is_std_optional<T>::value || yyjson::detail::indirect_value<T> ||
+                                        yyjson::detail::nullable_value<T>) &&
                                        std::derived_from<caster<T>, yyjson::detail::builtin_caster>)
                         return node<false, type_list<value_node<typename T::value_type, Loop>>>{};
                     else
@@ -16849,6 +17039,15 @@ namespace yyjson
                     return node<false, type_list<value_node<std::remove_cv_t<std::remove_all_extents_t<F>>, true>>>{};
                 else if constexpr (transparent_readable<F>)
                     return field_part<yyjson::detail::struct_field_type<F, 0>, Loop>();
+                else if constexpr (yyjson::detail::nullable_value<F> &&
+                                   std::derived_from<caster<F>, yyjson::detail::builtin_caster>)
+                {
+                    using value_type = typename F::value_type;
+                    if constexpr (yyjson::detail::reflected_assignable_in_place<value_type, const_value_ref>)
+                        return in_place_node<value_type, Loop>();
+                    else
+                        return node<false, type_list<value_node<value_type, Loop>>>{};
+                }
                 else if constexpr (yyjson::detail::caster_assigns_from_json<F, const_value_ref>)
                 {
                     if constexpr (is_std_optional<F>::value &&
@@ -19890,6 +20089,16 @@ namespace yyjson
                     else if constexpr (yyjson::detail::indirect_value<T> &&
                                        std::derived_from<caster<T>, yyjson::detail::builtin_caster>)
                         return T(std::in_place, read_value<typename T::value_type>());
+                    else if constexpr (yyjson::detail::nullable_value<T> &&
+                                       std::derived_from<caster<T>, yyjson::detail::builtin_caster>)
+                    {
+                        if (*cur_ == 'n')
+                        {
+                            read_literal("null");
+                            return T();
+                        }
+                        return T(std::in_place, read_value<typename T::value_type>());
+                    }
                     else if constexpr (is_std_optional<T>::value &&
                                        std::derived_from<caster<T>, yyjson::detail::builtin_caster>)
                     {
@@ -20488,6 +20697,21 @@ namespace yyjson
                         return;
                     }
                 }
+                else if constexpr (yyjson::detail::nullable_value<T> &&
+                                   std::derived_from<caster<T>, yyjson::detail::builtin_caster>)
+                {
+                    if (*cur_ == 'n')
+                    {
+                        read_literal("null");
+                        t.reset();
+                        return;
+                    }
+                    if (t.has_value())
+                    {
+                        read_value_into(*t);
+                        return;
+                    }
+                }
                 t = read_value<T>();
             }
 
@@ -20990,6 +21214,25 @@ namespace yyjson
                     else
                         read_field(*field, std::is_class_v<V> && std::is_aggregate_v<V> &&
                                                std::is_nothrow_default_constructible_v<V>);
+                }
+                else if constexpr (yyjson::detail::nullable_value<field_type> &&
+                                   std::derived_from<caster<field_type>, yyjson::detail::builtin_caster>)
+                {
+                    // the value is read as a field of its type, in the place of the old one
+                    using V = typename field_type::value_type;
+                    constexpr auto replaceable_value =
+                        std::is_class_v<V> && std::is_aggregate_v<V> && std::is_nothrow_default_constructible_v<V>;
+                    if (*cur_ == 'n')
+                    {
+                        read_literal("null");
+                        field.reset();
+                    }
+                    else if (field.has_value())
+                        read_field(*field, replaceable_value);
+                    else if constexpr (std::is_nothrow_default_constructible_v<V>)
+                        read_field(field.emplace(), replaceable_value);
+                    else
+                        field = read_value<field_type>();
                 }
                 else if constexpr (yyjson::detail::caster_assigns_from_json<field_type, const_value_ref>)
                 {

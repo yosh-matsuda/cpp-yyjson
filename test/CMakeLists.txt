@@ -58,7 +58,8 @@ add_executable(
   test_error_path.cpp
   test_many_fields.cpp
   test_transparent.cpp
-  test_read_policies.cpp)
+  test_read_policies.cpp
+  test_nullable.cpp)
 target_link_libraries("${PROJECT_NAME}_test"
                       PRIVATE ${PROJECT_NAME} GTest::gtest GTest::gtest_main)
 # a test file can exceed the sections of an object file that MSVC writes by default
