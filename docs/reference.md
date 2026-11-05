@@ -1355,7 +1355,7 @@ A parameter pack `Policies` of the functions on this page takes only these tags.
 | Policy | The read throws `yyjson::bad_cast` when |
 | --- | --- |
 | `reject_unknown_keys` | an object read into a struct has a key that names no field |
-| `reject_missing_keys` | an object read into a struct does not have the key of a field that is not a `std::optional` |
+| `reject_missing_keys` | an object read into a struct does not have the key of a field without a default: a field that is not a `std::optional` and has no [`yyjson::default_` or `yyjson::default_from`](#yyjsondefault_-yyjsondefault_from) |
 | `reject_null_as_missing` | a `std::optional` field gets `null` that it would read as a missing key |
 | `reject_duplicates` | an object read into a struct or a map has a key twice, or an array read into a set has an element twice |
 | `strict` | any of `reject_missing_keys`, `reject_null_as_missing` and `reject_duplicates` applies |
@@ -1396,7 +1396,7 @@ Specialize `annotations<T>` before the first use of `T`. `annotate` takes these 
 
 | `T` | Settings |
 | --- | --- |
-| a struct | [`yyjson::field`](#yyjsonfield), [`yyjson::transparent`](#yyjsontransparent), the [read policies](#read-policies) |
+| a struct | [`yyjson::field`](#yyjsonfield), [`yyjson::transparent`](#yyjsontransparent), [`yyjson::default_`](#yyjsondefault_-yyjsondefault_from), the [read policies](#read-policies) |
 | a `std::variant` | [`yyjson::internal_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag) |
 | an enumeration | [`yyjson::enumerator` and `yyjson::enum_format`](#yyjsonenum_format-yyjsonenumerator) |
 
@@ -1482,6 +1482,77 @@ inline constexpr auto yyjson::annotations<UserId> = yyjson::annotate(yyjson::tra
 
 auto ids = yyjson::read<std::vector<UserId>>("[7,42]");  // -> {UserId{7}, UserId{42}}
 auto json = yyjson::write(ids);                          // -> [7,42]
+```
+
+### `yyjson::required`
+
+A field whose key an object must have, also in a read without [policies](#read-policies).
+
+```cpp
+inline constexpr required_t required{};
+```
+
+It is a setting of [`yyjson::field`](#yyjsonfield). With the reflection of C++26, it can also be written on the member, as `[[=yyjson::required]] int id;`.
+
+*   `yyjson::read<T>`, `yyjson::read_into` and `cast<T>` throw `yyjson::bad_cast` when an object does not have the key of the field. Without `required`, they keep the value of the field in `T()`.
+*   `yyjson::merge_into` accepts an object without the key, because a merge patch leaves out the keys that it does not change.
+*   Under [`yyjson::reject_missing_keys`](#read-policies), each field without a default needs its key. `required` only makes one field need its key in every read.
+
+`required` on a `std::optional` field, and `required` together with [`yyjson::default_` or `yyjson::default_from`](#yyjsondefault_-yyjsondefault_from), are compile errors. See [Default values and required keys](conversions.md#default-values-and-required-keys).
+
+```cpp
+struct Account
+{
+    int id = 0;
+    std::string name;
+};
+
+template <>
+inline constexpr auto yyjson::annotations<Account> = yyjson::annotate(yyjson::field("id", yyjson::required));
+
+yyjson::read<Account>(R"({"name":"Ann"})");
+// throws yyjson::bad_cast: Account is not constructible from JSON without the key "id" (line 1, column 1, pos 0)
+```
+
+### `yyjson::default_`, `yyjson::default_from`
+
+The default value of a field. An object may leave out the key of a field with a default, and `yyjson::write` leaves out a field that is equal to its default.
+
+```cpp
+inline constexpr default_t default_{};
+
+template <auto F>
+inline constexpr default_from_t default_from = /* the value that F() returns */;
+```
+
+*   `yyjson::default_` makes the value of the field in `T()` its default. It is a setting of [`yyjson::field`](#yyjsonfield) or of the struct. On the struct, it applies to each field that has no `yyjson::required`, `yyjson::default_` or `yyjson::default_from<f>` and is not a `std::optional`. `T` must be default constructible.
+*   `yyjson::default_from<f>` makes `f()` the default of the field. It is a setting of `yyjson::field`. `f` returns the value that the field holds: for a field of `std::optional<U>`, `yyjson::nullable<U>`, a smart pointer or `yyjson::indirect<U>`, it returns a `U`. `T()` does not call `f`. When an object read by `yyjson::read<T>`, `yyjson::read_into` or `cast<T>` does not have the key, the field gets `f()`.
+*   With the reflection of C++26, both can also be written on the member, as `[[=yyjson::default_]]`, and `yyjson::default_` on the struct, as `struct [[=yyjson::default_]] S`.
+
+A field with a default:
+
+*   may leave out its key under [`yyjson::reject_missing_keys`](#read-policies) and `yyjson::strict`.
+*   gets its default when `yyjson::merge_into` reads `null` for it. Under `yyjson::reject_missing_keys`, `merge_into` accepts `null` only for a field with a default.
+*   is left out by `yyjson::write` when it is written as the same JSON as its default, unless [`yyjson::emit_defaults`](#yyjsonemit_defaults) applies. `-0.0` and `0.0` are different JSON. The library makes the default once, the first time that it writes the field, and compares each value with it. Thus `f` must return the same value each time.
+
+A `std::optional` field also has a default: its value in `T()`. It is written when it has a value, and it is left out when it is empty. With `yyjson::default_` or `yyjson::default_from<f>`, it is left out when it is equal to that default.
+
+A field with two defaults, a default on a skipped field, and a default on the field of a [transparent](#yyjsontransparent) struct or on a field that [`yyjson::adjacent_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag) tags are compile errors. See [Default values and required keys](conversions.md#default-values-and-required-keys).
+
+```cpp
+struct Page
+{
+    int size = 20;
+    int offset = 0;
+    std::optional<std::string> cursor;
+};
+
+template <>
+inline constexpr auto yyjson::annotations<Page> = yyjson::annotate(yyjson::field("size", yyjson::default_));
+
+yyjson::write(Page());                                     // -> {"offset":0}
+yyjson::write(Page{50, 0, "c1"});                          // -> {"size":50,"offset":0,"cursor":"c1"}
+yyjson::read<Page>(R"({"offset":40})", yyjson::strict);    // -> {20, 40, std::nullopt}
 ```
 
 ### `yyjson::internal_tag`, `yyjson::adjacent_tag`

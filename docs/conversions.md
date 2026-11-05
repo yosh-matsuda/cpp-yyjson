@@ -132,7 +132,7 @@ Besides the strings, ranges, maps and sets described above, the library has cast
 A `std::optional` field of a struct marks a key that may be absent:
 
 *   A field that holds no value is left out when the struct is written. Elsewhere, an empty `std::optional` is written as null. Examples are an element of an array, a value of a map and the root.
-*   When the key is missing, `yyjson::read<T>` and `read_into` leave the field at its value in `T()`. `merge_into` keeps the value that the field has.
+*   When the key is missing, `yyjson::read<T>` and `read_into` leave the field at its value in `T()`. `merge_into` keeps the value that the field has. [Default values and required keys](#default-values-and-required-keys) gives the other fields whose keys may be left out.
 *   `yyjson::read<T>` and `read_into` read JSON null in a `std::optional<U>` field as a missing key, unless `U` reads null. Examples of such a `U` are `std::shared_ptr`, `std::unique_ptr`, a `std::variant` with `std::monostate`, `yyjson::value` and another `std::optional`. The field then holds the value that `U` reads from null, as `explicit_limit` below does. This type tells a null from a missing key. [`null` in a `std::optional`](validation.md#null-in-a-stdoptional) gives the full rule.
 *   When the JSON gives null, `merge_into` sets the field to its value in `T()`, for every `U`. It does the same for a field of any other type, such as `int` or `std::string`.
 
@@ -477,10 +477,10 @@ auto json = yyjson::write(project);
 ```
 
 *   The annotations of the members and a `yyjson::annotations` specialization can be combined, as long as no field gets the same setting twice; that fails to compile.
-*   On the struct itself, only `yyjson::transparent` is read, as in `struct [[=yyjson::transparent]] UserId { ... };`.
+*   On the struct itself, `yyjson::transparent`, `yyjson::default_` and the [read policies](validation.md#read-policies) are read, as in `struct [[=yyjson::transparent]] UserId { ... };`.
 *   An enumeration takes a [format](#formats-and-renamed-enumerators) on its declaration, as in `enum class [[=yyjson::enum_format::integer]] Permission : unsigned { ... };`. An enumerator takes a new name, as in `in_progress [[=yyjson::rename("in-progress")]],`. These combine with `yyjson::annotations<E>` as the settings of fields do. An annotation on an alias, that is, an enumerator with the value of one declared before it, is not read.
 *   The annotations apply to the structs that the compile-time reflection converts. An annotation of this library on a member of a struct that `VISITABLE_STRUCT` registers fails to compile; use the pairs of the macro or `yyjson::annotations` there.
-*   The annotations are read when the macro `FIELD_RFL_ANNOTATIONS` is `1`. `yyjson::rename`, `yyjson::skip`, `yyjson::transparent` and the tags are always available for `yyjson::annotations`.
+*   The annotations are read when the macro `FIELD_RFL_ANNOTATIONS` is `1`. Every setting is always available for `yyjson::annotations`.
 
 ## Enumerations
 

@@ -27,6 +27,8 @@ A struct that is read:
 *   ignores a key that names no field of it;
 *   gives a field whose key is missing its value in `T()`, its default member initializer included. `merge_into` keeps the current value of such a field.
 
+A field with [`yyjson::required`](conversions.md#default-values-and-required-keys) makes the read reject a missing key. A field with `yyjson::default_from<f>` gets the value of `f()` instead of its value in `T()`.
+
 To reject such keys, give the read the [read policies](#read-policies) `yyjson::reject_unknown_keys` and `yyjson::reject_missing_keys`. To use the unknown keys, read the text into a document, as in [Keep the keys that the struct does not have](guide.md#keep-the-keys-that-the-struct-does-not-have).
 
 ### Repeated keys
@@ -50,9 +52,9 @@ A `std::optional` field may be left out of the object. JSON `null` as its value 
 | `std::shared_ptr` or `std::unique_ptr` | the field gets a value that holds an empty pointer |
 | another type that reads `null`, such as `yyjson::nullable<V>`, `std::variant<std::monostate, V>`, `std::nullptr_t` or `std::optional<V>` | the field gets a value that holds what `U` reads from `null`: an empty `yyjson::nullable`, `std::monostate`, `nullptr` or `std::nullopt` |
 | a type with a [user-defined caster](conversions.md#user-defined-casters) that may take `null`: a translator whose parameter reads `null`, or a `from_json` that takes a `json_view` or a JSON value | the field gets a value that holds what the caster reads from `null` |
-| any other type, such as `int` or a type whose translator takes `int` | the field keeps its value in `T()` |
+| any other type, such as `int` or a type whose translator takes `int` | the field is read as if its key were left out: it keeps its value in `T()`, or gets the value of its `yyjson::default_from<f>` |
 
-The value in `T()` is `std::nullopt`, unless a default member initializer gives the field another value. In the last row, `null` is read as if the key were left out. The [read policy](#read-policies) `yyjson::reject_null_as_missing` rejects `null` in the last row.
+The value in `T()` is `std::nullopt`, unless a default member initializer gives the field another value. The [read policy](#read-policies) `yyjson::reject_null_as_missing` rejects `null` in the last row.
 
 To tell `null` from a missing key, give the field a type of the first three rows, such as `std::optional<yyjson::nullable<V>>` or `std::optional<std::shared_ptr<V>>`. A missing key gives the field its value in `T()`. `null` gives the field a value that holds what `U` reads from `null`. `yyjson::write` leaves out a field without a value. It writes an empty `yyjson::nullable`, an empty pointer and `std::monostate` as `null`:
 
@@ -72,7 +74,7 @@ Without `std::optional`, a field of type `yyjson::nullable<V>`, `std::shared_ptr
 
 `yyjson::read<T>`, `read_into` and `cast<T>` throw `yyjson::bad_cast` for `null` in a field that is not a `std::optional` and does not read `null`. For example, `int retries = 3;` with `{"retries":null}` gives `int is not constructible from JSON null at /retries (line 1, column 12, pos 11)`.
 
-`merge_into` keeps the current value of a field whose key is missing. `null` gives a field its value in `T()`, whatever the type of the field is. `null` as the whole text throws `yyjson::bad_cast` when `T` is a struct.
+`merge_into` keeps the current value of a field whose key is missing. `null` gives a field its default, whatever the type of the field is: the value of its `yyjson::default_from<f>`, or else its value in `T()`. `null` as the whole text throws `yyjson::bad_cast` when `T` is a struct.
 
 Any other `std::optional<U>`, such as the root, an element of an array or a value of a map, reads `null` as `std::nullopt`. When `U` is `std::shared_ptr` or `std::unique_ptr`, the optional holds an empty pointer instead.
 
@@ -85,7 +87,7 @@ A read policy makes a read reject JSON that the rules above accept. Each policy 
 | Policy | The read throws `yyjson::bad_cast` when |
 | --- | --- |
 | `yyjson::reject_unknown_keys` | an object read into a struct has a key that names no field of the struct |
-| `yyjson::reject_missing_keys` | an object read into a struct does not have the key of a field that is not a `std::optional` |
+| `yyjson::reject_missing_keys` | an object read into a struct does not have the key of a field without a default. A `std::optional` field and a field with `yyjson::default_` or `yyjson::default_from<f>` have a default |
 | `yyjson::reject_null_as_missing` | a `std::optional` field gets `null` that would be read as a missing key, as in the last row of [`null` in a `std::optional`](#null-in-a-stdoptional) |
 | `yyjson::reject_duplicates` | an object read into a struct or a map has a key twice, or an array read into a set has an element twice |
 | `yyjson::strict` | any of the last three policies applies |
@@ -134,14 +136,14 @@ A [user-defined caster](conversions.md#user-defined-casters) that casts a value 
 ### What the policies check
 
 *   `reject_unknown_keys`: the keys of the fields and the key of a [tag](conversions.md#tagged-variants) are known. The key of a [skipped field](conversions.md#skipped-fields) is unknown. A map accepts every key.
-*   `reject_missing_keys`: only a `std::optional` field, or a [transparent](conversions.md#a-struct-as-the-value-of-its-field) struct over one, may be left out. A pointer, a `std::variant` with `std::monostate` and a [`yyjson::indirect`](reference.md#yyjsonindirect) need their keys. An untagged `std::variant` with a struct alternative no longer falls back to the first alternative that reads the object. It throws instead.
+*   `reject_missing_keys`: only a field with a default may be left out. These fields have a default: a `std::optional` field, a field with [`yyjson::default_` or `yyjson::default_from<f>`](conversions.md#default-values-and-required-keys), and a field of a struct with `yyjson::default_`. A [transparent](conversions.md#a-struct-as-the-value-of-its-field) struct over a `std::optional` has one too. A pointer, a `std::variant` with `std::monostate`, a `yyjson::nullable` and a [`yyjson::indirect`](reference.md#yyjsonindirect) need their keys. An untagged `std::variant` with a struct alternative no longer falls back to the first alternative that reads the object. It throws instead.
 *   `reject_null_as_missing`: `null` in a field of the other rows of the table is still read as before. An element of an array, a value of a map and the root are not affected.
 *   `reject_duplicates`: a struct, a map, a multimap and the object of a tagged variant reject a repeated key. A `std::set` and a `std::unordered_set` reject a repeated element. A `std::multiset` accepts it.
 
 `merge_into` applies the policies to the JSON patch:
 
 *   `reject_unknown_keys` and `reject_duplicates` check the keys of the patch.
-*   `reject_missing_keys` does not check the keys that the patch leaves out, because the merged object keeps those fields. It rejects `null` for a field that is not a `std::optional`, since `null` gives the field its value in `T()`.
+*   `reject_missing_keys` does not check the keys that the patch leaves out, because the merged object keeps those fields. It rejects `null` for a field without a default, since `null` gives the field its value in `T()`.
 *   `reject_null_as_missing` does not apply to the fields of a merged object.
 *   A value that the patch replaces as a whole is read with every policy.
 
