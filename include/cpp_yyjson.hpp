@@ -1556,7 +1556,8 @@ namespace yyjson
     };
     inline constexpr default_t default_{};
     // A field whose value is written even when it equals its default, as
-    // `yyjson::field("member", yyjson::default_, yyjson::emit_defaults)` declares it.
+    // `yyjson::field("member", yyjson::default_, yyjson::emit_defaults)` declares it.  As an argument of
+    // `yyjson::write`, the same for every field that the call writes.
     struct emit_defaults_t
     {
     };
@@ -1642,6 +1643,21 @@ namespace yyjson
 
         template <typename P>
         concept read_policy = policy_bits<P> != 0;
+
+        // Whether the write that runs on this thread takes `yyjson::emit_defaults`, which a caster within it writes
+        // under too.
+        inline constinit thread_local bool write_emit_defaults = false;
+
+        class emit_defaults_scope
+        {
+            bool outer_;
+
+        public:
+            emit_defaults_scope() noexcept : outer_(write_emit_defaults) { write_emit_defaults = true; }
+            emit_defaults_scope(const emit_defaults_scope&) = delete;
+            emit_defaults_scope& operator=(const emit_defaults_scope&) = delete;
+            ~emit_defaults_scope() { write_emit_defaults = outer_; }
+        };
     }  // namespace detail
 
     namespace detail
@@ -5586,9 +5602,60 @@ namespace yyjson
                 return field_reflection::get_field<I>(t);
         }
 
+        // Whether `a` and `b` are written as the same JSON value.  `SignOfZero` tells -0.0 from 0.0.
+        template <typename T, bool SignOfZero = false>
+        bool json_equal(const T& a, const T& b);
+
+        // Whether the field R of S, by its index among all the fields, is left out of an object when it equals its
+        // default value.
+        template <typename S, std::size_t R>
+        inline constexpr bool omits_default =
+            (presence_of<S, R>.defaulted || presence_of<S, R>.from.has_value()) && !presence_of<S, R>.emit_defaults;
+
+        template <typename S>
+        inline constexpr bool has_omitted_defaults = []<std::size_t... Ks>(std::index_sequence<Ks...>) {
+            if constexpr (std::is_void_v<typename presence_keys<S>::type>)
+                return false;
+            else
+                return count_true<omits_default<S, struct_declared_index<S, Ks>>...> != 0;
+        }(std::make_index_sequence<struct_field_count<S>>{});
+
+        // The default value of the field R of S: the value of its `yyjson::default_from<f>`, or the field of `S()`.
+        // It is made once.
+        template <typename S, std::size_t R>
+        const declared_field_type<S, R>& stored_default()
+        {
+            if constexpr (presence_of<S, R>.from.has_value())
+            {
+                static const declared_field_type<S, R> value = default_field_value<S, R>();
+                return value;
+            }
+            else
+            {
+                static_assert(std::is_default_constructible_v<S>,
+                              "yyjson::default_ compares a field with the field of S(): S must be default "
+                              "constructible");
+                static const S value = S();
+                if constexpr (visitable<S>)
+                    return value.*member_pointer<R>(visit_struct<S>::members);
+                else
+                    return field_reflection::get_field<R>(value);
+            }
+        }
+
+        // Whether `field`, the field R of S as `forward_field` or `writable_field` gives it, is written as its default
+        // value, unless the write takes `yyjson::emit_defaults`.
+        template <typename S, std::size_t R, typename Field>
+        bool holds_default(const Field& field)
+        {
+            if (write_emit_defaults) return false;
+            const auto& d = writable_field(stored_default<S, R>());
+            return json_equal<std::remove_cvref_t<decltype(d)>, true>(d, field);
+        }
+
         // Emplaces the field R of the struct S, by its index among all the fields, with `emitter`.  A variant
         // tagged by `adjacent_tag` is written as the alternative that it holds, after its tag unless S has a field
-        // of it.
+        // of it.  A field equal to its default value is left out.
         template <typename S, std::size_t R, bool Plain, typename Emitter, typename Field, typename... Ts>
         CPPYYJSON_ALWAYS_INLINE inline void emplace_struct_field(Emitter& emitter, std::string_view key, Field&& field,
                                                                  Ts... ts)
@@ -5617,7 +5684,13 @@ namespace yyjson
                     std::forward<Field>(field));
             }
             else
+            {
+                if constexpr (omits_default<S, R>)
+                {
+                    if (holds_default<S, R>(field)) return;
+                }
                 emitter.template emplace<Plain>(key, std::forward<Field>(field), ts...);
+            }
         }
     }  // namespace detail
 
@@ -10446,6 +10519,93 @@ namespace yyjson
         concept reflected_range_aggregate =
             std::is_class_v<T> && std::is_aggregate_v<T> && (!std_array<T>) && reflectable<T>;
 
+        // Whether `a` and `b` are written as the same JSON value: structs by fields, tuples and ranges by elements (as
+        // sets when unordered or written as objects), variants and holders by what they hold, the rest by `operator==`.
+        // `SignOfZero` tells -0.0 from 0.0, which the writer writes differently.
+        template <typename T, bool SignOfZero>
+        bool json_equal(const T& a, const T& b)
+        {
+            using U = std::remove_cv_t<T>;
+            const auto equal = []<typename E>(const E& x, const E& y) { return json_equal<E, SignOfZero>(x, y); };
+            if constexpr (char_string_array<U>)
+                return std::string_view(a, char_array_size(a)) == std::string_view(b, char_array_size(b));
+            else if constexpr (std::is_array_v<U>)
+            {
+                for (std::size_t i = 0; i < std::extent_v<U>; ++i)
+                    if (!equal(a[i], b[i])) return false;
+                return true;
+            }
+            else if constexpr (std::same_as<U, const char*> || std::same_as<U, char*>)
+                return a == nullptr || b == nullptr ? a == b : std::string_view(a) == std::string_view(b);
+            else if constexpr (std::floating_point<U>)
+                return a == b && (!SignOfZero || std::signbit(a) == std::signbit(b));
+            else if constexpr (!std::is_class_v<U> || writer::detail::base_of_value<U> ||
+                               reader::detail::base_of_value_ref<U> ||
+                               (caster_names_to_json<U> && !std::derived_from<caster<U>, builtin_caster>))
+            {
+                static_assert(std::equality_comparable<U>,
+                              "yyjson compares a value of this type, which it does not write by its parts, with "
+                              "operator==, as yyjson::default_ and yyjson::default_from do");
+                return a == b;
+            }
+            else if constexpr (is_std_optional<U>::value || nullable_value<U>)
+                return !a.has_value() || !b.has_value() ? a.has_value() == b.has_value() : equal(*a, *b);
+            else if constexpr (indirect_value<U>)
+                return a.valueless_after_move() || b.valueless_after_move()
+                           ? a.valueless_after_move() == b.valueless_after_move()
+                           : equal(*a, *b);
+            else if constexpr (owning_pointer<U>)
+                return a == nullptr || b == nullptr ? a == b : equal(*a, *b);
+            else if constexpr (requires { std::variant_size<U>::value; })
+            {
+                if (a.index() != b.index()) return false;
+                if (a.valueless_by_exception()) return true;
+                return [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                    auto r = false;
+                    (void)((a.index() == Is && (r = equal(*std::get_if<Is>(&a), *std::get_if<Is>(&b)), true)) || ...);
+                    return r;
+                }(std::make_index_sequence<std::variant_size_v<U>>{});
+            }
+            else if constexpr (std::convertible_to<const U&, std::string_view>)
+                return std::string_view(a) == std::string_view(b);
+            else if constexpr (visitable<U> || reflected_range_aggregate<U> ||
+                               (!std::ranges::range<U> && !tuple_like<U> && reflectable<U>))
+            {
+                if constexpr (struct_field_count<U> <= index_chunk)
+                    return [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                        return (equal(struct_field<Ks>(a), struct_field<Ks>(b)) && ...);
+                    }(std::make_index_sequence<struct_field_count<U>>{});
+                else
+                    return all_indices<struct_field_count<U>>([&](auto k) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                        return equal(struct_field<k>(a), struct_field<k>(b));
+                    });
+            }
+            else if constexpr (std::ranges::range<const U>)
+            {
+                if constexpr (std::ranges::sized_range<const U>)
+                    if (std::ranges::size(a) != std::ranges::size(b)) return false;
+                using E = std::remove_cvref_t<std::ranges::range_reference_t<const U>>;
+                const auto eq = [&](const E& x, const E& y) { return equal(x, y); };
+                // a JSON object does not order its keys
+                if constexpr (requires { typename U::hasher; } ||
+                              key_value_like<std::remove_cv_t<std::ranges::range_value_t<const U>>>)
+                    return std::ranges::is_permutation(a, b, eq);
+                else
+                    return std::ranges::equal(a, b, eq);
+            }
+            else if constexpr (tuple_like<U>)
+                return [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+                    return (equal(std::get<Is>(a), std::get<Is>(b)) && ...);
+                }(std::make_index_sequence<std::tuple_size_v<U>>{});
+            else
+            {
+                static_assert(std::equality_comparable<U>,
+                              "yyjson compares a value of this type, which it does not write by its parts, with "
+                              "operator==, as yyjson::default_ and yyjson::default_from do");
+                return a == b;
+            }
+        }
+
         // How a type is read or written, for checking a recursive type and for naming the cause of an error.
         // `opaque<T>` holds for a T that a caster of the user converts, whose members this library does not look
         // into, and `converts_recursive<T>()` tells whether a recursive T and its own fields can be converted.
@@ -11715,13 +11875,18 @@ namespace yyjson
         static void to_json(writer::object_ref& obj, const T& t, Ts... ts)
         {
             if constexpr (detail::has_adjacent_fields<T>) detail::check_adjacent_tags(t);
-            obj.assign_reflected_fields(detail::reflected_field_count(t), [&](auto& emitter) {
+            const auto emplace_fields = [&](auto& emitter) {
                 [&]<std::size_t... Is>(std::index_sequence<Is...>) {
                     (detail::emplace_struct_field<T, Is, detail::reflected_field_key<T, Is>::plain>(
                          emitter, detail::reflected_field_key<T, Is>::name, detail::forward_field<Is>(t), ts...),
                      ...);
                 }(detail::reflected_fields<T>{});
-            });
+            };
+            // The fields equal to their defaults are counted only while they are written.
+            if constexpr (detail::has_omitted_defaults<T>)
+                obj.assign_reflected_fields_max(detail::struct_member_capacity<T>, emplace_fields);
+            else
+                obj.assign_reflected_fields(detail::reflected_field_count(t), emplace_fields);
         }
         template <typename... Ts>
         requires copy_string_args<Ts...> && (!visitable<T>) && (!writer::detail::to_json_usr_translator<T>) &&
@@ -11731,15 +11896,21 @@ namespace yyjson
             // The fields are moved one by one out of `t` itself.  `for_each_field` would move them into a
             // temporary first, and a field that the user's caster references would not outlive the call.
             if constexpr (detail::has_adjacent_fields<T>) detail::check_adjacent_tags(t);
-            const auto field_count = detail::reflected_field_count(t);
-            obj.assign_reflected_fields(field_count, [&](auto& emitter) {
+            const auto emplace_fields = [&](auto& emitter) {
                 [&]<std::size_t... Is>(std::index_sequence<Is...>) {
                     (detail::emplace_struct_field<T, Is, detail::reflected_field_key<T, Is>::plain>(
                          emitter, detail::reflected_field_key<T, Is>::name,
                          detail::forward_field<Is>(std::move(t)), ts...),
                      ...);
                 }(detail::reflected_fields<T>{});
-            });
+            };
+            if constexpr (detail::has_omitted_defaults<T>)
+                obj.assign_reflected_fields_max(detail::struct_member_capacity<T>, emplace_fields);
+            else
+            {
+                const auto field_count = detail::reflected_field_count(t);
+                obj.assign_reflected_fields(field_count, emplace_fields);
+            }
         }
     };
 
@@ -15677,6 +15848,10 @@ namespace yyjson
                         std::forward<Field>(field));
                     return;
                 }
+                if constexpr (yyjson::detail::omits_default<S, R>)
+                {
+                    if (yyjson::detail::holds_default<S, R>(field)) return;
+                }
                 if constexpr (omittable<Field>)
                 {
                     if (should_omit_field(field)) return;
@@ -16182,6 +16357,32 @@ namespace yyjson
         out.append(write(t, write_flag));
     }
 #endif
+
+    // Writes a C++ value as `yyjson::write(t, write_flag)` does, but writes the fields that equal their defaults too.
+    template <writable T>
+    [[nodiscard]] json_string write(const T& t, emit_defaults_t)
+    {
+        const detail::emit_defaults_scope scope;
+        return write(t);
+    }
+    template <writable T>
+    [[nodiscard]] json_string write(const T& t, WriteFlag write_flag, emit_defaults_t)
+    {
+        const detail::emit_defaults_scope scope;
+        return write(t, write_flag);
+    }
+    template <writable T>
+    void write(const T& t, std::string& out, emit_defaults_t)
+    {
+        const detail::emit_defaults_scope scope;
+        write(t, out);
+    }
+    template <writable T>
+    void write(const T& t, std::string& out, WriteFlag write_flag, emit_defaults_t)
+    {
+        const detail::emit_defaults_scope scope;
+        write(t, out, write_flag);
+    }
 
     // A type that cannot be written is rejected by name, along with the field or the element of it that cannot be
     // written, in `cannot_be_written`.  See `yyjson::diagnostic`.

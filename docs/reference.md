@@ -43,6 +43,9 @@ This page lists the functions, classes and other entities of cpp-yyjson, grouped
     *   [`yyjson::rename`](#yyjsonrename)
     *   [`yyjson::skip`](#yyjsonskip)
     *   [`yyjson::transparent`](#yyjsontransparent)
+    *   [`yyjson::required`](#yyjsonrequired)
+    *   [`yyjson::default_`, `yyjson::default_from`](#yyjsondefault_-yyjsondefault_from)
+    *   [`yyjson::emit_defaults`](#yyjsonemit_defaults)
     *   [`yyjson::internal_tag`, `yyjson::adjacent_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag)
     *   [`yyjson::enum_format`, `yyjson::enumerator`](#yyjsonenum_format-yyjsonenumerator)
     *   [`VISITABLE_STRUCT`](#visitable_struct)
@@ -239,6 +242,15 @@ template <typename T>
 json_string write(const T& t, WriteFlag flag = WriteFlag::NoFlag);
 template <typename T>
 void write(const T& t, std::string& out, WriteFlag flag = WriteFlag::NoFlag);
+
+template <typename T>
+json_string write(const T& t, emit_defaults_t);
+template <typename T>
+json_string write(const T& t, WriteFlag flag, emit_defaults_t);
+template <typename T>
+void write(const T& t, std::string& out, emit_defaults_t);
+template <typename T>
+void write(const T& t, std::string& out, WriteFlag flag, emit_defaults_t);
 ```
 
 `T` may be any type that a `yyjson::value` can be constructed from. The result is the same as `value(t).write(flag)`, byte for byte.
@@ -247,6 +259,8 @@ void write(const T& t, std::string& out, WriteFlag flag = WriteFlag::NoFlag);
 *   The second form overwrites `out` and keeps its capacity. A loop that writes many objects into the same `std::string` stops allocating once the string is large enough. `t` must not refer to `out`, neither as `out` itself nor through a `std::string_view` or a pointer into it.
 
 Throws `yyjson::write_error` in the same cases as `value::write`. The second form leaves `out` empty when it throws.
+
+The forms with [`yyjson::emit_defaults`](#yyjsonemit_defaults) also write the fields that are equal to their [defaults](#yyjsondefault_-yyjsondefault_from). Without it, `write` leaves those fields out. The tag applies to every struct that the call writes, the structs that a caster writes included.
 
 ```cpp
 using namespace yyjson;
@@ -1427,7 +1441,7 @@ template <typename... As>
 consteval field_annotation<As...> field(std::string_view member, As... values);
 ```
 
-`values` are one or more of [`yyjson::rename`](#yyjsonrename), [`yyjson::skip`](#yyjsonskip) and [`yyjson::adjacent_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag). Any other setting is a compile error.
+`values` are one or more of [`yyjson::rename`](#yyjsonrename), [`yyjson::skip`](#yyjsonskip), [`yyjson::required`](#yyjsonrequired), [`yyjson::default_`, `yyjson::default_from<f>`](#yyjsondefault_-yyjsondefault_from), [`yyjson::emit_defaults`](#yyjsonemit_defaults) and [`yyjson::adjacent_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag). Any other setting is a compile error.
 
 ### `yyjson::rename`
 
@@ -1553,6 +1567,23 @@ inline constexpr auto yyjson::annotations<Page> = yyjson::annotate(yyjson::field
 yyjson::write(Page());                                     // -> {"offset":0}
 yyjson::write(Page{50, 0, "c1"});                          // -> {"size":50,"offset":0,"cursor":"c1"}
 yyjson::read<Page>(R"({"offset":40})", yyjson::strict);    // -> {20, 40, std::nullopt}
+```
+
+### `yyjson::emit_defaults`
+
+Writes the fields that are equal to their defaults.
+
+```cpp
+inline constexpr emit_defaults_t emit_defaults{};
+```
+
+*   As a setting of [`yyjson::field`](#yyjsonfield), it applies to that field. The field needs a default: `yyjson::default_` or `yyjson::default_from<f>` on the field, or `yyjson::default_` on the struct. Otherwise it is a compile error. With the reflection of C++26, it can also be written on the member, as `[[=yyjson::emit_defaults]]`.
+*   As an argument of [`yyjson::write`](#yyjsonwrite), it applies to every field that the call writes.
+
+A field with `emit_defaults` still has its default, so an object may leave out its key. An empty `std::optional` field is left out also with `emit_defaults`.
+
+```cpp
+yyjson::write(Page(), yyjson::emit_defaults);  // -> {"size":20,"offset":0}
 ```
 
 ### `yyjson::internal_tag`, `yyjson::adjacent_tag`

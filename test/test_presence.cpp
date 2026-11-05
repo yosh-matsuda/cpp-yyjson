@@ -127,6 +127,86 @@ struct PreAnnotated
 };
 #endif
 
+// a std::optional field with its own `default_`, and a field that writes its default
+struct PreOptDef
+{
+    std::optional<int> c = 3;
+    int d = 4;
+    int e = 5;
+    bool operator==(const PreOptDef&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<PreOptDef> =
+    yyjson::annotate(yyjson::field("c", yyjson::default_), yyjson::field("d", yyjson::default_, yyjson::emit_defaults),
+                     yyjson::field("e", yyjson::default_from<make_seven>));
+
+struct PreZero
+{
+    double z = 0.0;
+    float f = -0.0f;
+};
+template <>
+inline constexpr auto yyjson::annotations<PreZero> = yyjson::annotate(yyjson::default_);
+
+struct PreInner
+{
+    int x = 1;
+    std::string y = "y";
+    bool operator==(const PreInner&) const = default;
+};
+
+// fields of each kind under the default of the struct
+struct PreKinds
+{
+    std::vector<int> v = {1, 2};
+    std::map<std::string, int> m = {{"k", 1}};
+    std::unordered_set<int> u = {1, 2, 3};
+    std::variant<int, std::string> x = "s";
+    char c[4] = "ab";
+    std::shared_ptr<int> p;
+    yyjson::nullable<int> n = 3;
+    yyjson::indirect<PreInner> i;
+    PreInner s;
+    std::tuple<int, std::optional<int>> t = {1, std::nullopt};
+};
+template <>
+inline constexpr auto yyjson::annotations<PreKinds> = yyjson::annotate(yyjson::default_);
+
+struct PreDefV
+{
+    int a = 1;
+    std::string b = "b";
+};
+template <>
+inline constexpr auto yyjson::annotations<PreDefV> = yyjson::annotate(yyjson::field("a", yyjson::default_));
+VISITABLE_STRUCT(PreDefV, a, b);
+
+// more than 8 fields, all of them left out when they equal their defaults
+struct PreDefWide
+{
+    int a = 0, b = 0, c = 0, d = 0, e = 0, f = 0, g = 0, h = 0, i = 0;
+    std::string j = "j";
+};
+template <>
+inline constexpr auto yyjson::annotations<PreDefWide> = yyjson::annotate(yyjson::default_);
+
+// the members of a struct with defaults in another object
+struct PreMembers
+{
+    PreDef def;
+    int last = 0;
+};
+template <>
+struct yyjson::caster<PreMembers>
+{
+    template <typename... Ts>
+    static void to_json(yyjson::object_emitter& out, const PreMembers& r, Ts... ts)
+    {
+        out.emplace_members(r.def, ts...);
+        out.emplace("last", r.last);
+    }
+};
+
 // The rules that the table of the keys of a struct of the members `v` and `w` enforces
 namespace presence_rules
 {
@@ -303,8 +383,100 @@ TEST(Presence, DefaultFrom)
     EXPECT_EQ(*u.p, 7);
     EXPECT_EQ(**u.q, 7);
     // std::unique_ptr reads null, so the std::optional over it holds an empty pointer
-    EXPECT_EQ(written(yyjson::read<PreFromUnique>(R"({"q":null})")), R"({"p":7,"q":null})");
-    EXPECT_EQ(written(yyjson::read(R"({"p":1})").cast<PreFromUnique>()), R"({"p":1,"q":7})");
+    const auto all = [](const PreFromUnique& v) { return std::string(yyjson::write(v, yyjson::emit_defaults)); };
+    EXPECT_EQ(all(yyjson::read<PreFromUnique>(R"({"q":null})")), R"({"p":7,"q":null})");
+    EXPECT_EQ(all(yyjson::read(R"({"p":1})").cast<PreFromUnique>()), R"({"p":1,"q":7})");
+    // a value equal to the value that f makes is left out
+    EXPECT_EQ(written(yyjson::read<PreFromUnique>(R"({"q":null})")), R"({"q":null})");
+    EXPECT_EQ(written(yyjson::read(R"({"p":1})").cast<PreFromUnique>()), R"({"p":1})");
+}
+
+namespace
+{
+    // what writing `t` gives, which is the same through a document and without one
+    template <typename T>
+    std::string write_both(const T& t)
+    {
+        expect_direct_write(t);
+        return std::string(yyjson::write(t));
+    }
+
+    // what writing `t` with `yyjson::emit_defaults` gives, which all the forms of `yyjson::write` give
+    template <typename T>
+    std::string write_all(const T& t)
+    {
+        const auto json = std::string(yyjson::write(t, yyjson::emit_defaults));
+        EXPECT_EQ(std::string(yyjson::write(t, yyjson::WriteFlag::NoFlag, yyjson::emit_defaults)), json);
+        auto out = std::string("previous");
+        yyjson::write(t, out, yyjson::emit_defaults);
+        EXPECT_EQ(out, json);
+        yyjson::write(t, out, yyjson::WriteFlag::NoFlag, yyjson::emit_defaults);
+        EXPECT_EQ(out, json);
+        // the call leaves the next write as it was
+        EXPECT_EQ(std::string(yyjson::write(t)), write_both(t));
+        return json;
+    }
+}  // namespace
+
+TEST(Presence, WriteDefaults)
+{
+    // a field equal to its default is left out, and a std::optional field without `default_` only when empty
+    EXPECT_EQ(write_both(PreDef()), R"({"b":2,"c":3})");
+    EXPECT_EQ(write_both(PreDef{4, 2, std::nullopt}), R"({"a":4,"b":2})");
+    EXPECT_EQ(write_all(PreDef()), R"({"a":1,"b":2,"c":3})");
+    EXPECT_EQ(write_all(PreDef{1, 2, std::nullopt}), R"({"a":1,"b":2})");
+    // `default_` on a std::optional field also leaves out a value equal to its initializer
+    EXPECT_EQ(write_both(PreOptDef()), R"({"d":4,"e":5})");
+    EXPECT_EQ(write_both(PreOptDef{std::nullopt, 1, 7}), R"({"d":1})");
+    EXPECT_EQ(write_both(PreOptDef{6, 4, 8}), R"({"c":6,"d":4,"e":8})");
+    EXPECT_EQ(write_all(PreOptDef{std::nullopt, 4, 7}), R"({"d":4,"e":7})");
+    EXPECT_EQ(write_all(PreOptDef()), R"({"c":3,"d":4,"e":5})");
+    // the default of the struct, and `default_from`
+    EXPECT_EQ(write_both(PreStructDef()), R"({"b":2})");
+    EXPECT_EQ(write_both(PreStructDef{1, 2, "t"}), R"({"b":2,"s":"t"})");
+    EXPECT_EQ(write_both(PreFromV{"anon", "anon", 5}), R"({"plain":5})");
+    EXPECT_EQ(write_both(PreFromV{"init", "x", 5}), R"({"s":"init","o":"x","plain":5})");
+    EXPECT_EQ(write_all(PreFromV{"anon", "anon", 5}), R"({"s":"anon","o":"anon","plain":5})");
+    auto from = yyjson::read<PreFrom>("{}");
+    EXPECT_EQ(write_both(from), R"({"plain":5})");
+    *from.p = 8;
+    EXPECT_EQ(write_both(from), R"({"p":8,"plain":5})");
+    // -0.0 is not equal to a default of 0.0
+    EXPECT_EQ(write_both(PreZero()), R"({})");
+    EXPECT_EQ(write_both(PreZero{-0.0, 0.0f}), R"({"z":-0.0,"f":0.0})");
+    EXPECT_EQ(write_all(PreZero()), R"({"z":0.0,"f":-0.0})");
+    // fields of each kind
+    EXPECT_EQ(write_both(PreKinds()), R"({})");
+    auto kinds = PreKinds();
+    kinds.v = {2, 1};
+    kinds.m["k"] = 2;
+    kinds.u = {3, 2};
+    kinds.x = 1;
+    kinds.c[1] = 'c';
+    kinds.p = std::make_shared<int>(0);
+    kinds.n = std::nullopt;
+    kinds.i->x = 2;
+    kinds.s.y = "z";
+    std::get<1>(kinds.t) = 0;
+    EXPECT_EQ(write_both(kinds), R"({"v":[2,1],"m":{"k":2},"u":)" + written(kinds.u) +
+                                     R"(,"x":1,"c":[97,99,0,0],"p":0,"n":null,"i":{"x":2,"y":"y"},"s":{"x":1,"y":"z"},)"
+                                     R"("t":[1,0]})");
+    // the elements of an unordered set equal in any order
+    kinds = PreKinds();
+    kinds.u = {3, 1, 2};
+    EXPECT_EQ(write_both(kinds), R"({})");
+    // VISITABLE_STRUCT, more than 8 fields, elements of a vector and of a map, and members of another object
+    EXPECT_EQ(write_both(PreDefV()), R"({"b":"b"})");
+    EXPECT_EQ(write_both(PreDefV{2, "b"}), R"({"a":2,"b":"b"})");
+    EXPECT_EQ(write_both(PreDefWide()), R"({})");
+    EXPECT_EQ(write_both(PreDefWide{.i = 1, .j = "k"}), R"({"i":1,"j":"k"})");
+    EXPECT_EQ(write_all(PreDefWide()), R"({"a":0,"b":0,"c":0,"d":0,"e":0,"f":0,"g":0,"h":0,"i":0,"j":"j"})");
+    EXPECT_EQ(write_both(std::vector<PreDef>{{}, {4, 2, 3}}), R"([{"b":2,"c":3},{"a":4,"b":2,"c":3}])");
+    EXPECT_EQ(write_both(std::map<std::string, PreStructDef>{{"x", {}}}), R"({"x":{"b":2}})");
+    EXPECT_EQ(write_all(std::vector<PreDef>{{}}), R"([{"a":1,"b":2,"c":3}])");
+    EXPECT_EQ(write_both(PreMembers()), R"({"b":2,"c":3,"last":0})");
+    EXPECT_EQ(write_all(PreMembers()), R"({"a":1,"b":2,"c":3,"last":0})");
+    EXPECT_EQ(std::string(yyjson::object(PreDef()).write()), R"({"b":2,"c":3})");
 }
 
 #if FIELD_RFL_ANNOTATIONS

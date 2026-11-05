@@ -332,6 +332,9 @@ The annotations of a type change how the type converts, with no caster. Speciali
 | `yyjson::field("member", s...)` | a struct | gives the field `member` the settings `s...` below | [JSON keys](#json-keys) |
 | `yyjson::rename("key")` | a field | reads and writes the field by the JSON key `key` | [JSON keys](#json-keys) |
 | `yyjson::skip` | a field | leaves the field out of reading and writing | [Skipped fields](#skipped-fields) |
+| `yyjson::required` | a field | rejects an object without the key, also without `yyjson::strict` | [Default values and required keys](#default-values-and-required-keys) |
+| `yyjson::default_`, `yyjson::default_from<f>` | a field, or a struct for `default_` | gives the field a default: its key may be left out, and a value equal to the default is not written | [Default values and required keys](#default-values-and-required-keys) |
+| `yyjson::emit_defaults` | a field with a default | writes the field also when it is equal to its default | [Default values and required keys](#default-values-and-required-keys) |
 | `yyjson::transparent` | a struct | reads and writes the struct as the value of its one field | [A struct as the value of its field](#a-struct-as-the-value-of-its-field) |
 | `yyjson::adjacent_tag(key, ids)` | a field of a `std::variant` | tells the alternative by a sibling member | [Tagged variants](#tagged-variants) |
 | `yyjson::internal_tag(key, ids)` | a `std::variant` | tells the alternative by a member of its object | [Tagged variants](#tagged-variants) |
@@ -401,6 +404,71 @@ auto json = yyjson::write(Task{"x", [] {}});
 *   `yyjson::read<T>`, `cast<T>` and `read_into` leave a skipped field at its value in `T()`. `merge_into` keeps the value that the field has.
 *   Reading still needs what the struct itself needs. `yyjson::read<T>` and `cast<T>` need a default constructible and movable `T`, and `read_into` and `merge_into` need a move-assignable one. A struct with a skipped `std::mutex` can therefore only be written, and one with a skipped `const` or reference member cannot be read by `read_into` or `merge_into`.
 *   `VISITABLE_STRUCT` converts only the members that it lists: leave a member out of the macro instead. `yyjson::skip` on a struct that the macro registers fails to compile.
+
+### Default values and required keys
+
+A field has a default when its key may be left out of the JSON. These fields have one:
+
+*   A `std::optional` field. Its default is its value in `T()`, usually `std::nullopt`. It is written when it has a value.
+*   A field with `yyjson::default_`. Its default is its value in `T()`. On the struct, `yyjson::default_` gives a default to each field that has no setting of its own and is not a `std::optional`.
+*   A field with `yyjson::default_from<f>`. Its default is `f()`. For a field of `std::optional<U>`, `yyjson::nullable<U>`, a smart pointer or `yyjson::indirect<U>`, `f` returns a `U`. `T()` does not call `f`.
+
+When a field with `yyjson::default_` or `yyjson::default_from<f>` is equal to its default, the library does not write it. `yyjson::emit_defaults` on the field writes it in every case, and the call `yyjson::write(t, yyjson::emit_defaults)` writes every such field of every struct that it writes. An empty `std::optional` is left out also then.
+
+```cpp
+std::string guest() { return "guest"; }
+
+struct Query
+{
+    std::string text;
+    int limit = 20;
+    std::string user;
+    int version = 1;
+    std::optional<std::string> cursor;
+};
+
+template <>
+inline constexpr auto yyjson::annotations<Query> = yyjson::annotate(
+    yyjson::field("text", yyjson::required), yyjson::field("limit", yyjson::default_),
+    yyjson::field("user", yyjson::default_from<guest>), yyjson::field("version", yyjson::default_, yyjson::emit_defaults));
+
+auto q = yyjson::read<Query>(R"({"text":"cpp"})", yyjson::strict);
+// -> Query{.text = "cpp", .limit = 20, .user = "guest", .version = 1, .cursor = std::nullopt}
+yyjson::write(q);
+// -> {"text":"cpp","version":1}
+yyjson::write(q, yyjson::emit_defaults);
+// -> {"text":"cpp","limit":20,"user":"guest","version":1}
+yyjson::read<Query>(R"({"limit":5})");
+// throws yyjson::bad_cast: Query is not constructible from JSON without the key "text" ...
+```
+
+*   `yyjson::read<T>`, `read_into` and `cast<T>` give a field with a default its default when the key is missing. `merge_into` keeps the value that the field has, and `null` resets the field to its default.
+*   Under [`yyjson::strict`](validation.md#read-policies), and under `yyjson::reject_missing_keys`, only the key of a field with a default may be left out. Without them, a field without a default keeps its value in `T()`.
+*   `yyjson::required` makes every read reject an object without the key, with or without the policies. It takes no default, and a `std::optional` field takes no `yyjson::required`.
+*   The library compares a field with its default as JSON values: `-0.0` is not equal to `0.0`, because the two are written differently.
+*   `f` of `default_from<f>` must give the same value each time that it is called. The library calls it once and keeps the value for the comparison.
+
+`yyjson::nullable<U>` reads `null` and writes an empty value as `null`, at every position. As a field, it needs its key as `U` does. `std::optional<yyjson::nullable<U>>` tells three states of a key: absent, `null`, and a value.
+
+```cpp
+struct Profile
+{
+    std::string name;
+    yyjson::nullable<std::string> email;
+    std::optional<yyjson::nullable<int>> age;
+};
+
+yyjson::write(Profile{"Bob", std::nullopt, std::nullopt});
+// -> {"name":"Bob","email":null}
+yyjson::write(Profile{"Ann", "a@example.com", yyjson::nullable<int>()});
+// -> {"name":"Ann","email":"a@example.com","age":null}
+```
+
+The following fail to compile with a `static_assert`:
+
+*   `yyjson::required` together with a default, two defaults on one field, and `yyjson::emit_defaults` on a field without a default.
+*   a default or `yyjson::required` on a skipped field, on a field that `yyjson::adjacent_tag` tags, or on a transparent struct and its field.
+*   `yyjson::nullable<std::optional<U>>` and `yyjson::nullable<yyjson::nullable<U>>`.
 
 ### A struct as the value of its field
 

@@ -121,14 +121,15 @@ namespace
             return t;
     }
 
-    // what reading gives, written back, or the error it throws
+    // what reading gives, written back with the fields that equal their defaults, or the error it throws
     template <typename F>
     std::string read_or_error(F&& read)
     {
         try
         {
-            return std::string(yyjson::write(in_order(read()), yyjson::WriteFlag::AllowInfAndNan |
-                                                                   yyjson::WriteFlag::AllowInvalidUnicode));
+            return std::string(yyjson::write(in_order(read()),
+                                             yyjson::WriteFlag::AllowInfAndNan | yyjson::WriteFlag::AllowInvalidUnicode,
+                                             yyjson::emit_defaults));
         }
         catch (const yyjson::read_error& e)
         {
