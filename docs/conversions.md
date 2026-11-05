@@ -526,6 +526,69 @@ auto expr = yyjson::read<Expr>(R"(["add",["mul","x","y"],"z"])");
 // -> an Expr of three Exprs: "add", ["mul","x","y"] and "z"
 ```
 
+### A struct as a JSON array
+
+`yyjson::as_array` reads and writes a struct as a JSON array. The elements of the array are the fields, in the order of their declarations. Use it for a format that gives a record by the positions of its elements, such as a rule of ESLint (`[2, "always"]`). The fields then have names, and the array can end before the last fields:
+
+```cpp
+struct Rule
+{
+    int level = 0;
+    std::optional<std::string> mode;
+    std::optional<int> limit;
+};
+
+template <>
+inline constexpr auto yyjson::annotations<Rule> =
+    yyjson::annotate(yyjson::as_array, yyjson::field("level", yyjson::minimum(0)));
+
+auto rule = yyjson::read<Rule>(R"([2,"always"])");
+// -> Rule{2, "always", std::nullopt}
+auto json = yyjson::write(rule);
+// -> [2,"always"]
+yyjson::read<Rule>("[-1]");
+// throws: the value of the key "level" of Rule is less than the minimum 0 at /0 (line 1, column 2, pos 1)
+```
+
+A [`std::tuple`](#standard-library-types) also converts to an array of elements of different types. But it reads only an array of exactly as many elements as it has, and its elements have no names.
+
+*   **Positions.** Each field that is not [skipped](#skipped-fields) is an element of the array. The first one is at the index 0. A skipped field is no element, and it keeps its value in `T()`.
+*   **Missing elements.** An array can end before the last fields. A field whose element is missing follows the rules of a missing key. It keeps its value in `T()`, or gets its [default](#default-values-and-required-keys). `yyjson::reject_missing_keys` and `yyjson::strict` reject a missing element of a field without a default, and `yyjson::required` rejects a missing element always. The message names the element and its field, as in `Rule is not constructible from JSON without the element 0 of the field "level"`.
+*   **`null`.** `null` at the element of a `std::optional` field is read as a missing value, as in an object. `yyjson::reject_null_as_missing` and `yyjson::strict` reject it.
+*   **Elements after the fields.** An array can have more elements than the struct has fields. The read ignores them. `yyjson::strict` does not reject them. `yyjson::reject_unknown_keys` rejects them, with the message `Point has no field of the element 2` at `/2`. `yyjson::items(false)` on the struct rejects them in every read, as `items: false` does in JSON Schema.
+*   **A field for the elements after the others.** `yyjson::field("member", yyjson::extra_items)` gives the last field that is not skipped the elements after those of the other fields. The write writes them after the other fields. The field is a range with `push_back` and `clear`, such as `std::vector<double>` or `std::vector<yyjson::value>`. `yyjson::items(settings...)` on the field constrains these elements. A struct that holds a range of its own type in such a field reads a tree of arrays:
+
+    ```cpp
+    struct Series
+    {
+        std::string label;
+        std::vector<double> values;
+    };
+
+    template <>
+    inline constexpr auto yyjson::annotations<Series> = yyjson::annotate(
+        yyjson::as_array, yyjson::field("values", yyjson::extra_items, yyjson::items(yyjson::minimum(0))));
+
+    auto series = yyjson::read<Series>(R"(["cpu",0.5,0.75])");
+    // -> Series{"cpu", {0.5, 0.75}}
+    yyjson::read<Series>(R"(["cpu",0.5,-1])");
+    // throws: an element of the value of the key "values" of Series is less than the minimum 0 at /2 (line 1, column 12, pos 11)
+
+    struct Node
+    {
+        std::string name;
+        std::vector<Node> children;
+    };
+
+    template <>
+    inline constexpr auto yyjson::annotations<Node> =
+        yyjson::annotate(yyjson::as_array, yyjson::field("children", yyjson::extra_items));
+
+    auto tree = yyjson::read<Node>(R"(["a",["b"],["c",["d"]]])");
+    // -> tree.children.size() == 2
+    ```
+
+*   **Writing.** The write writes the fields in order. It leaves out the empty `std::optional` fields at the end of the array. The write writes an empty `std::optional` before a written value as `null`. The array has no other way to put the later value at its index. Thus `yyjson::write(Rule{1, std::nullopt, 3})` gives `[1,null,3]`. A plain read reads it back, and `yyjson::strict` rejects the `null`. A value equal to its default is written. When the field of `yyjson::extra_items` has elements, the write leaves out no field.
 ### C++26 annotations
 
 With C++26 static reflection, such as GCC 16 with `-std=c++26 -freflection`, the settings of a field can be written on the member itself as an [annotation](https://wg21.link/p3394). Every setting that `yyjson::field` takes is also an annotation: `[[=yyjson::rename("key")]]`, `[[=yyjson::skip]]` and `[[=yyjson::adjacent_tag(key, ids)]]`.

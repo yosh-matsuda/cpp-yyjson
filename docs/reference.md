@@ -1503,6 +1503,55 @@ auto ids = yyjson::read<std::vector<UserId>>("[7,42]");  // -> {UserId{7}, UserI
 auto json = yyjson::write(ids);                          // -> [7,42]
 ```
 
+### `yyjson::as_array`, `yyjson::extra_items`
+
+A struct that is read and written as a JSON array of its fields, and the field that receives the elements after the others.
+
+```cpp
+inline constexpr as_array_t as_array{};
+inline constexpr extra_items_t extra_items{};
+consteval explicit items(bool allowed);  // items<bool>, as yyjson::items(false)
+```
+
+`yyjson::as_array` and `yyjson::items(false)` are settings of the struct, given to [`yyjson::annotate`](#yyjsonannotationst-yyjsonannotate). `yyjson::extra_items` is a setting of a field. With the reflection of C++26, they can also be written on the declarations, as `struct [[=yyjson::as_array]] Rule`.
+
+*   Each field that is not skipped is an element of the array, in the order of the declarations.
+*   A missing element follows the rules of a missing key. `null` at the element of a `std::optional` field is read as a missing value.
+*   The read ignores the elements after the fields. `yyjson::reject_unknown_keys` and `yyjson::items(false)` reject them, and `yyjson::strict` does not. `items(true)` is a compile error.
+*   The field of `yyjson::extra_items` receives the elements after the fields. It is the last field that is not skipped, a range with `push_back` and `clear`. It takes [`yyjson::items(settings...)`](#constraints-of-elements) for its elements, and no other setting.
+*   `write` leaves out the empty `std::optional` fields at the end of the array. It writes an empty `std::optional` before a value that it writes as `null`. It leaves out no field when the field of `yyjson::extra_items` has elements.
+*   `read_into` and `merge_into` replace the whole value, as for an array.
+*   The struct takes [`yyjson::min_items`, `yyjson::max_items`, `yyjson::unique_items`, `yyjson::contains`, `yyjson::min_contains` and `yyjson::max_contains`](#constraints-of-elements). They count and compare the array that `write` gives for the value that the read gives.
+
+These are compile errors:
+
+*   `yyjson::as_array` given twice, or with `yyjson::transparent`.
+*   A key setting or `yyjson::adjacent_tag` on a field, or a combinator on the struct.
+*   `yyjson::items(false)` or the settings of the whole array without `yyjson::as_array`.
+*   `yyjson::extra_items` without `yyjson::as_array`, twice, or on a field that is not the last.
+*   `yyjson::extra_items` with another setting than `yyjson::items(settings...)`, or with `yyjson::items(false)`.
+
+See [A struct as a JSON array](conversions.md#a-struct-as-a-json-array).
+
+```cpp
+struct Rule
+{
+    int level = 0;
+    std::optional<std::string> mode;
+    std::optional<int> limit;
+};
+
+template <>
+inline constexpr auto yyjson::annotations<Rule> =
+    yyjson::annotate(yyjson::as_array, yyjson::items(false), yyjson::field("level", yyjson::minimum(0)));
+
+auto rule = yyjson::read<Rule>(R"([2,"always"])");  // -> Rule{2, "always", std::nullopt}
+auto json = yyjson::write(rule);                     // -> [2,"always"]
+yyjson::write(Rule{1, std::nullopt, 80});            // -> [1,null,80]
+yyjson::read<Rule>("[1,null,80,4]");
+// throws yyjson::bad_cast: Rule has no field of the element 3 at /3 (line 1, column 12, pos 11)
+```
+
 ### `yyjson::required`
 
 A field whose key an object must have, also in a read without [policies](#read-policies).
