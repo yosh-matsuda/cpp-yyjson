@@ -1383,6 +1383,84 @@ namespace yyjson
     };
     inline constexpr transparent_t transparent{};
 
+    // The read policies, which make a read reject JSON that it accepts otherwise.  A read takes them after its
+    // arguments, and a struct takes them as settings of `yyjson::annotate` for the objects read into it.
+    struct reject_unknown_keys_t
+    {
+    };
+    inline constexpr reject_unknown_keys_t reject_unknown_keys{};
+    struct reject_missing_keys_t
+    {
+    };
+    inline constexpr reject_missing_keys_t reject_missing_keys{};
+    struct reject_null_as_missing_t
+    {
+    };
+    inline constexpr reject_null_as_missing_t reject_null_as_missing{};
+    struct reject_duplicates_t
+    {
+    };
+    inline constexpr reject_duplicates_t reject_duplicates{};
+    // `reject_missing_keys`, `reject_null_as_missing` and `reject_duplicates`.
+    struct strict_t
+    {
+    };
+    inline constexpr strict_t strict{};
+
+    namespace detail
+    {
+        // The read policies as the bits of one byte.
+        inline constexpr std::uint8_t unknown_keys_policy = 1;
+        inline constexpr std::uint8_t missing_keys_policy = 2;
+        inline constexpr std::uint8_t null_as_missing_policy = 4;
+        inline constexpr std::uint8_t duplicates_policy = 8;
+        inline constexpr std::uint8_t key_policies = unknown_keys_policy | missing_keys_policy | duplicates_policy;
+
+        template <typename P>
+        inline constexpr std::uint8_t policy_bits = 0;
+        template <>
+        inline constexpr std::uint8_t policy_bits<reject_unknown_keys_t> = unknown_keys_policy;
+        template <>
+        inline constexpr std::uint8_t policy_bits<reject_missing_keys_t> = missing_keys_policy;
+        template <>
+        inline constexpr std::uint8_t policy_bits<reject_null_as_missing_t> = null_as_missing_policy;
+        template <>
+        inline constexpr std::uint8_t policy_bits<reject_duplicates_t> = duplicates_policy;
+        template <>
+        inline constexpr std::uint8_t policy_bits<strict_t> =
+            missing_keys_policy | null_as_missing_policy | duplicates_policy;
+
+        // Ps can be the settings of an `annotate(...)`, more than the 256 operands of a fold in clang before 22.
+        template <typename... Ps>
+        inline constexpr std::uint8_t policies_of = [] {
+            constexpr std::uint8_t bits[] = {std::uint8_t{0}, policy_bits<Ps>...};
+            auto result = std::uint8_t{0};
+            for (const auto b : bits) result |= b;
+            return result;
+        }();
+
+        // The policies of the read that runs on this thread, which a cast and a caster within it read under.
+        inline constinit thread_local std::uint8_t read_policies = 0;
+
+        // Adds policies to `read_policies` until it ends, so that a read nested in another adds to its policies.
+        class read_policy_scope
+        {
+            std::uint8_t outer_;
+
+        public:
+            explicit read_policy_scope(std::uint8_t policies) noexcept : outer_(read_policies)
+            {
+                read_policies = static_cast<std::uint8_t>(outer_ | policies);
+            }
+            read_policy_scope(const read_policy_scope&) = delete;
+            read_policy_scope& operator=(const read_policy_scope&) = delete;
+            ~read_policy_scope() { read_policies = outer_; }
+        };
+
+        template <typename P>
+        concept read_policy = policy_bits<P> != 0;
+    }  // namespace detail
+
     namespace detail
     {
         // How JSON names the alternative of a `std::variant`: by trying the alternatives in turn, by a member of the
@@ -1660,7 +1738,7 @@ namespace yyjson
 
         template <typename... As>
         inline constexpr bool annotate_settings =
-            count_true<(is_field_annotation<As>::value || std::same_as<As, transparent_t> ||
+            count_true<(is_field_annotation<As>::value || std::same_as<As, transparent_t> || read_policy<As> ||
                         internal_tag_annotation<As> || enum_annotation<As>)...> == sizeof...(As);
     }  // namespace detail
 
@@ -1668,9 +1746,10 @@ namespace yyjson
     consteval detail::annotation_list<As...> annotate(As... values)
     {
         static_assert(detail::annotate_settings<As...>,
-                      "yyjson::annotate takes yyjson::field(...) and yyjson::transparent for a struct, "
-                      "yyjson::internal_tag for a variant, and yyjson::enumerator(...) and yyjson::enum_format for "
-                      "an enumeration");
+                      "yyjson::annotate takes yyjson::field(...), yyjson::transparent and the read policies "
+                      "yyjson::reject_unknown_keys, yyjson::reject_missing_keys, yyjson::reject_null_as_missing, "
+                      "yyjson::reject_duplicates and yyjson::strict for a struct, yyjson::internal_tag for a variant, "
+                      "and yyjson::enumerator(...) and yyjson::enum_format for an enumeration");
         return detail::annotation_list<As...>{
             detail::annotation_values<std::index_sequence_for<As...>, As...>(values...)};
     }
@@ -1685,10 +1764,10 @@ namespace yyjson
     {
     };
 
-    template <typename T, typename Json>
-    auto cast(const Json& json) -> decltype(json.template cast<T>())
+    template <typename T, typename Json, detail::read_policy... Policies>
+    auto cast(const Json& json, Policies... policies) -> decltype(json.template cast<T>(policies...))
     {
-        return json.template cast<T>();
+        return json.template cast<T>(policies...);
     }
 
     class json_string : public std::string_view
@@ -2167,6 +2246,7 @@ namespace yyjson
             transparent_twice,
             transparent_field_count,
             transparent_field_setting,
+            transparent_policy,
         };
 
         template <std::size_t N>
@@ -2187,6 +2267,7 @@ namespace yyjson
             std::array<std::string_view, N> members;
             field_key_table<N> table;
             bool visitable = false;
+            bool policies = false;  // whether the struct is annotated with a read policy
             std::array<bool, N> renamed = {};
             std::array<bool, N> tagged = {};
             // where the search for the member of the next `yyjson::field` starts: after the previous one, so that
@@ -2256,6 +2337,8 @@ namespace yyjson
                 }
                 else if constexpr (std::same_as<A, transparent_t>)
                     make_transparent();
+                else if constexpr (read_policy<A>)
+                    policies = true;
                 else
                     fail(field_key_error::not_a_struct_setting);
             }
@@ -2282,6 +2365,8 @@ namespace yyjson
                         result.error = field_key_error::transparent_field_count;
                     else if (renamed[f] || tagged[f])
                         result.error = field_key_error::transparent_field_setting;
+                    else if (policies)
+                        result.error = field_key_error::transparent_policy;
                 }
                 if (result.error != field_key_error::none || std::ranges::find(renamed, true) == renamed.end())
                     return result;
@@ -2339,6 +2424,46 @@ namespace yyjson
         }
 #endif
 
+#if FIELD_RFL_ANNOTATIONS
+        // The read policies that annotate the class T under C++26.
+        template <typename T>
+        inline constexpr std::uint8_t type_annotated_policies = [] {
+            if constexpr (!std::is_class_v<T>)
+                return std::uint8_t{0};
+            else
+                return static_cast<std::uint8_t>(
+                    (field_reflection::type_annotations<T, reject_unknown_keys_t>.empty() ? 0 : unknown_keys_policy) |
+                    (field_reflection::type_annotations<T, reject_missing_keys_t>.empty() ? 0 : missing_keys_policy) |
+                    (field_reflection::type_annotations<T, reject_null_as_missing_t>.empty()
+                         ? 0
+                         : null_as_missing_policy) |
+                    (field_reflection::type_annotations<T, reject_duplicates_t>.empty() ? 0 : duplicates_policy) |
+                    (field_reflection::type_annotations<T, strict_t>.empty() ? 0 : policy_bits<strict_t>));
+        }();
+#endif
+
+        // The read policies in `annotations<T>`.
+        template <typename T>
+        inline constexpr std::uint8_t policies_of_annotations =
+            []<typename... As>(std::type_identity<std::tuple<As...>>) {
+                return policies_of<As...>;
+            }(std::type_identity<annotation_values_of<T>>{});
+
+        // The read policies that the struct T declares for the objects read into it, by `annotations<T>` or, under
+        // C++26, on the type.
+        template <typename T>
+        inline constexpr std::uint8_t struct_policies = [] {
+            if constexpr (!std::is_class_v<T>)
+                return std::uint8_t{0};
+            else
+                return static_cast<std::uint8_t>(
+                    policies_of_annotations<T>
+#if FIELD_RFL_ANNOTATIONS
+                    | type_annotated_policies<T>
+#endif
+                );
+        }();
+
         // Whether the class T is annotated with `yyjson::transparent`, by `annotations<T>` or, under C++26, on the
         // type.
         template <typename T>
@@ -2347,7 +2472,7 @@ namespace yyjson
                 return false;
             else
                 return []<typename... As>(std::type_identity<std::tuple<As...>>) {
-                    return (std::same_as<As, transparent_t> || ...);
+                    return count_true<std::same_as<As, transparent_t>...> != 0;
                 }(std::type_identity<annotation_values_of<T>>{})
 #if FIELD_RFL_ANNOTATIONS
                        || !field_reflection::type_annotations<T, transparent_t>.empty()
@@ -2405,6 +2530,7 @@ namespace yyjson
                     builder.fail(field_key_error::annotated_visitable);
                 for (std::size_t k = 0; k < field_reflection::type_annotations<T, transparent_t>.size(); ++k)
                     builder.make_transparent();
+                if (type_annotated_policies<T> != 0) builder.policies = true;
 #endif
                 return builder.result();
             }
@@ -2436,6 +2562,9 @@ namespace yyjson
             static_assert(table.error != field_key_error::transparent_field_setting,
                           "the field of a struct annotated with yyjson::transparent has no key: it takes no "
                           "yyjson::rename, (member, \"key\") pair or yyjson::adjacent_tag");
+            static_assert(table.error != field_key_error::transparent_policy,
+                          "a struct annotated with yyjson::transparent has no keys of its own: it takes no read "
+                          "policy, which the struct that has it as a field can take");
             static constexpr auto value = table.keys;
         };
 
@@ -3095,6 +3224,12 @@ namespace yyjson
 #endif
                 return builder.result();
             }
+            static_assert(policies_of_annotations<E> == 0
+#if FIELD_RFL_ANNOTATIONS
+                              && type_annotated_policies<E> == 0
+#endif
+                          ,
+                          "the read policies, such as yyjson::strict, annotate a struct, not an enumeration");
             static constexpr auto table = make_table();
             static_assert(
                 table.error != enum_annotation_error::not_an_enum_setting,
@@ -3282,6 +3417,8 @@ namespace yyjson
                               "yyjson::field annotates a struct, not a variant");
                 static_assert(!(enum_annotation<As> || ...),
                               "yyjson::enumerator and yyjson::enum_format annotate an enumeration, not a variant");
+                static_assert(!(read_policy<As> || ...),
+                              "the read policies, such as yyjson::strict, annotate a struct, not a variant");
                 auto result = sizeof...(As);
                 auto i = std::size_t{0};
                 ((result = internal_tag_annotation<As> ? i : result, ++i), ...);
@@ -3686,6 +3823,16 @@ namespace yyjson
         template <typename T, typename Json>
         void assign_transparent(T& t, const Json& json, bool replaceable);
 
+        // Whether `cast<T>` may read null, as `accepted_json_kinds` tells.
+        template <typename T>
+        consteval bool may_read_null();
+
+        // Whether a field of type T reads null as a missing key.
+        template <typename T>
+        constexpr bool null_reads_as_missing = false;
+        template <typename T>
+        constexpr bool null_reads_as_missing<std::optional<T>> = !may_read_null<T>();
+
         // Whether the field of `T`, a struct annotated with `yyjson::transparent`, is a `std::optional` that null
         // empties when `T` is an element, a value of a map, an alternative or the root, as it empties a
         // `std::optional` there.  As a field of a struct, `T` reads null as the field reads it.
@@ -3694,6 +3841,44 @@ namespace yyjson
             transparent_struct<T> && is_std_optional<struct_field_type<T, 0>>::value &&
             std::derived_from<caster<struct_field_type<T, 0>>, builtin_caster> &&
             !owning_pointer<typename struct_field_type<T, 0>::value_type>;
+
+        // Whether `yyjson::reject_missing_keys` lets an object leave out the key of a field of type F: a
+        // `std::optional`, or a transparent struct over a field that may be left out.
+        template <typename F>
+        inline constexpr bool may_be_absent = [] {
+            if constexpr (is_std_optional<F>::value)
+                return true;
+            else if constexpr (transparent_struct<F>)
+            {
+                if constexpr (std::derived_from<caster<F>, builtin_caster>)
+                    return may_be_absent<struct_field_type<F, 0>>;
+                else
+                    return false;
+            }
+            else
+                return false;
+        }();
+
+        // The `std::optional` that a field of type F reads null into as a missing key, which
+        // `yyjson::reject_null_as_missing` rejects null for: F, or the optional of a transparent struct over it.
+        template <typename F>
+        struct null_missing_optional
+        {
+            using type = void;
+        };
+        template <typename F>
+        requires null_reads_as_missing<F> && std::derived_from<caster<F>, builtin_caster>
+        struct null_missing_optional<F>
+        {
+            using type = F;
+        };
+        template <typename F>
+        requires transparent_struct<F> && std::derived_from<caster<F>, builtin_caster>
+        struct null_missing_optional<F> : null_missing_optional<struct_field_type<F, 0>>
+        {
+        };
+        template <typename F>
+        inline constexpr bool null_missing_field = !std::is_void_v<typename null_missing_optional<F>::type>;
 
         // `replaceable` tells whether a new object may be constructed in the place of the field.
         template <typename Field, typename Json>
@@ -4017,6 +4202,8 @@ namespace yyjson
             {
                 return names_[index].size();
             }
+            // The names of the fields, by their index.
+            [[nodiscard]] constexpr const std::string_view* names() const noexcept { return names_.data(); }
 
             // Whether the `name_size(index)` characters at `p` are the name of the field `index` written without
             // escapes, so that the JSON string ends at the next quotation mark.
@@ -4111,6 +4298,249 @@ namespace yyjson
             return field_key_matcher<sizeof...(Is)>(std::array<std::string_view, sizeof...(Is)>{field_key<T, Is>...});
         }(reflected_fields<T>{});
 
+        template <typename T>
+        CPPYYJSON_ALWAYS_INLINE inline constexpr const auto& struct_key_matcher() noexcept
+        {
+            if constexpr (visitable<T>)
+                return visit_struct<T>::key_matcher;
+            else
+                return reflected_key_matcher<T>;
+        }
+
+        // What the read policies check the keys of an object read into a struct against, kept out of the code
+        // of the struct, which checks only the objects that do not have the keys of its fields in their order.
+        struct struct_key_rules
+        {
+            const std::string_view* keys;  // of the fields, by their index
+            const bool* absent;            // whether each field may be left out, or null if none may
+            const std::string_view* tags;  // the keys of the tags that `writes_adjacent_tag`
+            const std::string_view* null_types;  // of the optionals that read null as missing, or null if none
+            std::uint32_t size;
+            std::uint32_t tag_count;
+            std::string_view type;
+            std::uint8_t policies;  // of the struct
+
+            [[nodiscard]] bool may_be_absent(std::size_t i) const noexcept { return absent != nullptr && absent[i]; }
+            // The type of the `std::optional` that the field `i` reads null into as a missing key, or empty.
+            [[nodiscard]] std::string_view null_type(std::size_t i) const noexcept
+            {
+                return null_types != nullptr ? null_types[i] : std::string_view();
+            }
+            // The field whose key is `key`, or `size`.
+            [[nodiscard]] std::size_t find(std::string_view key, std::size_t hint) const noexcept
+            {
+                if (hint < size && keys[hint] == key) return hint;
+                for (std::size_t i = 0; i < size; ++i)
+                {
+                    if (keys[i] == key) return i;
+                }
+                return size;
+            }
+            [[nodiscard]] bool is_adjacent_tag(std::string_view key) const noexcept
+            {
+                return std::find(tags, tags + tag_count, key) != tags + tag_count;
+            }
+        };
+
+        template <typename T>
+        inline constexpr auto struct_field_absence = []<std::size_t... Ks>(std::index_sequence<Ks...>) {
+            return std::array<bool, sizeof...(Ks)>{may_be_absent<struct_field_type<T, Ks>>...};
+        }(std::make_index_sequence<struct_field_count<T>>{});
+        template <typename F>
+        consteval std::string_view null_missing_type_name()
+        {
+            if constexpr (null_missing_field<F>)
+                return type_name<typename null_missing_optional<F>::type>();
+            else
+                return {};
+        }
+        template <typename T>
+        inline constexpr auto struct_field_null_types = []<std::size_t... Ks>(std::index_sequence<Ks...>) {
+            return std::array<std::string_view, sizeof...(Ks)>{null_missing_type_name<struct_field_type<T, Ks>>()...};
+        }(std::make_index_sequence<struct_field_count<T>>{});
+        template <typename T>
+        inline constexpr auto struct_adjacent_tag_count = []<std::size_t... Ks>(std::index_sequence<Ks...>) {
+            // summed in an array: a struct can have more fields than the 256 operands of a fold in clang before 22
+            constexpr std::size_t counts[] = {std::size_t{0}, [] {
+                if constexpr (adjacent_field<T, Ks>)
+                    return std::size_t{writes_adjacent_tag<T, struct_field_tags<T, Ks>>};
+                else
+                    return std::size_t{0};
+            }()...};
+            auto n = std::size_t{0};
+            for (const auto count : counts) n += count;
+            return n;
+        }(std::make_index_sequence<struct_field_count<T>>{});
+        template <typename T>
+        inline constexpr auto struct_adjacent_tags = [] {
+            auto result = std::pair<std::array<std::string_view, struct_adjacent_tag_count<T>>, std::uint32_t>();
+            if constexpr (has_adjacent_fields<T>)
+                [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                    [[maybe_unused]] const bool done[] = {
+                        true, (
+                                  [&] {
+                                      if constexpr (adjacent_field<T, Ks>)
+                                      {
+                                          if constexpr (writes_adjacent_tag<T, struct_field_tags<T, Ks>>)
+                                              result.first[result.second++] = struct_field_tags<T, Ks>::key;
+                                      }
+                                  }(),
+                                  true)...};
+                }(std::make_index_sequence<struct_field_count<T>>{});
+            return result;
+        }();
+        template <typename T>
+        inline constexpr auto struct_rules = struct_key_rules{
+            struct_key_matcher<T>().names(),
+            std::ranges::any_of(struct_field_absence<T>, std::identity()) ? struct_field_absence<T>.data() : nullptr,
+            struct_adjacent_tags<T>.first.data(),
+            std::ranges::any_of(struct_field_null_types<T>, [](std::string_view n) { return !n.empty(); })
+                ? struct_field_null_types<T>.data()
+                : nullptr,
+            static_cast<std::uint32_t>(struct_field_count<T>),
+            struct_adjacent_tags<T>.second,
+            type_name<T>(),
+            struct_policies<T>};
+
+        [[noreturn]] CPPYYJSON_COLD inline void throw_unknown_key(cast_target at, std::string_view key,
+                                                                  std::string_view type)
+        {
+            throw_bad_cast_at(at, "{} has no field of the key \"{}\"", type, key);
+        }
+        [[noreturn]] CPPYYJSON_COLD inline void throw_repeated_key(cast_target at, std::string_view key,
+                                                                   std::string_view type)
+        {
+            throw_bad_cast_at(at, "the object read into {} has the key \"{}\" twice", type, key);
+        }
+        [[noreturn]] CPPYYJSON_COLD inline void throw_missing_key(cast_target at, std::string_view key,
+                                                                  std::string_view type)
+        {
+            throw_bad_cast_at(at, "{} is not constructible from JSON without the key \"{}\"", type, key);
+        }
+        [[noreturn]] CPPYYJSON_COLD inline void throw_null_as_missing(cast_target at, std::string_view type)
+        {
+            throw_bad_cast_at(at, "{} is not constructible from JSON null under yyjson::reject_null_as_missing", type);
+        }
+        // Null in a merge patch for a field that may not be left out, which null would give its value in `T()`.
+        [[noreturn]] CPPYYJSON_COLD inline void throw_null_for_required_key(cast_target at, std::string_view key,
+                                                                            std::string_view type)
+        {
+            throw_bad_cast_at(at, "{} is not constructible from JSON null for the key \"{}\" under "
+                              "yyjson::reject_missing_keys", type, key);
+        }
+        [[noreturn]] CPPYYJSON_COLD inline void throw_repeated_element(cast_target at, std::string_view type)
+        {
+            throw_bad_cast_at(at, "the array read into {} has an element twice", type);
+        }
+
+        // The key of the tag of `yyjson::internal_tag` in the object that is being read as an alternative of the
+        // variant, which the struct of the alternative takes as a key of its own.  The object is told by its
+        // address in its document.  An alternative that is a variant tagged in the same object adds its key.
+        class internal_tag_key
+        {
+            static inline constinit thread_local const internal_tag_key* innermost_ = nullptr;
+            const void* object_;
+            std::string_view key_;
+            const void* original_ = nullptr;
+            const internal_tag_key* outer_;
+
+        public:
+            internal_tag_key(const void* object, std::string_view key) noexcept
+                : object_(object), key_(key), outer_(innermost_)
+            {
+                innermost_ = this;
+            }
+            // The object `copy` takes the keys of `original`, of which it is a copy in another document.
+            struct copy_t
+            {
+            };
+            internal_tag_key(const void* copy, const void* original, copy_t) noexcept
+                : object_(copy), original_(original), outer_(innermost_)
+            {
+                innermost_ = this;
+            }
+            ~internal_tag_key() { innermost_ = outer_; }
+            internal_tag_key(const internal_tag_key&) = delete;
+            internal_tag_key& operator=(const internal_tag_key&) = delete;
+
+            [[nodiscard]] static bool contains(const void* object, std::string_view key) noexcept
+            {
+                for (const auto* p = innermost_; p != nullptr; p = p->outer_)
+                {
+                    if (p->object_ != object) continue;
+                    if (p->original_ != nullptr)
+                        object = p->original_;
+                    else if (p->key_ == key)
+                        return true;
+                }
+                return false;
+            }
+        };
+
+        // Calls `f(key, value)` for each member of the object `obj`.
+        template <typename F>
+        void for_each_member(const yyjson_val* obj, F&& f)
+        {
+            auto iter = yyjson_obj_iter();
+            yyjson_obj_iter_init(const_cast<yyjson_val*>(obj), &iter);
+            while (auto* key = yyjson_obj_iter_next(&iter))
+                f(std::string_view(unsafe_yyjson_get_str(key), unsafe_yyjson_get_len(key)),
+                  static_cast<const yyjson_val*>(yyjson_obj_iter_get_val(key)));
+        }
+        template <typename F>
+        void for_each_member(const yyjson_mut_val* obj, F&& f)
+        {
+            auto iter = yyjson_mut_obj_iter();
+            yyjson_mut_obj_iter_init(const_cast<yyjson_mut_val*>(obj), &iter);
+            while (auto* key = yyjson_mut_obj_iter_next(&iter))
+                f(std::string_view(unsafe_yyjson_get_str(key), unsafe_yyjson_get_len(key)),
+                  static_cast<const yyjson_mut_val*>(yyjson_mut_obj_iter_get_val(key)));
+        }
+
+        // Checks the members of the object `obj` read into a struct against `rules` under `policies`.  A merge
+        // patch may leave out any key, but not give null to a field that may not be absent.
+        template <typename Val>
+        CPPYYJSON_NOINLINE CPPYYJSON_COLD void check_struct_keys(const Val* obj, const struct_key_rules& rules,
+                                                                 bool merge)
+        {
+            const auto policies = static_cast<std::uint8_t>(read_policies | rules.policies);
+            auto seen = std::vector<bool>(rules.size);
+            auto tags = std::vector<std::string_view>();
+            auto hint = std::size_t{0};
+            for_each_member(obj, [&](std::string_view key, const Val* value) {
+                if (const auto i = rules.find(key, hint); i < rules.size)
+                {
+                    if (seen[i] && (policies & duplicates_policy) != 0)
+                        throw_repeated_key(target_of(value), key, rules.type);
+                    seen[i] = true;
+                    hint = i + 1;
+                    if (unsafe_yyjson_is_null(const_cast<Val*>(value)))
+                    {
+                        if (merge && (policies & missing_keys_policy) != 0 && !rules.may_be_absent(i))
+                            throw_null_for_required_key(target_of(value), key, rules.type);
+                        if (!merge && (policies & null_as_missing_policy) != 0 && !rules.null_type(i).empty())
+                            throw_null_as_missing(target_of(value), rules.null_type(i));
+                    }
+                }
+                else if (rules.is_adjacent_tag(key) || internal_tag_key::contains(obj, key))
+                {
+                    if ((policies & duplicates_policy) != 0)
+                    {
+                        if (std::ranges::find(tags, key) != tags.end())
+                            throw_repeated_key(target_of(value), key, rules.type);
+                        tags.push_back(key);
+                    }
+                }
+                else if ((policies & unknown_keys_policy) != 0)
+                    throw_unknown_key(target_of(value), key, rules.type);
+            });
+            if (merge || (policies & missing_keys_policy) == 0) return;
+            for (std::size_t i = 0; i < rules.size; ++i)
+            {
+                if (!seen[i] && !rules.may_be_absent(i)) throw_missing_key(target_of(obj), rules.keys[i], rules.type);
+            }
+        }
+
         // Only a field of a struct type is replaced by a new object, and comparing the addresses of all fields
         // for any other costs a struct of many fields more than the field itself when the compiler does not
         // fold `field_reflection::get_field` away.
@@ -4174,8 +4604,51 @@ namespace yyjson
                 assign_fields_in_order<Matcher>(obj, assign);
         }
 
+        // The position of the first key of `keys`, each with its position, that an earlier key equals, or -1.
+        CPPYYJSON_NOINLINE CPPYYJSON_COLD inline std::size_t first_repeated_key(
+            std::vector<std::pair<std::string_view, std::size_t>>& keys)
+        {
+            std::ranges::sort(keys);
+            auto first = std::size_t(-1);
+            for (std::size_t i = 1; i < keys.size(); ++i)
+            {
+                if (keys[i].first == keys[i - 1].first) first = std::min(first, keys[i].second);
+            }
+            return first;
+        }
+
+        // Under `yyjson::reject_duplicates`, throws for a key repeated in the object `obj` read into T as pairs.
+        template <typename Val>
+        CPPYYJSON_NOINLINE CPPYYJSON_COLD void check_repeated_keys(const Val* obj, std::string_view type)
+        {
+            auto keys = std::vector<std::pair<std::string_view, std::size_t>>();
+            for_each_member(obj, [&](std::string_view key, const Val*) { keys.emplace_back(key, keys.size()); });
+            const auto first = first_repeated_key(keys);
+            if (first == std::size_t(-1)) return;
+            auto i = std::size_t{0};
+            for_each_member(obj, [&](std::string_view key, const Val* value) {
+                if (i++ == first) throw_repeated_key(target_of(value), key, type);
+            });
+        }
+        template <typename Val>
+        CPPYYJSON_ALWAYS_INLINE inline void check_object_keys_unique(const Val* obj, std::string_view type)
+        {
+            if ((read_policies & duplicates_policy) != 0) [[unlikely]]
+                check_repeated_keys(obj, type);
+        }
+
+        // Checks the object `obj` read into the struct T, or merged into it if `merge`, under the read policies of
+        // the call and of T.
         template <typename T, typename Json>
-        void assign_reflected_fields(T& t, const Json& obj)
+        CPPYYJSON_ALWAYS_INLINE inline void check_struct_object(const Json& obj, bool merge)
+        {
+            if ((read_policies | struct_policies<T>) != 0) [[unlikely]]
+                check_struct_keys(dependent_t<writer::detail::json_value_access, Json>::get(obj), struct_rules<T>,
+                                  merge);
+        }
+
+        template <typename T, typename Json>
+        void assign_reflected_fields_unchecked(T& t, const Json& obj)
         {
             [[maybe_unused]] const auto guard = recursion_guard<T>();
             assign_struct_fields_by_key<T, reflected_key_matcher<T>>(
@@ -4190,11 +4663,19 @@ namespace yyjson
                 });
             if constexpr (has_adjacent_fields<T>) check_adjacent_tags_without_values(t, obj);
         }
+        // The caller checks the read policies: a check in the body keeps GCC from inlining the body of a small
+        // struct into the loop over the elements of a vector.
+        template <typename T, typename Json>
+        CPPYYJSON_ALWAYS_INLINE inline void assign_reflected_fields(T& t, const Json& obj)
+        {
+            check_struct_object<T>(obj, false);
+            assign_reflected_fields_unchecked(t, obj);
+        }
 
         // The same as `assign_reflected_fields` for a struct registered by `VISITABLE_STRUCT`, whose
         // fields are given as pointers to members in the order of their names.
         template <typename T, typename Json, typename... Members>
-        void assign_visitable_fields(T& t, const member_list<Members...>& members, const Json& obj)
+        void assign_visitable_fields_unchecked(T& t, const member_list<Members...>& members, const Json& obj)
         {
             [[maybe_unused]] const auto guard = recursion_guard<T>();
             assign_struct_fields_by_key<T, visit_struct<T>::key_matcher>(
@@ -4207,6 +4688,13 @@ namespace yyjson
                         assign_reflected_field(field, value, visitable_field_replaceable<I>(t));
                 });
             if constexpr (has_adjacent_fields<T>) check_adjacent_tags_without_values(t, obj);
+        }
+        template <typename T, typename Json, typename... Members>
+        CPPYYJSON_ALWAYS_INLINE inline void assign_visitable_fields(T& t, const member_list<Members...>& members,
+                                                                    const Json& obj)
+        {
+            check_struct_object<T>(obj, false);
+            assign_visitable_fields_unchecked(t, members, obj);
         }
 
         template <typename Obj, typename Field, typename... Ts>
@@ -6302,6 +6790,13 @@ namespace yyjson
                     yyjson::detail::assert_from_json_usable<U>();
                     return default_caster<U>::from_json(const_value_ref(doc_, val_));
                 }
+                // A cast under read policies, such as `yyjson::strict`, which apply to the casts nested in it.
+                template <typename T, yyjson::detail::read_policy P, yyjson::detail::read_policy... Ps>
+                auto cast(P, Ps...) const -> decltype(this->template cast<T>())
+                {
+                    const auto scope = yyjson::detail::read_policy_scope(yyjson::detail::policies_of<P, Ps...>);
+                    return this->template cast<T>();
+                }
                 template <typename T>
                 requires (!base_of_value<T>)
                 explicit operator T() const
@@ -6816,6 +7311,13 @@ namespace yyjson
                 {
                     yyjson::detail::assert_from_json_usable<U>();
                     return default_caster<U>::from_json(const_array_ref(*this));
+                }
+                // A cast under read policies, such as `yyjson::strict`, which apply to the casts nested in it.
+                template <typename T, yyjson::detail::read_policy P, yyjson::detail::read_policy... Ps>
+                auto cast(P, Ps...) const -> decltype(this->template cast<T>())
+                {
+                    const auto scope = yyjson::detail::read_policy_scope(yyjson::detail::policies_of<P, Ps...>);
+                    return this->template cast<T>();
                 }
                 template <typename T>
                 requires (!base_of_value<T>)
@@ -7604,6 +8106,13 @@ namespace yyjson
                     yyjson::detail::assert_from_json_usable<U>();
                     return default_caster<U>::from_json(const_object_ref(*this));
                 }
+                // A cast under read policies, such as `yyjson::strict`, which apply to the casts nested in it.
+                template <typename T, yyjson::detail::read_policy P, yyjson::detail::read_policy... Ps>
+                auto cast(P, Ps...) const -> decltype(this->template cast<T>())
+                {
+                    const auto scope = yyjson::detail::read_policy_scope(yyjson::detail::policies_of<P, Ps...>);
+                    return this->template cast<T>();
+                }
                 template <typename T>
                 requires (!base_of_value<T>)
                 explicit operator T() const
@@ -8316,6 +8825,13 @@ namespace yyjson
                 return detail::default_caster<U>::from_json(*this);
             }
 
+            // A cast under read policies, such as `yyjson::strict`, which apply to the casts nested in it.
+            template <typename T, yyjson::detail::read_policy P, yyjson::detail::read_policy... Ps>
+            auto cast(P, Ps...) const -> decltype(this->template cast<T>())
+            {
+                const auto scope = yyjson::detail::read_policy_scope(yyjson::detail::policies_of<P, Ps...>);
+                return this->template cast<T>();
+            }
             template <typename T>
             requires (!detail::base_of_value_ref<T>)
             explicit operator T() const
@@ -8433,6 +8949,13 @@ namespace yyjson
             {
                 yyjson::detail::assert_from_json_usable<U>();
                 return detail::default_caster<U>::from_json(*this);
+            }
+            // A cast under read policies, such as `yyjson::strict`, which apply to the casts nested in it.
+            template <typename T, yyjson::detail::read_policy P, yyjson::detail::read_policy... Ps>
+            auto cast(P, Ps...) const -> decltype(this->template cast<T>())
+            {
+                const auto scope = yyjson::detail::read_policy_scope(yyjson::detail::policies_of<P, Ps...>);
+                return this->template cast<T>();
             }
             template <typename T>
             requires (!detail::base_of_value_ref<T>)
@@ -8582,6 +9105,13 @@ namespace yyjson
             {
                 yyjson::detail::assert_from_json_usable<U>();
                 return detail::default_caster<U>::from_json(*this);
+            }
+            // A cast under read policies, such as `yyjson::strict`, which apply to the casts nested in it.
+            template <typename T, yyjson::detail::read_policy P, yyjson::detail::read_policy... Ps>
+            auto cast(P, Ps...) const -> decltype(this->template cast<T>())
+            {
+                const auto scope = yyjson::detail::read_policy_scope(yyjson::detail::policies_of<P, Ps...>);
+                return this->template cast<T>();
             }
             template <typename T>
             requires (!detail::base_of_value_ref<T>)
@@ -9773,6 +10303,12 @@ namespace yyjson
             t.insert(t.end(), std::move(v));
         };
 
+        // A set or a map whose `insert` drops an element whose key it has, which `yyjson::reject_duplicates` rejects.
+        template <typename T>
+        concept unique_set = requires(T& t, std::ranges::range_value_t<T> v) {
+            { t.insert(std::move(v)) } -> std::same_as<std::pair<typename T::iterator, bool>>;
+        };
+
         // A map whose keys are neither strings nor `enum_key`s is written as a JSON array of [key, value] pairs, and
         // is read back from one with `emplace`.
         template <typename T>
@@ -10031,6 +10567,7 @@ namespace yyjson
         static dependent_t<T, Json> from_json(const Json& obj)
         {
             using value_type = std::remove_cvref_t<std::tuple_element_t<1, std::ranges::range_value_t<T>>>;
+            check_object_keys_unique(dependent_t<writer::detail::json_value_access, Json>::get(obj), type_name<T>());
             auto result = T();
             reserve_if_possible(result, obj.size());
             auto position = emplace_position<T>::first(result);
@@ -10046,6 +10583,7 @@ namespace yyjson
         static dependent_t<T, Json> from_json(const Json& obj)
         {
             using value_type = std::remove_cvref_t<std::tuple_element_t<1, std::ranges::range_value_t<T>>>;
+            check_object_keys_unique(dependent_t<writer::detail::json_value_access, Json>::get(obj), type_name<T>());
             auto result = T();
             reserve_if_possible(result, obj.size());
             auto position = emplace_position<T>::first(result);
@@ -10105,7 +10643,16 @@ namespace yyjson
             {
                 // the end is the right hint for the elements of a sorted set, which are written in order
                 reserve_if_possible(result, arr.size());
-                for (const auto& e : arr) result.insert(result.end(), detail::cast_nested<value_type>(e));
+                for (const auto& e : arr)
+                {
+                    [[maybe_unused]] const auto size = result.size();
+                    result.insert(result.end(), detail::cast_nested<value_type>(e));
+                    if constexpr (unique_set<T>)
+                    {
+                        if (result.size() == size && (read_policies & duplicates_policy) != 0) [[unlikely]]
+                            throw_repeated_element(target_of(e), type_name<T>());
+                    }
+                }
             }
             else if constexpr (pair_array_map<T>)
             {
@@ -10113,7 +10660,14 @@ namespace yyjson
                 for (const auto& e : arr)
                 {
                     auto kv = detail::cast_nested<array_element_t<T>>(e);
-                    result.emplace(std::move(kv.first), std::move(kv.second));
+                    if constexpr (unique_set<T>)
+                    {
+                        if (!result.emplace(std::move(kv.first), std::move(kv.second)).second &&
+                            (read_policies & duplicates_policy) != 0) [[unlikely]]
+                            throw_repeated_element(target_of(e), type_name<T>());
+                    }
+                    else
+                        result.emplace(std::move(kv.first), std::move(kv.second));
                 }
             }
             else
@@ -10724,19 +11278,6 @@ namespace yyjson
     };
 #endif
 
-    namespace detail
-    {
-        // Whether `cast<T>` may read null, as `accepted_json_kinds` tells.
-        template <typename T>
-        consteval bool may_read_null();
-
-        // Whether a field of type T reads null as a missing key.
-        template <typename T>
-        constexpr bool null_reads_as_missing = false;
-        template <typename T>
-        constexpr bool null_reads_as_missing<std::optional<T>> = !may_read_null<T>();
-    }  // namespace detail
-
     template <typename T>
     struct caster<std::optional<T>> : detail::builtin_caster
     {
@@ -10757,7 +11298,8 @@ namespace yyjson
                     return;
                 }
             }
-            if (!json.is_null() || detail::may_read_null<T>()) field = detail::cast_nested<T>(json);
+            if (!json.is_null() || detail::may_read_null<T>())
+                field = detail::cast_nested<T>(json);
         }
 
         // Null gives no value, and any other JSON value is read as `cast<T>` reads it.
@@ -11668,6 +12210,8 @@ namespace yyjson
                 const auto index = detail::tagged_alternative<V, tags>(*obj);
                 if (index == std::variant_npos)
                     detail::throw_variant_tag_missing(detail::target_of(json), tags::key, detail::type_name<V>());
+                const auto tag = detail::internal_tag_key(
+                    detail::dependent_t<writer::detail::json_value_access, Json>::get(json), tags::key);
                 return detail::cast_alternative<V>(index, json);
             }
             else
@@ -15109,15 +15653,7 @@ namespace yyjson
         template <typename T>
         concept mergeable = mergeable_of<T>();
 
-        template <typename T>
-        CPPYYJSON_ALWAYS_INLINE inline constexpr const auto& struct_key_matcher() noexcept
-        {
-            if constexpr (yyjson::detail::visitable<T>)
-                return visit_struct<T>::key_matcher;
-            else
-                return yyjson::detail::reflected_key_matcher<T>;
-        }
-
+        using yyjson::detail::struct_key_matcher;
         using yyjson::detail::struct_field;
         using yyjson::detail::struct_field_count;
 
@@ -15212,6 +15748,7 @@ namespace yyjson
         {
             [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<T>();
             auto defaults = struct_defaults<T>();
+            yyjson::detail::check_struct_object<T>(obj, true);
             yyjson::detail::assign_struct_fields_by_key<T, struct_key_matcher<T>()>(
                 obj, [&]<std::size_t I>(std::integral_constant<std::size_t, I>, const const_value_ref& value,
                                         const auto&... object) {
@@ -15249,6 +15786,9 @@ namespace yyjson
         void merge_map_from(T& t, const const_object_ref& obj)
         {
             using key_type = typename T::key_type;
+            using mapped_type = typename T::mapped_type;
+            yyjson::detail::check_object_keys_unique(writer::detail::json_value_access::get(obj),
+                                                     yyjson::detail::type_name<T>());
             auto key = key_type();
             for (auto&& [k, value] : obj)
             {
@@ -15259,6 +15799,14 @@ namespace yyjson
                 if (value.is_null())
                 {
                     if (const auto it = t.find(key); it != t.end()) t.erase(it);
+                }
+                else if ((yyjson::detail::read_policies | yyjson::detail::struct_policies<mapped_type>) != 0)
+                {
+                    // under a read policy a new key is read whole, so that its policies see the whole value
+                    if (const auto it = t.find(key); it != t.end())
+                        merge_from(it->second, value);
+                    else
+                        t.try_emplace(std::move(key), yyjson::detail::cast_nested<mapped_type>(value));
                 }
                 else
                     merge_from(t.try_emplace(key).first->second, value);
@@ -15283,6 +15831,8 @@ namespace yyjson
                     else if constexpr (tagged_mergeable<T>)
                     {
                         using tags = yyjson::detail::variant_tags<T>;
+                        const auto tag =
+                            yyjson::detail::internal_tag_key(writer::detail::json_value_access::get(v), tags::key);
                         merge_tagged<tags>(t, yyjson::detail::tagged_alternative<T, tags>(*obj), v);
                     }
                     else if constexpr (transparent_mergeable<T>)
@@ -15363,10 +15913,12 @@ namespace yyjson
         }
 
         // Calls `f` with `root`, the root of a copy of the value `original` in a document of the other API.  The
-        // path to a value in the copy that a `bad_cast` from `f` names is the path to it in `original`.
+        // path to a value in the copy that a `bad_cast` from `f` names is the path to it in `original`, and the
+        // copy takes the keys of tags that `original` has.
         template <typename Val, typename Copy, typename F>
         decltype(auto) with_copy_of(const Val* original, Copy* root, F&& f)
         {
+            const auto copy = internal_tag_key(root, original, internal_tag_key::copy_t());
             auto failure = std::exception_ptr();
             try
             {
@@ -15889,6 +16441,17 @@ namespace yyjson
             ReadFlag flg_;
             bool inv_;
             bool into_ = false;
+            // the read policies of the call, which the thread has while the reader reads
+            std::uint8_t policies_ = yyjson::detail::read_policies;
+            // The key of the tag of `yyjson::internal_tag` in the object at `object`, which is being read as an
+            // alternative of the variant, as `detail::internal_tag_key` keeps it for a document.
+            struct tag_context
+            {
+                const char* object;
+                std::string_view key;
+                const tag_context* outer;
+            };
+            const tag_context* tags_ = nullptr;
             std::string scratch_;
             std::string c_string_;  // the source of a translator that takes a `const char*`
             // the copy of a scalar root, in the array unless it is longer
@@ -17764,6 +18327,41 @@ namespace yyjson
                 ~cursor_guard() { r.cur_ = saved; }
             };
 
+        public:
+            // Adds read policies to those of the reader until it ends.
+            class policy_guard
+            {
+                direct_reader& r_;
+                std::uint8_t outer_;
+
+            public:
+                policy_guard(direct_reader& r, std::uint8_t policies) noexcept : r_(r), outer_(r.policies_)
+                {
+                    r.policies_ = static_cast<std::uint8_t>(outer_ | policies);
+                }
+                policy_guard(const policy_guard&) = delete;
+                policy_guard& operator=(const policy_guard&) = delete;
+                ~policy_guard() { r_.policies_ = outer_; }
+            };
+
+        private:
+            // Adds the key of the tag of the object at `object` to `tags_` until it ends.
+            class tag_guard
+            {
+                direct_reader& r_;
+                tag_context context_;
+
+            public:
+                tag_guard(direct_reader& r, const char* object, std::string_view key) noexcept
+                    : r_(r), context_{object, key, r.tags_}
+                {
+                    r.tags_ = &context_;
+                }
+                tag_guard(const tag_guard&) = delete;
+                tag_guard& operator=(const tag_guard&) = delete;
+                ~tag_guard() { r_.tags_ = context_.outer; }
+            };
+
             // Releases what the views kept, when the outermost caster that takes one returns.
             void view_release() noexcept
             {
@@ -18246,6 +18844,7 @@ namespace yyjson
                     const auto index = find_variant_tag<T>(start);
                     if (index == std::variant_npos) [[unlikely]]
                         throw_at(start, [] { yyjson::detail::throw_variant_tag_missing({}, tags::key, name<T>); });
+                    const auto guard = tag_guard(*this, start, tags::key);
                     read_tagged_alternative<T>(make, index, start);
                 }
                 else
@@ -18375,6 +18974,13 @@ namespace yyjson
                             check_tag_of_skipped_fields<T, I>(adjacent);
                         }
                     }
+                    using field_type = std::remove_cvref_t<yyjson::detail::struct_field_type<T, I>>;
+                    if constexpr (!Merge && (yyjson::detail::struct_policies<T> &
+                                             yyjson::detail::null_as_missing_policy) != 0 &&
+                                  yyjson::detail::null_missing_field<field_type>)
+                    {
+                        if (*cur_ == 'n') fail();
+                    }
                     std::forward<Read>(read)(struct_field<I>(t));
                 }
             }
@@ -18446,6 +19052,8 @@ namespace yyjson
                         cur_ = start;
                         merge_alternative<tags>(struct_field<I>(t));
                     }
+                    else if (alternative_policies<V> || policies_ != 0) [[unlikely]]
+                        fail();  // the document reads a new alternative whole under a read policy
                     else
                         struct_field<I>(t) = read_new_alternative<V>(index, start);
                 }
@@ -19023,6 +19631,12 @@ namespace yyjson
                 return std::move(*result);
             }
 
+            // Whether an alternative of the variant V is a struct that declares a read policy.
+            template <typename V>
+            static constexpr bool alternative_policies = []<typename... As>(std::type_identity<std::variant<As...>>) {
+                return ((yyjson::detail::struct_policies<As> != 0) || ...);
+            }(std::type_identity<V>{});
+
             // Reads the value at `cur_` into `target` as `target = read_value<T>()` does, but writes a string into
             // the buffer `target` already has.
             template <typename T>
@@ -19427,6 +20041,7 @@ namespace yyjson
                     auto result = T();
                     auto key_buf = std::string();
                     auto position = yyjson::detail::emplace_position<T>::first(result);
+                    check_map_keys();
                     read_members([&] {
                         // the key is kept in `key_buf` while the value is read if it has escapes
                         const auto key = read_key<T>(key_buf);
@@ -19726,11 +20341,24 @@ namespace yyjson
                             result.push_back(read_element<value_type>());
                     }
                     else if constexpr (yyjson::detail::insertable_set<T>)
+                    {
+                        [[maybe_unused]] const auto size = result.size();
                         result.insert(result.end(), read_element<value_type>());
+                        if constexpr (yyjson::detail::unique_set<T>)
+                        {
+                            if (result.size() == size && (policies_ & yyjson::detail::duplicates_policy) != 0)
+                                [[unlikely]] fail();
+                        }
+                    }
                     else if constexpr (yyjson::detail::pair_array_map<T>)
                     {
                         auto kv = read_element<value_type>();
-                        result.emplace(std::move(kv.first), std::move(kv.second));
+                        [[maybe_unused]] const auto inserted =
+                            result.emplace(std::move(kv.first), std::move(kv.second));
+                        if constexpr (yyjson::detail::unique_set<T>)
+                        {
+                            if (!inserted.second && (policies_ & yyjson::detail::duplicates_policy) != 0) fail();
+                        }
                     }
                     else if constexpr (builtin_variant<value_type>)
                     {
@@ -19872,7 +20500,7 @@ namespace yyjson
                 constexpr auto n = struct_field_count<T>;
                 auto seen = std::bitset<n>();
                 auto adjacent = adjacent_fields_of<T>{cur_};
-                read_fields(struct_key_matcher<T>(), [&](std::size_t index) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                read_fields<T, false>(struct_key_matcher<T>(), [&](std::size_t index) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
                     const auto first = !seen[index];
                     seen.set(index);
                     with_struct_field<T>(index, [&]<std::size_t I>(std::integral_constant<std::size_t, I>)
@@ -20008,8 +20636,11 @@ namespace yyjson
                 const char* const start = cur_;
                 const auto index = find_variant_tag<T>(start);
                 cur_ = start;
+                const auto guard = tag_guard(*this, start, tags::key);
                 if (index == std::variant_npos || index == t.index())
                     merge_alternative<tags>(t);
+                else if (alternative_policies<T> || policies_ != 0) [[unlikely]]
+                    fail();  // the document reads a new alternative whole under a read policy
                 else
                     t = read_new_alternative<T>(index, start);
             }
@@ -20020,7 +20651,7 @@ namespace yyjson
                 [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<T>();
                 auto defaults = struct_defaults<T>();
                 auto adjacent = adjacent_fields_of<T>{cur_};
-                read_fields(struct_key_matcher<T>(), [&](std::size_t index) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                read_fields<T, true>(struct_key_matcher<T>(), [&](std::size_t index) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
                     with_struct_field<T>(index, [&]<std::size_t I>(std::integral_constant<std::size_t, I>)
                                                     CPPYYJSON_LAMBDA_ALWAYS_INLINE {
                                                         if constexpr (yyjson::detail::adjacent_field<T, I>)
@@ -20077,6 +20708,7 @@ namespace yyjson
             template <typename T>
             void merge_map(T& t)
             {
+                check_map_keys();
                 auto key_buf = std::string();
                 auto lookup = typename T::key_type();
                 auto next = t.begin();
@@ -20092,7 +20724,13 @@ namespace yyjson
                         return;
                     }
                     // `find` has put the key into `lookup` when it is not in the map
-                    if (it == t.end()) it = t.try_emplace(next, lookup);
+                    if (it == t.end())
+                    {
+                        // under a read policy the document reads a new value whole
+                        if ((policies_ | yyjson::detail::struct_policies<typename T::mapped_type>) != 0) [[unlikely]]
+                            fail();
+                        it = t.try_emplace(next, lookup);
+                    }
                     next = std::next(it);
                     merge_value(it->second);
                 });
@@ -20160,6 +20798,7 @@ namespace yyjson
             void read_map_over(T& result)
             {
                 using value_type = std::remove_cvref_t<std::tuple_element_t<1, std::ranges::range_value_t<T>>>;
+                check_map_keys();
                 auto key_buf = std::string();
                 auto lookup = typename T::key_type();
                 if constexpr (yyjson::detail::hinted_map<T>)
@@ -20378,6 +21017,8 @@ namespace yyjson
                         {
                             if (*cur_ == 'n')
                             {
+                                if ((policies_ & yyjson::detail::null_as_missing_policy) != 0) [[unlikely]]
+                                    fail();
                                 read_literal("null");
                                 on_null();
                                 return;
@@ -20512,6 +21153,149 @@ namespace yyjson
                 read_field(struct_field<0>(t), replaceable);
             }
 
+            // Read policies -------------------------------------------------------------------------------------
+            // The keys of an object are checked only after one comes out of the order of the fields or the object
+            // ends early.  `fail` leaves the exception to the document, which checks the same keys.
+
+            // The read policies of the objects of the struct T.
+            template <typename T>
+            CPPYYJSON_ALWAYS_INLINE std::uint8_t policies_of() const noexcept
+            {
+                return static_cast<std::uint8_t>(policies_ | yyjson::detail::struct_policies<T>);
+            }
+            // The policies of the struct T that check its keys, or 0 if none does.
+            template <typename T>
+            CPPYYJSON_ALWAYS_INLINE std::uint8_t key_policies_of() const noexcept
+            {
+                return static_cast<std::uint8_t>(policies_of<T>() & yyjson::detail::key_policies);
+            }
+
+            // Whether `key` is the key of the tag of `yyjson::internal_tag` in the object at `open`.
+            [[nodiscard]] bool is_internal_tag(const char* open, std::string_view key) const noexcept
+            {
+                for (const auto* p = tags_; p != nullptr; p = p->outer)
+                {
+                    if (p->object == open && p->key == key) return true;
+                }
+                return false;
+            }
+
+            // Checks the keys of the object at `open` read into the struct of `rules` under the key policies
+            // `policies`, as `check_struct_keys` checks those of a document.  `merge` leaves out any key, but fails at
+            // null for a field that may not be absent.
+            CPPYYJSON_NOINLINE CPPYYJSON_COLD void check_object_keys(const char* open,
+                                                                     const yyjson::detail::struct_key_rules& rules,
+                                                                     std::uint8_t policies, bool merge)
+            {
+                const auto guard = cursor_guard{*this, cur_};
+                auto seen = std::vector<bool>(rules.size);
+                auto tags = std::vector<std::string>();
+                auto hint = std::size_t{0};
+                cur_ = open + 1;
+                skip_ws();
+                while (*cur_ == '"')
+                {
+                    const auto key = read_string(scratch_);
+                    read_colon();
+                    if (const auto i = rules.find(key, hint); i < rules.size)
+                    {
+                        if (seen[i] && (policies & yyjson::detail::duplicates_policy) != 0) fail();
+                        seen[i] = true;
+                        hint = i + 1;
+                        if (merge && (policies & yyjson::detail::missing_keys_policy) != 0 && *cur_ == 'n' &&
+                            !rules.may_be_absent(i))
+                            fail();
+                    }
+                    else if (rules.is_adjacent_tag(key) || is_internal_tag(open, key))
+                    {
+                        if ((policies & yyjson::detail::duplicates_policy) != 0)
+                        {
+                            if (std::ranges::find(tags, key) != tags.end()) fail();
+                            tags.emplace_back(key);
+                        }
+                    }
+                    else if ((policies & yyjson::detail::unknown_keys_policy) != 0)
+                        fail();
+                    skip_value();
+                    skip_ws();
+                    if (*cur_ != ',') break;
+                    ++cur_;
+                    skip_ws();
+                }
+                if (merge || (policies & yyjson::detail::missing_keys_policy) == 0) return;
+                for (std::size_t i = 0; i < rules.size; ++i)
+                {
+                    if (!seen[i] && !rules.may_be_absent(i)) fail();
+                }
+            }
+
+            // Fails if a field of the struct of `rules` from `count` on, whose key the object does not have, may
+            // not be left out under `yyjson::reject_missing_keys` of the call or of the struct.
+            CPPYYJSON_NOINLINE CPPYYJSON_COLD void check_fields_from(const yyjson::detail::struct_key_rules& rules,
+                                                                     std::size_t count) const
+            {
+                if (((policies_ | rules.policies) & yyjson::detail::missing_keys_policy) == 0) return;
+                for (auto i = count; i < rules.size; ++i)
+                {
+                    if (!rules.may_be_absent(i)) fail();
+                }
+            }
+
+            // Checks the object at `open` read into the struct of `rules`, whose keys are not those of its fields in
+            // their order, under the key policies.
+            CPPYYJSON_NOINLINE void check_irregular_fields(const char* open,
+                                                           const yyjson::detail::struct_key_rules& rules)
+            {
+                const auto p = static_cast<std::uint8_t>((policies_ | rules.policies) & yyjson::detail::key_policies);
+                if (p != 0) [[unlikely]]
+                    check_object_keys(open, rules, p, false);
+            }
+
+            // Checks the object at `open` read into the struct of `rules` under the key policies, with `hint` the
+            // field after the last key, or -1 if a key was out of the order of the fields.
+            CPPYYJSON_NOINLINE CPPYYJSON_COLD void check_fields_after(const char* open, std::size_t hint,
+                                                                      const yyjson::detail::struct_key_rules& rules,
+                                                                      bool merge)
+            {
+                if (hint == std::size_t(-1))
+                    check_object_keys(open, rules,
+                                      static_cast<std::uint8_t>((policies_ | rules.policies) &
+                                                                yyjson::detail::key_policies),
+                                      merge);
+                else if (!merge)
+                    check_fields_from(rules, hint);
+            }
+
+            // Fails if the object at `cur_` has a key twice, which `yyjson::reject_duplicates` rejects for a map.
+            CPPYYJSON_NOINLINE CPPYYJSON_COLD void check_unique_keys()
+            {
+                const auto guard = cursor_guard{*this, cur_};
+                auto keys = std::vector<std::string>();
+                ++cur_;
+                skip_ws();
+                if (*cur_ == '}') return;
+                for (;;)
+                {
+                    if (*cur_ != '"') fail();
+                    keys.emplace_back(read_string(scratch_));
+                    read_colon();
+                    skip_value();
+                    skip_ws();
+                    if (*cur_ != ',') break;
+                    ++cur_;
+                    skip_ws();
+                }
+                auto views = std::vector<std::pair<std::string_view, std::size_t>>();
+                views.reserve(keys.size());
+                for (const auto& key : keys) views.emplace_back(key, views.size());
+                if (yyjson::detail::first_repeated_key(views) != std::size_t(-1)) fail();
+            }
+            CPPYYJSON_ALWAYS_INLINE void check_map_keys()
+            {
+                if ((policies_ & yyjson::detail::duplicates_policy) != 0) [[unlikely]]
+                    check_unique_keys();
+            }
+
             // Reads the key at `cur_` and finds it with `matcher`.  The keys of a type that are not read, or not
             // in the order of its fields, come here, out of the loop of `read_fields`.
             template <std::size_t N>
@@ -20571,21 +21355,30 @@ namespace yyjson
                 return index < N ? index : N;
             }
 
-            // Reads the members of an object, assigning those that `matcher` finds with `assign(index)`, and
-            // recording their keys if `assign` is `key_watching`.
-            template <std::size_t N, typename Assign>
+            // Reads the members of an object of the struct T, assigning those that `matcher` finds with
+            // `assign(index)`, and recording their keys if `assign` is `key_watching`.  `Merge` leaves out no key.
+            template <typename T, bool Merge, std::size_t N, typename Assign>
             CPPYYJSON_ALWAYS_INLINE void read_fields(const yyjson::detail::field_key_matcher<N>& matcher,
                                                      Assign&& assign)
             {
+                const char* const open = cur_;
+                auto irregular = false;
                 auto hint = std::size_t{0};
                 read_members([&]() CPPYYJSON_LAMBDA_ALWAYS_INLINE {
                     auto index = N;
                     if constexpr (yyjson::detail::key_watching<std::remove_cvref_t<Assign>>)
+                    {
                         index = find_watched_field<N>(assign, hint);
+                        if (index != hint || index == N) irregular = true;
+                    }
                     else
                     {
                         index = expected_field(matcher, hint);
-                        if (index == N) index = find_field(matcher, hint);
+                        if (index == N)
+                        {
+                            index = find_field(matcher, hint);
+                            irregular = true;
+                        }
                     }
                     read_colon();
                     if (index < N)
@@ -20596,11 +21389,14 @@ namespace yyjson
                     else
                         skip_value();
                 });
+                if (key_policies_of<T>() != 0) [[unlikely]]
+                    check_fields_after(open, irregular || Merge ? std::size_t(-1) : hint,
+                                       yyjson::detail::struct_rules<T>, Merge);
             }
 
             // Reads the members of the object at `cur_` whose keys `Matcher` finds, from `cur_` at a key, with
             // `hint` the field that is expected next.
-            template <const auto& Matcher, typename ReadField>
+            template <const auto& Matcher, typename T, typename ReadField>
             CPPYYJSON_NOINLINE void read_fields_rest(const char* open, std::uint32_t indent, std::size_t hint,
                                                      const ReadField& read_field)
             {
@@ -20638,7 +21434,7 @@ namespace yyjson
                     if (*cur_ != '}') [[unlikely]]
                         fail();
                     close(open);
-                    return;
+                    return check_irregular_fields(open, yyjson::detail::struct_rules<T>);
                 }
             }
 
@@ -20646,7 +21442,7 @@ namespace yyjson
             // for the field K that `Matcher` finds.  Keys usually come in the order of the fields, so the key of
             // each field is compared in turn at a constant index, and the first key out of that order goes on in
             // `read_fields_rest`.
-            template <const auto& Matcher, typename ReadField>
+            template <const auto& Matcher, typename T, typename ReadField>
             CPPYYJSON_ALWAYS_INLINE void read_fields_in_order(const ReadField& read_field)
             {
                 using matcher_type = std::remove_cvref_t<decltype(Matcher)>;
@@ -20655,13 +21451,9 @@ namespace yyjson
                 const char* const open = cur_;
                 ++cur_;
                 auto indent = skip_ws_measured();
-                if (*cur_ == '}')
-                {
-                    close(open);
-                    return;
-                }
-                // the field whose key is out of order, or `n + 1` when the object has ended
-                auto next = n;
+                // the field whose key is out of order, or `2 * n - K` when the object has ended after the field K,
+                // where an empty object ends after the field -1
+                auto next = 2 * n + 1;
                 const auto in_order = [&]<std::size_t K>(std::integral_constant<std::size_t, K>)
                                           CPPYYJSON_LAMBDA_ALWAYS_INLINE {
                     if (*cur_ != '"') [[unlikely]]
@@ -20692,13 +21484,22 @@ namespace yyjson
                     if (*cur_ != '}') [[unlikely]]
                         fail();
                     close(open);
-                    next = n + 1;
+                    next = 2 * n - K;
                     return false;
                 };
-                [&]<std::size_t... Ks>(std::index_sequence<Ks...>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
-                    (void)(in_order(std::integral_constant<std::size_t, Ks>{}) && ...);
-                }(std::make_index_sequence<n>{});
-                if (next <= n) read_fields_rest<Matcher>(open, indent, next, read_field);
+                if (*cur_ != '}')
+                {
+                    next = n;
+                    [&]<std::size_t... Ks>(std::index_sequence<Ks...>) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
+                        (void)(in_order(std::integral_constant<std::size_t, Ks>{}) && ...);
+                    }(std::make_index_sequence<n>{});
+                }
+                else
+                    close(open);
+                if (next <= n)
+                    read_fields_rest<Matcher, T>(open, indent, next, read_field);
+                else if (next != n + 1 && (policies_of<T>() & yyjson::detail::missing_keys_policy) != 0) [[unlikely]]
+                    check_fields_from(yyjson::detail::struct_rules<T>, 2 * n + 1 - next);
             }
 
             // Structs of up to this many fields compare their keys in the order of the fields with
@@ -20708,12 +21509,12 @@ namespace yyjson
 
             // Reads the members of a struct with `read_one(std::integral_constant<std::size_t, K>)` for the field K
             // that `Matcher` finds, recording their keys if `read_one` is `key_watching`.
-            template <const auto& Matcher, typename ReadOne>
+            template <const auto& Matcher, typename T, typename ReadOne>
             CPPYYJSON_ALWAYS_INLINE void read_struct_fields(const ReadOne& read_one)
             {
                 constexpr auto n = std::remove_cvref_t<decltype(Matcher)>::size;
                 if constexpr (n <= ordered_fields_max)
-                    read_fields_in_order<Matcher>(read_one);
+                    read_fields_in_order<Matcher, T>(read_one);
                 else
                 {
                     const auto assign = [&](std::size_t index) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
@@ -20728,10 +21529,10 @@ namespace yyjson
                     if constexpr (yyjson::detail::key_watching<ReadOne>)
                     {
                         using watching = yyjson::detail::key_watching_read<typename ReadOne::ranking, decltype(assign)>;
-                        read_fields(Matcher, watching{assign, read_one.seen});
+                        read_fields<T, false>(Matcher, watching{assign, read_one.seen});
                     }
                     else
-                        read_fields(Matcher, assign);
+                        read_fields<T, false>(Matcher, assign);
                 }
             }
 
@@ -20749,7 +21550,7 @@ namespace yyjson
                         };
                         read_struct_field<T, K>(t, adjacent, read);
                     };
-                read_struct_fields<yyjson::detail::reflected_key_matcher<T>>(read_one);
+                read_struct_fields<yyjson::detail::reflected_key_matcher<T>, T>(read_one);
                 read_skipped_adjacent_fields(t, adjacent);
                 check_adjacent_tags_without_values(t, adjacent);
             }
@@ -20766,7 +21567,7 @@ namespace yyjson
                         };
                         read_struct_field<T, I>(t, adjacent, read);
                     };
-                read_struct_fields<visit_struct<T>::key_matcher>(read_one);
+                read_struct_fields<visit_struct<T>::key_matcher, T>(read_one);
                 read_skipped_adjacent_fields(t, adjacent);
                 check_adjacent_tags_without_values(t, adjacent);
             }
@@ -20788,7 +21589,7 @@ namespace yyjson
                             };
                             read_struct_field<T, I>(t, adjacent, read);
                         };
-                    read_struct_fields<visit_struct<T>::key_matcher>(
+                    read_struct_fields<visit_struct<T>::key_matcher, T>(
                         yyjson::detail::key_watching_read<Ranking, decltype(read_one)>{read_one, seen});
                 }
                 else
@@ -20802,7 +21603,7 @@ namespace yyjson
                             };
                             read_struct_field<T, K>(t, adjacent, read);
                         };
-                    read_struct_fields<yyjson::detail::reflected_key_matcher<T>>(
+                    read_struct_fields<yyjson::detail::reflected_key_matcher<T>, T>(
                         yyjson::detail::key_watching_read<Ranking, decltype(read_one)>{read_one, seen});
                 }
                 read_skipped_adjacent_fields(t, adjacent);
@@ -20925,6 +21726,16 @@ namespace yyjson
                 if (rd_ != nullptr) return rd_->template view_cast<U>(pos_);
                 return reader::const_value_ref(val_).template cast<U>();
             }
+        }
+        // A cast under read policies, such as `yyjson::strict`, added to those of the read that gives the view.
+        template <typename U, detail::read_policy P, detail::read_policy... Ps>
+        [[nodiscard]] U cast(P, Ps...) const
+        {
+            constexpr auto policies = detail::policies_of<P, Ps...>;
+            const auto scope = detail::read_policy_scope(policies);
+            if (rd_ == nullptr) return cast<U>();
+            const auto guard = reader::detail::direct_reader::policy_guard(*rd_, policies);
+            return cast<U>();
         }
     };
 
@@ -21072,6 +21883,11 @@ namespace yyjson
         {
             return (rd_ != nullptr ? json_view(*rd_, pos_) : json_view(val_)).template cast<U>();
         }
+        template <typename U, detail::read_policy P, detail::read_policy... Ps>
+        [[nodiscard]] U cast(P p, Ps... ps) const
+        {
+            return (rd_ != nullptr ? json_view(*rd_, pos_) : json_view(val_)).template cast<U>(p, ps...);
+        }
     };
 
     // The elements of an array of a `json_view`, which in the text are read from the start of the array.
@@ -21164,6 +21980,11 @@ namespace yyjson
         [[nodiscard]] U cast() const
         {
             return (rd_ != nullptr ? json_view(*rd_, pos_) : json_view(val_)).template cast<U>();
+        }
+        template <typename U, detail::read_policy P, detail::read_policy... Ps>
+        [[nodiscard]] U cast(P p, Ps... ps) const
+        {
+            return (rd_ != nullptr ? json_view(*rd_, pos_) : json_view(val_)).template cast<U>(p, ps...);
         }
     };
 
@@ -21451,6 +22272,47 @@ namespace yyjson
     requires (!std::is_const_v<T>) && (!detail::read_castable<T>)
     void merge_into(std::string_view json, T& t, ReadFlag read_flag = ReadFlag::NoFlag) = CPPYYJSON_DELETED_FUNCTION(
         "T cannot be read from JSON: `cannot_be_read` names the field or element that cannot be");
+
+    // The read functions above under the read policies after their arguments, such as `yyjson::strict`, which
+    // apply to the whole read: to every struct, map and set in T, and to the casts that its casters make.
+    template <typename T, detail::read_policy P, detail::read_policy... Ps>
+    [[nodiscard]] T read(std::string_view json, P, Ps...)
+    {
+        const auto scope = detail::read_policy_scope(detail::policies_of<P, Ps...>);
+        return read<T>(json);
+    }
+    template <typename T, detail::read_policy P, detail::read_policy... Ps>
+    [[nodiscard]] T read(std::string_view json, ReadFlag read_flag, P, Ps...)
+    {
+        const auto scope = detail::read_policy_scope(detail::policies_of<P, Ps...>);
+        return read<T>(json, read_flag);
+    }
+    template <typename T, detail::read_policy P, detail::read_policy... Ps>
+    void read_into(std::string_view json, T& t, P, Ps...)
+    {
+        const auto scope = detail::read_policy_scope(detail::policies_of<P, Ps...>);
+        read_into(json, t);
+    }
+    template <typename T, detail::read_policy P, detail::read_policy... Ps>
+    void read_into(std::string_view json, T& t, ReadFlag read_flag, P, Ps...)
+    {
+        const auto scope = detail::read_policy_scope(detail::policies_of<P, Ps...>);
+        read_into(json, t, read_flag);
+    }
+    // A merge patch is checked under the policies, but leaves out the keys that it does not change.  Null, which
+    // removes a key, is rejected under `yyjson::reject_missing_keys` for a field that may not be left out.
+    template <typename T, detail::read_policy P, detail::read_policy... Ps>
+    void merge_into(std::string_view json, T& t, P, Ps...)
+    {
+        const auto scope = detail::read_policy_scope(detail::policies_of<P, Ps...>);
+        merge_into(json, t);
+    }
+    template <typename T, detail::read_policy P, detail::read_policy... Ps>
+    void merge_into(std::string_view json, T& t, ReadFlag read_flag, P, Ps...)
+    {
+        const auto scope = detail::read_policy_scope(detail::policies_of<P, Ps...>);
+        merge_into(json, t, read_flag);
+    }
 
     namespace writer::detail
     {

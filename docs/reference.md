@@ -36,6 +36,7 @@ This page lists the functions, classes and other entities of cpp-yyjson, grouped
     *   [`yyjson::ReadFlag`](#yyjsonreadflag)
     *   [`yyjson::WriteFlag`](#yyjsonwriteflag)
     *   [Flags of `yyjson::read<T>`](#flags-of-yyjsonreadt)
+    *   [Read policies](#read-policies)
 *   [Annotations](#annotations)
     *   [`yyjson::annotations<T>`, `yyjson::annotate`](#yyjsonannotationst-yyjsonannotate)
     *   [`yyjson::field`](#yyjsonfield)
@@ -109,11 +110,13 @@ The data binding API reads and writes directly only with the bundled backend or 
 Reads a JSON string into a new C++ object of type `T`.
 
 ```cpp
-template <typename T>
-T read(std::string_view json_string, ReadFlag flag = ReadFlag::NoFlag);
+template <typename T, typename... Policies>
+T read(std::string_view json_string, Policies... policies);
+template <typename T, typename... Policies>
+T read(std::string_view json_string, ReadFlag flag, Policies... policies);
 ```
 
-`T` may be any type that `yyjson::cast` converts a JSON value to, and the root of the string may be any JSON value, as in `read<int>("42")`.
+`T` may be any type that `yyjson::cast` converts a JSON value to, and the root of the string may be any JSON value, as in `read<int>("42")`. `policies` are [read policies](#read-policies), such as `yyjson::strict`. Another type in `Policies` is a compile error.
 
 Throws:
 
@@ -158,14 +161,18 @@ If the string is valid JSON and a value does not convert to its type, `read<T>` 
 Read a JSON string into an object that the program already has, reusing its memory.
 
 ```cpp
-template <typename T>
-void read_into(std::string_view json_string, T& t, ReadFlag flag = ReadFlag::NoFlag);
+template <typename T, typename... Policies>
+void read_into(std::string_view json_string, T& t, Policies... policies);
+template <typename T, typename... Policies>
+void read_into(std::string_view json_string, T& t, ReadFlag flag, Policies... policies);
 
-template <typename T>
-void merge_into(std::string_view json_string, T& t, ReadFlag flag = ReadFlag::NoFlag);
+template <typename T, typename... Policies>
+void merge_into(std::string_view json_string, T& t, Policies... policies);
+template <typename T, typename... Policies>
+void merge_into(std::string_view json_string, T& t, ReadFlag flag, Policies... policies);
 ```
 
-Both functions read directly as [`read<T>`](#yyjsonreadt) does, with the same fallback to a document. They reuse the memory of `t`: a string is assigned over the old one, the elements of a range are read over the old elements, and the values of a map keep their nodes. A program that reads documents of the same shape over and over allocates almost nothing after the first one.
+Both functions read directly as [`read<T>`](#yyjsonreadt) does, with the same fallback to a document. They take the same [read policies](#read-policies). `merge_into` applies them to the patch as [Read policies](validation.md#read-policies) describes. They reuse the memory of `t`: a string is assigned over the old one, the elements of a range are read over the old elements, and the values of a map keep their nodes. A program that reads documents of the same shape over and over allocates almost nothing after the first one.
 
 In this section, the *default* of a field or a value is its value in a value-initialized `T()`.
 
@@ -315,11 +322,11 @@ To read a JSON string into a C++ object without a document, use [`yyjson::read<T
 Converts a JSON value to a C++ type.
 
 ```cpp
-template <typename T, typename Json>
-T cast(const Json& json);
+template <typename T, typename Json, typename... Policies>
+T cast(const Json& json, Policies... policies);
 ```
 
-`json` is a JSON value of either API or a [`yyjson::json_view`](conversions.md#reading-a-json-value-in-a-caster). `yyjson::cast<T>(json)` is the same as `json.cast<T>()` and follows the [conversion rules](conversions.md#conversion-rules). It throws [`yyjson::bad_cast`](#exceptions) when the value cannot be converted.
+`json` is a JSON value of either API or a [`yyjson::json_view`](conversions.md#reading-a-json-value-in-a-caster). `yyjson::cast<T>(json, policies...)` is the same as `json.cast<T>(policies...)` and follows the [conversion rules](conversions.md#conversion-rules). The member functions `cast<T>` of the DOM classes take the [read policies](#read-policies) in the same way. It throws [`yyjson::bad_cast`](#exceptions) when the value cannot be converted.
 
 ```cpp
 auto doc = yyjson::read(R"({"x":1,"y":2})");
@@ -407,6 +414,8 @@ decltype(auto) inspect(Visitor&& visitor) const;
 // Cast
 template <typename T>
 T cast<T>() const;
+template <typename T, typename... Policies>
+T cast<T>(Policies... policies) const;  // policies: the read policies
 template <typename T>
 explicit operator T() const;
 
@@ -554,6 +563,8 @@ bool empty() const;
 // Cast
 template <typename T>
 T cast<T>() const;
+template <typename T, typename... Policies>
+T cast<T>(Policies... policies) const;  // policies: the read policies
 template <typename T>
 explicit operator T() const;
 
@@ -632,6 +643,8 @@ bool contains(std::string_view key) const;  // O(N)
 // Cast
 template <typename T>
 T cast<T>() const;
+template <typename T, typename... Policies>
+T cast<T>(Policies... policies) const;  // policies: the read policies
 template <typename T>
 explicit operator T() const;
 
@@ -774,6 +787,8 @@ yyjson::value& yyjson::value::operator=(pair_like<T, yyjson::copy_string_t>);
 // Cast
 template <typename T>
 T cast<T>() const;
+template <typename T, typename... Policies>
+T cast<T>(Policies... policies) const;  // policies: the read policies
 template <typename T>
 explicit operator T() const;
 
@@ -905,6 +920,8 @@ yyjson::array& operator=(pair_like<T, yyjson::copy_string_t>);
 // Cast
 template <typename T>
 T cast<T>() const;
+template <typename T, typename... Policies>
+T cast<T>(Policies... policies) const;  // policies: the read policies
 template <typename T>
 explicit operator T() const;
 
@@ -1039,6 +1056,8 @@ yyjson::object& operator=(pair_like<T, yyjson::copy_string_t>);
 // Cast
 template <typename T>
 T cast<T>() const;
+template <typename T, typename... Policies>
+T cast<T>(Policies... policies) const;  // policies: the read policies
 template <typename T>
 explicit operator T() const;
 
@@ -1318,6 +1337,44 @@ std::cout << yyjson::write(std::vector{1, 2, 3}, yyjson::WriteFlag::Pretty | yyj
 
 The flags of the second row allow more text but do not change how strict JSON is read. A string that does not use the extra syntax is read as fast as with `NoFlag`. A string that does, for example one with a comment, is read directly up to the comment and then again from the start into a document, so it takes longer than `read(json_string, flag).cast<T>()`. `AllowBom` skips a byte order mark at the start of the string and reads the rest directly.
 
+### Read policies
+
+Tags that make a read reject JSON that it accepts by default.
+
+```cpp
+inline constexpr reject_unknown_keys_t reject_unknown_keys{};
+inline constexpr reject_missing_keys_t reject_missing_keys{};
+inline constexpr reject_null_as_missing_t reject_null_as_missing{};
+inline constexpr reject_duplicates_t reject_duplicates{};
+inline constexpr strict_t strict{};  // reject_missing_keys, reject_null_as_missing and reject_duplicates
+```
+
+A parameter pack `Policies` of the functions on this page takes only these tags. Another type is a compile error.
+
+| Policy | The read throws `yyjson::bad_cast` when |
+| --- | --- |
+| `reject_unknown_keys` | an object read into a struct has a key that names no field |
+| `reject_missing_keys` | an object read into a struct does not have the key of a field that is not a `std::optional` |
+| `reject_null_as_missing` | a `std::optional` field gets `null` that it would read as a missing key |
+| `reject_duplicates` | an object read into a struct or a map has a key twice, or an array read into a set has an element twice |
+| `strict` | any of `reject_missing_keys`, `reject_null_as_missing` and `reject_duplicates` applies |
+
+`read<T>`, `read_into`, `merge_into`, `cast<T>` and the member functions `cast<T>` take the policies after the `ReadFlag`. A struct takes them as settings of [`yyjson::annotate`](#yyjsonannotationst-yyjsonannotate), and every read of the struct then uses them. With the reflection of C++26, they can also be written on the struct, as `struct [[=yyjson::strict]] Point`. The policies of a struct do not apply to the types of its fields. A policy given twice is allowed. A policy on a variant, an enumeration or a [transparent](#yyjsontransparent) struct is a compile error.
+
+See [Read policies](validation.md#read-policies) for the exact rules and the messages.
+
+```cpp
+struct Point
+{
+    int x;
+    int y;
+};
+
+auto p = yyjson::read<Point>(R"({"x":1,"y":2})", yyjson::strict);  // -> {1, 2}
+yyjson::read<Point>(R"({"x":1,"z":2})", yyjson::strict, yyjson::reject_unknown_keys);
+// throws yyjson::bad_cast: Point has no field of the key "z" at /z (line 1, column 12, pos 11)
+```
+
 ## Annotations
 
 Annotations set how a type converts. They give the JSON keys of the fields of a struct and the skipped fields, and they make a struct the value of its field. They also give the tag of a variant and the names of an enumeration. Give them in a specialization of [`yyjson::annotations<T>`](#yyjsonannotationst-yyjsonannotate). With the reflection of C++26, the same settings can also be written on the declarations, as `[[=yyjson::rename("key")]]`; see [C++26 annotations](conversions.md#c26-annotations).
@@ -1338,7 +1395,7 @@ Specialize `annotations<T>` before the first use of `T`. `annotate` takes these 
 
 | `T` | Settings |
 | --- | --- |
-| a struct | [`yyjson::field`](#yyjsonfield), [`yyjson::transparent`](#yyjsontransparent) |
+| a struct | [`yyjson::field`](#yyjsonfield), [`yyjson::transparent`](#yyjsontransparent), the [read policies](#read-policies) |
 | a `std::variant` | [`yyjson::internal_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag) |
 | an enumeration | [`yyjson::enumerator` and `yyjson::enum_format`](#yyjsonenum_format-yyjsonenumerator) |
 

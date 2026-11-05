@@ -16,7 +16,7 @@ Short answers to questions about behavior that is not a single task, with links 
 
 ### What happens to a key that the struct does not have, a missing key, or a key that appears twice?
 
-`read<T>` ignores an unknown key, and the field of a missing key keeps its default. A [repeated key](validation.md#repeated-keys) gives its field the value of one of the members. [What a read checks](validation.md#what-a-read-checks) has the full rules. To see the keys that the struct does not have, read a document and look at its keys, as the Guide shows in [Keep the keys that the struct does not have](guide.md#keep-the-keys-that-the-struct-does-not-have).
+`read<T>` ignores an unknown key, and the field of a missing key keeps its default. The [read policies](validation.md#read-policies) make the read reject these keys instead. A [repeated key](validation.md#repeated-keys) gives its field the value of one of the members. [What a read checks](validation.md#what-a-read-checks) has the full rules. To see the keys that the struct does not have, read a document and look at its keys, as the Guide shows in [Keep the keys that the struct does not have](guide.md#keep-the-keys-that-the-struct-does-not-have).
 
 ### Why does a `std::optional` field not tell `null` from a missing key?
 

@@ -5,6 +5,7 @@
 This document describes:
 
 *   what a read checks, and what it does with unknown, missing and repeated keys and with `null` in a `std::optional` field;
+*   the [read policies](#read-policies) that make a read reject such JSON;
 *   the [errors](#errors) that the library reports at run time, with the path and the position of a value that does not convert;
 *   the [compile errors](#compile-errors) of types that cannot be converted.
 
@@ -26,7 +27,7 @@ A struct that is read:
 *   ignores a key that names no field of it;
 *   gives a field whose key is missing its value in `T()`, its default member initializer included. `merge_into` keeps the current value of such a field.
 
-To reject such keys, read the text into a document, check the keys of its objects, and cast it, as in [Keep the keys that the struct does not have](guide.md#keep-the-keys-that-the-struct-does-not-have).
+To reject such keys, give the read the [read policies](#read-policies) `yyjson::reject_unknown_keys` and `yyjson::reject_missing_keys`. To use the unknown keys, read the text into a document, as in [Keep the keys that the struct does not have](guide.md#keep-the-keys-that-the-struct-does-not-have).
 
 ### Repeated keys
 
@@ -37,6 +38,8 @@ When an object has a key more than once, which of the members a read takes is un
 *   the members that `merge_into` applies, and their order.
 
 A field gets the value of one of the members. With `merge_into`, it may get the values of several members, merged in turn.
+
+To reject a repeated key, give the read the [read policy](#read-policies) `yyjson::reject_duplicates`.
 
 ### `null` in a `std::optional`
 
@@ -49,7 +52,7 @@ A `std::optional` field may be left out of the object. JSON `null` as its value 
 | a type with a [user-defined caster](conversions.md#user-defined-casters) that may take `null`: a translator whose parameter reads `null`, or a `from_json` that takes a `json_view` or a JSON value | the field gets a value that holds what the caster reads from `null` |
 | any other type, such as `int` or a type whose translator takes `int` | the field keeps its value in `T()` |
 
-The value in `T()` is `std::nullopt`, unless a default member initializer gives the field another value. In the last row, `null` is read as if the key were left out.
+The value in `T()` is `std::nullopt`, unless a default member initializer gives the field another value. In the last row, `null` is read as if the key were left out. The [read policy](#read-policies) `yyjson::reject_null_as_missing` rejects `null` in the last row.
 
 To tell `null` from a missing key, give the field a type of the first three rows, such as `std::optional<std::shared_ptr<V>>` or `std::optional<std::variant<std::monostate, V>>`. A missing key gives the field its value in `T()`. `null` gives the field a value that holds what `U` reads from `null`. `yyjson::write` leaves out a field without a value. It writes an empty pointer and `std::monostate` as `null`:
 
@@ -74,6 +77,77 @@ Without `std::optional`, a field of type `std::shared_ptr<V>` or `std::variant<s
 Any other `std::optional<U>`, such as the root, an element of an array or a value of a map, reads `null` as `std::nullopt`. When `U` is `std::shared_ptr` or `std::unique_ptr`, the optional holds an empty pointer instead.
 
 A struct with [`yyjson::transparent`](conversions.md#a-struct-as-the-value-of-its-field) is read as its field. Let that field be a `std::optional<U>`, where `U` is not a pointer. When the struct is a field of another struct, the field follows the rules of a `std::optional` field.
+
+## Read policies
+
+A read policy makes a read reject JSON that the rules above accept. Each policy is a tag:
+
+| Policy | The read throws `yyjson::bad_cast` when |
+| --- | --- |
+| `yyjson::reject_unknown_keys` | an object read into a struct has a key that names no field of the struct |
+| `yyjson::reject_missing_keys` | an object read into a struct does not have the key of a field that is not a `std::optional` |
+| `yyjson::reject_null_as_missing` | a `std::optional` field gets `null` that would be read as a missing key, as in the last row of [`null` in a `std::optional`](#null-in-a-stdoptional) |
+| `yyjson::reject_duplicates` | an object read into a struct or a map has a key twice, or an array read into a set has an element twice |
+| `yyjson::strict` | any of the last three policies applies |
+
+`yyjson::strict` does not reject unknown keys. A program that reads JSON from a newer writer can then use `strict` and still accept the keys that the newer writer adds. Give `yyjson::reject_unknown_keys` together with `strict` to reject them too.
+
+### Giving the policies
+
+Give the policies after the `ReadFlag`, in any number and order:
+
+```cpp
+struct Point
+{
+    int x;
+    int y;
+};
+
+auto p = yyjson::read<Point>(R"({"x":1,"y":2})", yyjson::strict);
+auto q = yyjson::read<Point>(R"({"x":1,"y":2})", yyjson::ReadFlag::AllowComments, yyjson::strict, yyjson::reject_unknown_keys);
+yyjson::read<Point>(R"({"x":1})", yyjson::strict);
+// throws: Point is not constructible from JSON without the key "y" (line 1, column 1, pos 0)
+```
+
+`read<T>`, `read_into`, `merge_into`, `cast<T>` and the member function `cast<T>` of a JSON value take the policies.
+
+A struct can also declare the policies that every read of it uses, as a setting of [`yyjson::annotate`](reference.md#yyjsonannotationst-yyjsonannotate):
+
+```cpp
+struct Request
+{
+    std::string method;
+    std::optional<int> id;
+};
+
+template <>
+inline constexpr auto yyjson::annotations<Request> = yyjson::annotate(yyjson::reject_unknown_keys);
+
+yyjson::read<Request>(R"({"method":"get","verbose":true})");
+// throws: Request has no field of the key "verbose" at /verbose (line 1, column 27, pos 26)
+```
+
+The policies of a struct apply only to the objects read into that struct. They do not apply to the types of its fields. A read uses the policies of the call together with the policies of the struct. A policy can only add a check, so neither one can turn off a check of the other.
+
+A [user-defined caster](conversions.md#user-defined-casters) that casts a value in its `from_json` reads it with the policies of the call around it.
+
+### What the policies check
+
+*   `reject_unknown_keys`: the keys of the fields and the key of a [tag](conversions.md#tagged-variants) are known. The key of a [skipped field](conversions.md#skipped-fields) is unknown. A map accepts every key.
+*   `reject_missing_keys`: only a `std::optional` field, or a [transparent](conversions.md#a-struct-as-the-value-of-its-field) struct over one, may be left out. A pointer, a `std::variant` with `std::monostate` and a [`yyjson::indirect`](reference.md#yyjsonindirect) need their keys. An untagged `std::variant` with a struct alternative no longer falls back to the first alternative that reads the object. It throws instead.
+*   `reject_null_as_missing`: `null` in a field of the other rows of the table is still read as before. An element of an array, a value of a map and the root are not affected.
+*   `reject_duplicates`: a struct, a map, a multimap and the object of a tagged variant reject a repeated key. A `std::set` and a `std::unordered_set` reject a repeated element. A `std::multiset` accepts it.
+
+`merge_into` applies the policies to the JSON patch:
+
+*   `reject_unknown_keys` and `reject_duplicates` check the keys of the patch.
+*   `reject_missing_keys` does not check the keys that the patch leaves out, because the merged object keeps those fields. It rejects `null` for a field that is not a `std::optional`, since `null` gives the field its value in `T()`.
+*   `reject_null_as_missing` does not apply to the fields of a merged object.
+*   A value that the patch replaces as a whole is read with every policy.
+
+### The cost of the policies
+
+A read without a policy checks no key. With a policy, `read<T>`, `read_into` and `merge_into` check the keys of an object only when they differ from the keys of the fields in order. The `cast<T>` of a JSON value checks the keys of each object that it reads into a struct. This holds also for a value that `read<T>` reads into a temporary document.
 
 ## Errors
 

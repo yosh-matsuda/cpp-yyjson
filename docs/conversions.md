@@ -84,7 +84,7 @@ Some conversions succeed where one might expect them to fail, or give JSON that 
 *   A class that is constructible from a number, such as `struct Count { Count(int); };`, reads every JSON number that C++ converts to the parameter of its constructor, so `1.5` gives `Count(1)`. Only the integer and enumeration types themselves reject a real number with a fractional part.
 *   `char`, `signed char`, `unsigned char`, `std::int8_t` and `std::uint8_t` are numbers, and `std::u8string`, `std::u16string`, `std::u32string` and `std::wstring` are written as arrays of numbers. Only ranges of `char` are JSON strings.
 *   These four string types cannot be read back, and `yyjson::readable` is false for them. To read such an array of numbers, use a `std::vector` of the character type, such as `std::vector<char8_t>`.
-*   A struct that is read ignores a key that it does not have, and a field whose key is missing keeps its value in `T()`. [Unknown and missing keys](validation.md#unknown-and-missing-keys) and [Repeated keys](validation.md#repeated-keys) give the full rules.
+*   A struct that is read ignores a key that it does not have, and a field whose key is missing keeps its value in `T()`. [Unknown and missing keys](validation.md#unknown-and-missing-keys) and [Repeated keys](validation.md#repeated-keys) give the full rules. The [read policies](validation.md#read-policies) make a read reject such keys.
 
 If the keys of a map are neither strings nor [enumerations](#enumerations), the map is not a JSON object. An example is `std::map<int, int>`. If a user-defined caster, `VISITABLE_STRUCT` or the reflection converts the keys, the map is not a JSON object either. This holds also for a class of keys that converts to a string. Keys of `std::string` and `std::string_view` stay the keys of an object, even with a user-defined caster of `std::string`. A map that is not a JSON object has these rules:
 
@@ -233,6 +233,8 @@ auto other = yyjson::read<Result>(R"({"msg":"x"})");
 | `{"msg":"x"}` | `Ok{0}` | `Ok` has none of its keys in the object and `Err` lacks `code`, so there is no candidate. Step 3 reads the object as `Ok`, whose missing field keeps its value in `Ok()`. |
 
 "Required" decides only which structs are candidates. A struct that lacks a required key is still read in step 3, with the field left at its value in `T()`, as the last row shows. Since step 3 tries every alternative, every JSON value that a variant read without steps 1 and 2 is still read; only the alternative that the variant holds may differ.
+
+With [`yyjson::reject_missing_keys`](validation.md#read-policies), or `yyjson::strict`, step 3 does not read an object into a struct that lacks a required key. The read of `{"msg":"x"}` above then throws `yyjson::bad_cast`.
 
 Two cases need care:
 

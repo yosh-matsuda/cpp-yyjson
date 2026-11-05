@@ -21,6 +21,7 @@ Each example assumes `#include "cpp_yyjson.hpp"` and the standard headers that i
     *   [Keep null as a value](#keep-null-as-a-value)
     *   [Map every key to another naming convention](#map-every-key-to-another-naming-convention)
     *   [Keep the keys that the struct does not have](#keep-the-keys-that-the-struct-does-not-have)
+    *   [Reject unknown, missing or repeated keys](#reject-unknown-missing-or-repeated-keys)
 *   [Types](#types)
     *   [Read and write an enumeration](#read-and-write-an-enumeration)
     *   [Read an object whose keys are not known in advance](#read-an-object-whose-keys-are-not-known-in-advance)
@@ -249,6 +250,29 @@ for (const auto obj = *doc.as_object(); const auto& [key, value] : obj)
     if (key != "name") std::cout << key << " = " << value.write() << '\n';
 }
 // -> theme = "dark"
+```
+
+### Reject unknown, missing or repeated keys
+
+By default, a read ignores an unknown key, keeps the default of a field whose key is missing, and accepts a key twice. Give a [read policy](validation.md#read-policies) to reject such JSON:
+
+```cpp
+struct Config
+{
+    std::string host;
+    int port;
+};
+
+auto c = yyjson::read<Config>(R"({"host":"a","port":80})", yyjson::strict, yyjson::reject_unknown_keys);
+yyjson::read<Config>(R"({"host":"a"})", yyjson::strict);
+// throws yyjson::bad_cast: Config is not constructible from JSON without the key "port" (line 1, column 1, pos 0)
+```
+
+`yyjson::strict` rejects missing keys, `null` in a `std::optional` field, and repeated keys. It accepts unknown keys, so that a reader of an older version accepts the keys that a newer writer adds. To make every read of a struct use a policy, declare it in `yyjson::annotations<T>`:
+
+```cpp
+template <>
+inline constexpr auto yyjson::annotations<Config> = yyjson::annotate(yyjson::strict);
 ```
 
 ## Types
