@@ -62,6 +62,26 @@ struct TagBare
 };
 template <>
 inline constexpr auto yyjson::annotations<TagBare> = yyjson::annotate(yyjson::field("body", tag_body_or_none));
+// a skipped field before the variant, which `write` reaches through a const struct
+struct TagSkippedEnvelope
+{
+    int cache = 0;
+    std::string kind;
+    TagBody data;
+    bool operator==(const TagSkippedEnvelope&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<TagSkippedEnvelope> =
+    yyjson::annotate(yyjson::field("cache", yyjson::skip), yyjson::field("data", tag_body));
+struct TagSkippedBare
+{
+    int cache = 0;
+    TagBodyOrNone body;
+    bool operator==(const TagSkippedBare&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<TagSkippedBare> =
+    yyjson::annotate(yyjson::field("cache", yyjson::skip), yyjson::field("body", tag_body_or_none));
 struct TagEnumEnvelope
 {
     TagEnumBody value;
@@ -468,6 +488,26 @@ TEST(TaggedVariant, Adjacent)
     EXPECT_THROW((void)write(TagOuter(TagHolder{})), std::invalid_argument);
     EXPECT_THROW((void)value(TagOuter(TagHolder{})), std::invalid_argument);
     EXPECT_EQ(write(TagOuter(TagRect{1, 2})), R"({"kind":"rect","w":1,"h":2})");
+}
+
+TEST(TaggedVariant, AdjacentAfterSkippedField)
+{
+    using namespace yyjson;
+
+    // the checks of the tags find the variant by its position among the fields that are not skipped
+    const auto envelopes = std::vector<TagSkippedEnvelope>{{7, "circle", TagCircle{1}}, {8, "num", 2}};
+    EXPECT_EQ(write(envelopes), R"([{"kind":"circle","data":{"r":1.0}},{"kind":"num","data":2}])");
+    EXPECT_EQ(value(envelopes).write(), write(envelopes));
+    expect_direct_write(envelopes);
+    EXPECT_EQ(read<TagSkippedEnvelope>(R"({"data":2,"kind":"num"})"), (TagSkippedEnvelope{0, "num", 2}));
+    EXPECT_THROW((void)write(TagSkippedEnvelope{7, "rect", TagCircle{1}}), std::invalid_argument);
+
+    const auto bares = std::vector<TagSkippedBare>{{7, TagCircle{2}}, {8, {}}};
+    EXPECT_EQ(write(bares), R"([{"t":"circle","body":{"r":2.0}},{"body":null}])");
+    EXPECT_EQ(value(bares).write(), write(bares));
+    expect_direct_write(bares);
+    EXPECT_EQ(read<std::vector<TagSkippedBare>>(write(bares)),
+              (std::vector<TagSkippedBare>{{0, TagCircle{2}}, {0, {}}}));
 }
 
 TEST(TaggedVariant, ManyAlternatives)

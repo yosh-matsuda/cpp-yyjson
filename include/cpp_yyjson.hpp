@@ -2939,7 +2939,7 @@ namespace yyjson
             if constexpr (visitable<S>)
                 return s.*yyjson::detail::member_pointer<I>(visit_struct<S>::members);
             else
-                return field_reflection::get_field<reflected_field_index<S, I>>(s);
+                return field_reflection::get_field<reflected_field_index<std::remove_const_t<S>, I>>(s);
         }
         template <typename S, std::size_t I>
         using struct_field_type = std::remove_cvref_t<decltype(struct_field<I>(std::declval<S&>()))>;
