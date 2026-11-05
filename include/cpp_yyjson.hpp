@@ -2321,6 +2321,222 @@ namespace yyjson
         // The settings of the value of a field, which `yyjson::field` and the annotations of a member take.
         template <typename A>
         concept constraint_setting = constraint_bit<setting_type_t<A>> != 0;
+
+        // The settings of a subschema, such as those of `yyjson::items`, as a structural type.
+        template <typename... As>
+        struct setting_list
+        {
+        };
+        template <typename A, typename... Rest>
+        struct setting_list<A, Rest...>
+        {
+            A first;
+            setting_list<Rest...> rest;
+        };
+        consteval setting_list<> make_setting_list() { return {}; }
+        template <typename A, typename... Rest>
+        consteval setting_list<A, Rest...> make_setting_list(const A& first, const Rest&... rest)
+        {
+            return {first, make_setting_list(rest...)};
+        }
+        template <typename F>
+        constexpr void for_each_setting(const setting_list<>&, const F&)
+        {
+        }
+        template <typename A, typename... Rest, typename F>
+        constexpr void for_each_setting(const setting_list<A, Rest...>& list, const F& f)
+        {
+            f(list.first);
+            for_each_setting(list.rest, f);
+        }
+    }  // namespace detail
+
+    // The bounds of the number of the elements of a field written as a JSON array, as
+    // `yyjson::field("member", yyjson::min_items(1))` or `[[=yyjson::min_items(1)]]` gives them.
+    struct min_items
+    {
+        std::size_t value;
+        consteval explicit min_items(std::size_t v) : value(v) {}
+    };
+    struct max_items
+    {
+        std::size_t value;
+        consteval explicit max_items(std::size_t v) : value(v) {}
+    };
+    // The bounds of the number of the members of a map written as a JSON object.
+    struct min_properties
+    {
+        std::size_t value;
+        consteval explicit min_properties(std::size_t v) : value(v) {}
+    };
+    struct max_properties
+    {
+        std::size_t value;
+        consteval explicit max_properties(std::size_t v) : value(v) {}
+    };
+    // The bounds of the number of the elements that satisfy `yyjson::contains`, which is 1 or more without them.
+    struct min_contains
+    {
+        std::size_t value;
+        consteval explicit min_contains(std::size_t v) : value(v) {}
+    };
+    struct max_contains
+    {
+        std::size_t value;
+        consteval explicit max_contains(std::size_t v) : value(v) {}
+    };
+
+    // That no two elements of a field written as a JSON array are equal as JSON values: `yyjson::unique_items`.
+    struct unique_items_t
+    {
+    };
+    inline constexpr unique_items_t unique_items{};
+
+    // The settings of each element of a field written as a JSON array, after those of `yyjson::prefix_items`:
+    // `yyjson::items(yyjson::minimum(0))`.  They nest, as `yyjson::items(yyjson::items(yyjson::max_length(8)))`.
+    template <typename... As>
+    struct items
+    {
+        detail::setting_list<As...> settings;
+
+        consteval explicit items(As... as) : settings(detail::make_setting_list(as...))
+        {
+            static_assert(sizeof...(As) != 0, "yyjson::items needs a setting of the elements");
+            static_assert((detail::constraint_setting<As> && ...),
+                          "yyjson::items takes the keywords of a value, such as yyjson::minimum and yyjson::items");
+        }
+    };
+    template <typename... As>
+    items(As...) -> items<As...>;
+    template <typename... As>
+    items(items<As...>) -> items<items<As...>>;
+
+    // The settings of each value of a map written as a JSON object: `yyjson::additional_properties(...)`.
+    template <typename... As>
+    struct additional_properties
+    {
+        detail::setting_list<As...> settings;
+
+        consteval explicit additional_properties(As... as) : settings(detail::make_setting_list(as...))
+        {
+            static_assert(sizeof...(As) != 0, "yyjson::additional_properties needs a setting of the values");
+            static_assert((detail::constraint_setting<As> && ...),
+                          "yyjson::additional_properties takes the keywords of a value, such as yyjson::minimum and "
+                          "yyjson::items");
+        }
+    };
+    template <typename... As>
+    additional_properties(As...) -> additional_properties<As...>;
+    template <typename... As>
+    additional_properties(additional_properties<As...>) -> additional_properties<additional_properties<As...>>;
+
+    // The settings that an element of a field written as a JSON array must satisfy, as many times as
+    // `yyjson::min_contains` and `yyjson::max_contains` bound: `yyjson::contains(yyjson::minimum(10))`.
+    template <typename... As>
+    struct contains
+    {
+        detail::setting_list<As...> settings;
+
+        consteval explicit contains(As... as) : settings(detail::make_setting_list(as...))
+        {
+            static_assert(sizeof...(As) != 0, "yyjson::contains needs a setting of the elements");
+            static_assert((detail::constraint_setting<As> && ...),
+                          "yyjson::contains takes the keywords of a value, such as yyjson::minimum and yyjson::items");
+        }
+    };
+    template <typename... As>
+    contains(As...) -> contains<As...>;
+    template <typename... As>
+    contains(contains<As...>) -> contains<contains<As...>>;
+
+    namespace detail
+    {
+        // The keywords that a key of a JSON object can take, which is a string.
+        template <typename A>
+        concept key_setting = setting_of<A, min_length> || setting_of<A, max_length> || setting_of<A, pattern<>> ||
+                              setting_of<A, format<>> || setting_of<A, format_assertion<>> || setting_of<A, const_<>> ||
+                              setting_of<A, enum_<0>> || setting_of<A, satisfies_t>;
+    }  // namespace detail
+
+    // The settings of each key of a map written as a JSON object, which is a string:
+    // `yyjson::property_names(yyjson::pattern("^[a-z]+$"))`.
+    template <typename... As>
+    struct property_names
+    {
+        detail::setting_list<As...> settings;
+
+        consteval explicit property_names(As... as) : settings(detail::make_setting_list(as...))
+        {
+            static_assert(sizeof...(As) != 0, "yyjson::property_names needs a setting of the keys");
+            static_assert((detail::key_setting<As> && ...),
+                          "yyjson::property_names takes the keywords of a string: yyjson::min_length, max_length, "
+                          "pattern, format, format_assertion, const_, enum_ and satisfies");
+        }
+    };
+    template <typename... As>
+    property_names(As...) -> property_names<As...>;
+
+    // The settings of the first elements of a field written as a JSON array, by their positions, which
+    // `yyjson::prefix_items` makes.
+    template <std::size_t N>
+    struct prefix_items_t;
+
+    namespace detail
+    {
+        template <typename... As>
+        struct setting_type<items<As...>>
+        {
+            using type = items<>;
+        };
+        template <typename... As>
+        struct setting_type<additional_properties<As...>>
+        {
+            using type = additional_properties<>;
+        };
+        template <typename... As>
+        struct setting_type<contains<As...>>
+        {
+            using type = contains<>;
+        };
+        template <typename... As>
+        struct setting_type<property_names<As...>>
+        {
+            using type = property_names<>;
+        };
+        template <std::size_t N>
+        struct setting_type<prefix_items_t<N>>
+        {
+            using type = prefix_items_t<0>;
+        };
+
+        template <>
+        inline constexpr std::uint32_t constraint_bit<min_items> = 1U << 13;
+        template <>
+        inline constexpr std::uint32_t constraint_bit<max_items> = 1U << 14;
+        template <>
+        inline constexpr std::uint32_t constraint_bit<unique_items_t> = 1U << 15;
+        template <>
+        inline constexpr std::uint32_t constraint_bit<min_contains> = 1U << 16;
+        template <>
+        inline constexpr std::uint32_t constraint_bit<max_contains> = 1U << 17;
+        template <>
+        inline constexpr std::uint32_t constraint_bit<items<>> = 1U << 18;
+        template <>
+        inline constexpr std::uint32_t constraint_bit<prefix_items_t<0>> = 1U << 19;
+        template <>
+        inline constexpr std::uint32_t constraint_bit<contains<>> = 1U << 20;
+        template <>
+        inline constexpr std::uint32_t constraint_bit<min_properties> = 1U << 21;
+        template <>
+        inline constexpr std::uint32_t constraint_bit<max_properties> = 1U << 22;
+        template <>
+        inline constexpr std::uint32_t constraint_bit<additional_properties<>> = 1U << 23;
+        template <>
+        inline constexpr std::uint32_t constraint_bit<property_names<>> = 1U << 24;
+        // the keywords of a JSON array, and of a JSON object
+        inline constexpr std::uint32_t array_constraints = ((1U << 21) - 1) & ~((1U << 13) - 1);
+        inline constexpr std::uint32_t object_constraints = ((1U << 25) - 1) & ~((1U << 21) - 1);
+        inline constexpr std::uint32_t structure_constraints = array_constraints | object_constraints;
     }  // namespace detail
 
     namespace detail
@@ -3359,24 +3575,29 @@ namespace yyjson
 #if FIELD_RFL_ANNOTATIONS
         using adjacent_tag_annotation_type = variant_tag_spec<variant_tagging::adjacent>;
 
-        // The annotations `yyjson::enum_` of the field I of T, whose types differ by the number of the values.
+        // The annotations of the field I of T of the keywords that are templates, such as `yyjson::enum_` and
+        // `yyjson::items`, whose types differ by what they hold.
         template <typename T, std::size_t I>
-        consteval std::vector<std::meta::info> enum_annotations_of()
+        consteval std::vector<std::meta::info> template_annotations_of()
         {
             auto result = std::vector<std::meta::info>{};
             for (const auto a : std::meta::annotations_of(field_reflection::detail::member_at<T, I>))
             {
                 const auto type = std::meta::remove_cvref(std::meta::type_of(a));
-                if (std::meta::has_template_arguments(type) && std::meta::template_of(type) == ^^yyjson::enum_)
+                if (!std::meta::has_template_arguments(type)) continue;
+                const auto t = std::meta::template_of(type);
+                if (t == ^^yyjson::enum_ || t == ^^yyjson::items || t == ^^yyjson::additional_properties ||
+                    t == ^^yyjson::contains || t == ^^yyjson::property_names || t == ^^yyjson::prefix_items_t)
                     result.push_back(a);
             }
             return result;
         }
         template <typename T, std::size_t I>
-        inline constexpr std::span<const std::meta::info> enum_annotations =
-            std::define_static_array(enum_annotations_of<T, I>());
+        inline constexpr std::span<const std::meta::info> template_annotations =
+            std::define_static_array(template_annotations_of<T, I>());
         template <typename T, std::size_t I, std::size_t K>
-        using enum_annotation_type = typename[:std::meta::remove_cvref(std::meta::type_of(enum_annotations<T, I>[K])):];
+        using template_annotation_type =
+            typename[:std::meta::remove_cvref(std::meta::type_of(template_annotations<T, I>[K])):];
 
         // Whether the field I of T has an annotation of the keywords of its value.
         template <typename T, std::size_t I>
@@ -3392,7 +3613,14 @@ namespace yyjson
             !field_reflection::field_annotations<T, I, format<>>.empty() ||
             !field_reflection::field_annotations<T, I, format_assertion<>>.empty() ||
             !field_reflection::field_annotations<T, I, const_<>>.empty() ||
-            !field_reflection::field_annotations<T, I, satisfies_t>.empty() || !enum_annotations<T, I>.empty();
+            !field_reflection::field_annotations<T, I, satisfies_t>.empty() ||
+            !field_reflection::field_annotations<T, I, min_items>.empty() ||
+            !field_reflection::field_annotations<T, I, max_items>.empty() ||
+            !field_reflection::field_annotations<T, I, unique_items_t>.empty() ||
+            !field_reflection::field_annotations<T, I, min_contains>.empty() ||
+            !field_reflection::field_annotations<T, I, max_contains>.empty() ||
+            !field_reflection::field_annotations<T, I, min_properties>.empty() ||
+            !field_reflection::field_annotations<T, I, max_properties>.empty() || !template_annotations<T, I>.empty();
 
         // Whether a field of T has an annotation of this library, which gives it a key, skips it, tags it or
         // constrains its value.
@@ -5224,8 +5452,14 @@ namespace yyjson
             bound_number multiple_of;
             std::size_t min_length = 0;
             std::size_t max_length = 0;
-            std::string_view format_name;
-            std::string_view assertion_name;
+            std::size_t min_items = 0;
+            std::size_t max_items = 0;
+            std::size_t min_contains = 0;
+            std::size_t max_contains = 0;
+            std::size_t min_properties = 0;
+            std::size_t max_properties = 0;
+            tree_string format_name;
+            tree_string assertion_name;
             satisfies_t predicate;
 
             template <typename A>
@@ -5235,8 +5469,8 @@ namespace yyjson
             }
         };
 
-        // A position of a schema: its keywords, and its values of `yyjson::const_` and `yyjson::enum_`, the
-        // constant first, and its patterns in the pools of `schema_tree`.
+        // A position of a schema: its keywords, its values of `yyjson::const_` and `yyjson::enum_`, the constant
+        // first, and its patterns in the pools of `schema_tree`, and the nodes of its subschemas, where 0 is none.
         struct schema_node
         {
             field_constraints constraints;
@@ -5244,6 +5478,12 @@ namespace yyjson
             std::size_t values_count = 0;
             std::size_t patterns_first = 0;
             std::size_t patterns_count = 0;
+            std::size_t items = 0;
+            std::size_t properties = 0;
+            std::size_t keys = 0;
+            std::size_t contains = 0;
+            std::size_t prefix_first = 0;
+            std::size_t prefix_count = 0;
         };
 
         // The keywords that read nothing, or that a field cannot take.
@@ -5253,6 +5493,8 @@ namespace yyjson
             keyword_twice,
             multiple_of_not_positive,
             reads_nothing,
+            contains_missing,
+            prefix_position_too_large,
         };
 
         // The schema of a field as constant data: its nodes, of which the first is the field, and the pools of their
@@ -5297,7 +5539,7 @@ namespace yyjson
         // f(setting) for each keyword of the value of the field R of S, by its index among all the fields, in
         // `annotations<S>` and then in the annotations of the member.
         template <typename S, std::size_t R, typename F>
-        consteval void for_each_field_constraint(const F& f)
+        constexpr void for_each_field_constraint(const F& f)
         {
             using keys = typename presence_keys<S>::type;
             constexpr auto& members = keys::source::members;
@@ -5339,42 +5581,24 @@ namespace yyjson
                 for (const auto& a : field_reflection::field_annotations<S, R, format_assertion<>>) f(a);
                 for (const auto& a : field_reflection::field_annotations<S, R, const_<>>) f(a);
                 for (const auto& a : field_reflection::field_annotations<S, R, satisfies_t>) f(a);
+                for (const auto& a : field_reflection::field_annotations<S, R, min_items>) f(a);
+                for (const auto& a : field_reflection::field_annotations<S, R, max_items>) f(a);
+                for (const auto& a : field_reflection::field_annotations<S, R, unique_items_t>) f(a);
+                for (const auto& a : field_reflection::field_annotations<S, R, min_contains>) f(a);
+                for (const auto& a : field_reflection::field_annotations<S, R, max_contains>) f(a);
+                for (const auto& a : field_reflection::field_annotations<S, R, min_properties>) f(a);
+                for (const auto& a : field_reflection::field_annotations<S, R, max_properties>) f(a);
                 [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
-                    (f(std::meta::extract<enum_annotation_type<S, R, Ks>>(enum_annotations<S, R>[Ks])), ...);
-                }(std::make_index_sequence<enum_annotations<S, R>.size()>{});
+                    (f(std::meta::extract<template_annotation_type<S, R, Ks>>(template_annotations<S, R>[Ks])), ...);
+                }(std::make_index_sequence<template_annotations<S, R>.size()>{});
             }
 #endif
-        }
-
-        // The sizes of the pools of the schema of a field.
-        struct constraint_counts
-        {
-            std::size_t values = 0;
-            std::size_t patterns = 0;
-            bool has_const = false;
-        };
-        template <typename S, std::size_t R>
-        consteval constraint_counts count_field_constraints()
-        {
-            auto counts = constraint_counts{};
-            for_each_field_constraint<S, R>([&]<typename A>([[maybe_unused]] const A& a) {
-                if constexpr (setting_of<A, pattern<>>)
-                    ++counts.patterns;
-                else if constexpr (setting_of<A, const_<>>)
-                {
-                    ++counts.values;
-                    counts.has_const = true;
-                }
-                else if constexpr (setting_of<A, enum_<0>>)
-                    counts.values += a.values.size();
-            });
-            return counts;
         }
 
         // A value of `yyjson::const_` or `yyjson::enum_` with its string at `text`, where the setting holds it.
         template <typename J>
         requires std::same_as<J, json_scalar>
-        consteval json_scalar placed_scalar(J value, std::string_view text)
+        constexpr json_scalar placed_scalar(J value, std::string_view text)
         {
             value.text = {text.data(), text.size()};
             return value;
@@ -5383,7 +5607,7 @@ namespace yyjson
         // Whether the number or the string `s` is out of the bounds and the lengths of `c`.
         template <typename C>
         requires std::same_as<C, field_constraints>
-        consteval bool out_of_bounds(const C& c, const json_scalar& s)
+        constexpr bool out_of_bounds(const C& c, const json_scalar& s)
         {
             if (s.kind == json_scalar::kind_t::number)
             {
@@ -5406,7 +5630,7 @@ namespace yyjson
         // values tell without the type of the field.
         template <typename C>
         requires std::same_as<C, field_constraints>
-        consteval bool reads_nothing(const C& c, std::span<const json_scalar> values, bool has_const)
+        constexpr bool reads_nothing(const C& c, std::span<const json_scalar> values, bool has_const)
         {
             const auto crossed = [&](const bound_number& low, bool open_low, const bound_number& high, bool open_high) {
                 const auto order = compare_bounds(low, high);
@@ -5434,21 +5658,39 @@ namespace yyjson
                    std::ranges::all_of(listed, [&](const json_scalar& s) { return out_of_bounds(c, s); });
         }
 
-        // The tree of the keywords of the field R of S, by its index among all the fields.
-        template <typename S, std::size_t R>
-        consteval auto make_field_tree()
+        // The nodes and the pools of a schema while it is built, and the first error in it.
+        struct tree_builder
         {
-            constexpr auto counts = count_field_constraints<S, R>();
-            auto tree = schema_tree<1, counts.values, counts.patterns>{};
-            auto& c = tree.nodes[0].constraints;
-            auto value = std::size_t{counts.has_const ? 1U : 0U};
-            auto pattern_index = std::size_t{0};
-            tree.nodes[0].values_count = counts.values;
-            tree.nodes[0].patterns_count = counts.patterns;
-            for_each_field_constraint<S, R>([&]<typename A>(const A& a) {
+            std::vector<schema_node> nodes;
+            std::vector<json_scalar> values;
+            std::vector<tree_string> patterns;
+            constraint_error error = constraint_error::none;
+
+            constexpr void fail(constraint_error e) noexcept
+            {
+                if (error == constraint_error::none) error = e;
+            }
+        };
+
+        template <typename P, typename Keep>
+        constexpr void graft_prefix(tree_builder& b, std::size_t at, const P& p, const Keep& keep);
+
+        // Adds the node of the settings that `visit` passes to its function, and the nodes of their subschemas, and
+        // gives its index.  `keep` gives a string of a setting as the tree holds it.
+        template <typename Visit, typename Keep>
+        constexpr std::size_t build_schema_node(tree_builder& b, const Visit& visit, const Keep& keep)
+        {
+            const auto index = b.nodes.size();
+            b.nodes.emplace_back();
+            auto node = schema_node{};
+            auto& c = node.constraints;
+            auto values = std::vector<json_scalar>{};
+            auto patterns = std::vector<std::string_view>{};
+            bool has_const = false;
+            visit([&]<typename A>(const A& a) {
                 using B = setting_type_t<A>;
                 if ((c.bits & constraint_bit<B>) != 0 && !std::same_as<B, pattern<>>)
-                    tree.error = constraint_error::keyword_twice;
+                    b.fail(constraint_error::keyword_twice);
                 c.bits |= constraint_bit<B>;
                 if constexpr (std::same_as<B, minimum>)
                     c.minimum = a.value;
@@ -5461,51 +5703,288 @@ namespace yyjson
                 else if constexpr (std::same_as<B, multiple_of>)
                 {
                     c.multiple_of = a.value;
-                    if (!a.value.positive()) tree.error = constraint_error::multiple_of_not_positive;
+                    if (!a.value.positive()) b.fail(constraint_error::multiple_of_not_positive);
                 }
                 else if constexpr (std::same_as<B, min_length>)
                     c.min_length = a.value;
                 else if constexpr (std::same_as<B, max_length>)
                     c.max_length = a.value;
+                else if constexpr (std::same_as<B, min_items>)
+                    c.min_items = a.value;
+                else if constexpr (std::same_as<B, max_items>)
+                    c.max_items = a.value;
+                else if constexpr (std::same_as<B, min_contains>)
+                    c.min_contains = a.value;
+                else if constexpr (std::same_as<B, max_contains>)
+                    c.max_contains = a.value;
+                else if constexpr (std::same_as<B, min_properties>)
+                    c.min_properties = a.value;
+                else if constexpr (std::same_as<B, max_properties>)
+                    c.max_properties = a.value;
                 else if constexpr (std::same_as<B, pattern<>>)
-                    tree.patterns[pattern_index++] = a.regex();
+                    patterns.push_back(a.regex());
                 else if constexpr (std::same_as<B, format<>>)
-                    c.format_name = a.name();
+                    c.format_name = keep(a.name());
                 else if constexpr (std::same_as<B, format_assertion<>>)
-                    c.assertion_name = a.name();
+                    c.assertion_name = keep(a.name());
                 else if constexpr (std::same_as<B, const_<>>)
-                    tree.values[0] = placed_scalar(a.value, a.text());
+                {
+                    if (!has_const) values.insert(values.begin(), placed_scalar(a.value, a.text()));
+                    has_const = true;
+                }
                 else if constexpr (std::same_as<B, enum_<0>>)
                 {
                     for (std::size_t i = 0; i < a.values.size(); ++i)
-                        tree.values[value++] = placed_scalar(a.values[i], a.text(i));
+                        values.push_back(placed_scalar(a.values[i], a.text(i)));
                 }
-                else
+                else if constexpr (std::same_as<B, satisfies_t>)
                     c.predicate = a;
             });
-            if (tree.error == constraint_error::none && reads_nothing(c, tree.values, counts.has_const))
-                tree.error = constraint_error::reads_nothing;
+            const auto inverted = [&c]<typename Low, typename High>(std::size_t low, std::size_t high) {
+                return c.template has<Low>() && c.template has<High>() && low > high;
+            };
+            if (reads_nothing(c, values, has_const) ||
+                inverted.template operator()<min_items, max_items>(c.min_items, c.max_items) ||
+                inverted.template operator()<min_contains, max_contains>(c.min_contains, c.max_contains) ||
+                inverted.template operator()<min_properties, max_properties>(c.min_properties, c.max_properties))
+                b.fail(constraint_error::reads_nothing);
+            if ((c.template has<min_contains>() || c.template has<max_contains>()) && !c.template has<contains<>>())
+                b.fail(constraint_error::contains_missing);
+            node.values_first = b.values.size();
+            node.values_count = values.size();
+            for (const auto& v : values)
+            {
+                // a new scalar: GCC does not take a prefix_schema as a constant when it reassigns the text of a copy
+                auto kept = json_scalar{};
+                kept.kind = v.kind;
+                kept.number = v.number;
+                kept.boolean = v.boolean;
+                if (v.text.size != 0) kept.text = keep(v.text.view());
+                b.values.push_back(kept);
+            }
+            node.patterns_first = b.patterns.size();
+            node.patterns_count = patterns.size();
+            for (const auto p : patterns) b.patterns.push_back(keep(p));
+            visit([&]<typename A>(const A& a) {
+                using B = setting_type_t<A>;
+                if constexpr (std::same_as<B, prefix_items_t<0>>)
+                {
+                    node.prefix_first = b.nodes.size();
+                    node.prefix_count = a.positions.size();
+                    b.nodes.resize(b.nodes.size() + a.positions.size());
+                    for (std::size_t i = 0; i < a.positions.size(); ++i)
+                        graft_prefix(b, node.prefix_first + i, a.positions[i], keep);
+                }
+                else if constexpr (requires { a.settings; })
+                {
+                    const auto child =
+                        build_schema_node(b, [&a](const auto& f) { for_each_setting(a.settings, f); }, keep);
+                    if constexpr (std::same_as<B, items<>>)
+                        node.items = child;
+                    else if constexpr (std::same_as<B, additional_properties<>>)
+                        node.properties = child;
+                    else if constexpr (std::same_as<B, property_names<>>)
+                        node.keys = child;
+                    else
+                        node.contains = child;
+                }
+            });
+            b.nodes[index] = node;
+            return index;
+        }
+
+        // Copies the tree of the position `p` of `yyjson::prefix_items` into the node `at`, and its other nodes
+        // into new nodes.
+        template <typename P, typename Keep>
+        constexpr void graft_prefix(tree_builder& b, std::size_t at, const P& p, const Keep& keep)
+        {
+            if (p.error != constraint_error::none) b.fail(p.error);
+            const auto base = b.nodes.size();
+            const auto value_base = b.values.size();
+            const auto pattern_base = b.patterns.size();
+            for (std::size_t k = 0; k < p.value_size; ++k)
+            {
+                auto v = p.values[k];
+                if (v.text.size != 0) v.text = keep(p.chars.view(v.text));
+                b.values.push_back(v);
+            }
+            for (std::size_t k = 0; k < p.pattern_size; ++k) b.patterns.push_back(keep(p.chars.view(p.patterns[k])));
+            const auto moved = [&](schema_node n) {
+                for (auto* i : {&n.items, &n.properties, &n.keys, &n.contains, &n.prefix_first})
+                    if (*i != 0) *i += base - 1;
+                n.values_first += value_base;
+                n.patterns_first += pattern_base;
+                for (auto* name : {&n.constraints.format_name, &n.constraints.assertion_name})
+                    if (name->size != 0) *name = keep(p.chars.view(*name));
+                return n;
+            };
+            b.nodes[at] = moved(p.nodes[0]);
+            for (std::size_t k = 1; k < p.node_size; ++k) b.nodes.push_back(moved(p.nodes[k]));
+        }
+
+        // The characters that a position of `yyjson::prefix_items` holds, of the string literals of its settings,
+        // which are in static storage under C++26.
+#if defined(__cpp_lib_define_static)
+        inline constexpr std::size_t prefix_position_chars = 0;
+#else
+        inline constexpr std::size_t prefix_position_chars = 256;
+#endif
+
+        // The string `s` as a position of `yyjson::prefix_items` holds it, in `pool` unless it is in static storage.
+        template <std::size_t L>
+        constexpr tree_string keep_string(char_pool<L>& pool, std::string_view s, bool& too_long)
+        {
+            if constexpr (L == 0)
+                return {s.data(), s.size()};
+            else
+            {
+                too_long = too_long || pool.size + s.size() > L;
+                return too_long ? tree_string{} : pool.add(s);
+            }
+        }
+
+        // The settings of a position of `yyjson::prefix_items` as a tree of their own, of fixed sizes, so that a
+        // braced list makes it: `{}` for none, `{settings...}`, or a setting alone.
+        struct prefix_schema
+        {
+            std::array<schema_node, 8> nodes = {};
+            std::size_t node_size = 1;
+            std::array<json_scalar, 16> values = {};
+            std::size_t value_size = 0;
+            std::array<tree_string, 8> patterns = {};
+            std::size_t pattern_size = 0;
+            char_pool<prefix_position_chars> chars = {};
+            constraint_error error = constraint_error::none;
+
+            constexpr prefix_schema() = default;
+            template <typename... As>
+            requires (sizeof...(As) != 0 && !(std::same_as<As, prefix_schema> || ...))
+            consteval prefix_schema(As... settings)  // NOLINT(google-explicit-constructor)
+            {
+                static_assert((constraint_setting<As> && ...),
+                              "a position of yyjson::prefix_items takes the keywords of a value, such as "
+                              "yyjson::minimum and yyjson::items");
+                auto b = tree_builder{};
+                auto pool = char_pool<prefix_position_chars>{};
+                bool too_long = false;
+                build_schema_node(
+                    b, [&](const auto& f) { (f(settings), ...); },
+                    [&](std::string_view s) { return keep_string(pool, s, too_long); });
+                if (too_long || b.nodes.size() > nodes.size() || b.values.size() > values.size() ||
+                    b.patterns.size() > patterns.size())
+                    b.fail(constraint_error::prefix_position_too_large);
+                error = b.error;
+                if (error != constraint_error::none) return;
+                node_size = b.nodes.size();
+                value_size = b.values.size();
+                pattern_size = b.patterns.size();
+                std::ranges::copy(b.nodes, nodes.begin());
+                std::ranges::copy(b.values, values.begin());
+                std::ranges::copy(b.patterns, patterns.begin());
+                chars = pool;
+            }
+        };
+
+        template <typename T, std::size_t>
+        using always_t = T;
+        template <typename Seq>
+        struct prefix_items_n;
+        template <std::size_t... I>
+        struct prefix_items_n<std::index_sequence<I...>>
+        {
+            consteval prefix_items_t<sizeof...(I)> operator()(always_t<prefix_schema, I>... positions) const
+            {
+                return {{positions...}};
+            }
+        };
+        // A call operator for each number of the positions, so that each position can be a braced list.
+        template <typename Seq>
+        struct prefix_items_fn;
+        template <std::size_t... N>
+        struct prefix_items_fn<std::index_sequence<N...>> : prefix_items_n<std::make_index_sequence<N + 1>>...
+        {
+            using prefix_items_n<std::make_index_sequence<N + 1>>::operator()...;
+        };
+    }  // namespace detail
+
+    template <std::size_t N>
+    struct prefix_items_t
+    {
+        std::array<detail::prefix_schema, N> positions;
+    };
+
+    // The settings of the first elements of an array, as JSON Schema's `prefixItems`, one braced list or setting for
+    // each of up to 16 positions: `yyjson::prefix_items({yyjson::minimum(0)}, {}, yyjson::max_length(8))`.  `{}`
+    // leaves a position unconstrained.
+    inline constexpr detail::prefix_items_fn<std::make_index_sequence<16>> prefix_items{};
+
+    namespace detail
+    {
+        // The nodes and the pools of the tree of the field R of S, by its index among all the fields.
+        template <typename S, std::size_t R>
+        constexpr tree_builder build_field_tree()
+        {
+            auto b = tree_builder{};
+            build_schema_node(
+                b, [](const auto& f) { for_each_field_constraint<S, R>(f); },
+                [](std::string_view s) { return tree_string{s.data(), s.size()}; });
+            return b;
+        }
+
+        // The tree of the keywords of the field R of S, by its index among all the fields.
+        template <typename S, std::size_t R>
+        consteval auto make_field_tree()
+        {
+            constexpr auto sizes = [] {
+                const auto b = build_field_tree<S, R>();
+                return std::array{b.nodes.size(), b.values.size(), b.patterns.size()};
+            }();
+            const auto b = build_field_tree<S, R>();
+            auto tree = schema_tree<sizes[0], sizes[1], sizes[2]>{};
+            std::ranges::copy(b.nodes, tree.nodes.begin());
+            std::ranges::copy(b.values, tree.values.begin());
+            for (std::size_t i = 0; i < sizes[2]; ++i) tree.patterns[i] = b.patterns[i].view();
+            tree.error = b.error;
             return tree;
         }
 
-        // The schema of the field R of S, by its index among all the fields, of a struct that `has_constraints`.
+        // The tree of the field R of S, by its index among all the fields, of a struct that `has_constraints`.
         template <typename S, std::size_t R>
-        struct field_schema
+        struct field_tree
         {
             static constexpr auto tree = make_field_tree<S, R>();
             static_assert(tree.error != constraint_error::keyword_twice,
-                          "a field takes each keyword of its value once, but yyjson::pattern");
+                          "a subschema takes each keyword once, but yyjson::pattern");
             static_assert(tree.error != constraint_error::multiple_of_not_positive,
                           "yyjson::multiple_of takes a number greater than 0");
             static_assert(tree.error != constraint_error::reads_nothing,
-                          "the keywords of a field leave no value to read: a minimum is greater than the maximum, a "
-                          "minimum length greater than the maximum length, or no value of yyjson::const_ and "
-                          "yyjson::enum_ is within the bounds and the lengths");
-
-            static constexpr const field_constraints& constraints = tree.nodes[0].constraints;
-            static constexpr std::span<const json_scalar> values{tree.values};
-            static constexpr std::span<const std::string_view> patterns{tree.patterns};
+                          "the keywords of a subschema leave no value to read: a minimum is greater than the maximum, "
+                          "a minimum length, number of items, contains or properties greater than the maximum, or no "
+                          "value of yyjson::const_ and yyjson::enum_ is within the bounds and the lengths");
+            static_assert(tree.error != constraint_error::contains_missing,
+                          "yyjson::min_contains and yyjson::max_contains need yyjson::contains in the same subschema");
+            static_assert(tree.error != constraint_error::prefix_position_too_large,
+                          "a position of yyjson::prefix_items takes up to 8 subschemas, 16 values of yyjson::const_ "
+                          "and yyjson::enum_, 8 patterns and 256 characters of strings");
         };
+
+        // The node I of the tree of `Tree::tree`: its keywords, values and patterns, and its subschemas by `at`.
+        template <typename Tree, std::size_t I>
+        struct node_schema
+        {
+            static constexpr const schema_node& node = Tree::tree.nodes[I];
+            static constexpr const field_constraints& constraints = node.constraints;
+            static constexpr std::span<const json_scalar> values{Tree::tree.values.data() + node.values_first,
+                                                                 node.values_count};
+            static constexpr std::span<const std::string_view> patterns{
+                Tree::tree.patterns.data() + node.patterns_first, node.patterns_count};
+            template <std::size_t J>
+            using at = node_schema<Tree, J>;
+        };
+
+        // The schema of the field R of S, by its index among all the fields, of a struct that `has_constraints`.
+        template <typename S, std::size_t R>
+        using field_schema = node_schema<field_tree<S, R>, 0>;
 
         // Whether reading checks the field K of S, by its index among the fields that are read.
         template <typename S, std::size_t K>
@@ -6024,7 +6503,7 @@ namespace yyjson
         template <typename Schema>
         bool matches_format(std::string_view s)
         {
-            constexpr auto name = Schema::constraints.assertion_name;
+            constexpr auto name = Schema::constraints.assertion_name.view();
             constexpr auto index = builtin_format_index(name);
             if constexpr (index < std::size(builtin_formats))
                 return builtin_formats[index].second(s);
@@ -6095,6 +6574,19 @@ namespace yyjson
             const_,
             enum_,
             format,
+            min_items,
+            max_items,
+            unique_items,
+            duplicate_item,  // an element that is equal to an earlier one
+            prefix_items,
+            items,
+            contains,
+            min_contains,
+            max_contains,
+            min_properties,
+            max_properties,
+            additional_properties,
+            property_names,
         };
 
         template <typename B>
@@ -6150,7 +6642,7 @@ namespace yyjson
                     return text;
                 }
                 case constraint_kind::format:
-                    return std::format("does not have the format \"{}\"", c.assertion_name);
+                    return std::format("does not have the format \"{}\"", c.assertion_name.view());
                 case constraint_kind::minimum:
                     return "is less than the minimum " + bound_text(c.minimum);
                 case constraint_kind::maximum:
@@ -6165,6 +6657,34 @@ namespace yyjson
                     return std::format("is shorter than the minimum length {}", c.min_length);
                 case constraint_kind::max_length:
                     return std::format("is longer than the maximum length {}", c.max_length);
+                case constraint_kind::min_items:
+                    return std::format("has fewer items than the minimum {}", c.min_items);
+                case constraint_kind::max_items:
+                    return std::format("has more items than the maximum {}", c.max_items);
+                case constraint_kind::unique_items:
+                    return "has duplicate items";
+                case constraint_kind::duplicate_item:
+                    return "is equal to an earlier element";
+                case constraint_kind::prefix_items:
+                    return "has an element that does not satisfy the constraints of yyjson::prefix_items";
+                case constraint_kind::items:
+                    return "has an element that does not satisfy the constraints of yyjson::items";
+                case constraint_kind::contains:
+                    return "has no item that satisfies the constraints of yyjson::contains";
+                case constraint_kind::min_contains:
+                    return std::format("has fewer than {} {} the constraints of yyjson::contains", c.min_contains,
+                                       c.min_contains == 1 ? "item that satisfies" : "items that satisfy");
+                case constraint_kind::max_contains:
+                    return std::format("has more than {} {} the constraints of yyjson::contains", c.max_contains,
+                                       c.max_contains == 1 ? "item that satisfies" : "items that satisfy");
+                case constraint_kind::min_properties:
+                    return std::format("has fewer properties than the minimum {}", c.min_properties);
+                case constraint_kind::max_properties:
+                    return std::format("has more properties than the maximum {}", c.max_properties);
+                case constraint_kind::additional_properties:
+                    return "has a value that does not satisfy the constraints of yyjson::additional_properties";
+                case constraint_kind::property_names:
+                    return "has a key that does not satisfy the constraints of yyjson::property_names";
                 case constraint_kind::pattern:
                 {
                     if (patterns.size() == 1) return std::format("does not match the pattern \"{}\"", patterns[0]);
@@ -6493,15 +7013,20 @@ namespace yyjson
             return constraint_kind::none;
         }
 
+        // The keyword of `Schema` on the elements, the values or the keys of `v`, or on their number, that `v` does
+        // not satisfy.  Defined after the concepts of ranges.
+        template <typename Schema, typename V>
+        constraint_kind structure_violation(const V& v);
+
         // The keyword of `Schema` that the field `field` does not satisfy.  An empty `std::optional` is a missing
-        // key, which no keyword checks.
-        template <typename Schema, typename F>
+        // key, which no keyword checks, but an element that is one is null.
+        template <typename Schema, bool Element = false, typename F>
         constraint_kind constraint_violation(const F& field)
         {
             using V = constrained_value_t<F>;
             constexpr const field_constraints& c = Schema::constraints;
             assert_constraints_apply<Schema, F>();
-            if constexpr (is_std_optional<F>::value)
+            if constexpr (is_std_optional<F>::value && !Element)
                 if (!field.has_value()) return constraint_kind::none;
             const V* value = held_value(field);
             if (value == nullptr)
@@ -6510,6 +7035,10 @@ namespace yyjson
             }
             else if (const auto kind = value_violation<Schema>(*value); kind != constraint_kind::none)
                 return kind;
+            if constexpr ((c.bits & structure_constraints) != 0)
+                if (value != nullptr)
+                    if (const auto kind = structure_violation<Schema>(*value); kind != constraint_kind::none)
+                        return kind;
             if constexpr (c.template has<satisfies_t>())
             {
                 constexpr auto parameter = c.predicate.parameter();
@@ -6538,16 +7067,45 @@ namespace yyjson
             return constraint_violation<field_schema<S, struct_declared_index<S, K>>>(field);
         }
 
-        // Throws for the value `json` of the field K of S that does not satisfy the keyword `kind`.
-        template <typename S, std::size_t K, typename Json>
+        // What a violation is found in: the value of a field, an element at any depth in it, or a key of a map in it.
+        enum class constraint_subject : std::uint8_t
+        {
+            value,
+            element,
+            key,
+        };
+
+        // Throws at `json` for the subject of the field K of S that does not satisfy the keyword `kind` of `Schema`.
+        template <typename S, std::size_t K, typename Schema, typename Json>
+        [[noreturn]] CPPYYJSON_COLD void throw_constraint_violation(const Json& json, constraint_kind kind,
+                                                                    constraint_subject subject)
+        {
+            const auto what = constraint_what<Schema>(kind);
+            const auto subject_text = subject == constraint_subject::element ? "an element of the value"
+                                      : subject == constraint_subject::key   ? "a key of the value"
+                                                                             : "the value";
+            if constexpr (transparent_struct<S>)
+                throw_bad_cast_at(target_of(json), "{} of {} {}", subject_text, type_name<S>(), what);
+            else
+                throw_bad_cast_at(target_of(json), "{} of the key \"{}\" of {} {}", subject_text,
+                                  struct_field_key<S, K>, type_name<S>(), what);
+        }
+
+        // Finds in the JSON array or object `json`, read as V, the element, the value or the key that violates the
+        // keyword `kind` of `Schema`, and throws at it.  It returns if it finds none, as for the elements that
+        // `yyjson::merge_into` kept.  Defined after the concepts of ranges.
+        template <typename S, std::size_t K, typename Schema, typename V, typename Json>
+        void throw_located_violation(const Json& json, constraint_kind kind);
+
+        // Throws for the value `json`, read into the field F of the field K of S, that does not satisfy the keyword
+        // `kind`.
+        template <typename S, std::size_t K, typename F, typename Json>
         [[noreturn]] CPPYYJSON_COLD void throw_field_violation(const Json& json, constraint_kind kind)
         {
-            const auto what = constraint_what<field_schema<S, struct_declared_index<S, K>>>(kind);
-            if constexpr (transparent_struct<S>)
-                throw_bad_cast_at(target_of(json), "the value of {} {}", type_name<S>(), what);
-            else
-                throw_bad_cast_at(target_of(json), "the value of the key \"{}\" of {} {}", struct_field_key<S, K>,
-                                  type_name<S>(), what);
+            using schema = field_schema<S, struct_declared_index<S, K>>;
+            if constexpr ((schema::constraints.bits & structure_constraints) != 0)
+                throw_located_violation<S, K, schema, constrained_value_t<F>>(json, kind);
+            throw_constraint_violation<S, K, schema>(json, kind, constraint_subject::value);
         }
 
         // Checks the keywords of the value of the field K of S, which `field` has read from `json`.  A null that
@@ -6558,7 +7116,7 @@ namespace yyjson
             if constexpr (null_reads_as_missing<F>)
                 if (json.is_null()) return;
             if (const auto kind = field_violation<S, K>(field); kind != constraint_kind::none) [[unlikely]]
-                throw_field_violation<S, K>(json, kind);
+                throw_field_violation<S, K, F>(json, kind);
         }
 
         // Gives each field of `yyjson::default_from<f>` whose key `seen` lacks the value that f makes.  `seen` is
@@ -13320,6 +13878,476 @@ namespace yyjson
         };
         template <typename T>
         using array_element_t = typename array_element<T>::type;
+
+        // The values that the keywords of arrays and objects constrain, by the JSON that this library writes them
+        // as.  A caster of the user, a struct and a value of the DOM are left out.
+        template <typename V>
+        concept user_written_value = caster_names_to_json<V> && !std::derived_from<caster<V>, builtin_caster>;
+        template <typename V>
+        concept object_written_range =
+            std::ranges::forward_range<const V> && (!user_written_value<V>) && (!reflected_range_aggregate<V>) &&
+            (!visitable<V>) && key_value_like<std::remove_cv_t<std::ranges::range_value_t<const V>>>;
+        template <typename V>
+        concept array_written_range =
+            std::ranges::forward_range<const V> && (!char_string_array<V>) && (!constraint_string<V>) &&
+            (!user_written_value<V>) && (!reflected_range_aggregate<V>) && (!visitable<V>) &&
+            (!writer::detail::base_of_value<V>) && (!reader::detail::base_of_value_ref<V>) &&
+            (!object_written_range<V>);
+        template <typename V>
+        concept array_written_tuple = tuple_like<V> && (!std::ranges::range<V>) && (!user_written_value<V>);
+        // The ranges whose order is the order of the JSON array: not a set nor a map.
+        template <typename V>
+        concept ordered_array_range = array_written_range<V> && !requires { typename V::key_type; };
+
+        template <typename V>
+        using constrained_element_t = std::remove_cv_t<std::ranges::range_value_t<const V>>;
+
+        inline constexpr std::size_t no_duplicate = static_cast<std::size_t>(-1);
+
+        // The types whose `<=>` takes the values that `json_equal` tells equal as equivalent, so that a range of
+        // them may be sorted to find a duplicate.
+        template <typename T>
+        inline constexpr bool orders_as_json = std::is_arithmetic_v<T> || std::is_enum_v<T> ||
+                                               std::same_as<T, std::string> || std::same_as<T, std::string_view>;
+        template <typename A, typename B>
+        inline constexpr bool orders_as_json<std::pair<A, B>> =
+            orders_as_json<std::remove_cv_t<A>> && orders_as_json<std::remove_cv_t<B>>;
+
+        // The index of the first element of `r` that `json_equal` tells equal to an earlier one, or `no_duplicate`.
+        // Many elements of `orders_as_json` types are sorted and compared within each group of equivalent ones,
+        // without NaN, which equals nothing; others are compared pairwise.
+        template <typename R>
+        std::size_t first_duplicate(const R& r)
+        {
+            using reference = std::ranges::range_reference_t<const R>;
+            using E = std::remove_cvref_t<reference>;
+            constexpr bool floating = std::floating_point<E>;
+            const auto pairwise = [&r] {
+                std::size_t j = 0;
+                for (auto it = std::ranges::begin(r); it != std::ranges::end(r); ++it, ++j)
+                {
+                    for (auto jt = std::ranges::begin(r); jt != it; ++jt)
+                        if (json_equal<E>(*jt, *it)) return j;
+                }
+                return no_duplicate;
+            };
+            if constexpr (!std::is_lvalue_reference_v<reference> ||
+                          !(floating || (orders_as_json<E> && std::three_way_comparable<E, std::weak_ordering>)))
+                return pairwise();
+            else
+            {
+                if (std::ranges::distance(r) <= 16) return pairwise();
+                const auto less = [](const E& a, const E& b) {
+                    if constexpr (floating)
+                        return a < b;
+                    else
+                        return std::is_lt(a <=> b);
+                };
+                auto sorted = std::vector<std::pair<const E*, std::size_t>>();
+                std::size_t j = 0;
+                for (const E& e : r)
+                {
+                    if (!floating || e == e) sorted.emplace_back(std::addressof(e), j);
+                    ++j;
+                }
+                std::ranges::sort(sorted, [&less](const auto& a, const auto& b) {
+                    if (less(*a.first, *b.first)) return true;
+                    if (less(*b.first, *a.first)) return false;
+                    return a.second < b.second;
+                });
+                auto result = no_duplicate;
+                for (std::size_t g = 0; g < sorted.size();)
+                {
+                    auto end = g + 1;
+                    while (end < sorted.size() && !less(*sorted[g].first, *sorted[end].first)) ++end;
+                    // the elements of a group are in their order in `r`
+                    for (auto k = g + 1; k < end && sorted[k].second < result; ++k)
+                    {
+                        for (auto i = g; i < k; ++i)
+                        {
+                            if (json_equal<E>(*sorted[i].first, *sorted[k].first))
+                            {
+                                result = sorted[k].second;
+                                break;
+                            }
+                        }
+                    }
+                    g = end;
+                }
+                return result;
+            }
+        }
+
+        // Whether `f(index, element)` holds for an element of the tuple `v`.
+        template <typename V, typename F>
+        bool any_tuple_element(const V& v, F&& f)
+        {
+            return [&]<std::size_t... J>(std::index_sequence<J...>) {
+                return (f(std::integral_constant<std::size_t, J>(), std::get<J>(v)) || ...);
+            }(std::make_index_sequence<std::tuple_size_v<V>>{});
+        }
+
+        // Whether the elements of the tuple V all have one type, which `yyjson::unique_items` compares.
+        template <typename V>
+        inline constexpr bool uniform_tuple = []<std::size_t... J>(std::index_sequence<J...>) {
+            return (std::same_as<std::remove_cv_t<std::tuple_element_t<0, V>>,
+                                 std::remove_cv_t<std::tuple_element_t<J, V>>> &&
+                    ...);
+        }(std::make_index_sequence<std::tuple_size_v<V>>{});
+
+        // The keyword of `Schema` that the key `key` of a map, as the JSON string that it is written as, does not
+        // satisfy.
+        template <typename Schema, typename Key>
+        constraint_kind key_violation(const Key& key)
+        {
+            if constexpr (enum_key<Key>)
+            {
+                auto buf = enum_key_buffer();
+                return constraint_violation<Schema, true>(enum_key_text(key, buf));
+            }
+            else if constexpr (constraint_string<Key>)
+                return constraint_violation<Schema, true>(key);
+            else
+                return constraint_violation<Schema, true>(std::string_view(key));
+        }
+
+        // The keyword of `Schema` that a value written as a JSON array does not satisfy.
+        template <typename Schema, typename V>
+        constraint_kind array_violation(const V& v)
+        {
+            constexpr const schema_node& n = Schema::node;
+            constexpr const field_constraints& c = n.constraints;
+            constexpr bool tuple = array_written_tuple<V>;
+            const auto size = [&] {
+                if constexpr (tuple)
+                    return std::tuple_size_v<V>;
+                else
+                    return static_cast<std::size_t>(std::ranges::distance(v));
+            };
+            if constexpr (c.has<min_items>())
+                if (size() < c.min_items) return constraint_kind::min_items;
+            if constexpr (c.has<max_items>())
+                if (size() > c.max_items) return constraint_kind::max_items;
+            if constexpr (c.has<unique_items_t>())
+            {
+                if constexpr (tuple)
+                {
+                    static_assert(uniform_tuple<V>,
+                                  "yyjson::unique_items constrains a tuple whose elements have one type");
+                    if constexpr (uniform_tuple<V>)
+                    {
+                        const auto elements =
+                            std::apply([](const auto&... e) { return std::array{std::cref(e)...}; }, v);
+                        using E = std::remove_cv_t<std::tuple_element_t<0, V>>;
+                        for (std::size_t j = 1; j < elements.size(); ++j)
+                            for (std::size_t i = 0; i < j; ++i)
+                                if (json_equal<E>(elements[i].get(), elements[j].get()))
+                                    return constraint_kind::unique_items;
+                    }
+                }
+                else
+                {
+                    static_assert(!unique_set<V>,
+                                  "yyjson::unique_items constrains a range whose elements may be equal; a set or a "
+                                  "map holds no two equal elements");
+                    if constexpr (!unique_set<V>)
+                        if (first_duplicate(v) != no_duplicate) return constraint_kind::unique_items;
+                }
+            }
+            if constexpr (n.prefix_count != 0)
+            {
+                static_assert(tuple || ordered_array_range<V>,
+                              "yyjson::prefix_items constrains the elements of a tuple, or of a range that keeps the "
+                              "order of the JSON array: not a set nor a map");
+                if constexpr (tuple)
+                {
+                    static_assert(n.prefix_count <= std::tuple_size_v<V>,
+                                  "yyjson::prefix_items has more positions than the tuple has elements");
+                    if (any_tuple_element(v, [](auto j, const auto& e) {
+                            if constexpr (j < Schema::node.prefix_count)
+                                return constraint_violation<typename Schema::template at<Schema::node.prefix_first + j>,
+                                                            true>(e) != constraint_kind::none;
+                            else
+                                return false;
+                        }))
+                        return constraint_kind::prefix_items;
+                }
+                else if constexpr (ordered_array_range<V>)
+                {
+                    auto it = std::ranges::begin(v);
+                    const auto end = std::ranges::end(v);
+                    const bool violated = [&]<std::size_t... J>(std::index_sequence<J...>) {
+                        return (
+                            (it != end &&
+                             constraint_violation<typename Schema::template at<Schema::node.prefix_first + J>, true>(
+                                 static_cast<const constrained_element_t<V>&>(*it++)) != constraint_kind::none) ||
+                            ...);
+                    }(std::make_index_sequence<Schema::node.prefix_count>{});
+                    if (violated) return constraint_kind::prefix_items;
+                }
+            }
+            if constexpr (n.items != 0)
+            {
+                using items = typename Schema::template at<Schema::node.items>;
+                if constexpr (tuple)
+                {
+                    if (any_tuple_element(v, [](auto j, const auto& e) {
+                            if constexpr (j >= Schema::node.prefix_count)
+                                return constraint_violation<items, true>(e) != constraint_kind::none;
+                            else
+                                return false;
+                        }))
+                        return constraint_kind::items;
+                }
+                else
+                {
+                    auto it = std::ranges::begin(v);
+                    const auto end = std::ranges::end(v);
+                    for (std::size_t j = 0; j < n.prefix_count && it != end; ++j) ++it;
+                    for (; it != end; ++it)
+                        if (constraint_violation<items, true>(static_cast<const constrained_element_t<V>&>(*it)) !=
+                            constraint_kind::none)
+                            return constraint_kind::items;
+                }
+            }
+            if constexpr (n.contains != 0)
+            {
+                using contained = typename Schema::template at<Schema::node.contains>;
+                constexpr bool has_min = c.has<yyjson::min_contains>();
+                constexpr bool has_max = c.has<yyjson::max_contains>();
+                constexpr std::size_t min = has_min ? c.min_contains : 1;
+                std::size_t count = 0;
+                const auto counts = [&count](constraint_kind kind) {
+                    count += kind == constraint_kind::none ? 1 : 0;
+                    return !has_max && count >= min;
+                };
+                if constexpr (has_max || min != 0)
+                {
+                    if constexpr (tuple)
+                        any_tuple_element(v, [&counts](auto, const auto& e) {
+                            return counts(constraint_violation<contained, true>(e));
+                        });
+                    else
+                        for (const auto& e : v)
+                            if (counts(constraint_violation<contained, true>(
+                                    static_cast<const constrained_element_t<V>&>(e))))
+                                break;
+                }
+                if constexpr (has_max)
+                    if (count > c.max_contains) return constraint_kind::max_contains;
+                if (count < min) return has_min ? constraint_kind::min_contains : constraint_kind::contains;
+            }
+            return constraint_kind::none;
+        }
+
+        // The keyword of `Schema` that a map written as a JSON object does not satisfy.
+        template <typename Schema, typename V>
+        constraint_kind object_violation(const V& v)
+        {
+            constexpr const schema_node& n = Schema::node;
+            constexpr const field_constraints& c = n.constraints;
+            if constexpr (c.has<min_properties>() || c.has<max_properties>())
+            {
+                const auto size = static_cast<std::size_t>(std::ranges::distance(v));
+                if constexpr (c.has<min_properties>())
+                    if (size < c.min_properties) return constraint_kind::min_properties;
+                if constexpr (c.has<max_properties>())
+                    if (size > c.max_properties) return constraint_kind::max_properties;
+            }
+            if constexpr (n.properties != 0)
+                for (const auto& e : v)
+                    if (constraint_violation<typename Schema::template at<Schema::node.properties>, true>(
+                            std::get<1>(e)) != constraint_kind::none)
+                        return constraint_kind::additional_properties;
+            if constexpr (n.keys != 0)
+                for (const auto& e : v)
+                    if (key_violation<typename Schema::template at<Schema::node.keys>>(std::get<0>(e)) !=
+                        constraint_kind::none)
+                        return constraint_kind::property_names;
+            return constraint_kind::none;
+        }
+
+        template <typename Schema, typename V>
+        constraint_kind structure_violation(const V& v)
+        {
+            constexpr const schema_node& n = Schema::node;
+            constexpr const field_constraints& c = n.constraints;
+            constexpr bool array_keywords = (c.bits & array_constraints) != 0;
+            constexpr bool object_keywords = (c.bits & object_constraints) != 0;
+            constexpr bool as_array = array_written_range<V> || array_written_tuple<V>;
+            constexpr bool as_object = object_written_range<V>;
+            if constexpr (as_object)
+            {
+                static_assert(!c.has<min_items>() && !c.has<max_items>(),
+                              "yyjson::min_items and yyjson::max_items constrain a value written as a JSON array; "
+                              "a map written as a JSON object takes yyjson::min_properties and "
+                              "yyjson::max_properties");
+                static_assert(n.items == 0,
+                              "yyjson::items constrains the elements of a value written as a JSON array; the values "
+                              "of a map written as a JSON object take yyjson::additional_properties");
+                static_assert((c.bits & array_constraints &
+                               ~(constraint_bit<min_items> | constraint_bit<max_items> | constraint_bit<items<>>)) == 0,
+                              "yyjson::unique_items, prefix_items, contains, min_contains and max_contains constrain "
+                              "a value written as a JSON array, which a map with keys of strings is not");
+            }
+            else
+                static_assert(!array_keywords || as_array,
+                              "yyjson::min_items, max_items, unique_items, items, prefix_items, contains, "
+                              "min_contains and max_contains constrain a value written as a JSON array: a range that "
+                              "is not a string, a tuple or a map whose keys are not strings");
+            static_assert(!object_keywords || as_object,
+                          "yyjson::min_properties, max_properties, additional_properties and property_names "
+                          "constrain a map written as a JSON object, whose keys are strings or enumerations");
+            if constexpr (as_object && !array_keywords)
+                return object_violation<Schema>(v);
+            else if constexpr (as_array && !object_keywords)
+                return array_violation<Schema>(v);
+            else
+                return constraint_kind::none;
+        }
+
+        // Reads the JSON value `e` again as E, through Read, and throws at it, or at a value in it, if it does not
+        // satisfy `Schema`.  It returns if `e` is not read as E.
+        template <typename S, std::size_t K, typename Schema, typename E, typename Read, typename Json>
+        void throw_if_violated(const Json& e)
+        {
+            if constexpr (requires { E(cast_nested<Read>(e)); })
+            {
+                auto kind = constraint_kind::none;
+                auto value = std::optional<E>();
+                try
+                {
+                    value.emplace(cast_nested<Read>(e));
+                    kind = constraint_violation<Schema, true>(*value);
+                }
+                catch (const bad_cast&)
+                {
+                    return;
+                }
+                if (kind == constraint_kind::none) return;
+                if constexpr ((Schema::constraints.bits & structure_constraints) != 0)
+                    throw_located_violation<S, K, Schema, constrained_value_t<E>>(e, kind);
+                throw_constraint_violation<S, K, Schema>(e, kind, constraint_subject::element);
+            }
+        }
+
+        // Reads the elements of the JSON array `a` again as E, through Read, and throws at the first that equals an
+        // earlier one.  It returns if one is not read as E.
+        template <typename S, std::size_t K, typename Schema, typename E, typename Read, typename Array>
+        void throw_duplicate(const Array& a)
+        {
+            if constexpr (requires { E(cast_nested<Read>(a[0])); })
+            {
+                auto elements = std::vector<E>();
+                elements.reserve(a.size());
+                try
+                {
+                    for (const auto& e : a) elements.emplace_back(cast_nested<Read>(e));
+                }
+                catch (const bad_cast&)
+                {
+                    return;
+                }
+                if (const auto j = first_duplicate(elements); j != no_duplicate)
+                    throw_constraint_violation<S, K, Schema>(a[j], constraint_kind::duplicate_item,
+                                                             constraint_subject::element);
+            }
+        }
+
+        template <typename S, std::size_t K, typename Schema, typename V, typename Json>
+        void throw_located_violation(const Json& json, constraint_kind kind)
+        {
+            constexpr const schema_node& n = Schema::node;
+            if constexpr (array_written_tuple<V>)
+            {
+                const auto a = json.as_array();
+                if (!a.has_value()) return;
+                [&]<std::size_t... J>(std::index_sequence<J...>) {
+                    (
+                        [&] {
+                            using E = std::remove_cv_t<std::tuple_element_t<J, V>>;
+                            if (J >= a->size()) return;
+                            if constexpr (J < Schema::node.prefix_count)
+                            {
+                                if (kind == constraint_kind::prefix_items)
+                                    throw_if_violated<S, K, typename Schema::template at<Schema::node.prefix_first + J>,
+                                                      E, E>((*a)[J]);
+                            }
+                            else if constexpr (Schema::node.items != 0)
+                            {
+                                if (kind == constraint_kind::items)
+                                    throw_if_violated<S, K, typename Schema::template at<Schema::node.items>, E, E>(
+                                        (*a)[J]);
+                            }
+                        }(),
+                        ...);
+                }(std::make_index_sequence<std::tuple_size_v<V>>{});
+                if constexpr (Schema::constraints.template has<unique_items_t>() && uniform_tuple<V>)
+                    if (kind == constraint_kind::unique_items)
+                    {
+                        using E = std::remove_cv_t<std::tuple_element_t<0, V>>;
+                        throw_duplicate<S, K, Schema, E, E>(*a);
+                    }
+            }
+            else if constexpr (array_written_range<V>)
+            {
+                using E = constrained_element_t<V>;
+                using Read = array_element_t<V>;
+                const auto a = json.as_array();
+                if (!a.has_value()) return;
+                if constexpr (n.prefix_count != 0 && ordered_array_range<V>)
+                    if (kind == constraint_kind::prefix_items)
+                        [&]<std::size_t... J>(std::index_sequence<J...>) {
+                            ((J < a->size()
+                                  ? throw_if_violated<S, K, typename Schema::template at<Schema::node.prefix_first + J>,
+                                                      E, Read>((*a)[J])
+                                  : void()),
+                             ...);
+                        }(std::make_index_sequence<Schema::node.prefix_count>{});
+                if constexpr (n.items != 0)
+                    if (kind == constraint_kind::items)
+                    {
+                        std::size_t j = 0;
+                        for (const auto& e : *a)
+                            if (j++ >= n.prefix_count)
+                                throw_if_violated<S, K, typename Schema::template at<Schema::node.items>, E, Read>(e);
+                    }
+                if constexpr (Schema::constraints.template has<unique_items_t>() && !unique_set<V>)
+                    if (kind == constraint_kind::unique_items) throw_duplicate<S, K, Schema, E, Read>(*a);
+            }
+            else if constexpr (object_written_range<V>)
+            {
+                using Pair = std::ranges::range_value_t<const V>;
+                const auto o = json.as_object();
+                if (!o.has_value()) return;
+                if constexpr (n.properties != 0)
+                {
+                    using E = std::remove_cv_t<std::tuple_element_t<1, Pair>>;
+                    if (kind == constraint_kind::additional_properties)
+                        for (const auto& kv : *o)
+                            throw_if_violated<S, K, typename Schema::template at<Schema::node.properties>, E, E>(
+                                std::get<1>(kv));
+                }
+                if constexpr (n.keys != 0)
+                {
+                    using Key = std::remove_cv_t<std::tuple_element_t<0, Pair>>;
+                    using keys = typename Schema::template at<Schema::node.keys>;
+                    if (kind == constraint_kind::property_names)
+                        for (const auto& kv : *o)
+                        {
+                            const auto text = std::string_view(std::get<0>(kv));
+                            auto violated = constraint_kind::none;
+                            if constexpr (constraint_string<Key> && std::constructible_from<Key, std::string_view>)
+                                violated = constraint_violation<keys, true>(Key(text));
+                            else
+                                violated = constraint_violation<keys, true>(text);
+                            if (violated != constraint_kind::none)
+                                throw_constraint_violation<S, K, keys>(std::get<1>(kv), violated,
+                                                                       constraint_subject::key);
+                        }
+                }
+            }
+        }
 
         // A string is a range of characters, but is read from a JSON string only.
         template <typename T, typename Json>

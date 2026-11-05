@@ -1683,6 +1683,52 @@ yyjson::read<User>(R"({"name":"Ann","age":-1})");
 // throws yyjson::bad_cast: the value of the key "age" of User is less than the minimum 0 at /age (line 1, column 21, pos 20)
 ```
 
+### Constraints of elements
+
+Settings of a field that constrain its elements, the values and keys of a map, or the elements together.
+
+```cpp
+template <typename... As>
+struct items { consteval explicit items(As... settings); };
+template <typename... As>
+struct additional_properties { consteval explicit additional_properties(As... settings); };
+inline constexpr /* unspecified */ prefix_items;  // prefix_items(p0, p1, ...), up to 16 positions
+template <typename... As>
+struct contains { consteval explicit contains(As... settings); };
+struct min_contains { consteval explicit min_contains(std::size_t n); };
+struct max_contains { consteval explicit max_contains(std::size_t n); };
+template <typename... As>
+struct property_names { consteval explicit property_names(As... settings); };
+inline constexpr unique_items_t unique_items{};
+```
+
+| Setting | The field | Constrains |
+| --- | --- | --- |
+| `yyjson::items(s...)` | a range written as a JSON array | each element, after those of `yyjson::prefix_items` |
+| `yyjson::additional_properties(s...)` | a map written as a JSON object | each value |
+| `yyjson::prefix_items(p...)` | a tuple, or a range that keeps the order of the array | the element at each position. Each `p` is a braced list of settings, `{}` or one setting |
+| `yyjson::contains(s...)`, `yyjson::min_contains(n)`, `yyjson::max_contains(n)` | a range written as a JSON array | the number of elements that satisfy `s`: 1 or more by default |
+| `yyjson::property_names(s...)` | a map written as a JSON object | each key, by the constraints of a string and the combinators |
+| `yyjson::unique_items` | a range whose elements can be equal | no two elements are written as the same JSON value |
+
+The settings `s...` and `p` are the [constraints](#constraints), the settings of this table and the [combinators](#yyjsonnot_-yyjsonif_then_else-yyjsonall_of-yyjsonany_of-yyjsonone_of). `yyjson::min_items` and `yyjson::max_items` constrain the number of elements, and `yyjson::min_properties` and `yyjson::max_properties` the number of members of a map. `yyjson::min_contains` or `yyjson::max_contains` without `yyjson::contains`, and `yyjson::unique_items` on a set or a map, are compile errors. A struct with [`yyjson::as_array`](#yyjsonas_array-yyjsonextra_items) takes `yyjson::min_items`, `yyjson::max_items`, `yyjson::unique_items` and the settings of `yyjson::contains` as settings of its own. See [Constraints of elements](validation.md#constraints-of-elements).
+
+```cpp
+struct Survey
+{
+    std::vector<int> scores;
+    std::map<std::string, std::string> env;
+};
+
+template <>
+inline constexpr auto yyjson::annotations<Survey> = yyjson::annotate(
+    yyjson::field("scores", yyjson::unique_items, yyjson::items(yyjson::minimum(0), yyjson::maximum(100))),
+    yyjson::field("env", yyjson::property_names(yyjson::min_length(1))));
+
+yyjson::read<Survey>(R"({"scores":[90,101]})");
+// throws yyjson::bad_cast: an element of the value of the key "scores" of Survey is greater than the maximum 100 at /scores/1 (line 1, column 15, pos 14)
+```
+
 ### `yyjson::pattern_matcher<>`, `yyjson::format_checker<>`
 
 The engines that the program gives to `yyjson::pattern` and `yyjson::format_assertion`.
