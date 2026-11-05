@@ -258,7 +258,9 @@ static_assert(std::same_as<yyjson::detail::from_json_source<Polyline>, std::vect
 static_assert(std::same_as<yyjson::detail::from_json_in_place_source<BothForms>, int>);
 static_assert(!yyjson::detail::from_json_translator<std::optional<int>>::castable);
 static_assert(!yyjson::detail::from_json_translator<std::tuple<int>>::castable);
+#if YYJSON_VERSION_HEX >= 0x000C00
 static_assert(!yyjson::castable<yyjson::writer::const_value_ref, yyjson::json_view>);
+#endif
 
 TEST(Reader, TranslatorFromJson)
 {

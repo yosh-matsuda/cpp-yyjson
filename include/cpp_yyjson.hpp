@@ -14456,6 +14456,75 @@ namespace yyjson
                                [&] { reader::detail::merge_from(t, doc); });
             });
         }
+
+        // Calls `f` with `root`, the root of a copy of the value `original` in a document of the other API.  The
+        // path to a value in the copy that a `bad_cast` from `f` names is the path to it in `original`.
+        template <typename Val, typename Copy, typename F>
+        decltype(auto) with_copy_of(const Val* original, Copy* root, F&& f)
+        {
+            auto failure = std::exception_ptr();
+            try
+            {
+                return std::forward<F>(f)(root);
+            }
+            catch (bad_cast& e)
+            {
+                bad_cast_access::add_path(e, root);
+                bad_cast_access::move_target(e, root, original);
+                failure = std::current_exception();
+            }
+            std::rethrow_exception(failure);
+        }
+
+        // The value of the reader is excluded first: Clang before 19 can take the lambda of `base_of_value` as
+        // satisfied by it in the constraint of a partial specialization, and keeps that result for later checks.
+        template <typename Json>
+            requires(!reader::detail::base_of_value_ref<Json> && writer::detail::base_of_value<Json>)
+        struct json_value_of_copy<Json>
+        {
+            using other = reader::const_value_ref;
+
+            // Calls `f` with the root of a copy of `json` in an immutable document, which lives until `f` returns.
+            template <typename F>
+            static decltype(auto) with_root(const Json& json, F&& f)
+            {
+                const auto* const original = writer::detail::json_value_access::get(json);
+                const auto doc = std::unique_ptr<yyjson_doc, decltype(&yyjson_doc_free)>(
+                    // the value is const from yyjson 0.13, and not modified before
+                    yyjson_mut_val_imut_copy(const_cast<yyjson_mut_val*>(original), nullptr), &yyjson_doc_free);
+                if (doc == nullptr) [[unlikely]]
+                    throw std::bad_alloc();
+                return with_copy_of(original, yyjson_doc_get_root(doc.get()), std::forward<F>(f));
+            }
+            template <typename F>
+            static decltype(auto) apply(const Json& json, F&& f)
+            {
+                return with_root(json, [&](yyjson_val* root) -> decltype(auto) {
+                    return std::forward<F>(f)(other(root));
+                });
+            }
+        };
+
+        template <reader::detail::base_of_value_ref Json>
+        struct json_value_of_copy<Json>
+        {
+            using other = writer::detail::const_value_ref;
+
+            // Calls `f` with a copy of `json` in a mutable document, which lives until `f` returns.
+            template <typename F>
+            static decltype(auto) apply(const Json& json, F&& f)
+            {
+                const auto doc = writer::detail::mutable_document();
+                const auto* const original = writer::detail::json_value_access::get(json);
+                // the value is const from yyjson 0.13, and not modified before
+                auto* const root = yyjson_val_mut_copy(doc.ptrs->self, const_cast<yyjson_val*>(original));
+                if (root == nullptr) [[unlikely]]
+                    throw std::bad_alloc();
+                return with_copy_of(original, root, [&](yyjson_mut_val* copy) -> decltype(auto) {
+                    return std::forward<F>(f)(other(doc, copy));
+                });
+            }
+        };
     }  // namespace detail
 
 #if YYJSON_VERSION_HEX >= 0x000C00
@@ -19804,72 +19873,6 @@ namespace yyjson
 
     namespace detail
     {
-        // Calls `f` with `root`, the root of a copy of the value `original` in a document of the other API.  The
-        // path to a value in the copy that a `bad_cast` from `f` names is the path to it in `original`.
-        template <typename Val, typename Copy, typename F>
-        decltype(auto) with_copy_of(const Val* original, Copy* root, F&& f)
-        {
-            auto failure = std::exception_ptr();
-            try
-            {
-                return std::forward<F>(f)(root);
-            }
-            catch (bad_cast& e)
-            {
-                bad_cast_access::add_path(e, root);
-                bad_cast_access::move_target(e, root, original);
-                failure = std::current_exception();
-            }
-            std::rethrow_exception(failure);
-        }
-
-        template <writer::detail::base_of_value Json>
-        struct json_value_of_copy<Json>
-        {
-            using other = reader::const_value_ref;
-
-            // Calls `f` with the root of a copy of `json` in an immutable document, which lives until `f` returns.
-            template <typename F>
-            static decltype(auto) with_root(const Json& json, F&& f)
-            {
-                const auto* const original = writer::detail::json_value_access::get(json);
-                const auto doc = std::unique_ptr<yyjson_doc, decltype(&yyjson_doc_free)>(
-                    // the value is const from yyjson 0.13, and not modified before
-                    yyjson_mut_val_imut_copy(const_cast<yyjson_mut_val*>(original), nullptr), &yyjson_doc_free);
-                if (doc == nullptr) [[unlikely]]
-                    throw std::bad_alloc();
-                return with_copy_of(original, yyjson_doc_get_root(doc.get()), std::forward<F>(f));
-            }
-            template <typename F>
-            static decltype(auto) apply(const Json& json, F&& f)
-            {
-                return with_root(json, [&](yyjson_val* root) -> decltype(auto) {
-                    return std::forward<F>(f)(other(root));
-                });
-            }
-        };
-
-        template <reader::detail::base_of_value_ref Json>
-        struct json_value_of_copy<Json>
-        {
-            using other = writer::detail::const_value_ref;
-
-            // Calls `f` with a copy of `json` in a mutable document, which lives until `f` returns.
-            template <typename F>
-            static decltype(auto) apply(const Json& json, F&& f)
-            {
-                const auto doc = writer::detail::mutable_document();
-                const auto* const original = writer::detail::json_value_access::get(json);
-                // the value is const from yyjson 0.13, and not modified before
-                auto* const root = yyjson_val_mut_copy(doc.ptrs->self, const_cast<yyjson_val*>(original));
-                if (root == nullptr) [[unlikely]]
-                    throw std::bad_alloc();
-                return with_copy_of(original, root, [&](yyjson_mut_val* copy) -> decltype(auto) {
-                    return std::forward<F>(f)(other(doc, copy));
-                });
-            }
-        };
-
         template <typename Json>
         struct json_view_of_copy
         {
