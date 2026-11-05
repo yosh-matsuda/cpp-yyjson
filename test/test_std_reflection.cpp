@@ -234,7 +234,7 @@ struct SkippedConst
     SKIPPED_FIELD const int version = 3;
     bool operator==(const SkippedConst&) const = default;
 };
-struct SkippedMutex
+struct SkippedMutexMember
 {
     int x = 0;
     SKIPPED_FIELD std::mutex mutex = {};
@@ -271,7 +271,7 @@ inline constexpr auto yyjson::annotations<AllSkipped> =
 template <>
 inline constexpr auto yyjson::annotations<SkippedConst> = yyjson::annotate(yyjson::field("version", yyjson::skip));
 template <>
-inline constexpr auto yyjson::annotations<SkippedMutex> = yyjson::annotate(yyjson::field("mutex", yyjson::skip));
+inline constexpr auto yyjson::annotations<SkippedMutexMember> = yyjson::annotate(yyjson::field("mutex", yyjson::skip));
 template <>
 inline constexpr auto yyjson::annotations<SkippedRecursion> = yyjson::annotate(yyjson::field("children", yyjson::skip));
 #endif
@@ -348,7 +348,7 @@ TEST(Reflection, AnnotationSkip)
     EXPECT_EQ(yyjson::read<SkippedConst>(R"({"x":1,"version":4})"), (SkippedConst{1, 3}));
     EXPECT_EQ(std::string(yyjson::write(SkippedConst{1, 3})), R"({"x":1})");
     expect_direct_write(SkippedConst{1, 3});
-    auto mutex = SkippedMutex{.x = 1};
+    auto mutex = SkippedMutexMember{.x = 1};
     EXPECT_EQ(std::string(yyjson::write(mutex)), R"({"x":1})");
     EXPECT_EQ(std::string(yyjson::value(mutex).write()), R"({"x":1})");
 #if FIELD_RFL_ANNOTATIONS
