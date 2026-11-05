@@ -274,7 +274,10 @@ TEST(TaggedVariant, Internal)
     EXPECT_EQ(expect_merge_into(rect, "null"), "null");
     EXPECT_EQ(expect_merge_into(TagShapeOrNone(std::map<std::string, std::string>{{"a", "b"}}), R"({"c":"d"})"),
               R"({"type":"map","a":"b","c":"d"})");
-    for (const auto* json : {R"({"type":"zzz"})", R"({"type":1,"h":5})", R"({"h":"x"})"})
+    // an object with another tag that fails to read leaves the old alternative to the document that
+    // `merge_into` falls back to, which then reads the object as the new alternative and fails as well
+    for (const auto* json :
+         {R"({"type":"zzz"})", R"({"type":1,"h":5})", R"({"h":"x"})", R"({"type":"circle","r":null})"})
         EXPECT_TRUE(expect_merge_into(rect, json).starts_with("bad cast")) << json;
     // `std::monostate` has nothing to merge into
     EXPECT_TRUE(expect_merge_into(TagShapeOrNone(), R"({"r":1})").starts_with("bad cast"));
@@ -286,6 +289,7 @@ TEST(TaggedVariant, Internal)
     auto copy = nested;
     EXPECT_THROW(read_into(R"({"maybe":{"h":7}})", copy), bad_cast);
     EXPECT_TRUE(expect_merge_into(TagNested(), R"({"maybe":{"h":7}})").starts_with("bad cast"));
+    EXPECT_TRUE(expect_merge_into(TagNested(), R"({"maybe":{"type":"circle","r":null}})").starts_with("bad cast"));
 }
 
 TEST(TaggedVariant, Adjacent)
@@ -461,6 +465,8 @@ TEST(TaggedVariant, Adjacent)
               R"({"kind":"circle","data":{"r":1.0}})");
     EXPECT_EQ(expect_merge_into(envelope, R"({"kind":"rect"})"), R"({"kind":"rect","data":{"w":1,"h":2}})");
     EXPECT_TRUE(expect_merge_into(envelope, R"({"kind":"circle"})").starts_with("bad cast"));
+    for (const auto* json : {R"({"kind":"circle","data":{"r":null}})", R"({"data":{"r":null},"kind":"circle"})"})
+        EXPECT_TRUE(expect_merge_into(envelope, json).starts_with("bad cast")) << json;
 
     // `adjacent_tag` tags a field, so the variant type is untagged elsewhere and tagged per field
     EXPECT_EQ(read<TagBody>(R"({"r":1})"), TagBody(TagCircle{1}));
