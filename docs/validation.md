@@ -303,6 +303,40 @@ yyjson::read<Job>(R"({"env":{"PATH":"/bin","home":"/root"}})");
 *   `yyjson::property_names` takes the constraints of a string. It checks a key of an enumeration as the name of the enumerator. A key that the JSON does not give at a member fails at the map: a key that `merge_into` keeps from before, and a key of a map that is read from an array of pairs. The message is then `has a key that does not satisfy the constraints of yyjson::property_names`.
 *   `yyjson::format` in `yyjson::items` and the other settings of elements is an annotation too. It checks nothing.
 
+### Values of several JSON kinds
+
+A `yyjson::value` and a `std::variant` can hold values of more than one JSON kind. A constraint on them checks only the values of its kind, as the keywords of JSON Schema do. The values of the other kinds satisfy it:
+
+*   The bounds and `yyjson::multiple_of` check a number.
+*   The lengths, `yyjson::pattern` and `yyjson::format_assertion` check a string.
+*   The constraints of arrays check an array, and `yyjson::min_properties`, `yyjson::max_properties`, `yyjson::additional_properties` and `yyjson::property_names` check an object.
+*   `yyjson::const_` and `yyjson::enum_` compare a value only with the listed values of its own kind. `nullptr` is `null`.
+
+```cpp
+struct Sized
+{
+    std::variant<std::monostate, int, std::string> size;
+    yyjson::value tag;
+};
+template <>
+inline constexpr auto yyjson::annotations<Sized> =
+    yyjson::annotate(yyjson::field("size", yyjson::minimum(0), yyjson::max_length(2)),
+                     yyjson::field("tag", yyjson::enum_(1, "x", nullptr)));
+
+yyjson::read<Sized>(R"({"size":-1})");
+// throws: the value of the key "size" of Sized is less than the minimum 0 at /size (line 1, column 9, pos 8)
+yyjson::read<Sized>(R"({"size":"abc"})");
+// throws: the value of the key "size" of Sized is longer than the maximum length 2 at /size (line 1, column 9, pos 8)
+yyjson::read<Sized>(R"({"size":"ab","tag":1.0})");  // -> accepted: 1.0 is equal to 1
+yyjson::read<Sized>(R"({"tag":[]})");
+// throws: the value of the key "tag" of Sized is not one of 1, "x", null at /tag (line 1, column 8, pos 7)
+```
+
+*   `yyjson::const_` and `yyjson::enum_` take an alternative that is an enumeration written by name as a string. They compare the name of its enumerator. The lengths, `yyjson::pattern` and `yyjson::format_assertion` do not check an enumeration. On an enumeration, and on a variant without a string alternative, they are a compile error. On a variant with a string alternative, they check only a value of that alternative.
+*   An alternative that is a struct with [`yyjson::as_array`](conversions.md#a-struct-as-a-json-array) is an array.
+*   A number that a document keeps as text, with `ReadFlag::NumberAsRaw` or `ReadFlag::BignumAsRaw`, is a number for the keywords. The bounds, `yyjson::multiple_of`, `yyjson::const_`, `yyjson::enum_` and `yyjson::unique_items` read the text as the read reads a number without the flag. An integer that fits in 64 bits compares exactly. Another number compares as a `double`, and a number that is too large for a `double` is an infinity. Thus `yyjson::const_(1)` accepts a raw `1` and a raw `1.0`, also in an object or an array of a JSON text, and `yyjson::unique_items` rejects a raw `[1,1.0]`. The `operator==` of the DOM compares a raw number by its text. Thus the keywords and `operator==` can give different results for a raw number.
+*   A constraint that no alternative of a variant takes, such as `yyjson::minimum` on a `std::variant<bool, std::string>`, is a compile error.
+
 ### Combining constraints
 
 Five settings combine constraints, as the keywords `not`, `if`, `then`, `else`, `allOf`, `anyOf` and `oneOf` of JSON Schema do. Each operand is a subschema: a braced list of settings, or one setting without braces. A subschema takes the constraints of a value, the constraints of elements and the combinators again.
@@ -422,6 +456,56 @@ yyjson::read<Shipment>(R"({"method":"post","address":""})");
 *   The error of a condition is at the struct, with an empty path. The error of the value of a member is at the member.
 *   A field of `yyjson::value` or `yyjson::object` takes such conditions too, for the members of its object. A value that is not an object satisfies them, as in JSON Schema.
 *   `yyjson::field` in a subschema takes no `yyjson::rename`, `yyjson::skip`, `yyjson::adjacent_tag`, default or `yyjson::emit_defaults`. These are settings of a member, outside the subschemas.
+
+### How constraints are checked
+
+*   A constraint is checked when the read reads its key into the field: by `yyjson::read<T>`, `read_into`, `merge_into` and `cast<T>`, with or without the [read policies](#read-policies). The policies do not change the constraints.
+*   A field that gets no value from the JSON is not checked. It keeps a value that the constraints can reject:
+    *   A key that the object leaves out. Use `yyjson::required` or `yyjson::reject_missing_keys` to require the key.
+    *   `null` as the value of a `std::optional` field that is read as a missing key, as in [`null` in a `std::optional`](#null-in-a-stdoptional). A `std::optional<int>` field that is `5` in `T()` keeps `5` under `yyjson::maximum(3)`. Reject such a `null` with `yyjson::reject_null_as_missing`.
+    *   `null` in `merge_into`, which gives a field its default.
+*   A constraint of a `std::optional`, a smart pointer or a `std::variant` of `std::monostate` and one type applies to the value that it holds. An empty value satisfies it, except `yyjson::const_` and `yyjson::enum_` without `nullptr`.
+*   A constraint checks the value after the conversion to the type of the field. A `std::set<int>` reads `[1,1]` as one element, which `yyjson::max_items(1)` accepts.
+*   The bounds of a number are integers or reals of any type. The library compares the value with a bound exactly. A real bound is kept as a `double`, and a `long double` bound that a `double` rounds is a compile error.
+*   `yyjson::multiple_of` takes a number greater than 0. It decides in decimal: `19.99` is a multiple of `0.01`.
+*   The length of a string counts the Unicode code points, as JSON Schema does. Thus `"日本語"` has the length 3.
+*   `yyjson::const_` and `yyjson::enum_` compare the value as a value of the type of the field. An enumeration written by name compares the JSON names of its enumerators, after `yyjson::rename`. A string that names no enumerator is a compile error. For an object, an array or a value of any other type, give the value as JSON text with [`yyjson::json_text`](reference.md#constraints). The compiler checks the text. The read reads the text into the type of the field once, under `yyjson::strict`. A text that the type cannot read throws `std::invalid_argument` on the first check.
+*   A field can have `yyjson::pattern` more than once, and the value must match all the patterns. It can have each combinator more than once. It takes each other constraint once.
+*   `f` of `yyjson::satisfies<f>` is a function or a lambda without captures. Its parameter is the type of the field, or the type of the value that the field holds. The library can call it more than once for one value: when `yyjson::read<T>` rejects a value, it reads the text again to find the error. An exception that `f` throws goes out of the read.
+*   `yyjson::write` does not check the constraints. It writes a value that they reject.
+*   An untagged `std::variant` tries its alternatives in turn. A later alternative can read a value that an earlier one rejects by a constraint. Without `yyjson::reject_missing_keys`, a struct that ignores unknown keys accepts almost any object. Tag the variant with [`yyjson::internal_tag` or `yyjson::adjacent_tag`](conversions.md#tagged-variants) to read only the alternative that the tag names.
+*   These are compile errors, most of them with a `static_assert` that tells the reason:
+    *   A constraint on a field of a type that it does not apply to, such as `yyjson::minimum` on a string or `yyjson::unique_items` on a set.
+    *   `nullptr` in `yyjson::const_` or `yyjson::enum_` on a field that cannot be `null`, such as a `std::optional<int>`. Only `yyjson::nullable`, an owning pointer and a value of the DOM take it.
+    *   A constraint directly on a struct that is not an [`as_array`](conversions.md#a-struct-as-a-json-array) struct, on a [skipped field](conversions.md#skipped-fields), or on a field that [`yyjson::adjacent_tag`](conversions.md#tagged-variants) tags.
+    *   A constraint other than `yyjson::pattern` and the combinators, given twice in one subschema.
+    *   `yyjson::multiple_of` of 0 or less.
+    *   Constraints that leave no value to read, such as `yyjson::minimum(1)` with `yyjson::maximum(0)`, or `yyjson::exclusive_minimum(1)` with `yyjson::maximum(1)`. A minimum of a length, of the items, of `contains` or of the properties that is greater than its maximum is one too. So is a `yyjson::const_` or a `yyjson::enum_` with no value within the bounds and the lengths.
+    *   `yyjson::min_contains` or `yyjson::max_contains` without `yyjson::contains` in the same subschema.
+    *   `yyjson::prefix_items` with more positions than a tuple has elements, or on a set or a map.
+    *   A subschema larger than the limits below.
+
+### Limits
+
+The library builds the constraints of each field at compile time, in arrays of fixed size. A position of `yyjson::prefix_items` and a subschema of `yyjson::all_of`, `yyjson::any_of` and `yyjson::one_of` have these limits:
+
+| Item | Limit |
+| --- | --- |
+| positions of `yyjson::prefix_items`, subschemas of `yyjson::all_of`, `yyjson::any_of` and `yyjson::one_of` | 16 |
+| subschemas and combinators in one position or subschema | 8 |
+| values of `yyjson::const_` and `yyjson::enum_` in one position or subschema | 16 |
+| patterns in one position or subschema | 8 |
+| characters of the strings in one position or subschema | 256, and no limit with C++26 |
+
+A subschema over the limits is a compile error. The constraints of a field outside these positions and subschemas have no such limits.
+
+### The cost of constraints
+
+A field without constraints reads as it does without this feature. A constraint adds a check only to the field that has it. `yyjson::format` adds no check.
+
+*   `yyjson::unique_items` compares each pair of elements, so its time grows with the square of the number of elements. A range of more than 16 numbers, enumerations or strings, or pairs of them, is sorted first. When other ranges come from JSON that you do not trust, bound their size with `yyjson::max_items`.
+*   `yyjson::matches<T>` of a type other than a kind of JSON value reads the value into a `T`.
+*   When a read with `yyjson::read<T>` fails, it reads the text again to find the path of the error.
 
 ### Pattern matcher
 

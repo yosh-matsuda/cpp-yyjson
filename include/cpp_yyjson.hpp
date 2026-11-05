@@ -2645,13 +2645,14 @@ namespace yyjson
     template <typename... As>
     struct items
     {
-        detail::setting_list<As...> settings;
+        detail::setting_list<detail::subschema_entry_t<As>...> settings;
 
-        consteval explicit items(As... as) : settings(detail::make_setting_list(as...))
+        consteval explicit items(As... as) : settings(detail::make_setting_list(detail::make_subschema_entry(as)...))
         {
             static_assert(sizeof...(As) != 0, "yyjson::items needs a setting of the elements");
-            static_assert((detail::constraint_setting<As> && ...),
-                          "yyjson::items takes the keywords of a value, such as yyjson::minimum and yyjson::items");
+            static_assert((detail::subschema_setting<As> && ...),
+                          "yyjson::items takes the keywords of a value, such as yyjson::minimum and yyjson::items, "
+                          "and yyjson::field(\"key\", ...)");
         }
     };
     template <typename... As>
@@ -2663,14 +2664,15 @@ namespace yyjson
     template <typename... As>
     struct additional_properties
     {
-        detail::setting_list<As...> settings;
+        detail::setting_list<detail::subschema_entry_t<As>...> settings;
 
-        consteval explicit additional_properties(As... as) : settings(detail::make_setting_list(as...))
+        consteval explicit additional_properties(As... as)
+            : settings(detail::make_setting_list(detail::make_subschema_entry(as)...))
         {
             static_assert(sizeof...(As) != 0, "yyjson::additional_properties needs a setting of the values");
-            static_assert((detail::constraint_setting<As> && ...),
+            static_assert((detail::subschema_setting<As> && ...),
                           "yyjson::additional_properties takes the keywords of a value, such as yyjson::minimum and "
-                          "yyjson::items");
+                          "yyjson::items, and yyjson::field(\"key\", ...)");
         }
     };
     template <typename... As>
@@ -2683,13 +2685,14 @@ namespace yyjson
     template <typename... As>
     struct contains
     {
-        detail::setting_list<As...> settings;
+        detail::setting_list<detail::subschema_entry_t<As>...> settings;
 
-        consteval explicit contains(As... as) : settings(detail::make_setting_list(as...))
+        consteval explicit contains(As... as) : settings(detail::make_setting_list(detail::make_subschema_entry(as)...))
         {
             static_assert(sizeof...(As) != 0, "yyjson::contains needs a setting of the elements");
-            static_assert((detail::constraint_setting<As> && ...),
-                          "yyjson::contains takes the keywords of a value, such as yyjson::minimum and yyjson::items");
+            static_assert((detail::subschema_setting<As> && ...),
+                          "yyjson::contains takes the keywords of a value, such as yyjson::minimum and "
+                          "yyjson::items, and yyjson::field(\"key\", ...)");
         }
     };
     template <typename... As>
@@ -7142,6 +7145,7 @@ namespace yyjson
             max_properties,
             additional_properties,
             property_names,
+            properties,  // a key or a value of a member that `yyjson::field` in a subschema gives
             matches,
             not_,
             then,
@@ -7248,6 +7252,8 @@ namespace yyjson
                     return "has a value that does not satisfy the constraints of yyjson::additional_properties";
                 case constraint_kind::property_names:
                     return "has a key that does not satisfy the constraints of yyjson::property_names";
+                case constraint_kind::properties:
+                    return "does not have the keys and the values that yyjson::field gives";
                 case constraint_kind::matches:
                     return std::format("is not read as {} by yyjson::matches", c.matches.name());
                 case constraint_kind::not_:
@@ -7320,6 +7326,12 @@ namespace yyjson
         template <typename F>
         using constrained_value_t = typename constrained_value<F>::type;
 
+        // Whether the value of the type V can itself be JSON null, as a value of the DOM.
+        template <typename V>
+        concept null_testable = requires(const V& v) {
+            { v.is_null() } -> std::convertible_to<bool>;
+        };
+
         // Whether a field of the type F can be JSON null, which `yyjson::const_(nullptr)` constrains.
         template <typename F>
         inline constexpr bool null_holder = false;
@@ -7329,12 +7341,10 @@ namespace yyjson
         template <typename F>
         requires nullable_value<F> || owning_pointer<F>
         inline constexpr bool null_holder<F> = true;
-
-        // Whether the value of the type V can itself be JSON null, as a value of the DOM.
-        template <typename V>
-        concept null_testable = requires(const V& v) {
-            { v.is_null() } -> std::convertible_to<bool>;
-        };
+        template <typename... Ts>
+        inline constexpr bool null_holder<std::variant<Ts...>> =
+            count_true<(std::same_as<Ts, std::monostate> || std::same_as<Ts, std::nullptr_t> || null_holder<Ts> ||
+                        null_testable<Ts>)...> != 0;
 
         // The value that the field `f` holds, or null when it is empty, null or valueless.
         template <typename F>
@@ -7480,6 +7490,25 @@ namespace yyjson
             }
         }
 
+        // A value of the DOM that holds any JSON kind, to which each keyword applies only if the value is of its
+        // kind, as in JSON Schema.
+        template <typename V>
+        concept dom_json_value = requires(const V& v) {
+            v.is_null();
+            v.is_real();
+            v.as_string();
+            v.as_array();
+            v.as_object();
+        };
+        template <typename V>
+        concept dom_checked =
+            dom_json_value<V> || dom_kind_of<V> == dom_kind::array || dom_kind_of<V> == dom_kind::object;
+        // A variant, to whose alternative each keyword applies only if the alternative is of its kind.
+        template <typename V>
+        inline constexpr bool variant_value = false;
+        template <typename... Ts>
+        inline constexpr bool variant_value<std::variant<Ts...>> = true;
+
         // Rejects at compile time the keywords of `Schema` that a field of the type F cannot take.
         template <typename Schema, typename F>
         consteval void assert_constraints_apply()
@@ -7490,8 +7519,11 @@ namespace yyjson
                 assert_constraints_apply<Schema, std::underlying_type_t<V>>();
             else
             {
-                constexpr bool numeric = (c.bits & numeric_constraints) != 0;
-                constexpr bool text = (c.bits & string_constraints & ~constraint_bit<format<>>) != 0;
+                // a value of the DOM or a variant takes the keywords of every kind
+                constexpr bool dom_any = dom_json_value<V>;
+                constexpr bool any_kind = dom_any || variant_value<V>;
+                constexpr bool numeric = (c.bits & numeric_constraints) != 0 && !any_kind;
+                constexpr bool text = (c.bits & string_constraints & ~constraint_bit<format<>>) != 0 && !any_kind;
                 static_assert(!numeric || (std::is_arithmetic_v<V> && !std::same_as<V, bool>),
                               "yyjson::minimum, maximum, exclusive_minimum, exclusive_maximum and multiple_of "
                               "constrain a field of a number");
@@ -7501,7 +7533,7 @@ namespace yyjson
                 static_assert(!integer_out_of_bounds<V>(c),
                               "the bounds of a field leave no value of its integer type to read");
                 constexpr bool of_kind = std::ranges::all_of(Schema::values, [](const json_scalar& s) {
-                    return s.kind == json_scalar::kind_t::null || s.kind == json_scalar::kind_t::json ||
+                    return any_kind || s.kind == json_scalar::kind_t::null || s.kind == json_scalar::kind_t::json ||
                            s.kind == scalar_kind_of<V>;
                 });
                 static_assert(of_kind,
@@ -7513,12 +7545,13 @@ namespace yyjson
                 static_assert(!lists_null || null_holder<F> || null_testable<V>,
                               "yyjson::const_(nullptr) and yyjson::enum_ with nullptr constrain a field that can be "
                               "null: yyjson::nullable, an owning pointer or a value of the DOM");
-                static_assert(!c.template has<matches_t<void>>() || dom_kind_of<V> != dom_kind::other,
+                static_assert(!c.template has<matches_t<void>>() || dom_kind_of<V> != dom_kind::other || dom_any,
                               "yyjson::matches constrains a value of the DOM: yyjson::value, yyjson::array or "
                               "yyjson::object");
-                static_assert(!c.template has<member_schema<>>(),
+                static_assert(!c.template has<member_schema<>>() || dom_any || dom_kind_of<V> == dom_kind::object,
                               "yyjson::field in yyjson::not_, if_then_else, all_of, any_of and one_of names a key of "
-                              "the struct that they annotate, not of the value of a field");
+                              "the struct that they annotate, or of a yyjson::value or yyjson::object, not of the "
+                              "value of another field");
                 if constexpr (enum_by_name<V> && of_kind)
                     static_assert(listed_enumerators<Schema, V>.has_value(),
                                   "a string of yyjson::const_ or yyjson::enum_ of an enumeration is not the JSON name "
@@ -7526,21 +7559,22 @@ namespace yyjson
             }
         }
 
-        // The keyword of `Schema` that the value `v`, which is not null, does not satisfy, but `yyjson::satisfies`.
-        template <typename Schema, typename V>
+        // The keyword of `Schema` that the value `v`, which is not null, does not satisfy, other than
+        // `yyjson::satisfies`, and other than `yyjson::const_` and `yyjson::enum_` unless `Listed`.
+        template <typename Schema, bool Listed = true, typename V>
         constraint_kind value_violation(const V& v)
         {
             constexpr const field_constraints& c = Schema::constraints;
             if constexpr (enum_integer_only<V>)
-                return value_violation<Schema>(static_cast<std::underlying_type_t<V>>(v));
+                return value_violation<Schema, Listed>(static_cast<std::underlying_type_t<V>>(v));
             else
             {
                 constexpr std::size_t constants = c.template has<const_<>>() ? 1 : 0;
-                if constexpr (constants != 0)
+                if constexpr (constants != 0 && Listed)
                     if (!equals_any_listed<Schema, 0, true>(v)) return constraint_kind::const_;
-                if constexpr (c.template has<enum_<0>>())
+                if constexpr (c.template has<enum_<0>>() && Listed)
                     if (!equals_any_listed<Schema, constants, false>(v)) return constraint_kind::enum_;
-                if constexpr ((c.bits & numeric_constraints) != 0 && std::is_arithmetic_v<V>)
+                if constexpr ((c.bits & numeric_constraints) != 0 && std::is_arithmetic_v<V> && !std::same_as<V, bool>)
                 {
                     if constexpr (c.template has<minimum>())
                         if (!std::is_gteq(compare_bound(v, c.minimum))) return constraint_kind::minimum;
@@ -7607,6 +7641,17 @@ namespace yyjson
         template <typename Schema, std::size_t R, typename F>
         constraint_kind combinator_violation(const F& field);
 
+        // The keyword of `Schema` that the value of the DOM `v` does not satisfy, but `yyjson::const_` and
+        // `yyjson::enum_` unless `Listed`.  Defined after the DOM.
+        template <typename Schema, bool Listed = true, typename V>
+        constraint_kind dom_violation(const V& v);
+        // The keyword of `Schema` that the variant `v` does not satisfy.  Defined after the DOM.
+        template <typename Schema, typename V>
+        constraint_kind variant_violation(const V& v);
+        // Whether a value of the DOM that refers into a document, such as an element, satisfies `yyjson::matches`.
+        template <typename Schema, typename V>
+        bool dom_reference_matches(const V& v);
+
         // The keyword of `Schema` that the field `field` does not satisfy.  An empty `std::optional` is a missing
         // key, which no keyword checks, but an element that is one is null.
         template <typename Schema, bool Element = false, typename F>
@@ -7622,9 +7667,17 @@ namespace yyjson
             {
                 if (const auto kind = null_violation<Schema>(); kind != constraint_kind::none) return kind;
             }
+            else if constexpr (dom_checked<V>)
+            {
+                if (const auto kind = dom_violation<Schema>(*value); kind != constraint_kind::none) return kind;
+            }
+            else if constexpr (variant_value<V>)
+            {
+                if (const auto kind = variant_violation<Schema>(*value); kind != constraint_kind::none) return kind;
+            }
             else if (const auto kind = value_violation<Schema>(*value); kind != constraint_kind::none)
                 return kind;
-            if constexpr ((c.bits & structure_constraints) != 0)
+            if constexpr ((c.bits & structure_constraints) != 0 && !dom_checked<V> && !variant_value<V>)
                 if (value != nullptr)
                     if (const auto kind = structure_violation<Schema>(*value); kind != constraint_kind::none)
                         return kind;
@@ -7646,8 +7699,14 @@ namespace yyjson
                                   "yyjson::indirect field holds");
             }
             if constexpr (c.template has<matches_t<void>>())
-                if (!c.matches.test(value, value == nullptr ? dom_kind::null : dom_kind_of<V>))
+            {
+                if constexpr (dom_json_value<V> && dom_kind_of<V> == dom_kind::other)
+                {
+                    if (!dom_reference_matches<Schema>(*value)) return constraint_kind::matches;
+                }
+                else if (!c.matches.test(value, value == nullptr ? dom_kind::null : dom_kind_of<V>))
                     return constraint_kind::matches;
+            }
             if constexpr (Schema::node.combinators != 0)
                 return combinator_violation<Schema, Schema::node.combinators>(field);
             return constraint_kind::none;
@@ -14168,9 +14227,15 @@ namespace yyjson
         concept reflected_range_aggregate =
             std::is_class_v<T> && std::is_aggregate_v<T> && (!std_array<T>) && reflectable<T>;
 
+        namespace json_compare
+        {
+            template <typename L, typename R>
+            bool keyword_equal(const L& left, const R& right);
+        }
+
         // Whether `a` and `b` are written as the same JSON value: structs by fields, tuples and ranges by elements (as
         // sets when unordered or written as objects), variants and holders by what they hold, the rest by `operator==`.
-        // `SignOfZero` tells -0.0 from 0.0, which the writer writes differently.
+        // `SignOfZero` tells -0.0 from 0.0, which the writer writes differently; without it, the keywords compare.
         template <typename T, bool SignOfZero>
         bool json_equal(const T& a, const T& b)
         {
@@ -14188,6 +14253,9 @@ namespace yyjson
                 return a == nullptr || b == nullptr ? a == b : std::string_view(a) == std::string_view(b);
             else if constexpr (std::floating_point<U>)
                 return a == b && (!SignOfZero || std::signbit(a) == std::signbit(b));
+            else if constexpr (!SignOfZero &&
+                               (writer::detail::base_of_value<U> || reader::detail::base_of_value_ref<U>))
+                return json_compare::keyword_equal(a, b);
             else if constexpr (!std::is_class_v<U> || writer::detail::base_of_value<U> ||
                                reader::detail::base_of_value_ref<U> ||
                                (caster_names_to_json<U> && !std::derived_from<caster<U>, builtin_caster>))
@@ -15060,6 +15128,303 @@ namespace yyjson
                 return constraint_kind::none;
         }
 
+        // Reads into `number` the raw text `text` of a number, which a document keeps with `ReadFlag::NumberAsRaw`,
+        // as yyjson reads it without that flag.  It returns false if the text is not a number.
+        template <typename Text>
+        bool read_raw_number(const Text& text, yyjson_val& number)
+        {
+            // the read flags of the document allowed the text, and a flag that relaxes the syntax changes no number
+            constexpr auto flags = yyjson_read_flag{YYJSON_READ_ALLOW_INF_AND_NAN
+#if YYJSON_VERSION_HEX >= 0x000C00
+                                                    | YYJSON_READ_ALLOW_EXT_NUMBER
+#endif
+            };
+            const auto terminated = std::string(text);
+            const char* const end = yyjson_read_number(terminated.c_str(), &number, flags, nullptr, nullptr);
+            return end == terminated.c_str() + terminated.size();
+        }
+
+        // Whether the value of the DOM `v` equals the value I of `yyjson::const_` and `yyjson::enum_` of `Schema`, as
+        // JSON: a number equals a number of the same value, whether an integer, a real or raw text.
+        template <typename Schema, std::size_t I, typename V>
+        bool dom_equals_listed(const V& v)
+        {
+            constexpr auto kind = Schema::values[I].kind;
+            if constexpr (kind == json_scalar::kind_t::json)
+            {
+                if constexpr (std::same_as<V, writer::value>)
+                    return equals_json_text<Schema, I>(v);
+                else
+                    return equals_json_text<Schema, I>(writer::value(v));
+            }
+            else if constexpr (kind == json_scalar::kind_t::null)
+                return v.is_null();
+            else if constexpr (kind == json_scalar::kind_t::boolean)
+                return v.is_bool() && *v.as_bool() == Schema::values[I].boolean;
+            else if constexpr (kind == json_scalar::kind_t::string)
+                return v.is_string() && *v.as_string() == Schema::values[I].string();
+            else if (const auto raw = v.as_raw(); raw.has_value())
+            {
+                auto number = yyjson_val{};
+                if (!read_raw_number(*raw, number)) return false;
+                if (yyjson_is_real(&number)) return equals_scalar(yyjson_get_real(&number), Schema::values[I]);
+                if (yyjson_is_uint(&number)) return equals_scalar(yyjson_get_uint(&number), Schema::values[I]);
+                return equals_scalar(yyjson_get_sint(&number), Schema::values[I]);
+            }
+            else if (v.is_real())
+                return equals_scalar(*v.as_real(), Schema::values[I]);
+            else if (v.is_uint())
+                return equals_scalar(*v.as_uint(), Schema::values[I]);
+            else
+                return v.is_sint() && equals_scalar(*v.as_int(), Schema::values[I]);
+        }
+
+        // Whether the object of the DOM `o` has the members that the `yyjson::field` M of `Schema`, and those after
+        // it, give: the key if `yyjson::required`, and a value that satisfies its keywords if it has the key.
+        template <typename Schema, std::size_t M, typename O>
+        bool dom_members_hold(const O& o)
+        {
+            using N = typename Schema::template at<M>;
+            const auto it = o.find(N::node.key.view());
+            if (it == o.end())
+            {
+                if constexpr (N::node.required) return false;
+            }
+            else if (constraint_violation<N, true>((*it).second) != constraint_kind::none)
+                return false;
+            if constexpr (N::node.next != 0)
+                return dom_members_hold<Schema, N::node.next>(o);
+            else
+                return true;
+        }
+
+        // The keyword of `Schema` on the members of the object of the DOM `o`, or on their number, that `o` does not
+        // satisfy.
+        template <typename Schema, typename O>
+        constraint_kind dom_object_violation(const O& o)
+        {
+            if constexpr ((Schema::constraints.bits & object_constraints) != 0)
+                if (const auto kind = object_violation<Schema>(o); kind != constraint_kind::none) return kind;
+            if constexpr (Schema::node.members != 0)
+                if (!dom_members_hold<Schema, Schema::node.members>(o)) return constraint_kind::properties;
+            return constraint_kind::none;
+        }
+
+        // The keyword of `Schema` on numbers that the number of the raw text `text`, which a document keeps with
+        // `ReadFlag::NumberAsRaw`, does not satisfy.
+        template <typename Schema>
+        constraint_kind raw_number_violation(std::string_view text)
+        {
+            auto number = yyjson_val{};
+            if (!read_raw_number(text, number)) return constraint_kind::none;
+            if (yyjson_is_real(&number)) return value_violation<Schema, false>(yyjson_get_real(&number));
+            if (yyjson_is_uint(&number)) return value_violation<Schema, false>(yyjson_get_uint(&number));
+            return value_violation<Schema, false>(yyjson_get_sint(&number));
+        }
+
+        template <typename Schema, bool Listed, typename V>
+        constraint_kind dom_violation(const V& v)
+        {
+            constexpr const schema_node& n = Schema::node;
+            constexpr const field_constraints& c = n.constraints;
+            constexpr bool array_keywords = (c.bits & array_constraints) != 0;
+            constexpr bool object_keywords = (c.bits & object_constraints) != 0 || n.members != 0;
+            auto kind = constraint_kind::none;
+            if constexpr (dom_json_value<V>)
+            {
+                constexpr std::size_t constants = c.template has<const_<>>() ? 1 : 0;
+                if constexpr (constants != 0 && Listed)
+                    if (!dom_equals_listed<Schema, 0>(v)) return constraint_kind::const_;
+                if constexpr (c.template has<enum_<0>>() && Listed)
+                {
+                    constexpr auto equals = []<std::size_t... Is>(std::index_sequence<Is...>) {
+                        return std::array<bool (*)(const V&), sizeof...(Is)>{
+                            &dom_equals_listed<Schema, constants + Is, V>...};
+                    }(std::make_index_sequence<Schema::values.size() - constants>{});
+                    if (std::ranges::none_of(equals, [&v](const auto f) { return f(v); }))
+                        return constraint_kind::enum_;
+                }
+                if constexpr ((c.bits & numeric_constraints) != 0)
+                {
+                    if (v.is_real())
+                        kind = value_violation<Schema, false>(*v.as_real());
+                    else if (v.is_uint())
+                        kind = value_violation<Schema, false>(*v.as_uint());
+                    else if (v.is_sint())
+                        kind = value_violation<Schema, false>(*v.as_int());
+                    else if (const auto raw = v.as_raw(); raw.has_value())
+                        kind = raw_number_violation<Schema>(*raw);
+                    if (kind != constraint_kind::none) return kind;
+                }
+                if constexpr ((c.bits & string_constraints & checked_constraints) != 0)
+                    if (const auto s = v.as_string(); s.has_value())
+                        if (kind = value_violation<Schema, false>(*s); kind != constraint_kind::none) return kind;
+                if constexpr (array_keywords)
+                    if (const auto a = v.as_array(); a.has_value())
+                        if (kind = array_violation<Schema>(*a); kind != constraint_kind::none) return kind;
+                if constexpr (object_keywords)
+                    if (const auto o = v.as_object(); o.has_value()) return dom_object_violation<Schema>(*o);
+            }
+            else
+            {
+                constexpr bool object = dom_kind_of<V> == dom_kind::object;
+                static_assert(object || !object_keywords,
+                              "yyjson::min_properties, max_properties, additional_properties, property_names and "
+                              "yyjson::field constrain a JSON object, which a yyjson::array is not");
+                static_assert(!object || !array_keywords,
+                              "yyjson::min_items, max_items, unique_items, items, prefix_items, contains, "
+                              "min_contains and max_contains constrain a JSON array, which a yyjson::object is not");
+                if (kind = value_violation<Schema>(v); kind != constraint_kind::none) return kind;
+                if constexpr (object)
+                    return dom_object_violation<Schema>(v);
+                else if constexpr (array_keywords)
+                    return array_violation<Schema>(v);
+            }
+            return kind;
+        }
+
+        template <typename Schema, typename V>
+        bool dom_reference_matches(const V& v)
+        {
+            const auto copy = writer::value(v);
+            return Schema::constraints.matches.test(std::addressof(copy), dom_kind::value);
+        }
+
+        // Whether the alternative `a` of a variant equals the value I of `yyjson::const_` and `yyjson::enum_` of
+        // `Schema`, which is not a JSON text: a value of another kind equals none.
+        template <typename Schema, std::size_t I, typename A>
+        bool alternative_equals_listed(const A& a)
+        {
+            using V = constrained_value_t<A>;
+            constexpr auto kind = Schema::values[I].kind;
+            constexpr bool null = kind == json_scalar::kind_t::null;
+            const V* value = held_value(a);
+            if constexpr (std::same_as<V, std::monostate> || std::same_as<V, std::nullptr_t>)
+                return null;
+            else if (value == nullptr)
+                return null;
+            else if constexpr (dom_json_value<V>)
+                return dom_equals_listed<Schema, I>(*value);
+            else if constexpr (null)
+            {
+                if constexpr (null_testable<V>)
+                    return static_cast<bool>(value->is_null());
+                else
+                    return false;
+            }
+            else if constexpr (enum_integer_only<V>)
+                return kind == json_scalar::kind_t::number &&
+                       equals_scalar(static_cast<std::underlying_type_t<V>>(*value), Schema::values[I]);
+            else if constexpr (enum_by_name<V> && kind == json_scalar::kind_t::string)
+            {
+                constexpr auto index = enum_index_of_name<V>(Schema::values[I].string());
+                if constexpr (index == enum_conversion<V>::names.size())
+                    return false;
+                else
+                    return *value == field_reflection::enum_values<V>[index];
+            }
+            else if constexpr (kind != scalar_kind_of<V> || enum_by_name<V>)
+                return false;
+            else
+                return equals_scalar(*value, Schema::values[I]);
+        }
+
+        // Whether the variant `v` equals the value I of `yyjson::const_` and `yyjson::enum_` of `Schema`: a JSON
+        // text read as the variant, or another value of the kind of the alternative that `v` holds.
+        template <typename Schema, std::size_t I, typename V>
+        bool variant_equals_listed(const V& v)
+        {
+            if constexpr (Schema::values[I].kind == json_scalar::kind_t::json)
+                return equals_json_text<Schema, I>(v);
+            else
+                return !v.valueless_by_exception() &&
+                       std::visit([](const auto& a) { return alternative_equals_listed<Schema, I>(a); }, v);
+        }
+
+        // The keyword of `Schema` that the alternative `a` of a variant does not satisfy, of the keywords of its kind
+        // but `yyjson::const_` and `yyjson::enum_`.
+        template <typename Schema, typename A>
+        constraint_kind alternative_violation(const A& a)
+        {
+            using V = constrained_value_t<A>;
+            constexpr const field_constraints& c = Schema::constraints;
+            const V* value = held_value(a);
+            if constexpr (std::same_as<V, std::monostate> || std::same_as<V, std::nullptr_t>)
+                return constraint_kind::none;
+            else if (value == nullptr)
+                return constraint_kind::none;
+            else if constexpr (dom_checked<V>)
+                return dom_violation<Schema, false>(*value);
+            else
+            {
+                if (const auto kind = value_violation<Schema, false>(*value); kind != constraint_kind::none)
+                    return kind;
+                if constexpr ((c.bits & array_constraints) != 0 && (array_written_range<V> || array_written_tuple<V>))
+                    return array_violation<Schema>(*value);
+                else if constexpr ((c.bits & object_constraints) != 0 && object_written_range<V>)
+                    return object_violation<Schema>(*value);
+                else
+                    return constraint_kind::none;
+            }
+        }
+
+        // The JSON kinds that the alternatives of the variant V may be written as, of which the keywords constrain
+        // some: numbers, strings, arrays and objects.
+        template <typename V>
+        struct alternative_kinds;
+        template <typename... Ts>
+        struct alternative_kinds<std::variant<Ts...>>
+        {
+            template <typename T>
+            static constexpr bool any = dom_json_value<constrained_value_t<T>>;
+            template <typename T, typename U = constrained_value_t<T>>
+            static constexpr bool number =
+                any<T> || enum_integer_only<U> || (std::is_arithmetic_v<U> && !std::same_as<U, bool>);
+            template <typename T, typename U = constrained_value_t<T>>
+            static constexpr bool string = any<T> || constraint_string<U>;
+            template <typename T, typename U = constrained_value_t<T>>
+            static constexpr bool array = any<T> || array_written_range<U> || array_written_tuple<U>;
+            template <typename T, typename U = constrained_value_t<T>>
+            static constexpr bool object = any<T> || object_written_range<U>;
+
+            static constexpr bool numbers = count_true<number<Ts>...> != 0;
+            static constexpr bool strings = count_true<string<Ts>...> != 0;
+            static constexpr bool arrays = count_true<array<Ts>...> != 0;
+            static constexpr bool objects = count_true<object<Ts>...> != 0;
+        };
+
+        template <typename Schema, typename V>
+        constraint_kind variant_violation(const V& v)
+        {
+            constexpr const field_constraints& c = Schema::constraints;
+            using kinds = alternative_kinds<V>;
+            static_assert((c.bits & numeric_constraints) == 0 || kinds::numbers,
+                          "yyjson::minimum, maximum, exclusive_minimum, exclusive_maximum and multiple_of constrain a "
+                          "variant that has an alternative of a number");
+            static_assert((c.bits & string_constraints & ~constraint_bit<format<>>) == 0 || kinds::strings,
+                          "yyjson::min_length, max_length, pattern and format_assertion constrain a variant that has "
+                          "an alternative of a string");
+            static_assert((c.bits & array_constraints) == 0 || kinds::arrays,
+                          "yyjson::min_items, max_items, unique_items, items, prefix_items, contains, min_contains "
+                          "and max_contains constrain a variant that has an alternative written as a JSON array");
+            static_assert((c.bits & object_constraints) == 0 || kinds::objects,
+                          "yyjson::min_properties, max_properties, additional_properties and property_names "
+                          "constrain a variant that has an alternative of a map written as a JSON object");
+            constexpr std::size_t constants = c.template has<const_<>>() ? 1 : 0;
+            if constexpr (constants != 0)
+                if (!variant_equals_listed<Schema, 0>(v)) return constraint_kind::const_;
+            if constexpr (c.template has<enum_<0>>())
+            {
+                constexpr auto equals = []<std::size_t... Is>(std::index_sequence<Is...>) {
+                    return std::array<bool (*)(const V&), sizeof...(Is)>{
+                        &variant_equals_listed<Schema, constants + Is, V>...};
+                }(std::make_index_sequence<Schema::values.size() - constants>{});
+                if (std::ranges::none_of(equals, [&v](const auto f) { return f(v); })) return constraint_kind::enum_;
+            }
+            if (v.valueless_by_exception()) return constraint_kind::none;
+            return std::visit([](const auto& a) { return alternative_violation<Schema>(a); }, v);
+        }
+
         // Reads the JSON value `e` again as E, through Read, and throws at it, or at a value in it, if it does not
         // satisfy `Schema`.  It returns if `e` is not read as E.
         template <typename S, std::size_t K, typename Schema, typename E, typename Read, typename Json>
@@ -15199,6 +15564,50 @@ namespace yyjson
                                 throw_constraint_violation<S, K, keys>(std::get<1>(kv), violated,
                                                                        constraint_subject::key);
                         }
+                }
+            }
+            else if constexpr (dom_checked<V>)
+            {
+                using E = writer::value;
+                if (const auto a = json.as_array(); a.has_value())
+                {
+                    if constexpr (n.prefix_count != 0)
+                        if (kind == constraint_kind::prefix_items)
+                            [&]<std::size_t... J>(std::index_sequence<J...>) {
+                                ((J < a->size()
+                                      ? throw_if_violated<
+                                            S, K, typename Schema::template at<Schema::node.prefix_first + J>, E, E>(
+                                            (*a)[J])
+                                      : void()),
+                                 ...);
+                            }(std::make_index_sequence<Schema::node.prefix_count>{});
+                    if constexpr (n.items != 0)
+                        if (kind == constraint_kind::items)
+                        {
+                            std::size_t j = 0;
+                            for (const auto& e : *a)
+                                if (j++ >= n.prefix_count)
+                                    throw_if_violated<S, K, typename Schema::template at<Schema::node.items>, E, E>(e);
+                        }
+                }
+                else if (const auto o = json.as_object(); o.has_value())
+                {
+                    if constexpr (n.properties != 0)
+                        if (kind == constraint_kind::additional_properties)
+                            for (const auto& kv : *o)
+                                throw_if_violated<S, K, typename Schema::template at<Schema::node.properties>, E, E>(
+                                    std::get<1>(kv));
+                    if constexpr (n.keys != 0)
+                        if (kind == constraint_kind::property_names)
+                            for (const auto& kv : *o)
+                            {
+                                using keys = typename Schema::template at<Schema::node.keys>;
+                                const auto violated =
+                                    constraint_violation<keys, true>(std::string_view(std::get<0>(kv)));
+                                if (violated != constraint_kind::none)
+                                    throw_constraint_violation<S, K, keys>(std::get<1>(kv), violated,
+                                                                           constraint_subject::key);
+                            }
                 }
             }
         }
@@ -16522,8 +16931,7 @@ namespace yyjson
         {
             if ((json_kind_of(json) & accepted_json_kinds<T, Json>()) == 0) return false;
             if constexpr (read_by_kind<T> && json_value_of_document<Json>)
-                return true;
-            else
+                if (!json.is_raw()) return true;
             {
                 const exact_policy_scope scope(policy_bits<strict_t>);
                 try
@@ -17695,13 +18103,33 @@ namespace yyjson
             return i >= 0 && static_cast<std::uint64_t>(i) == (sa == YYJSON_SUBTYPE_UINT ? uint_of(a) : uint_of(b));
         }
 
-        template <typename A, typename B, typename IA, typename IB>
+        template <bool RawAsNumber, typename A, typename B, typename IA, typename IB>
         bool same_members(A* ka, IA& ia, B* kb, IB& ib, std::size_t n);
 
-        template <typename A, typename B>
+        // `RawAsNumber` compares a raw number as the number that yyjson reads from its text, as the keywords do.
+        template <bool RawAsNumber, typename A, typename B>
         bool values_equal(A* a, B* b)
         {
             const auto type = type_of(a);
+            if constexpr (RawAsNumber)
+                if ((type == YYJSON_TYPE_RAW) != (type_of(b) == YYJSON_TYPE_RAW) ||
+                    (type == YYJSON_TYPE_RAW && raw_of(a) != raw_of(b)))
+                {
+                    auto x = yyjson_val{};
+                    auto y = yyjson_val{};
+                    const auto number = [](auto* v, yyjson_val& n) {
+                        if (type_of(v) == YYJSON_TYPE_RAW) return read_raw_number(raw_of(v), n);
+                        if (type_of(v) != YYJSON_TYPE_NUM) return false;
+                        const auto subtype = subtype_of(v);
+                        n.tag = YYJSON_TYPE_NUM | subtype;
+                        if (subtype == YYJSON_SUBTYPE_REAL)
+                            n.uni.f64 = real_of(v);
+                        else
+                            n.uni.u64 = uint_of(v);
+                        return true;
+                    };
+                    return number(a, x) && number(b, y) && numbers_equal(&x, &y);
+                }
             if (type != type_of(b)) return false;
             switch (type)
             {
@@ -17721,7 +18149,7 @@ namespace yyjson
                     auto ia = node<A>::arr_iter(a);
                     auto ib = node<B>::arr_iter(b);
                     for (auto n = size_of(a); n > 0; --n)
-                        if (!values_equal(node<A>::arr_next(ia), node<B>::arr_next(ib))) return false;
+                        if (!values_equal<RawAsNumber>(node<A>::arr_next(ia), node<B>::arr_next(ib))) return false;
                     return true;
                 }
                 case YYJSON_TYPE_OBJ:
@@ -17734,8 +18162,9 @@ namespace yyjson
                     {
                         auto* const ka = node<A>::obj_next(ia);
                         auto* const kb = node<B>::obj_next(ib);
-                        if (text_of(ka) != text_of(kb) || !values_equal(node<A>::obj_value(ka), node<B>::obj_value(kb)))
-                            return same_members(ka, ia, kb, ib, n - i);
+                        if (text_of(ka) != text_of(kb) ||
+                            !values_equal<RawAsNumber>(node<A>::obj_value(ka), node<B>::obj_value(kb)))
+                            return same_members<RawAsNumber>(ka, ia, kb, ib, n - i);
                     }
                     return true;
                 }
@@ -17746,7 +18175,7 @@ namespace yyjson
 
         // Whether each member of `ka` is in `kb` as many times as in `ka`, by key and value. A member counts
         // itself without a comparison, so that a member that holds NaN, which equals nothing, is in no `kb`.
-        template <typename A, typename B>
+        template <bool RawAsNumber, typename A, typename B>
         bool same_members(const std::span<A* const> ka, const std::span<B* const> kb)
         {
             for (auto* const x : ka)
@@ -17755,10 +18184,10 @@ namespace yyjson
                 auto* const v = node<A>::obj_value(x);
                 auto count = std::size_t{0};
                 for (auto* const y : ka)
-                    if (y == x || (text_of(y) == name && values_equal(node<A>::obj_value(y), v))) ++count;
+                    if (y == x || (text_of(y) == name && values_equal<RawAsNumber>(node<A>::obj_value(y), v))) ++count;
                 for (auto* const y : kb)
                 {
-                    if (text_of(y) != name || !values_equal(node<B>::obj_value(y), v)) continue;
+                    if (text_of(y) != name || !values_equal<RawAsNumber>(node<B>::obj_value(y), v)) continue;
                     if (count == 0) return false;
                     --count;
                 }
@@ -17769,7 +18198,7 @@ namespace yyjson
 
         // Whether the last n members of two objects are the same members in any order. `ka` and `kb` are the first
         // of them, and `ia` and `ib` are after them. The members of a repeated key pair in any order too.
-        template <typename A, typename B, typename IA, typename IB>
+        template <bool RawAsNumber, typename A, typename B, typename IA, typename IB>
         bool same_members(A* ka, IA& ia, B* kb, IB& ib, const std::size_t n)
         {
             const auto collect = [n]<typename K, typename It>(K* key, It& it, K** out) {
@@ -17783,7 +18212,7 @@ namespace yyjson
                 auto mb = std::array<B*, few>{};
                 collect(ka, ia, ma.data());
                 collect(kb, ib, mb.data());
-                return same_members(std::span<A* const>(ma.data(), n), std::span<B* const>(mb.data(), n));
+                return same_members<RawAsNumber>(std::span<A* const>(ma.data(), n), std::span<B* const>(mb.data(), n));
             }
             auto ma = std::vector<A*>(n);
             auto mb = std::vector<B*>(n);
@@ -17799,7 +18228,8 @@ namespace yyjson
                 while (j < n && text_of(ma[j]) == name) ++j;
                 if (text_of(mb[i]) != name || text_of(mb[j - 1]) != name || (j < n && text_of(mb[j]) == name))
                     return false;
-                if (!same_members(std::span<A* const>(ma).subspan(i, j - i), std::span<B* const>(mb).subspan(i, j - i)))
+                if (!same_members<RawAsNumber>(std::span<A* const>(ma).subspan(i, j - i),
+                                               std::span<B* const>(mb).subspan(i, j - i)))
                     return false;
                 i = j;
             }
@@ -17818,7 +18248,17 @@ namespace yyjson
             using access = writer::detail::json_value_access;
             using LV = std::remove_const_t<std::remove_pointer_t<decltype(access::get(left))>>;
             using RV = std::remove_const_t<std::remove_pointer_t<decltype(access::get(right))>>;
-            return values_equal(const_cast<LV*>(access::get(left)), const_cast<RV*>(access::get(right)));
+            return values_equal<false>(const_cast<LV*>(access::get(left)), const_cast<RV*>(access::get(right)));
+        }
+
+        // Whether `left` and `right` are equal for `yyjson::const_`, `yyjson::enum_` and `yyjson::unique_items`.
+        template <typename L, typename R>
+        bool keyword_equal(const L& left, const R& right)
+        {
+            using access = writer::detail::json_value_access;
+            using LV = std::remove_const_t<std::remove_pointer_t<decltype(access::get(left))>>;
+            using RV = std::remove_const_t<std::remove_pointer_t<decltype(access::get(right))>>;
+            return values_equal<true>(const_cast<LV*>(access::get(left)), const_cast<RV*>(access::get(right)));
         }
     }  // namespace detail::json_compare
     namespace reader

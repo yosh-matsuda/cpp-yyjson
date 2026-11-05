@@ -1204,7 +1204,7 @@ bool operator==(const L& left, const R& right);
 Two JSON values are equal when they are the same JSON value:
 
 *   Numbers compare by their value. An integer and a real number are equal when they are the same number exactly, so `1` and `1.0` are equal and `9007199254740993` and `9007199254740992.0` are not. `0.0` and `-0.0` are equal, and NaN, which yyjson reads only with `yyjson::ReadFlag::AllowInfAndNan`, is equal to nothing.
-*   Strings compare by their bytes; a raw value, which `yyjson::ReadFlag::NumberAsRaw` and `yyjson::ReadFlag::BignumAsRaw` give, by its text, and only with a raw value.
+*   Strings compare by their bytes; a raw value, which `yyjson::ReadFlag::NumberAsRaw` and `yyjson::ReadFlag::BignumAsRaw` give, by its text, and only with a raw value. The keywords `yyjson::const_`, `yyjson::enum_` and `yyjson::unique_items` compare a raw number as a number instead, as [Values of several JSON kinds](validation.md#values-of-several-json-kinds) tells.
 *   Arrays are equal when they have the same elements in the same order.
 *   Objects are equal when they have the same members in any order. A member of one object matches a member of the other with the same name and an equal value. If an object repeats a name, the other object must hold each of those members as many times.
 

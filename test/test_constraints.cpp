@@ -347,6 +347,55 @@ template <>
 inline constexpr auto yyjson::annotations<UnreadableText> =
     yyjson::annotate(yyjson::field("n", yyjson::const_(yyjson::json_text(R"("one")"))));
 
+// numbers that a document keeps as raw text with ReadFlag::NumberAsRaw
+struct RawNumbers
+{
+    yyjson::value n;
+    yyjson::value big;
+    yyjson::value half;
+    yyjson::value flag;
+};
+template <>
+inline constexpr auto yyjson::annotations<RawNumbers> =
+    yyjson::annotate(yyjson::field("n", yyjson::minimum(0), yyjson::maximum(100)),
+                     yyjson::field("big", yyjson::minimum(9007199254740993LL)),
+                     yyjson::field("half", yyjson::multiple_of(0.5)), yyjson::field("flag", yyjson::matches<bool>));
+
+// raw numbers in the extended syntax of JSON5
+struct RawExtended
+{
+    yyjson::value n;
+    yyjson::value c;
+    std::vector<yyjson::value> u = {};
+    yyjson::value a;
+};
+template <>
+inline constexpr auto yyjson::annotations<RawExtended> =
+    yyjson::annotate(yyjson::field("n", yyjson::maximum(5)), yyjson::field("c", yyjson::const_(16)),
+                     yyjson::field("u", yyjson::unique_items), yyjson::field("a", yyjson::unique_items));
+
+// equality keywords on values that a document may keep as raw numbers
+struct RawHolder
+{
+    yyjson::value v;
+    bool operator==(const RawHolder&) const = default;
+};
+struct RawEquals
+{
+    yyjson::value one;
+    yyjson::value listed;
+    yyjson::value deep;
+    RawHolder held;
+    yyjson::value unique;
+    yyjson::array items;
+};
+template <>
+inline constexpr auto yyjson::annotations<RawEquals> =
+    yyjson::annotate(yyjson::field("one", yyjson::const_(1)), yyjson::field("listed", yyjson::enum_("a", 2.5)),
+                     yyjson::field("deep", yyjson::const_(yyjson::json_text(R"({"a":[1,2.5]})"))),
+                     yyjson::field("held", yyjson::const_(yyjson::json_text(R"({"v":3})"))),
+                     yyjson::field("unique", yyjson::unique_items), yyjson::field("items", yyjson::unique_items));
+
 // a constant with a key that Spot does not have, which yyjson::strict alone accepts
 struct WideText
 {
@@ -1042,7 +1091,7 @@ struct PrefixConditions
     std::vector<int> v;
     std::vector<std::string> w;
     std::tuple<int, std::string> t;
-    std::optional<std::vector<std::string>> d;
+    std::optional<std::vector<yyjson::value>> d;
     std::optional<int> n;
 };
 template <>
@@ -1053,6 +1102,49 @@ inline constexpr auto yyjson::annotations<PrefixConditions> = yyjson::annotate(
     yyjson::field("t", yyjson::not_(yyjson::prefix_items(yyjson::const_(1), yyjson::const_("y")))),
     yyjson::if_then_else(yyjson::if_(yyjson::field("d", yyjson::required, yyjson::prefix_items(yyjson::const_("a")))),
                          yyjson::then(yyjson::field("n", yyjson::required))));
+
+// yyjson::field in a subschema of a value of the DOM names a key of the object, and passes a value of another kind
+struct DomConditions
+{
+    yyjson::value v;
+    std::optional<yyjson::object> o;
+    std::vector<yyjson::value> e;
+    std::optional<std::map<std::string, yyjson::value>> m;
+};
+template <>
+inline constexpr auto yyjson::annotations<DomConditions> = yyjson::annotate(
+    yyjson::field("m", yyjson::additional_properties(yyjson::field("id", yyjson::required))),
+    yyjson::field("v", yyjson::not_(yyjson::field("bad", yyjson::required))),
+    // an absent key satisfies yyjson::field, so that yyjson::if_ tests it with yyjson::required
+    yyjson::field("o", yyjson::if_then_else(yyjson::if_(yyjson::field("kind", yyjson::required, yyjson::const_("x"))),
+                                            yyjson::then(yyjson::field("x", yyjson::required, yyjson::minimum(1))))),
+    yyjson::field("e", yyjson::items(yyjson::field("id", yyjson::required, yyjson::minimum(0)))));
+
+// the keywords on a value of several JSON kinds, each of which constrains only the values of its kind
+enum class MultiShade
+{
+    light,
+    dark
+};
+struct MultiKind
+{
+    yyjson::value v;
+    std::variant<std::monostate, int, std::string> w;
+    std::variant<MultiShade, int> s;
+    yyjson::value list;
+    std::vector<yyjson::value> elements;
+    std::variant<std::vector<int>, std::map<std::string, int>, bool> c;
+    std::variant<double, std::string> u;
+};
+template <>
+inline constexpr auto yyjson::annotations<MultiKind> = yyjson::annotate(
+    yyjson::field("v", yyjson::enum_(1, "x", nullptr), yyjson::max_length(3)),
+    yyjson::field("w", yyjson::minimum(0), yyjson::max_length(2)), yyjson::field("s", yyjson::enum_("dark", 3)),
+    yyjson::field("list", yyjson::min_items(2), yyjson::pattern("^a"), yyjson::max_properties(1),
+                  yyjson::items(yyjson::minimum(0))),
+    yyjson::field("elements", yyjson::items(yyjson::exclusive_maximum(2), yyjson::min_length(1))),
+    yyjson::field("c", yyjson::max_items(1), yyjson::min_properties(1)),
+    yyjson::field("u", yyjson::not_(yyjson::const_(1)), yyjson::enum_(1, 2.5, "a")));
 
 namespace struct_condition_rules
 {
@@ -1560,6 +1652,94 @@ TEST(Constraints, ConstAndEnumNames)
     expect_rejected<ListedEnums>(R"({"maybe":"HIGH"})", value("maybe") + R"(is not equal to the constant "mid")",
                                  "/maybe");
 }
+
+TEST(Constraints, RawNumbers)
+{
+    const auto raw = [](std::string_view json) {
+        return yyjson::read<RawNumbers>(json, yyjson::ReadFlag::NumberAsRaw);
+    };
+    const auto expect_raw_rejected = [&](std::string_view json, std::string_view message, std::string_view path) {
+        const auto e = bad_cast_of([&] { (void)raw(json); });
+        EXPECT_TRUE(message_of(e).starts_with(
+            std::format(R"(the value of the key "{}" of RawNumbers {})", path.substr(1), message)))
+            << json << "\n"
+            << e.what();
+        EXPECT_EQ(e.path(), path) << json;
+    };
+    EXPECT_EQ(*raw(R"({"n":5,"big":9007199254740993,"half":1.5,"flag":true})").n.as_raw(), "5");
+    expect_raw_rejected(R"({"n":-1})", "is less than the minimum 0", "/n");
+    expect_raw_rejected(R"({"n":1e400})", "is greater than the maximum 100", "/n");
+    // an integer that fits 64 bits compares exactly, which a double does not
+    expect_raw_rejected(R"({"big":9007199254740992})", "is less than the minimum 9007199254740993", "/big");
+    expect_raw_rejected(R"({"half":1.25})", "is not a multiple of 0.5", "/half");
+    // a raw number is a number, which yyjson::matches<bool> does not read
+    expect_raw_rejected(R"({"flag":1})", "is not read as bool by yyjson::matches", "/flag");
+}
+
+TEST(Constraints, RawEqualities)
+{
+    const auto raw = [](std::string_view json) { return yyjson::read<RawEquals>(json, yyjson::ReadFlag::NumberAsRaw); };
+    const auto expect_raw_rejected = [&](std::string_view json, std::string_view message, std::string_view path) {
+        const auto e = bad_cast_of([&] { (void)raw(json); });
+        EXPECT_TRUE(message_of(e).starts_with(message)) << json << "\n" << e.what();
+        EXPECT_EQ(e.path(), path) << json;
+    };
+    // a raw number equals the number that its text is without the flag
+    EXPECT_NO_THROW((void)raw(R"({"one":1,"listed":2.5,"deep":{"a":[1.0,2.50]},"held":{"v":3.0}})"));
+    EXPECT_NO_THROW((void)raw(R"({"one":1.0,"listed":"a","unique":[1,"1",2],"items":[[1],[2]]})"));
+    // a number that overflows a double is an infinity
+    expect_raw_rejected(R"({"unique":[1e400,2e400]})", "an element of the value", "/unique/1");
+    expect_raw_rejected(R"({"one":2})", R"(the value of the key "one" of RawEquals is not equal to the constant 1)",
+                        "/one");
+    expect_raw_rejected(R"({"listed":2})", R"(the value of the key "listed" of RawEquals is not one of)", "/listed");
+    expect_raw_rejected(R"({"deep":{"a":[1,2.4]}})", R"(the value of the key "deep" of RawEquals is not equal to)",
+                        "/deep");
+    expect_raw_rejected(R"({"held":{"v":4}})", R"(the value of the key "held" of RawEquals is not equal to)", "/held");
+    // a duplicate is reported at the later element, as for a std::vector
+    const auto duplicate = [](std::string_view key) {
+        return std::format(R"(an element of the value of the key "{}" of RawEquals is equal to an earlier element)",
+                           key);
+    };
+    expect_raw_rejected(R"({"unique":[1,1.0]})", duplicate("unique"), "/unique/1");
+    expect_raw_rejected(R"({"items":[[2],[1],[1e0]]})", duplicate("items"), "/items/2");
+    expect_rejected<RawEquals>(R"({"unique":[0,{"a":1},{"a":1.0}]})", duplicate("unique"), "/unique/2");
+
+    // a raw number equals a number that is not raw, and the public operator== compares the raw text
+    const auto doc = yyjson::read(R"([1,1.0])", yyjson::ReadFlag::NumberAsRaw);
+    EXPECT_NE((*doc.as_array())[0], (*doc.as_array())[1]);
+    EXPECT_NE((*doc.as_array())[0], yyjson::read("1"));
+    auto mixed = yyjson::object(yyjson::read(R"({"unique":[1]})", yyjson::ReadFlag::NumberAsRaw));
+    (*mixed["unique"].as_array()).emplace_back(1.0);
+    const auto e = bad_cast_of([&] { (void)yyjson::value(mixed).cast<RawEquals>(); });
+    EXPECT_TRUE(message_of(e).starts_with(duplicate("unique"))) << e.what();
+    EXPECT_EQ(e.path(), "/unique/1");
+}
+
+#if YYJSON_VERSION_HEX >= 0x000C00
+TEST(Constraints, RawExtendedNumbers)
+{
+    // a raw number in the syntax of JSON5 compares as the number that JSON5 reads
+    for (const auto flag : {yyjson::ReadFlag::Json5, yyjson::ReadFlag::Json5 | yyjson::ReadFlag::NumberAsRaw})
+    {
+        const auto read = [flag](std::string_view json) { return yyjson::read<RawExtended>(json, flag); };
+        const auto expect_raw_rejected = [&](std::string_view json, std::string_view message, std::string_view path) {
+            const auto e = bad_cast_of([&] { (void)read(json); });
+            EXPECT_TRUE(message_of(e).starts_with(message)) << json << "\n" << e.what();
+            EXPECT_EQ(e.path(), path) << json;
+        };
+        EXPECT_NO_THROW((void)read(R"({"n":+5,"c":0x10,"u":[0x10,15],"a":[16.,+15]})"));
+        EXPECT_NO_THROW((void)read(R"({"c":16.})"));
+        expect_raw_rejected(R"({"n":0x10})", R"(the value of the key "n" of RawExtended is greater than the maximum 5)",
+                            "/n");
+        expect_raw_rejected(R"({"n":+10})", R"(the value of the key "n" of RawExtended is greater than)", "/n");
+        expect_raw_rejected(R"({"c":0x11})", R"(the value of the key "c" of RawExtended is not equal to)", "/c");
+        expect_raw_rejected(R"({"u":[0x10,16]})", R"(an element of the value of the key "u" of RawExtended is equal)",
+                            "/u/1");
+        expect_raw_rejected(R"({"a":[0x10,16.]})", R"(an element of the value of the key "a" of RawExtended is equal)",
+                            "/a/1");
+    }
+}
+#endif
 
 TEST(Constraints, TextUnderStrict)
 {
@@ -2666,6 +2846,76 @@ TEST(Constraints, StructConditionsOfValues)
     expect_conditions<PrefixConditions>(R"({"v":[],"w":[],"t":[0,""],"d":[]})", n);
     expect_conditions<PrefixConditions>(R"({"v":[],"w":[],"t":[0,""],"d":["b"]})", "");
     expect_conditions<PrefixConditions>(R"({"v":[],"w":[],"t":[0,""],"d":["a"],"n":1})", "");
+}
+
+TEST(Constraints, DomConditions)
+{
+    const auto v = R"(the value of the key "v" of DomConditions )";
+    expect_conditions<DomConditions>(R"({"v":{},"e":[]})", "");
+    expect_conditions<DomConditions>(R"({"v":{"good":1},"e":[]})", "");
+    expect_conditions<DomConditions>(R"({"v":{"bad":null},"e":[]})", v, "/v");
+    // a value that is not an object has every key that yyjson::required names, as in JSON Schema
+    expect_conditions<DomConditions>(R"({"v":1,"e":[]})", v, "/v");
+    const auto o = R"(the value of the key "o" of DomConditions )";
+    expect_conditions<DomConditions>(R"({"v":{},"o":{},"e":[]})", "");
+    expect_conditions<DomConditions>(R"({"v":{},"o":{"kind":"y"},"e":[]})", "");
+    expect_conditions<DomConditions>(R"({"v":{},"o":{"kind":"x","x":1},"e":[]})", "");
+    expect_conditions<DomConditions>(R"({"v":{},"o":{"kind":"x"},"e":[]})", o, "/o");
+    expect_conditions<DomConditions>(R"({"v":{},"o":{"kind":"x","x":0},"e":[]})", o, "/o");
+    expect_conditions<DomConditions>(R"({"v":{},"o":{"kind":"x","x":"1"},"e":[]})", "");
+    const auto e = R"(an element of the value of the key "e" of DomConditions does not have the keys and the values )"
+                   R"(that yyjson::field gives)";
+    expect_conditions<DomConditions>(R"({"v":{},"e":[{"id":0},1,"a",null,[]]})", "");
+    expect_conditions<DomConditions>(R"({"v":{},"e":[{"id":0},{}]})", e, "/e/1");
+    expect_conditions<DomConditions>(R"({"v":{},"e":[{"id":-1}]})", e, "/e/0");
+    expect_conditions<DomConditions>(R"({"v":{},"e":[],"m":{"a":{"id":1},"b":2}})", "");
+    expect_conditions<DomConditions>(R"({"v":{},"e":[],"m":{"a":{"id":1},"b":{}}})",
+                                     R"(an element of the value of the key "m" of DomConditions )", "/m/b");
+}
+
+TEST(Constraints, MultiKindValues)
+{
+    // the members of a valid object that `members` does not give
+    const auto json = [](std::string_view members) {
+        auto text = std::string("{") + std::string(members);
+        for (const auto& [key, value] : {std::pair{"v", "1"},
+                                         {"w", "1"},
+                                         {"s", "\"dark\""},
+                                         {"list", "[0,1]"},
+                                         {"elements", "[]"},
+                                         {"c", "true"},
+                                         {"u", "\"a\""}})
+            if (text.find(std::format(R"("{}":)", key)) == std::string::npos)
+                text += std::format(R"({}"{}":{})", text.size() == 1 ? "" : ",", key, value);
+        return text + "}";
+    };
+    for (const auto members :
+         {R"("v":1.0,"w":null)", R"("v":"x","w":"ab")", R"("v":null)", R"("s":3,"list":"abc")", R"("list":{"k":1})",
+          R"("list":[1,2],"w":5)", R"("list":true)", R"("elements":[1,"a",null,{},[]])", R"("c":[1])", R"("c":{"k":1})",
+          R"("c":false)", R"("u":2.5)"})
+        expect_conditions<MultiKind>(json(members), "");
+    const auto key = [](std::string_view k, std::string_view text) {
+        return std::format(R"(the value of the key "{}" of MultiKind {})", k, text);
+    };
+    expect_conditions<MultiKind>(json(R"("v":2)"), key("v", "is not one of"), "/v");
+    expect_conditions<MultiKind>(json(R"("v":[])"), key("v", "is not one of"), "/v");
+    expect_conditions<MultiKind>(json(R"("w":-1)"), key("w", "is less than"), "/w");
+    expect_conditions<MultiKind>(json(R"("w":"abc")"), key("w", "is longer"), "/w");
+    expect_conditions<MultiKind>(json(R"("s":"light")"), key("s", "is not one of"), "/s");
+    expect_conditions<MultiKind>(json(R"("s":4)"), key("s", "is not one of"), "/s");
+    expect_conditions<MultiKind>(json(R"("list":[1])"), key("list", "has fewer"), "/list");
+    expect_conditions<MultiKind>(json(R"("list":"b")"), key("list", "does not match"), "/list");
+    expect_conditions<MultiKind>(json(R"("list":{"a":1,"b":2})"), key("list", "has more"), "/list");
+    expect_conditions<MultiKind>(json(R"("list":[0,-1])"), R"(an element of the value of the key "list")", "/list/1");
+    expect_conditions<MultiKind>(json(R"("elements":[1,2])"), R"(an element of the value of the key "elements")",
+                                 "/elements/1");
+    expect_conditions<MultiKind>(json(R"("elements":[""])"), R"(an element of the value of the key "elements")",
+                                 "/elements/0");
+    expect_conditions<MultiKind>(json(R"("c":[1,2])"), key("c", "has more"), "/c");
+    expect_conditions<MultiKind>(json(R"("c":{})"), key("c", "has fewer"), "/c");
+    expect_conditions<MultiKind>(json(R"("u":1)"), key("u", "satisfies"), "/u");
+    expect_conditions<MultiKind>(json(R"("u":2)"), key("u", "is not one of"), "/u");
+    expect_conditions<MultiKind>(json(R"("u":"b")"), key("u", "is not one of"), "/u");
 }
 
 #if FIELD_RFL_ANNOTATIONS
