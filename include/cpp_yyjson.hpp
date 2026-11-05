@@ -1641,6 +1641,21 @@ namespace yyjson
             ~read_policy_scope() { read_policies = outer_; }
         };
 
+        // Sets `read_policies` to `policies` alone until it ends, for a read that the outer policies must not change.
+        class exact_policy_scope
+        {
+            std::uint8_t outer_;
+
+        public:
+            explicit exact_policy_scope(std::uint8_t policies) noexcept : outer_(read_policies)
+            {
+                read_policies = policies;
+            }
+            exact_policy_scope(const exact_policy_scope&) = delete;
+            exact_policy_scope& operator=(const exact_policy_scope&) = delete;
+            ~exact_policy_scope() { read_policies = outer_; }
+        };
+
         template <typename P>
         concept read_policy = policy_bits<P> != 0;
 
@@ -2351,6 +2366,164 @@ namespace yyjson
         }
     }  // namespace detail
 
+    namespace detail
+    {
+        // The kind of a value of the DOM that a check of `yyjson::matches` is given, or `other` for another type.
+        enum class dom_kind : std::uint8_t
+        {
+            other,
+            null,
+            value,
+            array,
+            object,
+        };
+        template <typename V>
+        inline constexpr dom_kind dom_kind_of = dom_kind::other;
+
+        // Whether `json`, or JSON null for `dom_kind::null`, reads as T.  Defined after the values of the DOM.
+        template <typename T>
+        bool test_type(const void* json, dom_kind kind);
+        template <typename T, typename Json>
+        bool matches_json(const Json& json);
+
+        // The check of `yyjson::matches<T>` and the name of T, which the tree of a schema holds.
+        struct type_test
+        {
+            bool (*test)(const void*, dom_kind) = nullptr;
+            const char* name_data = nullptr;
+            std::size_t name_size = 0;
+
+            [[nodiscard]] constexpr std::string_view name() const noexcept { return {name_data, name_size}; }
+        };
+        template <typename T>
+        consteval type_test make_type_test()
+        {
+            constexpr auto name = type_name<T>();
+            return {&test_type<T>, static_string(name), name.size()};
+        }
+    }  // namespace detail
+
+    // That a value reads as T under `yyjson::strict`, whatever the policies of the read around it, as a keyword of a
+    // value of the DOM: `yyjson::contains(yyjson::matches<Point>)`.  `yyjson::matches<T>(json)` tells it for `json`.
+    template <typename T>
+    struct matches_t : detail::type_test
+    {
+        template <typename Json>
+        bool operator()(const Json& json) const
+        {
+            return detail::matches_json<T>(json);
+        }
+    };
+    template <typename T>
+    inline constexpr matches_t<T> matches = {detail::make_type_test<T>()};
+
+    // The settings that a value must not satisfy all together, as JSON Schema's `not`:
+    // `yyjson::not_(yyjson::minimum(10), yyjson::maximum(19))`.
+    template <typename... As>
+    struct not_
+    {
+        detail::setting_list<As...> settings;
+
+        consteval explicit not_(As... as) : settings(detail::make_setting_list(as...))
+        {
+            static_assert(sizeof...(As) != 0, "yyjson::not_ needs a setting");
+            static_assert((detail::constraint_setting<As> && ...),
+                          "yyjson::not_ takes the keywords of a value, such as yyjson::minimum and yyjson::items");
+        }
+    };
+    template <typename... As>
+    not_(As...) -> not_<As...>;
+    template <typename... As>
+    not_(not_<As...>) -> not_<not_<As...>>;
+
+    // The settings of the condition and of the branches of `yyjson::if_then_else`.
+    template <typename... As>
+    struct if_
+    {
+        detail::setting_list<As...> settings;
+
+        consteval explicit if_(As... as) : settings(detail::make_setting_list(as...))
+        {
+            static_assert(sizeof...(As) != 0, "yyjson::if_ needs a setting");
+            static_assert((detail::constraint_setting<As> && ...),
+                          "yyjson::if_ takes the keywords of a value, such as yyjson::minimum and yyjson::items");
+        }
+    };
+    template <typename... As>
+    if_(As...) -> if_<As...>;
+    template <typename... As>
+    struct then
+    {
+        detail::setting_list<As...> settings;
+
+        consteval explicit then(As... as) : settings(detail::make_setting_list(as...))
+        {
+            static_assert(sizeof...(As) != 0, "yyjson::then needs a setting");
+            static_assert((detail::constraint_setting<As> && ...),
+                          "yyjson::then takes the keywords of a value, such as yyjson::minimum and yyjson::items");
+        }
+    };
+    template <typename... As>
+    then(As...) -> then<As...>;
+    template <typename... As>
+    struct else_
+    {
+        detail::setting_list<As...> settings;
+
+        consteval explicit else_(As... as) : settings(detail::make_setting_list(as...))
+        {
+            static_assert(sizeof...(As) != 0, "yyjson::else_ needs a setting");
+            static_assert((detail::constraint_setting<As> && ...),
+                          "yyjson::else_ takes the keywords of a value, such as yyjson::minimum and yyjson::items");
+        }
+    };
+    template <typename... As>
+    else_(As...) -> else_<As...>;
+
+    namespace detail
+    {
+        // A branch of `yyjson::if_then_else` that is not given, which every value satisfies.
+        struct no_branch
+        {
+        };
+    }  // namespace detail
+
+    // JSON Schema's `if`, `then` and `else`, which `yyjson::if_then_else` makes.
+    template <typename If, typename Then, typename Else>
+    struct if_then_else_t
+    {
+        If if_branch;
+        Then then_branch;
+        Else else_branch;
+    };
+
+    // A value that satisfies the settings of `yyjson::if_` must satisfy those of `yyjson::then`, and another value
+    // those of `yyjson::else_`: `yyjson::if_then_else(yyjson::if_(...), yyjson::then(...), yyjson::else_(...))`.
+    template <typename... Is, typename... Ts, typename... Es>
+    consteval auto if_then_else(if_<Is...> i, then<Ts...> t, else_<Es...> e)
+    {
+        return if_then_else_t<if_<Is...>, then<Ts...>, else_<Es...>>{i, t, e};
+    }
+    template <typename... Is, typename... Ts>
+    consteval auto if_then_else(if_<Is...> i, then<Ts...> t)
+    {
+        return if_then_else_t<if_<Is...>, then<Ts...>, detail::no_branch>{i, t, {}};
+    }
+    template <typename... Is, typename... Es>
+    consteval auto if_then_else(if_<Is...> i, else_<Es...> e)
+    {
+        return if_then_else_t<if_<Is...>, detail::no_branch, else_<Es...>>{i, {}, e};
+    }
+
+    // The subschemas of which a value must satisfy all, at least one, or exactly one, which `yyjson::all_of`,
+    // `yyjson::any_of` and `yyjson::one_of` make.
+    template <std::size_t N>
+    struct all_of_t;
+    template <std::size_t N>
+    struct any_of_t;
+    template <std::size_t N>
+    struct one_of_t;
+
     // The bounds of the number of the elements of a field written as a JSON array, as
     // `yyjson::field("member", yyjson::min_items(1))` or `[[=yyjson::min_items(1)]]` gives them.
     struct min_items
@@ -2451,11 +2624,17 @@ namespace yyjson
 
     namespace detail
     {
+        // `yyjson::not_`, `if_then_else`, `all_of`, `any_of` and `one_of`, whose subschemas check their own keywords.
+        template <typename A>
+        concept combinator_setting =
+            setting_of<A, not_<>> || setting_of<A, if_then_else_t<void, void, void>> || setting_of<A, all_of_t<0>> ||
+            setting_of<A, any_of_t<0>> || setting_of<A, one_of_t<0>>;
+
         // The keywords that a key of a JSON object can take, which is a string.
         template <typename A>
         concept key_setting = setting_of<A, min_length> || setting_of<A, max_length> || setting_of<A, pattern<>> ||
                               setting_of<A, format<>> || setting_of<A, format_assertion<>> || setting_of<A, const_<>> ||
-                              setting_of<A, enum_<0>> || setting_of<A, satisfies_t>;
+                              setting_of<A, enum_<0>> || setting_of<A, satisfies_t> || combinator_setting<A>;
     }  // namespace detail
 
     // The settings of each key of a map written as a JSON object, which is a string:
@@ -2508,6 +2687,36 @@ namespace yyjson
         {
             using type = prefix_items_t<0>;
         };
+        template <typename T>
+        struct setting_type<matches_t<T>>
+        {
+            using type = matches_t<void>;
+        };
+        template <typename... As>
+        struct setting_type<not_<As...>>
+        {
+            using type = not_<>;
+        };
+        template <typename If, typename Then, typename Else>
+        struct setting_type<if_then_else_t<If, Then, Else>>
+        {
+            using type = if_then_else_t<void, void, void>;
+        };
+        template <std::size_t N>
+        struct setting_type<all_of_t<N>>
+        {
+            using type = all_of_t<0>;
+        };
+        template <std::size_t N>
+        struct setting_type<any_of_t<N>>
+        {
+            using type = any_of_t<0>;
+        };
+        template <std::size_t N>
+        struct setting_type<one_of_t<N>>
+        {
+            using type = one_of_t<0>;
+        };
 
         template <>
         inline constexpr std::uint32_t constraint_bit<min_items> = 1U << 13;
@@ -2537,6 +2746,20 @@ namespace yyjson
         inline constexpr std::uint32_t array_constraints = ((1U << 21) - 1) & ~((1U << 13) - 1);
         inline constexpr std::uint32_t object_constraints = ((1U << 25) - 1) & ~((1U << 21) - 1);
         inline constexpr std::uint32_t structure_constraints = array_constraints | object_constraints;
+        template <>
+        inline constexpr std::uint32_t constraint_bit<matches_t<void>> = 1U << 25;
+        template <>
+        inline constexpr std::uint32_t constraint_bit<not_<>> = 1U << 26;
+        template <>
+        inline constexpr std::uint32_t constraint_bit<if_then_else_t<void, void, void>> = 1U << 27;
+        template <>
+        inline constexpr std::uint32_t constraint_bit<all_of_t<0>> = 1U << 28;
+        template <>
+        inline constexpr std::uint32_t constraint_bit<any_of_t<0>> = 1U << 29;
+        template <>
+        inline constexpr std::uint32_t constraint_bit<one_of_t<0>> = 1U << 30;
+        // the keywords of subschemas, which a subschema can take more than once
+        inline constexpr std::uint32_t combinator_constraints = ((1U << 31) - 1) & ~((1U << 26) - 1);
     }  // namespace detail
 
     namespace detail
@@ -3587,7 +3810,9 @@ namespace yyjson
                 if (!std::meta::has_template_arguments(type)) continue;
                 const auto t = std::meta::template_of(type);
                 if (t == ^^yyjson::enum_ || t == ^^yyjson::items || t == ^^yyjson::additional_properties ||
-                    t == ^^yyjson::contains || t == ^^yyjson::property_names || t == ^^yyjson::prefix_items_t)
+                    t == ^^yyjson::contains || t == ^^yyjson::property_names || t == ^^yyjson::prefix_items_t ||
+                    t == ^^yyjson::matches_t || t == ^^yyjson::not_ || t == ^^yyjson::if_then_else_t ||
+                    t == ^^yyjson::all_of_t || t == ^^yyjson::any_of_t || t == ^^yyjson::one_of_t)
                     result.push_back(a);
             }
             return result;
@@ -5461,12 +5686,25 @@ namespace yyjson
             tree_string format_name;
             tree_string assertion_name;
             satisfies_t predicate;
+            type_test matches;
 
             template <typename A>
             [[nodiscard]] constexpr bool has() const noexcept
             {
                 return (bits & constraint_bit<A>) != 0;
             }
+        };
+
+        // The keyword of a node that holds the subschemas of one `yyjson::not_`, `if_then_else`, `all_of`, `any_of`
+        // or `one_of` of another node.
+        enum class combinator_kind : std::uint8_t
+        {
+            none,
+            not_,
+            if_then_else,
+            all_of,
+            any_of,
+            one_of,
         };
 
         // A position of a schema: its keywords, its values of `yyjson::const_` and `yyjson::enum_`, the constant
@@ -5484,6 +5722,13 @@ namespace yyjson
             std::size_t contains = 0;
             std::size_t prefix_first = 0;
             std::size_t prefix_count = 0;
+            // the first combinator, which holds its subschemas from `operands_first` (if, then and else for
+            // `if_then_else`) and links the next one by `next`
+            std::size_t combinators = 0;
+            combinator_kind combinator = combinator_kind::none;
+            std::size_t operands_first = 0;
+            std::size_t operands_count = 0;
+            std::size_t next = 0;
         };
 
         // The keywords that read nothing, or that a field cannot take.
@@ -5675,13 +5920,16 @@ namespace yyjson
         template <typename P, typename Keep>
         constexpr void graft_prefix(tree_builder& b, std::size_t at, const P& p, const Keep& keep);
 
-        // Adds the node of the settings that `visit` passes to its function, and the nodes of their subschemas, and
-        // gives its index.  `keep` gives a string of a setting as the tree holds it.
+        inline constexpr std::size_t new_node = static_cast<std::size_t>(-1);
+
+        // Adds the node of the settings that `visit` passes to its function, or sets the node `at`, and the nodes of
+        // their subschemas, and gives its index.  `keep` gives a string of a setting as the tree holds it.
         template <typename Visit, typename Keep>
-        constexpr std::size_t build_schema_node(tree_builder& b, const Visit& visit, const Keep& keep)
+        constexpr std::size_t build_schema_node(tree_builder& b, const Visit& visit, const Keep& keep,
+                                                std::size_t at = new_node)
         {
-            const auto index = b.nodes.size();
-            b.nodes.emplace_back();
+            const auto index = at == new_node ? b.nodes.size() : at;
+            if (at == new_node) b.nodes.emplace_back();
             auto node = schema_node{};
             auto& c = node.constraints;
             auto values = std::vector<json_scalar>{};
@@ -5689,7 +5937,7 @@ namespace yyjson
             bool has_const = false;
             visit([&]<typename A>(const A& a) {
                 using B = setting_type_t<A>;
-                if ((c.bits & constraint_bit<B>) != 0 && !std::same_as<B, pattern<>>)
+                if ((c.bits & constraint_bit<B> & ~combinator_constraints) != 0 && !std::same_as<B, pattern<>>)
                     b.fail(constraint_error::keyword_twice);
                 c.bits |= constraint_bit<B>;
                 if constexpr (std::same_as<B, minimum>)
@@ -5739,6 +5987,8 @@ namespace yyjson
                 }
                 else if constexpr (std::same_as<B, satisfies_t>)
                     c.predicate = a;
+                else if constexpr (std::same_as<B, matches_t<void>>)
+                    c.matches = a;
             });
             const auto inverted = [&c]<typename Low, typename High>(std::size_t low, std::size_t high) {
                 return c.template has<Low>() && c.template has<High>() && low > high;
@@ -5765,9 +6015,56 @@ namespace yyjson
             node.patterns_first = b.patterns.size();
             node.patterns_count = patterns.size();
             for (const auto p : patterns) b.patterns.push_back(keep(p));
+            std::size_t last_combinator = 0;
             visit([&]<typename A>(const A& a) {
                 using B = setting_type_t<A>;
-                if constexpr (std::same_as<B, prefix_items_t<0>>)
+                if constexpr (combinator_setting<A>)
+                {
+                    const auto record = b.nodes.size();
+                    b.nodes.emplace_back();
+                    auto r = schema_node{};
+                    if constexpr (std::same_as<B, not_<>>)
+                    {
+                        r.combinator = combinator_kind::not_;
+                        r.operands_count = 1;
+                        r.operands_first =
+                            build_schema_node(b, [&a](const auto& f) { for_each_setting(a.settings, f); }, keep);
+                    }
+                    else if constexpr (std::same_as<B, if_then_else_t<void, void, void>>)
+                    {
+                        r.combinator = combinator_kind::if_then_else;
+                        r.operands_first = b.nodes.size();
+                        r.operands_count = 3;
+                        b.nodes.resize(b.nodes.size() + 3);
+                        const auto branch = [&](const auto& part, std::size_t j) {
+                            if constexpr (requires { part.settings; })
+                                build_schema_node(
+                                    b, [&part](const auto& f) { for_each_setting(part.settings, f); }, keep,
+                                    r.operands_first + j);
+                        };
+                        branch(a.if_branch, 0);
+                        branch(a.then_branch, 1);
+                        branch(a.else_branch, 2);
+                    }
+                    else
+                    {
+                        r.combinator = std::same_as<B, all_of_t<0>>   ? combinator_kind::all_of
+                                       : std::same_as<B, any_of_t<0>> ? combinator_kind::any_of
+                                                                      : combinator_kind::one_of;
+                        r.operands_first = b.nodes.size();
+                        r.operands_count = a.operands.size();
+                        b.nodes.resize(b.nodes.size() + a.operands.size());
+                        for (std::size_t i = 0; i < a.operands.size(); ++i)
+                            graft_prefix(b, r.operands_first + i, a.operands[i], keep);
+                    }
+                    b.nodes[record] = r;
+                    if (last_combinator == 0)
+                        node.combinators = record;
+                    else
+                        b.nodes[last_combinator].next = record;
+                    last_combinator = record;
+                }
+                else if constexpr (std::same_as<B, prefix_items_t<0>>)
                 {
                     node.prefix_first = b.nodes.size();
                     node.prefix_count = a.positions.size();
@@ -5810,7 +6107,8 @@ namespace yyjson
             }
             for (std::size_t k = 0; k < p.pattern_size; ++k) b.patterns.push_back(keep(p.chars.view(p.patterns[k])));
             const auto moved = [&](schema_node n) {
-                for (auto* i : {&n.items, &n.properties, &n.keys, &n.contains, &n.prefix_first})
+                for (auto* i : {&n.items, &n.properties, &n.keys, &n.contains, &n.prefix_first, &n.combinators,
+                                &n.operands_first, &n.next})
                     if (*i != 0) *i += base - 1;
                 n.values_first += value_base;
                 n.patterns_first += pattern_base;
@@ -5843,8 +6141,9 @@ namespace yyjson
             }
         }
 
-        // The settings of a position of `yyjson::prefix_items` as a tree of their own, of fixed sizes, so that a
-        // braced list makes it: `{}` for none, `{settings...}`, or a setting alone.
+        // The settings of a position of `yyjson::prefix_items`, or of a subschema of `yyjson::all_of`, `any_of` and
+        // `one_of`, as a tree of their own, of fixed sizes, so that a braced list makes it: `{}` for none,
+        // `{settings...}`, or a setting alone.
         struct prefix_schema
         {
             std::array<schema_node, 8> nodes = {};
@@ -5862,8 +6161,8 @@ namespace yyjson
             consteval prefix_schema(As... settings)  // NOLINT(google-explicit-constructor)
             {
                 static_assert((constraint_setting<As> && ...),
-                              "a position of yyjson::prefix_items takes the keywords of a value, such as "
-                              "yyjson::minimum and yyjson::items");
+                              "a position of yyjson::prefix_items and a subschema of yyjson::all_of, any_of and "
+                              "one_of take the keywords of a value, such as yyjson::minimum and yyjson::items");
                 auto b = tree_builder{};
                 auto pool = char_pool<prefix_position_chars>{};
                 bool too_long = false;
@@ -5887,23 +6186,23 @@ namespace yyjson
 
         template <typename T, std::size_t>
         using always_t = T;
-        template <typename Seq>
-        struct prefix_items_n;
-        template <std::size_t... I>
-        struct prefix_items_n<std::index_sequence<I...>>
+        template <template <std::size_t> class R, typename Seq>
+        struct subschemas_n;
+        template <template <std::size_t> class R, std::size_t... I>
+        struct subschemas_n<R, std::index_sequence<I...>>
         {
-            consteval prefix_items_t<sizeof...(I)> operator()(always_t<prefix_schema, I>... positions) const
+            consteval R<sizeof...(I)> operator()(always_t<prefix_schema, I>... subschemas) const
             {
-                return {{positions...}};
+                return {{subschemas...}};
             }
         };
-        // A call operator for each number of the positions, so that each position can be a braced list.
-        template <typename Seq>
-        struct prefix_items_fn;
-        template <std::size_t... N>
-        struct prefix_items_fn<std::index_sequence<N...>> : prefix_items_n<std::make_index_sequence<N + 1>>...
+        // A call operator for each number of the subschemas, so that each subschema can be a braced list.
+        template <template <std::size_t> class R, typename Seq>
+        struct subschemas_fn;
+        template <template <std::size_t> class R, std::size_t... N>
+        struct subschemas_fn<R, std::index_sequence<N...>> : subschemas_n<R, std::make_index_sequence<N + 1>>...
         {
-            using prefix_items_n<std::make_index_sequence<N + 1>>::operator()...;
+            using subschemas_n<R, std::make_index_sequence<N + 1>>::operator()...;
         };
     }  // namespace detail
 
@@ -5912,11 +6211,34 @@ namespace yyjson
     {
         std::array<detail::prefix_schema, N> positions;
     };
+    template <std::size_t N>
+    struct all_of_t
+    {
+        std::array<detail::prefix_schema, N> operands;
+    };
+    template <std::size_t N>
+    struct any_of_t
+    {
+        std::array<detail::prefix_schema, N> operands;
+    };
+    template <std::size_t N>
+    struct one_of_t
+    {
+        std::array<detail::prefix_schema, N> operands;
+    };
 
     // The settings of the first elements of an array, as JSON Schema's `prefixItems`, one braced list or setting for
     // each of up to 16 positions: `yyjson::prefix_items({yyjson::minimum(0)}, {}, yyjson::max_length(8))`.  `{}`
     // leaves a position unconstrained.
-    inline constexpr detail::prefix_items_fn<std::make_index_sequence<16>> prefix_items{};
+    inline constexpr detail::subschemas_fn<prefix_items_t, std::make_index_sequence<16>> prefix_items{};
+
+    // The subschemas of which a value must satisfy all, as JSON Schema's `allOf`, one braced list or setting for each
+    // of up to 16: `yyjson::all_of({yyjson::minimum(0)}, yyjson::multiple_of(2))`.
+    inline constexpr detail::subschemas_fn<all_of_t, std::make_index_sequence<16>> all_of{};
+    // The subschemas of which a value must satisfy at least one, as JSON Schema's `anyOf`.
+    inline constexpr detail::subschemas_fn<any_of_t, std::make_index_sequence<16>> any_of{};
+    // The subschemas of which a value must satisfy exactly one, as JSON Schema's `oneOf`.
+    inline constexpr detail::subschemas_fn<one_of_t, std::make_index_sequence<16>> one_of{};
 
     namespace detail
     {
@@ -5964,8 +6286,9 @@ namespace yyjson
             static_assert(tree.error != constraint_error::contains_missing,
                           "yyjson::min_contains and yyjson::max_contains need yyjson::contains in the same subschema");
             static_assert(tree.error != constraint_error::prefix_position_too_large,
-                          "a position of yyjson::prefix_items takes up to 8 subschemas, 16 values of yyjson::const_ "
-                          "and yyjson::enum_, 8 patterns and 256 characters of strings");
+                          "a position of yyjson::prefix_items and a subschema of yyjson::all_of, any_of and one_of "
+                          "take up to 8 subschemas and combinators, 16 values of yyjson::const_ and yyjson::enum_, 8 "
+                          "patterns and 256 characters of strings");
         };
 
         // The node I of the tree of `Tree::tree`: its keywords, values and patterns, and its subschemas by `at`.
@@ -6587,6 +6910,14 @@ namespace yyjson
             max_properties,
             additional_properties,
             property_names,
+            matches,
+            not_,
+            then,
+            else_,
+            all_of,
+            any_of,
+            one_of_none,
+            one_of_many,
         };
 
         template <typename B>
@@ -6685,6 +7016,22 @@ namespace yyjson
                     return "has a value that does not satisfy the constraints of yyjson::additional_properties";
                 case constraint_kind::property_names:
                     return "has a key that does not satisfy the constraints of yyjson::property_names";
+                case constraint_kind::matches:
+                    return std::format("is not read as {} by yyjson::matches", c.matches.name());
+                case constraint_kind::not_:
+                    return "satisfies the settings of yyjson::not_";
+                case constraint_kind::then:
+                    return "satisfies the settings of yyjson::if_ and not those of yyjson::then";
+                case constraint_kind::else_:
+                    return "satisfies neither the settings of yyjson::if_ nor those of yyjson::else_";
+                case constraint_kind::all_of:
+                    return "does not satisfy all the subschemas of yyjson::all_of";
+                case constraint_kind::any_of:
+                    return "satisfies none of the subschemas of yyjson::any_of";
+                case constraint_kind::one_of_none:
+                    return "satisfies none of the subschemas of yyjson::one_of";
+                case constraint_kind::one_of_many:
+                    return "satisfies more than one subschema of yyjson::one_of";
                 case constraint_kind::pattern:
                 {
                     if (patterns.size() == 1) return std::format("does not match the pattern \"{}\"", patterns[0]);
@@ -6934,6 +7281,9 @@ namespace yyjson
                 static_assert(!lists_null || null_holder<F> || null_testable<V>,
                               "yyjson::const_(nullptr) and yyjson::enum_ with nullptr constrain a field that can be "
                               "null: yyjson::nullable, an owning pointer or a value of the DOM");
+                static_assert(!c.template has<matches_t<void>>() || dom_kind_of<V> != dom_kind::other,
+                              "yyjson::matches constrains a value of the DOM: yyjson::value, yyjson::array or "
+                              "yyjson::object");
                 if constexpr (enum_by_name<V> && of_kind)
                     static_assert(listed_enumerators<Schema, V>.has_value(),
                                   "a string of yyjson::const_ or yyjson::enum_ of an enumeration is not the JSON name "
@@ -7018,6 +7368,10 @@ namespace yyjson
         template <typename Schema, typename V>
         constraint_kind structure_violation(const V& v);
 
+        // The keyword of the combinator R of `Schema`, or of a later one, that `field` does not satisfy.
+        template <typename Schema, std::size_t R, typename F>
+        constraint_kind combinator_violation(const F& field);
+
         // The keyword of `Schema` that the field `field` does not satisfy.  An empty `std::optional` is a missing
         // key, which no keyword checks, but an element that is one is null.
         template <typename Schema, bool Element = false, typename F>
@@ -7056,7 +7410,61 @@ namespace yyjson
                                   "value that a std::optional, a yyjson::nullable, an owning pointer or "
                                   "yyjson::indirect field holds");
             }
+            if constexpr (c.template has<matches_t<void>>())
+                if (!c.matches.test(value, value == nullptr ? dom_kind::null : dom_kind_of<V>))
+                    return constraint_kind::matches;
+            if constexpr (Schema::node.combinators != 0)
+                return combinator_violation<Schema, Schema::node.combinators>(field);
             return constraint_kind::none;
+        }
+
+        template <typename Schema, std::size_t R, typename F>
+        constraint_kind combinator_violation(const F& field)
+        {
+            using N = typename Schema::template at<R>;
+            const auto holds = [&field]<std::size_t J>(std::integral_constant<std::size_t, J>) {
+                return constraint_violation<typename Schema::template at<N::node.operands_first + J>, true>(field) ==
+                       constraint_kind::none;
+            };
+            const auto count = [&holds]<std::size_t... J>(std::index_sequence<J...>) {
+                return (std::size_t{0} + ... + (holds(std::integral_constant<std::size_t, J>()) ? 1 : 0));
+            };
+            auto kind = constraint_kind::none;
+            if constexpr (N::node.combinator == combinator_kind::not_)
+            {
+                if (holds(std::integral_constant<std::size_t, 0>())) kind = constraint_kind::not_;
+            }
+            else if constexpr (N::node.combinator == combinator_kind::if_then_else)
+            {
+                if (holds(std::integral_constant<std::size_t, 0>()))
+                {
+                    if (!holds(std::integral_constant<std::size_t, 1>())) kind = constraint_kind::then;
+                }
+                else if (!holds(std::integral_constant<std::size_t, 2>()))
+                    kind = constraint_kind::else_;
+            }
+            else if constexpr (N::node.combinator == combinator_kind::all_of)
+            {
+                if (![&]<std::size_t... J>(std::index_sequence<J...>) {
+                        return (holds(std::integral_constant<std::size_t, J>()) && ...);
+                    }(std::make_index_sequence<N::node.operands_count>()))
+                    kind = constraint_kind::all_of;
+            }
+            else if constexpr (N::node.combinator == combinator_kind::any_of)
+            {
+                if (![&]<std::size_t... J>(std::index_sequence<J...>) {
+                        return (holds(std::integral_constant<std::size_t, J>()) || ...);
+                    }(std::make_index_sequence<N::node.operands_count>()))
+                    kind = constraint_kind::any_of;
+            }
+            else
+            {
+                const auto held = count(std::make_index_sequence<N::node.operands_count>());
+                if (held != 1) kind = held == 0 ? constraint_kind::one_of_none : constraint_kind::one_of_many;
+            }
+            if constexpr (N::node.next != 0)
+                if (kind == constraint_kind::none) return combinator_violation<Schema, N::node.next>(field);
+            return kind;
         }
 
         // The keyword of the field K of S, by its index among the fields that are read, that `field` does not
@@ -15648,6 +16056,64 @@ namespace yyjson
             return (accepted_json_kinds<T, reader::const_value_ref>() & json_kind_null) != 0;
         }
 
+        template <>
+        inline constexpr dom_kind dom_kind_of<writer::value> = dom_kind::value;
+        template <>
+        inline constexpr dom_kind dom_kind_of<writer::array> = dom_kind::array;
+        template <>
+        inline constexpr dom_kind dom_kind_of<writer::object> = dom_kind::object;
+
+        // The types that read every JSON value of their kinds, so that the kind of the value decides
+        // `yyjson::matches` without a read.
+        template <typename T>
+        concept read_by_kind =
+            reads_by_default<T> && (std::same_as<T, bool> || std::same_as<T, std::nullptr_t> ||
+                                    std::same_as<T, double> || std::same_as<T, long double> ||
+                                    std::same_as<T, std::string> || std::same_as<T, std::string_view> || dom_value<T>);
+
+        template <typename T, typename Json>
+        bool matches_json(const Json& json)
+        {
+            if ((json_kind_of(json) & accepted_json_kinds<T, Json>()) == 0) return false;
+            if constexpr (read_by_kind<T> && json_value_of_document<Json>)
+                return true;
+            else
+            {
+                const exact_policy_scope scope(policy_bits<strict_t>);
+                try
+                {
+                    (void)cast_nested<T>(json);
+                    return true;
+                }
+                catch (const bad_cast&)
+                {
+                    return false;
+                }
+            }
+        }
+
+        template <typename T>
+        bool test_type(const void* json, dom_kind kind)
+        {
+            switch (kind)
+            {
+                case dom_kind::value:
+                    return matches_json<T>(*static_cast<const writer::value*>(json));
+                case dom_kind::array:
+                    if constexpr ((accepted_json_kinds<T, writer::value>() & json_kind_array) == 0)
+                        return false;
+                    else
+                        return matches_json<T>(writer::value(*static_cast<const writer::array*>(json)));
+                case dom_kind::object:
+                    if constexpr ((accepted_json_kinds<T, writer::value>() & json_kind_object) == 0)
+                        return false;
+                    else
+                        return matches_json<T>(writer::value(*static_cast<const writer::object*>(json)));
+                default:
+                    return matches_json<T>(writer::value());
+            }
+        }
+
         // Whether the field of a transparent struct `T` that holds itself may be an object.  Otherwise, as for a
         // field that points to `T` again, asking whether it is written as an object would ask that of `T` again.
         template <typename T>
@@ -20011,8 +20477,8 @@ namespace yyjson
             return cast_text(json, read_flag, [](const reader::value& doc) { return doc.template cast<T>(); });
         }
 
-        // The text of `yyjson::json_text` is read under `yyjson::strict`, so that a text that V cannot hold as it is
-        // is not taken for another value, once, when it is first compared.  A text that a `std::variant` cannot
+        // The text of `yyjson::json_text` is read under `yyjson::strict` alone, so that a text that V cannot hold as
+        // it is is not taken for another value, once, when it is first compared.  A text that a `std::variant` cannot
         // read equals none of its values, which can be of other kinds.
         template <typename Schema, std::size_t I, typename V>
         bool equals_json_text(const V& v)
@@ -20020,7 +20486,7 @@ namespace yyjson
             using T = std::conditional_t<constraint_string<V>, std::string, std::remove_cv_t<V>>;
             constexpr std::string_view text = Schema::values[I].string();
             static const auto constant = [&]() -> std::optional<T> {
-                const auto scope = read_policy_scope(policies_of<strict_t>);
+                const auto scope = exact_policy_scope(policies_of<strict_t>);
                 try
                 {
                     return cast_text<T>(text, ReadFlag::NoFlag);

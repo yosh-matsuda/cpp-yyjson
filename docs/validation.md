@@ -303,6 +303,80 @@ yyjson::read<Job>(R"({"env":{"PATH":"/bin","home":"/root"}})");
 *   `yyjson::property_names` takes the constraints of a string. It checks a key of an enumeration as the name of the enumerator. A key that the JSON does not give at a member fails at the map: a key that `merge_into` keeps from before, and a key of a map that is read from an array of pairs. The message is then `has a key that does not satisfy the constraints of yyjson::property_names`.
 *   `yyjson::format` in `yyjson::items` and the other settings of elements is an annotation too. It checks nothing.
 
+### Combining constraints
+
+Five settings combine constraints, as the keywords `not`, `if`, `then`, `else`, `allOf`, `anyOf` and `oneOf` of JSON Schema do. Each operand is a subschema: a braced list of settings, or one setting without braces. A subschema takes the constraints of a value, the constraints of elements and the combinators again.
+
+| Setting | Rejects a value | Message |
+| --- | --- | --- |
+| `yyjson::not_(s...)` | that satisfies all of `s` | `the value satisfies the subschema of not` |
+| `yyjson::if_then_else(yyjson::if_(a...), yyjson::then(b...), yyjson::else_(c...))` | that satisfies `a` and not `b`, or that satisfies neither `a` nor `c` | `the value satisfies if and not then`, or `the value satisfies neither if nor else` |
+| `yyjson::all_of(s...)` | that does not satisfy each subschema | `the value does not satisfy all the subschemas of allOf` |
+| `yyjson::any_of(s...)` | that satisfies no subschema | `the value satisfies none of the subschemas of anyOf` |
+| `yyjson::one_of(s...)` | that satisfies no subschema, or more than one | `the value satisfies none of the subschemas of oneOf`, or `the value satisfies more than one subschema of oneOf` |
+
+```cpp
+struct Server
+{
+    int port = 80;
+    int workers = 1;
+    double ratio = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<Server> = yyjson::annotate(
+    yyjson::field("port", yyjson::if_then_else(yyjson::if_(yyjson::minimum(1024)), yyjson::then(yyjson::maximum(49151)),
+                                               yyjson::else_(yyjson::enum_(80, 443)))),
+    yyjson::field("workers", yyjson::not_(yyjson::const_(0)),
+                  yyjson::one_of(yyjson::multiple_of(2), yyjson::multiple_of(3))),
+    yyjson::field("ratio", yyjson::any_of({yyjson::minimum(0), yyjson::maximum(1)}, yyjson::const_(-1))));
+
+yyjson::read<Server>(R"({"port":81})");
+// throws: the value of the key "port" of Server satisfies neither the settings of yyjson::if_ nor those of yyjson::else_ at /port (line 1, column 9, pos 8)
+yyjson::read<Server>(R"({"workers":6})");
+// throws: the value of the key "workers" of Server satisfies more than one subschema of yyjson::one_of at /workers (line 1, column 12, pos 11)
+yyjson::read<Server>(R"({"ratio":2})");
+// throws: the value of the key "ratio" of Server satisfies none of the subschemas of yyjson::any_of at /ratio (line 1, column 10, pos 9)
+```
+
+*   `yyjson::if_then_else` can leave out `yyjson::then` or `yyjson::else_`. A part that it leaves out accepts every value.
+*   A field can have each combinator more than once, and each one applies. The error is at the value that has the combinator.
+*   `yyjson::all_of`, `yyjson::any_of` and `yyjson::one_of` take up to 16 subschemas.
+
+### Values of the DOM that read as a type
+
+`yyjson::matches<T>` is a constraint of a value of the DOM: a `yyjson::value`, a `yyjson::array` or a `yyjson::object`. It accepts a value that reads as `T` under [`yyjson::strict`](#read-policies). The policies of the read around it do not change it. Use it in a combinator or in `yyjson::contains`, as JSON Schema uses `$ref` there. The message is `is not read as T by yyjson::matches`:
+
+```cpp
+struct Point
+{
+    int x = 0;
+    int y = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<Point> =
+    yyjson::annotate(yyjson::field("x", yyjson::required), yyjson::field("y", yyjson::required));
+
+struct Scene
+{
+    std::vector<yyjson::value> shapes;
+};
+template <>
+inline constexpr auto yyjson::annotations<Scene> =
+    yyjson::annotate(yyjson::field("shapes", yyjson::contains(yyjson::matches<Point>)));
+
+yyjson::read<Scene>(R"({"shapes":[1,{"x":1,"y":2}]})");  // -> accepted
+yyjson::read<Scene>(R"({"shapes":[1,{"x":1}]})");
+// throws: the value of the key "shapes" of Scene has no item that satisfies the constraints of yyjson::contains at /shapes (line 1, column 11, pos 10)
+
+auto doc = yyjson::read(R"({"x":1,"y":2})");
+bool b = yyjson::matches<Point>(doc);  // -> true
+```
+
+*   `yyjson::matches<T>(json)` tells whether a JSON value reads as `T`.
+*   For `bool`, `std::nullptr_t`, a number, a string and the types of the DOM, the kind of the value decides. For another type, the library reads the value into a `T` under `yyjson::strict`, and then discards it.
+*   `yyjson::strict` does not reject unknown keys. Thus `yyjson::matches<Point>` accepts `{"x":1,"y":2,"z":3}`. Give `Point` the policy `yyjson::reject_unknown_keys` to reject it.
+*   `yyjson::matches<T>` on a field of another type is a compile error.
+
 ### Pattern matcher
 
 `yyjson::pattern` matches a string with a regular expression engine that the program gives. The library has no engine. Specialize `yyjson::pattern_matcher<>` before the first read of a struct that has a pattern. The specialization needs:
@@ -389,6 +463,54 @@ yyjson::read<Item>(R"({"sku":"abc"})");
 ```
 
 A `yyjson::format_assertion` without the specialization that it needs is a compile error: a `pattern` or the format `regex` without `yyjson::pattern_matcher<>`, and another format without `yyjson::format_checker<>`.
+
+## JSON Schema keywords
+
+The tables below list the keywords of [JSON Schema 2020-12](https://json-schema.org/draft/2020-12) that check a value. They give the settings and the types of cpp-yyjson that read the same JSON. The library does not read a schema. To write the C++ types of a schema, translate it by hand with the tables.
+
+### Numbers and strings
+
+| Keyword | cpp-yyjson | Difference |
+| --- | --- | --- |
+| `minimum`, `maximum` | `yyjson::minimum(m)`, `yyjson::maximum(m)` | the value is checked after the conversion to the type of the field. |
+| `exclusiveMinimum`, `exclusiveMaximum` | `yyjson::exclusive_minimum(m)`, `yyjson::exclusive_maximum(m)` | the numbers of 2020-12. |
+| `multipleOf` | `yyjson::multiple_of(m)` | decided in decimal. |
+| `minLength`, `maxLength` | `yyjson::min_length(n)`, `yyjson::max_length(n)` | none. |
+| `pattern` | `yyjson::pattern("regex")`, more than once for more than one `pattern` in `allOf` | the dialect of the engine of the [pattern matcher](#pattern-matcher). |
+| `format` | `yyjson::format("name")`, or `yyjson::format_assertion("name")` to check it | `yyjson::format_assertion` checks the [formats](#formats) of the table, `regex` with the pattern matcher, and the other formats with `yyjson::format_checker<>`. |
+| `const`, `enum` | `yyjson::const_(v)`, `yyjson::enum_(v...)`, or an [enumeration](conversions.md#enumerations) | compared after the conversion to the type of the field. Objects and arrays are given as `yyjson::json_text`. |
+
+### Arrays
+
+| Keyword | cpp-yyjson | Difference |
+| --- | --- | --- |
+| `items` | `yyjson::items(settings...)` | `items: false` is a tuple or a `std::array`, `yyjson::max_items`, or `yyjson::items(false)` on a struct with [`yyjson::as_array`](conversions.md#a-struct-as-a-json-array). |
+| `prefixItems` | `yyjson::prefix_items(...)`, a tuple, or the fields of a struct with `yyjson::as_array` | a tuple reads only an array of exactly as many elements as it has. |
+| `contains`, `minContains`, `maxContains` | `yyjson::contains(settings...)`, `yyjson::min_contains(n)`, `yyjson::max_contains(n)` | `contains` with a `$ref` is `yyjson::matches<T>` on values of the DOM. |
+| `minItems`, `maxItems` | `yyjson::min_items(n)`, `yyjson::max_items(n)` | none. |
+| `uniqueItems` | `yyjson::unique_items`, or a set | a set keeps one of equal elements, and `yyjson::reject_duplicates` rejects the repeated one. |
+
+### Objects
+
+| Keyword | cpp-yyjson | Difference |
+| --- | --- | --- |
+| `properties` | the fields of a struct, or `yyjson::field` in a combinator | a key is the name of the member, or its [`yyjson::rename`](conversions.md#json-keys). |
+| `required` | `yyjson::required`, or `yyjson::reject_missing_keys` for every field | without them, a field whose key is missing keeps its value in `T()`. |
+| `additionalProperties: false` | `yyjson::reject_unknown_keys` | without it, a struct ignores a key that names no field. |
+| `additionalProperties` with a schema | `yyjson::additional_properties(settings...)` on a map | none. |
+| `propertyNames` | `yyjson::property_names(settings...)` on a map | none. |
+| `minProperties`, `maxProperties` | `yyjson::min_properties(n)`, `yyjson::max_properties(n)` on a map | none. |
+
+### Combining schemas
+
+| Keyword | cpp-yyjson | Difference |
+| --- | --- | --- |
+| `allOf` | the constraints of one field, which all apply, or `yyjson::all_of(...)` | none. |
+| `anyOf` | `yyjson::any_of(...)`, or `std::variant` for alternatives of different types | a `std::variant` reads the first alternative that accepts the value. |
+| `oneOf` | `yyjson::one_of(...)`, or a [tagged variant](conversions.md#tagged-variants) | a tag names the alternative. An untagged `std::variant` does not check that only one alternative accepts the value. |
+| `not` | `yyjson::not_(...)` | none. |
+| `if`, `then`, `else` | `yyjson::if_then_else(...)` | none. |
+| `$ref`, `$defs` | a C++ type, or `yyjson::matches<T>` on a value of the DOM | a definition with constraints that is not an object is a struct with [`yyjson::transparent`](conversions.md#a-struct-as-the-value-of-its-field). |
 
 ## Errors
 

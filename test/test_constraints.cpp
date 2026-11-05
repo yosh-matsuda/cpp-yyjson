@@ -347,6 +347,15 @@ template <>
 inline constexpr auto yyjson::annotations<UnreadableText> =
     yyjson::annotate(yyjson::field("n", yyjson::const_(yyjson::json_text(R"("one")"))));
 
+// a constant with a key that Spot does not have, which yyjson::strict alone accepts
+struct WideText
+{
+    Spot at{};
+};
+template <>
+inline constexpr auto yyjson::annotations<WideText> =
+    yyjson::annotate(yyjson::field("at", yyjson::const_(yyjson::json_text(R"({"x":1,"y":2,"z":3})"))));
+
 // the formats that the library checks, "regex" with the engine of pattern_matcher<>, one that the program checks,
 // and yyjson::format, which checks nothing
 struct Formatted
@@ -662,6 +671,125 @@ inline constexpr auto yyjson::annotations<Visited> = yyjson::annotate(
     yyjson::field("k", yyjson::property_names(yyjson::max_length(1))));
 VISITABLE_STRUCT(Visited, u, p, c, k);
 
+// the subschemas of yyjson::not_ at each position that takes keywords
+struct Negated
+{
+    int n = 0;
+    std::string s = {};
+    std::vector<int> v = {};
+    int twice = 0;
+    std::map<std::string, int> m = {};
+    std::tuple<int, std::string> row = {};
+    std::vector<int> c = {};
+    std::vector<std::optional<int>> holes = {};
+    std::optional<int> o = {};
+    std::vector<std::vector<int>> nested = {};
+    bool operator==(const Negated&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<Negated> = yyjson::annotate(
+    yyjson::field("n", yyjson::not_(yyjson::minimum(10), yyjson::maximum(19))),
+    yyjson::field("s", yyjson::not_(yyjson::pattern("^x"))),
+    yyjson::field("v", yyjson::items(yyjson::not_(yyjson::not_(yyjson::minimum(0))))),
+    yyjson::field("twice", yyjson::not_(yyjson::const_(1)), yyjson::not_(yyjson::const_(2))),
+    yyjson::field("m", yyjson::additional_properties(yyjson::not_(yyjson::const_(0))),
+                  yyjson::property_names(yyjson::not_(yyjson::pattern("^_")))),
+    yyjson::field("row", yyjson::prefix_items(yyjson::not_(yyjson::const_(0)), {yyjson::not_(yyjson::const_("x"))})),
+    yyjson::field("c", yyjson::contains(yyjson::not_(yyjson::minimum(0)))),
+    yyjson::field("holes", yyjson::items(yyjson::not_(yyjson::minimum(5)))),
+    yyjson::field("o", yyjson::not_(yyjson::minimum(5))),
+    yyjson::field("nested", yyjson::not_(yyjson::items(yyjson::min_items(1)))));
+
+// yyjson::if_then_else with both branches and with one
+struct Conditional
+{
+    int n = 0;
+    std::vector<int> v = {};
+    std::vector<int> e = {};
+    std::string s = {};
+    std::map<std::string, std::string> m = {};
+    bool operator==(const Conditional&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<Conditional> = yyjson::annotate(
+    yyjson::field("n", yyjson::if_then_else(yyjson::if_(yyjson::minimum(10)), yyjson::then(yyjson::multiple_of(2)),
+                                            yyjson::else_(yyjson::maximum(5)))),
+    yyjson::field(
+        "v", yyjson::if_then_else(yyjson::if_(yyjson::min_items(2)), yyjson::then(yyjson::items(yyjson::maximum(9))))),
+    yyjson::field(
+        "e", yyjson::items(yyjson::if_then_else(yyjson::if_(yyjson::const_(0)), yyjson::else_(yyjson::minimum(5))))),
+    yyjson::field("s", yyjson::if_then_else(yyjson::if_(yyjson::pattern("^#")), yyjson::then(yyjson::min_length(4)))),
+    yyjson::field("m", yyjson::additional_properties(yyjson::if_then_else(yyjson::if_(yyjson::const_("x")),
+                                                                          yyjson::else_(yyjson::enum_("y", "z"))))));
+
+// yyjson::all_of, any_of and one_of, whose subschemas are braced lists or settings alone
+struct Composed
+{
+    int a = 0;
+    int b = 0;
+    int c = 0;
+    std::vector<int> v = {};
+    std::string s = {};
+    std::map<std::string, int> m = {};
+    int deep = 0;
+    std::vector<std::vector<int>> rows = {};
+    bool operator==(const Composed&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<Composed> = yyjson::annotate(
+    yyjson::field("a", yyjson::all_of(yyjson::minimum(0), {yyjson::multiple_of(2), yyjson::maximum(10)})),
+    yyjson::field("b", yyjson::any_of(yyjson::maximum(0), {yyjson::minimum(10), yyjson::maximum(20)})),
+    yyjson::field("c", yyjson::one_of(yyjson::multiple_of(2), yyjson::multiple_of(3))),
+    yyjson::field("v", yyjson::items(yyjson::any_of(yyjson::const_(0), yyjson::minimum(10)))),
+    yyjson::field("s", yyjson::any_of(yyjson::const_("a"), {yyjson::enum_("b", "c")}, {yyjson::pattern("^d")})),
+    yyjson::field("m", yyjson::additional_properties(yyjson::one_of({yyjson::minimum(0)}, {yyjson::maximum(9)}))),
+    yyjson::field("deep", yyjson::one_of(yyjson::not_(yyjson::minimum(0)),
+                                         yyjson::all_of(yyjson::minimum(100),
+                                                        yyjson::any_of(yyjson::const_(100), yyjson::minimum(200))))),
+    yyjson::field("rows", yyjson::any_of(yyjson::max_items(1), yyjson::items(yyjson::min_items(2)))));
+
+// yyjson::matches at the positions of values of the DOM
+struct Point
+{
+    int x = 0;
+    int y = 0;
+    bool operator==(const Point&) const = default;
+};
+struct Typed
+{
+    std::vector<yyjson::value> events = {};
+    std::vector<yyjson::value> ids = {};
+    yyjson::value point = {};
+    yyjson::value text = {};
+    std::map<std::string, yyjson::value> small = {};
+    bool operator==(const Typed& other) const
+    {
+        const auto write = [](const auto& t) {
+            return std::string(yyjson::write(std::tuple(t.events, t.ids, t.point, t.text, t.small)).data());
+        };
+        return write(*this) == write(other);
+    }
+};
+template <>
+inline constexpr auto yyjson::annotations<Typed> = yyjson::annotate(
+    yyjson::field("events", yyjson::contains(yyjson::matches<Point>), yyjson::min_contains(2)),
+    yyjson::field("ids", yyjson::items(yyjson::any_of(yyjson::matches<int>, yyjson::matches<std::string>))),
+    yyjson::field("point", yyjson::matches<Point>), yyjson::field("text", yyjson::not_(yyjson::matches<std::string>)),
+    yyjson::field("small", yyjson::additional_properties(yyjson::matches<std::uint8_t>)));
+
+// the combinators of a struct that VISITABLE_STRUCT describes
+struct VisitedCombined
+{
+    int n = 0;
+    std::vector<int> v = {};
+    bool operator==(const VisitedCombined&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<VisitedCombined> =
+    yyjson::annotate(yyjson::field("n", yyjson::not_(yyjson::const_(0))),
+                     yyjson::field("v", yyjson::items(yyjson::one_of(yyjson::minimum(5), yyjson::maximum(7)))));
+VISITABLE_STRUCT(VisitedCombined, n, v);
+
 // the keywords of the elements of a struct that is transparent
 struct Scores
 {
@@ -731,6 +859,15 @@ using Nested10 = std::vector<std::vector<
 CONSTRAINT_RULE(PrefixTooLong, Nested10,
                 yyjson::prefix_items(yyjson::items(yyjson::items(yyjson::items(
                     yyjson::items(yyjson::items(yyjson::items(yyjson::items(yyjson::items(yyjson::minimum(0)))))))))))
+// a subschema of a combinator follows the rules of a field, and a field can take a combinator more than once
+CONSTRAINT_RULE(NotTwice, int, yyjson::not_(yyjson::minimum(0)), yyjson::not_(yyjson::maximum(1)))
+CONSTRAINT_RULE(NotInverted, int, yyjson::not_(yyjson::minimum(2), yyjson::maximum(1)))
+CONSTRAINT_RULE(BranchMissingContains, std::vector<int>,
+                yyjson::if_then_else(yyjson::if_(yyjson::min_items(1)), yyjson::then(yyjson::min_contains(1))))
+CONSTRAINT_RULE(MatchesTwice, yyjson::value, yyjson::matches<int>, yyjson::matches<int>)
+CONSTRAINT_RULE(AnyOfTooLong, Nested10,
+                yyjson::any_of(yyjson::items(yyjson::items(yyjson::items(
+                    yyjson::items(yyjson::items(yyjson::items(yyjson::items(yyjson::items(yyjson::minimum(0)))))))))))
 #undef CONSTRAINT_RULE
 namespace constraint_tree_rules
 {
@@ -751,6 +888,9 @@ namespace constraint_tree_rules
                   tree_error<ContainsInverted> == reads_nothing && tree_error<ItemsInside> == reads_nothing);
     static_assert(tree_error<ContainsMissing> == contains_missing && tree_error<ItemsTwice> == keyword_twice);
     static_assert(tree_error<PrefixTooLong> == prefix_position_too_large);
+    static_assert(tree_error<NotTwice> == none && tree_error<NotInverted> == reads_nothing &&
+                  tree_error<BranchMissingContains> == contains_missing && tree_error<MatchesTwice> == keyword_twice &&
+                  tree_error<AnyOfTooLong> == prefix_position_too_large);
 
     // the keywords that a field without them leaves unchecked, and those that are no check
     static_assert(!yyjson::detail::has_constraints<Spot> && yyjson::detail::has_constraints<Bounded>);
@@ -798,6 +938,21 @@ struct ElementsAnnotated
        = yyjson::max_properties(1) ]] std::map<std::string, std::vector<int>>
         groups{};
     bool operator==(const ElementsAnnotated&) const = default;
+};
+
+struct CombinedAnnotated
+{
+    [[= yyjson::not_(yyjson::const_(0))]] int n = 1;
+    [[= yyjson::if_then_else(yyjson::if_(yyjson::minimum(10)), yyjson::then(yyjson::multiple_of(2)))]] int even = 0;
+    [[= yyjson::all_of(yyjson::minimum(0), {yyjson::maximum(9)})]] int digit = 0;
+    [[= yyjson::any_of(yyjson::const_("a"), yyjson::pattern("^b"))]] std::string s = "a";
+    [[= yyjson::one_of(yyjson::minimum(5), yyjson::maximum(7))]] int one = 0;
+    [[= yyjson::items(yyjson::matches<int>)]] std::vector<yyjson::value> ints{};
+    bool operator==(const CombinedAnnotated& other) const
+    {
+        return n == other.n && even == other.even && digit == other.digit && s == other.s && one == other.one &&
+               std::string(yyjson::write(ints).data()) == std::string(yyjson::write(other.ints).data());
+    }
 };
 #endif
 
@@ -1234,6 +1389,15 @@ TEST(Constraints, ConstAndEnumNames)
     expect_rejected<ListedEnums>(R"({"loud":"low"})", value("loud") + R"(is not one of "mid", "HIGH")", "/loud");
     expect_rejected<ListedEnums>(R"({"maybe":"HIGH"})", value("maybe") + R"(is not equal to the constant "mid")",
                                  "/maybe");
+}
+
+TEST(Constraints, TextUnderStrict)
+{
+    // the policies of the read that first compares the constant do not change it
+    EXPECT_EQ(yyjson::read<WideText>(R"({"at":{"x":1,"y":2}})", yyjson::reject_unknown_keys).at, (Spot{1, 2}));
+    EXPECT_EQ(yyjson::read<WideText>(R"({"at":{"x":1,"y":2}})").at, (Spot{1, 2}));
+    expect_rejected<WideText>(R"({"at":{"x":1,"y":3}})", R"(the value of the key "at" of WideText is not equal to)",
+                              "/at");
 }
 
 TEST(Constraints, ConstAndEnumTexts)
@@ -1930,6 +2094,212 @@ TEST(Constraints, ElementsDifferential)
     same(prefixed, false, R"({"row":[0,"abc",1]})");
 }
 
+TEST(Constraints, Not)
+{
+    expect_accepted<Negated>(
+        R"({"n":9,"s":"y","v":[0,1],"twice":3,"m":{"a":1},"row":[1,"y"],"c":[1,-1],"holes":[1],"o":3,"nested":[[]]})",
+        {9, "y", {0, 1}, 3, {{"a", 1}}, {1, "y"}, {1, -1}, {1}, 3, {{}}});
+    expect_accepted<Negated>(R"({"n":20,"o":null})", {.n = 20});
+
+    const auto value = [](std::string_view key) {
+        return std::format(R"(the value of the key "{}" of Negated )", key);
+    };
+    const auto element = [](std::string_view key) {
+        return std::format(R"(an element of the value of the key "{}" of Negated )", key);
+    };
+    constexpr auto negated = "satisfies the settings of yyjson::not_";
+    expect_rejected<Negated>(R"({"n":10})", value("n") + negated, "/n");
+    expect_rejected<Negated>(R"({"n":19})", value("n") + negated, "/n");
+    expect_rejected<Negated>(R"({"s":"xy"})", value("s") + negated, "/s");
+    // not_(not_(minimum(0))) is minimum(0)
+    expect_rejected<Negated>(R"({"v":[0,-1]})", element("v") + negated, "/v/1");
+    // each yyjson::not_ of a field is checked
+    expect_rejected<Negated>(R"({"twice":1})", value("twice") + negated, "/twice");
+    expect_rejected<Negated>(R"({"twice":2})", value("twice") + negated, "/twice");
+    expect_rejected<Negated>(R"({"m":{"a":0}})", element("m") + negated, "/m/a");
+    expect_rejected<Negated>(R"({"m":{"_a":1}})",
+                             R"(a key of the value of the key "m" of Negated )" + std::string(negated), "/m/_a");
+    expect_rejected<Negated>(R"({"row":[0,"y"]})", element("row") + negated, "/row/0");
+    expect_rejected<Negated>(R"({"row":[1,"x"]})", element("row") + negated, "/row/1");
+    expect_rejected<Negated>(R"({"c":[1,2]})",
+                             value("c") + "has no item that satisfies the constraints of yyjson::contains", "/c");
+    // null satisfies minimum(5), so not_ rejects a null element, but a null field is missing
+    expect_rejected<Negated>(R"({"holes":[1,null]})", element("holes") + negated, "/holes/1");
+    expect_rejected<Negated>(R"({"o":5})", value("o") + negated, "/o");
+    // not_ of a keyword of the elements
+    expect_rejected<Negated>(R"({"nested":[[1]]})", value("nested") + negated, "/nested");
+    expect_rejected<Negated>(R"({"nested":[]})", value("nested") + negated, "/nested");
+}
+
+TEST(Constraints, IfThenElse)
+{
+    expect_accepted<Conditional>(R"({"n":12,"v":[10],"e":[0,5],"s":"#abc","m":{"a":"x","b":"y"}})",
+                                 {12, {10}, {0, 5}, "#abc", {{"a", "x"}, {"b", "y"}}});
+    expect_accepted<Conditional>(R"({"n":5,"v":[1,9],"s":"ab"})", {5, {1, 9}, {}, "ab", {}});
+
+    const auto value = [](std::string_view key) {
+        return std::format(R"(the value of the key "{}" of Conditional )", key);
+    };
+    const auto element = [](std::string_view key) {
+        return std::format(R"(an element of the value of the key "{}" of Conditional )", key);
+    };
+    constexpr auto then = "satisfies the settings of yyjson::if_ and not those of yyjson::then";
+    constexpr auto else_ = "satisfies neither the settings of yyjson::if_ nor those of yyjson::else_";
+    expect_rejected<Conditional>(R"({"n":11})", value("n") + then, "/n");
+    expect_rejected<Conditional>(R"({"n":6})", value("n") + else_, "/n");
+    expect_rejected<Conditional>(R"({"v":[1,10]})", value("v") + then, "/v");
+    expect_rejected<Conditional>(R"({"e":[0,4]})", element("e") + else_, "/e/1");
+    expect_rejected<Conditional>(R"({"s":"#ab"})", value("s") + then, "/s");
+    expect_rejected<Conditional>(R"({"m":{"a":"w"}})", element("m") + else_, "/m/a");
+}
+
+TEST(Constraints, AllAnyOneOf)
+{
+    expect_accepted<Composed>(R"({"a":10,"b":-1,"c":4,"v":[0,10],"s":"c","m":{"k":-1},"deep":-5,"rows":[[1,2],[3,4]]})",
+                              {10, -1, 4, {0, 10}, "c", {{"k", -1}}, -5, {{1, 2}, {3, 4}}});
+    expect_accepted<Composed>(R"({"b":15,"c":3,"s":"a","m":{"k":10},"deep":100,"rows":[[]]})",
+                              {.b = 15, .c = 3, .s = "a", .m = {{"k", 10}}, .deep = 100, .rows = {{}}});
+    expect_accepted<Composed>(R"({"c":9,"s":"dz","deep":300})", {.c = 9, .s = "dz", .deep = 300});
+
+    const auto value = [](std::string_view key) {
+        return std::format(R"(the value of the key "{}" of Composed )", key);
+    };
+    const auto element = [](std::string_view key) {
+        return std::format(R"(an element of the value of the key "{}" of Composed )", key);
+    };
+    constexpr auto all = "does not satisfy all the subschemas of yyjson::all_of";
+    constexpr auto any = "satisfies none of the subschemas of yyjson::any_of";
+    constexpr auto none = "satisfies none of the subschemas of yyjson::one_of";
+    constexpr auto many = "satisfies more than one subschema of yyjson::one_of";
+    expect_rejected<Composed>(R"({"a":-2})", value("a") + all, "/a");
+    expect_rejected<Composed>(R"({"a":3})", value("a") + all, "/a");
+    expect_rejected<Composed>(R"({"a":12})", value("a") + all, "/a");
+    expect_rejected<Composed>(R"({"b":5})", value("b") + any, "/b");
+    expect_rejected<Composed>(R"({"b":21})", value("b") + any, "/b");
+    expect_rejected<Composed>(R"({"c":1})", value("c") + none, "/c");
+    expect_rejected<Composed>(R"({"c":6})", value("c") + many, "/c");
+    expect_rejected<Composed>(R"({"v":[0,5]})", element("v") + any, "/v/1");
+    expect_rejected<Composed>(R"({"s":"e"})", value("s") + any, "/s");
+    // minimum(0) and maximum(9) both hold for 5
+    expect_rejected<Composed>(R"({"m":{"k":5}})", element("m") + many, "/m/k");
+    expect_rejected<Composed>(R"({"deep":0})", value("deep") + none, "/deep");
+    expect_rejected<Composed>(R"({"deep":150})", value("deep") + none, "/deep");
+    expect_rejected<Composed>(R"({"rows":[[1],[2]]})", value("rows") + any, "/rows");
+}
+
+TEST(Constraints, Matches)
+{
+    expect_accepted<Typed>(
+        R"({"events":[{"x":1,"y":2},1,{"x":0,"y":0,"z":0}],"ids":[1,"a"],"point":{"x":1,"y":2},"text":1,)"
+        R"("small":{"a":255}})",
+        yyjson::read<Typed>(R"({"events":[{"x":1,"y":2},1,{"x":0,"y":0,"z":0}],"ids":[1,"a"],"point":{"x":1,"y":2},)"
+                            R"("text":1,"small":{"a":255}})"));
+
+    const auto value = [](std::string_view key) { return std::format(R"(the value of the key "{}" of Typed )", key); };
+    const auto element = [](std::string_view key) {
+        return std::format(R"(an element of the value of the key "{}" of Typed )", key);
+    };
+    const auto few = "has fewer than 2 items that satisfy the constraints of yyjson::contains";
+    // a point without "y" is not read under yyjson::strict
+    expect_rejected<Typed>(R"({"events":[{"x":1,"y":2},{"x":1}],"point":{"x":1,"y":2}})", value("events") + few,
+                           "/events");
+    expect_rejected<Typed>(R"({"events":[{"x":1,"y":2},{"x":1,"y":null}],"point":{"x":1,"y":2}})",
+                           value("events") + few, "/events");
+    expect_rejected<Typed>(R"({"events":[{"x":1,"y":2},{"x":1,"y":2,"y":3}],"point":{"x":1,"y":2}})",
+                           value("events") + few, "/events");
+    expect_rejected<Typed>(R"({"ids":[1,1.5],"point":{"x":1,"y":2}})",
+                           element("ids") + "satisfies none of the subschemas of yyjson::any_of", "/ids/1");
+    expect_rejected<Typed>(R"({"point":[1,2]})", value("point") + "is not read as Point by yyjson::matches", "/point");
+    expect_rejected<Typed>(R"({"point":{"x":1,"y":2},"text":"a"})",
+                           value("text") + "satisfies the settings of yyjson::not_", "/text");
+    expect_rejected<Typed>(R"({"point":{"x":1,"y":2},"small":{"a":256}})",
+                           element("small") + "is not read as unsigned char by yyjson::matches", "/small/a");
+
+    // the policies of the read around yyjson::matches do not change it
+    constexpr auto unknown = R"({"events":[{"x":1,"y":2},{"x":1,"y":2,"z":3}],"ids":[],"point":{"x":1,"y":2,"z":3},)"
+                             R"("text":null,"small":{}})";
+    EXPECT_NO_THROW((void)yyjson::read<Typed>(unknown, yyjson::reject_unknown_keys));
+    EXPECT_NO_THROW((void)yyjson::read<Typed>(unknown, yyjson::strict));
+}
+
+TEST(Constraints, MatchesFunction)
+{
+    const auto matches = [](auto m, const char* json) { return m(yyjson::value(yyjson::read(json))); };
+    EXPECT_TRUE(matches(yyjson::matches<int>, "1"));
+    EXPECT_FALSE(matches(yyjson::matches<int>, "1.5"));
+    EXPECT_FALSE(matches(yyjson::matches<std::uint8_t>, "300"));
+    EXPECT_TRUE(matches(yyjson::matches<Point>, R"({"x":1,"y":2,"z":3})"));
+    EXPECT_FALSE(matches(yyjson::matches<Point>, R"({"x":1})"));
+    EXPECT_TRUE(matches(yyjson::matches<std::optional<int>>, "null"));
+    EXPECT_TRUE(yyjson::matches<std::vector<int>>(yyjson::read("[1,2]")));
+    EXPECT_FALSE(yyjson::matches<std::vector<int>>(*yyjson::read("[1,true]").as_array()));
+
+    // the kind of the value decides the types that read each value of their kinds, as a read under strict does
+    const auto read_strictly = []<typename T>(std::type_identity<T>, const char* json) {
+        try
+        {
+            (void)yyjson::read<std::tuple<T>>(std::format("[{}]", json), yyjson::strict);
+            return true;
+        }
+        catch (const yyjson::bad_cast&)
+        {
+            return false;
+        }
+    };
+    const auto agree = [&]<typename T>(std::type_identity<T> type) {
+        for (const auto* json : {"null", "true", "0", "-1", "1.5", "1e300", R"("a")", "[1]", R"({"a":1})"})
+        {
+            EXPECT_EQ(yyjson::matches<T>(yyjson::value(yyjson::read(json))), read_strictly(type, json))
+                << json << " " << yyjson::detail::type_name<T>();
+        }
+    };
+    agree(std::type_identity<bool>());
+    agree(std::type_identity<std::nullptr_t>());
+    agree(std::type_identity<double>());
+    agree(std::type_identity<std::string>());
+    agree(std::type_identity<yyjson::value>());
+    agree(std::type_identity<yyjson::array>());
+    agree(std::type_identity<yyjson::object>());
+    agree(std::type_identity<int>());
+    agree(std::type_identity<float>());
+}
+
+TEST(Constraints, CombinatorsMerge)
+{
+    // merge_into checks the values of the patch, and a null patch resets the field without a check
+    auto merged = Negated{.n = 5, .o = 1};
+    yyjson::merge_into(R"({"n":9,"o":null})", merged);
+    EXPECT_EQ(merged.n, 9);
+    EXPECT_FALSE(merged.o.has_value());
+    EXPECT_THROW(yyjson::merge_into(R"({"n":11})", merged), yyjson::bad_cast);
+
+    expect_accepted<VisitedCombined>(R"({"n":1,"v":[4,8]})", {1, {4, 8}});
+    expect_rejected<VisitedCombined>(
+        R"({"n":0})", R"(the value of the key "n" of VisitedCombined satisfies the settings of yyjson::not_)", "/n");
+    expect_rejected<VisitedCombined>(
+        R"({"n":1,"v":[6]})",
+        R"(an element of the value of the key "v" of VisitedCombined satisfies more than one subschema of yyjson::one_of)",
+        "/v/0");
+}
+
+TEST(Constraints, CombinatorsDifferential)
+{
+    // the reader without a document reads what the document gives, and leaves a rejected value to it
+    const auto negated = [](const char* json) { return expect_direct_read<Negated>(json); };
+    EXPECT_TRUE(negated(R"({"n":9,"v":[1],"m":{"a":1},"row":[1,"y"],"holes":[1]})"));
+    for (const auto* json : {R"({"n":10})", R"({"v":[-1]})", R"({"m":{"_":1}})", R"({"holes":[null]})"})
+        (void)negated(json);
+    const auto conditional = [](const char* json) { return expect_direct_read<Conditional>(json); };
+    EXPECT_TRUE(conditional(R"({"n":12,"e":[0,5]})"));
+    (void)conditional(R"({"e":[1]})");
+    const auto composed = [](const char* json) { return expect_direct_read<Composed>(json); };
+    EXPECT_TRUE(composed(R"({"c":2,"v":[0,11],"s":"b"})"));
+    for (const auto* json : {R"({"c":6})", R"({"v":[1]})", R"({"m":{"k":3}})"}) (void)composed(json);
+    const auto typed = [](const char* json) { return expect_direct_read<Typed>(json); };
+    EXPECT_TRUE(typed(R"({"events":[{"x":1,"y":2},{"x":1,"y":2}],"point":{"x":0,"y":0}})"));
+    (void)typed(R"({"events":[{"x":1,"y":2},{"x":1,"y":2}],"point":{"x":0}})");
+}
+
 #if FIELD_RFL_ANNOTATIONS
 TEST(Constraints, Annotations)
 {
@@ -1990,6 +2360,28 @@ TEST(Constraints, ElementAnnotations)
                                        "/groups/g/0");
     expect_rejected<ElementsAnnotated>(R"({"groups":{"g":[],"h":[]}})",
                                        value("groups") + "has more properties than the maximum 1", "/groups");
+}
+
+TEST(Constraints, CombinatorAnnotations)
+{
+    expect_accepted<CombinedAnnotated>(R"({"n":2,"even":12,"digit":9,"s":"bc","one":4})", {2, 12, 9, "bc", 4, {}});
+    const auto value = [](std::string_view key) {
+        return std::format(R"(the value of the key "{}" of CombinedAnnotated )", key);
+    };
+    expect_rejected<CombinedAnnotated>(R"({"n":0})", value("n") + "satisfies the settings of yyjson::not_", "/n");
+    expect_rejected<CombinedAnnotated>(
+        R"({"even":11})", value("even") + "satisfies the settings of yyjson::if_ and not those of yyjson::then",
+        "/even");
+    expect_rejected<CombinedAnnotated>(
+        R"({"digit":10})", value("digit") + "does not satisfy all the subschemas of yyjson::all_of", "/digit");
+    expect_rejected<CombinedAnnotated>(R"({"s":"c"})",
+                                       value("s") + "satisfies none of the subschemas of yyjson::any_of", "/s");
+    expect_rejected<CombinedAnnotated>(R"({"one":6})",
+                                       value("one") + "satisfies more than one subschema of yyjson::one_of", "/one");
+    expect_rejected<CombinedAnnotated>(
+        R"({"ints":[1,"a"]})",
+        R"(an element of the value of the key "ints" of CombinedAnnotated is not read as int by yyjson::matches)",
+        "/ints/1");
 }
 #endif
 

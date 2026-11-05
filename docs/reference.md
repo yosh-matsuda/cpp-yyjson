@@ -48,6 +48,11 @@ This page lists the functions, classes and other entities of cpp-yyjson, grouped
     *   [`yyjson::emit_defaults`](#yyjsonemit_defaults)
     *   [`yyjson::internal_tag`, `yyjson::adjacent_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag)
     *   [`yyjson::enum_format`, `yyjson::enumerator`](#yyjsonenum_format-yyjsonenumerator)
+    *   [Constraints](#constraints)
+    *   [Constraints of elements](#constraints-of-elements)
+    *   [`yyjson::not_`, `yyjson::if_then_else`, `yyjson::all_of`, `yyjson::any_of`, `yyjson::one_of`](#yyjsonnot_-yyjsonif_then_else-yyjsonall_of-yyjsonany_of-yyjsonone_of)
+    *   [`yyjson::matches<T>`](#yyjsonmatchest)
+    *   [`yyjson::pattern_matcher<>`, `yyjson::format_checker<>`](#yyjsonpattern_matcher-yyjsonformat_checker)
     *   [`VISITABLE_STRUCT`](#visitable_struct)
 *   [Casters](#casters)
     *   [`yyjson::caster<T>`](#yyjsoncastert)
@@ -1727,6 +1732,79 @@ inline constexpr auto yyjson::annotations<Survey> = yyjson::annotate(
 
 yyjson::read<Survey>(R"({"scores":[90,101]})");
 // throws yyjson::bad_cast: an element of the value of the key "scores" of Survey is greater than the maximum 100 at /scores/1 (line 1, column 15, pos 14)
+```
+
+### `yyjson::not_`, `yyjson::if_then_else`, `yyjson::all_of`, `yyjson::any_of`, `yyjson::one_of`
+
+The settings that combine subschemas, as the keywords `not`, `if`, `then`, `else`, `allOf`, `anyOf` and `oneOf` of JSON Schema.
+
+```cpp
+template <typename... As>
+struct not_ { consteval explicit not_(As... settings); };
+template <typename... As>
+struct if_ { consteval explicit if_(As... settings); };
+template <typename... As>
+struct then { consteval explicit then(As... settings); };
+template <typename... As>
+struct else_ { consteval explicit else_(As... settings); };
+consteval auto if_then_else(if_<...> condition, then<...> then_part, else_<...> else_part);
+consteval auto if_then_else(if_<...> condition, then<...> then_part);
+consteval auto if_then_else(if_<...> condition, else_<...> else_part);
+inline constexpr /* unspecified */ all_of;  // all_of(s0, s1, ...), up to 16 subschemas
+inline constexpr /* unspecified */ any_of;
+inline constexpr /* unspecified */ one_of;
+```
+
+*   `yyjson::not_(s...)` rejects a value that satisfies all of `s`.
+*   `yyjson::if_then_else` rejects a value that satisfies `yyjson::if_` and not `yyjson::then`, or that does not satisfy `yyjson::if_` and not `yyjson::else_`. A part that it leaves out accepts every value.
+*   `yyjson::all_of`, `yyjson::any_of` and `yyjson::one_of` reject a value that satisfies not all, none, or not exactly one of the subschemas. Each subschema is a braced list of settings, or one setting.
+*   They are settings of a field and of the subschemas, and a field can have each one more than once.
+*   A struct takes them as settings of its own. Their subschemas then take `yyjson::field("key", s...)`, where `s` is `yyjson::required` and the constraints of the member `key`. A field of `yyjson::value` or `yyjson::object` takes such subschemas too. A struct with `yyjson::transparent` or `yyjson::as_array` does not take them.
+
+See [Combining constraints](validation.md#combining-constraints) and [Conditions between fields](validation.md#conditions-between-fields).
+
+```cpp
+struct Contact
+{
+    std::optional<std::string> email;
+    std::optional<std::string> phone;
+};
+
+template <>
+inline constexpr auto yyjson::annotations<Contact> = yyjson::annotate(
+    yyjson::one_of(yyjson::field("email", yyjson::required), yyjson::field("phone", yyjson::required)));
+
+yyjson::read<Contact>(R"({})");
+// throws yyjson::bad_cast: Contact satisfies none of the subschemas of yyjson::one_of (line 1, column 1, pos 0)
+```
+
+### `yyjson::matches<T>`
+
+A constraint of a value of the DOM that reads as `T`.
+
+```cpp
+template <typename T>
+inline constexpr matches_t<T> matches;
+
+template <typename T>
+struct matches_t
+{
+    template <typename Json>
+    bool operator()(const Json& json) const;
+};
+```
+
+`yyjson::matches<T>` is a setting of a `yyjson::value`, a `yyjson::array` or a `yyjson::object`, and of the subschemas of such a field. On a field of another type, it is a compile error. A value satisfies it when it reads as `T` under [`yyjson::strict`](#read-policies), whatever the policies of the read around it. `yyjson::matches<T>(json)` tells this for a JSON value. See [Values of the DOM that read as a type](validation.md#values-of-the-dom-that-read-as-a-type).
+
+```cpp
+struct Point
+{
+    int x = 0;
+    int y = 0;
+};
+
+auto doc = yyjson::read(R"({"x":1,"y":2})");
+bool b = yyjson::matches<Point>(doc);  // -> true
 ```
 
 ### `yyjson::pattern_matcher<>`, `yyjson::format_checker<>`
