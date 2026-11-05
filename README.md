@@ -138,13 +138,14 @@ Without CMake, copy `cpp_yyjson.hpp`, `field_reflection.hpp` and `yyjson.h` from
 
 ### CMake options
 
-| Option | Effect |
-| --- | --- |
-| `CPPYYJSON_ENABLE_AVX2=ON` | Compiles the backend with AVX2 in addition to SSE2; the binary then requires an AVX2-capable CPU. |
-| `CPPYYJSON_USE_BUNDLED_YYJSON=OFF` | Uses an external yyjson package instead of the bundled backend. |
-| `CPPYYJSON_READER_DEPTH_LIMIT`, `CPPYYJSON_WRITER_DEPTH_LIMIT`, `CPPYYJSON_DISABLE_FILE` | Set the yyjson [compile-time options](https://ibireme.github.io/yyjson/doc/doxygen/html/building-and-testing.html#compile-time-options) `YYJSON_READER_DEPTH_LIMIT`, `YYJSON_WRITER_DEPTH_LIMIT` and `YYJSON_DISABLE_FILE` of the bundled backend. With `CPPYYJSON_USE_BUNDLED_YYJSON=OFF`, these options stop the configuration with an error. |
-| `CPPYYJSON_DISABLE_HUGE_PAGES=ON` | Turns off the huge pages of the bundled backend. With `CPPYYJSON_USE_BUNDLED_YYJSON=OFF`, this option stops the configuration with an error. |
-| `CPPYYJSON_RECURSION_DEPTH_LIMIT` | Limits how deeply values of [recursive types](docs/conversions.md#recursive-types) are read. |
+| Option | Default | Effect |
+| --- | --- | --- |
+| `CPPYYJSON_ENABLE_AVX2` | `OFF`, but `ON` when `CPPYYJSON_BUILD_BENCH=ON` on x86-64 | `ON` compiles the backend with AVX2 in addition to SSE2; the binary then requires an AVX2-capable CPU. |
+| `CPPYYJSON_USE_BUNDLED_YYJSON` | `ON` | `OFF` uses an external yyjson package instead of the bundled backend. |
+| `CPPYYJSON_READER_DEPTH_LIMIT`, `CPPYYJSON_WRITER_DEPTH_LIMIT` | Empty (no limit) | Set the yyjson [compile-time options](https://ibireme.github.io/yyjson/doc/doxygen/html/building-and-testing.html#compile-time-options) `YYJSON_READER_DEPTH_LIMIT` and `YYJSON_WRITER_DEPTH_LIMIT` of the bundled backend. With `CPPYYJSON_USE_BUNDLED_YYJSON=OFF`, these options stop the configuration with an error. |
+| `CPPYYJSON_DISABLE_FILE` | `OFF` | `ON` sets the yyjson compile-time option `YYJSON_DISABLE_FILE` of the bundled backend. With `CPPYYJSON_USE_BUNDLED_YYJSON=OFF`, this option stops the configuration with an error. |
+| `CPPYYJSON_DISABLE_HUGE_PAGES` | `OFF` | `ON` turns off the huge pages of the bundled backend. With `CPPYYJSON_USE_BUNDLED_YYJSON=OFF`, this option stops the configuration with an error. |
+| `CPPYYJSON_RECURSION_DEPTH_LIMIT` | Empty (256) | Limits how deeply values of [recursive types](docs/conversions.md#recursive-types) are read. `0` removes the limit. |
 
 [Build configuration](docs/reference.md#build-configuration) covers link-time optimization, the options with an external yyjson and building this repository.
 
