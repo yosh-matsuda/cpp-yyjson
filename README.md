@@ -238,7 +238,7 @@ cpp-yyjson, [Glaze](https://github.com/stephenberry/glaze) and [reflect-cpp](htt
 
 ![Write throughput from C++ types](docs/benchmark/images/typed_write_throughput.svg)
 
-For a reused object, cpp-yyjson's `merge_into` is compared with Glaze, because both keep the members that the next document omits. `read_into` resets them instead. reflect-cpp has no interface that reuses the object or the string. The charts also show the DOM API reading and casting (`read(json).cast<T>()`) and building and writing (`value(t).write()`). See [docs/benchmark](docs/benchmark/README.md#data-binding-api) for the environment and every document.
+For a reused object, cpp-yyjson's `merge_into` is compared with Glaze, because both keep the members that the next document omits. `read_into` resets them instead. reflect-cpp has no interface that reuses the object or the string. The charts also show the DOM API reading and casting (`read(json).cast<T>()`) and building and writing (`value(t).write()`). These DOM rows measure other work than the rows under [DOM API vs. other libraries](#dom-api-vs-other-libraries), so their numbers differ. There, reading visits every element of the document, and writing writes a document that is already parsed. Here, reading converts the document into the struct and allocates its strings and vectors, and writing first builds a document from the struct. See [docs/benchmark](docs/benchmark/README.md#data-binding-api) for the environment and every document.
 
 ### DOM API vs. other libraries
 
