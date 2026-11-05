@@ -203,6 +203,108 @@ static_assert(yyjson::readable<RecJson> && yyjson::writable<RecJson>);
 static_assert(yyjson::readable<RecExpr> && yyjson::writable<RecExpr>);
 static_assert(yyjson::readable<RecTagged> && yyjson::writable<RecTagged>);
 
+// Recursive types that hold themselves through `yyjson::indirect`, which copies the value that it holds
+struct IndExpr
+{
+    std::string op;
+    std::optional<yyjson::indirect<IndExpr>> lhs;
+    std::variant<std::monostate, yyjson::indirect<IndExpr>> rhs;
+    std::vector<yyjson::indirect<IndExpr>> args;
+    bool operator==(const IndExpr&) const = default;
+};
+struct IndLeaf
+{
+    int v = 0;
+    bool operator==(const IndLeaf&) const = default;
+};
+struct IndBranch;
+using IndTree = std::variant<IndLeaf, yyjson::indirect<IndBranch>>;
+struct IndBranch
+{
+    std::vector<IndTree> kids;
+    bool operator==(const IndBranch&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<IndTree> = yyjson::annotate(yyjson::internal_tag("t", {"leaf", "branch"}));
+// The default constructor of `indirect` is explicit, so a member without an initializer is not initialized from
+// `{}`: the struct is default constructible, but not `std::default_initializable`, as with `std::indirect`
+struct IndBare
+{
+    yyjson::indirect<IndLeaf> leaf;
+    yyjson::indirect<std::vector<int>> list;
+};
+static_assert(std::is_default_constructible_v<IndBare> && !std::default_initializable<IndBare>);
+static_assert(yyjson::detail::recursive_type<IndExpr>);
+static_assert(yyjson::readable<IndExpr> && yyjson::writable<IndExpr>);
+static_assert(yyjson::readable<IndTree> && yyjson::writable<IndTree>);
+static_assert(yyjson::readable<IndBare> && yyjson::writable<IndBare>);
+static_assert(std::is_copy_constructible_v<IndExpr> && std::is_copy_constructible_v<yyjson::indirect<IndExpr>>);
+static_assert(!std::is_convertible_v<int, yyjson::indirect<int>>);
+static_assert(!std::is_convertible_v<IndExpr, yyjson::indirect<IndExpr>>);
+static_assert([] {
+    auto a = yyjson::indirect<int>(3);
+    auto b = a;
+    *b = 4;
+    auto c = std::move(a);
+    return *b + *c + (a.valueless_after_move() ? 10 : 0);
+}() == 17);
+// A recursive member that comes first: counting the members of an aggregate asks whether it is constructible from a
+// type that converts to anything, which asked the same of the member again, also through a variant
+struct IndFirst
+{
+    std::optional<yyjson::indirect<IndFirst>> next;
+    int n = 0;
+    bool operator==(const IndFirst&) const = default;
+};
+struct IndFirstVariant
+{
+    std::variant<std::monostate, yyjson::indirect<IndFirstVariant>> next;
+    std::vector<IndFirstVariant> list;
+    bool operator==(const IndFirstVariant&) const = default;
+};
+struct IndFirstAlternative
+{
+    std::optional<yyjson::indirect<std::variant<int, IndFirstAlternative>>> next;
+    bool operator==(const IndFirstAlternative&) const = default;
+};
+struct IndOuter
+{
+    std::optional<IndFirst> first;
+    IndFirstVariant variant;
+    IndFirstAlternative alternative;
+    bool operator==(const IndOuter&) const = default;
+};
+static_assert(yyjson::readable<IndOuter> && yyjson::writable<IndOuter>);
+static_assert(std::is_copy_constructible_v<IndOuter>);
+// so a class is constructed only from itself or a derived class, unlike `std::indirect`, which takes the arguments
+// of any constructor; the others go after `std::in_place`
+struct IndBase
+{
+    int a = 0;
+};
+struct IndDerived : IndBase
+{
+    int b = 0;
+};
+static_assert(std::is_constructible_v<yyjson::indirect<IndBase>, IndDerived>);
+static_assert(std::is_assignable_v<yyjson::indirect<IndBase>&, const IndDerived&>);
+static_assert(!std::is_constructible_v<yyjson::indirect<IndBase>, int>);
+static_assert(std::is_constructible_v<yyjson::indirect<IndBase>, std::in_place_t, int>);
+static_assert(!std::is_constructible_v<yyjson::indirect<std::string>, const char*>);
+static_assert(std::is_constructible_v<yyjson::indirect<std::string>, std::in_place_t, const char*>);
+static_assert(std::is_constructible_v<yyjson::indirect<double>, int>);
+#if defined(__cpp_lib_indirect)
+struct IndStd
+{
+    int n = 0;
+    std::optional<std::indirect<IndStd>> next;
+    std::vector<std::indirect<IndStd>> list;
+    bool operator==(const IndStd&) const = default;
+};
+static_assert(yyjson::detail::recursive_type<IndStd>);
+static_assert(yyjson::readable<IndStd> && yyjson::writable<IndStd>);
+#endif
+
 // The fields of a recursive type are checked as those of any other type, through each type on the cycle
 class RecPrivate
 {
@@ -511,6 +613,120 @@ TEST(Reader, RecursiveVariantLimit)
     // and the first alternative is read at any depth
     expect_recursive<RecTagged>(tagged(100, "1"));
     EXPECT_EQ(yyjson::read<RecTagged>(tagged(100, "1")).op.index(), 0);
+}
+
+TEST(Indirect, Class)
+{
+    using E = IndExpr;
+    const auto make = [](std::string op, std::optional<yyjson::indirect<E>> lhs = std::nullopt) {
+        auto x = E();
+        x.op = std::move(op);
+        x.lhs = std::move(lhs);
+        return x;
+    };
+    auto e = make("+", yyjson::indirect<E>(make("a")));
+    e.rhs = yyjson::indirect<E>(make("b"));
+    // a copy is deep
+    auto f = e;
+    EXPECT_EQ(f, e);
+    (*f.lhs)->op = "c";
+    EXPECT_NE(f, e);
+    EXPECT_EQ(e.lhs.value()->op, "a");
+
+    // a move leaves the source without a value, which assignment gives back
+    auto i = yyjson::indirect<E>(std::in_place, make("x"));
+    auto j = std::move(i);
+    EXPECT_TRUE(i.valueless_after_move());
+    EXPECT_EQ(j->op, "x");
+    i = j;
+    EXPECT_FALSE(i.valueless_after_move());
+    EXPECT_EQ(i->op, "x");
+    auto k = yyjson::indirect<E>();
+    EXPECT_EQ(*k, E());
+    k = std::move(i);
+    auto moved = std::move(k);
+    k = moved;
+    EXPECT_EQ(k->op, "x");
+
+    // comparison with another indirect or with a value; one without a value is less than any value
+    auto a = yyjson::indirect<int>(1);
+    auto b = yyjson::indirect<int>(2);
+    EXPECT_TRUE(a < b && a != b && a == 1 && a < 2 && (a <=> 1) == 0);
+    auto c = std::move(a);
+    EXPECT_TRUE(a < b && a != c && !(a == 1));
+    auto d = std::move(b);
+    EXPECT_EQ(a, b);
+    a = 5;
+    EXPECT_EQ(*a, 5);
+    swap(a, c);
+    EXPECT_EQ(*a, 1);
+    EXPECT_EQ(*c, 5);
+
+    auto v = yyjson::indirect<std::vector<int>>(std::in_place, {1, 2, 3});
+    EXPECT_EQ(v->size(), 3);
+    auto w = yyjson::indirect(std::string("x"));
+    static_assert(std::same_as<decltype(w), yyjson::indirect<std::string>>);
+    auto set = std::set<yyjson::indirect<int>>();
+    set.emplace(1);
+    auto hashed = std::unordered_set<yyjson::indirect<int>>();
+    hashed.insert(yyjson::indirect<int>(1));
+    EXPECT_TRUE(hashed.contains(yyjson::indirect<int>(1)));
+
+    auto base = yyjson::indirect<IndBase>(IndDerived{{1}, 2});
+    EXPECT_EQ(base->a, 1);
+    base = IndDerived{{3}, 4};
+    EXPECT_EQ(base->a, 3);
+    EXPECT_EQ(yyjson::indirect<IndBase>(std::in_place, 7)->a, 7);
+
+    // assignment from a part of the value that is held
+    auto g = make("1", yyjson::indirect<E>(make("2", yyjson::indirect<E>(make("3")))));
+    *g.lhs = std::move(*(*g.lhs)->lhs);
+    EXPECT_EQ((*g.lhs)->op, "3");
+}
+
+TEST(Reader, IndirectFields)
+{
+    expect_recursive<IndExpr>(
+        R"({"op":"+","lhs":{"op":"x","rhs":null,"args":[]},"rhs":{"op":"y","rhs":{"op":"z","rhs":null,"args":[]},)"
+        R"("args":[]},"args":[{"op":"a","rhs":null,"args":[]}]})");
+    expect_recursive<IndTree>(R"({"t":"branch","kids":[{"t":"leaf","v":1},{"t":"branch","kids":[]}]})");
+    expect_recursive<std::vector<yyjson::indirect<int>>>("[1,2,3]");
+    expect_recursive<IndOuter>(R"({"first":{"next":{"n":2},"n":1},"variant":{"next":{"next":null,"list":[]},)"
+                               R"("list":[{"next":null,"list":[]}]},"alternative":{"next":{"next":1}}})");
+    EXPECT_FALSE(yyjson::read<std::optional<yyjson::indirect<int>>>("null").has_value());
+    EXPECT_EQ(**yyjson::read<std::optional<yyjson::indirect<int>>>("1"), 1);
+#if defined(__cpp_lib_indirect)
+    // `std::indirect` is read and written as `yyjson::indirect`
+    constexpr auto std_json = std::string_view(R"({"n":1,"next":{"n":2,"list":[]},"list":[{"n":3,"list":[]}]})");
+    expect_recursive<IndStd>(std_json);
+    EXPECT_EQ(std::string_view(yyjson::write(yyjson::read<IndStd>(std_json))), std_json);
+#endif
+
+    // an indirect holds a value always, so a field of one does not take null
+    EXPECT_THROW((void)yyjson::read<IndBare>(R"({"leaf":null,"list":[]})"), yyjson::bad_cast);
+    EXPECT_THROW((void)yyjson::read(R"({"leaf":null,"list":[]})").cast<IndBare>(), yyjson::bad_cast);
+
+    // reading into a struct reads into the values that its fields hold, and merging merges them
+    auto bare = IndBare();
+    yyjson::read_into(R"({"leaf":{"v":3},"list":[1,2]})", bare);
+    EXPECT_EQ(bare.leaf->v, 3);
+    EXPECT_EQ(*bare.list, (std::vector<int>{1, 2}));
+    yyjson::merge_into(R"({"leaf":{"v":9}})", bare);
+    EXPECT_EQ(bare.leaf->v, 9);
+    EXPECT_EQ(*bare.list, (std::vector<int>{1, 2}));
+    EXPECT_EQ(std::string_view(yyjson::write(bare)), R"({"leaf":{"v":9},"list":[1,2]})");
+
+    // a field without a value after a move is not written, but reported
+    auto taken = std::move(bare.leaf);
+    EXPECT_THROW((void)yyjson::write(bare), yyjson::bad_cast);
+    EXPECT_THROW((void)yyjson::object(bare), yyjson::bad_cast);
+    // and reading gives it one again
+    yyjson::merge_into(R"({"leaf":{"v":2}})", bare);
+    EXPECT_FALSE(bare.leaf.valueless_after_move());
+    EXPECT_EQ(bare.leaf->v, 2);
+    taken = std::move(bare.leaf);
+    yyjson::read_into(R"({"leaf":{"v":4},"list":[]})", bare);
+    EXPECT_EQ(bare.leaf->v, 4);
 }
 
 // NOLINTEND

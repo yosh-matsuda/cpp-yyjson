@@ -1063,6 +1063,210 @@ namespace yyjson
     {
     } inline constexpr empty_object;
 
+    template <typename T>
+    class indirect;
+
+    namespace detail
+    {
+        // `yyjson::indirect<T>`, and `std::indirect<T, A>` of C++26.
+        template <typename T>
+        struct is_indirect : std::false_type
+        {
+        };
+        template <typename T>
+        struct is_indirect<yyjson::indirect<T>> : std::true_type
+        {
+            using value_type = T;
+        };
+#if defined(__cpp_lib_indirect)
+        template <typename T, typename A>
+        struct is_indirect<std::indirect<T, A>> : std::true_type
+        {
+            using value_type = T;
+        };
+#endif
+        template <typename T>
+        concept indirect_value = is_indirect<std::remove_cvref_t<T>>::value;
+
+        template <typename I>
+        [[noreturn]] void throw_valueless_indirect();
+
+        // The three-way comparison of `std::indirect`, which falls back to `operator<` for the types that have no
+        // `operator<=>`.
+        inline constexpr auto synth_three_way = []<typename T, typename U>(const T& t, const U& u)
+        requires requires {
+            { t < u } -> std::convertible_to<bool>;
+            { u < t } -> std::convertible_to<bool>;
+        }
+        {
+            if constexpr (std::three_way_comparable_with<T, U>)
+                return t <=> u;
+            else if (t < u)
+                return std::weak_ordering::less;
+            else if (u < t)
+                return std::weak_ordering::greater;
+            else
+                return std::weak_ordering::equivalent;
+        };
+        template <typename T, typename U>
+        using synth_three_way_result = decltype(synth_three_way(std::declval<T&>(), std::declval<U&>()));
+
+        // Whether `indirect<T>` is constructed from U without `std::in_place`: a class T from T or a class derived
+        // from T only, so that whether T is constructible from U is not asked for other types.
+        template <typename T, typename U>
+        concept indirect_constructible =
+            (std::is_class_v<T> || std::is_union_v<T> ? std::is_base_of_v<T, std::remove_cvref_t<U>> : true) &&
+            std::is_constructible_v<T, U>;
+    }  // namespace detail
+
+    // A value of T on the heap, so that a struct can hold a value of its own type; read and written as the value of
+    // T.  The interface is that of `std::indirect<T>` of C++26 without the allocator.  T may be incomplete where
+    // `indirect<T>` is the type of a member.
+    template <typename T>
+    class indirect
+    {
+        T* p_;
+
+    public:
+        using value_type = T;
+        using pointer = T*;
+        using const_pointer = const T*;
+
+        constexpr explicit indirect() : p_(new T()) {}
+        constexpr indirect(const indirect& other) : p_(other.p_ == nullptr ? nullptr : new T(*other.p_)) {}
+        constexpr indirect(indirect&& other) noexcept : p_(std::exchange(other.p_, nullptr)) {}
+        // Unlike std::indirect, a class T is constructed only from T or a class derived from it.  A constructibility
+        // check of a struct asks the same of its members, and a member that holds the struct through indirect would
+        // ask it again, which fails to compile, e.g., when the reflection counts the members of the struct.
+        template <typename U = T>
+        requires (!std::same_as<std::remove_cvref_t<U>, indirect>) &&
+                 (!std::same_as<std::remove_cvref_t<U>, std::in_place_t>) && detail::indirect_constructible<T, U>
+        constexpr explicit indirect(U&& u) : p_(new T(std::forward<U>(u)))
+        {
+        }
+        template <typename... Us>
+        requires std::is_constructible_v<T, Us...>
+        constexpr explicit indirect(std::in_place_t, Us&&... us) : p_(new T(std::forward<Us>(us)...))
+        {
+        }
+        template <typename I, typename... Us>
+        requires std::is_constructible_v<T, std::initializer_list<I>&, Us...>
+        constexpr explicit indirect(std::in_place_t, std::initializer_list<I> il, Us&&... us)
+            : p_(new T(il, std::forward<Us>(us)...))
+        {
+        }
+        constexpr ~indirect() { delete p_; }
+
+        constexpr indirect& operator=(const indirect& other)
+        {
+            if (this == std::addressof(other)) return *this;
+            if (other.p_ == nullptr)
+            {
+                delete std::exchange(p_, nullptr);
+            }
+            else if (p_ != nullptr)
+            {
+                *p_ = *other.p_;
+            }
+            else
+            {
+                p_ = new T(*other.p_);
+            }
+            return *this;
+        }
+        constexpr indirect& operator=(indirect&& other) noexcept
+        {
+            if (this == std::addressof(other)) return *this;
+            // `other` may be a part of the value that this holds
+            auto* p = std::exchange(other.p_, nullptr);
+            delete std::exchange(p_, p);
+            return *this;
+        }
+        template <typename U = T>
+        requires (!std::same_as<std::remove_cvref_t<U>, indirect>) && detail::indirect_constructible<T, U> &&
+                 std::is_assignable_v<T&, U>
+        constexpr indirect& operator=(U&& u)
+        {
+            if (p_ == nullptr)
+                p_ = new T(std::forward<U>(u));
+            else
+                *p_ = std::forward<U>(u);
+            return *this;
+        }
+
+        constexpr const T& operator*() const& noexcept
+        {
+            assert(p_ != nullptr);
+            return *p_;
+        }
+        constexpr T& operator*() & noexcept
+        {
+            assert(p_ != nullptr);
+            return *p_;
+        }
+        constexpr const T&& operator*() const&& noexcept
+        {
+            assert(p_ != nullptr);
+            return std::move(*p_);
+        }
+        constexpr T&& operator*() && noexcept
+        {
+            assert(p_ != nullptr);
+            return std::move(*p_);
+        }
+        constexpr const_pointer operator->() const noexcept
+        {
+            assert(p_ != nullptr);
+            return p_;
+        }
+        constexpr pointer operator->() noexcept
+        {
+            assert(p_ != nullptr);
+            return p_;
+        }
+        [[nodiscard]] constexpr bool valueless_after_move() const noexcept { return p_ == nullptr; }
+
+        constexpr void swap(indirect& other) noexcept { std::swap(p_, other.p_); }
+        friend constexpr void swap(indirect& lhs, indirect& rhs) noexcept { lhs.swap(rhs); }
+
+        // Not constrained on `*lhs == *rhs`, as with std::indirect: checking it while the defaulted `operator==` of
+        // a struct that holds itself through indirect is declared needs the exception specification of that
+        // operator, which clang rejects as depending on itself with the standard library of MSVC.
+        template <typename U>
+        friend constexpr bool operator==(const indirect& lhs, const indirect<U>& rhs)
+        {
+            if (lhs.valueless_after_move() || rhs.valueless_after_move())
+                return lhs.valueless_after_move() == rhs.valueless_after_move();
+            return *lhs == *rhs;
+        }
+        template <typename U>
+        friend constexpr detail::synth_three_way_result<T, U> operator<=>(const indirect& lhs,
+                                                                          const indirect<U>& rhs)
+        {
+            if (lhs.valueless_after_move() || rhs.valueless_after_move())
+                return !lhs.valueless_after_move() <=> !rhs.valueless_after_move();
+            return detail::synth_three_way(*lhs, *rhs);
+        }
+        // The left operand is deduced, so that a reversed candidate whose right operand is not an `indirect` fails
+        // in deduction before the constraint is checked; checking `t == u` there recurses when T compares a member
+        // of the type `std::optional<indirect<T>>`.
+        template <typename U, std::same_as<T> V>
+        requires (!detail::is_indirect<U>::value) && requires(const T& t, const U& u) { t == u; }
+        friend constexpr bool operator==(const indirect<V>& lhs, const U& rhs)
+        {
+            return !lhs.valueless_after_move() && *lhs == rhs;
+        }
+        template <typename U>
+        requires (!detail::is_indirect<U>::value)
+        friend constexpr detail::synth_three_way_result<T, U> operator<=>(const indirect& lhs, const U& rhs)
+        {
+            if (lhs.valueless_after_move()) return std::strong_ordering::less;
+            return detail::synth_three_way(*lhs, rhs);
+        }
+    };
+    template <typename T>
+    indirect(T) -> indirect<T>;
+
     template <typename...>
     class visit_struct : public std::false_type
     {
@@ -1119,6 +1323,19 @@ template <std::size_t I, typename... Ms>
 struct std::tuple_element<I, yyjson::detail::member_list<Ms...>>
 {
     using type = decltype(yyjson::detail::member_at_leaf<I>(std::declval<const yyjson::detail::member_list<Ms...>&>()));
+};
+
+// The hash of the held value, as `std::hash<std::indirect<T>>` gives.
+template <typename T>
+requires std::is_default_constructible_v<std::hash<T>>
+struct std::hash<yyjson::indirect<T>>
+{
+    std::size_t operator()(const yyjson::indirect<T>& i) const
+        noexcept(noexcept(std::hash<T>()(std::declval<const T&>())))
+    {
+        if (i.valueless_after_move()) return static_cast<std::size_t>(-1);
+        return std::hash<T>()(*i);
+    }
 };
 
 namespace yyjson
@@ -3399,6 +3616,17 @@ namespace yyjson
             if constexpr (c_array<field_type>)
             {
                 assign_c_array(field, value);
+            }
+            else if constexpr (indirect_value<field_type> && std::derived_from<caster<field_type>, builtin_caster>)
+            {
+                // the value on the heap is read as a field of its type, in its own place
+                using V = typename field_type::value_type;
+                if (field.valueless_after_move())
+                    field = cast_nested<field_type>(value);
+                else
+                    assign_reflected_field_impl(*field, value,
+                                                std::is_class_v<V> && std::is_aggregate_v<V> &&
+                                                    std::is_nothrow_default_constructible_v<V>);
             }
             else if constexpr (caster_assigns_from_json<field_type, Json>)
             {
@@ -9063,6 +9291,8 @@ namespace yyjson
                 return type_list<cause_child<element_label<T>, typename T::value_type>>{};
             else if constexpr (owning_pointer<T>)
                 return type_list<cause_child<element_label<T>, typename is_owning_pointer<T>::value_type>>{};
+            else if constexpr (indirect_value<T>)
+                return type_list<cause_child<element_label<T>, typename T::value_type>>{};
             else if constexpr (requires { std::variant_size<T>::value; })
                 return []<std::size_t... Is>(std::index_sequence<Is...>) {
                     return type_list<cause_child<element_label<T>, std::variant_alternative_t<Is, T>>...>{};
@@ -9574,9 +9804,12 @@ namespace yyjson
             (std::constructible_from<T, std::string_view> || std::constructible_from<T, std::string> ||
              std::constructible_from<T, const char*>);
 
+        // A struct is read into `T()`.  `std::default_initializable` would also ask for `T{}`, which a member of
+        // `yyjson::indirect` or `std::indirect` without an initializer rules out: its default constructor is
+        // explicit, and `{}` initializes the member by copy-list-initialization.
         template <typename T, typename Json>
         concept reflected_object_castable =
-            std::default_initializable<T> && std::move_constructible<T> && (!visitable<T>) &&
+            std::constructible_from<T> && std::move_constructible<T> && (!visitable<T>) &&
             (!std::ranges::input_range<T> || reflected_range_aggregate<T>) && all_fields_castable<Json, T>;
 
         // `cast<T>` of a value of a read document builds `T()` and assigns the fields from the object,
@@ -9679,7 +9912,7 @@ namespace yyjson
     struct detail::default_caster
     {
         template <json_object Json>
-        requires std::default_initializable<T> && std::move_constructible<T> && visitable<T> &&
+        requires std::constructible_from<T> && std::move_constructible<T> && visitable<T> &&
                  (visitable_fields_assignable<T, Json>())
         static dependent_t<T, Json> from_json(const Json& obj)
         {
@@ -10322,6 +10555,69 @@ namespace yyjson
 
     namespace detail
     {
+        template <typename I>
+        [[noreturn]] CPPYYJSON_COLD void throw_valueless_indirect()
+        {
+            throw_bad_cast("{} has been moved from and holds no value to write", type_name<I>());
+        }
+
+        // The caster of `yyjson::indirect<T>` and `std::indirect<T>`, which are read and written as T.  A value
+        // that has been moved from is not written, as `std::visit` does not take a `std::variant` without a value.
+        template <typename I, typename T>
+        struct indirect_caster : builtin_caster
+        {
+            template <typename Json>
+            requires castable<Json, T>
+            static I from_json(const Json& json)
+            {
+                return I(std::in_place, cast_nested<T>(json));
+            }
+
+            template <typename... Ts>
+            requires copy_string_args<Ts...> && requires(writer::value_ref& v, const T& t) {
+                v = t;
+                v = std::pair<const T&, copy_string_t>(t, copy_string);
+            }
+            static void to_json(writer::value_ref& v, const I& t, Ts...)
+            {
+                if (t.valueless_after_move()) [[unlikely]]
+                    throw_valueless_indirect<I>();
+                if constexpr (sizeof...(Ts) != 0)
+                    v = std::pair<const T&, copy_string_t>(*t, copy_string);
+                else
+                    v = *t;
+            }
+            template <typename... Ts>
+            requires copy_string_args<Ts...> && requires(writer::value_ref& v, T&& t) {
+                v = std::move(t);
+                v = std::pair<T&&, copy_string_t>(std::move(t), copy_string);
+            }
+            static void to_json(writer::value_ref& v, I&& t, Ts...)
+            {
+                if (t.valueless_after_move()) [[unlikely]]
+                    throw_valueless_indirect<I>();
+                if constexpr (sizeof...(Ts) != 0)
+                    v = std::pair<T&&, copy_string_t>(std::move(*t), copy_string);
+                else
+                    v = std::move(*t);
+            }
+        };
+    }  // namespace detail
+
+    // A value on the heap, which a struct can hold a value of its own type in.
+    template <typename T>
+    struct caster<indirect<T>> : detail::indirect_caster<indirect<T>, T>
+    {
+    };
+#if defined(__cpp_lib_indirect)
+    template <typename T, typename A>
+    struct caster<std::indirect<T, A>> : detail::indirect_caster<std::indirect<T, A>, T>
+    {
+    };
+#endif
+
+    namespace detail
+    {
         // Whether `cast<T>` may read null, as `accepted_json_kinds` tells.
         template <typename T>
         consteval bool may_read_null();
@@ -10496,6 +10792,8 @@ namespace yyjson
                     return variant_json_kinds<T>::template value<Json>();
                 else if constexpr (owning_pointer<T>)
                     return json_kind_null | accepted_json_kinds<typename is_owning_pointer<T>::value_type, Json>();
+                else if constexpr (indirect_value<T>)
+                    return accepted_json_kinds<typename T::value_type, Json>();
                 else if constexpr (is_std_optional<T>::value)
                     return json_kind_null | accepted_json_kinds<typename T::value_type, Json>();
                 else if constexpr (tuple_like<T>)
@@ -10577,7 +10875,7 @@ namespace yyjson
             using json = reader::const_value_ref;
             static constexpr bool builtin_cast = caster_from_json_or_copy<T, json>;
             static constexpr bool inner = builtin_cast && std::derived_from<caster<T>, builtin_caster> &&
-                                          (owning_pointer<T> || is_std_optional<T>::value);
+                                          (owning_pointer<T> || is_std_optional<T>::value || indirect_value<T>);
             static constexpr bool source = !builtin_cast && from_json_translator<T>::castable && !recursive_type<T>;
             static constexpr bool elements =
                 !builtin_cast && !from_json_translator<T>::castable && array_castable_range<T, reader::const_array_ref>;
@@ -10665,7 +10963,7 @@ namespace yyjson
                 return true;
             else if constexpr (n::inner)
             {
-                if (kind == json_kind_null) return true;
+                if (kind == json_kind_null && !indirect_value<T>) return true;
                 if constexpr (owning_pointer<T>)
                     return may_cast<std::remove_cv_t<typename T::element_type>>(json, kind);
                 else
@@ -14202,7 +14500,9 @@ namespace yyjson
                     using V = to_json_input_ref<T>;
                     constexpr auto builtin = std::derived_from<caster<U>, yyjson::detail::builtin_caster>;
                     return !(to_json_inp_def<V, T> || to_json_emit_usr<V, T> ||
-                             (builtin && (yyjson::detail::owning_pointer<U> || is_optional<U>::value) &&
+                             (builtin &&
+                              (yyjson::detail::owning_pointer<U> || is_optional<U>::value ||
+                               yyjson::detail::indirect_value<U>) &&
                               std::same_as<V, value_ref>) ||
                              (builtin && is_variant<U>::value && std::same_as<V, value_ref>) ||
                              (builtin && std::same_as<U, std::vector<bool>> && std::same_as<V, array_ref>) ||
@@ -14301,6 +14601,13 @@ namespace yyjson
                         write_value(*std::forward<T>(t));
                     else
                         write_null();
+                }
+                else if constexpr (std::derived_from<caster<U>, yyjson::detail::builtin_caster> &&
+                                   yyjson::detail::indirect_value<U> && std::same_as<V, value_ref>)
+                {
+                    if (t.valueless_after_move()) [[unlikely]]
+                        yyjson::detail::throw_valueless_indirect<U>();
+                    write_value(*std::forward<T>(t));
                 }
                 else if constexpr (std::derived_from<caster<U>, yyjson::detail::builtin_caster> &&
                                    is_variant<U>::value && std::same_as<V, value_ref>)
@@ -14500,7 +14807,7 @@ namespace yyjson
         template <typename T>
         concept struct_mergeable =
             (!yyjson::detail::from_json_translator<T>::castable) && (!from_json_val_usr_defined<T>) &&
-            std::default_initializable<T> && std::is_move_assignable_v<T> &&
+            std::constructible_from<T> && std::is_move_assignable_v<T> &&
             (yyjson::detail::reflected_assignable_in_place<T, const_value_ref> ||
              (yyjson::detail::visitable<T> && requires {
                  visit_struct<T>::key_matcher;
@@ -14517,7 +14824,7 @@ namespace yyjson
             requires(T& t, const typename T::key_type& key) {
                 requires std::same_as<typename T::key_type, std::string> ||
                              yyjson::detail::enum_key<typename T::key_type>;
-                requires std::default_initializable<typename T::mapped_type>;
+                requires std::constructible_from<typename T::mapped_type>;
                 requires std::is_move_assignable_v<typename T::mapped_type>;
                 { t.try_emplace(key).first->second } -> std::same_as<typename T::mapped_type&>;
                 t.erase(t.find(key));
@@ -14537,7 +14844,7 @@ namespace yyjson
         template <typename T>
         concept mergeable = (!std::is_array_v<T>) &&
                             (struct_mergeable<T> || map_mergeable<T> || tagged_mergeable<T> ||
-                             (yyjson::detail::is_std_optional<T>::value &&
+                             ((yyjson::detail::is_std_optional<T>::value || yyjson::detail::indirect_value<T>) &&
                               std::derived_from<caster<T>, yyjson::detail::builtin_caster> &&
                               (struct_mergeable<typename T::value_type> || map_mergeable<typename T::value_type> ||
                                tagged_mergeable<typename T::value_type>)));
@@ -14717,6 +15024,13 @@ namespace yyjson
                     {
                         using tags = yyjson::detail::variant_tags<T>;
                         merge_tagged<tags>(t, yyjson::detail::tagged_alternative<T, tags>(*obj), v);
+                    }
+                    else if constexpr (yyjson::detail::indirect_value<T>)
+                    {
+                        if (t.valueless_after_move())
+                            t = yyjson::detail::cast_nested<T>(v);
+                        else
+                            merge_from(*t, v);
                     }
                     else if constexpr (tagged_mergeable<typename T::value_type>)
                     {
@@ -15645,7 +15959,7 @@ namespace yyjson
                     if constexpr (yyjson::detail::owning_pointer<T> &&
                                   std::derived_from<caster<T>, yyjson::detail::builtin_caster>)
                         return node<false, type_list<value_node<std::remove_cv_t<typename T::element_type>, Loop>>>{};
-                    else if constexpr (is_std_optional<T>::value &&
+                    else if constexpr ((is_std_optional<T>::value || yyjson::detail::indirect_value<T>) &&
                                        std::derived_from<caster<T>, yyjson::detail::builtin_caster>)
                         return node<false, type_list<value_node<typename T::value_type, Loop>>>{};
                     else
@@ -17570,7 +17884,7 @@ namespace yyjson
                     return true;
                 else if constexpr (n::inner)
                 {
-                    if (kind == d::json_kind_null) return true;
+                    if (kind == d::json_kind_null && !d::indirect_value<T>) return true;
                     if constexpr (d::owning_pointer<T>)
                         return may_read<std::remove_cv_t<typename T::element_type>>();
                     else
@@ -18673,6 +18987,9 @@ namespace yyjson
                         return yyjson::detail::is_owning_pointer<T>::make(
                             read_value<std::remove_cv_t<typename T::element_type>>());
                     }
+                    else if constexpr (yyjson::detail::indirect_value<T> &&
+                                       std::derived_from<caster<T>, yyjson::detail::builtin_caster>)
+                        return T(std::in_place, read_value<typename T::value_type>());
                     else if constexpr (is_std_optional<T>::value &&
                                        std::derived_from<caster<T>, yyjson::detail::builtin_caster>)
                     {
@@ -18856,7 +19173,7 @@ namespace yyjson
             template <typename T>
             static constexpr bool array_readable_in_place =
                 !from_json_val_usr_defined<T> && from_json_def_arr_defined<T> && std::ranges::range<T> &&
-                std::default_initializable<T>;
+                std::constructible_from<T>;
 
             // Whether a field of type T, which `read_value` reads from an array with `read_array`, is cleared for an
             // empty array.
@@ -19248,6 +19565,15 @@ namespace yyjson
                     t = read_element<T>();
                     return;
                 }
+                else if constexpr (yyjson::detail::indirect_value<T> &&
+                                   std::derived_from<caster<T>, yyjson::detail::builtin_caster>)
+                {
+                    if (!t.valueless_after_move())
+                    {
+                        read_value_into(*t);
+                        return;
+                    }
+                }
                 t = read_value<T>();
             }
 
@@ -19352,6 +19678,13 @@ namespace yyjson
                             merge_map(t);
                         else if constexpr (tagged_mergeable<T>)
                             merge_tagged_variant(t);
+                        else if constexpr (yyjson::detail::indirect_value<T>)
+                        {
+                            if (t.valueless_after_move())
+                                t = read_value<T>();
+                            else
+                                merge_value(*t);
+                        }
                         else if constexpr (tagged_mergeable<typename T::value_type>)
                         {
                             if (t.has_value())
@@ -19710,6 +20043,16 @@ namespace yyjson
                 using field_type = std::remove_cvref_t<Field>;
                 if constexpr (std::is_array_v<field_type>)
                     read_c_array(field);
+                else if constexpr (yyjson::detail::indirect_value<field_type> &&
+                                   std::derived_from<caster<field_type>, yyjson::detail::builtin_caster>)
+                {
+                    using V = typename field_type::value_type;
+                    if (field.valueless_after_move())
+                        field = read_value<field_type>();
+                    else
+                        read_field(*field, std::is_class_v<V> && std::is_aggregate_v<V> &&
+                                               std::is_nothrow_default_constructible_v<V>);
+                }
                 else if constexpr (yyjson::detail::caster_assigns_from_json<field_type, const_value_ref>)
                 {
                     if constexpr (is_std_optional<field_type>::value &&
@@ -21162,7 +21505,7 @@ struct std::formatter<T>
 #define VISITABLE_STRUCT_IMPL2(X) std::string_view(CPPYYJSON_VISITABLE_SELECT(CPPYYJSON_VISITABLE_KEY_, X))
 #define VISITABLE_STRUCT_IMPL4(X) &class_type::CPPYYJSON_VISITABLE_SELECT(CPPYYJSON_VISITABLE_MEMBER_, X)
 #define VISITABLE_STRUCT(CLASS, ...)                                                                                   \
-    static_assert(std::default_initializable<CLASS>, #CLASS " is not default initializable");                          \
+    static_assert(std::constructible_from<CLASS>, #CLASS " is not default constructible");                             \
     template <>                                                                                                        \
     struct yyjson::visit_struct<CLASS> : public std::true_type                                                         \
     {                                                                                                                  \

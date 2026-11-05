@@ -124,6 +124,7 @@ Besides the strings, ranges, maps and sets described above, the library has cast
 *   `std::optional`
 *   `std::shared_ptr`
 *   `std::unique_ptr`, with the default deleter and not of an array
+*   `std::indirect` of C++26, and `yyjson::indirect` of the library for C++20. See [Fields of the type that holds them](#fields-of-the-type-that-holds-them)
 *   `std::variant`
 *   `std::tuple`-like
 *   `std::vector<bool>` (specialized)
@@ -1032,7 +1033,7 @@ The same applies to a translator that returns a `yyjson::value`, `yyjson::object
 
 ## Recursive types
 
-A struct may hold values of its own type, in a range, a map, a `std::unique_ptr`, a `std::shared_ptr` or a `std::variant`, or in another struct that holds it in turn. Such a recursive type converts from and to JSON as any other struct does, with the compile-time reflection, the `VISITABLE_STRUCT` macro or a user-defined caster:
+A struct may hold values of its own type, in a range, a map, a `yyjson::indirect`, a `std::unique_ptr`, a `std::shared_ptr` or a `std::variant`, or in another struct that holds it in turn. Such a recursive type converts from and to JSON as any other struct does, with the compile-time reflection, the `VISITABLE_STRUCT` macro or a user-defined caster:
 
 ```cpp
 using namespace yyjson;
@@ -1065,3 +1066,31 @@ An untagged `std::variant` tries its alternatives in turn, and reads the value a
 To read deeper values of such a variant, [tag it](#tagged-variants), so that it reads only the alternative that the tag names.
 
 To change the limit, define `CPPYYJSON_RECURSION_DEPTH_LIMIT` before including `cpp_yyjson.hpp`, or set the CMake variable of the same name, which defines it for every target that links cpp-yyjson. `0` removes both the limit of depth and the limit of backtracking. Every translation unit of a program must see the same value.
+
+### Fields of the type that holds them
+
+A struct cannot hold a member of its own type by value. A range holds any number of such values. To hold one, use [`yyjson::indirect<T>`](reference.md#yyjsonindirect). It keeps a value of `T` on the heap, and a copy of it holds a copy of that value. It is read and written as the value of `T`. Unlike a `std::unique_ptr`, it leaves the struct that holds it copyable, and it holds a value until a move takes it:
+
+```cpp
+using namespace yyjson;
+
+struct Expr
+{
+    std::string op;
+    std::optional<indirect<Expr>> lhs;
+    std::optional<indirect<Expr>> rhs;
+};
+
+auto expr = read<Expr>(R"({"op":"+","lhs":{"op":"1"},"rhs":{"op":"2"}})");
+auto copy = expr;        // copies the operands too
+(*copy.lhs)->op = "x";   // expr is unchanged
+auto json = write(expr);
+// -> {"op":"+","lhs":{"op":"1"},"rhs":{"op":"2"}}
+```
+
+*   `indirect<T>` reads the JSON values that `T` reads, and not null. For a key that may be absent, wrap it in a `std::optional`, as any other value. For null, use `std::variant<std::monostate, indirect<T>>`.
+*   After a move, an `indirect` holds no value. Writing it throws `yyjson::bad_cast` with the message `yyjson::indirect<T> has been moved from and holds no value to write`. Reading into it gives it a new value.
+*   Its default constructor makes `T()` on the heap and is `explicit`, as that of `std::indirect` is. A struct with a field of `indirect<U>` is therefore value-initialized as `S()`, which `read<S>` does, but not as `S{}`, and `std::default_initializable<S>` is false. A field of `indirect<S>` in `S` itself makes `S()` construct without end. Put it in a `std::optional`, in a `std::variant` whose first alternative ends, or in a range.
+*   A class `T` is constructed from a `T` or a class derived from it. Other arguments go after `std::in_place`, as in `indirect<std::string>(std::in_place, "text")`. This is the one place where the interface differs from `std::indirect`, whose constructor takes any argument that `T` is constructible from. The reflection of C++20 counts the fields of a struct by asking whether the struct is constructible from such arguments. A member that holds the struct through `std::indirect` then asks the same question about the struct again, which fails to compile.
+
+`std::indirect` of C++26 is read and written in the same way. `yyjson::indirect` stays the class of the library under every standard. The [reflection](#reflection) of C++20 can fail to compile for a struct that holds itself through `std::indirect`, because of the constructor of `std::indirect`. For example, it fails when that member is the first one. The reflection of C++26 (`-freflection`) and `VISITABLE_STRUCT` convert such a struct. Use `yyjson::indirect` in code that has to compile with the reflection of C++20.
