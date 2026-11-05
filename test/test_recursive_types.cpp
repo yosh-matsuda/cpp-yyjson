@@ -305,6 +305,69 @@ static_assert(yyjson::detail::recursive_type<IndStd>);
 static_assert(yyjson::readable<IndStd> && yyjson::writable<IndStd>);
 #endif
 
+// A struct annotated with `yyjson::transparent` that holds itself, without an object between
+struct TrNest
+{
+    std::variant<std::string, std::vector<TrNest>> value;
+    bool operator==(const TrNest&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<TrNest> = yyjson::annotate(yyjson::transparent);
+struct TrInd;
+using TrIndValue = std::variant<std::int64_t, TrInd>;
+struct TrInd
+{
+    std::variant<std::string, yyjson::indirect<TrIndValue>> value;
+    bool operator==(const TrInd&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<TrInd> = yyjson::annotate(yyjson::transparent);
+struct TrMap
+{
+    std::map<std::string, TrMap> value;
+    bool operator==(const TrMap&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<TrMap> = yyjson::annotate(yyjson::transparent);
+struct TrVisitable
+{
+    std::vector<TrVisitable> kids;
+    bool operator==(const TrVisitable&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<TrVisitable> = yyjson::annotate(yyjson::transparent);
+VISITABLE_STRUCT(TrVisitable, kids);
+struct TrHolder
+{
+    TrNest nest;
+    std::optional<TrInd> ind;
+    std::vector<TrMap> maps;
+    bool operator==(const TrHolder&) const = default;
+};
+// A field that points to the struct itself never holds an object, so `yyjson::object(t)` does not apply
+struct TrPtr
+{
+    std::unique_ptr<TrPtr> value;
+};
+template <>
+inline constexpr auto yyjson::annotations<TrPtr> = yyjson::annotate(yyjson::transparent);
+// the alternatives of a variant hold the struct again
+struct TrVariantMap;
+using TrVariantMapValue = std::variant<std::monostate, std::string, TrVariantMap>;
+struct TrVariantMap
+{
+    std::map<std::string, TrVariantMapValue> value;
+    bool operator==(const TrVariantMap&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<TrVariantMap> = yyjson::annotate(yyjson::transparent);
+static_assert(yyjson::readable<TrNest> && yyjson::writable<TrNest>);
+static_assert(yyjson::readable<TrVariantMap> && yyjson::writable<TrVariantMap>);
+static_assert(yyjson::readable<TrHolder> && yyjson::writable<TrHolder>);
+static_assert(yyjson::readable<TrPtr> && yyjson::writable<TrPtr>);
+static_assert(std::is_constructible_v<yyjson::object, const TrMap&>);
+static_assert(!std::is_constructible_v<yyjson::object, const TrPtr&>);
+
 // The fields of a recursive type are checked as those of any other type, through each type on the cycle
 class RecPrivate
 {
@@ -548,12 +611,50 @@ TEST(Reader, RecursiveTypes)
     EXPECT_EQ(std::string_view(yyjson::write(owner)), R"({"x":1,"handle":2})");
 }
 
+TEST(Reader, RecursiveTransparent)
+{
+    expect_recursive<TrNest>(R"(["a",["b",[]],[]])");
+    expect_recursive<TrNest>(R"("a")");
+    expect_recursive<TrInd>(R"("a")");
+    expect_recursive<TrInd>("1");
+    expect_recursive<TrInd>(R"("abcd")");
+    expect_recursive<TrMap>(R"({"a":{"b":{}},"c":{}})");
+    expect_recursive<TrVisitable>("[[],[[]]]");
+    expect_recursive<TrHolder>(R"({"nest":[["x"]],"ind":"y","maps":[{"a":{}}]})");
+    expect_recursive<TrVariantMap>(R"({"a":"x","b":{"c":null,"d":{}}})");
+
+    // an error is at the path of the value in the innermost struct
+    for (const auto dom : {false, true})
+        try
+        {
+            const auto json = R"({"a":{"b":1}})";
+            (void)(dom ? yyjson::read(json).cast<TrMap>() : yyjson::read<TrMap>(json));
+            ADD_FAILURE();
+        }
+        catch (const yyjson::bad_cast& e)
+        {
+            EXPECT_EQ(e.path(), "/a/b");
+        }
+
+    // merging merges the objects of a map at every level
+    auto map = yyjson::read<TrMap>(R"({"a":{"b":{}}})");
+    yyjson::merge_into(R"({"a":{"c":{}}})", map);
+    EXPECT_EQ(std::string_view(yyjson::write(map)), R"({"a":{"b":{},"c":{}}})");
+    EXPECT_EQ(std::string_view(yyjson::object(map).write()), R"({"a":{"b":{},"c":{}}})");
+
+    EXPECT_EQ(yyjson::read<TrPtr>("null").value, nullptr);
+    EXPECT_EQ(std::string_view(yyjson::write(TrPtr{})), "null");
+}
+
 TEST(Reader, RecursionDepthLimit)
 {
     expect_depth_limit<RecTree>([](std::size_t depth) {
         return nested(depth - 1, R"({"v":1,"kids":[)", R"({"v":2})", "]}");
     });
     expect_depth_limit<RecList>([](std::size_t depth) { return nested(depth, R"({"next":)", "null", "}"); });
+    // each level of a struct annotated with `yyjson::transparent` counts
+    expect_depth_limit<TrNest>([](std::size_t depth) { return nested(depth - 1, "[", "[]", "]"); });
+    expect_depth_limit<TrMap>([](std::size_t depth) { return nested(depth - 1, R"({"a":)", "{}", "}"); });
     expect_depth_limit<RecUList>([](std::size_t depth) { return nested(depth - 1, R"({"kids":[)", "{}", "]}"); });
     expect_depth_limit<RecDict>([](std::size_t depth) {
         return nested(depth - 1, R"({"children":{"a":)", "{}", "}}");

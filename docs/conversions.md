@@ -330,6 +330,7 @@ The annotations of a type change how the type converts, with no caster. Speciali
 | `yyjson::field("member", s...)` | a struct | gives the field `member` the settings `s...` below | [JSON keys](#json-keys) |
 | `yyjson::rename("key")` | a field | reads and writes the field by the JSON key `key` | [JSON keys](#json-keys) |
 | `yyjson::skip` | a field | leaves the field out of reading and writing | [Skipped fields](#skipped-fields) |
+| `yyjson::transparent` | a struct | reads and writes the struct as the value of its one field | [A struct as the value of its field](#a-struct-as-the-value-of-its-field) |
 | `yyjson::adjacent_tag(key, ids)` | a field of a `std::variant` | tells the alternative by a sibling member | [Tagged variants](#tagged-variants) |
 | `yyjson::internal_tag(key, ids)` | a `std::variant` | tells the alternative by a member of its object | [Tagged variants](#tagged-variants) |
 | `yyjson::enum_format::...`, `yyjson::enumerator("name", s...)` | an enumeration | chooses names or integers, and renames enumerators | [Enumerations](#formats-and-renamed-enumerators) |
@@ -399,6 +400,62 @@ auto json = yyjson::write(Task{"x", [] {}});
 *   Reading still needs what the struct itself needs. `yyjson::read<T>` and `cast<T>` need a default constructible and movable `T`, and `read_into` and `merge_into` need a move-assignable one. A struct with a skipped `std::mutex` can therefore only be written, and one with a skipped `const` or reference member cannot be read by `read_into` or `merge_into`.
 *   `VISITABLE_STRUCT` converts only the members that it lists: leave a member out of the macro instead. `yyjson::skip` on a struct that the macro registers fails to compile.
 
+### A struct as the value of its field
+
+`yyjson::transparent` reads and writes a struct as the value of its one field, with no object around it. Use it to give a kind of value a type of its own. An example is an id that the program must not mix with other integers:
+
+```cpp
+struct UserId
+{
+    std::int64_t value = 0;
+};
+
+template <>
+inline constexpr auto yyjson::annotations<UserId> = yyjson::annotate(yyjson::transparent);
+
+struct Order
+{
+    UserId buyer;
+    std::vector<UserId> watchers;
+    std::map<std::string, UserId> roles;
+};
+
+auto order = yyjson::read<Order>(R"({"buyer":42,"watchers":[7],"roles":{"admin":1}})");
+// -> order.buyer.value == 42
+auto json = yyjson::write(order);
+// -> {"buyer":42,"watchers":[7],"roles":{"admin":1}}
+```
+
+A [translator](#translator) to `std::int64_t` gives the same JSON, but it needs a caster specialization with two functions. `yyjson::transparent` needs only the annotation.
+
+*   The struct has exactly one field that is not [skipped](#skipped-fields). When the struct is read, a skipped field keeps its value in `T()`.
+*   The struct is the value of its field everywhere: as a field, an element, a value of a map, an alternative of a `std::variant` and the root. An untagged variant chooses the struct by the value of its field. An [internal tag](#internal-tag) goes into the object of the field.
+*   As the key of a map, the struct does not give a key of a JSON object. The map is written as an array of `[key, value]` pairs, as other maps whose keys are structs are. See [Conversions that may surprise](#conversions-that-may-surprise).
+*   An error path has no segment for the field. A string in `watchers` above gives the path `/watchers/1`.
+*   `read_into` and `merge_into` read into the field. If the field is a struct or a map, `merge_into` keeps the members that the object leaves out.
+*   When the struct is a field of another struct, a field of `std::optional<U>` in it follows the rules of a `std::optional` field. `U` must not be a pointer. An empty value leaves the key out, and `null` is read as a missing key. Elsewhere, `null` empties the field, and an empty value is written as `null`.
+*   `yyjson::object(t)` takes the struct only when its field is written as an object. For other fields, such as an integer, it fails to compile.
+*   `VISITABLE_STRUCT` registers such a struct too. Define the specialization before the macro.
+*   The following fail to compile with a `static_assert`:
+    *   `yyjson::transparent` given twice
+    *   no field, or more than one field that is not skipped
+    *   a setting on the field, such as `yyjson::rename` or `yyjson::adjacent_tag`
+
+The field may hold the struct itself through a range, a map, a `yyjson::indirect`, a `std::unique_ptr`, a `std::shared_ptr` or a `std::variant`. Each level counts toward the limit of [Recursive types](#recursive-types):
+
+```cpp
+struct Expr
+{
+    std::variant<std::string, std::vector<Expr>> value;
+};
+
+template <>
+inline constexpr auto yyjson::annotations<Expr> = yyjson::annotate(yyjson::transparent);
+
+auto expr = yyjson::read<Expr>(R"(["add",["mul","x","y"],"z"])");
+// -> an Expr of three Exprs: "add", ["mul","x","y"] and "z"
+```
+
 ### C++26 annotations
 
 With C++26 static reflection, such as GCC 16 with `-std=c++26 -freflection`, the settings of a field can be written on the member itself as an [annotation](https://wg21.link/p3394). Every setting that `yyjson::field` takes is also an annotation: `[[=yyjson::rename("key")]]`, `[[=yyjson::skip]]` and `[[=yyjson::adjacent_tag(key, ids)]]`.
@@ -418,10 +475,10 @@ auto json = yyjson::write(project);
 ```
 
 *   The annotations of the members and a `yyjson::annotations` specialization can be combined, as long as no field gets the same setting twice; that fails to compile.
-*   An annotation on the struct itself is not read.
+*   On the struct itself, only `yyjson::transparent` is read, as in `struct [[=yyjson::transparent]] UserId { ... };`.
 *   An enumeration takes a [format](#formats-and-renamed-enumerators) on its declaration, as in `enum class [[=yyjson::enum_format::integer]] Permission : unsigned { ... };`. An enumerator takes a new name, as in `in_progress [[=yyjson::rename("in-progress")]],`. These combine with `yyjson::annotations<E>` as the settings of fields do. An annotation on an alias, that is, an enumerator with the value of one declared before it, is not read.
 *   The annotations apply to the structs that the compile-time reflection converts. An annotation of this library on a member of a struct that `VISITABLE_STRUCT` registers fails to compile; use the pairs of the macro or `yyjson::annotations` there.
-*   The annotations are read when the macro `FIELD_RFL_ANNOTATIONS` is `1`. `yyjson::rename`, `yyjson::skip` and the tags are always available for `yyjson::annotations`.
+*   The annotations are read when the macro `FIELD_RFL_ANNOTATIONS` is `1`. `yyjson::rename`, `yyjson::skip`, `yyjson::transparent` and the tags are always available for `yyjson::annotations`.
 
 ## Enumerations
 

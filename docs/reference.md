@@ -41,6 +41,7 @@ This page lists the functions, classes and other entities of cpp-yyjson, grouped
     *   [`yyjson::field`](#yyjsonfield)
     *   [`yyjson::rename`](#yyjsonrename)
     *   [`yyjson::skip`](#yyjsonskip)
+    *   [`yyjson::transparent`](#yyjsontransparent)
     *   [`yyjson::internal_tag`, `yyjson::adjacent_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag)
     *   [`yyjson::enum_format`, `yyjson::enumerator`](#yyjsonenum_format-yyjsonenumerator)
     *   [`VISITABLE_STRUCT`](#visitable_struct)
@@ -1319,7 +1320,7 @@ The flags of the second row allow more text but do not change how strict JSON is
 
 ## Annotations
 
-Annotations set how a type converts: the JSON keys of the fields of a struct and the fields that are skipped, the tag of a variant, and the names of an enumeration. Give them in a specialization of [`yyjson::annotations<T>`](#yyjsonannotationst-yyjsonannotate). With the reflection of C++26, the same settings can also be written on the declarations, as `[[=yyjson::rename("key")]]`; see [C++26 annotations](conversions.md#c26-annotations).
+Annotations set how a type converts. They give the JSON keys of the fields of a struct and the skipped fields, and they make a struct the value of its field. They also give the tag of a variant and the names of an enumeration. Give them in a specialization of [`yyjson::annotations<T>`](#yyjsonannotationst-yyjsonannotate). With the reflection of C++26, the same settings can also be written on the declarations, as `[[=yyjson::rename("key")]]`; see [C++26 annotations](conversions.md#c26-annotations).
 
 ### `yyjson::annotations<T>`, `yyjson::annotate`
 
@@ -1337,7 +1338,7 @@ Specialize `annotations<T>` before the first use of `T`. `annotate` takes these 
 
 | `T` | Settings |
 | --- | --- |
-| a struct | [`yyjson::field`](#yyjsonfield) |
+| a struct | [`yyjson::field`](#yyjsonfield), [`yyjson::transparent`](#yyjsontransparent) |
 | a `std::variant` | [`yyjson::internal_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag) |
 | an enumeration | [`yyjson::enumerator` and `yyjson::enum_format`](#yyjsonenum_format-yyjsonenumerator) |
 
@@ -1393,6 +1394,37 @@ inline constexpr skip_t skip{};
 ```
 
 `yyjson::read<T>` and `yyjson::read_into` give the field its value in `T()`. `yyjson::merge_into` keeps the current value of the field. See [Skipped fields](conversions.md#skipped-fields).
+
+### `yyjson::transparent`
+
+A struct that is read and written as the value of its one field, with no object around it.
+
+```cpp
+inline constexpr transparent_t transparent{};
+```
+
+It is a setting of the struct for [`yyjson::annotate`](#yyjsonannotationst-yyjsonannotate). With the reflection of C++26, it can also be written on the struct, as `struct [[=yyjson::transparent]] UserId`.
+
+*   The struct has exactly one field that is not skipped. When the struct is read, a skipped field keeps its value in `T()`.
+*   The struct is the value of its field at every position: a field, an element, a value of a map, an alternative and the root. As the key of a map, it gives an array of `[key, value]` pairs.
+*   An error path has no segment for the field.
+*   Let the field be a `std::optional<U>`, where `U` is not a pointer. When the struct is a field of another struct, the field follows the rules of a `std::optional` field. Elsewhere, `null` empties it, and an empty value is written as `null`.
+*   `yyjson::object(t)` takes the struct only when its field is written as an object.
+
+The setting given twice, no field or more than one field that is not skipped, and a setting on the field are compile errors. See [A struct as the value of its field](conversions.md#a-struct-as-the-value-of-its-field).
+
+```cpp
+struct UserId
+{
+    std::int64_t value = 0;
+};
+
+template <>
+inline constexpr auto yyjson::annotations<UserId> = yyjson::annotate(yyjson::transparent);
+
+auto ids = yyjson::read<std::vector<UserId>>("[7,42]");  // -> {UserId{7}, UserId{42}}
+auto json = yyjson::write(ids);                          // -> [7,42]
+```
 
 ### `yyjson::internal_tag`, `yyjson::adjacent_tag`
 

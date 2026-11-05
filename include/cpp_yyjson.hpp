@@ -1375,6 +1375,14 @@ namespace yyjson
     };
     inline constexpr skip_t skip{};
 
+    // A struct that is read and written as the value of its only field, as
+    // `yyjson::annotations<T> = yyjson::annotate(yyjson::transparent)` or `struct [[=yyjson::transparent]] T` gives
+    // it.  The struct has exactly one field that is not skipped, and that field takes no key settings.
+    struct transparent_t
+    {
+    };
+    inline constexpr transparent_t transparent{};
+
     namespace detail
     {
         // How JSON names the alternative of a `std::variant`: by trying the alternatives in turn, by a member of the
@@ -1652,16 +1660,17 @@ namespace yyjson
 
         template <typename... As>
         inline constexpr bool annotate_settings =
-            count_true<(is_field_annotation<As>::value || internal_tag_annotation<As> || enum_annotation<As>)...> ==
-            sizeof...(As);
+            count_true<(is_field_annotation<As>::value || std::same_as<As, transparent_t> ||
+                        internal_tag_annotation<As> || enum_annotation<As>)...> == sizeof...(As);
     }  // namespace detail
 
     template <typename... As>
     consteval detail::annotation_list<As...> annotate(As... values)
     {
         static_assert(detail::annotate_settings<As...>,
-                      "yyjson::annotate takes yyjson::field(...) for a struct, yyjson::internal_tag for a variant, "
-                      "and yyjson::enumerator(...) and yyjson::enum_format for an enumeration");
+                      "yyjson::annotate takes yyjson::field(...) and yyjson::transparent for a struct, "
+                      "yyjson::internal_tag for a variant, and yyjson::enumerator(...) and yyjson::enum_format for "
+                      "an enumeration");
         return detail::annotation_list<As...>{
             detail::annotation_values<std::index_sequence_for<As...>, As...>(values...)};
     }
@@ -2155,6 +2164,9 @@ namespace yyjson
             annotated_visitable,
             not_a_struct_setting,
             duplicate_key,
+            transparent_twice,
+            transparent_field_count,
+            transparent_field_setting,
         };
 
         template <std::size_t N>
@@ -2163,6 +2175,7 @@ namespace yyjson
             std::array<std::string_view, N> keys;
             field_key_error error = field_key_error::none;
             std::array<bool, N> skipped = {};  // whether a field is annotated with `yyjson::skip`
+            bool transparent = false;          // whether the struct is annotated with `yyjson::transparent`
         };
 
         // Applies the settings of `yyjson::field` and of the annotations of the members to the keys of the fields,
@@ -2204,6 +2217,11 @@ namespace yyjson
                 if (table.skipped[i]) return fail(field_key_error::skipped_with_setting);
                 tagged[i] = true;
             }
+            constexpr void make_transparent()
+            {
+                if (table.transparent) return fail(field_key_error::transparent_twice);
+                table.transparent = true;
+            }
             // The index of the member `member`, or N.  The search starts at `start` and wraps around.
             [[nodiscard]] constexpr std::size_t member_index(std::string_view member,
                                                              std::size_t start = 0) const noexcept
@@ -2236,6 +2254,8 @@ namespace yyjson
                     next = i + 1;
                     std::apply([&](const auto&... values) { (apply_setting(i, values), ...); }, a.values);
                 }
+                else if constexpr (std::same_as<A, transparent_t>)
+                    make_transparent();
                 else
                     fail(field_key_error::not_a_struct_setting);
             }
@@ -2245,6 +2265,24 @@ namespace yyjson
             [[nodiscard]] constexpr field_key_table<N> result() const
             {
                 auto result = table;
+                if (result.transparent && result.error == field_key_error::none)
+                {
+                    // the struct is its only field, which has no key
+                    std::size_t count = 0;
+                    std::size_t f = N;
+                    for (std::size_t i = 0; i < N; ++i)
+                    {
+                        if (!result.skipped[i])
+                        {
+                            ++count;
+                            f = i;
+                        }
+                    }
+                    if (count != 1)
+                        result.error = field_key_error::transparent_field_count;
+                    else if (renamed[f] || tagged[f])
+                        result.error = field_key_error::transparent_field_setting;
+                }
                 if (result.error != field_key_error::none || std::ranges::find(renamed, true) == renamed.end())
                     return result;
                 if (!distinct_names(result.keys, [&](std::size_t i) { return !result.skipped[i]; }))
@@ -2301,13 +2339,33 @@ namespace yyjson
         }
 #endif
 
-        // Whether `annotations<T>` or the annotations of the fields of the reflected struct T give the fields keys,
-        // skip them or tag them.
+        // Whether the class T is annotated with `yyjson::transparent`, by `annotations<T>` or, under C++26, on the
+        // type.
+        template <typename T>
+        inline constexpr bool transparent_annotated = [] {
+            if constexpr (!std::is_class_v<T>)
+                return false;
+            else
+                return []<typename... As>(std::type_identity<std::tuple<As...>>) {
+                    return (std::same_as<As, transparent_t> || ...);
+                }(std::type_identity<annotation_values_of<T>>{})
+#if FIELD_RFL_ANNOTATIONS
+                       || !field_reflection::type_annotations<T, transparent_t>.empty()
+#endif
+                    ;
+        }();
+        template <typename T>
+        concept transparent_struct = transparent_annotated<T>;
+
+        // Whether `annotations<T>` or the annotations of the reflected struct T and of its fields give the fields
+        // keys, skip them or tag them, or make T transparent.
         template <typename T>
         inline constexpr bool annotated_fields = [] {
             if constexpr (std::tuple_size_v<annotation_values_of<T>> != 0)
                 return true;
 #if FIELD_RFL_ANNOTATIONS
+            else if constexpr (transparent_annotated<T>)
+                return true;
             else if constexpr (!visitable<T>)
                 return annotated_members<T>;
 #endif
@@ -2345,6 +2403,8 @@ namespace yyjson
                     annotate_reflected_fields<T>(builder);
                 else if constexpr (annotated_members<T>)
                     builder.fail(field_key_error::annotated_visitable);
+                for (std::size_t k = 0; k < field_reflection::type_annotations<T, transparent_t>.size(); ++k)
+                    builder.make_transparent();
 #endif
                 return builder.result();
             }
@@ -2368,6 +2428,14 @@ namespace yyjson
                           "yyjson::internal_tag annotates a variant, and yyjson::enumerator and yyjson::enum_format "
                           "an enumeration, not a struct");
             static_assert(table.error != field_key_error::duplicate_key, "two fields have the same JSON key");
+            static_assert(table.error != field_key_error::transparent_twice,
+                          "a struct is annotated with yyjson::transparent twice");
+            static_assert(table.error != field_key_error::transparent_field_count,
+                          "a struct annotated with yyjson::transparent is read and written as the value of its only "
+                          "field: it needs exactly one field that is not skipped");
+            static_assert(table.error != field_key_error::transparent_field_setting,
+                          "the field of a struct annotated with yyjson::transparent has no key: it takes no "
+                          "yyjson::rename, (member, \"key\") pair or yyjson::adjacent_tag");
             static constexpr auto value = table.keys;
         };
 
@@ -2711,17 +2779,15 @@ namespace yyjson
         // The values of recursive types that are being read on this thread, one inside the other.
         inline constinit thread_local std::size_t recursion_depth = 0;
 
-        // Counts a value of a recursive type while it is read, and throws `bad_cast` before more of them are
-        // nested than `CPPYYJSON_RECURSION_DEPTH_LIMIT`, which could overflow the stack.  The values of other
-        // types cannot be nested deeper than their definitions, and are not counted.  Nor are the standard
-        // types that this library casts, such as `std::shared_ptr<T>` of a recursive `T`: every cycle of
-        // types passes through a type of the user, so counting those counts each level once.
+        // Throws `bad_cast` before values of a recursive type nest deeper than `CPPYYJSON_RECURSION_DEPTH_LIMIT`.
+        // Only the types of the user count, structs with `yyjson::transparent` too.  Every cycle of types passes
+        // through one of them, so a standard type such as `std::shared_ptr<T>` would count a level twice.
         template <typename T>
         class recursion_guard
         {
         };
         template <typename T>
-        requires recursive_type<T> && (!std::derived_from<caster<T>, builtin_caster>) &&
+        requires recursive_type<T> && (!std::derived_from<caster<T>, builtin_caster> || transparent_struct<T>) &&
                  (CPPYYJSON_RECURSION_DEPTH_LIMIT != 0)
         class recursion_guard<T>
         {
@@ -3395,6 +3461,15 @@ namespace yyjson
         }
         template <typename S, std::size_t I>
         using struct_field_type = std::remove_cvref_t<decltype(struct_field<I>(std::declval<S&>()))>;
+        // The field of a struct annotated with `yyjson::transparent`, an rvalue if the struct is one.
+        template <typename S>
+        CPPYYJSON_ALWAYS_INLINE inline constexpr decltype(auto) transparent_field(S&& s) noexcept
+        {
+            if constexpr (std::is_lvalue_reference_v<S>)
+                return (struct_field<0>(s));
+            else
+                return std::move(struct_field<0>(s));
+        }
         template <typename S, std::size_t I>
         inline constexpr std::string_view struct_field_key = [] {
             if constexpr (visitable<S>)
@@ -3608,6 +3683,18 @@ namespace yyjson
             }(std::make_index_sequence<struct_field_count<S>>{});
         }
 
+        template <typename T, typename Json>
+        void assign_transparent(T& t, const Json& json, bool replaceable);
+
+        // Whether the field of `T`, a struct annotated with `yyjson::transparent`, is a `std::optional` that null
+        // empties when `T` is an element, a value of a map, an alternative or the root, as it empties a
+        // `std::optional` there.  As a field of a struct, `T` reads null as the field reads it.
+        template <typename T>
+        concept transparent_over_optional =
+            transparent_struct<T> && is_std_optional<struct_field_type<T, 0>>::value &&
+            std::derived_from<caster<struct_field_type<T, 0>>, builtin_caster> &&
+            !owning_pointer<typename struct_field_type<T, 0>::value_type>;
+
         // `replaceable` tells whether a new object may be constructed in the place of the field.
         template <typename Field, typename Json>
         void assign_reflected_field_impl(Field& field, const Json& value, bool replaceable)
@@ -3616,6 +3703,11 @@ namespace yyjson
             if constexpr (c_array<field_type>)
             {
                 assign_c_array(field, value);
+            }
+            else if constexpr (transparent_struct<field_type> &&
+                               std::derived_from<caster<field_type>, builtin_caster>)
+            {
+                assign_transparent(field, value, replaceable);
             }
             else if constexpr (indirect_value<field_type> && std::derived_from<caster<field_type>, builtin_caster>)
             {
@@ -4050,6 +4142,21 @@ namespace yyjson
                 return [&]<std::size_t... Js>(std::index_sequence<Js...>) {
                     return has_own_bytes<I>(t.*yyjson::detail::member_pointer<Js>(members)...);
                 }(std::make_index_sequence<std::tuple_size_v<std::remove_cvref_t<decltype(members)>>>{});
+        }
+
+        // Reads `json` into the field of `t`, a struct annotated with `yyjson::transparent`, as into a field of a
+        // struct.  `replaceable` tells whether a new object may be constructed in the place of `t`, and so of its
+        // field.
+        template <typename T, typename Json>
+        void assign_transparent(T& t, const Json& json, bool replaceable)
+        {
+            [[maybe_unused]] const auto guard = recursion_guard<T>();
+            auto& field = struct_field<0>(t);
+            if constexpr (visitable<T>)
+                replaceable = false;
+            else
+                replaceable = replaceable && reflected_field_replaceable<reflected_field_index<T, 0>>(t);
+            assign_reflected_field_impl(field, json, replaceable);
         }
 
         // `assign_fields_in_order` for the fields of the struct T, which calls `assign(k, value, obj)` instead
@@ -9484,7 +9591,8 @@ namespace yyjson
         template <typename T, typename Json>
         T user_from_json(const Json& json)
         {
-            [[maybe_unused]] const auto guard = recursion_guard<T>();
+            // `assign_transparent` counts a struct annotated with `yyjson::transparent`, wherever it is read
+            [[maybe_unused]] const auto guard = recursion_guard<std::conditional_t<transparent_struct<T>, void, T>>();
             if constexpr (!from_json_translator<T>::castable)
             {
                 if constexpr (requires { caster<T>::from_json(json); })
@@ -10454,14 +10562,14 @@ namespace yyjson
 
         template <typename... Ts>
         requires copy_string_args<Ts...> && visitable<T> && (!writer::detail::to_json_usr_translator<T>) &&
-                 writer::detail::to_json_with_visitable<T>
+                 (!detail::transparent_struct<T>) && writer::detail::to_json_with_visitable<T>
         static void to_json(writer::object_ref& obj, const T& t, Ts... ts)
         {
             visit_struct<T>::to_json_impl(obj, t, ts...);
         }
         template <typename... Ts>
         requires copy_string_args<Ts...> && visitable<T> && (!writer::detail::to_json_usr_translator<T>) &&
-                 writer::detail::to_json_with_visitable<T>
+                 (!detail::transparent_struct<T>) && writer::detail::to_json_with_visitable<T>
         static void to_json(writer::object_ref& obj, T&& t, Ts... ts)
         {
             visit_struct<T>::to_json_impl(obj, std::move(t), ts...);
@@ -10469,7 +10577,7 @@ namespace yyjson
 
         template <typename... Ts>
         requires copy_string_args<Ts...> && (!visitable<T>) && (!writer::detail::to_json_usr_translator<T>) &&
-                 writer::detail::to_json_with_reflection<T>
+                 (!detail::transparent_struct<T>) && writer::detail::to_json_with_reflection<T>
         static void to_json(writer::object_ref& obj, const T& t, Ts... ts)
         {
             if constexpr (detail::has_adjacent_fields<T>) detail::check_adjacent_tags(t);
@@ -10483,7 +10591,7 @@ namespace yyjson
         }
         template <typename... Ts>
         requires copy_string_args<Ts...> && (!visitable<T>) && (!writer::detail::to_json_usr_translator<T>) &&
-                 writer::detail::to_json_with_reflection<T>
+                 (!detail::transparent_struct<T>) && writer::detail::to_json_with_reflection<T>
         static void to_json(writer::object_ref& obj, T&& t, Ts... ts)
         {
             // The fields are moved one by one out of `t` itself.  `for_each_field` would move them into a
@@ -10697,6 +10805,98 @@ namespace yyjson
         }
     };
 
+    namespace detail
+    {
+        template <typename T>
+        consteval bool transparent_field_may_be_object();
+    }
+
+    // A struct annotated with `yyjson::transparent`, which is read and written as the value of its only field.
+    // The field is read in place as a field of a struct is.  Null empties a `std::optional` field, as it does a
+    // `std::optional` value, unless `T` is a field of a struct.
+    template <typename T>
+    requires detail::transparent_struct<T>
+    struct caster<T> : detail::builtin_caster
+    {
+        using field_type = detail::struct_field_type<T, 0>;
+
+        static bool should_omit(const T& t)
+        requires detail::omittable<field_type>
+        {
+            return detail::should_omit_field(detail::struct_field<0>(t));
+        }
+
+        // `t` is a value of its own, unless it is a field of a struct, which `detail::assign_transparent` reads
+        // into instead with what the struct allows.
+        template <typename Json>
+        requires(detail::recursive_type<T> || field_assignable<Json, field_type>)
+        static void from_json(T& t, const Json& json)
+        {
+            if constexpr (detail::transparent_over_optional<T>)
+            {
+                if (json.is_null())
+                {
+                    detail::struct_field<0>(t).reset();
+                    return;
+                }
+            }
+            detail::assign_transparent(t, json, true);
+        }
+
+        template <typename Json>
+        requires(detail::recursive_type<T> || field_assignable<Json, field_type>)
+        static T from_json(const Json& json)
+        {
+            auto t = T();
+            from_json(t, json);
+            return t;
+        }
+
+        template <typename... Ts>
+        requires detail::copy_string_args<Ts...> &&
+                 (detail::recursive_type<T> || requires(writer::value_ref& v, const field_type& f) {
+                     v = f;
+                     v = std::pair<const field_type&, copy_string_t>(f, copy_string);
+                 })
+        static void to_json(writer::value_ref& v, const T& t, Ts...)
+        {
+            if constexpr (sizeof...(Ts) != 0)
+                v = std::pair<const field_type&, copy_string_t>(detail::transparent_field(t), copy_string);
+            else
+                v = detail::transparent_field(t);
+        }
+        template <typename... Ts>
+        requires detail::copy_string_args<Ts...> &&
+                 (detail::recursive_type<T> || requires(writer::value_ref& v, field_type&& f) {
+                     v = std::move(f);
+                     v = std::pair<field_type&&, copy_string_t>(std::move(f), copy_string);
+                 })
+        static void to_json(writer::value_ref& v, T&& t, Ts...)
+        {
+            if constexpr (sizeof...(Ts) != 0)
+                v = std::pair<field_type&&, copy_string_t>(detail::transparent_field(std::move(t)), copy_string);
+            else
+                v = detail::transparent_field(std::move(t));
+        }
+        // `yyjson::object(t)` and the like, when the field is written as an object.
+        template <typename U, typename... Ts>
+        requires std::same_as<std::remove_cvref_t<U>, T> && detail::copy_string_args<Ts...> &&
+                 (!detail::recursive_type<T> || detail::transparent_field_may_be_object<T>()) &&
+                 requires(writer::object_ref& v, U&& t) {
+                     v = detail::transparent_field(std::forward<U>(t));
+                     v = std::pair<decltype(detail::transparent_field(std::forward<U>(t))), copy_string_t>(
+                         detail::transparent_field(std::forward<U>(t)), copy_string);
+                 }
+        static void to_json(writer::object_ref& v, U&& t, Ts...)
+        {
+            if constexpr (sizeof...(Ts) != 0)
+                v = std::pair<decltype(detail::transparent_field(std::forward<U>(t))), copy_string_t>(
+                    detail::transparent_field(std::forward<U>(t)), copy_string);
+            else
+                v = detail::transparent_field(std::forward<U>(t));
+        }
+    };
+
     template <>
     struct caster<std::monostate>
     {
@@ -10762,9 +10962,10 @@ namespace yyjson
             static constexpr bool is_variant = false;
         };
 
-        // The kinds of JSON values from which `cast<T>(json)` may succeed.  Every kind that it does not
-        // reject at compile time is included, so that a kind left out is one that always fails.
-        template <typename T, typename Json>
+        // The kinds of JSON values from which `cast<T>(json)` may succeed.  A kind left out always fails.  `Seen` are
+        // the structs with `yyjson::transparent` whose field is being asked about.  A struct that holds itself again
+        // adds no kind.
+        template <typename T, typename Json, typename... Seen>
         consteval std::uint16_t accepted_json_kinds()
         {
             if constexpr (!json_value_of_document<Json>)
@@ -10773,7 +10974,7 @@ namespace yyjson
             }
             else if constexpr (!std::same_as<T, std::remove_cvref_t<T>>)
             {
-                return accepted_json_kinds<std::remove_cvref_t<T>, Json>();
+                return accepted_json_kinds<std::remove_cvref_t<T>, Json, Seen...>();
             }
             else if constexpr (std::same_as<T, json_view>)
             {
@@ -10789,13 +10990,21 @@ namespace yyjson
                 else if constexpr (std::same_as<T, writer::array>)
                     return json_kind_array;
                 else if constexpr (variant_json_kinds<T>::is_variant)
-                    return variant_json_kinds<T>::template value<Json>();
+                    return variant_json_kinds<T>::template value<Json, Seen...>();
+                else if constexpr (transparent_struct<T>)
+                {
+                    if constexpr ((std::same_as<T, Seen> || ...))
+                        return 0;
+                    else
+                        return accepted_json_kinds<struct_field_type<T, 0>, Json, Seen..., T>();
+                }
                 else if constexpr (owning_pointer<T>)
-                    return json_kind_null | accepted_json_kinds<typename is_owning_pointer<T>::value_type, Json>();
+                    return json_kind_null |
+                           accepted_json_kinds<typename is_owning_pointer<T>::value_type, Json, Seen...>();
                 else if constexpr (indirect_value<T>)
-                    return accepted_json_kinds<typename T::value_type, Json>();
+                    return accepted_json_kinds<typename T::value_type, Json, Seen...>();
                 else if constexpr (is_std_optional<T>::value)
-                    return json_kind_null | accepted_json_kinds<typename T::value_type, Json>();
+                    return json_kind_null | accepted_json_kinds<typename T::value_type, Json, Seen...>();
                 else if constexpr (tuple_like<T>)
                     return json_kind_array | json_kind_object;
                 else
@@ -10803,7 +11012,7 @@ namespace yyjson
             }
             else if constexpr (from_json_translator<T>::castable)
             {
-                return accepted_json_kinds<from_json_source<T>, Json>();
+                return accepted_json_kinds<from_json_source<T>, Json, Seen...>();
             }
             else
             {
@@ -10834,18 +11043,27 @@ namespace yyjson
             return (accepted_json_kinds<T, reader::const_value_ref>() & json_kind_null) != 0;
         }
 
+        // Whether the field of a transparent struct `T` that holds itself may be an object.  Otherwise, as for a
+        // field that points to `T` again, asking whether it is written as an object would ask that of `T` again.
+        template <typename T>
+        consteval bool transparent_field_may_be_object()
+        {
+            return (accepted_json_kinds<struct_field_type<T, 0>, reader::const_value_ref, T>() & json_kind_object) !=
+                   0;
+        }
+
         template <typename... Ts>
         struct variant_json_kinds<std::variant<Ts...>>
         {
             static constexpr bool is_variant = true;
-            template <typename Json>
+            template <typename Json, typename... Seen>
             static consteval std::uint16_t value()
             {
                 using tags = variant_tags<std::variant<Ts...>>;
                 if constexpr (tags::tagging == variant_tagging::internal)
                     return tags::monostate != std::variant_npos ? json_kind_object | json_kind_null : json_kind_object;
                 else
-                    return static_cast<std::uint16_t>((0U | ... | accepted_json_kinds<Ts, Json>()));
+                    return static_cast<std::uint16_t>((0U | ... | accepted_json_kinds<Ts, Json, Seen...>()));
             }
         };
 
@@ -10876,6 +11094,9 @@ namespace yyjson
             static constexpr bool builtin_cast = caster_from_json_or_copy<T, json>;
             static constexpr bool inner = builtin_cast && std::derived_from<caster<T>, builtin_caster> &&
                                           (owning_pointer<T> || is_std_optional<T>::value || indirect_value<T>);
+            // a struct annotated with `yyjson::transparent`, whose field is the value
+            static constexpr bool transparent =
+                builtin_cast && std::derived_from<caster<T>, builtin_caster> && transparent_struct<T>;
             static constexpr bool source = !builtin_cast && from_json_translator<T>::castable && !recursive_type<T>;
             static constexpr bool elements =
                 !builtin_cast && !from_json_translator<T>::castable && array_castable_range<T, reader::const_array_ref>;
@@ -10939,6 +11160,8 @@ namespace yyjson
                 else
                     return may_reject_nested<typename T::value_type>();
             }
+            else if constexpr (n::transparent)
+                return may_reject_nested<struct_field_type<T, 0>>();
             else if constexpr (n::source)
                 return may_reject_nested<from_json_source<T>>();
             else
@@ -10969,6 +11192,8 @@ namespace yyjson
                 else
                     return may_cast<typename T::value_type>(json, kind);
             }
+            else if constexpr (n::transparent)
+                return may_cast<struct_field_type<T, 0>>(json, kind);
             else if constexpr (n::source)
                 return may_cast<from_json_source<T>>(json, kind);
             else
@@ -14505,6 +14730,7 @@ namespace yyjson
                                yyjson::detail::indirect_value<U>) &&
                               std::same_as<V, value_ref>) ||
                              (builtin && is_variant<U>::value && std::same_as<V, value_ref>) ||
+                             (builtin && yyjson::detail::transparent_struct<U> && std::same_as<V, value_ref>) ||
                              (builtin && std::same_as<U, std::vector<bool>> && std::same_as<V, array_ref>) ||
                              (builtin && yyjson::detail::tuple_like<U> &&
                               (std::same_as<V, array_ref> || std::same_as<V, object_ref>)));
@@ -14616,6 +14842,11 @@ namespace yyjson
                         write_internally_tagged(std::forward<T>(t));
                     else
                         std::visit([&](auto&& v) { write_value(std::forward<decltype(v)>(v)); }, std::forward<T>(t));
+                }
+                else if constexpr (std::derived_from<caster<U>, yyjson::detail::builtin_caster> &&
+                                   yyjson::detail::transparent_struct<U> && std::same_as<V, value_ref>)
+                {
+                    write_value(yyjson::detail::transparent_field(std::forward<T>(t)));
                 }
                 else if constexpr (std::derived_from<caster<U>, yyjson::detail::builtin_caster> &&
                                    std::same_as<U, std::vector<bool>> && std::same_as<V, array_ref>)
@@ -14792,15 +15023,29 @@ namespace yyjson
 
     namespace reader::detail
     {
+        // A struct annotated with `yyjson::transparent`, which is read as its field is.
+        template <typename T>
+        concept transparent_readable =
+            yyjson::detail::transparent_struct<T> && std::derived_from<caster<T>, yyjson::detail::builtin_caster>;
+
         // A field that a caster reads over its old value, which `read_into` and `merge_into` reset to its value in
-        // `T()` first, so that the caster sees the value that it sees when the struct is read anew.
+        // `T()` first, so that the caster sees the value that it sees when the struct is read anew.  The field of
+        // a struct annotated with `yyjson::transparent` decides it for the struct.
         template <typename Field>
-        concept reads_over_old_value =
-            (!std::is_array_v<Field>) &&
-            (yyjson::detail::from_json_translator<Field>::in_place ||
-             (yyjson::detail::caster_assigns_from_json<Field, const_value_ref> &&
-              !(yyjson::detail::is_std_optional<Field>::value &&
-                std::derived_from<caster<Field>, yyjson::detail::builtin_caster>)));
+        consteval bool reads_over_old_value_of()
+        {
+            if constexpr (std::is_array_v<Field>)
+                return false;
+            else if constexpr (transparent_readable<Field>)
+                return reads_over_old_value_of<yyjson::detail::struct_field_type<Field, 0>>();
+            else
+                return yyjson::detail::from_json_translator<Field>::in_place ||
+                       (yyjson::detail::caster_assigns_from_json<Field, const_value_ref> &&
+                        !(yyjson::detail::is_std_optional<Field>::value &&
+                          std::derived_from<caster<Field>, yyjson::detail::builtin_caster>));
+        }
+        template <typename Field>
+        concept reads_over_old_value = reads_over_old_value_of<Field>();
 
         // A struct that the default caster reads field by field and whose fields can all be move-assigned, so
         // that `read_into` reads over its fields and `merge_into` merges an object into them.
@@ -14838,16 +15083,31 @@ namespace yyjson
             std::derived_from<caster<T>, yyjson::detail::builtin_caster> &&
             (!yyjson::detail::from_json_translator<T>::castable);
 
-        // A value that `merge_into` merges a JSON object into: a struct, a map, a variant tagged by `internal_tag`,
-        // or an optional of one of them, which gets a value first if it has none: `T()` for a struct or a map, and
+        // A value that `merge_into` merges an object into: a struct, a map, a variant with `internal_tag`, a struct
+        // with `yyjson::transparent` whose field is one, or an optional of one.  An empty optional first gets `T()` or
         // the variant read from the object.  Any other value is replaced.
         template <typename T>
-        concept mergeable = (!std::is_array_v<T>) &&
-                            (struct_mergeable<T> || map_mergeable<T> || tagged_mergeable<T> ||
-                             ((yyjson::detail::is_std_optional<T>::value || yyjson::detail::indirect_value<T>) &&
-                              std::derived_from<caster<T>, yyjson::detail::builtin_caster> &&
-                              (struct_mergeable<typename T::value_type> || map_mergeable<typename T::value_type> ||
-                               tagged_mergeable<typename T::value_type>)));
+        consteval bool mergeable_of();
+        template <typename T>
+        concept transparent_mergeable =
+            transparent_readable<T> && mergeable_of<yyjson::detail::struct_field_type<T, 0>>();
+        template <typename T>
+        consteval bool mergeable_of()
+        {
+            if constexpr (std::is_array_v<T>)
+                return false;
+            else if constexpr (struct_mergeable<T> || map_mergeable<T> || tagged_mergeable<T> ||
+                               transparent_mergeable<T>)
+                return true;
+            else if constexpr ((yyjson::detail::is_std_optional<T>::value || yyjson::detail::indirect_value<T>) &&
+                               std::derived_from<caster<T>, yyjson::detail::builtin_caster>)
+                return struct_mergeable<typename T::value_type> || map_mergeable<typename T::value_type> ||
+                       tagged_mergeable<typename T::value_type> || transparent_mergeable<typename T::value_type>;
+            else
+                return false;
+        }
+        template <typename T>
+        concept mergeable = mergeable_of<T>();
 
         template <typename T>
         CPPYYJSON_ALWAYS_INLINE inline constexpr const auto& struct_key_matcher() noexcept
@@ -15024,6 +15284,11 @@ namespace yyjson
                     {
                         using tags = yyjson::detail::variant_tags<T>;
                         merge_tagged<tags>(t, yyjson::detail::tagged_alternative<T, tags>(*obj), v);
+                    }
+                    else if constexpr (transparent_mergeable<T>)
+                    {
+                        [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<T>();
+                        merge_from(struct_field<0>(t), v);
                     }
                     else if constexpr (yyjson::detail::indirect_value<T>)
                     {
@@ -15954,6 +16219,8 @@ namespace yyjson
                     else
                         return node<false, type_list<value_node<yyjson::detail::from_json_source<T>, Loop>>>{};
                 }
+                else if constexpr (transparent_readable<T>)
+                    return field_part<yyjson::detail::struct_field_type<T, 0>, Loop>();
                 else if constexpr (from_json_val_usr_defined<T>)
                 {
                     if constexpr (yyjson::detail::owning_pointer<T> &&
@@ -16017,6 +16284,8 @@ namespace yyjson
                 using yyjson::detail::type_list;
                 if constexpr (std::is_array_v<F>)
                     return node<false, type_list<value_node<std::remove_cv_t<std::remove_all_extents_t<F>>, true>>>{};
+                else if constexpr (transparent_readable<F>)
+                    return field_part<yyjson::detail::struct_field_type<F, 0>, Loop>();
                 else if constexpr (yyjson::detail::caster_assigns_from_json<F, const_value_ref>)
                 {
                     if constexpr (is_std_optional<F>::value &&
@@ -17890,6 +18159,8 @@ namespace yyjson
                     else
                         return may_read<typename T::value_type>();
                 }
+                else if constexpr (n::transparent)
+                    return may_read<d::struct_field_type<T, 0>>();
                 else if constexpr (n::source)
                     return may_read<d::from_json_source<T>>();
                 else
@@ -18974,6 +19245,21 @@ namespace yyjson
                         return yyjson::detail::from_json_translator<T>::convert(std::move(source));
                     });
                 }
+                else if constexpr (transparent_readable<T>)
+                {
+                    auto result = T();
+                    if constexpr (yyjson::detail::transparent_over_optional<T>)
+                    {
+                        if (*cur_ == 'n')
+                        {
+                            read_literal("null");
+                            struct_field<0>(result).reset();
+                            return result;
+                        }
+                    }
+                    read_field(result, true);
+                    return result;
+                }
                 else if constexpr (from_json_val_usr_defined<T>)
                 {
                     if constexpr (yyjson::detail::owning_pointer<T> &&
@@ -19654,6 +19940,12 @@ namespace yyjson
                     });
                     return;
                 }
+                else if constexpr (transparent_readable<field_type>)
+                {
+                    // null leaves an optional in the struct as it is
+                    if (first && *cur_ == 'n') [[unlikely]]
+                        reset_field<I>(t);
+                }
                 read_field(field, false);
             }
 
@@ -19678,6 +19970,11 @@ namespace yyjson
                             merge_map(t);
                         else if constexpr (tagged_mergeable<T>)
                             merge_tagged_variant(t);
+                        else if constexpr (transparent_mergeable<T>)
+                        {
+                            [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<T>();
+                            merge_value(struct_field<0>(t));
+                        }
                         else if constexpr (yyjson::detail::indirect_value<T>)
                         {
                             if (t.valueless_after_move())
@@ -20043,6 +20340,8 @@ namespace yyjson
                 using field_type = std::remove_cvref_t<Field>;
                 if constexpr (std::is_array_v<field_type>)
                     read_c_array(field);
+                else if constexpr (transparent_readable<field_type>)
+                    read_transparent_field(field, replaceable);
                 else if constexpr (yyjson::detail::indirect_value<field_type> &&
                                    std::derived_from<caster<field_type>, yyjson::detail::builtin_caster>)
                 {
@@ -20197,6 +20496,20 @@ namespace yyjson
                 }
                 else
                     field = read_value<field_type>();
+            }
+
+            // Reads the value at `cur_` into the field of `t`, a struct annotated with `yyjson::transparent`, as
+            // `detail::assign_transparent` reads a value of a document.
+            template <typename T>
+            void read_transparent_field(T& t, bool replaceable)
+            {
+                [[maybe_unused]] const auto guard = yyjson::detail::recursion_guard<T>();
+                if constexpr (yyjson::detail::visitable<T>)
+                    replaceable = false;
+                else
+                    replaceable = replaceable && yyjson::detail::reflected_field_replaceable<
+                                                     yyjson::detail::reflected_field_index<T, 0>>(t);
+                read_field(struct_field<0>(t), replaceable);
             }
 
             // Reads the key at `cur_` and finds it with `matcher`.  The keys of a type that are not read, or not

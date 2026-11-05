@@ -73,6 +73,8 @@ Without `std::optional`, a field of type `std::shared_ptr<V>` or `std::variant<s
 
 Any other `std::optional<U>`, such as the root, an element of an array or a value of a map, reads `null` as `std::nullopt`. When `U` is `std::shared_ptr` or `std::unique_ptr`, the optional holds an empty pointer instead.
 
+A struct with [`yyjson::transparent`](conversions.md#a-struct-as-the-value-of-its-field) is read as its field. Let that field be a `std::optional<U>`, where `U` is not a pointer. When the struct is a field of another struct, the field follows the rules of a `std::optional` field.
+
 ## Errors
 
 The functions of the library report a failure with one of these exceptions:
