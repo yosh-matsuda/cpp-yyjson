@@ -1625,6 +1625,82 @@ consteval enumerator_annotation<As...> enumerator(std::string_view name, As... v
 
 Both are settings of the enumeration, given to [`yyjson::annotate`](#yyjsonannotationst-yyjsonannotate). See [Formats and renamed enumerators](conversions.md#formats-and-renamed-enumerators).
 
+### Constraints
+
+Settings of a field that restrict the values that it reads, as the keywords of JSON Schema of the same names do.
+
+```cpp
+template <std::size_t L = 0>
+struct const_ { consteval explicit const_(const auto& v); };
+template <std::size_t N, std::size_t L = 0>
+struct enum_ { consteval explicit enum_(const auto&... v); };
+template <std::size_t N = 0>
+struct json_text { consteval explicit json_text(std::string_view text); };
+struct minimum { consteval explicit minimum(auto m); };
+struct maximum { consteval explicit maximum(auto m); };
+struct exclusive_minimum { consteval explicit exclusive_minimum(auto m); };
+struct exclusive_maximum { consteval explicit exclusive_maximum(auto m); };
+struct multiple_of { consteval explicit multiple_of(auto m); };
+struct min_length { consteval explicit min_length(std::size_t n); };
+struct max_length { consteval explicit max_length(std::size_t n); };
+template <std::size_t N = 0>
+struct pattern { consteval explicit pattern(std::string_view regex); };
+template <std::size_t N = 0>
+struct format { consteval explicit format(std::string_view name); };
+template <std::size_t N = 0>
+struct format_assertion { consteval explicit format_assertion(std::string_view name); };
+struct min_items { consteval explicit min_items(std::size_t n); };
+struct max_items { consteval explicit max_items(std::size_t n); };
+struct min_properties { consteval explicit min_properties(std::size_t n); };
+struct max_properties { consteval explicit max_properties(std::size_t n); };
+template <auto F>
+inline constexpr satisfies_t satisfies;
+```
+
+They are settings of [`yyjson::field`](#yyjsonfield), and of the subschemas of the [constraints of elements](#constraints-of-elements) and the [combinators](#yyjsonnot_-yyjsonif_then_else-yyjsonall_of-yyjsonany_of-yyjsonone_of). With the reflection of C++26, they can also be written on the member, as `[[=yyjson::minimum(0)]] int age;`.
+
+*   `yyjson::const_` and `yyjson::enum_` take strings, numbers, `bool`, and `nullptr` for `null`. An enumeration written by name takes the JSON names of its enumerators. Another value, such as an object or an array, is a `yyjson::json_text`. The compiler checks the text. `yyjson::enum_` takes JSON texts only or C++ values only.
+*   The bounds and `yyjson::multiple_of` take any arithmetic value other than `bool`.
+*   `yyjson::format` checks nothing. `yyjson::format_assertion` checks the [formats](validation.md#formats). `yyjson::pattern` needs a [`yyjson::pattern_matcher<>`](#yyjsonpattern_matcher-yyjsonformat_checker).
+*   `f` of `yyjson::satisfies<f>` takes the value of the field, and returns `false` to reject it.
+*   On a `yyjson::value` and a `std::variant`, each constraint checks only the values of its JSON kind.
+*   A read of a value that a constraint rejects throws `yyjson::bad_cast`. `write` does not check them.
+
+A constraint on a type that it does not apply to is a compile error. So are a constraint given twice, except `yyjson::pattern`, and constraints that leave no value to read. See [Constraints](validation.md#constraints).
+
+```cpp
+struct User
+{
+    std::string name;
+    int age = 0;
+};
+
+template <>
+inline constexpr auto yyjson::annotations<User> =
+    yyjson::annotate(yyjson::field("name", yyjson::min_length(1)), yyjson::field("age", yyjson::minimum(0)));
+
+yyjson::read<User>(R"({"name":"Ann","age":-1})");
+// throws yyjson::bad_cast: the value of the key "age" of User is less than the minimum 0 at /age (line 1, column 21, pos 20)
+```
+
+### `yyjson::pattern_matcher<>`, `yyjson::format_checker<>`
+
+The engines that the program gives to `yyjson::pattern` and `yyjson::format_assertion`.
+
+```cpp
+template <typename = void>
+struct pattern_matcher;  // the program specializes pattern_matcher<>
+template <typename = void>
+struct format_checker;   // the program specializes format_checker<>
+```
+
+*   `pattern_matcher<>` is constructible from the `std::string_view` of a pattern. Its `const` call operator takes a `std::string_view` and returns whether the pattern matches somewhere in it. The format `regex` takes a string from which the constructor returns without an exception.
+*   `format_checker<>` is constructible from the `std::string_view` of the name of a format. Its `const` call operator takes a `std::string_view` and returns whether the string has the format. It checks the formats that the library does not check.
+*   Each pattern and each format constructs its engine once, on its first check. Every read on every thread then calls that engine.
+*   A `yyjson::pattern` or a `yyjson::format_assertion` without the specialization that it needs is a compile error.
+
+See [Pattern matcher](validation.md#pattern-matcher) and [Formats](validation.md#formats).
+
 ### `VISITABLE_STRUCT`
 
 A macro that registers the fields of a struct or a class by name.

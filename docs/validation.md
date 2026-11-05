@@ -151,6 +151,176 @@ A [user-defined caster](conversions.md#user-defined-casters) that casts a value 
 
 A read without a policy checks no key. With a policy, `read<T>`, `read_into` and `merge_into` check the keys of an object only when they differ from the keys of the fields in order. The `cast<T>` of a JSON value checks the keys of each object that it reads into a struct. This holds also for a value that `read<T>` reads into a temporary document.
 
+## Constraints
+
+A field can restrict the values that it reads, as a schema does. Give the constraints to the field in `yyjson::field`, or write them on the member as [C++26 annotations](conversions.md#c26-annotations). A read of a value that does not satisfy them throws `yyjson::bad_cast`, with the [path and the position](#conversion-errors) of the value:
+
+```cpp
+#include "cpp_yyjson.hpp"
+#include <iostream>
+
+struct User
+{
+    std::string name;
+    int age = 0;
+    std::vector<std::string> tags;
+};
+template <>
+inline constexpr auto yyjson::annotations<User> =
+    yyjson::annotate(yyjson::field("name", yyjson::min_length(1), yyjson::max_length(32)),
+                     yyjson::field("age", yyjson::minimum(0), yyjson::maximum(150)),
+                     yyjson::field("tags", yyjson::max_items(8)));
+
+int main()
+{
+    auto user = yyjson::read<User>(R"({"name":"Ann","age":30})");  // -> User{"Ann", 30, {}}
+    try
+    {
+        user = yyjson::read<User>(R"({"name":"Ann","age":-1})");
+    }
+    catch (const yyjson::bad_cast& e)
+    {
+        std::cerr << e.what() << '\n';  // the value of the key "age" of User is less than the minimum 0 at /age (line 1, column 21, pos 20)
+    }
+}
+```
+
+The constraints have the names of the keywords of [JSON Schema](https://json-schema.org/draft/2020-12), and they accept the values that the keywords accept. [JSON Schema keywords](#json-schema-keywords) gives the differences. The table below gives the constraints of one value. A value that a constraint rejects throws `yyjson::bad_cast`. The message is `the value of the key "k" of T`, and then the text in the last column:
+
+| Constraint | The field | Rejects a value | Message |
+| --- | --- | --- | --- |
+| `yyjson::const_(v)` | a string, a number, a `bool` or an enumeration written by name; any type with `yyjson::json_text` | not equal to `v` | `is not equal to the constant v` |
+| `yyjson::enum_(v...)` | as `yyjson::const_` | equal to none of `v...` | `is not one of v...` |
+| `yyjson::minimum(m)` | a number | less than `m` | `is less than the minimum m` |
+| `yyjson::maximum(m)` | a number | greater than `m` | `is greater than the maximum m` |
+| `yyjson::exclusive_minimum(m)` | a number | `m` or less | `is not greater than the exclusive minimum m` |
+| `yyjson::exclusive_maximum(m)` | a number | `m` or greater | `is not less than the exclusive maximum m` |
+| `yyjson::multiple_of(m)` | a number | not an integer multiple of `m` | `is not a multiple of m` |
+| `yyjson::min_length(n)` | a string | of fewer than `n` code points | `is shorter than the minimum length n` |
+| `yyjson::max_length(n)` | a string | of more than `n` code points | `is longer than the maximum length n` |
+| `yyjson::pattern("regex")` | a string | in which the regular expression matches nowhere | `does not match the pattern "regex"`. With more than one pattern: `does not match all of the patterns "a", "b"` |
+| `yyjson::format_assertion("name")` | a string | that does not have the [format](#formats) `name` | `does not have the format "name"` |
+| `yyjson::format("name")` | a string | none: it is an annotation only | |
+| `yyjson::min_items(n)` | a range, a tuple or a map written as an array | with fewer than `n` elements | `has fewer items than the minimum n` |
+| `yyjson::max_items(n)` | as `yyjson::min_items` | with more than `n` elements | `has more items than the maximum n` |
+| `yyjson::min_properties(n)` | a map written as an object | with fewer than `n` members | `has fewer properties than the minimum n` |
+| `yyjson::max_properties(n)` | a map written as an object | with more than `n` members | `has more properties than the maximum n` |
+| `yyjson::satisfies<f>` | any | for which `f(value)` returns `false` | `is rejected by yyjson::satisfies` |
+
+```cpp
+struct Order
+{
+    int version = 2;
+    std::string unit;
+    std::string created;
+    std::string contact;
+};
+template <>
+inline constexpr auto yyjson::annotations<Order> =
+    yyjson::annotate(yyjson::field("version", yyjson::const_(2)),
+                     yyjson::field("unit", yyjson::enum_("mm", "cm", "m")),
+                     yyjson::field("created", yyjson::format_assertion("date-time")),
+                     yyjson::field("contact", yyjson::format("email")));
+
+yyjson::read<Order>(R"({"version":3})");
+// throws: the value of the key "version" of Order is not equal to the constant 2 at /version (line 1, column 12, pos 11)
+yyjson::read<Order>(R"({"unit":"km"})");
+// throws: the value of the key "unit" of Order is not one of "mm", "cm", "m" at /unit (line 1, column 9, pos 8)
+yyjson::read<Order>(R"({"created":"2024-05-01"})");
+// throws: the value of the key "created" of Order does not have the format "date-time" at /created (line 1, column 12, pos 11)
+yyjson::read<Order>(R"({"contact":"not an address"})");
+// -> Order{2, "", "", "not an address"}: yyjson::format does not check the value
+```
+
+The constraints above apply to a field of a struct. To give them to a type, put the value in a struct with [`yyjson::transparent`](conversions.md#a-struct-as-the-value-of-its-field), and give the constraints to its field. The constraints then apply at each position of the type: a field, an element, a value of a map and the root. The message gives the kind of the JSON value, as in `the number is less than the minimum 1`. The note at the end of `what()` names the struct, as in `reading UserId`.
+
+### Pattern matcher
+
+`yyjson::pattern` matches a string with a regular expression engine that the program gives. The library has no engine. Specialize `yyjson::pattern_matcher<>` before the first read of a struct that has a pattern. The specialization needs:
+
+*   A constructor from the `std::string_view` of the pattern. The string is in static storage, and the matcher can keep it.
+*   A `const` call operator. It takes the `std::string_view` of a string, and returns whether the pattern matches somewhere in it, as `pattern` of JSON Schema does.
+
+```cpp
+#include <regex>
+
+template <>
+struct yyjson::pattern_matcher<>
+{
+    std::regex regex;
+    explicit pattern_matcher(std::string_view pattern) : regex(pattern.begin(), pattern.end()) {}
+    bool operator()(std::string_view s) const { return std::regex_search(s.begin(), s.end(), regex); }
+};
+
+struct Product
+{
+    std::string code;
+};
+template <>
+inline constexpr auto yyjson::annotations<Product> =
+    yyjson::annotate(yyjson::field("code", yyjson::pattern("^[A-Z]{3}-[0-9]{4}$")));
+
+yyjson::read<Product>(R"({"code":"abc"})");
+// throws: the value of the key "code" of Product does not match the pattern "^[A-Z]{3}-[0-9]{4}$" at /code (line 1, column 9, pos 8)
+```
+
+*   Each pattern constructs its matcher once, on its first check. Every read on every thread then uses that matcher. Thus the call operator must be safe to call at the same time from more than one thread, as `std::regex_search` on a `const std::regex` is.
+*   An exception from the constructor, such as `std::regex_error`, goes out of the read.
+*   The specialization is one for the whole program. Each translation unit that reads a pattern must see the same specialization.
+*   The dialect of the patterns is that of the engine. JSON Schema names ECMA-262.
+
+### Formats
+
+`yyjson::format("name")` is an annotation, as `format` is in JSON Schema 2020-12 by default. It checks nothing. `yyjson::format_assertion("name")` checks a string field by the grammar of the format `name`, as the vocabulary "format-assertion" does. The library checks these formats:
+
+| Format | Grammar | Accepts |
+| --- | --- | --- |
+| `date-time` | RFC 3339 `date-time` | `2024-05-01T12:00:00Z`, `2024-05-01t12:00:00.5+09:00` |
+| `date` | RFC 3339 `full-date` | `2024-02-29`, a day that the month has |
+| `time` | RFC 3339 `full-time` | `12:00:00Z`, `23:59:60Z`. An offset or `Z` is necessary |
+| `duration` | RFC 3339 Appendix A | `P1Y2M`, `PT1H30M`, `P2W` |
+| `email` | RFC 5321 `Mailbox` | `ann@example.com`, `"a b"@example.com`, `ann@[192.0.2.1]` |
+| `hostname` | RFC 1123, with the A-labels of RFC 5891 | `example.com`, `xn--bcher-kva.example` |
+| `ipv4` | RFC 791 dotted decimal | `192.0.2.1`, without leading zeros |
+| `ipv6` | RFC 4291 | `2001:db8::1`, `::ffff:192.0.2.1`, without a zone |
+| `uri` | RFC 3986 `URI` | `https://example.com/a?b#c`, with a scheme |
+| `uri-reference` | RFC 3986 `URI-reference` | `../a`, `#frag`, a URI |
+| `uri-template` | RFC 6570 | `https://example.com/{id}{?q*}` |
+| `uuid` | RFC 9562 | `123e4567-e89b-12d3-a456-426614174000`, of any version |
+| `json-pointer` | RFC 6901 | `/a/b~1c`, the empty string |
+| `relative-json-pointer` | draft-handrews-relative-json-pointer-01 | `0`, `1/a`, `2#` |
+
+`regex` uses the [pattern matcher](#pattern-matcher). A string has the format when the constructor of the matcher returns without an exception. For this format, the constructor must throw for a string that is not a regular expression, as the constructor of `std::regex` does. It gets a string of the read, so it must copy the string. A `std::bad_alloc` from it goes out of the read.
+
+The program checks the other formats, such as `idn-email`, `iri` or a format of its own. Specialize `yyjson::format_checker<>` before the first read of a struct that has one. The specialization needs a constructor from the `std::string_view` of the name of the format. It also needs a `const` call operator that takes the `std::string_view` of a string and returns whether the string has the format. Each format constructs its checker once, and every read on every thread uses it. With a `yyjson::format_checker<>` of the program, the library still checks the formats in the table above and `regex` itself.
+
+```cpp
+template <>
+struct yyjson::format_checker<>
+{
+    std::string_view name;
+    explicit format_checker(std::string_view name) : name(name) {}
+    bool operator()(std::string_view s) const
+    {
+        if (name == "sku") return s.size() == 8 && std::ranges::all_of(s, [](char c) { return c >= '0' && c <= '9'; });
+        return false;
+    }
+};
+
+struct Item
+{
+    std::string sku;
+};
+template <>
+inline constexpr auto yyjson::annotations<Item> =
+    yyjson::annotate(yyjson::field("sku", yyjson::format_assertion("sku")));
+
+yyjson::read<Item>(R"({"sku":"abc"})");
+// throws: the value of the key "sku" of Item does not have the format "sku" at /sku (line 1, column 8, pos 7)
+```
+
+A `yyjson::format_assertion` without the specialization that it needs is a compile error: a `pattern` or the format `regex` without `yyjson::pattern_matcher<>`, and another format without `yyjson::format_checker<>`.
+
 ## Errors
 
 The functions of the library report a failure with one of these exceptions:
