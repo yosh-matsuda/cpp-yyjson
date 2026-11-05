@@ -17217,10 +17217,12 @@ namespace yyjson
                     {
                         cur_ = start;
                         merge_alternative<tags>(struct_field<I>(t));
-                        return;
                     }
+                    else
+                        struct_field<I>(t) = read_new_alternative<V>(index, start);
                 }
-                read_adjacent_alternative<T, I>(t, index, start);
+                else
+                    read_adjacent_alternative<T, I>(t, index, start);
             }
 
             template <typename T, std::size_t I>
@@ -17751,6 +17753,30 @@ namespace yyjson
                 return v;
             }
 
+            // The `make` of `read_variant` that constructs the variant in `result`.
+            template <typename T>
+            static auto variant_maker(std::optional<T>& result) noexcept
+            {
+                return [&result](auto index, auto&&... args) -> T& {
+                    if (result.has_value())
+                        return emplace_alternative(*result, index, std::forward<decltype(args)>(args)...);
+                    if constexpr (emplaced_variant<T>)
+                        return emplace_alternative(result.emplace(), index, std::forward<decltype(args)>(args)...);
+                    else
+                        return result.emplace(index, std::forward<decltype(args)>(args)...);
+                };
+            }
+
+            // Reads the value at `start` as the alternative `index` of the variant T into a new variant.  A merge
+            // assigns it only after the read succeeds, so the document that it falls back to holds the old one.
+            template <typename T>
+            T read_new_alternative(std::size_t index, const char* start)
+            {
+                auto result = std::optional<T>();
+                read_tagged_alternative<T>(variant_maker(result), index, start);
+                return std::move(*result);
+            }
+
             // Reads the value at `cur_` into `target` as `target = read_value<T>()` does, but writes a string into
             // the buffer `target` already has.
             template <typename T>
@@ -17888,14 +17914,7 @@ namespace yyjson
                 if constexpr (builtin_variant<T>)
                 {
                     auto result = std::optional<T>();
-                    read_variant<T>([&](auto index, auto&&... args) -> T& {
-                        if (result.has_value())
-                            return emplace_alternative(*result, index, std::forward<decltype(args)>(args)...);
-                        if constexpr (emplaced_variant<T>)
-                            return emplace_alternative(result.emplace(), index, std::forward<decltype(args)>(args)...);
-                        else
-                            return result.emplace(index, std::forward<decltype(args)>(args)...);
-                    });
+                    read_variant<T>(variant_maker(result));
                     return std::move(*result);
                 }
                 else if constexpr (builtin_tuple<T>)
@@ -18607,11 +18626,7 @@ namespace yyjson
                 if (index == std::variant_npos || index == t.index())
                     merge_alternative<tags>(t);
                 else
-                    read_tagged_alternative<T>(
-                        [&](auto i, auto&&... args) -> T& {
-                            return emplace_alternative(t, i, std::forward<decltype(args)>(args)...);
-                        },
-                        index, start);
+                    t = read_new_alternative<T>(index, start);
             }
 
             template <typename T>
