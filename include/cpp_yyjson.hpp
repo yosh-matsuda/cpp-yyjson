@@ -1562,9 +1562,6 @@ namespace yyjson
         template <typename T>
         concept enum_key = std::is_enum_v<T> && std::is_class_v<caster<T>> && (!std::is_final_v<caster<T>>) &&
                            (!caster_names_from_json<T>) && (!caster_names_to_json<T>);
-        template <typename Pair>
-        concept key_value_like = pair_like<Pair> && (key_type<std::tuple_element_t<0, Pair>> ||
-                                                     enum_key<std::remove_cv_t<std::tuple_element_t<0, Pair>>>);
         template <typename T>
         concept omittable = requires(const std::remove_cvref_t<T>& t) {
             { caster<std::remove_cvref_t<T>>::should_omit(t) } -> std::convertible_to<bool>;
@@ -1663,6 +1660,35 @@ namespace yyjson
         concept reflectable =
             field_reflection::field_namable<T> &&
             ((field_reflection::field_count<T> > 0) || (std::is_empty_v<T> && !library_class<T>()));
+
+        template <typename T>
+        struct is_basic_string : std::false_type
+        {
+        };
+        template <typename... Ts>
+        struct is_basic_string<std::basic_string<Ts...>> : std::true_type
+        {
+        };
+        template <typename T>
+        struct is_basic_string_view : std::false_type
+        {
+        };
+        template <typename... Ts>
+        struct is_basic_string_view<std::basic_string_view<Ts...>> : std::true_type
+        {
+        };
+
+        // A class that converts to a string is a key of a JSON object only when the string is what it is written
+        // as.  A caster, its fields or `VISITABLE_STRUCT` may write another JSON value, so that a map with such
+        // keys is an array of pairs.  A key of a standard string is the string, even with a caster of the user.
+        template <typename T>
+        concept string_key =
+            key_type<T> && (!std::is_class_v<T> || is_basic_string<T>::value || is_basic_string_view<T>::value ||
+                            ((!caster_names_from_json<T>) && (!caster_names_to_json<T>) && (!reflectable<T>) &&
+                             (!visitable<T>)));
+        template <typename Pair>
+        concept key_value_like = pair_like<Pair> && (string_key<std::remove_cv_t<std::tuple_element_t<0, Pair>>> ||
+                                                     enum_key<std::remove_cv_t<std::tuple_element_t<0, Pair>>>);
 
         template <typename T>
         using annotation_values_of = typename std::remove_cvref_t<decltype(annotations<T>)>::types;
@@ -9126,23 +9152,6 @@ namespace yyjson
                     pair_type{std::tuple_element_t<0, pair_type>(std::forward<Key>(key)), std::forward<Value>(value)});
             }
         }
-
-        template <typename T>
-        struct is_basic_string : std::false_type
-        {
-        };
-        template <typename... Ts>
-        struct is_basic_string<std::basic_string<Ts...>> : std::true_type
-        {
-        };
-        template <typename T>
-        struct is_basic_string_view : std::false_type
-        {
-        };
-        template <typename... Ts>
-        struct is_basic_string_view<std::basic_string_view<Ts...>> : std::true_type
-        {
-        };
 
         // A set, whose elements are its keys, is not an output range and is filled with `insert`.  A map has
         // key-value pairs as its elements and is read from a JSON object.

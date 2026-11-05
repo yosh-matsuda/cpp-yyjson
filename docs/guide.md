@@ -280,7 +280,7 @@ auto scores = yyjson::read<std::map<std::string, int>>(R"({"alice":3,"bob":5})")
 // -> {{"alice", 3}, {"bob", 5}}
 ```
 
-`std::unordered_map` works as well. A map whose keys are enumerations reads the names of the enumerators as keys, and one whose keys are integers is an array of `[key, value]` pairs ([details](conversions.md#conversion-rules)).
+`std::unordered_map` works as well. A map whose keys are enumerations reads the names of the enumerators as keys. A map whose keys are integers or classes that a caster converts is an array of `[key, value]` pairs ([details](conversions.md#conversion-rules)).
 
 ### Choose a variant alternative by a `"type"` member
 

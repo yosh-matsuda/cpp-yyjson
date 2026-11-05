@@ -1019,6 +1019,88 @@ TEST(Reflection, MapsFromArraysOfPairs)
     EXPECT_TRUE(expect_read_into(std::map<int, int>{{1, 1}}, "[[2,5]]"));
 }
 
+// Classes that convert to a string, of which those that a caster converts or that are reflected are not keys of an
+// object
+struct CastIntKey
+{
+    std::string s;
+    operator const std::string&() const { return s; }
+    auto operator<=>(const CastIntKey&) const = default;
+};
+template <>
+struct yyjson::caster<CastIntKey>
+{
+    static CastIntKey from_json(int v) { return {std::to_string(v)}; }
+    static int to_json(const CastIntKey& k) { return std::stoi(k.s); }
+};
+struct CastStringKey
+{
+    std::string s;
+    operator const std::string&() const { return s; }
+    auto operator<=>(const CastStringKey&) const = default;
+};
+template <>
+struct yyjson::caster<CastStringKey>
+{
+    static CastStringKey from_json(std::string_view v) { return {std::string(v.substr(1))}; }
+    static std::string to_json(const CastStringKey& k) { return "#" + k.s; }
+};
+struct ReflectedKey
+{
+    std::string s;
+    operator std::string_view() const { return s; }
+    auto operator<=>(const ReflectedKey&) const = default;
+};
+struct DerivedKey : std::string
+{
+    using std::string::string;
+};
+class HiddenKey
+{
+    std::string s_;
+
+public:
+    explicit HiddenKey(std::string s) : s_(std::move(s)) {}
+    operator std::string_view() const { return s_; }
+    auto operator<=>(const HiddenKey&) const = default;
+};
+
+// A map whose keys a caster converts or which are reflected is an array of [key, value] pairs, as a map of
+// enumerations that a caster converts is, and is read back from one
+TEST(Reflection, MapsWithConvertedKeys)
+{
+    const auto ints = std::map<CastIntKey, int>{{{"3"}, 1}, {{"7"}, 2}};
+    EXPECT_EQ(written(ints), "[[3,1],[7,2]]");
+    EXPECT_EQ(std::string(yyjson::value(ints).write()), "[[3,1],[7,2]]");
+    expect_direct_write(ints);
+    EXPECT_EQ((yyjson::read<std::map<CastIntKey, int>>(written(ints))), ints);
+    EXPECT_TRUE((expect_direct_read<std::map<CastIntKey, int>>("[[3,1],[7,2]]")));
+
+    const auto strings = std::map<CastStringKey, int>{{{"a"}, 1}};
+    EXPECT_EQ(written(strings), R"([["#a",1]])");
+    EXPECT_EQ(std::string(yyjson::value(strings).write()), R"([["#a",1]])");
+    EXPECT_EQ((yyjson::read<std::map<CastStringKey, int>>(written(strings))), strings);
+    EXPECT_TRUE((expect_direct_read<std::map<CastStringKey, int>>(R"([["#a",1]])")));
+
+    const auto reflected = std::map<ReflectedKey, int>{{{"p"}, 1}};
+    EXPECT_EQ(written(reflected), R"([[{"s":"p"},1]])");
+    EXPECT_EQ(std::string(yyjson::value(reflected).write()), R"([[{"s":"p"},1]])");
+    EXPECT_EQ((yyjson::read<std::map<ReflectedKey, int>>(written(reflected))), reflected);
+    EXPECT_TRUE((expect_direct_read<std::map<ReflectedKey, int>>(R"([[{"s":"p"},1]])")));
+    static_assert(!std::is_constructible_v<yyjson::object, const std::map<CastIntKey, int>&>);
+    static_assert(!std::is_constructible_v<yyjson::object, const std::map<ReflectedKey, int>&>);
+
+    // a class that is written as its string stays a key
+    const auto derived = std::map<DerivedKey, int>{{"d", 1}};
+    EXPECT_EQ(written(derived), R"({"d":1})");
+    EXPECT_EQ(std::string(yyjson::object(derived).write()), R"({"d":1})");
+    EXPECT_EQ((yyjson::read<std::map<DerivedKey, int>>(R"({"d":1})")), derived);
+    const auto hidden = std::map<HiddenKey, int>{{HiddenKey("h"), 1}};
+    EXPECT_EQ(written(hidden), R"({"h":1})");
+    EXPECT_EQ(std::string(yyjson::object(hidden).write()), R"({"h":1})");
+    expect_direct_write(hidden);
+}
+
 // An aggregate with begin() and end() is written into an object, and is read from one
 struct RangeAggregate
 {

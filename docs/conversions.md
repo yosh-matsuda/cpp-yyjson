@@ -85,7 +85,7 @@ Some conversions succeed where one might expect them to fail, or give JSON that 
 *   These four string types cannot be read back, and `yyjson::readable` is false for them. To read such an array of numbers, use a `std::vector` of the character type, such as `std::vector<char8_t>`.
 *   A struct that is read ignores a key that it does not have, and a field whose key is missing keeps its value in `T()`. [Unknown and missing keys](validation.md#unknown-and-missing-keys) and [Repeated keys](validation.md#repeated-keys) give the full rules.
 
-A map whose keys are neither strings nor [enumerations](#enumerations), such as `std::map<int, int>`, is not a JSON object:
+If the keys of a map are neither strings nor [enumerations](#enumerations), the map is not a JSON object. An example is `std::map<int, int>`. If a user-defined caster, `VISITABLE_STRUCT` or the reflection converts the keys, the map is not a JSON object either. This holds also for a class of keys that converts to a string. Keys of `std::string` and `std::string_view` stay the keys of an object, even with a user-defined caster of `std::string`. A map that is not a JSON object has these rules:
 
 *   It is written as an array of `[key, value]` pairs, such as `[[1,2]]`, and read back from the same form.
 *   A key that appears twice in the array keeps its first value. A `std::multimap` keeps them all.
