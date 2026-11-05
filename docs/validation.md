@@ -377,6 +377,52 @@ bool b = yyjson::matches<Point>(doc);  // -> true
 *   `yyjson::strict` does not reject unknown keys. Thus `yyjson::matches<Point>` accepts `{"x":1,"y":2,"z":3}`. Give `Point` the policy `yyjson::reject_unknown_keys` to reject it.
 *   `yyjson::matches<T>` on a field of another type is a compile error.
 
+### Conditions between fields
+
+A struct takes `yyjson::not_`, `yyjson::if_then_else`, `yyjson::all_of`, `yyjson::any_of` and `yyjson::one_of` as settings of its own. Their subschemas take `yyjson::field("key", s...)`, which gives the settings of the member `key`, as the keywords `properties` and `required` of JSON Schema do. `s` is `yyjson::required`, which needs the key, and the constraints of the value:
+
+```cpp
+struct Contact
+{
+    std::optional<std::string> name;
+    std::optional<int> id;
+    std::optional<std::string> email;
+    std::optional<std::string> phone;
+};
+template <>
+inline constexpr auto yyjson::annotations<Contact> =
+    yyjson::annotate(yyjson::any_of(yyjson::field("name", yyjson::required), yyjson::field("id", yyjson::required)),
+                     yyjson::one_of(yyjson::field("email", yyjson::required), yyjson::field("phone", yyjson::required)));
+
+struct Shipment
+{
+    std::string method;
+    std::optional<std::string> address;
+};
+template <>
+inline constexpr auto yyjson::annotations<Shipment> = yyjson::annotate(yyjson::if_then_else(
+    yyjson::if_(yyjson::field("method", yyjson::const_("post"))),
+    yyjson::then(yyjson::field("address", yyjson::required, yyjson::min_length(1)))));
+
+yyjson::read<Contact>(R"({"email":"a@example.com"})");
+// throws: Contact satisfies none of the subschemas of yyjson::any_of (line 1, column 1, pos 0)
+yyjson::read<Contact>(R"({"id":1,"email":"a","phone":"1"})");
+// throws: Contact satisfies more than one subschema of yyjson::one_of (line 1, column 1, pos 0)
+yyjson::read<Shipment>(R"({"method":"post"})");
+// throws: Shipment is not constructible from JSON without the key "address", which yyjson::if_then_else requires (line 1, column 1, pos 0)
+yyjson::read<Shipment>(R"({"method":"post","address":""})");
+// throws: the value of the key "address" of Shipment is shorter than the minimum length 1 at /address (line 1, column 28, pos 27)
+```
+
+*   The key is the JSON key of the member, after a [`yyjson::rename`](conversions.md#json-keys).
+*   The object has a key when the read gets the key from the JSON. A value that a field has in `T()` does not count. A key with `null` counts when the type of the field can hold `null`, such as a `yyjson::nullable`, a pointer or a `std::variant` of `std::monostate`. Its empty value then satisfies the constraints, except `yyjson::const_` and `yyjson::enum_` without `nullptr`. A key with `null` that the read reads as a missing key counts as missing, as in [`null` in a `std::optional`](#null-in-a-stdoptional).
+*   `yyjson::field` without `yyjson::required` accepts an object without the key. Thus `yyjson::not_(yyjson::field("a", yyjson::minimum(5)))` rejects `{}`. Add `yyjson::required` to the `yyjson::field` to reject only an object that has the key with such a value.
+*   `read_into` checks the keys of the text that it reads.
+*   `merge_into` checks the keys of the patch, without the keys whose value is `null`. It takes the values from the struct after the merge. A key that the patch leaves out counts as missing, also when the struct has a value for it.
+*   The error of a condition is at the struct, with an empty path. The error of the value of a member is at the member.
+*   A field of `yyjson::value` or `yyjson::object` takes such conditions too, for the members of its object. A value that is not an object satisfies them, as in JSON Schema.
+*   `yyjson::field` in a subschema takes no `yyjson::rename`, `yyjson::skip`, `yyjson::adjacent_tag`, default or `yyjson::emit_defaults`. These are settings of a member, outside the subschemas.
+
 ### Pattern matcher
 
 `yyjson::pattern` matches a string with a regular expression engine that the program gives. The library has no engine. Specialize `yyjson::pattern_matcher<>` before the first read of a struct that has a pattern. The specialization needs:
