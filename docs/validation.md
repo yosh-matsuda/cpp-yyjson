@@ -536,6 +536,51 @@ yyjson::read<Shipment>(R"({"method":"post","address":""})");
 *   A field of `yyjson::value` or `yyjson::object` takes such conditions too, for the members of its object. A value that is not an object satisfies them, as in JSON Schema.
 *   `yyjson::field` in a subschema takes no `yyjson::rename`, `yyjson::skip`, `yyjson::adjacent_tag`, default or `yyjson::emit_defaults`. These are settings of a member, outside the subschemas.
 
+#### Keys that need other keys
+
+Three settings of a struct give the keys that its objects must have together. They are short forms of the conditions above:
+
+*   `yyjson::dependent_required("card", {"address", "postal"})`: an object with the key `card` must also have the keys `address` and `postal`. It is the keyword `dependentRequired` of JSON Schema, and the same as `yyjson::if_then_else(yyjson::if_(yyjson::field("card", yyjson::required)), yyjson::then(yyjson::field("address", yyjson::required), yyjson::field("postal", yyjson::required)))`.
+*   `yyjson::one_of_required({"env"}, {"value", "unit"})`: an object must have all the keys of exactly one group. It is `oneOf` of `required` in JSON Schema.
+*   `yyjson::any_of_required({"email"}, {"phone"})`: an object must have all the keys of one group or more. It is `anyOf` of `required` in JSON Schema.
+
+```cpp
+struct Measure
+{
+    std::optional<std::string> env;
+    std::optional<double> value;
+    std::optional<std::string> unit;
+};
+template <>
+inline constexpr auto yyjson::annotations<Measure> =
+    yyjson::annotate(yyjson::one_of_required({"env"}, {"value", "unit"}));
+
+struct Billing
+{
+    std::optional<std::string> card;
+    std::optional<std::string> address;
+    std::optional<std::string> postal;
+};
+template <>
+inline constexpr auto yyjson::annotations<Billing> =
+    yyjson::annotate(yyjson::dependent_required("card", {"address", "postal"}));
+
+yyjson::read<Measure>(R"({"value":1})");
+// throws: Measure is not constructible from JSON without all the keys of one of ["env"], ["value", "unit"] (line 1, column 1, pos 0)
+yyjson::read<Measure>(R"({"env":"a","value":1,"unit":"m"})");
+// throws: Measure is not constructible from JSON with all the keys of more than one of ["env"], ["value", "unit"] (line 1, column 1, pos 0)
+yyjson::read<Billing>(R"({"card":"c","postal":"1"})");
+// throws: Billing is not constructible from JSON without the key "address", which yyjson::dependent_required requires (line 1, column 1, pos 0)
+```
+
+*   The strings are the JSON keys of the fields, after [`yyjson::rename`](conversions.md#json-keys). A string that is not the key of a field is a compile error. A [skipped field](conversions.md#skipped-fields) has no key.
+*   The object has a key as in the conditions above. Thus `null` in a `std::optional` field is a missing key, and `null` in a `yyjson::nullable` field is a key. `read_into` and `merge_into` check the keys as the conditions do.
+*   `yyjson::any_of_required` has the same message as `yyjson::one_of_required` without the keys of a group. The message gives the groups of the setting in their order.
+*   A struct can have more than one of these settings and the other conditions. The object must satisfy all of them. The read checks them in the order of `yyjson::annotate`, after the keys, the number of members and the values of the fields.
+*   An empty list of keys, an empty group or no group is a compile error. So is a key given twice in one list or in one group, and `yyjson::dependent_required` that lists its own key. Two groups can share a key.
+*   A struct with [`yyjson::transparent`](conversions.md#a-struct-as-the-value-of-its-field) or [`yyjson::as_array`](conversions.md#a-struct-as-a-json-array) takes none of these settings. The subschemas of the conditions do not take them.
+*   A write does not check the keys. A field that equals its [default value](conversions.md#default-values-and-required-keys) is left out also when a setting names its key. The text can then fail the read. Thus give such a field `std::optional` and no default, because a write writes it only when it holds a value. `yyjson::emit_defaults` on the field writes it in every case.
+
 ### How constraints are checked
 
 *   A constraint is checked when the read reads its key into the field: by `yyjson::read<T>`, `read_into`, `merge_into` and `cast<T>`, with or without the [read policies](#read-policies). The policies do not change the constraints.
@@ -710,14 +755,15 @@ The tables below list the keywords of [JSON Schema 2020-12](https://json-schema.
 | `additionalProperties` with a schema | `yyjson::additional_properties(settings...)` on a map | none. |
 | `propertyNames` | `yyjson::property_names(settings...)` on a struct or a map | none. |
 | `minProperties`, `maxProperties` | `yyjson::min_properties(n)`, `yyjson::max_properties(n)` on a struct or a map | none. |
+| `dependentRequired` | `yyjson::dependent_required("key", {"keys"...})` on a struct | none. |
 
 ### Combining schemas
 
 | Keyword | cpp-yyjson | Difference |
 | --- | --- | --- |
 | `allOf` | the constraints of one field, which all apply, or `yyjson::all_of(...)` | none. |
-| `anyOf` | `yyjson::any_of(...)`, or `std::variant` for alternatives of different types | a `std::variant` reads the first alternative that accepts the value. |
-| `oneOf` | `yyjson::one_of(...)`, or a [tagged variant](conversions.md#tagged-variants) | a tag names the alternative. An untagged `std::variant` does not check that only one alternative accepts the value. |
+| `anyOf` | `yyjson::any_of(...)`, or `std::variant` for alternatives of different types. `yyjson::any_of_required` on a struct for subschemas of `required` only | a `std::variant` reads the first alternative that accepts the value. |
+| `oneOf` | `yyjson::one_of(...)`, or a [tagged variant](conversions.md#tagged-variants). `yyjson::one_of_required` on a struct for subschemas of `required` only | a tag names the alternative. An untagged `std::variant` does not check that only one alternative accepts the value. |
 | `not` | `yyjson::not_(...)` | none. |
 | `if`, `then`, `else` | `yyjson::if_then_else(...)` | none. |
 | `$ref`, `$defs` | a C++ type, or `yyjson::matches<T>` on a value of the DOM | a definition with constraints that is not an object is a struct with [`yyjson::transparent`](conversions.md#a-struct-as-the-value-of-its-field). |

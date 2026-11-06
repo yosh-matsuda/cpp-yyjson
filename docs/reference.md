@@ -52,6 +52,7 @@ This page lists the functions, classes and other entities of cpp-yyjson, grouped
     *   [Constraints](#constraints)
     *   [Constraints of elements](#constraints-of-elements)
     *   [`yyjson::not_`, `yyjson::if_then_else`, `yyjson::all_of`, `yyjson::any_of`, `yyjson::one_of`](#yyjsonnot_-yyjsonif_then_else-yyjsonall_of-yyjsonany_of-yyjsonone_of)
+    *   [`yyjson::dependent_required`, `yyjson::one_of_required`, `yyjson::any_of_required`](#yyjsondependent_required-yyjsonone_of_required-yyjsonany_of_required)
     *   [`yyjson::matches<T>`](#yyjsonmatchest)
     *   [`yyjson::pattern_matcher<>`, `yyjson::format_checker<>`](#yyjsonpattern_matcher-yyjsonformat_checker)
     *   [`VISITABLE_STRUCT`](#visitable_struct)
@@ -1416,7 +1417,7 @@ Specialize `annotations<T>` before the first use of `T`. `annotate` takes these 
 
 | `T` | Settings |
 | --- | --- |
-| a struct | [`yyjson::field`](#yyjsonfield), [`yyjson::transparent`](#yyjsontransparent), [`yyjson::as_array` and `yyjson::items(false)`](#yyjsonas_array-yyjsonextra_items), [`yyjson::default_`](#yyjsondefault_-yyjsondefault_from), `yyjson::additional_properties(false)`, `yyjson::min_properties(n)`, `yyjson::max_properties(n)` and `yyjson::property_names(s...)`, the [read policies](#read-policies), the [combinators](#yyjsonnot_-yyjsonif_then_else-yyjsonall_of-yyjsonany_of-yyjsonone_of), and with `yyjson::as_array` the [settings of the whole array](#constraints-of-elements) |
+| a struct | [`yyjson::field`](#yyjsonfield), [`yyjson::transparent`](#yyjsontransparent), [`yyjson::as_array` and `yyjson::items(false)`](#yyjsonas_array-yyjsonextra_items), [`yyjson::default_`](#yyjsondefault_-yyjsondefault_from), `yyjson::additional_properties(false)`, `yyjson::min_properties(n)`, `yyjson::max_properties(n)` and `yyjson::property_names(s...)`, the [read policies](#read-policies), the [combinators](#yyjsonnot_-yyjsonif_then_else-yyjsonall_of-yyjsonany_of-yyjsonone_of) and [`yyjson::dependent_required`, `yyjson::one_of_required` and `yyjson::any_of_required`](#yyjsondependent_required-yyjsonone_of_required-yyjsonany_of_required), and with `yyjson::as_array` the [settings of the whole array](#constraints-of-elements) |
 | a `std::variant` | [`yyjson::internal_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag) |
 | an enumeration | [`yyjson::enumerator` and `yyjson::enum_format`](#yyjsonenum_format-yyjsonenumerator) |
 
@@ -1837,6 +1838,24 @@ inline constexpr auto yyjson::annotations<Contact> = yyjson::annotate(
 yyjson::read<Contact>(R"({})");
 // throws yyjson::bad_cast: Contact satisfies none of the subschemas of yyjson::one_of (line 1, column 1, pos 0)
 ```
+
+### `yyjson::dependent_required`, `yyjson::one_of_required`, `yyjson::any_of_required`
+
+```cpp
+template <std::size_t N>
+consteval auto dependent_required(std::string_view key, const std::string_view (&keys)[N]);
+template <std::size_t... Ns>
+consteval auto one_of_required(const std::string_view (&... groups)[Ns]);
+template <std::size_t... Ns>
+consteval auto any_of_required(const std::string_view (&... groups)[Ns]);
+```
+
+*   `yyjson::dependent_required("k", {"m", ...})` rejects an object that has the key `k` and not all the keys `m`.
+*   `yyjson::one_of_required({"a", ...}, {"b", ...}, ...)` rejects an object that does not have all the keys of exactly one group. `yyjson::any_of_required` rejects an object that does not have all the keys of at least one group.
+*   They are settings of a struct for `yyjson::annotate`, or annotations of the type under C++26. The strings are the JSON keys of the fields. A struct can have more than one of them.
+*   A key that is not the key of a field is a compile error. So are an empty list, an empty group and no group. A key given twice in one list or group is one too, and so is a key of `yyjson::dependent_required` in its own list. A struct with `yyjson::transparent` or `yyjson::as_array` and the subschemas of the combinators do not take them.
+
+See [Keys that need other keys](validation.md#keys-that-need-other-keys).
 
 ### `yyjson::matches<T>`
 

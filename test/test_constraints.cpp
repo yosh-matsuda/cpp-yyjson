@@ -953,6 +953,13 @@ namespace constraint_rules
                   transparent_object_keyword);
     static_assert(table_error(yyjson::transparent, field("w", yyjson::skip),
                               yyjson::property_names(yyjson::min_length(1))) == transparent_object_keyword);
+    static_assert(table_error(yyjson::dependent_required("v", {"w"})) == none);
+    static_assert(table_error(yyjson::transparent, field("w", yyjson::skip), yyjson::dependent_required("v", {"w"})) ==
+                  transparent_object_keyword);
+    static_assert(table_error(yyjson::transparent, field("w", yyjson::skip), yyjson::one_of_required({"v"})) ==
+                  transparent_object_keyword);
+    static_assert(table_error(yyjson::any_of_required({"v"}), yyjson::transparent, field("w", yyjson::skip)) ==
+                  transparent_object_keyword);
 }  // namespace constraint_rules
 
 // the tree of the keywords of the field `v` of a struct, by its error
@@ -1321,6 +1328,36 @@ inline constexpr auto yyjson::annotations<MultiKindWritten> =
     yyjson::annotate(yyjson::field("p", yyjson::min_items(2), yyjson::max_items(3)),
                      yyjson::field("q", yyjson::max_items(2), yyjson::contains(yyjson::minimum(5))));
 
+// the settings of the keys that an object has, by the keys of the fields: "b" is the member of the key "bb", and
+// "s" is skipped
+struct PresenceRenamed
+{
+    std::optional<int> a;
+    std::optional<int> b;
+    std::optional<int> s;
+};
+struct PresenceSkipped
+{
+    std::optional<int> a;
+    std::optional<int> b;
+    std::optional<int> s;
+};
+struct PresenceKnown
+{
+    std::optional<int> a;
+    std::optional<int> b;
+    std::optional<int> s;
+};
+template <>
+inline constexpr auto yyjson::annotations<PresenceRenamed> =
+    yyjson::annotate(yyjson::field("b", yyjson::rename("bb")), yyjson::one_of_required({"a"}, {"b"}));
+template <>
+inline constexpr auto yyjson::annotations<PresenceSkipped> =
+    yyjson::annotate(yyjson::field("s", yyjson::skip), yyjson::dependent_required("a", {"s"}));
+template <>
+inline constexpr auto yyjson::annotations<PresenceKnown> =
+    yyjson::annotate(yyjson::field("b", yyjson::rename("bb")), yyjson::any_of_required({"a"}, {"bb", "s"}));
+
 namespace struct_condition_rules
 {
     // the settings that a condition of a struct takes, which the types alone tell
@@ -1330,6 +1367,48 @@ namespace struct_condition_rules
     static_assert(yyjson::detail::has_struct_conditions<ConditionShape> &&
                   yyjson::detail::has_struct_conditions<ConditionVisitable> &&
                   !yyjson::detail::has_struct_conditions<Bounded> && !yyjson::detail::has_constraints<Contact>);
+
+    // `yyjson::dependent_required`, `one_of_required` and `any_of_required` name the keys of the fields, each once
+    template <int K>
+    consteval auto make_presence()
+    {
+        if constexpr (K == 0)
+            return yyjson::dependent_required("a", {"b", "c"});
+        else if constexpr (K == 1)
+            return yyjson::dependent_required("a", {"b", "b"});
+        else if constexpr (K == 2)
+            return yyjson::dependent_required("a", {"b", "a"});
+        else if constexpr (K == 3)
+            return yyjson::dependent_required("a", {});
+        else if constexpr (K == 4)
+            return yyjson::one_of_required({"a"}, {"a", "b"});
+        else if constexpr (K == 5)
+            return yyjson::one_of_required({"a"}, {"b", "c", "b"});
+        else
+            return yyjson::any_of_required({"a", "a"});
+    }
+    template <int K>
+    concept presence_made = requires { typename std::integral_constant<bool, (make_presence<K>(), true)>; };
+    static_assert(presence_made<0> && !presence_made<1> && !presence_made<2> && !presence_made<3> && presence_made<4> &&
+                  !presence_made<5> && !presence_made<6>);
+    template <typename S>
+    concept groups_made = requires(S s) { yyjson::one_of_required({s}, {s, s}); };
+    template <typename S>
+    concept empty_group_made = requires(S s) { yyjson::any_of_required({s}, {}); };
+    static_assert(groups_made<std::string_view> && !empty_group_made<std::string_view>);
+    // a key that no field has, which a renamed or skipped member does not
+    template <typename T>
+    constexpr auto presence_error =
+        yyjson::detail::check_struct_tree<T>(yyjson::detail::make_schema_tree<&yyjson::detail::build_struct_tree<T>>());
+    using enum yyjson::detail::struct_condition_error;
+    static_assert(presence_error<PresenceRenamed> == unknown_key && presence_error<PresenceSkipped> == unknown_key &&
+                  presence_error<PresenceKnown> == none);
+    static_assert(yyjson::detail::has_struct_conditions<PresenceKnown> &&
+                  !yyjson::detail::has_constraints<PresenceKnown>);
+    // they are settings of a struct, not of a subschema or a field, until a struct in them takes them
+    static_assert(!yyjson::detail::subschema_setting<decltype(yyjson::one_of_required({"a"}, {"b"}))> &&
+                  !yyjson::detail::subschema_setting<decltype(yyjson::dependent_required("a", {"b"}))> &&
+                  !yyjson::detail::field_setting<decltype(yyjson::any_of_required({"a"}))>);
 }  // namespace struct_condition_rules
 
 #if FIELD_RFL_ANNOTATIONS

@@ -551,6 +551,92 @@ struct[[= yyjson::property_names(yyjson::max_length(1))]] NamedAnnotated
 };
 #endif
 
+// types whose objects need the keys of some fields when they have another key, or the keys of one or more groups
+struct Billing
+{
+    std::string name;
+    std::optional<std::string> card;
+    std::optional<std::string> address;
+    std::optional<int> zip;
+    bool operator==(const Billing&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<Billing> = yyjson::annotate(
+    yyjson::field("zip", yyjson::rename("postal")), yyjson::dependent_required("card", {"address", "postal"}));
+struct Measure
+{
+    std::string name;
+    std::optional<std::string> env;
+    std::optional<int> value;
+    std::optional<std::string> unit;
+    bool operator==(const Measure&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<Measure> =
+    yyjson::annotate(yyjson::field("unit", yyjson::rename("u")), yyjson::one_of_required({"env"}, {"value", "u"}));
+struct NullableMeasure
+{
+    yyjson::nullable<std::string> env;
+    std::optional<int> value;
+    bool operator==(const NullableMeasure&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<NullableMeasure> =
+    yyjson::annotate(yyjson::one_of_required({"env"}, {"value"}));
+struct Reachable
+{
+    std::optional<std::string> email;
+    std::optional<std::string> phone;
+    std::optional<std::string> fax;
+    bool operator==(const Reachable&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<Reachable> =
+    yyjson::annotate(yyjson::any_of_required({"email"}, {"phone"}), yyjson::one_of_required({"phone"}, {"fax"}));
+struct ExclusiveVisitable
+{
+    std::optional<int> a;
+    std::optional<int> b;
+    bool operator==(const ExclusiveVisitable&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<ExclusiveVisitable> = yyjson::annotate(yyjson::one_of_required({"a"}, {"b"}));
+VISITABLE_STRUCT(ExclusiveVisitable, a, b);
+// the settings with the keys of the read, the counts and a condition of the values
+struct PresenceChecked
+{
+    int n = 0;
+    std::optional<int> a;
+    std::optional<int> b;
+    bool operator==(const PresenceChecked&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<PresenceChecked> = yyjson::annotate(
+    yyjson::additional_properties(false), yyjson::max_properties(2), yyjson::field("n", yyjson::minimum(0)),
+    yyjson::any_of_required({"a"}, {"b"}), yyjson::not_(yyjson::field("a", yyjson::required, yyjson::maximum(0))));
+// the fields named by the settings are left out when they equal their defaults
+struct PresenceDefaults
+{
+    int a = 0;
+    int b = 5;
+    int c = 7;
+    std::optional<int> d;
+    bool operator==(const PresenceDefaults&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<PresenceDefaults> =
+    yyjson::annotate(yyjson::field("a", yyjson::default_), yyjson::field("b", yyjson::default_),
+                     yyjson::field("c", yyjson::default_), yyjson::one_of_required({"a"}, {"b"}));
+#if FIELD_RFL_ANNOTATIONS
+struct[[ = yyjson::one_of_required({"a"}, {"B"}), = yyjson::dependent_required("a", {"cc"}) ]] PresenceAnnotated
+{
+    std::optional<int> a;
+    [[= yyjson::rename("B")]] std::optional<int> b;
+    std::optional<int> cc;
+    bool operator==(const PresenceAnnotated&) const = default;
+};
+#endif
+
 using OptionalMap = std::map<std::string, std::optional<int>>;
 using IntMap = std::map<std::string, int>;
 using IntHashMap = std::unordered_map<std::string, int>;
@@ -713,6 +799,21 @@ namespace
     std::string null_as_missing(std::string_view type)
     {
         return error(std::format("{} is not constructible from JSON null under yyjson::reject_null_as_missing", type));
+    }
+    std::string dependent(std::string_view type, std::string_view key)
+    {
+        return error(std::format(
+            "{} is not constructible from JSON without the key \"{}\", which yyjson::dependent_required requires", type,
+            key));
+    }
+    std::string none_of(std::string_view type, std::string_view groups)
+    {
+        return error(std::format("{} is not constructible from JSON without all the keys of one of {}", type, groups));
+    }
+    std::string many_of(std::string_view type, std::string_view groups)
+    {
+        return error(
+            std::format("{} is not constructible from JSON with all the keys of more than one of {}", type, groups));
     }
 
     // the cases of the objects of `{"x":..,"y":..}` for a struct of <= 8 fields, both kinds of struct
@@ -1407,6 +1508,151 @@ TEST(PropertyNames, Write)
     EXPECT_EQ(std::string(yyjson::write(NamedPt{1, 2, 3})), R"({"a":1,"bb":2,"bad":3})");
     EXPECT_EQ(std::string(yyjson::write(NamedShape(NamedRect{1, 2}))), R"({"kind":"r","w":1,"h":2})");
     EXPECT_EQ(std::string(yyjson::write(NamedRenamed{1, 2})), R"({"A":1,"b":2})");
+}
+
+TEST(DependentRequired, Read)
+{
+    // an object without the key, or with every key that it needs, in any order
+    EXPECT_EQ(read_with<Billing>(R"({"name":"a"})"), R"({"name":"a"})");
+    EXPECT_TRUE(direct_read);
+    EXPECT_EQ(read_with<Billing>(R"({"name":"a","address":"b"})"), R"({"name":"a","address":"b"})");
+    EXPECT_EQ(read_with<Billing>(R"({"name":"a","card":"c","address":"b","postal":1})"),
+              R"({"name":"a","card":"c","address":"b","postal":1})");
+    EXPECT_TRUE(direct_read);
+    EXPECT_EQ(read_with<Billing>(R"({"postal":1,"card":"c","address":"b"})"),
+              R"({"name":"","card":"c","address":"b","postal":1})");
+    for (const auto& [json, key] :
+         {std::pair{R"({"name":"a","card":"c"})", "address"}, std::pair{R"({"card":"c","address":"b"})", "postal"},
+          std::pair{R"({"postal":1,"name":"a","card":"c"})", "address"}})
+    {
+        EXPECT_EQ(read_with<Billing>(json), dependent("Billing", key)) << json;
+        EXPECT_EQ(error_path<Billing>(json), "") << json;
+    }
+    // the name of a renamed member is no key of it, and null in an optional field is a missing key
+    EXPECT_EQ(read_with<Billing>(R"({"card":"c","address":"b","zip":1})"), dependent("Billing", "postal"));
+    EXPECT_EQ(read_with<Billing>(R"({"card":"c","address":null,"postal":1})"), dependent("Billing", "address"));
+    EXPECT_EQ(read_with<Billing>(R"({"card":null,"name":"a"})"), R"({"name":"a"})");
+    EXPECT_TRUE(direct_read);
+    // the policies check the keys first
+    EXPECT_EQ(read_with<Billing>(R"({"card":"c"})", yyjson::reject_missing_keys), missing("Billing", "name"));
+    EXPECT_EQ(read_with<Billing>(R"({"card":"c","z":1})", yyjson::reject_unknown_keys),
+              unknown("Billing", "z") + " at /z");
+    EXPECT_EQ(read_with<Billing>(R"({"name":"a","card":"c"})", yyjson::strict), dependent("Billing", "address"));
+    EXPECT_EQ(read_with<Billing>(R"({"name":"a","card":"c","address":"b","postal":1})", yyjson::strict),
+              R"({"name":"a","card":"c","address":"b","postal":1})");
+    // a struct in an element checks its own object
+    EXPECT_EQ(read_with<std::vector<Billing>>(R"([{},{"card":"c"}])"), dependent("Billing", "address") + " at /1");
+    EXPECT_EQ(error_path<std::vector<Billing>>(R"([{},{"card":"c"}])"), "/1");
+#if FIELD_RFL_ANNOTATIONS
+    EXPECT_EQ(read_with<PresenceAnnotated>(R"({"a":1,"cc":2})"), R"({"a":1,"cc":2})");
+    EXPECT_EQ(read_with<PresenceAnnotated>(R"({"a":1})"), dependent("PresenceAnnotated", "cc"));
+#endif
+}
+
+TEST(RequiredGroups, Read)
+{
+    const auto measure_none = none_of("Measure", R"(["env"], ["value", "u"])");
+    const auto measure_many = many_of("Measure", R"(["env"], ["value", "u"])");
+    EXPECT_EQ(read_with<Measure>(R"({"name":"a","env":"e"})"), R"({"name":"a","env":"e"})");
+    EXPECT_TRUE(direct_read);
+    EXPECT_EQ(read_with<Measure>(R"({"name":"a","value":1,"u":"m"})"), R"({"name":"a","value":1,"u":"m"})");
+    EXPECT_EQ(read_with<Measure>(R"({"u":"m","value":1})"), R"({"name":"","value":1,"u":"m"})");
+    EXPECT_TRUE(direct_read);
+    for (const auto json : {R"({"name":"a","value":1})", R"({"name":"a"})", R"({})", R"({"value":1,"unit":"m"})"})
+    {
+        EXPECT_EQ(read_with<Measure>(json), measure_none) << json;
+        EXPECT_EQ(error_path<Measure>(json), "") << json;
+    }
+    // the keys of all the groups, in their order and out of order
+    EXPECT_EQ(read_with<Measure>(R"({"name":"a","env":"e","value":1,"u":"m"})"), measure_many);
+    EXPECT_EQ(read_with<Measure>(R"({"u":"m","env":"e","value":1})"), measure_many);
+    // null in an optional field is a missing key, and null in a field that holds it is not
+    EXPECT_EQ(read_with<Measure>(R"({"env":null,"value":1,"u":"m"})"), R"({"name":"","value":1,"u":"m"})");
+    EXPECT_EQ(read_with<NullableMeasure>(R"({"env":null})"), R"({"env":null})");
+    EXPECT_TRUE(direct_read);
+    EXPECT_EQ(read_with<NullableMeasure>(R"({"env":null,"value":1})"),
+              many_of("NullableMeasure", R"(["env"], ["value"])"));
+    EXPECT_EQ(read_with<NullableMeasure>(R"({"value":null})"), none_of("NullableMeasure", R"(["env"], ["value"])"));
+    // several settings, in their order
+    EXPECT_EQ(read_with<Reachable>(R"({"email":"a","fax":"f"})"), R"({"email":"a","fax":"f"})");
+    EXPECT_TRUE(direct_read);
+    EXPECT_EQ(read_with<Reachable>(R"({"phone":"p"})"), R"({"phone":"p"})");
+    EXPECT_EQ(read_with<Reachable>(R"({"email":"a"})"), none_of("Reachable", R"(["phone"], ["fax"])"));
+    EXPECT_EQ(read_with<Reachable>(R"({"fax":"f"})"), none_of("Reachable", R"(["email"], ["phone"])"));
+    EXPECT_EQ(read_with<Reachable>(R"({"email":"a","phone":"p","fax":"f"})"),
+              many_of("Reachable", R"(["phone"], ["fax"])"));
+    EXPECT_EQ(read_with<ExclusiveVisitable>(R"({"b":1})"), R"({"b":1})");
+    EXPECT_TRUE(direct_read);
+    EXPECT_EQ(read_with<ExclusiveVisitable>(R"({"a":1,"b":2})"), many_of("ExclusiveVisitable", R"(["a"], ["b"])"));
+    EXPECT_EQ(read_with<ExclusiveVisitable>(R"({"b":2,"a":1})"), many_of("ExclusiveVisitable", R"(["a"], ["b"])"));
+    EXPECT_EQ(read_with<ExclusiveVisitable>(R"({})"), none_of("ExclusiveVisitable", R"(["a"], ["b"])"));
+    // the policies check the keys first
+    EXPECT_EQ(read_with<Measure>(R"({"env":"e","value":1})", yyjson::reject_missing_keys), missing("Measure", "name"));
+    EXPECT_EQ(read_with<Measure>(R"({"name":"a"})", yyjson::strict), measure_none);
+    EXPECT_EQ(read_with<Measure>(R"({"name":"a","env":"e"})", yyjson::strict), R"({"name":"a","env":"e"})");
+    // the keys of a closed type, the count and the values of the fields come before the settings
+    EXPECT_EQ(read_with<PresenceChecked>(R"({"b":1})"), R"({"n":0,"b":1})");
+    EXPECT_TRUE(direct_read);
+    EXPECT_EQ(read_with<PresenceChecked>(R"({"z":1})"), closed("PresenceChecked", "z") + " at /z");
+    EXPECT_EQ(read_with<PresenceChecked>(R"({"n":1,"a":1,"b":1})"), more("PresenceChecked", 2));
+    EXPECT_EQ(read_with<PresenceChecked>(R"({"n":-1})"),
+              error("the value of the key \"n\" of PresenceChecked is less than the minimum 0 at /n"));
+    EXPECT_EQ(read_with<PresenceChecked>(R"({"n":1})"), none_of("PresenceChecked", R"(["a"], ["b"])"));
+    EXPECT_EQ(read_with<PresenceChecked>(R"({"a":0})"),
+              error("PresenceChecked has the keys and the values that yyjson::not_ rejects"));
+    // a struct in an element checks its own object
+    EXPECT_EQ(read_with<std::vector<Measure>>(R"([{"env":"e"},{}])"), measure_none + " at /1");
+    EXPECT_EQ(error_path<std::vector<Measure>>(R"([{"env":"e"},{}])"), "/1");
+#if FIELD_RFL_ANNOTATIONS
+    EXPECT_EQ(read_with<PresenceAnnotated>(R"({"B":1})"), R"({"B":1})");
+    EXPECT_EQ(read_with<PresenceAnnotated>(R"({"a":1,"B":1,"cc":1})"), many_of("PresenceAnnotated", R"(["a"], ["B"])"));
+    EXPECT_EQ(read_with<PresenceAnnotated>(R"({"b":1})"), none_of("PresenceAnnotated", R"(["a"], ["B"])"));
+#endif
+}
+
+TEST(DependentRequired, MergeInto)
+{
+    // the keys of the members of the patch that are not null are present, and the keys that it leaves out are not
+    const auto t = Billing{"n", "c", "a", 1};
+    const auto all = std::string(R"({"name":"n","card":"c","address":"a","postal":1})");
+    EXPECT_EQ(merge_with(t, R"({"name":"n"})"), all);
+    EXPECT_TRUE(direct_read);
+    EXPECT_EQ(merge_with(t, R"({"card":"c"})"), dependent("Billing", "address"));
+    EXPECT_EQ(merge_with(t, R"({"card":"c","address":"a","postal":1})"), all);
+    EXPECT_TRUE(direct_read);
+    EXPECT_EQ(merge_with(t, R"({"card":"c","address":"a","postal":null})"), dependent("Billing", "postal"));
+    EXPECT_EQ(merge_with(t, R"({"card":null})"), R"({"name":"n","address":"a","postal":1})");
+}
+
+TEST(RequiredGroups, MergeInto)
+{
+    // the same for the groups
+    const auto m = Measure{"a", "e", {}, {}};
+    EXPECT_EQ(merge_with(m, R"({"env":"f"})"), R"({"name":"a","env":"f"})");
+    EXPECT_TRUE(direct_read);
+    EXPECT_EQ(merge_with(m, R"({"value":1,"u":"m"})"), R"({"name":"a","env":"e","value":1,"u":"m"})");
+    EXPECT_EQ(merge_with(m, R"({"env":null,"value":1,"u":"m"})"), R"({"name":"a","value":1,"u":"m"})");
+    EXPECT_EQ(merge_with(m, R"({"name":"b"})"), none_of("Measure", R"(["env"], ["value", "u"])"));
+    EXPECT_EQ(merge_with(m, R"({"env":"f","value":1,"u":"m"})"), many_of("Measure", R"(["env"], ["value", "u"])"));
+    EXPECT_EQ(merge_with(ExclusiveVisitable{1, {}}, R"({"a":null,"b":2})"), R"({"b":2})");
+    // the key "a" that the patch leaves out counts as missing, as the merge checks the keys of the patch
+    EXPECT_EQ(merge_with(ExclusiveVisitable{1, {}}, R"({"b":2})"), R"({"a":1,"b":2})");
+}
+
+TEST(RequiredGroups, Write)
+{
+    // the fields that the settings name are left out when they equal their defaults, as the other fields
+    EXPECT_EQ(std::string(yyjson::write(PresenceDefaults())), "{}");
+    EXPECT_EQ(std::string(yyjson::write(PresenceDefaults{1, 5, 7, {}})), R"({"a":1})");
+    EXPECT_EQ(std::string(yyjson::write(std::vector{PresenceDefaults{0, 6, 7, {}}})), R"([{"b":6}])");
+    auto doc = yyjson::object(PresenceDefaults{1, 5, 8, {}});
+    EXPECT_EQ(std::string(doc.write()), R"({"a":1,"c":8})");
+    EXPECT_EQ(read_with<PresenceDefaults>(R"({"a":1})"), R"({"a":1,"b":5,"c":7})");
+    EXPECT_EQ(std::string(yyjson::write(PresenceDefaults(), yyjson::emit_defaults)), R"({"a":0,"b":5,"c":7})");
+    EXPECT_EQ(read_with<PresenceDefaults>(R"({"a":0,"b":5,"c":7})"), many_of("PresenceDefaults", R"(["a"], ["b"])"));
+    // the settings are not checked when writing
+    EXPECT_EQ(std::string(yyjson::write(Billing{"n", "c", {}, {}})), R"({"name":"n","card":"c"})");
+    EXPECT_EQ(std::string(yyjson::write(Measure{"n", "e", 1, "m"})), R"({"name":"n","env":"e","value":1,"u":"m"})");
 }
 
 // NOLINTEND
