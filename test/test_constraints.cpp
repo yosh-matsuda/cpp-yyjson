@@ -956,6 +956,38 @@ namespace constraint_rules
     static_assert(table_error(yyjson::dependent_required("v", {"w"})) == none);
     static_assert(table_error(yyjson::transparent, field("w", yyjson::skip), yyjson::dependent_required("v", {"w"})) ==
                   transparent_object_keyword);
+    // the field of `yyjson::extra_keys`, which takes only the keywords of its values and keys
+    using yyjson::extra_keys;
+    static_assert(table_error(field("w", extra_keys)) == none);
+    static_assert(table_error(field("w", extra_keys, additional_properties(minimum(0)),
+                                    yyjson::property_names(yyjson::max_length(1)))) == none);
+    static_assert(table_error(field("v", extra_keys), field("w", extra_keys)) == extra_keys_twice);
+    static_assert(table_error(field("w", extra_keys, yyjson::rename("x"))) == extra_keys_with_setting);
+    static_assert(table_error(field("w", yyjson::required), field("w", extra_keys)) == extra_keys_with_setting);
+    static_assert(table_error(field("w", extra_keys, yyjson::default_)) == extra_keys_with_setting);
+    static_assert(table_error(field("w", extra_keys, yyjson::skip)) == extra_keys_with_setting);
+    static_assert(table_error(field("w", yyjson::skip), field("w", extra_keys)) == extra_keys_with_setting);
+    static_assert(table_error(field("w", extra_keys, yyjson::min_properties(1))) == extra_keys_with_setting);
+    static_assert(table_error(field("w", extra_keys, yyjson::min_items(1))) == extra_keys_with_setting);
+    static_assert(table_error(field("w", extra_keys, minimum(0))) == extra_keys_with_setting);
+    static_assert(table_error(field("w", extra_keys, yyjson::adjacent_tag("t", {"x"}))) == extra_keys_with_setting);
+    static_assert(table_error(field("w", extra_keys), additional_properties(false)) == extra_keys_denied);
+    static_assert(table_error(additional_properties(false), field("w", extra_keys)) == extra_keys_denied);
+    static_assert(table_error(field("w", extra_keys), additional_properties(minimum(0))) ==
+                  struct_additional_properties);
+    static_assert(table_error(yyjson::transparent, field("w", extra_keys)) == transparent_object_keyword);
+    static_assert(table_error(field("w", extra_keys), yyjson::transparent) == transparent_object_keyword);
+    static_assert([] {
+        constexpr auto members = std::array<std::string_view, 2>{"v", "w"};
+        auto builder = yyjson::detail::field_key_builder<2>{members, {members}, true};
+        builder.apply_annotation(field("w", extra_keys));
+        return builder.result().error;
+    }() == extra_keys_visitable);
+    using yyjson::detail::extra_keys_map;
+    static_assert(extra_keys_map<std::map<std::string, int>> && extra_keys_map<std::unordered_map<std::string, int>> &&
+                  extra_keys_map<std::map<std::string, yyjson::value>>);
+    static_assert(!extra_keys_map<std::map<int, int>> && !extra_keys_map<std::multimap<std::string, int>> &&
+                  !extra_keys_map<std::vector<std::pair<std::string, int>>> && !extra_keys_map<yyjson::object>);
     static_assert(table_error(yyjson::transparent, field("w", yyjson::skip), yyjson::one_of_required({"v"})) ==
                   transparent_object_keyword);
     static_assert(table_error(yyjson::any_of_required({"v"}), yyjson::transparent, field("w", yyjson::skip)) ==
@@ -1357,6 +1389,23 @@ inline constexpr auto yyjson::annotations<PresenceSkipped> =
 template <>
 inline constexpr auto yyjson::annotations<PresenceKnown> =
     yyjson::annotate(yyjson::field("b", yyjson::rename("bb")), yyjson::any_of_required({"a"}, {"bb", "s"}));
+// the field of `yyjson::extra_keys` has no key, so that the settings cannot name it
+struct PresenceExtra
+{
+    std::optional<int> a;
+    std::map<std::string, int> s;
+};
+template <>
+inline constexpr auto yyjson::annotations<PresenceExtra> =
+    yyjson::annotate(yyjson::field("s", yyjson::extra_keys), yyjson::dependent_required("a", {"s"}));
+struct ConditionExtra
+{
+    std::optional<int> a;
+    std::map<std::string, int> s;
+};
+template <>
+inline constexpr auto yyjson::annotations<ConditionExtra> = yyjson::annotate(
+    yyjson::field("s", yyjson::extra_keys), yyjson::not_(yyjson::field("s", yyjson::min_properties(1))));
 
 // additional_properties(false) in then and else_: a circle has only a kind and a radius, another shape only a kind
 // and a width
@@ -1543,6 +1592,7 @@ namespace struct_condition_rules
     using enum yyjson::detail::struct_condition_error;
     static_assert(presence_error<PresenceRenamed> == unknown_key && presence_error<PresenceSkipped> == unknown_key &&
                   presence_error<PresenceKnown> == none);
+    static_assert(presence_error<PresenceExtra> == unknown_key && presence_error<ConditionExtra> == unknown_key);
     static_assert(yyjson::detail::has_struct_conditions<PresenceKnown> &&
                   !yyjson::detail::has_constraints<PresenceKnown>);
     // the keywords of an object at a position of a struct, which a map, a struct written as an array and a value

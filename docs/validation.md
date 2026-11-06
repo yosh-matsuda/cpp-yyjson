@@ -30,7 +30,7 @@ A struct that is read:
 
 A field with [`yyjson::required`](conversions.md#default-values-and-required-keys) makes the read reject a missing key. A field with `yyjson::default_from<f>` gets the value of `f()` instead of its value in `T()`.
 
-To reject such keys, give the read the [read policies](#read-policies) `yyjson::reject_unknown_keys` and `yyjson::reject_missing_keys`, or make the struct [closed](#closed-structs). To use the unknown keys, read the text into a document, as in [Keep the keys that the struct does not have](guide.md#keep-the-keys-that-the-struct-does-not-have).
+To reject such keys, give the read the [read policies](#read-policies) `yyjson::reject_unknown_keys` and `yyjson::reject_missing_keys`, or make the struct [closed](#closed-structs). To keep the unknown keys, give the struct a field of [`yyjson::extra_keys`](#keys-that-no-field-names).
 
 ### Closed structs
 
@@ -58,7 +58,42 @@ yyjson::read<Request>(R"({"method":"get","verbose":true})");
 *   The setting applies only to the objects read into that struct. It does not apply to the types of its fields. A field can close the struct that it holds, as in [Keywords of an object at a field](#keywords-of-an-object-at-a-field).
 *   A write is not changed. A struct writes only its fields and its tags.
 *   A struct with [`yyjson::transparent`](conversions.md#a-struct-as-the-value-of-its-field) or [`yyjson::as_array`](conversions.md#a-struct-as-a-json-array) takes no `yyjson::additional_properties(false)`. A struct with `yyjson::as_array` takes `yyjson::items(false)` instead.
-*   `yyjson::additional_properties` with the constraints of a value applies to a map field, as in [Constraints of elements](#constraints-of-elements). On a struct, it is a compile error.
+*   `yyjson::additional_properties` with the constraints of a value applies to a map field, as in [Constraints of elements](#constraints-of-elements), and to the field of [`yyjson::extra_keys`](#keys-that-no-field-names). On a struct, it is a compile error.
+
+### Keys that no field names
+
+The setting `yyjson::extra_keys` of a field makes the field receive each key that no field and no tag of the struct names. It is the keyword `additionalProperties` with a schema of JSON Schema. The field is a map that is written as a JSON object, such as `std::map<std::string, int>`. It takes `yyjson::additional_properties(s...)` for its values and `yyjson::property_names(s...)` for its keys:
+
+```cpp
+struct Item
+{
+    std::string name;
+    std::map<std::string, int> counts;
+};
+
+template <>
+inline constexpr auto yyjson::annotations<Item> =
+    yyjson::annotate(yyjson::field("counts", yyjson::extra_keys, yyjson::additional_properties(yyjson::minimum(0))));
+
+auto item = yyjson::read<Item>(R"({"name":"pen","red":2,"blue":5})");
+// -> Item{"pen", {{"blue", 5}, {"red", 2}}}
+auto json = yyjson::write(item);
+// -> {"name":"pen","blue":5,"red":2}
+yyjson::read<Item>(R"({"name":"pen","red":-1})");
+// throws: the value of the key "red" of Item is less than the minimum 0 at /red (line 1, column 21, pos 20)
+```
+
+*   The keys of the map must be strings, as in `std::map` and `std::unordered_map`. A map of `yyjson::value` takes a value of each kind. Another type of the field is a compile error.
+*   The field has no key of its own. Thus the field `counts` above receives a member `"counts"` of the JSON object. The key of a [skipped field](conversions.md#skipped-fields) also goes into the map.
+*   `yyjson::property_names` of the field checks each key before its value. The error has the path of the member of the key.
+*   A `null` in the object is a value of the map. A map of `int` rejects it, as a map field does. A map of `std::optional<int>` or of `yyjson::value` keeps it.
+*   `yyjson::read<T>` and `read_into` start from the map of `T()`, and they add the keys of the object to it. `merge_into` adds the members of the patch to the map. A member with `null` removes its key from the map. Another member merges into the value of its key, as for a map field.
+*   `merge_into` checks the keys and the values of the patch, without the members whose value is `null`.
+*   The read policy `yyjson::reject_unknown_keys` accepts the keys of the map. `yyjson::reject_duplicates` rejects a key that the object gives twice.
+*   The settings of the struct apply to the keys of the map too. Thus `yyjson::min_properties`, `yyjson::max_properties` and `yyjson::property_names` count and check them. `yyjson::additional_properties(false)` in a [condition](#keywords-of-an-object-in-the-conditions) rejects them.
+*   A write puts the members of the map after the fields and the tags, in the order of the map. An empty map writes no member. A write does not check the values of the map.
+*   When the map has the key of a field or of a tag of the struct, a write throws `std::invalid_argument`. This applies also to a field that the write leaves out, such as an empty `std::optional`. The message is `the field of yyjson::extra_keys of Item has the key "name", which Item writes for a field or a tag`.
+*   These are compile errors: `yyjson::extra_keys` on two fields, another setting on the field, `yyjson::extra_keys` in a closed struct, and in a struct with [`yyjson::transparent`](conversions.md#a-struct-as-the-value-of-its-field) or [`yyjson::as_array`](conversions.md#a-struct-as-a-json-array). So is a [condition](#conditions-between-fields) that names the field. A struct that `VISITABLE_STRUCT` registers cannot take `yyjson::extra_keys`.
 
 ### The number of members of a struct
 
@@ -814,7 +849,7 @@ The tables below list the keywords of [JSON Schema 2020-12](https://json-schema.
 | `properties` | the fields of a struct, or `yyjson::field` in a combinator or at a [struct position](#keywords-of-an-object-at-a-field) | a key is the name of the member, or its [`yyjson::rename`](conversions.md#json-keys). |
 | `required` | `yyjson::required`, or `yyjson::reject_missing_keys` for every field | without them, a field whose key is missing keeps its value in `T()`. |
 | `additionalProperties: false` | `yyjson::additional_properties(false)` on a struct, in its conditions or at a struct position, or the read policy `yyjson::reject_unknown_keys` | without them, a struct ignores a key that names no field. |
-| `additionalProperties` with a schema | `yyjson::additional_properties(settings...)` on a map | none. |
+| `additionalProperties` with a schema | `yyjson::additional_properties(settings...)` on a map, or a field of [`yyjson::extra_keys`](#keys-that-no-field-names) with it | without `yyjson::extra_keys`, a struct ignores a key that names no field. |
 | `propertyNames` | `yyjson::property_names(settings...)` on a struct, in its conditions, at a struct position or on a map | none. |
 | `minProperties`, `maxProperties` | `yyjson::min_properties(n)`, `yyjson::max_properties(n)` on a struct, in its conditions, at a struct position or on a map | none. |
 | `dependentRequired` | `yyjson::dependent_required("key", {"keys"...})` on a struct, in its conditions or at a struct position | none. |

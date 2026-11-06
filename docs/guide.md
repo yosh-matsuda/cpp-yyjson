@@ -235,7 +235,26 @@ There is no setting that renames all the keys of a struct, such as from `snake_c
 
 ### Keep the keys that the struct does not have
 
-A struct ignores the keys that it has no field for, and there is no field that collects them. When the program needs them, read a document, cast it, and look at the keys of the document:
+A struct ignores the keys that it has no field for. A field of [`yyjson::extra_keys`](validation.md#keys-that-no-field-names) receives them, and a write writes them again:
+
+```cpp
+struct Profile
+{
+    std::string name;
+    std::map<std::string, yyjson::value> rest;
+};
+
+template <>
+inline constexpr auto yyjson::annotations<Profile> = yyjson::annotate(yyjson::field("rest", yyjson::extra_keys));
+
+auto profile = yyjson::read<Profile>(R"({"name":"Ann","theme":"dark"})");
+for (const auto& [key, value] : profile.rest) std::cout << key << " = " << value.write() << '\n';
+// -> theme = "dark"
+auto json = yyjson::write(profile);
+// -> {"name":"Ann","theme":"dark"}
+```
+
+A document also keeps the keys. Read a document, cast it, and look at the keys of the document:
 
 ```cpp
 struct User
@@ -723,7 +742,6 @@ for (const auto& p : points)
 | `operator<<` for JSON values | [`write()` or `std::format`](#print-a-json-value) |
 | JSON Pointer lookup | [a struct of the members needed](#read-only-a-few-members-of-a-large-document), or `operator[]` and `find` level by level |
 | A rule that renames every key | [rename each field](#map-every-key-to-another-naming-convention) |
-| A field that collects unknown keys | [read a document and look at its keys](#keep-the-keys-that-the-struct-does-not-have) |
 | Rejecting unknown or missing keys | [read a document and look at its keys](#keep-the-keys-that-the-struct-does-not-have) before casting it |
 | Restricting the values of a field, such as to a range | check the values after the read, or read the field through a [translator](#read-a-struct-from-an-array-or-a-string) that throws `yyjson::bad_cast`, which then names the [path](#find-the-value-that-failed) of the value |
 | JSON Lines and streams of values | [read line by line](#read-json-lines) |

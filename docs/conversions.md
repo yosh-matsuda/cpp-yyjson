@@ -518,6 +518,7 @@ A [translator](#translator) to `std::int64_t` gives the same JSON, but it needs 
     *   a setting on the field, such as `yyjson::rename` or `yyjson::adjacent_tag`. The field takes the [constraints](validation.md#constraints), which then apply to the struct at each position
     *   `yyjson::not_`, `yyjson::if_then_else`, `yyjson::all_of`, `yyjson::any_of` or `yyjson::one_of` on the struct, which has no keys of its own. Give them to the field
     *   `yyjson::additional_properties(false)`, `yyjson::min_properties`, `yyjson::max_properties` or `yyjson::property_names` on the struct. The struct or the map of the field can take them
+    *   `yyjson::extra_keys` on the field. The struct of the field can take it
     *   `yyjson::dependent_required`, `yyjson::one_of_required` or `yyjson::any_of_required` on the struct. The struct of the field can take them
 
 The field may hold the struct itself through a range, a map, a `yyjson::indirect`, a `std::unique_ptr`, a `std::shared_ptr` or a `std::variant`. Each level counts toward the limit of [Recursive types](#recursive-types):
@@ -644,7 +645,7 @@ A [`std::tuple`](#standard-library-types) also converts to an array of elements 
     *   `yyjson::as_array` given twice, or together with `yyjson::transparent`.
     *   `yyjson::rename`, a `(member, "key")` pair or `yyjson::adjacent_tag` on a field, because the elements have no keys.
     *   `yyjson::not_`, `yyjson::if_then_else`, `yyjson::all_of`, `yyjson::any_of` and `yyjson::one_of` on the struct. Give them to its fields.
-    *   `yyjson::additional_properties(false)`, `yyjson::min_properties`, `yyjson::max_properties`, `yyjson::property_names`, `yyjson::dependent_required`, `yyjson::one_of_required` or `yyjson::any_of_required` on the struct, because the elements have no keys. Use `yyjson::items(false)` to reject the elements after the fields.
+    *   `yyjson::additional_properties(false)`, `yyjson::min_properties`, `yyjson::max_properties`, `yyjson::property_names`, `yyjson::dependent_required`, `yyjson::one_of_required` or `yyjson::any_of_required` on the struct, or `yyjson::extra_keys` on a field, because the elements have no keys. Use `yyjson::items(false)` to reject the elements after the fields, and `yyjson::extra_items` to receive them.
     *   A field that the write can leave out, such as a `std::optional`, before a field that the write always writes. An `int` and a `yyjson::nullable<U>` are always written. The optional fields must come after the fields that are always written, as the default arguments of a C++ function do. A skipped field and the field of `yyjson::extra_items` are not counted.
     *   `yyjson::unique_items`, `yyjson::contains`, `yyjson::min_contains` or `yyjson::max_contains` on a struct without a field of `yyjson::extra_items` and without `yyjson::items(false)`. A field of the type of such a struct cannot take them either.
     *   A constraint of the whole array that no array of the struct can satisfy. With `yyjson::items(false)`, `yyjson::min_items` cannot be greater than the number of fields. `yyjson::max_items` cannot be less than the number of fields up to the last one that every array must have.
@@ -654,7 +655,7 @@ A [`std::tuple`](#standard-library-types) also converts to an array of elements 
 
 ### C++26 annotations
 
-With C++26 static reflection, such as GCC 16 with `-std=c++26 -freflection`, the settings of a field can be written on the member itself as an [annotation](https://wg21.link/p3394). Every setting that `yyjson::field` takes is also an annotation: `[[=yyjson::rename("key")]]`, `[[=yyjson::skip]]`, `[[=yyjson::adjacent_tag(key, ids)]]`, `[[=yyjson::extra_items]]` and the [constraints](validation.md#constraints), such as `[[=yyjson::minimum(0)]]` and `[[=yyjson::items(yyjson::maximum(9))]]`.
+With C++26 static reflection, such as GCC 16 with `-std=c++26 -freflection`, the settings of a field can be written on the member itself as an [annotation](https://wg21.link/p3394). Every setting that `yyjson::field` takes is also an annotation: `[[=yyjson::rename("key")]]`, `[[=yyjson::skip]]`, `[[=yyjson::adjacent_tag(key, ids)]]`, `[[=yyjson::extra_items]]`, `[[=yyjson::extra_keys]]` and the [constraints](validation.md#constraints), such as `[[=yyjson::minimum(0)]]` and `[[=yyjson::items(yyjson::maximum(9))]]`.
 
 ```cpp
 struct Project
