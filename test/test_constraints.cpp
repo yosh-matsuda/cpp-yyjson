@@ -926,15 +926,20 @@ namespace constraint_rules
     static_assert(table_error(field("v", minimum(0)), field("v", yyjson::skip)) == skipped_with_setting);
     static_assert(table_error(field("w", minimum(0), yyjson::adjacent_tag("t", {"x"}))) == tagged_constraint);
     static_assert(table_error(field("v", minimum(0)), field("w", yyjson::adjacent_tag("t", {"x"}))) == none);
-    // `yyjson::additional_properties(false)` is the only keyword of an object that a struct takes
+    // the keywords of an object that a struct takes: `yyjson::additional_properties(false)` and the counts
     using yyjson::additional_properties;
     static_assert(table_error(additional_properties(false)) == none);
     static_assert(table_error(additional_properties(false), additional_properties(false)) == closed_twice);
     static_assert(table_error(additional_properties(minimum(0))) == struct_additional_properties);
-    static_assert(table_error(yyjson::min_properties(1)) == struct_constraint);
+    static_assert(table_error(yyjson::min_properties(1)) == none);
+    static_assert(table_error(yyjson::max_properties(1), additional_properties(false)) == none);
     static_assert(table_error(yyjson::property_names(yyjson::min_length(1))) == struct_constraint);
     static_assert(table_error(yyjson::transparent, field("w", yyjson::skip), additional_properties(false)) ==
-                  transparent_closed);
+                  transparent_object_keyword);
+    static_assert(table_error(yyjson::transparent, field("w", yyjson::skip), yyjson::min_properties(1)) ==
+                  transparent_object_keyword);
+    static_assert(table_error(yyjson::max_properties(1), yyjson::transparent, field("w", yyjson::skip)) ==
+                  transparent_object_keyword);
 }  // namespace constraint_rules
 
 // the tree of the keywords of the field `v` of a struct, by its error
@@ -984,8 +989,32 @@ CONSTRAINT_RULE(AnyOfTooLong, Nested10,
                 yyjson::any_of(yyjson::items(yyjson::items(yyjson::items(
                     yyjson::items(yyjson::items(yyjson::items(yyjson::items(yyjson::items(yyjson::minimum(0)))))))))))
 #undef CONSTRAINT_RULE
+// the counts of the members of a struct follow the rules of those of a map
+struct StructCountsInverted
+{
+    int v;
+};
+template <>
+inline constexpr auto yyjson::annotations<StructCountsInverted> =
+    yyjson::annotate(yyjson::min_properties(2), yyjson::max_properties(1));
+struct StructCountsTwice
+{
+    int v;
+};
+template <>
+inline constexpr auto yyjson::annotations<StructCountsTwice> =
+    yyjson::annotate(yyjson::max_properties(2), yyjson::max_properties(1));
+struct StructCountsEqual
+{
+    int v;
+};
+template <>
+inline constexpr auto yyjson::annotations<StructCountsEqual> =
+    yyjson::annotate(yyjson::min_properties(1), yyjson::max_properties(1));
 namespace constraint_tree_rules
 {
+    template <typename T>
+    constexpr auto count_error = yyjson::detail::make_schema_tree<&yyjson::detail::build_struct_count_tree<T>>().error;
     template <typename T>
     constexpr auto tree_error = yyjson::detail::make_schema_tree<&yyjson::detail::build_field_tree<T, 0>>().error;
     using enum yyjson::detail::constraint_error;
@@ -1006,6 +1035,8 @@ namespace constraint_tree_rules
     static_assert(tree_error<NotTwice> == none && tree_error<NotInverted> == reads_nothing &&
                   tree_error<BranchMissingContains> == contains_missing && tree_error<MatchesTwice> == keyword_twice &&
                   tree_error<AnyOfTooLong> == prefix_position_too_large);
+    static_assert(count_error<StructCountsInverted> == reads_nothing &&
+                  count_error<StructCountsTwice> == keyword_twice && count_error<StructCountsEqual> == none);
 
     // the keywords that a field without them leaves unchecked, and those that are no check
     static_assert(!yyjson::detail::has_constraints<Spot> && yyjson::detail::has_constraints<Bounded>);

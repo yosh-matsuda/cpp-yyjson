@@ -313,6 +313,94 @@ template <>
 inline constexpr auto yyjson::annotations<ClosedEnvelope> = yyjson::annotate(
     yyjson::field("data", yyjson::adjacent_tag("kind", {"circle", "rect"})), yyjson::additional_properties(false));
 
+// types that bound the number of the members of their objects
+struct CountedPt
+{
+    int a = 0;
+    int b = 0;
+    std::optional<int> c;
+    bool operator==(const CountedPt&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<CountedPt> =
+    yyjson::annotate(yyjson::min_properties(1), yyjson::max_properties(2));
+struct CountedPtV
+{
+    int a = 0;
+    int b = 0;
+    std::optional<int> c;
+    bool operator==(const CountedPtV&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<CountedPtV> =
+    yyjson::annotate(yyjson::min_properties(1), yyjson::max_properties(2));
+VISITABLE_STRUCT(CountedPtV, a, b, c);
+struct CountedWide
+{
+    int a = 0, b = 0, c = 0, d = 0, e = 0, f = 0, g = 0, h = 0, i = 0;
+    std::optional<int> j;
+    bool operator==(const CountedWide&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<CountedWide> =
+    yyjson::annotate(yyjson::min_properties(1), yyjson::max_properties(2));
+struct CountedHolder
+{
+    CountedPt p;
+    std::vector<CountedPt> v;
+    bool operator==(const CountedHolder&) const = default;
+};
+struct CountedRect
+{
+    int w = 0;
+    int h = 0;
+    bool operator==(const CountedRect&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<CountedRect> = yyjson::annotate(yyjson::min_properties(3));
+using CountedShape = std::variant<ClosedCircle, CountedRect>;
+template <>
+inline constexpr auto yyjson::annotations<CountedShape> =
+    yyjson::annotate(yyjson::internal_tag("type", {"circle", "rect"}));
+struct CountedEnvelope
+{
+    int id = 0;
+    std::variant<ClosedCircle, ClosedRect> data;
+    bool operator==(const CountedEnvelope&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<CountedEnvelope> = yyjson::annotate(
+    yyjson::field("data", yyjson::adjacent_tag("kind", {"circle", "rect"})), yyjson::max_properties(3));
+struct CountedClosed
+{
+    int x = 0;
+    bool operator==(const CountedClosed&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<CountedClosed> =
+    yyjson::annotate(yyjson::additional_properties(false), yyjson::max_properties(1));
+// the same fields, with and without `yyjson::min_properties`
+struct CountedDefaults
+{
+    int a = 0;
+    int b = 5;
+    std::optional<int> c;
+    bool operator==(const CountedDefaults&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<CountedDefaults> =
+    yyjson::annotate(yyjson::field("b", yyjson::default_), yyjson::min_properties(0));
+struct UncountedDefaults
+{
+    int a = 0;
+    int b = 5;
+    std::optional<int> c;
+    bool operator==(const UncountedDefaults&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<UncountedDefaults> =
+    yyjson::annotate(yyjson::field("b", yyjson::default_), yyjson::max_properties(3));
+
 using OptionalMap = std::map<std::string, std::optional<int>>;
 using IntMap = std::map<std::string, int>;
 using IntHashMap = std::unordered_map<std::string, int>;
@@ -459,6 +547,14 @@ namespace
     {
         return error(
             std::format("{} has the key \"{}\", which yyjson::additional_properties(false) rejects", type, key));
+    }
+    std::string fewer(std::string_view type, int n)
+    {
+        return error(std::format("{} has fewer properties than the minimum {}", type, n));
+    }
+    std::string more(std::string_view type, int n)
+    {
+        return error(std::format("{} has more properties than the maximum {}", type, n));
     }
     std::string null_as_missing(std::string_view type)
     {
@@ -926,6 +1022,97 @@ TEST(ClosedTypes, Write)
               R"({"id":1,"kind":"circle","data":{"r":3}})");
     EXPECT_EQ(std::string(yyjson::write(ClosedShape(ClosedRect{1, 2}))), R"({"type":"rect","w":1,"h":2})");
     EXPECT_EQ(std::string(yyjson::write(ClosedRenamed{1, 2})), R"({"A":1})");
+}
+
+TEST(PropertyCounts, Read)
+{
+    // every member of the object counts: unknown keys, null values and repeated keys too
+    const auto expect = []<typename T>(std::type_identity<T>, std::string_view name) {
+        EXPECT_EQ(read_with<T>(R"({"a":1})"), R"({"a":1,"b":0})");
+        EXPECT_TRUE(direct_read);
+        EXPECT_EQ(read_with<T>(R"({"b":2,"a":1})"), R"({"a":1,"b":2})");
+        EXPECT_EQ(read_with<T>(R"({"z":1})"), R"({"a":0,"b":0})");
+        EXPECT_EQ(read_with<T>(R"({})"), fewer(name, 1));
+        EXPECT_EQ(error_path<T>(R"({})"), "");
+        EXPECT_EQ(read_with<T>(R"({"a":1,"b":2,"c":3})"), more(name, 2));
+        for (const auto json : {R"({"a":1,"b":2,"z":3})", R"({"a":1,"c":null,"b":2})", R"({"a":1,"a":2,"a":3})",
+                                R"({"z":1,"z":2,"z":3})"})
+        {
+            EXPECT_EQ(read_with<T>(json), more(name, 2)) << json;
+        }
+        // the policies check the keys first
+        EXPECT_EQ(read_with<T>(R"({"a":1,"b":2,"z":3})", yyjson::reject_unknown_keys), unknown(name, "z") + " at /z");
+        EXPECT_EQ(read_with<T>(R"({"a":1,"a":2,"a":3})", yyjson::reject_duplicates), repeated(name, "a") + " at /a");
+        EXPECT_EQ(read_with<T>(R"({"a":1,"b":2,"c":3})", yyjson::reject_unknown_keys), more(name, 2));
+        EXPECT_EQ(read_with<T>(R"({"a":1,"b":2})", yyjson::strict), R"({"a":1,"b":2})");
+    };
+    expect(std::type_identity<CountedPt>(), "CountedPt");
+    expect(std::type_identity<CountedPtV>(), "CountedPtV");
+    EXPECT_EQ(read_with<CountedWide>(R"({"j":1,"a":1})"),
+              R"({"a":1,"b":0,"c":0,"d":0,"e":0,"f":0,"g":0,"h":0,"i":0,"j":1})");
+    EXPECT_TRUE(direct_read);
+    EXPECT_EQ(read_with<CountedWide>(R"({})"), fewer("CountedWide", 1));
+    EXPECT_EQ(read_with<CountedWide>(R"({"j":1,"a":1,"k":null})"), more("CountedWide", 2));
+    // the count of a struct in a field or an element has its path
+    EXPECT_EQ(read_with<CountedHolder>(R"({"p":{"a":1},"v":[{"b":1}]})"), R"({"p":{"a":1,"b":0},"v":[{"a":0,"b":1}]})");
+    EXPECT_EQ(read_with<CountedHolder>(R"({"p":{}})"), fewer("CountedPt", 1) + " at /p");
+    EXPECT_EQ(error_path<CountedHolder>(R"({"p":{}})"), "/p");
+    EXPECT_EQ(read_with<CountedHolder>(R"({"v":[{"a":1},{"a":1,"b":1,"z":1}]})"), more("CountedPt", 2) + " at /v/1");
+    EXPECT_EQ(error_path<CountedHolder>(R"({"v":[{"a":1},{"a":1,"b":1,"z":1}]})"), "/v/1");
+    // a key that a closed type rejects comes before the count
+    EXPECT_EQ(read_with<CountedClosed>(R"({"x":1})"), R"({"x":1})");
+    EXPECT_EQ(read_with<CountedClosed>(R"({"x":1,"x":2})"), more("CountedClosed", 1));
+    EXPECT_EQ(read_with<CountedClosed>(R"({"x":1,"z":2})"), closed("CountedClosed", "z") + " at /z");
+}
+
+TEST(PropertyCounts, Tags)
+{
+    // the key of an internal tag is a member of the alternative
+    EXPECT_EQ(read_with<CountedShape>(R"({"type":"rect","w":1,"h":2})"), R"({"type":"rect","w":1,"h":2})");
+    EXPECT_TRUE(direct_read);
+    EXPECT_EQ(read_with<CountedShape>(R"({"type":"rect","w":1})"), fewer("CountedRect", 3));
+    EXPECT_EQ(read_with<CountedRect>(R"({"w":1,"h":2})"), fewer("CountedRect", 3));
+    // the keys of an adjacent tag are members of the struct that holds the variant
+    EXPECT_EQ(read_with<CountedEnvelope>(R"({"id":1,"kind":"rect","data":{"w":1,"h":2}})"),
+              R"({"id":1,"kind":"rect","data":{"w":1,"h":2}})");
+    EXPECT_EQ(read_with<CountedEnvelope>(R"({"id":1,"kind":"rect","data":{"w":1,"h":2},"z":null})"),
+              more("CountedEnvelope", 3));
+}
+
+TEST(PropertyCounts, MergeInto)
+{
+    // the members of the patch that are not null count, as for a map
+    const auto t = CountedPt{1, 2, 3};
+    EXPECT_EQ(merge_with(t, R"({"a":4})"), R"({"a":4,"b":2,"c":3})");
+    EXPECT_TRUE(direct_read);
+    EXPECT_EQ(merge_with(t, R"({"z":1,"c":null})"), R"({"a":1,"b":2})");
+    EXPECT_EQ(merge_with(t, R"({"a":4,"z":null,"c":null,"b":5})"), R"({"a":4,"b":5})");
+    EXPECT_EQ(merge_with(t, R"({})"), fewer("CountedPt", 1));
+    EXPECT_EQ(merge_with(t, R"({"c":null})"), fewer("CountedPt", 1));
+    EXPECT_EQ(merge_with(t, R"({ "c" : null })"), fewer("CountedPt", 1));
+    EXPECT_EQ(merge_with(t, R"({ "a" : 4 , "b" : null })"), R"({"a":4,"b":0,"c":3})");
+    EXPECT_TRUE(direct_read);
+    EXPECT_EQ(merge_with(t, R"({"a":4,"b":5,"z":6})"), more("CountedPt", 2));
+    EXPECT_EQ(merge_with(t, R"({"a":4,"a":5,"a":6})"), more("CountedPt", 2));
+    EXPECT_EQ(merge_with(CountedPtV{1, 2, 3}, R"({"c":null})"), fewer("CountedPtV", 1));
+    EXPECT_EQ(merge_with(CountedWide(), R"({"j":1,"k":null,"a":1})"),
+              R"({"a":1,"b":0,"c":0,"d":0,"e":0,"f":0,"g":0,"h":0,"i":0,"j":1})");
+    EXPECT_EQ(merge_with(CountedWide(), R"({"j":1,"k":1,"a":1})"), more("CountedWide", 2));
+    EXPECT_EQ(merge_with(CountedHolder(), R"({"p":{"c":null}})"), fewer("CountedPt", 1) + " at /p");
+    EXPECT_EQ(merge_with(CountedShape(CountedRect{1, 2}), R"({"type":"rect","h":3,"w":null})"),
+              fewer("CountedRect", 3));
+}
+
+TEST(PropertyCounts, Write)
+{
+    // `yyjson::min_properties` writes the fields equal to their defaults, but not an empty optional
+    EXPECT_EQ(std::string(yyjson::write(CountedDefaults())), R"({"a":0,"b":5})");
+    EXPECT_EQ(std::string(yyjson::write(UncountedDefaults())), R"({"a":0})");
+    EXPECT_EQ(std::string(yyjson::write(std::vector{CountedDefaults()})), R"([{"a":0,"b":5}])");
+    auto doc = yyjson::object(CountedDefaults());
+    EXPECT_EQ(std::string(doc.write()), R"({"a":0,"b":5})");
+    // the count is not checked when writing
+    EXPECT_EQ(std::string(yyjson::write(CountedPt{1, 2, 3})), R"({"a":1,"b":2,"c":3})");
 }
 
 // NOLINTEND

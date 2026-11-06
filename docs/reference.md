@@ -1416,7 +1416,7 @@ Specialize `annotations<T>` before the first use of `T`. `annotate` takes these 
 
 | `T` | Settings |
 | --- | --- |
-| a struct | [`yyjson::field`](#yyjsonfield), [`yyjson::transparent`](#yyjsontransparent), [`yyjson::as_array` and `yyjson::items(false)`](#yyjsonas_array-yyjsonextra_items), [`yyjson::default_`](#yyjsondefault_-yyjsondefault_from), `yyjson::additional_properties(false)`, the [read policies](#read-policies), the [combinators](#yyjsonnot_-yyjsonif_then_else-yyjsonall_of-yyjsonany_of-yyjsonone_of), and with `yyjson::as_array` the [settings of the whole array](#constraints-of-elements) |
+| a struct | [`yyjson::field`](#yyjsonfield), [`yyjson::transparent`](#yyjsontransparent), [`yyjson::as_array` and `yyjson::items(false)`](#yyjsonas_array-yyjsonextra_items), [`yyjson::default_`](#yyjsondefault_-yyjsondefault_from), `yyjson::additional_properties(false)`, `yyjson::min_properties(n)` and `yyjson::max_properties(n)`, the [read policies](#read-policies), the [combinators](#yyjsonnot_-yyjsonif_then_else-yyjsonall_of-yyjsonany_of-yyjsonone_of), and with `yyjson::as_array` the [settings of the whole array](#constraints-of-elements) |
 | a `std::variant` | [`yyjson::internal_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag) |
 | an enumeration | [`yyjson::enumerator` and `yyjson::enum_format`](#yyjsonenum_format-yyjsonenumerator) |
 
@@ -1773,6 +1773,8 @@ inline constexpr unique_items_t unique_items{};
 The settings `s...` and `p` are the [constraints](#constraints), the settings of this table and the [combinators](#yyjsonnot_-yyjsonif_then_else-yyjsonall_of-yyjsonany_of-yyjsonone_of). `yyjson::min_items` and `yyjson::max_items` constrain the number of elements, and `yyjson::min_properties` and `yyjson::max_properties` the number of members of a map. `yyjson::min_contains` or `yyjson::max_contains` without `yyjson::contains`, and `yyjson::unique_items` on a set or a map, are compile errors. A struct with [`yyjson::as_array`](#yyjsonas_array-yyjsonextra_items) takes `yyjson::min_items`, `yyjson::max_items`, `yyjson::unique_items` and the settings of `yyjson::contains` as settings of its own. See [Constraints of elements](validation.md#constraints-of-elements).
 
 `yyjson::additional_properties(false)` is a setting of a struct, given to [`yyjson::annotate`](#yyjsonannotationst-yyjsonannotate). It makes the struct [closed](validation.md#closed-structs): every read rejects a key that names no field and no tag of the struct. `additional_properties(true)`, `additional_properties(s...)` on a struct, and `additional_properties(false)` on a struct with `yyjson::transparent` or `yyjson::as_array` are compile errors.
+
+`yyjson::min_properties(n)` and `yyjson::max_properties(n)` are also settings of a struct for `yyjson::annotate`. Every read then counts the members of the object, as for a map. `merge_into` counts the members of the patch that are not `null`. A struct with `yyjson::min_properties` writes the fields that equal their defaults. See [The number of members of a struct](validation.md#the-number-of-members-of-a-struct). On a struct with `yyjson::transparent` or `yyjson::as_array`, they are compile errors.
 
 ```cpp
 struct Survey

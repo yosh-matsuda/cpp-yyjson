@@ -516,7 +516,7 @@ A [translator](#translator) to `std::int64_t` gives the same JSON, but it needs 
     *   no field, or more than one field that is not skipped
     *   a setting on the field, such as `yyjson::rename` or `yyjson::adjacent_tag`. The field takes the [constraints](validation.md#constraints), which then apply to the struct at each position
     *   `yyjson::not_`, `yyjson::if_then_else`, `yyjson::all_of`, `yyjson::any_of` or `yyjson::one_of` on the struct, which has no keys of its own. Give them to the field
-    *   `yyjson::additional_properties(false)` on the struct. The struct of the field can take it
+    *   `yyjson::additional_properties(false)`, `yyjson::min_properties` or `yyjson::max_properties` on the struct. The struct or the map of the field can take them
 
 The field may hold the struct itself through a range, a map, a `yyjson::indirect`, a `std::unique_ptr`, a `std::shared_ptr` or a `std::variant`. Each level counts toward the limit of [Recursive types](#recursive-types):
 
@@ -642,7 +642,7 @@ A [`std::tuple`](#standard-library-types) also converts to an array of elements 
     *   `yyjson::as_array` given twice, or together with `yyjson::transparent`.
     *   `yyjson::rename`, a `(member, "key")` pair or `yyjson::adjacent_tag` on a field, because the elements have no keys.
     *   `yyjson::not_`, `yyjson::if_then_else`, `yyjson::all_of`, `yyjson::any_of` and `yyjson::one_of` on the struct. Give them to its fields.
-    *   `yyjson::additional_properties(false)` on the struct, because the elements have no keys. Use `yyjson::items(false)` to reject the elements after the fields.
+    *   `yyjson::additional_properties(false)`, `yyjson::min_properties` or `yyjson::max_properties` on the struct, because the elements have no keys. Use `yyjson::items(false)` to reject the elements after the fields.
     *   A field that the write can leave out, such as a `std::optional`, before a field that the write always writes. An `int` and a `yyjson::nullable<U>` are always written. The optional fields must come after the fields that are always written, as the default arguments of a C++ function do. A skipped field and the field of `yyjson::extra_items` are not counted.
     *   `yyjson::unique_items`, `yyjson::contains`, `yyjson::min_contains` or `yyjson::max_contains` on a struct without a field of `yyjson::extra_items` and without `yyjson::items(false)`. A field of the type of such a struct cannot take them either.
     *   A constraint of the whole array that no array of the struct can satisfy. With `yyjson::items(false)`, `yyjson::min_items` cannot be greater than the number of fields. `yyjson::max_items` cannot be less than the number of fields up to the last one that every array must have.
@@ -669,7 +669,7 @@ auto json = yyjson::write(project);
 ```
 
 *   The annotations of the members and a `yyjson::annotations` specialization can be combined, as long as no field gets the same setting twice; that fails to compile.
-*   On the struct itself, `yyjson::transparent`, `yyjson::default_`, `yyjson::additional_properties(false)` and the [read policies](validation.md#read-policies) are read, as in `struct [[=yyjson::transparent]] UserId { ... };`. So are `yyjson::as_array`, `yyjson::items(false)`, the settings of the whole array and the [conditions between fields](validation.md#conditions-between-fields).
+*   On the struct itself, `yyjson::transparent`, `yyjson::default_`, `yyjson::additional_properties(false)`, `yyjson::min_properties`, `yyjson::max_properties` and the [read policies](validation.md#read-policies) are read, as in `struct [[=yyjson::transparent]] UserId { ... };`. So are `yyjson::as_array`, `yyjson::items(false)`, the settings of the whole array and the [conditions between fields](validation.md#conditions-between-fields).
 *   An enumeration takes a [format](#formats-and-renamed-enumerators) on its declaration, as in `enum class [[=yyjson::enum_format::integer]] Permission : unsigned { ... };`. An enumerator takes a new name, as in `in_progress [[=yyjson::rename("in-progress")]],`. These combine with `yyjson::annotations<E>` as the settings of fields do. An annotation on an alias, that is, an enumerator with the value of one declared before it, is not read.
 *   The annotations apply to the structs that the compile-time reflection converts. An annotation of this library on a member of a struct that `VISITABLE_STRUCT` registers fails to compile; use the pairs of the macro or `yyjson::annotations` there.
 *   The annotations are read when the macro `FIELD_RFL_ANNOTATIONS` is `1`. Every setting is always available for `yyjson::annotations`.

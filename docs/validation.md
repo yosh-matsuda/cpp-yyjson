@@ -60,6 +60,31 @@ yyjson::read<Request>(R"({"method":"get","verbose":true})");
 *   A struct with [`yyjson::transparent`](conversions.md#a-struct-as-the-value-of-its-field) or [`yyjson::as_array`](conversions.md#a-struct-as-a-json-array) takes no `yyjson::additional_properties(false)`. A struct with `yyjson::as_array` takes `yyjson::items(false)` instead.
 *   `yyjson::additional_properties` with the constraints of a value applies to a map field, as in [Constraints of elements](#constraints-of-elements). On a struct, it is a compile error.
 
+### The number of members of a struct
+
+The settings `yyjson::min_properties(n)` and `yyjson::max_properties(n)` of [`yyjson::annotate`](reference.md#yyjsonannotationst-yyjsonannotate) set the bounds of the number of members of the objects that a struct reads. They are the keywords `minProperties` and `maxProperties` of JSON Schema:
+
+```cpp
+struct Patch
+{
+    std::optional<std::string> name;
+    std::optional<std::string> email;
+};
+
+template <>
+inline constexpr auto yyjson::annotations<Patch> = yyjson::annotate(yyjson::min_properties(1));
+
+yyjson::read<Patch>("{}");
+// throws: Patch has fewer properties than the minimum 1 (line 1, column 1, pos 0)
+```
+
+*   The settings are a part of the type, as `yyjson::additional_properties(false)` is. `yyjson::read<T>`, `read_into`, `merge_into` and `cast<T>` apply them, with or without the read policies.
+*   They count the members of the JSON object, as the [count keywords](#how-constraints-are-checked) of a map do. An unknown key, the key of a [tag](conversions.md#tagged-variants), a member with `null` and each occurrence of a repeated key are members.
+*   `merge_into` counts the members of the patch, without the members whose value is `null`.
+*   The error has the path of the object. When the struct also rejects a key, because it is closed or because of a read policy, the error of the key comes first.
+*   A minimum greater than the maximum is a compile error. A struct with [`yyjson::transparent`](conversions.md#a-struct-as-the-value-of-its-field) or [`yyjson::as_array`](conversions.md#a-struct-as-a-json-array) takes neither setting.
+*   A write does not check the number. A struct with `yyjson::min_properties` writes each field that equals its [default value](conversions.md#default-values-and-required-keys), as `yyjson::emit_defaults` does, because the read counts the members. It does not write an empty `std::optional`.
+
 ### Repeated keys
 
 When an object has a key more than once, which of the members a read takes is unspecified. This applies to:
@@ -494,7 +519,7 @@ yyjson::read<Shipment>(R"({"method":"post","address":""})");
     *   `null` as the value of a `std::optional` field that is read as a missing key, as in [`null` in a `std::optional`](#null-in-a-stdoptional). A `std::optional<int>` field that is `5` in `T()` keeps `5` under `yyjson::maximum(3)`. Every check takes such a key as missing, also the [conditions between fields](#conditions-between-fields) and `yyjson::required` in them. A field of a struct with [`yyjson::as_array`](conversions.md#a-struct-as-a-json-array) does not read such a `null`: every read rejects it. Reject such a `null` with `yyjson::reject_null_as_missing`.
     *   `null` in `merge_into`, which gives a field its default.
 *   A constraint of a `std::optional`, a smart pointer or a `std::variant` of `std::monostate` and one type applies to the value that it holds. An empty value satisfies it, except `yyjson::const_` and `yyjson::enum_` without `nullptr`.
-*   The count keywords count the JSON value that the read reads. `yyjson::min_items`, `yyjson::max_items`, `yyjson::min_contains` and `yyjson::max_contains` count the elements of the JSON array. `yyjson::min_properties` and `yyjson::max_properties` count the members of the JSON object. In `merge_into`, they count the members of the patch. Thus a `std::set<int>` reads `[1,1]` as one element, but `yyjson::min_items(2)` accepts the array. An object with a repeated key has a member for each occurrence of the key.
+*   The count keywords count the JSON value that the read reads. `yyjson::min_items`, `yyjson::max_items`, `yyjson::min_contains` and `yyjson::max_contains` count the elements of the JSON array. `yyjson::min_properties` and `yyjson::max_properties` count the members of the JSON object, on a map and on a [struct](#the-number-of-members-of-a-struct). In `merge_into`, they count the members of the patch, without the members whose value is `null`. Thus a `std::set<int>` reads `[1,1]` as one element, but `yyjson::min_items(2)` accepts the array. An object with a repeated key has a member for each occurrence of the key.
 *   The other constraints check the value after the conversion to the type of the field. `yyjson::contains` checks each element of the JSON array as a value of the type of the element. `yyjson::unique_items`, `yyjson::const_` and `yyjson::enum_` compare the converted values.
 *   The bounds of a number are integers or reals of any type. The library compares the value with a bound exactly. A real bound is kept as a `double`, and a `long double` bound that a `double` rounds is a compile error.
 *   `yyjson::multiple_of` takes a number greater than 0. It decides in decimal: `19.99` is a multiple of `0.01`.
@@ -507,7 +532,7 @@ yyjson::read<Shipment>(R"({"method":"post","address":""})");
 *   These are compile errors, most of them with a `static_assert` that tells the reason:
     *   A constraint on a field of a type that it does not apply to, such as `yyjson::minimum` on a string or `yyjson::unique_items` on a set.
     *   `nullptr` in `yyjson::const_` or `yyjson::enum_` on a field that cannot be `null`, such as a `std::optional<int>`. Only `yyjson::nullable`, an owning pointer and a value of the DOM take it.
-    *   A constraint directly on a struct that is not an [`as_array`](conversions.md#a-struct-as-a-json-array) struct, on a [skipped field](conversions.md#skipped-fields), or on a field that [`yyjson::adjacent_tag`](conversions.md#tagged-variants) tags.
+    *   A constraint directly on a struct that is not an [`as_array`](conversions.md#a-struct-as-a-json-array) struct, on a [skipped field](conversions.md#skipped-fields), or on a field that [`yyjson::adjacent_tag`](conversions.md#tagged-variants) tags. A struct takes `yyjson::min_properties` and `yyjson::max_properties` as settings of its own.
     *   A constraint other than `yyjson::pattern` and the combinators, given twice in one subschema.
     *   `yyjson::multiple_of` of 0 or less.
     *   Constraints that leave no value to read, such as `yyjson::minimum(1)` with `yyjson::maximum(0)`, or `yyjson::exclusive_minimum(1)` with `yyjson::maximum(1)`. A minimum of a length, of the items, of `contains` or of the properties that is greater than its maximum is one too. So is a `yyjson::const_` or a `yyjson::enum_` with no value within the bounds and the lengths.
@@ -659,7 +684,7 @@ The tables below list the keywords of [JSON Schema 2020-12](https://json-schema.
 | `additionalProperties: false` | `yyjson::additional_properties(false)` on a struct, or the read policy `yyjson::reject_unknown_keys` | without them, a struct ignores a key that names no field. |
 | `additionalProperties` with a schema | `yyjson::additional_properties(settings...)` on a map | none. |
 | `propertyNames` | `yyjson::property_names(settings...)` on a map | none. |
-| `minProperties`, `maxProperties` | `yyjson::min_properties(n)`, `yyjson::max_properties(n)` on a map | none. |
+| `minProperties`, `maxProperties` | `yyjson::min_properties(n)`, `yyjson::max_properties(n)` on a struct or a map | none. |
 
 ### Combining schemas
 
