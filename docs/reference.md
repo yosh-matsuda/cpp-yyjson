@@ -45,6 +45,7 @@ This page lists the functions, classes and other entities of cpp-yyjson, grouped
     *   [`yyjson::transparent`](#yyjsontransparent)
     *   [`yyjson::as_array`, `yyjson::extra_items`](#yyjsonas_array-yyjsonextra_items)
     *   [`yyjson::extra_keys`](#yyjsonextra_keys)
+    *   [`yyjson::pattern_properties`](#yyjsonpattern_properties)
     *   [`yyjson::required`](#yyjsonrequired)
     *   [`yyjson::default_`, `yyjson::default_from`](#yyjsondefault_-yyjsondefault_from)
     *   [`yyjson::emit_defaults`](#yyjsonemit_defaults)
@@ -1449,7 +1450,7 @@ template <typename... As>
 consteval field_annotation<As...> field(std::string_view member, As... values);
 ```
 
-`values` are one or more of [`yyjson::rename`](#yyjsonrename), [`yyjson::skip`](#yyjsonskip), [`yyjson::required`](#yyjsonrequired), [`yyjson::default_`, `yyjson::default_from<f>`](#yyjsondefault_-yyjsondefault_from), [`yyjson::emit_defaults`](#yyjsonemit_defaults), [`yyjson::adjacent_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag), [`yyjson::extra_items`](#yyjsonas_array-yyjsonextra_items), [`yyjson::extra_keys`](#yyjsonextra_keys), the [constraints](#constraints), the [constraints of elements](#constraints-of-elements) and the [combinators](#yyjsonnot_-yyjsonif_then_else-yyjsonall_of-yyjsonany_of-yyjsonone_of). Any other setting is a compile error.
+`values` are one or more of [`yyjson::rename`](#yyjsonrename), [`yyjson::skip`](#yyjsonskip), [`yyjson::required`](#yyjsonrequired), [`yyjson::default_`, `yyjson::default_from<f>`](#yyjsondefault_-yyjsondefault_from), [`yyjson::emit_defaults`](#yyjsonemit_defaults), [`yyjson::adjacent_tag`](#yyjsoninternal_tag-yyjsonadjacent_tag), [`yyjson::extra_items`](#yyjsonas_array-yyjsonextra_items), [`yyjson::extra_keys`](#yyjsonextra_keys), [`yyjson::pattern_properties`](#yyjsonpattern_properties), the [constraints](#constraints), the [constraints of elements](#constraints-of-elements) and the [combinators](#yyjsonnot_-yyjsonif_then_else-yyjsonall_of-yyjsonany_of-yyjsonone_of). Any other setting is a compile error.
 
 A field that holds a struct also takes the keywords of an object for that struct: `yyjson::field("key", s...)`, `yyjson::additional_properties(false)`, `yyjson::min_properties(n)`, `yyjson::max_properties(n)`, `yyjson::property_names(s...)` and [`yyjson::dependent_required`, `yyjson::one_of_required` and `yyjson::any_of_required`](#yyjsondependent_required-yyjsonone_of_required-yyjsonany_of_required). So do `yyjson::items` of a range of structs, `yyjson::additional_properties(s...)` of a map of structs, and the combinators at these positions. The inner `yyjson::field` names a field of that struct by its JSON key. See [Keywords of an object at a field](validation.md#keywords-of-an-object-at-a-field).
 
@@ -1562,7 +1563,7 @@ yyjson::read<Rule>("[1,null,80,4]");
 
 ### `yyjson::extra_keys`
 
-The field that receives the keys that no field and no tag of the struct names.
+The field that receives the keys that no field and no tag of the struct names, and that no pattern matches.
 
 ```cpp
 inline constexpr extra_keys_t extra_keys{};
@@ -1571,7 +1572,7 @@ inline constexpr extra_keys_t extra_keys{};
 `yyjson::extra_keys` is a setting of a field, given to [`yyjson::field`](#yyjsonfield). With the reflection of C++26, it can also be written on the member, as `[[=yyjson::extra_keys]]`.
 
 *   The field is a map with string keys that is written as a JSON object, such as `std::map<std::string, yyjson::value>` or `std::unordered_map<std::string, int>`.
-*   The field has no key of its own. Every read puts each key that no field and no tag names into the map, with its value. `read<T>` and `read_into` start from the map of `T()`. `merge_into` adds the members of the patch to the map, and a member with `null` removes its key.
+*   The field has no key of its own. Every read puts each key that no field and no tag names, and that no [pattern](#yyjsonpattern_properties) matches, into the map, with its value. `read<T>` and `read_into` start from the map of `T()`. `merge_into` adds the members of the patch to the map, and a member with `null` removes its key.
 *   The field takes [`yyjson::additional_properties(s...)`](#constraints-of-elements) for the values and `yyjson::property_names(s...)` for the keys. The read checks a key before its value. `merge_into` checks only the members of the patch that are not `null`.
 *   The settings of the struct, such as `yyjson::min_properties` and `yyjson::property_names`, count and check the keys of the map too. `yyjson::reject_unknown_keys` accepts them.
 *   Every write puts the members of the map after the fields and the tags. It throws `std::invalid_argument` when the map has the key of a field or a tag of the struct.
@@ -1601,6 +1602,57 @@ auto json = yyjson::write(item);                                       // -> {"n
 yyjson::merge_into(R"({"red":null,"green":1})", item);                 // -> Item{"pen", {{"blue", 5}, {"green", 1}}}
 yyjson::write(Item{"pen", {{"name", 1}}});
 // throws std::invalid_argument: the field of yyjson::extra_keys of Item has the key "name", which Item writes for a field or a tag
+```
+
+### `yyjson::pattern_properties`
+
+The field that receives the keys that a regular expression matches.
+
+```cpp
+struct pattern_properties
+{
+    consteval explicit pattern_properties(std::string_view regex);
+    constexpr std::string_view regex() const noexcept;
+};
+```
+
+`yyjson::pattern_properties` is a setting of a field, given to [`yyjson::field`](#yyjsonfield). With the reflection of C++26, it can also be written on the member, as `[[=yyjson::pattern_properties("regex")]]`. The program gives the engine of the patterns. Specialize [`yyjson::pattern_matcher<>`](validation.md#pattern-matcher) for it.
+
+*   The field is a map with string keys, as for [`yyjson::extra_keys`](#yyjsonextra_keys).
+*   The field has no key of its own. Every read puts a key that no field and no tag names into the map of the first field whose pattern matches the key. The fields are in the order of the members.
+*   The field takes [`yyjson::additional_properties(s...)`](#constraints-of-elements) for the values and `yyjson::property_names(s...)` for the keys. Each pattern that matches a key checks it, also the key of a field or of a tag. A later pattern checks the value without a change to its own map.
+*   `read<T>` and `read_into` start from the map of `T()`. `merge_into` adds the members of the patch to the map of the first pattern. A member with `null` removes its key. Each other pattern that matches the key checks the merged value.
+*   A closed struct, `yyjson::reject_unknown_keys` and the settings of the struct accept, count and check the keys of the maps.
+*   Every write puts the members of the maps after the fields and the tags, in the order of the members. The map of `yyjson::extra_keys` comes after them. A write throws `std::invalid_argument` when a map has the key of a field or a tag, or when two maps have the same key.
+
+These are compile errors:
+
+*   `yyjson::pattern_properties` twice on a field, or on a field that is not a map with string keys.
+*   Another setting on the field, such as `yyjson::rename`, `yyjson::required`, `yyjson::skip` or `yyjson::extra_keys`.
+*   `yyjson::pattern_properties` on more than 64 fields of a struct, in a struct with `yyjson::transparent` or `yyjson::as_array`, or in a struct that `VISITABLE_STRUCT` registers.
+*   A condition or `yyjson::dependent_required`, `yyjson::one_of_required` or `yyjson::any_of_required` that names the field.
+*   A read of the struct without a specialization of `yyjson::pattern_matcher<>`.
+
+See [Keys that a pattern matches](validation.md#keys-that-a-pattern-matches).
+
+```cpp
+struct Sensor
+{
+    std::string name;
+    std::map<std::string, double> temperatures;
+    std::map<std::string, std::string> labels;
+};
+
+template <>
+inline constexpr auto yyjson::annotations<Sensor> = yyjson::annotate(
+    yyjson::field("temperatures", yyjson::pattern_properties("^t_"), yyjson::additional_properties(yyjson::minimum(-50))),
+    yyjson::field("labels", yyjson::pattern_properties("^l_")));
+
+auto sensor = yyjson::read<Sensor>(R"({"name":"s1","t_in":21.5,"l_room":"lab"})");
+// -> Sensor{"s1", {{"t_in", 21.5}}, {{"l_room", "lab"}}}
+auto json = yyjson::write(sensor);  // -> {"name":"s1","t_in":21.5,"l_room":"lab"}
+yyjson::write(Sensor{"s1", {{"t_in", 21.5}}, {{"t_in", "x"}}});
+// throws std::invalid_argument: the fields of yyjson::pattern_properties of Sensor have the key "t_in" more than once
 ```
 
 ### `yyjson::required`
@@ -1811,15 +1863,15 @@ inline constexpr unique_items_t unique_items{};
 | Setting | The field | Constrains |
 | --- | --- | --- |
 | `yyjson::items(s...)` | a range written as a JSON array | each element, after those of `yyjson::prefix_items` |
-| `yyjson::additional_properties(s...)` | a map written as a JSON object, or the field of [`yyjson::extra_keys`](#yyjsonextra_keys) | each value |
+| `yyjson::additional_properties(s...)` | a map written as a JSON object, the field of [`yyjson::extra_keys`](#yyjsonextra_keys), or a field of [`yyjson::pattern_properties`](#yyjsonpattern_properties) | each value |
 | `yyjson::prefix_items(p...)` | a tuple, or a range that keeps the order of the array | the element at each position. Each `p` is a braced list of settings, `{}` or one setting |
 | `yyjson::contains(s...)`, `yyjson::min_contains(n)`, `yyjson::max_contains(n)` | a range written as a JSON array | the number of elements that satisfy `s`: 1 or more by default |
-| `yyjson::property_names(s...)` | a map written as a JSON object, the field of [`yyjson::extra_keys`](#yyjsonextra_keys), or a struct | each key, by the constraints of a string and the combinators |
+| `yyjson::property_names(s...)` | a map written as a JSON object, the field of [`yyjson::extra_keys`](#yyjsonextra_keys), a field of [`yyjson::pattern_properties`](#yyjsonpattern_properties), or a struct | each key, by the constraints of a string and the combinators |
 | `yyjson::unique_items` | a range whose elements can be equal | no two elements are written as the same JSON value |
 
 The settings `s...` and `p` are the [constraints](#constraints), the settings of this table and the [combinators](#yyjsonnot_-yyjsonif_then_else-yyjsonall_of-yyjsonany_of-yyjsonone_of). `yyjson::min_items` and `yyjson::max_items` constrain the number of elements, and `yyjson::min_properties` and `yyjson::max_properties` the number of members of a map. `yyjson::min_contains` or `yyjson::max_contains` without `yyjson::contains`, and `yyjson::unique_items` on a set or a map, are compile errors. A struct with [`yyjson::as_array`](#yyjsonas_array-yyjsonextra_items) takes `yyjson::min_items`, `yyjson::max_items`, `yyjson::unique_items` and the settings of `yyjson::contains` as settings of its own. See [Constraints of elements](validation.md#constraints-of-elements).
 
-`yyjson::additional_properties(false)` is a setting of a struct, given to [`yyjson::annotate`](#yyjsonannotationst-yyjsonannotate). It makes the struct [closed](validation.md#closed-structs): every read rejects a key that names no field and no tag of the struct. A subschema of the conditions of a struct and a field that holds a struct take it too. There, it accepts only the keys that `yyjson::field` names in the same subschema, and the keys of the tags. `additional_properties(true)`, `additional_properties(s...)` on a struct, and `additional_properties(false)` on a struct with `yyjson::transparent` or `yyjson::as_array` are compile errors. So are `additional_properties(false)` on a struct with a field of [`yyjson::extra_keys`](#yyjsonextra_keys) and on a field that holds no struct.
+`yyjson::additional_properties(false)` is a setting of a struct, given to [`yyjson::annotate`](#yyjsonannotationst-yyjsonannotate). It makes the struct [closed](validation.md#closed-structs): every read rejects a key that names no field and no tag of the struct. A subschema of the conditions of a struct and a field that holds a struct take it too. There, it accepts only the keys that `yyjson::field` names in the same subschema, and the keys of the tags. A closed struct accepts the keys that a field of [`yyjson::pattern_properties`](#yyjsonpattern_properties) receives, but a closed subschema rejects them. `additional_properties(true)`, `additional_properties(s...)` on a struct, and `additional_properties(false)` on a struct with `yyjson::transparent` or `yyjson::as_array` are compile errors. So are `additional_properties(false)` on a struct with a field of [`yyjson::extra_keys`](#yyjsonextra_keys) and on a field that holds no struct.
 
 `yyjson::min_properties(n)` and `yyjson::max_properties(n)` are also settings of a struct for `yyjson::annotate`. Every read then counts the members of the object, as for a map. `merge_into` counts the members of the patch that are not `null`. A struct with `yyjson::min_properties` writes the fields that equal their defaults. See [The number of members of a struct](validation.md#the-number-of-members-of-a-struct). On a struct with `yyjson::transparent` or `yyjson::as_array`, they are compile errors. The subschemas of the conditions of a struct and a field that holds a struct take them too. There, `yyjson::min_properties` changes the write only in a `yyjson::all_of` of the struct.
 

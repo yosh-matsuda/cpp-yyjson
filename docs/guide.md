@@ -254,6 +254,8 @@ auto json = yyjson::write(profile);
 // -> {"name":"Ann","theme":"dark"}
 ```
 
+A field of [`yyjson::pattern_properties("regex")`](validation.md#keys-that-a-pattern-matches) receives only the keys that its pattern matches.
+
 A document also keeps the keys. Read a document, cast it, and look at the keys of the document:
 
 ```cpp

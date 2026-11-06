@@ -1540,6 +1540,22 @@ namespace yyjson
     };
     inline constexpr extra_keys_t extra_keys{};
 
+    // A map field that takes each member whose key matches the regular expression `re` and names no field and no
+    // tag, as JSON Schema's `patternProperties`.  `additional_properties` and `property_names` on the same field
+    // check its values and keys, and a specialization of `yyjson::pattern_matcher<>` matches the patterns.
+    struct pattern_properties
+    {
+        const char* regex_data = nullptr;
+        std::size_t regex_size = 0;
+
+        consteval explicit pattern_properties(std::string_view re)
+            : regex_data(detail::static_string(re)), regex_size(re.size())
+        {
+        }
+
+        [[nodiscard]] constexpr std::string_view regex() const noexcept { return {regex_data, regex_size}; }
+    };
+
     // The read policies, which make a read reject JSON that it accepts otherwise.  A read takes them after its
     // arguments, and a struct takes them as settings of `yyjson::annotate` for the objects read into it.
     struct reject_unknown_keys_t
@@ -3161,7 +3177,8 @@ namespace yyjson
             std::same_as<A, rename> || std::same_as<A, skip_t> || adjacent_tag_annotation<A> ||
             std::same_as<A, required_t> || std::same_as<A, default_t> || std::same_as<A, emit_defaults_t> ||
             std::same_as<A, default_from_t> || std::same_as<A, extra_items_t> || std::same_as<A, extra_keys_t> ||
-            constraint_setting<A> || object_subschema_setting<A> || member_annotation<A>;
+            std::same_as<A, pattern_properties> || constraint_setting<A> || object_subschema_setting<A> ||
+            member_annotation<A>;
 
         // The settings of the field `member` of a struct, which `yyjson::annotate` takes.
         template <typename... As>
@@ -3186,8 +3203,8 @@ namespace yyjson
         static_assert((detail::field_setting<As> && ...),
                       "yyjson::field takes yyjson::rename, yyjson::skip, yyjson::adjacent_tag, yyjson::required, "
                       "yyjson::default_, yyjson::default_from, yyjson::emit_defaults, yyjson::extra_items, "
-                      "yyjson::extra_keys and the keywords of the value, such as yyjson::minimum, yyjson::pattern "
-                      "and, for a struct, yyjson::field(\"key\", ...)");
+                      "yyjson::extra_keys, yyjson::pattern_properties and the keywords of the value, such as "
+                      "yyjson::minimum, yyjson::pattern and, for a struct, yyjson::field(\"key\", ...)");
         static_assert((detail::nested_field_settings<As> && ...),
                       "yyjson::field in yyjson::field takes yyjson::required and the keywords of the value; "
                       "yyjson::rename, skip, adjacent_tag, default_, default_from and emit_defaults declare "
@@ -3365,8 +3382,8 @@ namespace yyjson
     {
         static_assert(detail::count_true<std::same_as<detail::setting_type_t<As>, additional_properties<>>...> == 0,
                       "yyjson::additional_properties takes only false for a struct: with the keywords of the "
-                      "values, it constrains a field of a map, or the field of yyjson::extra_keys, in "
-                      "yyjson::field");
+                      "values, it constrains a field of a map, or the field of yyjson::extra_keys or of "
+                      "yyjson::pattern_properties, in yyjson::field");
         static_assert(detail::annotate_settings<As...>,
                       "yyjson::annotate takes yyjson::field(...), yyjson::transparent, yyjson::as_array, "
                       "yyjson::items(false), yyjson::default_ and the read policies yyjson::reject_unknown_keys, "
@@ -3923,6 +3940,9 @@ namespace yyjson
             extra_keys_with_setting,
             extra_keys_visitable,
             extra_keys_denied,
+            pattern_with_setting,
+            pattern_visitable,
+            too_many_patterns,
         };
 
         template <std::size_t N>
@@ -3942,6 +3962,11 @@ namespace yyjson
             std::size_t extra_items = N;                  // the field of `yyjson::extra_items`, or N
             bool closed = false;                          // `yyjson::additional_properties(false)` on the struct
             std::size_t extra_keys = N;                   // the field of `yyjson::extra_keys`, or N
+            std::array<bool, N> pattern = {};             // `yyjson::pattern_properties`
+            std::array<std::string_view, N> patterns = {};  // its regular expression, which may be empty
+
+            // Whether the field i has no key of its own, but receives the keys of no field.
+            [[nodiscard]] constexpr bool keyless(std::size_t i) const noexcept { return i == extra_keys || pattern[i]; }
         };
 
         // Applies the settings of `yyjson::field` and of the annotations of the members to the keys of the fields,
@@ -3985,6 +4010,7 @@ namespace yyjson
                 if (visitable) return fail(field_key_error::skip_visitable);
                 if (table.skipped[i]) return fail(field_key_error::same_setting_twice);
                 if (table.extra_keys == i) return fail(field_key_error::extra_keys_with_setting);
+                if (table.pattern[i]) return fail(field_key_error::pattern_with_setting);
                 if (renamed[i] || tagged[i] || has_presence(i) || constrained[i])
                     return fail(field_key_error::skipped_with_setting);
                 table.skipped[i] = true;
@@ -4062,6 +4088,15 @@ namespace yyjson
                 table.extra_keys = i;
                 object_keywords = true;
             }
+            constexpr void set_pattern(std::size_t i, std::string_view re)
+            {
+                if (visitable) return fail(field_key_error::pattern_visitable);
+                if (table.skipped[i]) return fail(field_key_error::pattern_with_setting);
+                if (table.pattern[i]) return fail(field_key_error::same_setting_twice);
+                table.pattern[i] = true;
+                table.patterns[i] = re;
+                object_keywords = true;
+            }
             constexpr void close()
             {
                 if (table.closed) return fail(field_key_error::closed_twice);
@@ -4098,6 +4133,8 @@ namespace yyjson
                     set_extra_items(i);
                 else if constexpr (std::same_as<A, extra_keys_t>)
                     set_extra_keys(i);
+                else if constexpr (std::same_as<A, pattern_properties>)
+                    set_pattern(i, a.regex());
                 else if constexpr (constraint_setting<A> || object_subschema_setting<A> || member_annotation<A>)
                     constrain_field(i, std::same_as<setting_type_t<A>, items<>>,
                                     setting_of<A, additional_properties<>> || setting_of<A, property_names<>>);
@@ -4180,6 +4217,22 @@ namespace yyjson
                 return field_key_error::none;
             }
 
+            // The errors of `yyjson::pattern_properties`.
+            [[nodiscard]] constexpr field_key_error pattern_error(const field_key_table<N>& result) const
+            {
+                std::size_t count = 0;
+                for (std::size_t p = 0; p < N; ++p)
+                {
+                    if (!result.pattern[p]) continue;
+                    if (p == result.extra_keys || renamed[p] || tagged[p] || has_presence(p) || constrained_keyed[p])
+                        return field_key_error::pattern_with_setting;
+                    ++count;
+                }
+                // the patterns that match a key are kept as the bits of 64
+                if (count > 64) return field_key_error::too_many_patterns;
+                return field_key_error::none;
+            }
+
             // Duplicate keys are reported only when a key was given, so that a `VISITABLE_STRUCT` listing a
             // member twice still compiles as it did.  A skipped field has no key in JSON.
             [[nodiscard]] constexpr field_key_table<N> result() const
@@ -4210,7 +4263,7 @@ namespace yyjson
                     std::size_t f = N;
                     for (std::size_t i = 0; i < N; ++i)
                     {
-                        if (!result.skipped[i] && i != result.extra_keys)
+                        if (!result.skipped[i] && !result.keyless(i))
                         {
                             ++count;
                             f = i;
@@ -4229,12 +4282,13 @@ namespace yyjson
                 }
                 if (result.error == field_key_error::none) result.error = array_error(result);
                 if (result.error == field_key_error::none) result.error = extra_keys_error(result);
+                if (result.error == field_key_error::none) result.error = pattern_error(result);
                 if (result.error == field_key_error::none && additional_values)
                     result.error = field_key_error::struct_additional_properties;
                 if (result.error != field_key_error::none || std::ranges::find(renamed, true) == renamed.end())
                     return result;
                 if (!distinct_names(result.keys,
-                                    [&](std::size_t i) { return !result.skipped[i] && i != result.extra_keys; }))
+                                    [&](std::size_t i) { return !result.skipped[i] && !result.keyless(i); }))
                     result.error = field_key_error::duplicate_key;
                 return result;
             }
@@ -4348,6 +4402,7 @@ namespace yyjson
                              !field_reflection::field_annotations<T, Is, default_from_t>.empty() ||
                              !field_reflection::field_annotations<T, Is, extra_items_t>.empty() ||
                              !field_reflection::field_annotations<T, Is, extra_keys_t>.empty() ||
+                             !field_reflection::field_annotations<T, Is, pattern_properties>.empty() ||
                              constraint_annotated<T, Is>) ||
                             ...);
                 }(std::make_index_sequence<field_reflection::field_count<T>>{});
@@ -4383,6 +4438,9 @@ namespace yyjson
                         for (std::size_t k = 0; k < field_reflection::field_annotations<T, Is, extra_keys_t>.size();
                              ++k)
                             builder.set_extra_keys(Is);
+                        for (const pattern_properties& p :
+                             field_reflection::field_annotations<T, Is, pattern_properties>)
+                            builder.set_pattern(Is, p.regex());
                         if constexpr (constraint_annotated<T, Is>)
                             builder.constrain_field(
                                 Is, !value_keyword_annotated<T, Is> && items_annotated_only<T, Is>(),
@@ -4785,18 +4843,18 @@ namespace yyjson
             static_assert(table.error != field_key_error::transparent_object_keyword,
                           "a struct annotated with yyjson::transparent has no keys of its own: it takes no "
                           "yyjson::additional_properties(false), min_properties, max_properties, property_names, "
-                          "dependent_required, one_of_required, any_of_required or yyjson::extra_keys, which the "
-                          "struct of its field can take");
+                          "dependent_required, one_of_required, any_of_required, yyjson::extra_keys or "
+                          "yyjson::pattern_properties, which the struct of its field can take");
             static_assert(table.error != field_key_error::as_array_object_keyword,
                           "a struct annotated with yyjson::as_array has no keys: it takes no "
                           "yyjson::additional_properties(false), min_properties, max_properties, property_names, "
-                          "dependent_required, one_of_required, any_of_required or yyjson::extra_keys; "
-                          "yyjson::items(false) denies the elements after its fields, and yyjson::extra_items "
-                          "receives them");
+                          "dependent_required, one_of_required, any_of_required, yyjson::extra_keys or "
+                          "yyjson::pattern_properties; yyjson::items(false) denies the elements after its fields, "
+                          "and yyjson::extra_items receives them");
             static_assert(table.error != field_key_error::struct_additional_properties,
                           "yyjson::additional_properties takes only false for a struct: with the keywords of the "
-                          "values, it constrains a field of a map, or the field of yyjson::extra_keys, in "
-                          "yyjson::field");
+                          "values, it constrains a field of a map, or the field of yyjson::extra_keys or of "
+                          "yyjson::pattern_properties, in yyjson::field");
             static_assert(table.error != field_key_error::extra_keys_twice,
                           "only one field of a struct may be annotated with yyjson::extra_keys");
             static_assert(table.error != field_key_error::extra_keys_with_setting,
@@ -4809,6 +4867,15 @@ namespace yyjson
             static_assert(table.error != field_key_error::extra_keys_denied,
                           "a struct annotated with yyjson::additional_properties(false) has no key for a field "
                           "annotated with yyjson::extra_keys to receive");
+            static_assert(table.error != field_key_error::pattern_with_setting,
+                          "a field annotated with yyjson::pattern_properties has no key of its own and takes only "
+                          "yyjson::additional_properties(settings...) and yyjson::property_names(settings...), which "
+                          "constrain its values and keys; it is not the field of yyjson::extra_keys");
+            static_assert(table.error != field_key_error::pattern_visitable,
+                          "yyjson::pattern_properties needs a struct that the compile-time reflection converts, not a "
+                          "VISITABLE_STRUCT");
+            static_assert(table.error != field_key_error::too_many_patterns,
+                          "a struct has at most 64 fields annotated with yyjson::pattern_properties");
             static constexpr auto value = table.keys;
             using source = Source;
         };
@@ -4826,17 +4893,20 @@ namespace yyjson
         inline constexpr std::string_view field_key = make_field_key<T, I>();
 
         // The indices of the fields of a reflected struct that are read and written by their keys, which are all but
-        // those annotated with `yyjson::skip` or `yyjson::extra_keys`, as a `std::index_sequence`.
-        // `reflected_field_index<T, K>` is the K-th.
+        // those annotated with `yyjson::skip`, `yyjson::extra_keys` or `yyjson::pattern_properties`, as a
+        // `std::index_sequence`.  `reflected_field_index<T, K>` is the K-th.
         template <typename T>
         inline constexpr auto unskipped_field_indices = [] {
             constexpr auto& table = field_keys<T, reflected_field_names<T>>::table;
-            constexpr auto count = static_cast<std::size_t>(std::ranges::count(table.skipped, false)) -
-                                   (table.extra_keys != table.skipped.size() ? 1 : 0);
+            constexpr auto count = [] {
+                std::size_t c = 0;
+                for (std::size_t i = 0; i < table.skipped.size(); ++i) c += !table.skipped[i] && !table.keyless(i);
+                return c;
+            }();
             auto indices = std::array<std::size_t, count>{};
             for (std::size_t i = 0, k = 0; i < table.skipped.size(); ++i)
             {
-                if (!table.skipped[i] && i != table.extra_keys) indices[k++] = i;
+                if (!table.skipped[i] && !table.keyless(i)) indices[k++] = i;
             }
             return indices;
         }();
@@ -5911,6 +5981,63 @@ namespace yyjson
         }
         template <typename S>
         using extra_keys_type = std::remove_cvref_t<decltype(extra_keys_field(std::declval<S&>()))>;
+
+        // The fields of the struct S annotated with `yyjson::pattern_properties`, by their indices among all the
+        // fields, in the order of the members.
+        template <typename S>
+        inline constexpr auto pattern_field_indices = [] {
+            using U = std::remove_const_t<S>;
+            if constexpr (!visitable<U> && field_reflection::field_countable<U> && annotated_fields<U>)
+            {
+                constexpr auto& table = field_keys<U, reflected_field_names<U>>::table;
+                auto indices = std::array<std::size_t, std::ranges::count(table.pattern, true)>{};
+                for (std::size_t i = 0, k = 0; i < table.pattern.size(); ++i)
+                {
+                    if (table.pattern[i]) indices[k++] = i;
+                }
+                return indices;
+            }
+            else
+                return std::array<std::size_t, 0>{};
+        }();
+        template <typename S>
+        inline constexpr std::size_t pattern_count = pattern_field_indices<S>.size();
+        template <typename S>
+        inline constexpr bool has_pattern_fields = pattern_count<S> != 0;
+        // Whether S has a field that receives the keys of no field: of `yyjson::extra_keys` or of
+        // `yyjson::pattern_properties`.
+        template <typename S>
+        inline constexpr bool has_key_maps = has_extra_keys<S> || has_pattern_fields<S>;
+
+        // The field P of `s` among those annotated with `yyjson::pattern_properties`, and its pattern.
+        template <std::size_t P, typename S>
+        CPPYYJSON_ALWAYS_INLINE inline constexpr auto& pattern_field(S& s) noexcept
+        {
+            auto& field = field_reflection::get_field<pattern_field_indices<std::remove_const_t<S>>[P]>(s);
+            static_assert(extra_keys_map<std::remove_cvref_t<decltype(field)>>,
+                          "a field annotated with yyjson::pattern_properties is a map with keys constructible from "
+                          "and convertible to std::string_view and a try_emplace, such as "
+                          "std::map<std::string, yyjson::value> or std::unordered_map<std::string, int>");
+            return field;
+        }
+        template <typename S, std::size_t P>
+        using pattern_type = std::remove_cvref_t<decltype(pattern_field<P>(std::declval<S&>()))>;
+        template <typename S, std::size_t P>
+        inline constexpr std::string_view pattern_of =
+            field_keys<S, reflected_field_names<S>>::table.patterns[pattern_field_indices<S>[P]];
+
+        // The fields of `s` annotated with `yyjson::pattern_properties`, in the order of the members, and then that
+        // of `yyjson::extra_keys`, as references in the order that a write gives their members.
+        template <typename S>
+        constexpr auto key_maps_of(S& s) noexcept
+        {
+            return [&]<std::size_t... Ps>(std::index_sequence<Ps...>) {
+                if constexpr (has_extra_keys<std::remove_const_t<S>>)
+                    return std::tie(pattern_field<Ps>(s)..., extra_keys_field(s));
+                else
+                    return std::tie(pattern_field<Ps>(s)...);
+            }(std::make_index_sequence<pattern_count<std::remove_const_t<S>>>{});
+        }
 
         // The index of the field of S whose key is `key`, or `struct_field_count<S>`.
         template <typename S>
@@ -10126,10 +10253,26 @@ namespace yyjson
                   static_cast<const yyjson_mut_val*>(yyjson_mut_obj_iter_get_val(key)));
         }
 
-        // Checks the members of the object `obj` read into a struct against `rules` under `policies`, and against
-        // its keys if `Closed`.  A merge patch may leave out any key, but not give null to a field that may not be
-        // absent.  An unknown key of null removes nothing, unless the field of `yyjson::extra_keys` takes it (`Open`).
-        template <bool Closed, bool Open = false, typename Val>
+        // Whether a pattern of `yyjson::pattern_properties` of S matches `key`.  Defined after the keywords of a map.
+        template <typename S>
+        bool matches_any_pattern(std::string_view key);
+        // A type and not a function pointer, because UBSan makes a pointer comparison not a constant
+        template <typename T>
+        using key_matcher_of = std::conditional_t<has_pattern_fields<T>, T, void>;
+
+        template <typename Match>
+        bool key_matches(std::string_view key)
+        {
+            if constexpr (!std::is_void_v<Match>)
+                return matches_any_pattern<Match>(key);
+            else
+                return false;
+        }
+
+        // Checks the members of the object `obj` read into a struct against `rules` under `policies`, and its keys
+        // if `Closed`.  A merge patch may leave out any key, but not give null to a field that may not be absent.
+        // `Open` (`yyjson::extra_keys`) and the patterns of a non-void `Match` take the keys that no field names.
+        template <bool Closed, bool Open = false, typename Match = void, typename Val>
         CPPYYJSON_NOINLINE CPPYYJSON_COLD void check_struct_keys(const Val* obj, const struct_key_rules& rules,
                                                                  bool merge)
         {
@@ -10152,7 +10295,8 @@ namespace yyjson
                             throw_null_as_missing(target_of(value), rules.null_type(i));
                     }
                 }
-                else if (Open || rules.is_adjacent_tag(key) || internal_tag_key::contains(obj, key))
+                else if (Open || rules.is_adjacent_tag(key) || internal_tag_key::contains(obj, key) ||
+                         key_matches<Match>(key))
                 {
                     // a tag never equals an extra key, so that the two share the list
                     if ((policies & duplicates_policy) != 0)
@@ -10374,7 +10518,7 @@ namespace yyjson
         CPPYYJSON_ALWAYS_INLINE inline void check_struct_object(const Json& obj, bool merge)
         {
             if (struct_closed<T> || has_required_fields<T> || (read_policies | struct_policies<T>) != 0) [[unlikely]]
-                check_struct_keys<struct_closed<T>, has_extra_keys<T>>(
+                check_struct_keys<struct_closed<T>, has_extra_keys<T>, key_matcher_of<T>>(
                     dependent_t<writer::detail::json_value_access, Json>::get(obj), struct_rules<T>, merge);
             if constexpr (struct_property_names<T>)
                 check_struct_names<T>(dependent_t<writer::detail::json_value_access, Json>::get(obj), merge);
@@ -10382,8 +10526,9 @@ namespace yyjson
                 check_struct_members<T>(dependent_t<writer::detail::json_value_access, Json>::get(obj), merge);
         }
 
-        // Reads into the field of `yyjson::extra_keys` of `t` each member of the object `obj` whose key names no
-        // field and no tag of T.  Defined after the keywords of a map.
+        // Reads into the field of `yyjson::extra_keys` of `t` each member of the object `obj` whose key no field,
+        // no tag and no pattern of T takes, and into a field of `yyjson::pattern_properties` each member whose key
+        // its pattern matches first.  Defined after the keywords of a map.
         template <typename T, typename Json>
         void read_extra_keys(T& t, const Json& obj);
 
@@ -10430,7 +10575,7 @@ namespace yyjson
             }
             else
                 assign_reflected_fields_unchecked(t, obj);
-            if constexpr (has_extra_keys<T>) read_extra_keys(t, obj);
+            if constexpr (has_key_maps<T>) read_extra_keys(t, obj);
             if constexpr (has_struct_conditions<T>) check_struct_conditions(t, obj, reflected_key_matcher<T>);
         }
 
@@ -11252,7 +11397,7 @@ namespace yyjson
             concept directly_create_reflected_object =
                 (!yyjson::detail::std_array<T>) && yyjson::detail::reflectable<std::remove_cvref_t<T>> &&
                 (!visitable<std::remove_cvref_t<T>>) && (!to_json_inp_usr_defined<T>) && (!to_json_usr<T>) &&
-                (!yyjson::detail::has_extra_keys<std::remove_cvref_t<T>>) &&
+                (!yyjson::detail::has_key_maps<std::remove_cvref_t<T>>) &&
                 directly_create_reflected_object_impl<std::remove_cvref_t<T>>(
                     yyjson::detail::reflected_fields<std::remove_cvref_t<T>>{});
             // Whether every member of a visitable struct can be created directly, as for a reflected struct above.
@@ -17694,21 +17839,24 @@ namespace yyjson
             }
         }
 
-        // The keywords of the field of S annotated with `yyjson::extra_keys`, whose `property_names` checks a key and
-        // whose `additional_properties` checks a value.
-        template <typename S>
-        using extra_keys_schema = field_schema<S, extra_keys_index<S>>;
+        // The keywords of the field R of S, by its index among all the fields, that receives the keys of no field:
+        // the field of `yyjson::extra_keys` unless R is given.  Its `property_names` checks a key and its
+        // `additional_properties` checks a value.
+        template <typename S, std::size_t R = extra_keys_index<S>>
+        using extra_keys_schema = field_schema<S, R>;
+        template <typename S, std::size_t R>
+        using key_map_type = std::remove_cvref_t<decltype(field_reflection::get_field<R>(std::declval<S&>()))>;
 
-        // The keyword of `yyjson::property_names` of the field of `yyjson::extra_keys` of S that the key `key` does
-        // not satisfy, read as a key of the map.
-        template <typename S>
+        // The keyword of `yyjson::property_names` of the field R of S that the key `key` does not satisfy, read as a
+        // key of the map.
+        template <typename S, std::size_t R = extra_keys_index<S>>
         constraint_kind extra_key_violation(std::string_view key)
         {
-            using schema = extra_keys_schema<S>;
+            using schema = extra_keys_schema<S, R>;
             if constexpr (schema::node.keys != 0)
             {
                 using names = typename schema::template at<schema::node.keys>;
-                using Key = typename extra_keys_type<S>::key_type;
+                using Key = typename key_map_type<S, R>::key_type;
                 if constexpr (constraint_string<Key>)
                     return constraint_violation<names, true>(Key(key));
                 else
@@ -17718,12 +17866,12 @@ namespace yyjson
                 return constraint_kind::none;
         }
 
-        // The keyword of `yyjson::additional_properties` of the field of `yyjson::extra_keys` of S that the value
-        // `e` read from `input` does not satisfy.
-        template <typename S, typename E, typename Input = no_input>
+        // The keyword of `yyjson::additional_properties` of the field R of S that the value `e` read from `input`
+        // does not satisfy.
+        template <typename S, std::size_t R = extra_keys_index<S>, typename E, typename Input = no_input>
         constraint_kind extra_value_violation(const E& e, Input input = {})
         {
-            using schema = extra_keys_schema<S>;
+            using schema = extra_keys_schema<S, R>;
             if constexpr (schema::node.properties != 0)
             {
                 using values = typename schema::template at<schema::node.properties>;
@@ -17733,53 +17881,253 @@ namespace yyjson
                 return constraint_kind::none;
         }
 
-        // Whether the keywords of the values of the field of `yyjson::extra_keys` of S count the members or the
-        // elements of the input, which the direct reader leaves to the document.
-        template <typename S>
+        // Whether the keywords of the values of the field R of S count the members or the elements of the input,
+        // which the direct reader leaves to the document.
+        template <typename S, std::size_t R = extra_keys_index<S>>
         consteval bool extra_values_count_input()
         {
-            using schema = extra_keys_schema<S>;
+            using schema = extra_keys_schema<S, R>;
             if constexpr (schema::node.properties != 0)
                 return counts_input<typename schema::template at<schema::node.properties>,
-                                    typename extra_keys_type<S>::mapped_type>();
+                                    typename key_map_type<S, R>::mapped_type>();
             else
                 return false;
         }
 
-        template <typename S, typename Json>
+        template <typename S, std::size_t R = extra_keys_index<S>, typename Json>
         [[noreturn]] CPPYYJSON_NOINLINE CPPYYJSON_COLD void throw_extra_key_violation(const Json& json,
                                                                                       constraint_kind kind)
         {
-            using schema = extra_keys_schema<S>;
+            using schema = extra_keys_schema<S, R>;
             throw_bad_cast_at(target_of(json), "a key of {} {}", type_name<S>(),
                               constraint_what<typename schema::template at<schema::node.keys>>(kind));
         }
-        template <typename S, typename Json>
+        template <typename S, std::size_t R = extra_keys_index<S>, typename Json>
         [[noreturn]] CPPYYJSON_NOINLINE CPPYYJSON_COLD void throw_extra_value_violation(const Json& json,
                                                                                         std::string_view key,
                                                                                         constraint_kind kind)
         {
-            using schema = extra_keys_schema<S>;
+            using schema = extra_keys_schema<S, R>;
             throw_bad_cast_at(target_of(json), "the value of the key \"{}\" of {} {}", key, type_name<S>(),
                               constraint_what<typename schema::template at<schema::node.properties>>(kind));
         }
 
-        // Throws at `json`, the value of the key `key` that the field of `yyjson::extra_keys` of S receives, if the
-        // key does not satisfy the keywords of the keys of the field.
-        template <typename S, typename Json>
+        // Throws at `json`, the value of the key `key` that the field R of S receives, if the key does not satisfy
+        // the keywords of the keys of the field.
+        template <typename S, std::size_t R = extra_keys_index<S>, typename Json>
         CPPYYJSON_ALWAYS_INLINE inline void check_extra_key(std::string_view key, const Json& json)
         {
-            if constexpr (extra_keys_schema<S>::node.keys != 0)
-                if (const auto kind = extra_key_violation<S>(key); kind != constraint_kind::none) [[unlikely]]
-                    throw_extra_key_violation<S>(json, kind);
+            if constexpr (extra_keys_schema<S, R>::node.keys != 0)
+                if (const auto kind = extra_key_violation<S, R>(key); kind != constraint_kind::none) [[unlikely]]
+                    throw_extra_key_violation<S, R>(json, kind);
         }
         // Throws at `json` if `e`, read from it, does not satisfy the keywords of the values of the field.
-        template <typename S, typename E, typename Json>
+        template <typename S, std::size_t R = extra_keys_index<S>, typename E, typename Json>
         CPPYYJSON_ALWAYS_INLINE inline void check_extra_value(const E& e, std::string_view key, const Json& json)
         {
-            if constexpr (extra_keys_schema<S>::node.properties != 0)
-                if (const auto kind = extra_value_violation<S>(e, &json); kind != constraint_kind::none) [[unlikely]]
-                    throw_extra_value_violation<S>(json, key, kind);
+            if constexpr (extra_keys_schema<S, R>::node.properties != 0)
+                if (const auto kind = extra_value_violation<S, R>(e, &json); kind != constraint_kind::none) [[unlikely]]
+                    throw_extra_value_violation<S, R>(json, key, kind);
+        }
+
+        // Whether the field P of S annotated with `yyjson::pattern_properties` takes every key and every value as
+        // they are, so that a key that only its pattern matches needs no check.
+        template <typename S, std::size_t P>
+        inline constexpr bool pattern_takes_any = [] {
+            using schema = extra_keys_schema<S, pattern_field_indices<S>[P]>;
+            return dom_kind_of<typename pattern_type<S, P>::mapped_type> == dom_kind::value &&
+                   schema::node.properties == 0 && schema::node.keys == 0;
+        }();
+
+        template <typename S, std::size_t P>
+        using pattern_matcher_of = pattern_matcher<dependent_t<void, S, std::integral_constant<std::size_t, P>>>;
+        // A matcher that a constant expression can construct and call, which matches the keys of the fields of a
+        // struct at compile time.
+        template <typename M>
+        concept constant_pattern_matcher = requires {
+            typename std::bool_constant<static_cast<bool>(M(std::string_view{})(std::string_view{}))>;
+        };
+
+        // Whether the pattern of the field P of S annotated with `yyjson::pattern_properties` matches `key`.  The
+        // matcher is constructed on the first call.
+        template <typename S, std::size_t P>
+        bool pattern_matches(std::string_view key)
+        {
+            using matcher_type = pattern_matcher_of<S, P>;
+            static_assert(
+                requires { sizeof(matcher_type); },
+                "yyjson::pattern_properties needs a regular expression engine: specialize yyjson::pattern_matcher<> "
+                "with a constructor from std::string_view and a const operator() that takes the std::string_view of "
+                "a key and tells whether the pattern matches it");
+            if constexpr (requires { sizeof(matcher_type); })
+            {
+                static const matcher_type matcher(pattern_of<S, P>);
+                return static_cast<bool>(matcher(key));
+            }
+            else
+                return false;
+        }
+        template <typename S, std::size_t P, bool Constant>
+        constexpr bool pattern_matches_key(std::string_view key)
+        {
+            if constexpr (Constant)
+                return static_cast<bool>(pattern_matcher_of<S, P>(pattern_of<S, P>)(key));
+            else
+                return pattern_matches<S, P>(key);
+        }
+
+        // The first field of S annotated with `yyjson::pattern_properties`, in the order of the members, whose
+        // pattern matches `key`, or `pattern_count<S>`.
+        template <typename S>
+        std::size_t first_pattern(std::string_view key)
+        {
+            return [&]<std::size_t... Ps>(std::index_sequence<Ps...>) {
+                auto p = sizeof...(Ps);
+                (void)((pattern_matches<S, Ps>(key) && (p = Ps, true)) || ...);
+                return p;
+            }(std::make_index_sequence<pattern_count<S>>{});
+        }
+        template <typename S>
+        bool matches_any_pattern(std::string_view key)
+        {
+            return first_pattern<S>(key) != pattern_count<S>;
+        }
+
+        // The fields of S annotated with `yyjson::pattern_properties` from `from` on whose patterns match `key`, as
+        // bits by their order among those, leaving out those that take any key and value.
+        template <typename S, bool Constant = false>
+        constexpr std::uint64_t pattern_mask(std::string_view key, std::size_t from = 0)
+        {
+            return [&]<std::size_t... Ps>(std::index_sequence<Ps...>) {
+                auto mask = std::uint64_t{0};
+                (
+                    [&] {
+                        if constexpr (!pattern_takes_any<S, Ps>)
+                            if (Ps >= from && pattern_matches_key<S, Ps, Constant>(key)) mask |= std::uint64_t{1} << Ps;
+                    }(),
+                    ...);
+                return mask;
+            }(std::make_index_sequence<pattern_count<S>>{});
+        }
+
+        // The patterns of S that match the key of each field and of each tag of an adjacently tagged field, by
+        // their indices in `struct_rules<S>`, as `pattern_mask` gives them.
+        template <typename S>
+        struct key_patterns
+        {
+            std::array<std::uint64_t, struct_field_count<S>> fields{};
+            std::array<std::uint64_t, struct_adjacent_tag_count<S>> tags{};
+        };
+        template <typename S, bool Constant>
+        constexpr key_patterns<S> make_key_patterns()
+        {
+            auto result = key_patterns<S>();
+            const auto& rules = struct_rules<S>;
+            for (std::size_t k = 0; k < result.fields.size(); ++k)
+                result.fields[k] = pattern_mask<S, Constant>(rules.keys[k]);
+            for (std::size_t j = 0; j < rules.tag_count; ++j) result.tags[j] = pattern_mask<S, Constant>(rules.tags[j]);
+            return result;
+        }
+        // They are matched once for each struct: at compile time if the matcher allows it, and on the first call
+        // otherwise.
+        template <typename S>
+        const key_patterns<S>& key_patterns_of()
+        {
+            if constexpr (constant_pattern_matcher<pattern_matcher_of<S, 0>>)
+            {
+                static constexpr auto result = make_key_patterns<S, true>();
+                return result;
+            }
+            else
+            {
+                static const auto result = make_key_patterns<S, false>();
+                return result;
+            }
+        }
+
+        // Throws at `json`, the value of the key `key`, unless the field P of S annotated with
+        // `yyjson::pattern_properties` would take the key and the value.
+        template <typename S, std::size_t P, typename Json>
+        void check_pattern_member(std::string_view key, const Json& json)
+        {
+            constexpr auto r = pattern_field_indices<S>[P];
+            using E = typename pattern_type<S, P>::mapped_type;
+            check_extra_key<S, r>(key, json);
+            if constexpr (dom_kind_of<E> != dom_kind::value || extra_keys_schema<S, r>::node.properties != 0)
+            {
+                const auto e = cast_nested<E>(json);
+                check_extra_value<S, r>(e, key, json);
+            }
+        }
+        // As `check_pattern_member` for each field of `mask`, a result of `pattern_mask`.
+        template <typename S, typename Json>
+        CPPYYJSON_NOINLINE void check_pattern_members(std::uint64_t mask, std::string_view key, const Json& json)
+        {
+            [&]<std::size_t... Ps>(std::index_sequence<Ps...>) {
+                (
+                    [&] {
+                        if ((mask >> Ps & 1) != 0) check_pattern_member<S, Ps>(key, json);
+                    }(),
+                    ...);
+            }(std::make_index_sequence<pattern_count<S>>{});
+        }
+
+        // Reads the member of `key` and `json` into the field P of `s` annotated with `yyjson::pattern_properties`.
+        template <std::size_t P, typename S, typename Json>
+        void read_pattern_member(S& s, std::string_view key, const Json& json)
+        {
+            constexpr auto r = pattern_field_indices<S>[P];
+            using M = pattern_type<S, P>;
+            check_extra_key<S, r>(key, json);
+            auto e = cast_nested<typename M::mapped_type>(json);
+            check_extra_value<S, r>(e, key, json);
+            if (auto [it, inserted] = pattern_field<P>(s).try_emplace(typename M::key_type(key), std::move(e));
+                !inserted)
+                it->second = std::move(e);
+        }
+
+        // The index among the tags of an adjacently tagged field of S of the tag `key`, or `rules.tag_count`.
+        inline std::size_t adjacent_tag_index(const struct_key_rules& rules, std::string_view key) noexcept
+        {
+            return static_cast<std::size_t>(std::find(rules.tags, rules.tags + rules.tag_count, key) - rules.tags);
+        }
+
+        // Reads the member `key` of `obj` into the field of the first pattern of T that matches it, if no field and
+        // no tag names it, and checks it against each other matching pattern.  Returns false if nothing takes the
+        // key.  `hint` is where the search for a field starts.
+        template <typename T, typename Val, typename Json>
+        bool read_pattern_key(T& t, const Val* obj, std::string_view key, const Json& json, std::size_t& hint)
+        {
+            const auto& rules = struct_rules<T>;
+            if (const auto i = rules.find(key, hint); i < rules.size)
+            {
+                hint = i + 1;
+                // a null that reads as a missing key has no value to check
+                if (const auto mask = key_patterns_of<T>().fields[i];
+                    mask != 0 && !(json.is_null() && null_absent_fields<T>[i])) [[unlikely]]
+                    check_pattern_members<T>(mask, key, json);
+                return true;
+            }
+            if (const auto j = adjacent_tag_index(rules, key); j < rules.tag_count)
+            {
+                if (const auto mask = key_patterns_of<T>().tags[j]; mask != 0) [[unlikely]]
+                    check_pattern_members<T>(mask, key, json);
+                return true;
+            }
+            if (internal_tag_key::contains(obj, key))
+            {
+                if (const auto mask = pattern_mask<T>(key); mask != 0) [[unlikely]]
+                    check_pattern_members<T>(mask, key, json);
+                return true;
+            }
+            const auto p = first_pattern<T>(key);
+            if (p == pattern_count<T>) return false;
+            call_at_index<pattern_count<T>>(p, [&]<std::size_t P>(std::integral_constant<std::size_t, P>) {
+                read_pattern_member<P>(t, key, json);
+            });
+            if (const auto mask = pattern_mask<T>(key, p + 1); mask != 0) [[unlikely]]
+                check_pattern_members<T>(mask, key, json);
+            return true;
         }
 
         // Whether the key `key` of the object `obj` read into the struct T names no field and no tag of T, so that
@@ -17799,19 +18147,27 @@ namespace yyjson
         template <typename T, typename Json>
         CPPYYJSON_NOINLINE void read_extra_keys(T& t, const Json& obj)
         {
-            using M = extra_keys_type<T>;
-            auto& map = extra_keys_field(t);
             const auto* raw = dependent_t<writer::detail::json_value_access, Json>::get(obj);
             auto hint = std::size_t{0};
             for (auto&& [k, value] : obj)
             {
                 const auto key = std::string_view(k);
-                if (!extra_key_of<T>(raw, key, hint)) continue;
-                check_extra_key<T>(key, value);
-                auto e = cast_nested<typename M::mapped_type>(value);
-                check_extra_value<T>(e, key, value);
-                if (auto [it, inserted] = map.try_emplace(typename M::key_type(key), std::move(e)); !inserted)
-                    it->second = std::move(e);
+                if constexpr (has_pattern_fields<T>)
+                {
+                    if (read_pattern_key(t, raw, key, value, hint)) continue;
+                }
+                else if (!extra_key_of<T>(raw, key, hint))
+                    continue;
+                if constexpr (has_extra_keys<T>)
+                {
+                    using M = extra_keys_type<T>;
+                    check_extra_key<T>(key, value);
+                    auto e = cast_nested<typename M::mapped_type>(value);
+                    check_extra_value<T>(e, key, value);
+                    if (auto [it, inserted] = extra_keys_field(t).try_emplace(typename M::key_type(key), std::move(e));
+                        !inserted)
+                        it->second = std::move(e);
+                }
             }
         }
 
@@ -17823,30 +18179,84 @@ namespace yyjson
                             "a tag",
                             type_name<S>(), key, type_name<S>()));
         }
-
-        // Throws if a key of the field of `yyjson::extra_keys` of `s` is the key of a field of S, written or not, or
-        // of a tag of an adjacently tagged field, which the object would have twice.
         template <typename S>
-        void check_extra_key_conflicts(const S& s)
+        [[noreturn]] CPPYYJSON_NOINLINE CPPYYJSON_COLD void throw_pattern_key_conflict(std::string_view key)
+        {
+            throw std::invalid_argument(
+                std::format("a field of yyjson::pattern_properties of {} has the key \"{}\", "
+                            "which {} writes for a field or a tag",
+                            type_name<S>(), key, type_name<S>()));
+        }
+        template <typename S>
+        [[noreturn]] CPPYYJSON_NOINLINE CPPYYJSON_COLD void throw_key_maps_conflict(std::string_view key, bool extra)
+        {
+            if (extra)
+                throw std::invalid_argument(
+                    std::format("the fields of yyjson::pattern_properties and yyjson::extra_keys of {} have the key "
+                                "\"{}\" more than once",
+                                type_name<S>(), key));
+            throw std::invalid_argument(
+                std::format("the fields of yyjson::pattern_properties of {} have the key \"{}\" more than once",
+                            type_name<S>(), key));
+        }
+
+        // Throws if a key of the map `map` of `s` is the key of a field of S, written or not, or of a tag of an
+        // adjacently tagged field, or of a map of `s` before it, `before...`; the object would have it twice.
+        template <typename S, bool Pattern, typename M, typename... Before>
+        void check_key_map_conflicts(const M& map, const Before&... before)
         {
             const auto& rules = struct_rules<S>;
-            for (const auto& kv : extra_keys_field(s))
+            for (const auto& kv : map)
             {
                 const auto key = std::string_view(std::get<0>(kv));
                 if (rules.find(key, 0) < rules.size || rules.is_adjacent_tag(key)) [[unlikely]]
-                    throw_extra_key_conflict<S>(key);
+                {
+                    if constexpr (Pattern)
+                        throw_pattern_key_conflict<S>(key);
+                    else
+                        throw_extra_key_conflict<S>(key);
+                }
+                if (((!before.empty() && before.find(typename Before::key_type(key)) != before.end()) || ...))
+                    [[unlikely]]
+                    throw_key_maps_conflict<S>(key, !Pattern);
             }
         }
 
-        // Throws if the field of `yyjson::extra_keys` of `a`, an alternative of a variant tagged by `internal_tag`,
-        // has the key of the tag, which is written for the variant.
+        // Throws if a key of the fields of `yyjson::pattern_properties` and of `yyjson::extra_keys` of `s` is the
+        // key of a field of S, written or not, or of a tag of an adjacently tagged field, or is in two of them,
+        // which the object would have twice.
+        template <typename S>
+        void check_extra_key_conflicts(const S& s)
+        {
+            [&]<std::size_t... Ps>(std::index_sequence<Ps...>) {
+                (
+                    [&] {
+                        [&]<std::size_t... Qs>(std::index_sequence<Qs...>) {
+                            check_key_map_conflicts<S, true>(pattern_field<Ps>(s), pattern_field<Qs>(s)...);
+                        }(std::make_index_sequence<Ps>{});
+                    }(),
+                    ...);
+                if constexpr (has_extra_keys<S>)
+                    check_key_map_conflicts<S, false>(extra_keys_field(s), pattern_field<Ps>(s)...);
+            }(std::make_index_sequence<pattern_count<S>>{});
+        }
+
+        // Throws if a field of `yyjson::extra_keys` or of `yyjson::pattern_properties` of `a`, an alternative of a
+        // variant tagged by `internal_tag`, has the key of the tag, which is written for the variant.
         template <typename Tags, typename A>
         void check_extra_tag_key(const A& a)
         {
-            using M = extra_keys_type<A>;
-            const auto& map = extra_keys_field(a);
-            if (!map.empty() && map.find(typename M::key_type(Tags::key)) != map.end()) [[unlikely]]
-                throw_extra_key_conflict<A>(Tags::key);
+            const auto has_tag = [](const auto& map) {
+                using M = std::remove_cvref_t<decltype(map)>;
+                return !map.empty() && map.find(typename M::key_type(Tags::key)) != map.end();
+            };
+            [&]<std::size_t... Ps>(std::index_sequence<Ps...>) {
+                if ((has_tag(pattern_field<Ps>(a)) || ...)) [[unlikely]]
+                    throw_pattern_key_conflict<A>(Tags::key);
+            }(std::make_index_sequence<pattern_count<A>>{});
+            if constexpr (has_extra_keys<A>)
+                if (has_tag(extra_keys_field(a))) [[unlikely]]
+                    throw_extra_key_conflict<A>(Tags::key);
         }
 
         // The map of a field F, of a map or of a `std::optional`, a `yyjson::nullable` or a `yyjson::indirect` of one,
@@ -18875,7 +19285,7 @@ namespace yyjson
         static void to_json(writer::object_ref& obj, const T& t, Ts... ts)
         {
             if constexpr (detail::has_adjacent_fields<T>) detail::check_adjacent_tags(t);
-            if constexpr (detail::has_extra_keys<T>)
+            if constexpr (detail::has_key_maps<T>)
             {
                 detail::check_extra_key_conflicts(t);
                 return emplace_with_extra_keys(obj, t, ts...);
@@ -18902,7 +19312,7 @@ namespace yyjson
             // The fields are moved one by one out of `t` itself.  `for_each_field` would move them into a
             // temporary first, and a field that the user's caster references would not outlive the call.
             if constexpr (detail::has_adjacent_fields<T>) detail::check_adjacent_tags(t);
-            if constexpr (detail::has_extra_keys<T>)
+            if constexpr (detail::has_key_maps<T>)
             {
                 detail::check_extra_key_conflicts(t);
                 return emplace_with_extra_keys(obj, std::move(t), ts...);
@@ -18925,15 +19335,25 @@ namespace yyjson
         }
 
     private:
-        // Writes the fields of `t` and then the members of its field of `yyjson::extra_keys`, in the order of the
-        // map.  The keys of a map moved from are copied, as `t` does not outlive the document.
+        // Writes the fields of `t`, then the members of its fields of `yyjson::pattern_properties` in the order of
+        // the members, and then those of its field of `yyjson::extra_keys`, each in the order of its map.  The keys
+        // of a map moved from are copied, as `t` does not outlive the document.
         template <typename U, typename... Ts>
         static void emplace_with_extra_keys(writer::object_ref& obj, U&& t, Ts... ts)
         {
-            constexpr bool moved = std::is_rvalue_reference_v<U&&>;
-            using M = detail::extra_keys_type<T>;
-            using R = std::conditional_t<moved, M&&, const M&>;
-            auto& map = detail::extra_keys_field(t);
+            const auto maps = detail::key_maps_of(t);
+            const auto emplace_map = [&](auto& emitter, auto& map) {
+                using M = std::remove_cvref_t<decltype(map)>;
+                using R = std::conditional_t<std::is_rvalue_reference_v<U&&>, M&&, const M&>;
+                for (auto&& kv : static_cast<R>(map))
+                {
+                    const auto key = std::string_view(std::get<0>(kv));
+                    if constexpr (std::is_rvalue_reference_v<U&&> && sizeof...(Ts) == 0)
+                        emitter.emplace_member(key, detail::forward_element<R>(std::get<1>(kv)), copy_string);
+                    else
+                        emitter.emplace_member(key, detail::forward_element<R>(std::get<1>(kv)), ts...);
+                }
+            };
             const auto emplace_fields = [&](auto& emitter) {
                 [&]<std::size_t... Is>(std::index_sequence<Is...>) {
                     (detail::emplace_struct_field<T, Is, detail::reflected_field_key<T, Is>::plain>(
@@ -18941,20 +19361,14 @@ namespace yyjson
                          detail::forward_field<Is>(std::forward<U>(t)), ts...),
                      ...);
                 }(detail::reflected_fields<T>{});
-                for (auto&& kv : static_cast<R>(map))
-                {
-                    const auto key = std::string_view(std::get<0>(kv));
-                    if constexpr (moved && sizeof...(Ts) == 0)
-                        emitter.emplace_member(key, detail::forward_element<R>(std::get<1>(kv)), copy_string);
-                    else
-                        emitter.emplace_member(key, detail::forward_element<R>(std::get<1>(kv)), ts...);
-                }
+                std::apply([&](auto&... map) { (emplace_map(emitter, map), ...); }, maps);
             };
+            const auto size =
+                std::apply([](const auto&... map) { return (std::size_t{0} + ... + std::ranges::size(map)); }, maps);
             if constexpr (detail::has_omitted_defaults<T>)
-                obj.assign_reflected_fields_max(detail::struct_member_capacity<T> + std::ranges::size(map),
-                                                emplace_fields);
+                obj.assign_reflected_fields_max(detail::struct_member_capacity<T> + size, emplace_fields);
             else
-                obj.assign_reflected_fields(detail::reflected_field_count(t) + std::ranges::size(map), emplace_fields);
+                obj.assign_reflected_fields(detail::reflected_field_count(t) + size, emplace_fields);
         }
     };
 
@@ -20919,7 +21333,7 @@ namespace yyjson
             std::visit(
                 [&val](const auto& v) {
                     if constexpr (detail::internally_tagged<std::variant<Ts...>> &&
-                                  detail::has_extra_keys<std::remove_cvref_t<decltype(v)>>)
+                                  detail::has_key_maps<std::remove_cvref_t<decltype(v)>>)
                         detail::check_extra_tag_key<detail::variant_tags<std::variant<Ts...>>>(v);
                     if constexpr (copy)
                         val = std::pair<decltype(v), copy_string_t>(v, copy_string);
@@ -20940,7 +21354,7 @@ namespace yyjson
             std::visit(
                 [&val](auto&& v) {
                     if constexpr (detail::internally_tagged<std::variant<Ts...>> &&
-                                  detail::has_extra_keys<std::remove_cvref_t<decltype(v)>>)
+                                  detail::has_key_maps<std::remove_cvref_t<decltype(v)>>)
                         detail::check_extra_tag_key<detail::variant_tags<std::variant<Ts...>>>(v);
                     if constexpr (copy)
                         val = std::pair<decltype(v), copy_string_t>(std::move(v), copy_string);
@@ -23802,18 +24216,20 @@ namespace yyjson
                 using U = std::remove_cvref_t<T>;
                 constexpr auto n = sizeof...(Is);
                 if constexpr (yyjson::detail::has_adjacent_fields<U>) yyjson::detail::check_adjacent_tags(t);
-                if constexpr (yyjson::detail::has_extra_keys<U>) yyjson::detail::check_extra_key_conflicts(t);
+                if constexpr (yyjson::detail::has_key_maps<U>) yyjson::detail::check_extra_key_conflicts(t);
                 if constexpr (n <= field_part_size)
                     write_field_part<Visitable>(first, std::forward<T>(t), fields);
                 else
                     write_field_parts<Visitable>(
                         first, std::forward<T>(t), fields,
                         std::make_index_sequence<(n + field_part_size - 1) / field_part_size>{});
-                if constexpr (yyjson::detail::has_extra_keys<U>)
-                    write_extra_keys(first, yyjson::detail::extra_keys_field(t), std::is_rvalue_reference<T&&>{});
+                if constexpr (yyjson::detail::has_key_maps<U>)
+                    std::apply(
+                        [&](auto&... map) { (write_extra_keys(first, map, std::is_rvalue_reference<T&&>{}), ...); },
+                        yyjson::detail::key_maps_of(t));
             }
-            // The members of the field of `yyjson::extra_keys`, after the fields, in the order of the map, moved
-            // from it if `Move`.
+            // The members of a field of `yyjson::pattern_properties` or of `yyjson::extra_keys`, after the fields,
+            // in the order of the map, moved from it if `Move`.
             template <typename M, bool Move>
             void write_extra_keys(bool& first, M& extra, std::bool_constant<Move>)
             {
@@ -23996,7 +24412,7 @@ namespace yyjson
                 std::visit(
                     [&]<typename A>(A&& a) {
                         using W = std::remove_cvref_t<A>;
-                        if constexpr (yyjson::detail::has_extra_keys<W>) yyjson::detail::check_extra_tag_key<tags>(a);
+                        if constexpr (yyjson::detail::has_key_maps<W>) yyjson::detail::check_extra_tag_key<tags>(a);
                         constexpr auto tagless_struct = [] {
                             if constexpr (to_json_inp_def<to_json_input_ref<A>, A> && !std::is_enum_v<W>)
                                 return !yyjson::detail::writes_member_of_key<W>(tags::key);
@@ -24515,50 +24931,164 @@ namespace yyjson
                 t);
         }
 
+        // Throws at `value`, the member of `key` of a patch, if `merged`, the value that it merged into, does not
+        // satisfy the keywords of the values of the field R of S that receives the keys of no field.
+        template <typename S, std::size_t R, typename E, typename Json>
+        void check_merged_value(const E& merged, std::string_view key, const Json& value)
+        {
+            namespace d = yyjson::detail;
+            if constexpr (d::extra_keys_schema<S, R>::node.properties != 0)
+            {
+                const auto violated = [&] {
+                    if constexpr (d::merged_map_value<E>())
+                        if (value.is_object())
+                            return d::extra_value_violation<S, R>(
+                                merged, d::merge_patch<std::remove_cvref_t<decltype(value)>>{&value});
+                    return d::extra_value_violation<S, R>(merged, &value);
+                }();
+                if (violated != d::constraint_kind::none) [[unlikely]]
+                    d::throw_extra_value_violation<S, R>(value, key, violated);
+            }
+        }
+
+        // Merges the member of `key` and `value` of a patch into `map`, the field R of S that receives the keys of
+        // no field, as `merge_map_from` merges it into a map, and checks it unless it is null.  Returns the merged
+        // value, or null for a key that null removes.
+        template <typename S, std::size_t R, typename M, typename Json>
+        typename M::mapped_type* merge_key_map_member(M& map, std::string_view key, const Json& value)
+        {
+            namespace d = yyjson::detail;
+            using E = typename M::mapped_type;
+            if (value.is_null())
+            {
+                if (const auto it = map.find(typename M::key_type(key)); it != map.end()) map.erase(it);
+                return nullptr;
+            }
+            d::check_extra_key<S, R>(key, value);
+            auto it = map.find(typename M::key_type(key));
+            if (it != map.end())
+                merge_from(it->second, value);
+            else if ((d::read_policies | d::struct_policies<E>) != 0)
+                it = map.try_emplace(typename M::key_type(key), d::cast_nested<E>(value)).first;
+            else
+            {
+                it = map.try_emplace(typename M::key_type(key)).first;
+                merge_from(it->second, value);
+            }
+            check_merged_value<S, R>(it->second, key, value);
+            return &it->second;
+        }
+
+        template <typename S, std::size_t R, typename E, typename Json>
+        CPPYYJSON_NOINLINE CPPYYJSON_COLD void check_merged_json(const ::yyjson::value& json, std::string_view key,
+                                                                 const Json& value)
+        {
+            namespace d = yyjson::detail;
+            const auto e = [&] {
+                try
+                {
+                    return d::cast_nested<E>(json);
+                }
+                catch (const bad_cast& x)
+                {
+                    d::throw_bad_cast_at(d::target_of(value), "{}", x.what());
+                }
+            }();
+            if (const auto kind = d::extra_value_violation<S, R>(e, &json); kind != d::constraint_kind::none)
+                [[unlikely]]
+                d::throw_extra_value_violation<S, R>(value, key, kind);
+        }
+        // Throws at `value`, the member of `key` of a patch, unless the field P of S annotated with
+        // `yyjson::pattern_properties` would take the key and `merged`, the value that the patch merged into.  A
+        // value of another type is read again from its JSON.
+        template <typename S, std::size_t P, typename F, typename Json>
+        void check_merged_pattern(const F& merged, std::string_view key, const Json& value)
+        {
+            namespace d = yyjson::detail;
+            constexpr auto r = d::pattern_field_indices<S>[P];
+            using E = typename d::pattern_type<S, P>::mapped_type;
+            d::check_extra_key<S, r>(key, value);
+            if constexpr (std::same_as<F, E>)
+                check_merged_value<S, r>(merged, key, value);
+            else if constexpr (d::dom_kind_of<E> != d::dom_kind::value ||
+                               d::extra_keys_schema<S, r>::node.properties != 0)
+                check_merged_json<S, r, E>(::yyjson::value(merged), key, value);
+        }
+        // As `check_merged_pattern` for each field of `mask`, a result of `pattern_mask`.
+        template <typename S, typename F, typename Json>
+        CPPYYJSON_NOINLINE void check_merged_patterns(std::uint64_t mask, const F& merged, std::string_view key,
+                                                      const Json& value)
+        {
+            [&]<std::size_t... Ps>(std::index_sequence<Ps...>) {
+                (
+                    [&] {
+                        if ((mask >> Ps & 1) != 0) check_merged_pattern<S, Ps>(merged, key, value);
+                    }(),
+                    ...);
+            }(std::make_index_sequence<yyjson::detail::pattern_count<S>>{});
+        }
+
+        // Merges the member `key` of the patch `obj` as `read_pattern_key` reads it, and removes the key from its
+        // map for null.  Each other matching pattern checks the merged value.  Returns false if nothing takes the
+        // key.
+        template <typename T, typename Val, typename Json>
+        bool merge_pattern_key(T& t, const Val* obj, std::string_view key, const Json& value, std::size_t& hint)
+        {
+            namespace d = yyjson::detail;
+            const auto& rules = d::struct_rules<T>;
+            if (const auto i = rules.find(key, hint); i < rules.size)
+            {
+                hint = i + 1;
+                if (const auto mask = d::key_patterns_of<T>().fields[i]; mask != 0 && !value.is_null()) [[unlikely]]
+                    d::call_at_index<d::struct_field_count<T>>(
+                        i, [&]<std::size_t K>(std::integral_constant<std::size_t, K>) {
+                            check_merged_patterns<T>(mask, struct_field<K>(t), key, value);
+                        });
+                return true;
+            }
+            if (const auto j = d::adjacent_tag_index(rules, key); j < rules.tag_count)
+            {
+                if (const auto mask = d::key_patterns_of<T>().tags[j]; mask != 0 && !value.is_null()) [[unlikely]]
+                    d::check_pattern_members<T>(mask, key, value);
+                return true;
+            }
+            if (d::internal_tag_key::contains(obj, key))
+            {
+                if (const auto mask = d::pattern_mask<T>(key); mask != 0 && !value.is_null()) [[unlikely]]
+                    d::check_pattern_members<T>(mask, key, value);
+                return true;
+            }
+            const auto p = d::first_pattern<T>(key);
+            if (p == d::pattern_count<T>) return false;
+            d::call_at_index<d::pattern_count<T>>(p, [&]<std::size_t P>(std::integral_constant<std::size_t, P>) {
+                if (const auto* merged =
+                        merge_key_map_member<T, d::pattern_field_indices<T>[P]>(d::pattern_field<P>(t), key, value))
+                    if (const auto mask = d::pattern_mask<T>(key, P + 1); mask != 0) [[unlikely]]
+                        check_merged_patterns<T>(mask, *merged, key, value);
+            });
+            return true;
+        }
+
         // Merges each member of `obj` whose key names no field and no tag of T into the field of
-        // `yyjson::extra_keys` of `t` as `merge_map_from` merges it into a map, and checks the members of the patch
-        // that are not null.
+        // `yyjson::pattern_properties` whose pattern matches it first, or else into the field of
+        // `yyjson::extra_keys`, and checks the members of the patch that are not null.
         template <typename T>
         CPPYYJSON_NOINLINE void merge_extra_keys(T& t, const const_object_ref& obj)
         {
             namespace d = yyjson::detail;
-            using M = d::extra_keys_type<T>;
-            using E = typename M::mapped_type;
-            auto& map = d::extra_keys_field(t);
             const auto* raw = writer::detail::json_value_access::get(obj);
             auto hint = std::size_t{0};
             for (auto&& [k, value] : obj)
             {
                 const auto key = std::string_view(k);
-                if (!d::extra_key_of<T>(raw, key, hint)) continue;
-                if (value.is_null())
+                if constexpr (d::has_pattern_fields<T>)
                 {
-                    if (const auto it = map.find(typename M::key_type(key)); it != map.end()) map.erase(it);
+                    if (merge_pattern_key(t, raw, key, value, hint)) continue;
+                }
+                else if (!d::extra_key_of<T>(raw, key, hint))
                     continue;
-                }
-                d::check_extra_key<T>(key, value);
-                auto it = map.find(typename M::key_type(key));
-                if (it != map.end())
-                    merge_from(it->second, value);
-                else if ((d::read_policies | d::struct_policies<E>) != 0)
-                    it = map.try_emplace(typename M::key_type(key), d::cast_nested<E>(value)).first;
-                else
-                {
-                    it = map.try_emplace(typename M::key_type(key)).first;
-                    merge_from(it->second, value);
-                }
-                if constexpr (d::extra_keys_schema<T>::node.properties != 0)
-                {
-                    const auto violated = [&] {
-                        if constexpr (d::merged_map_value<E>())
-                            if (value.is_object())
-                                return d::extra_value_violation<T>(
-                                    it->second, d::merge_patch<std::remove_cvref_t<decltype(value)>>{&value});
-                        return d::extra_value_violation<T>(it->second, &value);
-                    }();
-                    if (violated != d::constraint_kind::none) [[unlikely]]
-                        d::throw_extra_value_violation<T>(value, key, violated);
-                }
+                if constexpr (d::has_extra_keys<T>)
+                    merge_key_map_member<T, d::extra_keys_index<T>>(d::extra_keys_field(t), key, value);
             }
         }
 
@@ -24604,7 +25134,7 @@ namespace yyjson
                     if constexpr (yyjson::detail::constrained_field<T, I>)
                         yyjson::detail::check_field_constraints<T, I>(field, value);
                 });
-            if constexpr (yyjson::detail::has_extra_keys<T>) merge_extra_keys(t, obj);
+            if constexpr (yyjson::detail::has_key_maps<T>) merge_extra_keys(t, obj);
             if constexpr (yyjson::detail::has_adjacent_fields<T>)
                 yyjson::detail::check_adjacent_tags_without_values(t, obj);
             if constexpr (yyjson::detail::has_struct_conditions<T>)
@@ -25772,9 +26302,22 @@ namespace yyjson
                 else
                     return node<false, type_list<value_node<T, Loop>>>{};
             }
-            // The part of the field of `yyjson::extra_keys`, which is not among the reflected fields.
+            // The part of the fields of `yyjson::extra_keys` and of `yyjson::pattern_properties`, which are not
+            // among the reflected fields.
             template <typename T, bool Loop>
             static consteval auto extra_keys_part()
+            {
+                if constexpr (yyjson::detail::has_pattern_fields<T>)
+                    return []<std::size_t... Ps>(std::index_sequence<Ps...>) {
+                        return
+                            typename join<decltype(extra_keys_map_part<T, Loop>()),
+                                          decltype(field_part<yyjson::detail::pattern_type<T, Ps>, Loop>())...>::type{};
+                    }(std::make_index_sequence<yyjson::detail::pattern_count<T>>{});
+                else
+                    return extra_keys_map_part<T, Loop>();
+            }
+            template <typename T, bool Loop>
+            static consteval auto extra_keys_map_part()
             {
                 if constexpr (yyjson::detail::has_extra_keys<T>)
                     return field_part<yyjson::detail::extra_keys_type<T>, Loop>();
@@ -29774,10 +30317,10 @@ namespace yyjson
                 auto seen = std::bitset<n>();
                 auto adjacent = adjacent_fields_of<T>{cur_};
                 [[maybe_unused]] auto keys = yyjson::detail::condition_keys<T>();
-                if constexpr (yyjson::detail::has_extra_keys<T>)
+                if constexpr (yyjson::detail::has_key_maps<T>)
                 {
                     auto defaults = T();
-                    yyjson::detail::extra_keys_field(t) = std::move(yyjson::detail::extra_keys_field(defaults));
+                    yyjson::detail::key_maps_of(t) = std::move(yyjson::detail::key_maps_of(defaults));
                 }
                 auto assign =
                     [&](std::size_t index) CPPYYJSON_LAMBDA_ALWAYS_INLINE {
@@ -29792,9 +30335,9 @@ namespace yyjson
                                                             });
                                                         });
                     };
-                if constexpr (yyjson::detail::has_extra_keys<T>)
+                if constexpr (yyjson::detail::has_key_maps<T>)
                 {
-                    auto extra = extra_members<T>{&yyjson::detail::extra_keys_field(t)};
+                    auto extra = extra_members<T>{&t};
                     read_fields<T, false>(struct_key_matcher<T>(), std::move(assign), keys, extra);
                 }
                 else
@@ -29973,9 +30516,9 @@ namespace yyjson
                                                                   [&](auto&) { merge_field<I>(t, defaults); });
                             });
                     };
-                if constexpr (yyjson::detail::has_extra_keys<T>)
+                if constexpr (yyjson::detail::has_key_maps<T>)
                 {
-                    auto extra = extra_members<T>{&yyjson::detail::extra_keys_field(t)};
+                    auto extra = extra_members<T>{&t};
                     read_fields<T, true>(struct_key_matcher<T>(), std::move(assign), keys, extra);
                 }
                 else
@@ -30770,10 +31313,10 @@ namespace yyjson
                 return false;
             }
 
-            // Checks the keys of the object at `open` read into the struct of `rules` under `policies`, as
-            // `check_struct_keys` checks those of a document.  `merge` leaves out any key, but fails at null for a
-            // field that may not be absent.  If `Open`, the field of `yyjson::extra_keys` takes the unknown keys.
-            template <bool Closed, bool Open = false>
+            // Checks the keys of the object at `open` as `check_struct_keys` checks those of a document.  `merge`
+            // leaves out any key, but fails at null for a field that may not be absent.  `Open` (`extra_keys`) and
+            // the patterns of a non-void `Match` take the keys that no field names.
+            template <bool Closed, bool Open = false, typename Match = void>
             CPPYYJSON_NOINLINE CPPYYJSON_COLD void check_object_keys(const char* open,
                                                                      const yyjson::detail::struct_key_rules& rules,
                                                                      std::uint8_t policies, bool merge)
@@ -30797,7 +31340,8 @@ namespace yyjson
                             !rules.may_be_absent(i))
                             fail();
                     }
-                    else if (Open || rules.is_adjacent_tag(key) || is_internal_tag(open, key))
+                    else if (Open || rules.is_adjacent_tag(key) || is_internal_tag(open, key) ||
+                             yyjson::detail::key_matches<Match>(key))
                     {
                         if ((policies & yyjson::detail::duplicates_policy) != 0)
                         {
@@ -30849,13 +31393,13 @@ namespace yyjson
 
             // Checks the object at `open` read into the struct of `rules` under the key policies, with `hint` the
             // field after the last key, or -1 if a key was out of the order of the fields.
-            template <bool Closed, bool Open = false>
+            template <bool Closed, bool Open = false, typename Match = void>
             CPPYYJSON_NOINLINE CPPYYJSON_COLD void check_fields_after(const char* open, std::size_t hint,
                                                                       const yyjson::detail::struct_key_rules& rules,
                                                                       bool merge)
             {
                 if (hint == std::size_t(-1))
-                    check_object_keys<Closed, Open>(
+                    check_object_keys<Closed, Open, Match>(
                         open, rules,
                         static_cast<std::uint8_t>((policies_ | rules.policies) & yyjson::detail::key_policies), merge);
                 else if (!merge)
@@ -31013,12 +31557,12 @@ namespace yyjson
                 }
             }
 
-            // The field of `yyjson::extra_keys` of the struct T, which `read_fields` gives each member whose key
-            // names no field and no tag of T.
+            // The struct T whose fields of `yyjson::extra_keys` and of `yyjson::pattern_properties` `read_fields`
+            // gives each member whose key names no field and no tag of T.
             template <typename T>
             struct extra_members
             {
-                yyjson::detail::extra_keys_type<T>* map;
+                T* owner;
 
                 template <bool Merge, std::size_t N>
                 CPPYYJSON_ALWAYS_INLINE void add(std::size_t, char) const noexcept
@@ -31026,19 +31570,17 @@ namespace yyjson
                 }
             };
 
-            // Reads the member at `cur_`, whose key at `key_at` names no field of T, into the map of the
-            // `extra_members` among `tally...`, as `read_extra_keys` and `merge_extra_keys` do for a document.  A
-            // read without that map, or whose values need the input for their keywords, is left to the document.
+            // Reads the member at `cur_`, whose key at `key_at` names no field of T, into the `extra_members` field
+            // among `tally...` that takes it.  It leaves to the document a read without such fields, a tag that a
+            // pattern matches, and a value that a pattern of another type must check.
             template <typename T, bool Merge, typename... Tally>
             CPPYYJSON_NOINLINE void read_extra_member(const char* key_at, const char* open, Tally&... tally)
             {
                 namespace d = yyjson::detail;
-                using M = d::extra_keys_type<T>;
-                using E = typename M::mapped_type;
-                M* map = nullptr;
+                T* owner = nullptr;
                 (
                     [&] {
-                        if constexpr (std::same_as<Tally, extra_members<T>>) map = tally.map;
+                        if constexpr (std::same_as<Tally, extra_members<T>>) owner = tally.owner;
                     }(),
                     ...);
                 const auto key = [&] {
@@ -31046,41 +31588,110 @@ namespace yyjson
                     cur_ = key_at;
                     return std::string(read_string(scratch_));
                 }();
-                if (d::struct_rules<T>.is_adjacent_tag(key) || is_internal_tag(open, key))
+                const auto& rules = d::struct_rules<T>;
+                if (const auto j = d::adjacent_tag_index(rules, key); j < rules.tag_count)
                 {
+                    if constexpr (d::has_pattern_fields<T>)
+                        if (d::key_patterns_of<T>().tags[j] != 0) fail();
                     skip_value();
                     return;
                 }
-                if constexpr (d::extra_values_count_input<T>()) fail();
-                if (map == nullptr) fail();
+                if (is_internal_tag(open, key))
+                {
+                    if constexpr (d::has_pattern_fields<T>)
+                        if (d::pattern_mask<T>(key) != 0) fail();
+                    skip_value();
+                    return;
+                }
+                if constexpr (d::has_pattern_fields<T>)
+                {
+                    if (const auto p = d::first_pattern<T>(key); p != d::pattern_count<T>)
+                    {
+                        if (owner == nullptr) fail();
+                        d::call_at_index<d::pattern_count<T>>(
+                            p, [&]<std::size_t P>(std::integral_constant<std::size_t, P>) {
+                                read_key_map_member<T, d::pattern_field_indices<T>[P], Merge>(
+                                    d::pattern_field<P>(*owner), key, P + 1);
+                            });
+                        return;
+                    }
+                }
+                if constexpr (d::has_extra_keys<T>)
+                {
+                    if (owner == nullptr) fail();
+                    read_key_map_member<T, d::extra_keys_index<T>, Merge>(d::extra_keys_field(*owner), key,
+                                                                          d::pattern_count<T>);
+                }
+                else
+                    skip_value();
+            }
+
+            // Reads the member at `cur_` of the key `key` into `map`, the field R of T that receives the keys of no
+            // field.  The patterns of T from `from` on that match the key check its value.
+            template <typename T, std::size_t R, bool Merge, typename M>
+            void read_key_map_member(M& map, const std::string& key, std::size_t from)
+            {
+                namespace d = yyjson::detail;
+                using E = typename M::mapped_type;
+                if constexpr (d::extra_values_count_input<T, R>()) fail();
                 if constexpr (Merge)
                 {
                     if (*cur_ == 'n')
                     {
                         read_literal("null");
-                        if (const auto it = map->find(typename M::key_type(key)); it != map->end()) map->erase(it);
+                        if (const auto it = map.find(typename M::key_type(key)); it != map.end()) map.erase(it);
                         return;
                     }
                 }
-                if (d::extra_key_violation<T>(key) != d::constraint_kind::none) fail();
+                if (d::extra_key_violation<T, R>(key) != d::constraint_kind::none) fail();
                 if constexpr (Merge)
                 {
-                    auto it = map->find(typename M::key_type(key));
-                    if (it == map->end())
+                    auto it = map.find(typename M::key_type(key));
+                    if (it == map.end())
                     {
                         // under a read policy the document reads a new value whole
                         if ((policies_ | d::struct_policies<E>) != 0) fail();
-                        it = map->try_emplace(typename M::key_type(key)).first;
+                        it = map.try_emplace(typename M::key_type(key)).first;
                     }
                     merge_value(it->second);
-                    if (d::extra_value_violation<T>(it->second) != d::constraint_kind::none) fail();
+                    if (d::extra_value_violation<T, R>(it->second) != d::constraint_kind::none) fail();
+                    check_later_patterns<T>(key, it->second, from);
                 }
                 else
                 {
                     auto e = read_value<E>();
-                    if (d::extra_value_violation<T>(e) != d::constraint_kind::none) fail();
-                    map->insert_or_assign(typename M::key_type(key), std::move(e));
+                    if (d::extra_value_violation<T, R>(e) != d::constraint_kind::none) fail();
+                    check_later_patterns<T>(key, e, from);
+                    map.insert_or_assign(typename M::key_type(key), std::move(e));
                 }
+            }
+
+            // Fails unless each pattern of T from `from` on that matches `key` takes the key and `e`, its value.
+            // A pattern of another value type is left to the document.
+            template <typename T, typename E>
+            void check_later_patterns(std::string_view key, const E& e, std::size_t from)
+            {
+                namespace d = yyjson::detail;
+                if constexpr (d::has_pattern_fields<T>)
+                {
+                    if (from >= d::pattern_count<T>) return;
+                    if (const auto mask = d::pattern_mask<T>(key, from); mask != 0) [[unlikely]]
+                        [&]<std::size_t... Ps>(std::index_sequence<Ps...>) {
+                            if (!((((mask >> Ps & 1) == 0) || pattern_takes_value<T, Ps>(key, e)) && ...)) fail();
+                        }(std::make_index_sequence<d::pattern_count<T>>{});
+                }
+            }
+            template <typename T, std::size_t P, typename E>
+            static bool pattern_takes_value(std::string_view key, const E& e)
+            {
+                namespace d = yyjson::detail;
+                constexpr auto r = d::pattern_field_indices<T>[P];
+                if constexpr (!std::same_as<E, typename d::pattern_type<T, P>::mapped_type> ||
+                              d::extra_values_count_input<T, r>())
+                    return false;
+                else
+                    return d::extra_key_violation<T, r>(key) == d::constraint_kind::none &&
+                           d::extra_value_violation<T, r>(e) == d::constraint_kind::none;
             }
 
             // What `read_fields` keeps of the members of an object of the struct T for the keywords of T on the
@@ -31159,10 +31770,14 @@ namespace yyjson
                     (tally.template add<Merge, N>(index, *cur_), ...);
                     if (index < N)
                     {
+                        // a pattern that matches the key of a field checks its value in the document
+                        if constexpr (yyjson::detail::has_pattern_fields<T>)
+                            if (yyjson::detail::key_patterns_of<T>().fields[index] != 0) [[unlikely]]
+                                fail();
                         assign(index);
                         hint = index + 1;
                     }
-                    else if constexpr (yyjson::detail::has_extra_keys<T>)
+                    else if constexpr (yyjson::detail::has_key_maps<T>)
                         read_extra_member<T, Merge>(key_at, open, tally...);
                     else
                         skip_value();
@@ -31171,7 +31786,7 @@ namespace yyjson
                 constexpr bool closed = yyjson::detail::struct_closed<T>;
                 if (closed || key_policies_of<T>() != 0 || (!Merge && yyjson::detail::has_required_fields<T>))
                     [[unlikely]]
-                    check_fields_after<closed, yyjson::detail::has_extra_keys<T>>(
+                    check_fields_after<closed, yyjson::detail::has_extra_keys<T>, yyjson::detail::key_matcher_of<T>>(
                         open, irregular || Merge ? std::size_t(-1) : hint, yyjson::detail::struct_rules<T>, Merge);
             }
 
@@ -31336,9 +31951,9 @@ namespace yyjson
                         if constexpr (yyjson::detail::has_struct_conditions<T>) adjacent.template note<K>(cur_);
                         read_struct_field<T, K>(t, adjacent, adjacent, read);
                     };
-                if constexpr (yyjson::detail::has_extra_keys<T>)
+                if constexpr (yyjson::detail::has_key_maps<T>)
                 {
-                    auto extra = extra_members<T>{&yyjson::detail::extra_keys_field(t)};
+                    auto extra = extra_members<T>{&t};
                     if constexpr (yyjson::detail::struct_conditions_object<T>)
                         read_struct_fields<yyjson::detail::reflected_key_matcher<T>, T>(
                             read_one, static_cast<yyjson::detail::condition_keys<T>&>(adjacent), extra);

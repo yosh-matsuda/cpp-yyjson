@@ -348,6 +348,8 @@ namespace as_array_rules
     static_assert(table_error(yyjson::dependent_required("a", {"b"}), as_array) == as_array_object_keyword);
     static_assert(table_error(as_array, field("e", yyjson::extra_keys)) == as_array_object_keyword);
     static_assert(table_error(field("e", yyjson::extra_keys), as_array) == as_array_object_keyword);
+    static_assert(table_error(as_array, field("e", yyjson::pattern_properties("^a"))) == as_array_object_keyword);
+    static_assert(table_error(field("e", yyjson::pattern_properties("^a")), as_array) == as_array_object_keyword);
     static_assert(table_error(items(false)) == items_without_as_array);
     static_assert(table_error(as_array, items(false), items(false)) == items_twice);
     static_assert(table_error(field("e", extra_items)) == extra_items_without_as_array);

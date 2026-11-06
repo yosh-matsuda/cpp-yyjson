@@ -30,7 +30,7 @@ A struct that is read:
 
 A field with [`yyjson::required`](conversions.md#default-values-and-required-keys) makes the read reject a missing key. A field with `yyjson::default_from<f>` gets the value of `f()` instead of its value in `T()`.
 
-To reject such keys, give the read the [read policies](#read-policies) `yyjson::reject_unknown_keys` and `yyjson::reject_missing_keys`, or make the struct [closed](#closed-structs). To keep the unknown keys, give the struct a field of [`yyjson::extra_keys`](#keys-that-no-field-names).
+To reject such keys, give the read the [read policies](#read-policies) `yyjson::reject_unknown_keys` and `yyjson::reject_missing_keys`, or make the struct [closed](#closed-structs). To keep the unknown keys, give the struct a field of [`yyjson::extra_keys`](#keys-that-no-field-names). A field of [`yyjson::pattern_properties`](#keys-that-a-pattern-matches) keeps the keys that a pattern matches.
 
 ### Closed structs
 
@@ -58,11 +58,12 @@ yyjson::read<Request>(R"({"method":"get","verbose":true})");
 *   The setting applies only to the objects read into that struct. It does not apply to the types of its fields. A field can close the struct that it holds, as in [Keywords of an object at a field](#keywords-of-an-object-at-a-field).
 *   A write is not changed. A struct writes only its fields and its tags.
 *   A struct with [`yyjson::transparent`](conversions.md#a-struct-as-the-value-of-its-field) or [`yyjson::as_array`](conversions.md#a-struct-as-a-json-array) takes no `yyjson::additional_properties(false)`. A struct with `yyjson::as_array` takes `yyjson::items(false)` instead.
-*   `yyjson::additional_properties` with the constraints of a value applies to a map field, as in [Constraints of elements](#constraints-of-elements), and to the field of [`yyjson::extra_keys`](#keys-that-no-field-names). On a struct, it is a compile error.
+*   A closed struct accepts the keys that a field of [`yyjson::pattern_properties`](#keys-that-a-pattern-matches) receives.
+*   `yyjson::additional_properties` with the constraints of a value applies to a map field, as in [Constraints of elements](#constraints-of-elements). It also applies to the field of [`yyjson::extra_keys`](#keys-that-no-field-names) and to a field of [`yyjson::pattern_properties`](#keys-that-a-pattern-matches). On a struct, it is a compile error.
 
 ### Keys that no field names
 
-The setting `yyjson::extra_keys` of a field makes the field receive each key that no field and no tag of the struct names. It is the keyword `additionalProperties` with a schema of JSON Schema. The field is a map that is written as a JSON object, such as `std::map<std::string, int>`. It takes `yyjson::additional_properties(s...)` for its values and `yyjson::property_names(s...)` for its keys:
+The setting `yyjson::extra_keys` of a field makes the field receive each key that no field and no tag of the struct names, and that no [pattern](#keys-that-a-pattern-matches) matches. It is the keyword `additionalProperties` with a schema of JSON Schema. The field is a map that is written as a JSON object, such as `std::map<std::string, int>`. It takes `yyjson::additional_properties(s...)` for its values and `yyjson::property_names(s...)` for its keys:
 
 ```cpp
 struct Item
@@ -94,6 +95,44 @@ yyjson::read<Item>(R"({"name":"pen","red":-1})");
 *   A write puts the members of the map after the fields and the tags, in the order of the map. An empty map writes no member. A write does not check the values of the map.
 *   When the map has the key of a field or of a tag of the struct, a write throws `std::invalid_argument`. This applies also to a field that the write leaves out, such as an empty `std::optional`. The message is `the field of yyjson::extra_keys of Item has the key "name", which Item writes for a field or a tag`.
 *   These are compile errors: `yyjson::extra_keys` on two fields, another setting on the field, `yyjson::extra_keys` in a closed struct, and in a struct with [`yyjson::transparent`](conversions.md#a-struct-as-the-value-of-its-field) or [`yyjson::as_array`](conversions.md#a-struct-as-a-json-array). So is a [condition](#conditions-between-fields) that names the field. A struct that `VISITABLE_STRUCT` registers cannot take `yyjson::extra_keys`.
+
+### Keys that a pattern matches
+
+The setting `yyjson::pattern_properties("regex")` of a field makes the field receive the keys that the pattern matches. It is the keyword `patternProperties` of JSON Schema. The field is a map, as for [`yyjson::extra_keys`](#keys-that-no-field-names). It takes `yyjson::additional_properties(s...)` for its values and `yyjson::property_names(s...)` for its keys. The patterns use the engine of the [pattern matcher](#pattern-matcher):
+
+```cpp
+struct Sensor
+{
+    std::string name;
+    std::map<std::string, double> temperatures;
+    std::map<std::string, std::string> labels;
+};
+
+template <>
+inline constexpr auto yyjson::annotations<Sensor> = yyjson::annotate(
+    yyjson::field("temperatures", yyjson::pattern_properties("^t_"), yyjson::additional_properties(yyjson::minimum(-50))),
+    yyjson::field("labels", yyjson::pattern_properties("^l_")));
+
+auto sensor = yyjson::read<Sensor>(R"({"name":"s1","t_in":21.5,"l_room":"lab","x":1})");
+// -> Sensor{"s1", {{"t_in", 21.5}}, {{"l_room", "lab"}}}
+auto json = yyjson::write(sensor);
+// -> {"name":"s1","t_in":21.5,"l_room":"lab"}
+yyjson::read<Sensor>(R"({"name":"s1","t_out":-60})");
+// throws: the value of the key "t_out" of Sensor is less than the minimum -50 at /t_out (line 1, column 22, pos 21)
+```
+
+*   A key that no field and no tag names goes into the map of the first field whose pattern matches it. The fields are in the order of the members. The field of `yyjson::extra_keys` receives a key that no pattern matches. Without that field, the key is unknown.
+*   Each pattern that matches a key checks it, as in JSON Schema. A later pattern checks the value of the key, and its `yyjson::property_names` checks the key. The key does not go into its map.
+*   A pattern can match the key of a field or of a tag. The field reads the value, and the pattern checks the value too. When the value is `null` and the field reads it as missing, no pattern checks it.
+*   The patterns that match the key of each field are found once for each type. A read matches only the other keys.
+*   A `null` in the object is a value of the map, as for `yyjson::extra_keys`. A map of `int` rejects it.
+*   `merge_into` checks only the members of the patch. A member with `null` removes its key from the map that has it. Another member merges into the map of the first pattern. Each other pattern that matches the key checks the merged value.
+*   A [closed struct](#closed-structs) and the read policy `yyjson::reject_unknown_keys` accept the keys that a pattern matches. `yyjson::reject_duplicates` rejects a key that the object gives twice.
+*   `yyjson::min_properties`, `yyjson::max_properties` and `yyjson::property_names` of the struct count and check the keys of the maps. `yyjson::additional_properties(false)` in a [condition](#keywords-of-an-object-in-the-conditions) rejects them, because the condition gives no pattern.
+*   A write puts the members of the maps after the fields and the tags. It writes the maps in the order of the members, and each map in its own order. The map of `yyjson::extra_keys` comes last. A write does not check the keys and the values of the maps.
+*   When a map has the key of a field or of a tag, a write throws `std::invalid_argument`. The message is `a field of yyjson::pattern_properties of Sensor has the key "name", which Sensor writes for a field or a tag`.
+*   A write also throws `std::invalid_argument` when two maps have the same member name. The message is `the fields of yyjson::pattern_properties of Sensor have the key "t_in" more than once`. When the map of `yyjson::extra_keys` is one of the two, the message starts with `the fields of yyjson::pattern_properties and yyjson::extra_keys of`.
+*   These are compile errors: another setting on the field, `yyjson::pattern_properties` twice on one field, and more than 64 fields of `yyjson::pattern_properties` in a struct. So are the setting in a struct with `yyjson::transparent` or `yyjson::as_array`, and a [condition](#conditions-between-fields) that names the field. A struct that `VISITABLE_STRUCT` registers cannot take `yyjson::pattern_properties`. Without a specialization of `yyjson::pattern_matcher<>`, a read is a compile error.
 
 ### The number of members of a struct
 
@@ -731,7 +770,7 @@ A field without constraints reads as it does without this feature. A constraint 
 
 ### Pattern matcher
 
-`yyjson::pattern` matches a string with a regular expression engine that the program gives. The library has no engine. Specialize `yyjson::pattern_matcher<>` before the first read of a struct that has a pattern. The specialization needs:
+`yyjson::pattern` matches a string with a regular expression engine that the program gives. [`yyjson::pattern_properties`](#keys-that-a-pattern-matches) matches the names of the members with the same engine. The library has no engine. Specialize `yyjson::pattern_matcher<>` before the first read of a struct that has a pattern. The specialization needs:
 
 *   A constructor from the `std::string_view` of the pattern. The string is in static storage, and the matcher can keep it.
 *   A `const` call operator. It takes the `std::string_view` of a string, and returns whether the pattern matches somewhere in it, as `pattern` of JSON Schema does.
@@ -850,6 +889,7 @@ The tables below list the keywords of [JSON Schema 2020-12](https://json-schema.
 | `required` | `yyjson::required`, or `yyjson::reject_missing_keys` for every field | without them, a field whose key is missing keeps its value in `T()`. |
 | `additionalProperties: false` | `yyjson::additional_properties(false)` on a struct, in its conditions or at a struct position, or the read policy `yyjson::reject_unknown_keys` | without them, a struct ignores a key that names no field. |
 | `additionalProperties` with a schema | `yyjson::additional_properties(settings...)` on a map, or a field of [`yyjson::extra_keys`](#keys-that-no-field-names) with it | without `yyjson::extra_keys`, a struct ignores a key that names no field. |
+| `patternProperties` | a field of [`yyjson::pattern_properties("regex")`](#keys-that-a-pattern-matches), with `yyjson::additional_properties(settings...)` and `yyjson::property_names(settings...)` | the engine of the patterns is the [pattern matcher](#pattern-matcher). A write does not check that a key of a map matches its pattern. |
 | `propertyNames` | `yyjson::property_names(settings...)` on a struct, in its conditions, at a struct position or on a map | none. |
 | `minProperties`, `maxProperties` | `yyjson::min_properties(n)`, `yyjson::max_properties(n)` on a struct, in its conditions, at a struct position or on a map | none. |
 | `dependentRequired` | `yyjson::dependent_required("key", {"keys"...})` on a struct, in its conditions or at a struct position | none. |
