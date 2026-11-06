@@ -246,6 +246,16 @@ struct UniqueTails
 template <>
 inline constexpr auto yyjson::annotations<UniqueTails> =
     yyjson::annotate(yyjson::field("t", yyjson::unique_items), yyjson::field("u", yyjson::items(yyjson::unique_items)));
+// a condition of a struct on the count of the elements of a field read as an array
+struct PointGate
+{
+    Point p;
+    int k = 0;
+    bool operator==(const PointGate&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<PointGate> = yyjson::annotate(yyjson::if_then_else(
+    yyjson::if_(yyjson::field("p", yyjson::min_items(3))), yyjson::then(yyjson::field("k", yyjson::required))));
 // a std::optional before a position that the write always writes, which no array can leave out
 struct EarlyOptional
 {
@@ -709,9 +719,9 @@ TEST(AsArray, FieldArrayKeywords)
     // the keywords of a field count the elements of the JSON array, and a missing position is no element
     auto panel = Panel();
     panel.e = {1, "a"};
-    expect_read<Panel>(R"({"e":[1,"a"]})", panel, false, false);
+    expect_read<Panel>(R"({"e":[1,"a"]})", panel, false);
     panel.o = Point{3, 0};
-    expect_read<Panel>(R"({"e":[1,"a"],"o":[3]})", panel, false, false);
+    expect_read<Panel>(R"({"e":[1,"a"],"o":[3]})", panel, false);
     expect_rejected<Panel>(R"({"e":[1,"a",3]})",
                            "the value of the key \"e\" of Panel has more items than the maximum 2", "/e");
     expect_rejected<Panel>(R"({"o":[3,4]})", "the value of the key \"o\" of Panel has more items than the maximum 1",
@@ -720,7 +730,7 @@ TEST(AsArray, FieldArrayKeywords)
     panel = Panel();
     panel.v = {{1, 2}};
     panel.m = {{"k", {5, 0}}};
-    expect_read<Panel>(R"({"v":[[1,2,3]],"m":{"k":[5]}})", panel, false, false);
+    expect_read<Panel>(R"({"v":[[1,2,3]],"m":{"k":[5]}})", panel, false);
     expect_rejected<Panel>(R"({"v":[[1,2],[1]]})",
                            "an element of the value of the key \"v\" of Panel has fewer items than the minimum 2",
                            "/v/1");
@@ -730,20 +740,33 @@ TEST(AsArray, FieldArrayKeywords)
     // the keywords that check the elements, on an alternative of a variant
     panel = Panel();
     panel.w = Ranks{5, 6, {}};
-    expect_read<Panel>(R"({"w":[5,6]})", panel, false, false);
+    expect_read<Panel>(R"({"w":[5,6]})", panel, false);
     panel.w = Ranks{5, 7, {}};
-    expect_read<Panel>(R"({"w":[5,7]})", panel, false, false);
+    expect_read<Panel>(R"({"w":[5,7]})", panel, false);
     expect_rejected<Panel>(R"({"w":[5,6,1]})", "the value of the key \"w\" of Panel has more than 2 items that satisfy",
                            "/w");
     expect_rejected<Panel>(R"({"w":[7,8]})", "the value of the key \"w\" of Panel has no item that satisfies", "/w");
     expect_rejected<Panel>(R"({"w":[5,6,7,1]})", "the value of the key \"w\" of Panel has more", "/w");
-    expect_read<UniqueTails>(R"({"t":[1,2],"u":[[3,4]]})", {{1, {2}}, {{3, {4}}}}, true, false);
+    expect_read<UniqueTails>(R"({"t":[1,2],"u":[[3,4]]})", {{1, {2}}, {{3, {4}}}});
     expect_rejected<UniqueTails>(
         R"({"t":[1,2,1]})", "an element of the value of the key \"t\" of UniqueTails is equal to an earlier element",
         "/t/2");
     expect_rejected<UniqueTails>(
         R"({"u":[[3,4,4]]})", "an element of the value of the key \"u\" of UniqueTails is equal to an earlier element",
         "/u/0/2");
+}
+
+TEST(AsArray, FieldArrayConditions)
+{
+    // a condition counts the elements of the JSON array, which `read_into` and `merge_into` read too
+    expect_read<PointGate>(R"({"p":[1,2]})", {{1, 2}, 0}, false);
+    expect_read<PointGate>(R"({"p":[1,2,3],"k":1})", {{1, 2}, 1});
+    const auto missing = R"(PointGate is not constructible from JSON without the key "k")";
+    expect_rejected<PointGate>(R"({"p":[1,2,3]})", missing, "");
+    auto gate = PointGate{{1, 2}, 4};
+    yyjson::merge_into(R"({"p":[3,4,5],"k":2})", gate);
+    EXPECT_EQ(gate, (PointGate{{3, 4}, 2}));
+    EXPECT_THROW(yyjson::merge_into(R"({"p":[3,4,5]})", gate), yyjson::bad_cast);
 }
 
 TEST(AsArray, Visitable)

@@ -596,6 +596,37 @@ inline constexpr auto yyjson::annotations<ElementLiterals> = yyjson::annotate(
     yyjson::field("days", yyjson::items(yyjson::format_assertion("date"))));
 
 bool is_short(const std::string& s) { return s.size() < 3; }
+// maps in holders and maps of maps, whose keywords merge_into checks on the members of the patch
+using Limits = std::map<std::string, int>;
+struct HeldLimits
+{
+    std::shared_ptr<Limits> pointer = {};
+    yyjson::nullable<Limits> held = {};
+    yyjson::indirect<Limits> boxed;
+    std::map<std::string, Limits> nested = {};
+    bool operator==(const HeldLimits&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<HeldLimits> = yyjson::annotate(
+    yyjson::field("pointer", yyjson::max_properties(1), yyjson::additional_properties(yyjson::maximum(100))),
+    yyjson::field("held", yyjson::max_properties(1), yyjson::additional_properties(yyjson::maximum(100))),
+    yyjson::field("boxed", yyjson::max_properties(1), yyjson::additional_properties(yyjson::maximum(100))),
+    yyjson::field(
+        "nested", yyjson::max_properties(1),
+        yyjson::additional_properties(yyjson::max_properties(1), yyjson::additional_properties(yyjson::maximum(100)))));
+
+// maps of sets, whose values a patch with a repeated key merges and erases
+struct RepeatedSets
+{
+    std::map<std::string, std::set<int>> m = {};
+    std::map<std::string, int> n = {};
+    bool operator==(const RepeatedSets&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<RepeatedSets> =
+    yyjson::annotate(yyjson::field("m", yyjson::additional_properties(yyjson::max_items(1))),
+                     yyjson::field("n", yyjson::max_properties(2), yyjson::additional_properties(yyjson::maximum(10))));
+
 struct Keyed
 {
     std::map<std::string, int> m = {};
@@ -627,6 +658,32 @@ inline constexpr auto yyjson::annotations<Containing> = yyjson::annotate(
     yyjson::field("none", yyjson::contains(yyjson::minimum(10)), yyjson::min_contains(0), yyjson::max_contains(1)),
     yyjson::field("rows", yyjson::contains(yyjson::contains(yyjson::minimum(5)))),
     yyjson::field("pair", yyjson::contains(yyjson::const_(2))));
+
+// the count keywords count the JSON value, also the elements that a set drops and the members that a map drops
+struct InputCounted
+{
+    std::set<int> s = {};
+    std::map<std::string, int> m = {};
+    std::vector<int> v = {};
+    std::unordered_set<int> c = {};
+    bool operator==(const InputCounted&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<InputCounted> =
+    yyjson::annotate(yyjson::field("s", yyjson::min_items(2), yyjson::max_items(2)),
+                     yyjson::field("m", yyjson::min_properties(2), yyjson::max_properties(2)),
+                     yyjson::field("v", yyjson::min_items(2), yyjson::max_items(2)),
+                     yyjson::field("c", yyjson::contains(yyjson::minimum(5)), yyjson::min_contains(2)));
+// a condition of a struct on the count of the elements of a set
+struct CountGate
+{
+    std::set<int> s = {};
+    int k = 0;
+    bool operator==(const CountGate&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<CountGate> = yyjson::annotate(yyjson::if_then_else(
+    yyjson::if_(yyjson::field("s", yyjson::min_items(2))), yyjson::then(yyjson::field("k", yyjson::required))));
 
 // the counts of yyjson::contains that are 0, null elements and a std::optional range
 struct Counted
@@ -2092,14 +2149,33 @@ TEST(Constraints, ElementNullables)
 
 TEST(Constraints, ElementsMerge)
 {
-    // a value that the map keeps is not in the JSON, which leaves the error at the map
+    // the keywords of a map check the members of the patch, not the values that the map keeps
     auto t = Elements();
     t.limits = {{"old", 200}};
-    const auto e = bad_cast_of([&] { yyjson::merge_into(R"({"limits":{"a":1}})", t); });
-    EXPECT_TRUE(message_of(e).starts_with(R"(the value of the key "limits" of Elements has a value that does not )"
-                                          R"(satisfy the constraints of yyjson::additional_properties)"))
-        << e.what();
-    EXPECT_EQ(e.path(), "/limits");
+    EXPECT_TRUE(expect_merge_into(t, R"({"limits":{"a":1}})").find(R"("limits":{"a":1,"old":200})") !=
+                std::string::npos);
+    const auto limits = [](std::string_view text) {
+        return std::format(R"(the value of the key "limits" of Elements {})", text);
+    };
+    const auto expect_merge_rejected = [](Elements value, std::string_view json, std::string_view message,
+                                          std::string_view path) {
+        const auto e = bad_cast_of([&] { yyjson::merge_into(json, value); });
+        EXPECT_TRUE(message_of(e).starts_with(message)) << json << "\n" << e.what();
+        EXPECT_EQ(e.path(), path) << json;
+    };
+    expect_merge_rejected(t, R"({"limits":{"a":101}})",
+                          R"(an element of the value of the key "limits" of Elements is greater than the maximum 100)",
+                          "/limits/a");
+    // yyjson::max_properties counts the members of the patch without null
+    t.limits = {{"a", 1}, {"b", 2}, {"c", 3}};
+    auto direct = false;
+    EXPECT_TRUE(expect_merge_into(t, R"({"limits":{"d":4}})", &direct).find(R"("limits":{"a":1,"b":2,"c":3,"d":4})") !=
+                std::string::npos);
+    EXPECT_TRUE(direct);
+    EXPECT_TRUE(expect_merge_into(t, R"({"limits":{"a":null,"d":4,"e":5,"f":6}})")
+                    .find(R"("limits":{"b":2,"c":3,"d":4,"e":5,"f":6})") != std::string::npos);
+    expect_merge_rejected(t, R"({"limits":{"d":4,"e":5,"f":6,"g":7}})",
+                          limits("has more properties than the maximum 3"), "/limits");
     // the elements of an array replace those of the range, which are checked as they are read
     auto merged = Elements();
     merged.scores = {-1};
@@ -2111,16 +2187,130 @@ TEST(Constraints, ElementsMerge)
     EXPECT_EQ(merged.tags, std::nullopt);
 }
 
+TEST(Constraints, InputCounts)
+{
+    // every read counts the elements and the members of the JSON value, without a document
+    const auto key = [](std::string_view k, std::string_view text) {
+        return std::format(R"(the value of the key "{}" of InputCounted {})", k, text);
+    };
+    expect_accepted<InputCounted>(R"({"s":[1,1]})", {.s = {1}});
+    expect_rejected<InputCounted>(R"({"s":[1]})", key("s", "has fewer items than the minimum 2"), "/s");
+    expect_rejected<InputCounted>(R"({"s":[1,2,2]})", key("s", "has more items than the maximum 2"), "/s");
+    // a merge keeps the last value of a repeated key, and a read the first
+    const auto* const repeated = R"({"m":{"a":1,"a":2}})";
+    EXPECT_EQ(yyjson::read<InputCounted>(repeated).m.size(), 1U);
+    EXPECT_EQ(yyjson::read(repeated).cast<InputCounted>().m.size(), 1U);
+    EXPECT_TRUE(expect_direct_read<InputCounted>(repeated));
+    EXPECT_TRUE(expect_read_into(InputCounted(), repeated));
+    expect_rejected<InputCounted>(R"({"m":{"a":1}})", key("m", "has fewer properties than the minimum 2"), "/m");
+    expect_rejected<InputCounted>(R"({"m":{"a":1,"b":2,"a":3}})", key("m", "has more properties than the maximum 2"),
+                                  "/m");
+    expect_accepted<InputCounted>(R"({"v":[1,1]})", {.v = {1, 1}});
+    expect_rejected<InputCounted>(R"({"v":[1]})", key("v", "has fewer items than the minimum 2"), "/v");
+    expect_accepted<InputCounted>(R"({"c":[5,5]})", {.c = {5}});
+    expect_rejected<InputCounted>(R"({"c":[5,1]})", key("c", "has fewer than 2 items that satisfy"), "/c");
+
+    // `merge_into` counts the members of the patch, and replaces a set with the elements that it counts
+    for (const auto* json : {R"({"s":[1,1]})", R"({"m":{"a":1,"a":2}})", R"({"c":[5,5]})"})
+    {
+        auto direct = false;
+        static_cast<void>(expect_merge_into(InputCounted{.m = {{"x", 0}}}, json, &direct));
+        EXPECT_TRUE(direct || !reads_directly) << json;
+    }
+    auto t = InputCounted{.m = {{"x", 0}}};
+    yyjson::merge_into(R"({"m":{"a":1,"a":2}})", t);
+    EXPECT_EQ(t.m, (std::map<std::string, int>{{"a", 2}, {"x", 0}}));
+    EXPECT_THROW(yyjson::merge_into(R"({"m":{"b":1}})", t), yyjson::bad_cast);
+
+    // a condition of the struct counts the elements of the JSON array too
+    expect_accepted<CountGate>(R"({"s":[1,1],"k":1})", {{1}, 1});
+    expect_accepted<CountGate>(R"({"s":[1]})", {{1}, 0});
+    expect_rejected<CountGate>(R"({"s":[1,1]})", R"(CountGate is not constructible from JSON without the key "k")", "");
+    auto direct = false;
+    static_cast<void>(expect_merge_into(CountGate{}, R"({"s":[2,2],"k":3})", &direct));
+    EXPECT_TRUE(direct || !reads_directly);
+}
+
+TEST(Constraints, MergeHeldMaps)
+{
+    auto t = HeldLimits();
+    t.pointer = std::make_shared<Limits>(Limits{{"old", 200}});
+    t.held = Limits{{"old", 200}};
+    t.boxed = yyjson::indirect<Limits>(Limits{{"old", 200}});
+    t.nested = {{"k", {{"old", 200}}}, {"j", {}}};
+    // a pointer takes the map of the patch, and the other holders keep the members that the patch does not give
+    EXPECT_EQ(expect_merge_into(t, R"({"pointer":{"a":1},"held":{"a":1},"boxed":{"a":1},"nested":{"k":{"a":1}}})"),
+              R"({"pointer":{"a":1},"held":{"a":1,"old":200},"boxed":{"a":1,"old":200},)"
+              R"("nested":{"j":{},"k":{"a":1,"old":200}}})");
+    const auto expect_merge_rejected = [&t](std::string_view json, std::string_view message, std::string_view path) {
+        auto value = t;
+        const auto e = bad_cast_of([&] { yyjson::merge_into(json, value); });
+        EXPECT_TRUE(message_of(e).starts_with(message)) << json << "\n" << e.what();
+        EXPECT_EQ(e.path(), path) << json;
+    };
+    const auto element = [](std::string_view key) {
+        return std::format(R"(an element of the value of the key "{}" of HeldLimits )", key);
+    };
+    for (const auto* key : {"pointer", "held", "boxed"})
+    {
+        expect_merge_rejected(std::format(R"({{"{}":{{"a":101}}}})", key),
+                              element(key) + "is greater than the maximum 100", std::format("/{}/a", key));
+        expect_merge_rejected(std::format(R"({{"{}":{{"a":1,"b":2}}}})", key),
+                              std::format(R"(the value of the key "{}" of HeldLimits has more properties)", key),
+                              std::format("/{}", key));
+    }
+    expect_merge_rejected(R"({"nested":{"k":{"a":101}}})", element("nested") + "is greater than the maximum 100",
+                          "/nested/k/a");
+    expect_merge_rejected(R"({"nested":{"k":{"a":1,"b":2}}})", element("nested") + "has more properties", "/nested/k");
+    expect_merge_rejected(R"({"nested":{"k":{"a":1},"i":{}}})",
+                          R"(the value of the key "nested" of HeldLimits has more properties)", "/nested");
+}
+
+TEST(Constraints, MergeRepeatedKeys)
+{
+    // a patch can give a key more than once; the checks look only at the members that the merged map has, and the
+    // counts count each member of the patch that is not null
+    auto t = HeldLimits();
+    t.boxed = yyjson::indirect<Limits>(Limits{});
+    EXPECT_EQ(expect_merge_into(t, R"({"nested":{"a":{"x":1},"a":null}})"), expect_merge_into(t, R"({"nested":{}})"));
+    EXPECT_EQ(expect_merge_into(t, R"({"held":{"a":1,"a":null}})"), expect_merge_into(t, R"({"held":{}})"));
+    EXPECT_TRUE(expect_merge_into(t, R"({"held":{"a":1,"a":null,"b":1}})")
+                    .starts_with(R"(bad cast: the value of the key "held" of HeldLimits has more properties)"));
+    const auto sets = RepeatedSets();
+    EXPECT_EQ(expect_merge_into(sets, R"({"m":{"a":[1],"a":null}})"), R"({"m":{},"n":{}})");
+    EXPECT_EQ(expect_merge_into(sets, R"({"m":{"a":[1,2],"a":null}})"), R"({"m":{},"n":{}})");
+    EXPECT_TRUE(expect_merge_into(sets, R"({"m":{"a":null,"a":[1,2]}})")
+                    .starts_with(R"(bad cast: an element of the value of the key "m" of RepeatedSets has more items)"));
+    EXPECT_EQ(expect_merge_into(sets, R"({"n":{"a":11,"a":null,"b":9}})"), R"({"m":{},"n":{"b":9}})");
+    EXPECT_TRUE(expect_merge_into(sets, R"({"n":{"a":1,"a":null,"b":11}})")
+                    .starts_with(R"(bad cast: an element of the value of the key "n" of RepeatedSets is greater)"));
+    EXPECT_TRUE(expect_merge_into(sets, R"({"n":{"a":1,"a":null,"b":1,"c":1}})")
+                    .starts_with(R"(bad cast: the value of the key "n" of RepeatedSets has more properties)"));
+    // a patch without a repeated key, through the document too
+    EXPECT_EQ(expect_merge_into(sets, R"({"m":{"a":[1]},"n":{"a":1}})"), R"({"m":{"a":[1]},"n":{"a":1}})");
+}
+
 TEST(Constraints, MergeKept)
 {
-    // a key that merge_into keeps is not in the JSON, which leaves the error at the map
+    // yyjson::property_names and yyjson::min_properties check the keys of the patch without null
     auto keyed = Keyed();
     keyed.m = {{"ABC", 1}};
-    const auto e = bad_cast_of([&] { yyjson::merge_into(R"({"m":{"ab":1}})", keyed); });
-    EXPECT_TRUE(message_of(e).starts_with(R"(the value of the key "m" of Keyed has a key that does not satisfy )"
-                                          R"(the constraints of yyjson::property_names)"))
+    auto direct = false;
+    EXPECT_TRUE(expect_merge_into(keyed, R"({"m":{"ab":1}})", &direct).find(R"("m":{"ABC":1,"ab":1})") !=
+                std::string::npos);
+    EXPECT_TRUE(direct);
+    const auto e = bad_cast_of([&] { yyjson::merge_into(R"({"m":{"ab":null,"Ab":1}})", keyed); });
+    EXPECT_TRUE(message_of(e).starts_with(R"(a key of the value of the key "m" of Keyed does not match the pattern)"))
         << e.what();
-    EXPECT_EQ(e.path(), "/m");
+    EXPECT_EQ(e.path(), "/m/Ab");
+    keyed = Keyed();
+    keyed.sized = {{"a", 1}};
+    EXPECT_TRUE(expect_merge_into(keyed, R"({"sized":{"b":2}})").find(R"("sized":{"a":1,"b":2})") != std::string::npos);
+    const auto empty = bad_cast_of([&] { yyjson::merge_into(R"({"sized":{"a":null}})", keyed); });
+    EXPECT_TRUE(message_of(empty).starts_with(
+        R"(the value of the key "sized" of Keyed has fewer properties than the minimum 1)"))
+        << empty.what();
+    EXPECT_EQ(empty.path(), "/sized");
 }
 
 TEST(Constraints, UniqueItems)
@@ -2978,10 +3168,10 @@ TEST(Constraints, MultiKindValues)
 
 TEST(Constraints, MultiKindWrittenForms)
 {
-    // the reader without a document leaves the elements of the JSON array to the document
-    expect_accepted<MultiKindWritten>(R"({"p":"x","q":[5]})", {"x", {5, {}, {}}}, false);
-    expect_accepted<MultiKindWritten>(R"({"p":[1,2],"q":[1,5]})", {MultiKindPair{1, 2, {}}, {1, 5, {}}}, false);
-    expect_accepted<MultiKindWritten>(R"({"p":[1,4,3],"q":[5,6]})", {MultiKindPair{1, 4, {3}}, {5, 6, {}}}, false);
+    // the reader without a document counts the elements of the JSON array while it reads them
+    expect_accepted<MultiKindWritten>(R"({"p":"x","q":[5]})", {"x", {5, {}, {}}});
+    expect_accepted<MultiKindWritten>(R"({"p":[1,2],"q":[1,5]})", {MultiKindPair{1, 2, {}}, {1, 5, {}}});
+    expect_accepted<MultiKindWritten>(R"({"p":[1,4,3],"q":[5,6]})", {MultiKindPair{1, 4, {3}}, {5, 6, {}}});
     // null at the position of a std::optional is an error, also in an alternative of a variant
     expect_rejected<MultiKindWritten>(R"({"p":"x","q":[5,null]})",
                                       "std::optional<int> is not constructible from JSON null", "/q/1");

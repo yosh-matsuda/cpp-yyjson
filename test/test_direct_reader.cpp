@@ -879,6 +879,7 @@ public:
     const T* begin() const noexcept { return data_.data(); }
     const T* end() const noexcept { return data_.data() + size_; }
     std::size_t size() const noexcept { return size_; }
+    void clear() noexcept { size_ = 0; }
     T& operator[](std::size_t i) noexcept { return data_[i]; }
     void reserve(std::size_t n) const { grow(n); }
     void push_back(const T& v)
@@ -896,6 +897,22 @@ public:
         size_ = static_cast<std::size_t>(std::move(last, end(), first) - begin());
         return first;
     }
+};
+
+// elements after the positions kept in a bounded range
+template <bool Boost>
+struct BoundedRest
+{
+    int a = 0;
+    BoundedVector<int, 2, Boost> rest;
+};
+template <bool Boost>
+inline constexpr auto yyjson::annotations<BoundedRest<Boost>> =
+    yyjson::annotate(yyjson::as_array, yyjson::field("rest", yyjson::extra_items));
+template <bool Boost>
+struct HoldsBoundedRest
+{
+    BoundedRest<Boost> r;
 };
 
 template <bool Boost>
@@ -926,6 +943,38 @@ void expect_bounded_reads()
 
     // a variant passes over the range for an array beyond its capacity
     EXPECT_TRUE((expect_direct_read<std::vector<std::variant<ints, std::vector<int>>>>("[[1],[1,2,3],[]]")));
+
+    // the elements after the positions of a struct read as an array, which fail at the array
+    EXPECT_EQ(yyjson::read<BoundedRest<Boost>>("[0,1,2]").rest.size(), 2);
+    EXPECT_FALSE(expect_direct_read<BoundedRest<Boost>>("[0,1,2,3]"));
+    constexpr auto json = std::string_view(R"({"r":[0,1,2,3]})");
+    const auto bad_cast_of = [](const auto& f) {
+        try
+        {
+            f();
+        }
+        catch (const yyjson::bad_cast& e)
+        {
+            return e;
+        }
+        ADD_FAILURE() << "no exception";
+        return yyjson::bad_cast("no exception");
+    };
+    constexpr auto message = std::string_view("the size of JSON array exceeds the capacity of ");
+    const auto read = bad_cast_of([&] { (void)yyjson::read<HoldsBoundedRest<Boost>>(json); });
+    const auto into = bad_cast_of([&] {
+        auto t = HoldsBoundedRest<Boost>();
+        yyjson::read_into(json, t);
+    });
+    for (const auto& e : {read, into})
+    {
+        EXPECT_TRUE(std::string_view(e.what()).starts_with(message)) << e.what();
+        EXPECT_EQ(e.path(), "/r");
+        EXPECT_EQ(e.position(), (yyjson::text_position{1, 6, 5}));
+    }
+    const auto cast = bad_cast_of([&] { (void)yyjson::read(json).cast<HoldsBoundedRest<Boost>>(); });
+    EXPECT_TRUE(std::string_view(cast.what()).starts_with(message)) << cast.what();
+    EXPECT_EQ(cast.path(), "/r");
 }
 
 TEST(DirectReader, VariantsBySize)
