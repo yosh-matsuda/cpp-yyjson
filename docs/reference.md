@@ -1527,12 +1527,13 @@ consteval explicit items(bool allowed);  // items<bool>, as yyjson::items(false)
 *   The field of `yyjson::extra_items` receives the elements after the fields. It is the last field that is not skipped, a range with `push_back` and `clear`. It takes [`yyjson::items(settings...)`](#constraints-of-elements) for its elements, and no other setting.
 *   `write` leaves out the empty `std::optional` fields at the end of the array. An empty `std::optional` before a written value makes every write of the struct throw [`yyjson::write_error`](#yyjsonwrite_error). The elements of the field of `yyjson::extra_items` are written values too. Use `yyjson::nullable<U>` to write `null`.
 *   `read_into` and `merge_into` replace the whole value, as for an array.
-*   The struct takes [`yyjson::min_items`, `yyjson::max_items`, `yyjson::unique_items`, `yyjson::contains`, `yyjson::min_contains` and `yyjson::max_contains`](#constraints-of-elements). The read checks them on the elements of the JSON array: a `null` is an element, a missing element is not, and an element that the read ignores counts for `yyjson::min_items` and `yyjson::max_items`. The same rules apply when a field of the type of the struct takes these settings.
+*   The struct takes [`yyjson::min_items`, `yyjson::max_items`, `yyjson::unique_items`, `yyjson::contains`, `yyjson::min_contains` and `yyjson::max_contains`](#constraints-of-elements). The read checks them on the elements of the JSON array: a `null` is an element, a missing element is not, and an element that the read ignores counts for `yyjson::min_items` and `yyjson::max_items`. The same rules apply when a field of the type of the struct takes these settings. The struct and the field also take the combinators of these settings.
 
 These are compile errors:
 
 *   `yyjson::as_array` given twice, or with `yyjson::transparent`.
-*   A key setting or `yyjson::adjacent_tag` on a field, or a combinator on the struct.
+*   A key setting or `yyjson::adjacent_tag` on a field.
+*   `yyjson::items(settings...)`, `yyjson::prefix_items` or a keyword of a number, a string or an object on the struct or on a field of its type. A combinator cannot have them either.
 *   `yyjson::items(false)` or the settings of the whole array without `yyjson::as_array`.
 *   `yyjson::extra_items` without `yyjson::as_array`, twice, or on a field that is not the last.
 *   `yyjson::extra_items` with another setting than `yyjson::items(settings...)`, or with `yyjson::items(false)`.
@@ -1823,7 +1824,7 @@ They are settings of [`yyjson::field`](#yyjsonfield), and of the subschemas of t
 *   On a `yyjson::value` and a `std::variant`, each constraint checks only the values of its JSON kind.
 *   A read of a value that a constraint rejects throws `yyjson::bad_cast`. `write` does not check them.
 
-A constraint on a type that it does not apply to is a compile error. So are a constraint given twice, except `yyjson::pattern`, and constraints that leave no value to read. See [Constraints](validation.md#constraints).
+A constraint of a JSON kind that the type at its position does not write is a compile error. So are a constraint given twice, except `yyjson::pattern`, and constraints that leave no value to read at a position. A subschema of `yyjson::any_of`, `yyjson::one_of`, `yyjson::not_` and `yyjson::if_then_else` can leave no value to read. See [Constraints](validation.md#constraints).
 
 ```cpp
 struct User

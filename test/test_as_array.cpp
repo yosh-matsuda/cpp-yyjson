@@ -256,6 +256,46 @@ struct PointGate
 template <>
 inline constexpr auto yyjson::annotations<PointGate> = yyjson::annotate(yyjson::if_then_else(
     yyjson::if_(yyjson::field("p", yyjson::min_items(3))), yyjson::then(yyjson::field("k", yyjson::required))));
+// the combinators of the whole array of a struct read as an array, which take the keywords of an array
+struct Gated
+{
+    int a = 0;
+    std::vector<int> rest;
+    bool operator==(const Gated&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<Gated> =
+    yyjson::annotate(yyjson::as_array, yyjson::field("rest", yyjson::extra_items), yyjson::not_(yyjson::min_items(4)),
+                     yyjson::any_of(yyjson::max_items(1), yyjson::contains(yyjson::minimum(10))),
+                     yyjson::if_then_else(yyjson::if_(yyjson::min_items(3)), yyjson::then(yyjson::unique_items)));
+struct GatedHolder
+{
+    Gated g;
+    std::vector<Gated> v;
+    std::map<std::string, Gated> m;
+    std::optional<Gated> o;
+    bool operator==(const GatedHolder&) const = default;
+};
+VISITABLE_STRUCT(GatedHolder, g, v, m, o);
+// a subschema of yyjson::any_of that no array satisfies, and the keywords of the type with those of a field
+struct DeadGate
+{
+    int a = 0;
+    std::vector<int> rest;
+    bool operator==(const DeadGate&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<DeadGate> =
+    yyjson::annotate(yyjson::as_array, yyjson::field("rest", yyjson::extra_items),
+                     yyjson::one_of(yyjson::all_of(yyjson::min_items(3), yyjson::max_items(1)), yyjson::max_items(2)));
+struct DeadGateHolder
+{
+    DeadGate d;
+    bool operator==(const DeadGateHolder&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<DeadGateHolder> =
+    yyjson::annotate(yyjson::field("d", yyjson::not_(yyjson::max_items(1))));
 // a std::optional before a position that the write always writes, which no array can leave out
 struct EarlyOptional
 {
@@ -306,6 +346,12 @@ struct[[ = yyjson::as_array, = yyjson::max_items(3), = yyjson::unique_items, = y
     [[= yyjson::extra_items]] std::vector<int> rest;
     bool operator==(const AnnotatedScores&) const = default;
 };
+struct[[ = yyjson::as_array, = yyjson::not_(yyjson::min_items(3)) ]] AnnotatedGate
+{
+    int a = 0;
+    [[= yyjson::extra_items]] std::vector<int> rest;
+    bool operator==(const AnnotatedGate&) const = default;
+};
 struct AnnotatedHolder
 {
     [[= yyjson::max_items(1)]] AnnotatedPair p;
@@ -333,14 +379,28 @@ namespace as_array_rules
     static_assert(table_error(as_array, yyjson::transparent) == as_array_transparent);
     static_assert(table_error(as_array, field("a", yyjson::rename("x"))) == as_array_field_setting);
     static_assert(table_error(as_array, field("a", yyjson::rename("x"), yyjson::skip)) != none);
-    static_assert(table_error(as_array, yyjson::not_(yyjson::minimum(0))) == as_array_struct_setting);
+    // the keywords of an array apply to the struct in the subschemas of its combinators too, and those of another
+    // kind, `yyjson::items` and `yyjson::prefix_items` in none
+    static_assert(table_error(as_array, yyjson::not_(yyjson::minimum(0))) == keyword_kind);
+    static_assert(table_error(as_array, yyjson::not_(yyjson::min_items(1))) == none);
+    static_assert(table_error(as_array, yyjson::any_of(yyjson::max_items(1), yyjson::contains(yyjson::minimum(0))),
+                              yyjson::if_then_else(yyjson::if_(yyjson::min_items(2)),
+                                                   yyjson::then(yyjson::unique_items))) == none);
+    static_assert(table_error(as_array, yyjson::all_of(yyjson::not_(yyjson::max_length(1)))) == keyword_kind);
+    static_assert(table_error(as_array, yyjson::not_(items(yyjson::minimum(0)))) == as_array_items);
+    static_assert(table_error(as_array, yyjson::any_of(yyjson::prefix_items(yyjson::minimum(0)),
+                                                       yyjson::min_items(1))) == as_array_items);
+    static_assert(table_error(as_array, yyjson::not_(yyjson::min_properties(1))) == as_array_object_keyword);
+    static_assert(table_error(as_array, yyjson::not_(field("a", yyjson::required))) == as_array_object_keyword);
+    static_assert(table_error(as_array, yyjson::not_(yyjson::const_(1))) == struct_value_keyword);
     static_assert(table_error(as_array, yyjson::min_items(1), yyjson::unique_items,
                               yyjson::contains(yyjson::minimum(0)), yyjson::min_contains(1), yyjson::max_contains(2),
                               yyjson::max_items(3)) == none);
-    static_assert(table_error(yyjson::max_items(1)) == array_keywords_without_as_array);
-    static_assert(table_error(yyjson::contains(yyjson::minimum(0))) == array_keywords_without_as_array);
-    static_assert(table_error(as_array, yyjson::minimum(0)) == struct_constraint);
-    static_assert(table_error(as_array, items(yyjson::minimum(0))) == struct_constraint);
+    static_assert(table_error(yyjson::max_items(1)) == keyword_kind);
+    static_assert(table_error(yyjson::contains(yyjson::minimum(0))) == keyword_kind);
+    static_assert(table_error(yyjson::not_(yyjson::max_items(1))) == keyword_kind);
+    static_assert(table_error(as_array, yyjson::minimum(0)) == keyword_kind);
+    static_assert(table_error(as_array, items(yyjson::minimum(0))) == as_array_items);
     static_assert(table_error(as_array, yyjson::additional_properties(false)) == as_array_object_keyword);
     static_assert(table_error(as_array, yyjson::min_properties(1)) == as_array_object_keyword);
     static_assert(table_error(as_array, yyjson::property_names(yyjson::min_length(1))) == as_array_object_keyword);
@@ -778,6 +838,40 @@ TEST(AsArray, FieldArrayConditions)
     EXPECT_THROW(yyjson::merge_into(R"({"p":[3,4,5]})", gate), yyjson::bad_cast);
 }
 
+TEST(AsArray, ArrayConditions)
+{
+    // the combinators of the struct count and check the elements of the array that the read reads
+    expect_read<Gated>("[1]", {1, {}});
+    expect_read<Gated>("[1,10]", {1, {10}});
+    expect_read<Gated>("[1,10,2]", {1, {10, 2}});
+    expect_rejected<Gated>("[1,2]", "the value of Gated satisfies none of the subschemas of yyjson::any_of", "");
+    expect_rejected<Gated>(
+        "[1,10,1]", "the value of Gated satisfies the settings of yyjson::if_ and not those of yyjson::then", "");
+    expect_rejected<Gated>("[1,10,2,3]", "the value of Gated satisfies the settings of yyjson::not_", "");
+    // in a field, an element, a value of a map and a std::optional
+    auto holder = GatedHolder{{1, {}}, {{2, {10}}, {3, {}}}, {{"k", {4, {11, 5}}}}, Gated{5, {}}};
+    expect_read<GatedHolder>(R"({"g":[1],"v":[[2,10],[3]],"m":{"k":[4,11,5]},"o":[5]})", holder);
+    expect_rejected<GatedHolder>(R"({"g":[1,2]})", "the value of Gated satisfies none of the subschemas", "/g");
+    expect_rejected<GatedHolder>(R"({"v":[[1],[2,3]]})", "the value of Gated satisfies none of the subschemas", "/v/1");
+    expect_rejected<GatedHolder>(R"({"m":{"k":[1,10,10]}})", "the value of Gated satisfies the settings of yyjson::if_",
+                                 "/m/k");
+    expect_rejected<GatedHolder>(R"({"o":[1,10,2,3]})", "the value of Gated satisfies the settings of yyjson::not_",
+                                 "/o");
+    auto into = Gated{7, {8}};
+    yyjson::merge_into("[1,10]", into);
+    EXPECT_EQ(into, (Gated{1, {10}}));
+    EXPECT_THROW(yyjson::merge_into("[1,2]", into), yyjson::bad_cast);
+    // a dead subschema satisfies nothing, and the keywords of a field apply with those of the type
+    expect_read<DeadGate>("[1,2]", {1, {2}});
+    expect_rejected<DeadGate>("[1,2,3]", "the value of DeadGate satisfies none of the subschemas of yyjson::one_of",
+                              "");
+    expect_read<DeadGateHolder>(R"({"d":[1,2]})", {{1, {2}}});
+    expect_rejected<DeadGateHolder>(R"({"d":[1]})",
+                                    "the value of the key \"d\" of DeadGateHolder satisfies the "
+                                    "settings of yyjson::not_",
+                                    "/d");
+}
+
 TEST(AsArray, Visitable)
 {
     expect_read<VisitablePoint>(R"([1,"a"])", {1, "a", {}});
@@ -885,6 +979,8 @@ TEST(AsArray, Annotations)
     expect_rejected<AnnotatedScores>("[5,5]",
                                      "an element of the value of AnnotatedScores is equal to an earlier element", "/1");
     expect_rejected<AnnotatedScores>("[5,6,7,8]", "the value of AnnotatedScores has more items than the maximum 3", "");
+    expect_read<AnnotatedGate>("[1,2]", {1, {2}});
+    expect_rejected<AnnotatedGate>("[1,2,3]", "the value of AnnotatedGate satisfies the settings of yyjson::not_", "");
     // the keywords of a field count and check the elements of the JSON array
     expect_read<AnnotatedHolder>(R"({"p":[1],"s":[5,1]})", {{1, 0}, {5, {1}}}, false, false);
     expect_rejected<AnnotatedHolder>(

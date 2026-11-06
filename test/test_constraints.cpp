@@ -710,11 +710,33 @@ struct Counted
 template <>
 inline constexpr auto yyjson::annotations<Counted> = yyjson::annotate(
     yyjson::field("min0", yyjson::contains(yyjson::minimum(10)), yyjson::min_contains(0)),
-    yyjson::field("max0", yyjson::contains(yyjson::minimum(10)), yyjson::max_contains(0)),
+    yyjson::field("max0", yyjson::not_(yyjson::contains(yyjson::minimum(10)), yyjson::max_contains(0))),
     yyjson::field("both0", yyjson::contains(yyjson::minimum(10)), yyjson::min_contains(0), yyjson::max_contains(0)),
     yyjson::field("opts", yyjson::contains(yyjson::minimum(10)), yyjson::max_contains(1)),
     yyjson::field("unique", yyjson::unique_items), yyjson::field("head", yyjson::prefix_items(yyjson::minimum(0))),
     yyjson::field("some", yyjson::contains(yyjson::minimum(10))));
+
+// the subschemas of yyjson::any_of, one_of, not_ and if_then_else that no value satisfies, also by the bounds of
+// the type
+struct DeadBranches
+{
+    unsigned char byte = 0;
+    int any = 0;
+    std::string text = {};
+    std::vector<int> one = {};
+    std::optional<unsigned char> low = {};
+    bool operator==(const DeadBranches&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<DeadBranches> = yyjson::annotate(
+    yyjson::field("byte", yyjson::not_(yyjson::minimum(256))),
+    yyjson::field("any", yyjson::any_of(yyjson::all_of(yyjson::minimum(5), yyjson::maximum(1)), yyjson::maximum(3))),
+    yyjson::field("text",
+                  yyjson::if_then_else(yyjson::if_(yyjson::min_length(3), yyjson::max_length(2)),
+                                       yyjson::then(yyjson::const_("a")), yyjson::else_(yyjson::max_length(2)))),
+    yyjson::field("one",
+                  yyjson::one_of(yyjson::min_items(2), yyjson::all_of(yyjson::min_items(3), yyjson::max_items(1)))),
+    yyjson::field("low", yyjson::any_of(yyjson::maximum(-1), yyjson::minimum(10))));
 
 // elements of a user caster, keys that are enumerations, ranges of pairs and sequences that are not vectors
 struct CastPoint
@@ -931,7 +953,9 @@ namespace constraint_rules
     using enum yyjson::detail::field_key_error;
     using yyjson::field, yyjson::minimum, yyjson::maximum;
     static_assert(table_error(field("v", minimum(0)), field("w", yyjson::pattern("^a"))) == none);
-    static_assert(table_error(minimum(0)) == struct_constraint);
+    static_assert(table_error(minimum(0)) == keyword_kind);
+    static_assert(table_error(yyjson::not_(yyjson::min_items(1))) == keyword_kind);
+    static_assert(table_error(yyjson::any_of(yyjson::const_(1))) == struct_value_keyword);
     static_assert(table_error(field("v", yyjson::skip, minimum(0))) == skipped_with_setting);
     static_assert(table_error(field("v", minimum(0)), field("v", yyjson::skip)) == skipped_with_setting);
     static_assert(table_error(field("w", minimum(0), yyjson::adjacent_tag("t", {"x"}))) == tagged_constraint);
@@ -1059,6 +1083,7 @@ CONSTRAINT_RULE(ContainsMissing, std::vector<int>, yyjson::min_contains(1))
 CONSTRAINT_RULE(ContainsInverted, std::vector<int>, yyjson::contains(yyjson::minimum(0)), yyjson::min_contains(2),
                 yyjson::max_contains(1))
 using StringMap = std::map<std::string, int>;
+using ScalarVariant = std::variant<int, std::string>;
 CONSTRAINT_RULE(PropertiesInverted, StringMap, yyjson::min_properties(2), yyjson::max_properties(1))
 CONSTRAINT_RULE(ItemsTwice, std::vector<int>, yyjson::items(yyjson::minimum(0)), yyjson::items(yyjson::maximum(1)))
 CONSTRAINT_RULE(ItemsInside, std::vector<int>, yyjson::items(yyjson::minimum(2), yyjson::maximum(1)))
@@ -1074,6 +1099,38 @@ CONSTRAINT_RULE(NotInverted, int, yyjson::not_(yyjson::minimum(2), yyjson::maxim
 CONSTRAINT_RULE(BranchMissingContains, std::vector<int>,
                 yyjson::if_then_else(yyjson::if_(yyjson::min_items(1)), yyjson::then(yyjson::min_contains(1))))
 CONSTRAINT_RULE(MatchesTwice, yyjson::value, yyjson::matches<int>, yyjson::matches<int>)
+// the keywords of a position and of the subschemas of its yyjson::all_of constrain one value
+CONSTRAINT_RULE(AllOfInverted, int, yyjson::minimum(1), yyjson::all_of(yyjson::maximum(0)))
+CONSTRAINT_RULE(AllOfTwiceInverted, int, yyjson::all_of(yyjson::minimum(1)), yyjson::all_of(yyjson::maximum(0)))
+CONSTRAINT_RULE(AllOfNestedInverted, int,
+                yyjson::all_of(yyjson::all_of(yyjson::exclusive_minimum(0)), yyjson::not_(yyjson::const_(7))),
+                yyjson::maximum(0))
+CONSTRAINT_RULE(AllOfStricter, int, yyjson::minimum(0), yyjson::all_of(yyjson::minimum(1)))
+CONSTRAINT_RULE(AllOfConstOutside, int, yyjson::const_(5), yyjson::all_of(yyjson::maximum(4)))
+CONSTRAINT_RULE(AllOfItemsInverted, std::vector<int>, yyjson::min_items(3), yyjson::all_of(yyjson::max_items(2)))
+CONSTRAINT_RULE(AllOfLengthsInverted, std::string, yyjson::all_of(yyjson::min_length(3), yyjson::max_length(2)))
+CONSTRAINT_RULE(ContainsNone, std::vector<int>, yyjson::contains(yyjson::minimum(0)), yyjson::max_contains(0))
+// yyjson::contains of two subschemas count different elements
+CONSTRAINT_RULE(ContainsAcrossAllOf, std::vector<int>, yyjson::contains(yyjson::minimum(0)), yyjson::min_contains(2),
+                yyjson::all_of(yyjson::contains(yyjson::maximum(0)), yyjson::max_contains(1)))
+// a subschema of yyjson::any_of, one_of, not_ and if_then_else may hold a branch that no value satisfies
+CONSTRAINT_RULE(AnyOfDead, int,
+                yyjson::any_of(yyjson::all_of(yyjson::minimum(5), yyjson::maximum(1)), yyjson::maximum(3)))
+CONSTRAINT_RULE(OneOfDead, std::vector<int>,
+                yyjson::one_of(yyjson::min_items(2), yyjson::all_of(yyjson::min_items(3), yyjson::max_items(1))))
+CONSTRAINT_RULE(BranchesDead, std::string,
+                yyjson::if_then_else(yyjson::if_(yyjson::min_length(3), yyjson::max_length(2)),
+                                     yyjson::then(yyjson::const_("a"), yyjson::min_length(2)),
+                                     yyjson::else_(yyjson::enum_("ab", "cd"), yyjson::max_length(1))))
+CONSTRAINT_RULE(ContainsDead, std::vector<int>,
+                yyjson::not_(yyjson::contains(yyjson::minimum(0)), yyjson::max_contains(0)))
+CONSTRAINT_RULE(ByteDead, unsigned char, yyjson::not_(yyjson::minimum(256)))
+CONSTRAINT_RULE(ByteOutside, unsigned char, yyjson::minimum(256))
+CONSTRAINT_RULE(ByteAllOfOutside, unsigned char, yyjson::all_of(yyjson::maximum(-1)))
+// a contradiction leaves no value of its kind, and a position of more kinds reads the others
+CONSTRAINT_RULE(ValueBoundsInverted, yyjson::value, yyjson::minimum(1), yyjson::maximum(0))
+CONSTRAINT_RULE(VariantBoundsInverted, ScalarVariant, yyjson::minimum(1), yyjson::maximum(0))
+CONSTRAINT_RULE(ValueConstOutside, yyjson::value, yyjson::const_(5), yyjson::maximum(4))
 CONSTRAINT_RULE(AnyOfTooLong, Nested10,
                 yyjson::any_of(yyjson::items(yyjson::items(yyjson::items(
                     yyjson::items(yyjson::items(yyjson::items(yyjson::items(yyjson::items(yyjson::minimum(0)))))))))))
@@ -1100,6 +1157,21 @@ struct StructCountsEqual
 template <>
 inline constexpr auto yyjson::annotations<StructCountsEqual> =
     yyjson::annotate(yyjson::min_properties(1), yyjson::max_properties(1));
+// the counts of the members of a struct and those of the subschemas of its yyjson::all_of constrain one object
+struct StructAllOfCounts
+{
+    int v;
+};
+template <>
+inline constexpr auto yyjson::annotations<StructAllOfCounts> =
+    yyjson::annotate(yyjson::min_properties(2), yyjson::all_of(yyjson::max_properties(1)));
+struct StructAnyOfCounts
+{
+    int v;
+};
+template <>
+inline constexpr auto yyjson::annotations<StructAnyOfCounts> = yyjson::annotate(
+    yyjson::min_properties(1), yyjson::any_of(yyjson::max_properties(0), yyjson::field("v", yyjson::minimum(0))));
 // the names of the members of a struct follow the rules of those of a map
 struct StructNamesInverted
 {
@@ -1123,6 +1195,32 @@ namespace constraint_tree_rules
     constexpr auto count_error = yyjson::detail::make_schema_tree<&yyjson::detail::build_struct_count_tree<T>>().error;
     template <typename T>
     constexpr auto tree_error = yyjson::detail::make_schema_tree<&yyjson::detail::build_field_tree<T, 0>>().error;
+    // whether the keywords of the position of the field `v` leave no value of its JSON kinds, or of its integer type
+    template <typename T>
+    constexpr auto tree_of = yyjson::detail::make_schema_tree<&yyjson::detail::build_field_tree<T, 0>>();
+    template <typename T>
+    constexpr bool empty_position =
+        yyjson::detail::position_reads_nothing<yyjson::detail::constrained_value_t<decltype(T::v)>>(tree_of<T>, 0);
+    template <typename T>
+    constexpr bool out_of_type = yyjson::detail::position_out_of_type<decltype(T::v)>(tree_of<T>, 0);
+    template <typename T>
+    constexpr bool counts_empty =
+        (yyjson::detail::position_empty_kinds(
+             yyjson::detail::make_schema_tree<&yyjson::detail::build_struct_count_tree<T>>(), 0) &
+         yyjson::detail::object_kind) != 0;
+    template <typename T>
+    constexpr bool struct_empty = [] {
+        constexpr auto counts =
+            yyjson::detail::make_schema_tree<&yyjson::detail::build_struct_count_tree<T>>().nodes[0].constraints;
+        return (yyjson::detail::position_empty_kinds(
+                    yyjson::detail::make_schema_tree<&yyjson::detail::build_struct_tree<T>>(), 0, {&counts, 1}) &
+                yyjson::detail::object_kind) != 0;
+    }();
+    template <typename T>
+    constexpr bool names_empty = [] {
+        constexpr auto tree = yyjson::detail::make_schema_tree<&yyjson::detail::build_struct_names_tree<T>>();
+        return yyjson::detail::position_reads_nothing<std::string>(tree, tree.nodes[0].keys);
+    }();
     using enum yyjson::detail::constraint_error;
     static_assert(tree_error<MinimumTwice> == keyword_twice && tree_error<ConstTwice> == keyword_twice &&
                   tree_error<EnumTwice> == keyword_twice && tree_error<FormatTwice> == keyword_twice &&
@@ -1130,20 +1228,39 @@ namespace constraint_tree_rules
     static_assert(tree_error<PatternsTwice> == none);
     static_assert(tree_error<MultipleOfZero> == multiple_of_not_positive &&
                   tree_error<MultipleOfNegative> == multiple_of_not_positive);
-    static_assert(tree_error<BoundsInverted> == reads_nothing && tree_error<BoundsExclusive> == reads_nothing &&
-                  tree_error<LengthsInverted> == reads_nothing && tree_error<ConstOutside> == reads_nothing &&
-                  tree_error<EnumOutside> == reads_nothing);
-    static_assert(tree_error<BoundsEqual> == none && tree_error<EnumPartlyInside> == none);
-    static_assert(tree_error<ItemsInverted> == reads_nothing && tree_error<PropertiesInverted> == reads_nothing &&
-                  tree_error<ContainsInverted> == reads_nothing && tree_error<ItemsInside> == reads_nothing);
+    static_assert(empty_position<BoundsInverted> && empty_position<BoundsExclusive> &&
+                  empty_position<LengthsInverted> && empty_position<ConstOutside> && empty_position<EnumOutside>);
+    static_assert(!empty_position<BoundsEqual> && !empty_position<EnumPartlyInside>);
+    static_assert(empty_position<ItemsInverted> && empty_position<PropertiesInverted> &&
+                  empty_position<ContainsInverted>);
+    // the subschema of yyjson::items is a position of its own
+    static_assert(tree_error<ItemsInside> == none && !empty_position<ItemsInside> &&
+                  yyjson::detail::position_reads_nothing<int>(tree_of<ItemsInside>,
+                                                              tree_of<ItemsInside>.nodes[0].items));
     static_assert(tree_error<ContainsMissing> == contains_missing && tree_error<ItemsTwice> == keyword_twice);
     static_assert(tree_error<PrefixTooLong> == prefix_position_too_large);
-    static_assert(tree_error<NotTwice> == none && tree_error<NotInverted> == reads_nothing &&
+    static_assert(tree_error<NotTwice> == none && tree_error<NotInverted> == none && !empty_position<NotInverted> &&
                   tree_error<BranchMissingContains> == contains_missing && tree_error<MatchesTwice> == keyword_twice &&
                   tree_error<AnyOfTooLong> == prefix_position_too_large);
-    static_assert(count_error<StructCountsInverted> == reads_nothing &&
-                  count_error<StructCountsTwice> == keyword_twice && count_error<StructCountsEqual> == none);
-    static_assert(names_error<StructNamesInverted> == reads_nothing && names_error<StructNamesTwice> == keyword_twice);
+    static_assert(counts_empty<StructCountsInverted> && count_error<StructCountsTwice> == keyword_twice &&
+                  count_error<StructCountsEqual> == none && !counts_empty<StructCountsEqual>);
+    static_assert(names_empty<StructNamesInverted> && names_error<StructNamesTwice> == keyword_twice);
+    static_assert(struct_empty<StructAllOfCounts> && !struct_empty<StructAnyOfCounts>);
+    static_assert(empty_position<AllOfInverted> && empty_position<AllOfTwiceInverted> &&
+                  empty_position<AllOfNestedInverted> && empty_position<AllOfConstOutside> &&
+                  empty_position<AllOfItemsInverted> && empty_position<AllOfLengthsInverted>);
+    static_assert(!empty_position<AllOfStricter> && tree_error<AllOfStricter> == none);
+    static_assert(empty_position<ContainsNone> && !empty_position<ContainsAcrossAllOf>);
+    static_assert(tree_error<AnyOfDead> == none && !empty_position<AnyOfDead> && !empty_position<OneOfDead> &&
+                  !empty_position<BranchesDead> && !empty_position<ContainsDead>);
+    static_assert(!out_of_type<ByteDead> && out_of_type<ByteOutside> && out_of_type<ByteAllOfOutside>);
+    static_assert(!empty_position<ValueBoundsInverted> && !empty_position<VariantBoundsInverted> &&
+                  empty_position<BoundsInverted> && empty_position<ValueConstOutside>);
+    // the JSON kinds of a variant are those of its alternatives
+    using yyjson::detail::json_kinds_of, yyjson::detail::misplaced_keywords, yyjson::detail::constraint_bit;
+    static_assert(misplaced_keywords(constraint_bit<yyjson::min_items>, json_kinds_of<ScalarVariant>()) != 0 &&
+                  misplaced_keywords(constraint_bit<yyjson::min_items>,
+                                     json_kinds_of<std::variant<int, std::vector<int>>>()) == 0);
 
     // the keywords that a field without them leaves unchecked, and those that are no check
     static_assert(!yyjson::detail::has_constraints<Spot> && yyjson::detail::has_constraints<Bounded>);
@@ -3090,17 +3207,15 @@ TEST(Constraints, Contains)
 
 TEST(Constraints, ContainsCounts)
 {
-    // min_contains(0) alone accepts any array, max_contains(0) alone still needs one item, and both reject one
+    // min_contains(0) alone accepts any array, max_contains(0) alone still needs one item, so that no array
+    // satisfies it, and both reject one
     expect_accepted<Counted>(R"({"min0":[],"both0":[1]})", {.both0 = {1}});
+    expect_accepted<Counted>(R"({"max0":[1,10]})", {.max0 = {1, 10}});
+    expect_accepted<Counted>(R"({"max0":[]})", {});
     expect_accepted<Counted>(R"({"min0":[1],"both0":[]})", {.min0 = {1}});
     const auto prefix = [](std::string_view key) {
         return std::format(R"(the value of the key "{}" of Counted )", key);
     };
-    expect_rejected<Counted>(
-        R"({"max0":[1]})", prefix("max0") + "has no item that satisfies the constraints of yyjson::contains", "/max0");
-    expect_rejected<Counted>(R"({"max0":[10]})",
-                             prefix("max0") + "has more than 0 items that satisfy the constraints of yyjson::contains",
-                             "/max0");
     expect_rejected<Counted>(R"({"both0":[1,10]})",
                              prefix("both0") + "has more than 0 items that satisfy the constraints of yyjson::contains",
                              "/both0");
@@ -3355,6 +3470,28 @@ TEST(Constraints, AllAnyOneOf)
     expect_rejected<Composed>(R"({"deep":0})", value("deep") + none, "/deep");
     expect_rejected<Composed>(R"({"deep":150})", value("deep") + none, "/deep");
     expect_rejected<Composed>(R"({"rows":[[1],[2]]})", value("rows") + any, "/rows");
+}
+
+TEST(Constraints, DeadBranches)
+{
+    // a subschema that no value satisfies is false, as in JSON Schema
+    expect_accepted<DeadBranches>(R"({"byte":255,"any":3,"text":"ab","one":[1,2],"low":10})",
+                                  {255, 3, "ab", {1, 2}, 10});
+    expect_accepted<DeadBranches>(R"({"byte":0,"any":-7,"text":"","one":[1,2,3]})", {0, -7, "", {1, 2, 3}});
+    const auto value = [](std::string_view key) {
+        return std::format(R"(the value of the key "{}" of DeadBranches )", key);
+    };
+    expect_rejected<DeadBranches>(R"({"any":4})", value("any") + "satisfies none of the subschemas of yyjson::any_of",
+                                  "/any");
+    expect_rejected<DeadBranches>(
+        R"({"text":"abc"})", value("text") + "satisfies neither the settings of yyjson::if_ nor those of yyjson::else_",
+        "/text");
+    expect_rejected<DeadBranches>(R"({"one":[1]})", value("one") + "satisfies none of the subschemas of yyjson::one_of",
+                                  "/one");
+    expect_rejected<DeadBranches>(R"({"low":9})", value("low") + "satisfies none of the subschemas of yyjson::any_of",
+                                  "/low");
+    expect_rejected<DeadBranches>(
+        R"({"byte":256})", "overflow detected: unsigned char is not constructible from JSON integer 256", "/byte");
 }
 
 TEST(Constraints, Matches)
