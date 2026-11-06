@@ -3185,9 +3185,10 @@ namespace yyjson
         inline constexpr bool annotate_settings =
             count_true<(is_field_annotation<As>::value || std::same_as<As, transparent_t> ||
                         std::same_as<As, as_array_t> || std::same_as<As, items<bool>> || std::same_as<As, default_t> ||
-                        std::same_as<As, additional_properties<bool>> || struct_count_setting<As> || read_policy<As> ||
-                        combinator_setting<As> || array_struct_setting<As> || internal_tag_annotation<As> ||
-                        enum_annotation<As>)...> == sizeof...(As);
+                        std::same_as<As, additional_properties<bool>> || struct_count_setting<As> ||
+                        setting_of<As, property_names<>> || read_policy<As> || combinator_setting<As> ||
+                        array_struct_setting<As> || internal_tag_annotation<As> || enum_annotation<As>)...> ==
+            sizeof...(As);
     }  // namespace detail
 
     template <typename... As>
@@ -3201,7 +3202,7 @@ namespace yyjson
                       "yyjson::items(false), yyjson::default_ and the read policies yyjson::reject_unknown_keys, "
                       "yyjson::reject_missing_keys, yyjson::reject_null_as_missing, yyjson::reject_duplicates and "
                       "yyjson::strict, and yyjson::additional_properties(false), min_properties, max_properties, "
-                      "not_, if_then_else, all_of, any_of and one_of for a struct, "
+                      "property_names, not_, if_then_else, all_of, any_of and one_of for a struct, "
                       "yyjson::min_items, max_items, unique_items, contains, min_contains and max_contains for a "
                       "struct annotated with yyjson::as_array, "
                       "yyjson::internal_tag for a variant, and yyjson::enumerator(...) and yyjson::enum_format for an "
@@ -3786,7 +3787,6 @@ namespace yyjson
             bool array_keywords = false;                 // whether the struct has a keyword of the whole array
             bool object_keywords = false;                // whether it has a keyword of an object, such as closed
             bool additional_values = false;              // whether it has `yyjson::additional_properties(s...)`
-            bool object_constraint = false;              // whether it has `yyjson::property_names`
             // where the search for the member of the next `yyjson::field` starts: after the previous one, so that
             // settings in the order of the members are found at once
             std::size_t next = 0;
@@ -3940,15 +3940,12 @@ namespace yyjson
                     array_keywords = true;
                 else if constexpr (std::same_as<A, additional_properties<bool>>)
                     close();
-                else if constexpr (struct_count_setting<A>)
+                else if constexpr (struct_count_setting<A> || setting_of<A, property_names<>>)
                     object_keywords = true;
-                else if constexpr ((constraint_bit<setting_type_t<A>> & object_constraints) != 0)
+                else if constexpr (setting_of<A, additional_properties<>>)
                 {
                     object_keywords = true;
-                    if (std::same_as<setting_type_t<A>, additional_properties<>>)
-                        additional_values = true;
-                    else
-                        object_constraint = true;
+                    additional_values = true;
                 }
                 else if constexpr (constraint_setting<A>)
                     fail(field_key_error::struct_constraint);
@@ -4031,8 +4028,6 @@ namespace yyjson
                 if (result.error == field_key_error::none) result.error = array_error(result);
                 if (result.error == field_key_error::none && additional_values)
                     result.error = field_key_error::struct_additional_properties;
-                if (result.error == field_key_error::none && object_constraint)
-                    result.error = field_key_error::struct_constraint;
                 if (result.error != field_key_error::none || std::ranges::find(renamed, true) == renamed.end())
                     return result;
                 if (!distinct_names(result.keys, [&](std::size_t i) { return !result.skipped[i]; }))
@@ -4226,6 +4221,30 @@ namespace yyjson
         template <typename T, std::size_t K>
         using type_contains_type = typename[:std::meta::remove_cvref(std::meta::type_of(type_contains<T>[K])):];
 
+        // The annotations of the class T of `yyjson::property_names`.
+        template <typename T>
+        consteval std::vector<std::meta::info> type_property_names_of()
+        {
+            auto result = std::vector<std::meta::info>{};
+            for (const auto a : std::meta::annotations_of(std::meta::dealias(^^T)))
+            {
+                const auto type = std::meta::remove_cvref(std::meta::type_of(a));
+                if (std::meta::has_template_arguments(type) && std::meta::template_of(type) == ^^yyjson::property_names)
+                    result.push_back(a);
+            }
+            return result;
+        }
+        template <typename T>
+        inline constexpr std::span<const std::meta::info> type_property_names = [] {
+            if constexpr (std::is_class_v<T>)
+                return std::span<const std::meta::info>(std::define_static_array(type_property_names_of<T>()));
+            else
+                return std::span<const std::meta::info>{};
+        }();
+        template <typename T, std::size_t K>
+        using type_property_names_type =
+            typename[:std::meta::remove_cvref(std::meta::type_of(type_property_names<T>[K])):];
+
         // Whether the class T is annotated with a keyword of the whole array of a struct annotated with
         // `yyjson::as_array`.
         template <typename T>
@@ -4316,6 +4335,21 @@ namespace yyjson
         inline constexpr bool struct_property_counts =
             struct_count_annotated<T, false> || struct_count_annotated<T, true>;
 
+        // Whether the struct T is annotated with `yyjson::property_names`, as above.
+        template <typename T>
+        inline constexpr bool struct_property_names = [] {
+            if constexpr (!std::is_class_v<T>)
+                return false;
+            else
+                return []<typename... As>(std::type_identity<std::tuple<As...>>) {
+                    return count_true<setting_of<As, property_names<>>...> != 0;
+                }(std::type_identity<annotation_values_of<T>>{})
+#if FIELD_RFL_ANNOTATIONS
+                       || !type_property_names<T>.empty()
+#endif
+                           ;
+        }();
+
         // Whether the class T is annotated with `yyjson::transparent`, by `annotations<T>` or, under C++26, on the
         // type.
         template <typename T>
@@ -4362,7 +4396,8 @@ namespace yyjson
                                !field_reflection::type_annotations<T, as_array_t>.empty() ||
                                !field_reflection::type_annotations<T, items<bool>>.empty() ||
                                !field_reflection::type_annotations<T, additional_properties<bool>>.empty() ||
-                               struct_property_counts<T> || type_array_keywords_annotated<T>)
+                               struct_property_counts<T> || struct_property_names<T> ||
+                               type_array_keywords_annotated<T>)
                 return true;
             else if constexpr (!visitable<T>)
                 return annotated_members<T>;
@@ -4416,7 +4451,7 @@ namespace yyjson
                 if (!type_conditions<T>.empty()) builder.conditions = true;
                 if (type_array_keywords_annotated<T>) builder.array_keywords = true;
                 if (!field_reflection::type_annotations<T, min_properties>.empty() ||
-                    !field_reflection::type_annotations<T, max_properties>.empty())
+                    !field_reflection::type_annotations<T, max_properties>.empty() || !type_property_names<T>.empty())
                     builder.object_keywords = true;
 #endif
                 return builder.result();
@@ -6937,6 +6972,38 @@ namespace yyjson
         // The schema of the number of the members of the objects read into the struct S.
         template <typename S>
         using struct_count_schema = node_schema<struct_count_tree<S>, 0>;
+
+        // f(setting) for each `yyjson::property_names` of the struct S, in `annotations<S>` and then on the type.
+        template <typename S, typename F>
+        constexpr void for_each_struct_names_keyword(const F& f)
+        {
+            for_each_annotation(
+                [&]<typename A>(const A& a) {
+                    if constexpr (setting_of<A, property_names<>>) f(a);
+                },
+                annotations<S>.values);
+#if FIELD_RFL_ANNOTATIONS
+            [&]<std::size_t... Ks>(std::index_sequence<Ks...>) {
+                (f(std::meta::extract<type_property_names_type<S, Ks>>(type_property_names<S>[Ks])), ...);
+            }(std::make_index_sequence<type_property_names<S>.size()>{});
+#endif
+        }
+        template <typename S>
+        constexpr tree_builder build_struct_names_tree()
+        {
+            auto b = tree_builder{};
+            build_schema_node(
+                b, [](const auto& f) { for_each_struct_names_keyword<S>(f); },
+                [](std::string_view s) { return tree_string{s.data(), s.size()}; });
+            return b;
+        }
+        template <typename S>
+        struct struct_names_tree : checked_tree<&build_struct_names_tree<S>>
+        {
+        };
+        // The schema of each key of the objects read into the struct S.
+        template <typename S>
+        using struct_names_schema = node_schema<struct_names_tree<S>, struct_names_tree<S>::tree.nodes[0].keys>;
 
         // Whether reading checks the field K of S, by its index among the fields that are read.
         template <typename S, std::size_t K>
@@ -9551,6 +9618,63 @@ namespace yyjson
                                   constraint_what<struct_count_schema<T>>(kind));
         }
 
+        // Whether `yyjson::satisfies` in `yyjson::property_names` of the struct S takes a key as a `std::string`,
+        // rather than as a `std::string_view`.
+        template <typename S>
+        inline constexpr bool struct_names_take_string =
+            std::ranges::any_of(struct_names_tree<S>::tree.nodes, [](const schema_node& n) {
+                return n.constraints.template has<satisfies_t>() &&
+                       n.constraints.predicate.parameter() == type_name<std::string>();
+            });
+
+        // The keyword of `yyjson::property_names` of the struct T that the key `key` does not satisfy.
+        template <typename T>
+        constraint_kind struct_key_violation(std::string_view key)
+        {
+            if constexpr (struct_names_take_string<T>)
+                return constraint_violation<struct_names_schema<T>, true>(std::string(key));
+            else
+                return constraint_violation<struct_names_schema<T>, true>(key);
+        }
+
+        // The same for the key of each field of T, by its index, found once: a pattern or a predicate of the keyword
+        // is not a constant expression.
+        template <typename T>
+        const std::array<constraint_kind, struct_field_count<T>>& struct_field_name_violations()
+        {
+            static const auto kinds = [] {
+                auto result = std::array<constraint_kind, struct_field_count<T>>{};
+                for (std::size_t i = 0; i < result.size(); ++i)
+                    result[i] = struct_key_violation<T>(struct_rules<T>.keys[i]);
+                return result;
+            }();
+            return kinds;
+        }
+
+        // The same for the key `key` of the field `i` of T, or of no field if `i` is the number of the fields.
+        template <typename T>
+        constraint_kind struct_name_violation(std::string_view key, std::size_t i)
+        {
+            return i < struct_field_count<T> ? struct_field_name_violations<T>()[i] : struct_key_violation<T>(key);
+        }
+
+        // Throws at the first key of the object `obj` read into the struct T that `yyjson::property_names` of T
+        // rejects.  A merge checks the keys of the members that are not null, as it does for a map.
+        template <typename T, typename Val>
+        void check_struct_names(const Val* obj, bool merge)
+        {
+            const auto& rules = struct_rules<T>;
+            auto hint = std::size_t{0};
+            for_each_member(obj, [&](std::string_view key, const Val* value) {
+                if (merge && unsafe_yyjson_is_null(const_cast<Val*>(value))) return;
+                const auto i = rules.find(key, hint);
+                if (i < rules.size) hint = i + 1;
+                if (const auto kind = struct_name_violation<T>(key, i); kind != constraint_kind::none) [[unlikely]]
+                    throw_bad_cast_at(target_of(value), "a key of {} {}", type_name<T>(),
+                                      constraint_what<struct_names_schema<T>>(kind));
+            });
+        }
+
         // Checks the object `obj` read into the struct T, or merged into it if `merge`, under the read policies of
         // the call and of T.
         template <typename T, typename Json>
@@ -9559,6 +9683,8 @@ namespace yyjson
             if (struct_closed<T> || has_required_fields<T> || (read_policies | struct_policies<T>) != 0) [[unlikely]]
                 check_struct_keys<struct_closed<T>>(dependent_t<writer::detail::json_value_access, Json>::get(obj),
                                                     struct_rules<T>, merge);
+            if constexpr (struct_property_names<T>)
+                check_struct_names<T>(dependent_t<writer::detail::json_value_access, Json>::get(obj), merge);
             if constexpr (struct_property_counts<T>)
                 check_struct_members<T>(dependent_t<writer::detail::json_value_access, Json>::get(obj), merge);
         }
@@ -29635,20 +29761,82 @@ namespace yyjson
                 return index < N ? index : N;
             }
 
+            // Fails at the first key of the object at `open` read into the struct T that `yyjson::property_names`
+            // of T rejects, leaving out the members of null if `merge`.
+            template <typename T>
+            CPPYYJSON_NOINLINE CPPYYJSON_COLD void check_object_names(const char* open, bool merge)
+            {
+                const auto guard = cursor_guard{*this, cur_};
+                const auto& rules = yyjson::detail::struct_rules<T>;
+                auto hint = std::size_t{0};
+                cur_ = open + 1;
+                skip_ws();
+                while (*cur_ == '"')
+                {
+                    const auto key = read_string(scratch_);
+                    read_colon();
+                    const auto i = rules.find(key, hint);
+                    if (i < rules.size) hint = i + 1;
+                    if ((!merge || *cur_ != 'n') &&
+                        yyjson::detail::struct_name_violation<T>(key, i) != yyjson::detail::constraint_kind::none)
+                        fail();
+                    skip_value();
+                    skip_ws();
+                    if (*cur_ != ',') break;
+                    ++cur_;
+                    skip_ws();
+                }
+            }
+
+            // What `read_fields` keeps of the members of an object of the struct T for the keywords of T on the
+            // object: their number, and whether `yyjson::property_names` rejects the key of a field or must check a
+            // key of no field.  A merge leaves out the members of null, as for a map.
+            template <typename T>
+            struct object_tally
+            {
+                std::size_t members = 0;
+                const yyjson::detail::constraint_kind* names = nullptr;  // of the keys of the fields
+                bool rejected = false;
+                bool unnamed = false;
+
+                template <bool Merge, std::size_t N>
+                CPPYYJSON_ALWAYS_INLINE void add(std::size_t index, char value) noexcept
+                {
+                    if (Merge && value == 'n') return;
+                    ++members;
+                    if constexpr (yyjson::detail::struct_property_names<T>)
+                    {
+                        if (index < N)
+                            rejected |= names[index] != yyjson::detail::constraint_kind::none;
+                        else
+                            unnamed = true;
+                    }
+                }
+            };
+
             // Reads the members of an object of the struct T, assigning those that `matcher` finds with
             // `assign(index)`, and recording their keys if `assign` is `key_watching`.  `Merge` leaves out no key.
-            // `members...` counts the members, or those that are not null if `Merge`, for the bounds of T on them.
-            template <typename T, bool Merge, std::size_t N, typename Assign, typename... Count>
+            // `tally...` keeps the members for the keywords of T on the object.
+            template <typename T, bool Merge, std::size_t N, typename Assign, typename... Tally>
             CPPYYJSON_ALWAYS_INLINE void read_fields(const yyjson::detail::field_key_matcher<N>& matcher,
-                                                     Assign&& assign, Count&... members)
+                                                     Assign&& assign, Tally&... tally)
             {
-                if constexpr (yyjson::detail::struct_property_counts<T> && sizeof...(Count) == 0)
+                constexpr bool names = yyjson::detail::struct_property_names<T>;
+                if constexpr ((yyjson::detail::struct_property_counts<T> || names) && sizeof...(Tally) == 0)
                 {
-                    auto count = std::size_t{0};
-                    read_fields<T, Merge>(matcher, std::forward<Assign>(assign), count);
-                    if (yyjson::detail::struct_count_violation<T>(count) != yyjson::detail::constraint_kind::none)
-                        [[unlikely]]
+                    const char* const open = cur_;
+                    auto kept = object_tally<T>();
+                    if constexpr (names) kept.names = yyjson::detail::struct_field_name_violations<T>().data();
+                    read_fields<T, Merge>(matcher, std::forward<Assign>(assign), kept);
+                    if (kept.rejected) [[unlikely]]
                         fail();
+                    if constexpr (names)
+                        if (kept.unnamed) [[unlikely]]
+                            check_object_names<T>(open, Merge);
+                    if constexpr (yyjson::detail::struct_property_counts<T>)
+                        if (yyjson::detail::struct_count_violation<T>(kept.members) !=
+                            yyjson::detail::constraint_kind::none) [[unlikely]]
+                            fail();
                     return;
                 }
                 const char* const open = cur_;
@@ -29671,7 +29859,7 @@ namespace yyjson
                         }
                     }
                     read_colon();
-                    ((members += Merge ? std::size_t{*cur_ != 'n'} : 1), ...);
+                    (tally.template add<Merge, N>(index, *cur_), ...);
                     if (index < N)
                     {
                         assign(index);
@@ -29808,7 +29996,8 @@ namespace yyjson
             CPPYYJSON_ALWAYS_INLINE void read_struct_fields(const ReadOne& read_one)
             {
                 constexpr auto n = std::remove_cvref_t<decltype(Matcher)>::size;
-                if constexpr (n <= ordered_fields_max && !yyjson::detail::struct_property_counts<T>)
+                if constexpr (n <= ordered_fields_max && !yyjson::detail::struct_property_counts<T> &&
+                              !yyjson::detail::struct_property_names<T>)
                     read_fields_in_order<Matcher, T>(read_one);
                 else
                 {

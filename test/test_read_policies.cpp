@@ -401,6 +401,156 @@ template <>
 inline constexpr auto yyjson::annotations<UncountedDefaults> =
     yyjson::annotate(yyjson::field("b", yyjson::default_), yyjson::max_properties(3));
 
+// types that constrain the keys of the members of their objects
+struct NamedPt
+{
+    int a = 0;
+    int bb = 0;
+    std::optional<int> bad;
+    bool operator==(const NamedPt&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<NamedPt> = yyjson::annotate(yyjson::property_names(yyjson::max_length(2)));
+struct NamedPtV
+{
+    int a = 0;
+    int bb = 0;
+    std::optional<int> bad;
+    bool operator==(const NamedPtV&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<NamedPtV> = yyjson::annotate(yyjson::property_names(yyjson::max_length(2)));
+VISITABLE_STRUCT(NamedPtV, a, bb, bad);
+struct NamedWide
+{
+    int a = 0, b = 0, c = 0, d = 0, e = 0, f = 0, g = 0, h = 0, i = 0;
+    std::optional<int> jjj;
+    bool operator==(const NamedWide&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<NamedWide> = yyjson::annotate(yyjson::property_names(yyjson::max_length(2)));
+struct NamedHolder
+{
+    NamedPt p;
+    std::vector<NamedPt> v;
+    bool operator==(const NamedHolder&) const = default;
+};
+inline bool is_lower(std::string_view s)
+{
+    return std::ranges::all_of(s, [](char c) { return c >= 'a' && c <= 'z'; });
+}
+inline bool is_short_key(const std::string& s) { return s.size() < 3; }
+struct NamedRenamed
+{
+    int a = 0;
+    int b = 0;
+    bool operator==(const NamedRenamed&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<NamedRenamed> =
+    yyjson::annotate(yyjson::field("a", yyjson::rename("A")), yyjson::property_names(yyjson::satisfies<is_lower>));
+struct NamedListed
+{
+    int x = 0;
+    std::optional<int> y;
+    bool operator==(const NamedListed&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<NamedListed> =
+    yyjson::annotate(yyjson::property_names(yyjson::enum_("x", "y", "w")));
+struct NamedNot
+{
+    int x = 0;
+    std::optional<int> y;
+    bool operator==(const NamedNot&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<NamedNot> =
+    yyjson::annotate(yyjson::property_names(yyjson::not_(yyjson::const_("y"))));
+struct NamedChecked
+{
+    int x = 0;
+    int y = 0;
+    bool operator==(const NamedChecked&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<NamedChecked> =
+    yyjson::annotate(yyjson::property_names(yyjson::satisfies<is_lower>));
+struct NamedShort
+{
+    int x = 0;
+    int yyy = 0;
+    bool operator==(const NamedShort&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<NamedShort> =
+    yyjson::annotate(yyjson::property_names(yyjson::not_(yyjson::satisfies<is_short_key>)));
+struct NamedClosed
+{
+    int x = 0;
+    bool operator==(const NamedClosed&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<NamedClosed> =
+    yyjson::annotate(yyjson::additional_properties(false), yyjson::property_names(yyjson::max_length(1)));
+struct NamedCounted
+{
+    int x = 0;
+    bool operator==(const NamedCounted&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<NamedCounted> =
+    yyjson::annotate(yyjson::max_properties(1), yyjson::property_names(yyjson::max_length(1)));
+// the keys of the tags, which `yyjson::property_names` checks as the keys of the fields
+struct NamedCircle
+{
+    int r = 0;
+    bool operator==(const NamedCircle&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<NamedCircle> =
+    yyjson::annotate(yyjson::property_names(yyjson::enum_("r", "kind")));
+struct NamedRect
+{
+    int w = 0;
+    int h = 0;
+    bool operator==(const NamedRect&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<NamedRect> = yyjson::annotate(yyjson::property_names(yyjson::max_length(1)));
+using NamedShape = std::variant<NamedCircle, NamedRect>;
+template <>
+inline constexpr auto yyjson::annotations<NamedShape> = yyjson::annotate(yyjson::internal_tag("kind", {"c", "r"}));
+struct NamedTagless
+{
+    int id = 0;
+    std::variant<ClosedCircle, ClosedRect> data;
+    bool operator==(const NamedTagless&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<NamedTagless> =
+    yyjson::annotate(yyjson::field("data", yyjson::adjacent_tag("kind", {"circle", "rect"})),
+                     yyjson::property_names(yyjson::enum_("id", "data")));
+struct NamedEnvelope
+{
+    int id = 0;
+    std::variant<ClosedCircle, ClosedRect> data;
+    bool operator==(const NamedEnvelope&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<NamedEnvelope> =
+    yyjson::annotate(yyjson::field("data", yyjson::adjacent_tag("kind", {"circle", "rect"})),
+                     yyjson::property_names(yyjson::max_length(4)));
+#if FIELD_RFL_ANNOTATIONS
+struct[[= yyjson::property_names(yyjson::max_length(1))]] NamedAnnotated
+{
+    int a = 0;
+    [[= yyjson::rename("B")]] int b = 0;
+    std::optional<int> cc;
+    bool operator==(const NamedAnnotated&) const = default;
+};
+#endif
+
 using OptionalMap = std::map<std::string, std::optional<int>>;
 using IntMap = std::map<std::string, int>;
 using IntHashMap = std::unordered_map<std::string, int>;
@@ -555,6 +705,10 @@ namespace
     std::string more(std::string_view type, int n)
     {
         return error(std::format("{} has more properties than the maximum {}", type, n));
+    }
+    std::string key_of(std::string_view type, std::string_view what)
+    {
+        return error(std::format("a key of {} {}", type, what));
     }
     std::string null_as_missing(std::string_view type)
     {
@@ -1113,6 +1267,146 @@ TEST(PropertyCounts, Write)
     EXPECT_EQ(std::string(doc.write()), R"({"a":0,"b":5})");
     // the count is not checked when writing
     EXPECT_EQ(std::string(yyjson::write(CountedPt{1, 2, 3})), R"({"a":1,"b":2,"c":3})");
+}
+
+TEST(PropertyNames, Read)
+{
+    // the key of a field is checked when the object has it, as is a key of no field
+    const auto expect = []<typename T>(std::type_identity<T>, std::string_view name) {
+        const auto longer = key_of(name, "is longer than the maximum length 2");
+        EXPECT_EQ(read_with<T>(R"({"a":1,"bb":2})"), R"({"a":1,"bb":2})");
+        EXPECT_TRUE(direct_read);
+        EXPECT_EQ(read_with<T>(R"({"bb":2,"a":1})"), R"({"a":1,"bb":2})");
+        EXPECT_EQ(read_with<T>(R"({})"), R"({"a":0,"bb":0})");
+        EXPECT_EQ(read_with<T>(R"({"z":1})"), R"({"a":0,"bb":0})");
+        EXPECT_TRUE(direct_read);
+        EXPECT_EQ(read_with<T>(R"({"a":1,"bad":3})"), longer + " at /bad");
+        EXPECT_EQ(error_path<T>(R"({"a":1,"bad":3})"), "/bad");
+        EXPECT_EQ(read_with<T>(R"({"bad":null})"), longer + " at /bad");
+        for (const auto json :
+             {R"({"zzz":0,"a":1})", R"({"a":1,"zzz":0,"bb":2})", R"({"a":1,"bb":2,"zzz":0})", R"({"zzz":{"a":1}})"})
+        {
+            EXPECT_EQ(read_with<T>(json), longer + " at /zzz") << json;
+            EXPECT_EQ(error_path<T>(json), "/zzz") << json;
+        }
+        // the first key that it rejects, and each key that comes twice
+        EXPECT_EQ(read_with<T>(R"({"a":1,"zzz":0,"bad":1})"), longer + " at /zzz");
+        EXPECT_EQ(read_with<T>(R"({"a":1,"bad":0,"zzz":1})"), longer + " at /bad");
+        EXPECT_EQ(read_with<T>(R"({"a":1,"a":2})"), R"({"a":2,"bb":0})");
+        EXPECT_TRUE(direct_read);
+        EXPECT_EQ(read_with<T>(R"({"a":1,"bad":1,"bad":2})"), longer + " at /bad");
+        // the policies check the keys first
+        EXPECT_EQ(read_with<T>(R"({"z":1,"zzz":1})", yyjson::reject_unknown_keys), unknown(name, "z") + " at /z");
+        EXPECT_EQ(read_with<T>(R"({"zzz":1,"z":1})", yyjson::reject_unknown_keys), unknown(name, "zzz") + " at /zzz");
+        EXPECT_EQ(read_with<T>(R"({"a":1,"bad":1,"a":2})", yyjson::reject_duplicates), repeated(name, "a") + " at /a");
+        EXPECT_EQ(read_with<T>(R"({"a":1,"bb":2,"bad":3})", yyjson::strict), longer + " at /bad");
+    };
+    expect(std::type_identity<NamedPt>(), "NamedPt");
+    expect(std::type_identity<NamedPtV>(), "NamedPtV");
+    const auto all = std::string(R"({"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8,"i":9})");
+    EXPECT_EQ(read_with<NamedWide>(all), all);
+    EXPECT_TRUE(direct_read);
+    EXPECT_EQ(read_with<NamedWide>(R"({"i":9,"jjj":1})"),
+              key_of("NamedWide", "is longer than the maximum length 2") + " at /jjj");
+    EXPECT_EQ(read_with<NamedWide>(R"({"i":9,"kkk":null,"a":1})"),
+              key_of("NamedWide", "is longer than the maximum length 2") + " at /kkk");
+    // a struct in a field or an element checks the keys of its own object
+    EXPECT_EQ(read_with<NamedHolder>(R"({"p":{"a":1},"v":[{},{"bb":1}],"zzz":1})"),
+              R"({"p":{"a":1,"bb":0},"v":[{"a":0,"bb":0},{"a":0,"bb":1}]})");
+    EXPECT_TRUE(direct_read);
+    EXPECT_EQ(read_with<NamedHolder>(R"({"p":{"bad":1}})"),
+              key_of("NamedPt", "is longer than the maximum length 2") + " at /p/bad");
+    EXPECT_EQ(error_path<NamedHolder>(R"({"p":{"bad":1}})"), "/p/bad");
+    EXPECT_EQ(read_with<NamedHolder>(R"({"v":[{},{"xyz":1}]})"),
+              key_of("NamedPt", "is longer than the maximum length 2") + " at /v/1/xyz");
+    // the key of a renamed field is its new key
+    EXPECT_EQ(read_with<NamedRenamed>(R"({"b":1,"a":2})"), R"({"A":0,"b":1})");
+    EXPECT_TRUE(direct_read);
+    EXPECT_EQ(read_with<NamedRenamed>(R"({"A":1})"),
+              key_of("NamedRenamed", "is rejected by yyjson::satisfies") + " at /A");
+    // the keywords of a string, the combinators and a predicate
+    EXPECT_EQ(read_with<NamedListed>(R"({"x":1,"w":2})"), R"({"x":1})");
+    EXPECT_TRUE(direct_read);
+    EXPECT_EQ(read_with<NamedListed>(R"({"x":1,"v":2})"),
+              key_of("NamedListed", R"(is not one of "x", "y", "w")") + " at /v");
+    EXPECT_EQ(read_with<NamedNot>(R"({"x":1,"z":2})"), R"({"x":1})");
+    EXPECT_EQ(read_with<NamedNot>(R"({"x":1,"y":2})"),
+              key_of("NamedNot", "satisfies the settings of yyjson::not_") + " at /y");
+    EXPECT_EQ(read_with<NamedChecked>(R"({"x":1,"y":2,"z":3})"), R"({"x":1,"y":2})");
+    EXPECT_TRUE(direct_read);
+    EXPECT_EQ(read_with<NamedChecked>(R"({"x":1,"Z":3})"),
+              key_of("NamedChecked", "is rejected by yyjson::satisfies") + " at /Z");
+    EXPECT_EQ(read_with<NamedShort>(R"({"yyy":1,"zzz":3})"), R"({"x":0,"yyy":1})");
+    EXPECT_TRUE(direct_read);
+    EXPECT_EQ(read_with<NamedShort>(R"({"yyy":1,"x":1})"),
+              key_of("NamedShort", "satisfies the settings of yyjson::not_") + " at /x");
+    // a key that a closed type rejects comes first, and the count after the keys
+    EXPECT_EQ(read_with<NamedClosed>(R"({"x":1})"), R"({"x":1})");
+    EXPECT_EQ(read_with<NamedClosed>(R"({"x":1,"zz":1})"), closed("NamedClosed", "zz") + " at /zz");
+    EXPECT_EQ(read_with<NamedClosed>(R"({"zz":1,"x":1})"), closed("NamedClosed", "zz") + " at /zz");
+    EXPECT_EQ(read_with<NamedCounted>(R"({"x":1,"zz":1})"),
+              key_of("NamedCounted", "is longer than the maximum length 1") + " at /zz");
+    EXPECT_EQ(read_with<NamedCounted>(R"({"x":1,"z":1})"), more("NamedCounted", 1));
+#if FIELD_RFL_ANNOTATIONS
+    EXPECT_EQ(read_with<NamedAnnotated>(R"({"a":1,"B":2})"), R"({"a":1,"B":2})");
+    EXPECT_EQ(read_with<NamedAnnotated>(R"({"a":1,"b":2})"), R"({"a":1,"B":0})");
+    EXPECT_EQ(read_with<NamedAnnotated>(R"({"cc":1})"),
+              key_of("NamedAnnotated", "is longer than the maximum length 1") + " at /cc");
+#endif
+}
+
+TEST(PropertyNames, Tags)
+{
+    // the key of an internal tag is a key of the alternative
+    EXPECT_EQ(read_with<NamedShape>(R"({"kind":"c","r":1})"), R"({"kind":"c","r":1})");
+    EXPECT_TRUE(direct_read);
+    EXPECT_EQ(read_with<NamedShape>(R"({"r":1,"kind":"c","z":1})"),
+              key_of("NamedCircle", R"(is not one of "r", "kind")") + " at /z");
+    EXPECT_EQ(read_with<NamedShape>(R"({"kind":"r","w":1,"h":2})"),
+              key_of("NamedRect", "is longer than the maximum length 1") + " at /kind");
+    EXPECT_EQ(read_with<NamedRect>(R"({"w":1,"h":2})"), R"({"w":1,"h":2})");
+    // the keys of an adjacent tag are keys of the struct that holds the variant
+    EXPECT_EQ(read_with<NamedEnvelope>(R"({"id":1,"kind":"rect","data":{"w":1,"h":2}})"),
+              R"({"id":1,"kind":"rect","data":{"w":1,"h":2}})");
+    EXPECT_TRUE(direct_read);
+    EXPECT_EQ(read_with<NamedEnvelope>(R"({"id":1,"kind":"rect","data":{"w":1,"h":2},"extra":1})"),
+              key_of("NamedEnvelope", "is longer than the maximum length 4") + " at /extra");
+    EXPECT_EQ(read_with<NamedTagless>(R"({"id":1,"kind":"rect","data":{"w":1,"h":2}})"),
+              key_of("NamedTagless", R"(is not one of "id", "data")") + " at /kind");
+}
+
+TEST(PropertyNames, MergeInto)
+{
+    // the keys of the members of the patch that are not null are checked, as for a map
+    const auto t = NamedPt{1, 2, 3};
+    const auto longer = key_of("NamedPt", "is longer than the maximum length 2");
+    EXPECT_EQ(merge_with(t, R"({"a":4})"), R"({"a":4,"bb":2,"bad":3})");
+    EXPECT_TRUE(direct_read);
+    EXPECT_EQ(merge_with(t, R"({"bad":null})"), R"({"a":1,"bb":2})");
+    EXPECT_EQ(merge_with(t, R"({ "bad" : null , "zzz" : null })"), R"({"a":1,"bb":2})");
+    EXPECT_TRUE(direct_read);
+    EXPECT_EQ(merge_with(t, R"({"bad":4})"), longer + " at /bad");
+    EXPECT_EQ(merge_with(t, R"({"a":4,"zzz":1})"), longer + " at /zzz");
+    EXPECT_EQ(merge_with(t, R"({ "zzz" : null , "zzz" : 1 })"), longer + " at /zzz");
+    EXPECT_EQ(merge_with(NamedPtV{1, 2, 3}, R"({"bad":4})"),
+              key_of("NamedPtV", "is longer than the maximum length 2") + " at /bad");
+    EXPECT_EQ(merge_with(NamedWide(), R"({"i":1,"jjj":null})"),
+              R"({"a":0,"b":0,"c":0,"d":0,"e":0,"f":0,"g":0,"h":0,"i":1})");
+    EXPECT_EQ(merge_with(NamedWide(), R"({"i":1,"jjj":1})"),
+              key_of("NamedWide", "is longer than the maximum length 2") + " at /jjj");
+    EXPECT_EQ(merge_with(NamedHolder(), R"({"p":{"zzz":1}})"), longer + " at /p/zzz");
+    EXPECT_EQ(merge_with(NamedHolder(), R"({"p":{"zzz":null}})"), R"({"p":{"a":0,"bb":0},"v":[]})");
+    EXPECT_EQ(merge_with(NamedShape(NamedCircle{1}), R"({"kind":"c","r":2})"), R"({"kind":"c","r":2})");
+    EXPECT_EQ(merge_with(NamedShape(NamedCircle{1}), R"({"kind":"c","z":2})"),
+              key_of("NamedCircle", R"(is not one of "r", "kind")") + " at /z");
+}
+
+TEST(PropertyNames, Write)
+{
+    // the keys are not checked when writing
+    EXPECT_EQ(std::string(yyjson::write(NamedPt{1, 2, 3})), R"({"a":1,"bb":2,"bad":3})");
+    EXPECT_EQ(std::string(yyjson::write(NamedShape(NamedRect{1, 2}))), R"({"kind":"r","w":1,"h":2})");
+    EXPECT_EQ(std::string(yyjson::write(NamedRenamed{1, 2})), R"({"A":1,"b":2})");
 }
 
 // NOLINTEND

@@ -641,6 +641,16 @@ inline constexpr auto yyjson::annotations<Keyed> = yyjson::annotate(
     yyjson::field("u", yyjson::property_names(yyjson::satisfies<is_short>)),
     yyjson::field("deep", yyjson::additional_properties(yyjson::property_names(yyjson::min_length(2)))),
     yyjson::field("sized", yyjson::min_properties(1), yyjson::property_names(yyjson::enum_("a", "b"))));
+// a struct whose keys follow a pattern and a length in code points
+struct KeyedStruct
+{
+    int ab = 0;
+    std::optional<int> AB;
+    bool operator==(const KeyedStruct&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<KeyedStruct> =
+    yyjson::annotate(yyjson::property_names(yyjson::max_length(3), yyjson::pattern("^[^A-Z/]+$")));
 
 struct Containing
 {
@@ -933,13 +943,16 @@ namespace constraint_rules
     static_assert(table_error(additional_properties(minimum(0))) == struct_additional_properties);
     static_assert(table_error(yyjson::min_properties(1)) == none);
     static_assert(table_error(yyjson::max_properties(1), additional_properties(false)) == none);
-    static_assert(table_error(yyjson::property_names(yyjson::min_length(1))) == struct_constraint);
+    static_assert(table_error(yyjson::property_names(yyjson::min_length(1))) == none);
+    static_assert(table_error(yyjson::max_properties(1), yyjson::property_names(yyjson::min_length(1))) == none);
     static_assert(table_error(yyjson::transparent, field("w", yyjson::skip), additional_properties(false)) ==
                   transparent_object_keyword);
     static_assert(table_error(yyjson::transparent, field("w", yyjson::skip), yyjson::min_properties(1)) ==
                   transparent_object_keyword);
     static_assert(table_error(yyjson::max_properties(1), yyjson::transparent, field("w", yyjson::skip)) ==
                   transparent_object_keyword);
+    static_assert(table_error(yyjson::transparent, field("w", yyjson::skip),
+                              yyjson::property_names(yyjson::min_length(1))) == transparent_object_keyword);
 }  // namespace constraint_rules
 
 // the tree of the keywords of the field `v` of a struct, by its error
@@ -1011,8 +1024,25 @@ struct StructCountsEqual
 template <>
 inline constexpr auto yyjson::annotations<StructCountsEqual> =
     yyjson::annotate(yyjson::min_properties(1), yyjson::max_properties(1));
+// the names of the members of a struct follow the rules of those of a map
+struct StructNamesInverted
+{
+    int v;
+};
+template <>
+inline constexpr auto yyjson::annotations<StructNamesInverted> =
+    yyjson::annotate(yyjson::property_names(yyjson::min_length(3), yyjson::max_length(2)));
+struct StructNamesTwice
+{
+    int v;
+};
+template <>
+inline constexpr auto yyjson::annotations<StructNamesTwice> =
+    yyjson::annotate(yyjson::property_names(yyjson::max_length(2)), yyjson::property_names(yyjson::max_length(1)));
 namespace constraint_tree_rules
 {
+    template <typename T>
+    constexpr auto names_error = yyjson::detail::make_schema_tree<&yyjson::detail::build_struct_names_tree<T>>().error;
     template <typename T>
     constexpr auto count_error = yyjson::detail::make_schema_tree<&yyjson::detail::build_struct_count_tree<T>>().error;
     template <typename T>
@@ -1037,6 +1067,7 @@ namespace constraint_tree_rules
                   tree_error<AnyOfTooLong> == prefix_position_too_large);
     static_assert(count_error<StructCountsInverted> == reads_nothing &&
                   count_error<StructCountsTwice> == keyword_twice && count_error<StructCountsEqual> == none);
+    static_assert(names_error<StructNamesInverted> == reads_nothing && names_error<StructNamesTwice> == keyword_twice);
 
     // the keywords that a field without them leaves unchecked, and those that are no check
     static_assert(!yyjson::detail::has_constraints<Spot> && yyjson::detail::has_constraints<Bounded>);
@@ -2500,6 +2531,15 @@ TEST(Constraints, PropertyNames)
     expect_rejected<Keyed>(R"({"sized":{}})",
                            R"(the value of the key "sized" of Keyed has fewer properties than the minimum 1)",
                            "/sized");
+}
+
+TEST(Constraints, StructPropertyNames)
+{
+    expect_accepted<KeyedStruct>(R"({"ab":1,"x":2,"\u00e9\u00e9\u00e9":3})", {.ab = 1, .AB = {}});
+    expect_rejected<KeyedStruct>(R"({"ab":1,"AB":2})",
+                                 R"(a key of KeyedStruct does not match the pattern "^[^A-Z/]+$")", "/AB");
+    expect_rejected<KeyedStruct>(R"({"abcd":1})", "a key of KeyedStruct is longer than the maximum length 3", "/abcd");
+    expect_rejected<KeyedStruct>(R"({"a/b":1})", "a key of KeyedStruct does not match", "/a~1b");
 }
 
 TEST(Constraints, EscapedKeys)

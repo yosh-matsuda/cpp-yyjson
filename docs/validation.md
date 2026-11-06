@@ -85,6 +85,31 @@ yyjson::read<Patch>("{}");
 *   A minimum greater than the maximum is a compile error. A struct with [`yyjson::transparent`](conversions.md#a-struct-as-the-value-of-its-field) or [`yyjson::as_array`](conversions.md#a-struct-as-a-json-array) takes neither setting.
 *   A write does not check the number. A struct with `yyjson::min_properties` writes each field that equals its [default value](conversions.md#default-values-and-required-keys), as `yyjson::emit_defaults` does, because the read counts the members. It does not write an empty `std::optional`.
 
+### The names of the members of a struct
+
+The setting `yyjson::property_names(s...)` of [`yyjson::annotate`](reference.md#yyjsonannotationst-yyjsonannotate) constrains each key of the objects that a struct reads. It is the keyword `propertyNames` of JSON Schema. The settings `s` are the [constraints of a string](#constraints), as in `yyjson::property_names` of a [map](#constraints-of-elements):
+
+```cpp
+struct Server
+{
+    std::string host;
+    int port = 0;
+};
+
+template <>
+inline constexpr auto yyjson::annotations<Server> = yyjson::annotate(yyjson::property_names(yyjson::max_length(4)));
+
+yyjson::read<Server>(R"({"host":"a","port":80,"timeout":5})");
+// throws: a key of Server is longer than the maximum length 4 at /timeout (line 1, column 33, pos 32)
+```
+
+*   The setting is a part of the type, as `yyjson::additional_properties(false)` is. `yyjson::read<T>`, `read_into`, `merge_into` and `cast<T>` apply it, with or without the read policies.
+*   It checks each key of the JSON object. These are the keys of the fields, after [`yyjson::rename`](conversions.md#json-keys), the unknown keys, the keys of the [tags](conversions.md#tagged-variants) and each occurrence of a repeated key. A field whose key is missing is not checked.
+*   `merge_into` checks the keys of the patch, without the keys whose value is `null`.
+*   The error has the path of the member of the key. When the object has more than one such key, the error is about the first one. When the struct also rejects a key, because it is closed or because of a read policy, that error comes first. The error of the [number of members](#the-number-of-members-of-a-struct) comes after it.
+*   A struct with [`yyjson::transparent`](conversions.md#a-struct-as-the-value-of-its-field) or [`yyjson::as_array`](conversions.md#a-struct-as-a-json-array) takes no `yyjson::property_names`. The setting given twice is a compile error.
+*   A write does not check the keys.
+
 ### Repeated keys
 
 When an object has a key more than once, which of the members a read takes is unspecified. This applies to:
@@ -324,7 +349,7 @@ Four more settings constrain the elements together, the positions of an array an
 | `yyjson::unique_items` | a range whose elements can be equal, such as `std::vector` | with an element that is written as the same JSON value as an earlier one | `an element of the value of the key "k" of T is equal to an earlier element` | the later element |
 | `yyjson::prefix_items(p...)` | a tuple, or a range that keeps the order of the JSON array | whose element `i` does not satisfy the settings `p` at the position `i` | `an element of the value of the key "k" of T`, and then the text of the constraint | the element |
 | `yyjson::contains(s...)`, `yyjson::min_contains(n)`, `yyjson::max_contains(m)` | a range written as a JSON array | with fewer than `n`, or more than `m`, elements that satisfy `s` | `the value of the key "k" of T has no item that satisfies the constraints of yyjson::contains`, `has fewer than n items ...` or `has more than m items ...` | the field |
-| `yyjson::property_names(s...)` | a map written as a JSON object | with a key that does not satisfy `s` | `a key of the value of the key "k" of T`, and then the text of the constraint | the member of the key |
+| `yyjson::property_names(s...)` | a map written as a JSON object. For a struct, see [The names of the members of a struct](#the-names-of-the-members-of-a-struct) | with a key that does not satisfy `s` | `a key of the value of the key "k" of T`, and then the text of the constraint | the member of the key |
 
 ```cpp
 struct Job
@@ -683,7 +708,7 @@ The tables below list the keywords of [JSON Schema 2020-12](https://json-schema.
 | `required` | `yyjson::required`, or `yyjson::reject_missing_keys` for every field | without them, a field whose key is missing keeps its value in `T()`. |
 | `additionalProperties: false` | `yyjson::additional_properties(false)` on a struct, or the read policy `yyjson::reject_unknown_keys` | without them, a struct ignores a key that names no field. |
 | `additionalProperties` with a schema | `yyjson::additional_properties(settings...)` on a map | none. |
-| `propertyNames` | `yyjson::property_names(settings...)` on a map | none. |
+| `propertyNames` | `yyjson::property_names(settings...)` on a struct or a map | none. |
 | `minProperties`, `maxProperties` | `yyjson::min_properties(n)`, `yyjson::max_properties(n)` on a struct or a map | none. |
 
 ### Combining schemas
