@@ -5426,16 +5426,16 @@ namespace yyjson
         // among them, which a key matcher of the struct gives.
         template <typename S>
         inline constexpr std::size_t struct_field_count = [] {
-            if constexpr (visitable<S>)
-                return std::tuple_size_v<std::remove_cvref_t<decltype(visit_struct<S>::members)>>;
+            if constexpr (visitable<std::remove_const_t<S>>)
+                return std::tuple_size_v<std::remove_cvref_t<decltype(visit_struct<std::remove_const_t<S>>::members)>>;
             else
                 return reflected_fields<S>::size();
         }();
         template <std::size_t I, typename S>
         CPPYYJSON_ALWAYS_INLINE inline constexpr auto& struct_field(S& s) noexcept
         {
-            if constexpr (visitable<S>)
-                return s.*yyjson::detail::member_pointer<I>(visit_struct<S>::members);
+            if constexpr (visitable<std::remove_const_t<S>>)
+                return s.*yyjson::detail::member_pointer<I>(visit_struct<std::remove_const_t<S>>::members);
             else
                 return field_reflection::get_field<reflected_field_index<std::remove_const_t<S>, I>>(s);
         }

@@ -124,6 +124,32 @@ inline constexpr auto yyjson::annotations<VisitablePoint> =
     yyjson::annotate(yyjson::as_array, yyjson::field("x", yyjson::maximum(9)),
                      yyjson::field("rest", yyjson::extra_items), yyjson::max_items(4));
 VISITABLE_STRUCT(VisitablePoint, x, label, rest);
+// a VISITABLE_STRUCT whose order differs from the order of the declarations, and one that is not an aggregate
+struct Reordered
+{
+    int a = 0;
+    std::string b;
+    int c = 0;
+    bool operator==(const Reordered&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<Reordered> =
+    yyjson::annotate(yyjson::as_array, yyjson::field("c", yyjson::minimum(5)));
+VISITABLE_STRUCT(Reordered, b, a, c);
+class Constructed
+{
+public:
+    Constructed() = default;
+    Constructed(int a, std::string b) : a_(a), b_(std::move(b)) {}
+    bool operator==(const Constructed&) const = default;
+
+    int a_ = 0;
+    std::string b_;
+};
+template <>
+inline constexpr auto yyjson::annotations<Constructed> =
+    yyjson::annotate(yyjson::as_array, yyjson::field("a_", yyjson::maximum(9)), yyjson::min_items(2));
+VISITABLE_STRUCT(Constructed, b_, a_);
 // the keywords of the whole array, which count and check the elements of the array that the read reads
 struct Banner
 {
@@ -731,6 +757,16 @@ TEST(AsArray, Visitable)
                                     yyjson::strict);
     expect_rejected<VisitablePoint>(R"([1,"a",2,3,4])", "the value of VisitablePoint has more items than the maximum 4",
                                     "");
+}
+
+TEST(AsArray, VisitableOrder)
+{
+    expect_written(Reordered{1, "x", 7}, R"(["x",1,7])");
+    expect_read<Reordered>(R"(["x",1,7])", {1, "x", 7});
+    expect_rejected<Reordered>(R"(["x",9,1])", "is less than the minimum 5", "/2");
+    expect_written(Constructed{1, "x"}, R"(["x",1])");
+    expect_read<Constructed>(R"(["x",1])", {1, "x"});
+    expect_rejected<Constructed>(R"(["x",10])", "is greater than the maximum 9", "/1");
 }
 
 TEST(AsArray, Differential)

@@ -1000,6 +1000,32 @@ template <>
 inline constexpr auto yyjson::annotations<ConditionVisitable> = yyjson::annotate(yyjson::if_then_else(
     yyjson::if_(yyjson::field("a", yyjson::required)), yyjson::then(yyjson::field("b", yyjson::required))));
 VISITABLE_STRUCT(ConditionVisitable, a, b);
+// VISITABLE_STRUCT in another order than the declarations, and a struct that is not an aggregate
+struct ConditionReordered
+{
+    int a = 0;
+    int b = 0;
+    int c = 0;
+    bool operator==(const ConditionReordered&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<ConditionReordered> =
+    yyjson::annotate(yyjson::any_of(yyjson::field("c", yyjson::minimum(5))));
+VISITABLE_STRUCT(ConditionReordered, c, a, b);
+class ConditionConstructed
+{
+public:
+    ConditionConstructed() = default;
+    explicit ConditionConstructed(int a) : a_(a) {}
+    bool operator==(const ConditionConstructed&) const = default;
+
+    int a_ = 0;
+    int b_ = 0;
+};
+template <>
+inline constexpr auto yyjson::annotations<ConditionConstructed> = yyjson::annotate(yyjson::if_then_else(
+    yyjson::if_(yyjson::field("a_", yyjson::minimum(1))), yyjson::then(yyjson::field("b_", yyjson::required))));
+VISITABLE_STRUCT(ConditionConstructed, b_, a_);
 // fields whose keys a condition tests while their values cannot tell: a std::optional with an initializer and plain
 // fields; reading tells by the keys of the object
 struct ConditionPresence
@@ -2763,6 +2789,14 @@ TEST(Constraints, StructConditions)
     expect_conditions<ConditionVisitable>(R"({"a":1})",
                                           R"(ConditionVisitable is not constructible from JSON without the key "b", )"
                                           R"(which yyjson::if_then_else requires)");
+    expect_conditions<ConditionReordered>(R"({"a":1,"b":1,"c":5})", "");
+    expect_conditions<ConditionReordered>(R"({"a":9,"b":9,"c":1})",
+                                          "ConditionReordered satisfies none of the subschemas of yyjson::any_of");
+    expect_conditions<ConditionConstructed>(R"({"a_":0})", "");
+    expect_conditions<ConditionConstructed>(R"({"a_":1,"b_":0})", "");
+    expect_conditions<ConditionConstructed>(R"({"a_":1})",
+                                            R"(ConditionConstructed is not constructible from JSON )"
+                                            R"(without the key "b_", which yyjson::if_then_else requires)");
 
     // the keys of the object tell which fields it has, whatever values the fields have in T()
     const auto missing_d =
