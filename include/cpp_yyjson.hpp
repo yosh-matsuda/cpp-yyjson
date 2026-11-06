@@ -2707,6 +2707,18 @@ namespace yyjson
     template <typename... As>
     additional_properties(additional_properties<As...>) -> additional_properties<additional_properties<As...>>;
 
+    // That the object of a struct has no key other than those of its fields and its tags, as JSON Schema's
+    // `additionalProperties: false`: `yyjson::annotate(yyjson::additional_properties(false))`.  It is a part of the
+    // type, and every read checks it.
+    template <>
+    struct additional_properties<bool>
+    {
+        consteval explicit additional_properties(bool allowed)
+        {
+            if (allowed) throw "yyjson::additional_properties takes false: a struct accepts unknown keys without it";
+        }
+    };
+
     // The settings that an element of a field written as a JSON array must satisfy, as many times as
     // `yyjson::min_contains` and `yyjson::max_contains` bound: `yyjson::contains(yyjson::minimum(10))`.
     template <typename... As>
@@ -2788,6 +2800,12 @@ namespace yyjson
         struct setting_type<additional_properties<As...>>
         {
             using type = additional_properties<>;
+        };
+        // `yyjson::additional_properties(false)` is a setting of a struct, not a keyword of a value.
+        template <>
+        struct setting_type<additional_properties<bool>>
+        {
+            using type = additional_properties<bool>;
         };
         template <typename... As>
         struct setting_type<contains<As...>>
@@ -3163,18 +3181,23 @@ namespace yyjson
         inline constexpr bool annotate_settings =
             count_true<(is_field_annotation<As>::value || std::same_as<As, transparent_t> ||
                         std::same_as<As, as_array_t> || std::same_as<As, items<bool>> || std::same_as<As, default_t> ||
-                        read_policy<As> || combinator_setting<As> || array_struct_setting<As> ||
-                        internal_tag_annotation<As> || enum_annotation<As>)...> == sizeof...(As);
+                        std::same_as<As, additional_properties<bool>> || read_policy<As> || combinator_setting<As> ||
+                        array_struct_setting<As> || internal_tag_annotation<As> || enum_annotation<As>)...> ==
+            sizeof...(As);
     }  // namespace detail
 
     template <typename... As>
     consteval detail::annotation_list<As...> annotate(As... values)
     {
+        static_assert(detail::count_true<std::same_as<detail::setting_type_t<As>, additional_properties<>>...> == 0,
+                      "yyjson::additional_properties takes only false for a struct: with the keywords of the "
+                      "values, it constrains a field of a map in yyjson::field");
         static_assert(detail::annotate_settings<As...>,
                       "yyjson::annotate takes yyjson::field(...), yyjson::transparent, yyjson::as_array, "
                       "yyjson::items(false), yyjson::default_ and the read policies yyjson::reject_unknown_keys, "
                       "yyjson::reject_missing_keys, yyjson::reject_null_as_missing, yyjson::reject_duplicates and "
-                      "yyjson::strict, and yyjson::not_, if_then_else, all_of, any_of and one_of for a struct, "
+                      "yyjson::strict, and yyjson::additional_properties(false), not_, if_then_else, all_of, any_of "
+                      "and one_of for a struct, "
                       "yyjson::min_items, max_items, unique_items, contains, min_contains and max_contains for a "
                       "struct annotated with yyjson::as_array, "
                       "yyjson::internal_tag for a variant, and yyjson::enumerator(...) and yyjson::enum_format for an "
@@ -3716,6 +3739,10 @@ namespace yyjson
             extra_items_not_last,
             extra_items_with_setting,
             extra_items_denied,
+            closed_twice,
+            transparent_closed,
+            as_array_object_keyword,
+            struct_additional_properties,
         };
 
         template <std::size_t N>
@@ -3733,6 +3760,7 @@ namespace yyjson
             bool as_array = false;                        // whether the struct is annotated with `yyjson::as_array`
             bool items_denied = false;                    // `yyjson::items(false)` on the struct
             std::size_t extra_items = N;                  // the field of `yyjson::extra_items`, or N
+            bool closed = false;                          // `yyjson::additional_properties(false)` on the struct
         };
 
         // Applies the settings of `yyjson::field` and of the annotations of the members to the keys of the fields,
@@ -3752,6 +3780,9 @@ namespace yyjson
             std::array<bool, N> constrained_value = {};  // whether it has one other than `yyjson::items`
             bool extra_items_twice = false;
             bool array_keywords = false;                 // whether the struct has a keyword of the whole array
+            bool object_keywords = false;                // whether it has a keyword of an object, such as closed
+            bool additional_values = false;              // whether it has `yyjson::additional_properties(s...)`
+            bool object_constraint = false;  // whether it has `yyjson::min_properties` or another object keyword
             // where the search for the member of the next `yyjson::field` starts: after the previous one, so that
             // settings in the order of the members are found at once
             std::size_t next = 0;
@@ -3839,6 +3870,12 @@ namespace yyjson
                 if (table.extra_items != N) extra_items_twice = true;
                 table.extra_items = i;
             }
+            constexpr void close()
+            {
+                if (table.closed) return fail(field_key_error::closed_twice);
+                table.closed = true;
+                object_keywords = true;
+            }
             constexpr void make_transparent()
             {
                 if (table.transparent) return fail(field_key_error::transparent_twice);
@@ -3897,6 +3934,16 @@ namespace yyjson
                     conditions = true;
                 else if constexpr (array_struct_setting<A>)
                     array_keywords = true;
+                else if constexpr (std::same_as<A, additional_properties<bool>>)
+                    close();
+                else if constexpr ((constraint_bit<setting_type_t<A>> & object_constraints) != 0)
+                {
+                    object_keywords = true;
+                    if (std::same_as<setting_type_t<A>, additional_properties<>>)
+                        additional_values = true;
+                    else
+                        object_constraint = true;
+                }
                 else if constexpr (constraint_setting<A>)
                     fail(field_key_error::struct_constraint);
                 else
@@ -3910,6 +3957,7 @@ namespace yyjson
                 if (result.extra_items != N && !result.as_array) return field_key_error::extra_items_without_as_array;
                 if (array_keywords && !result.as_array) return field_key_error::array_keywords_without_as_array;
                 if (!result.as_array) return field_key_error::none;
+                if (object_keywords) return field_key_error::as_array_object_keyword;
                 if (conditions) return field_key_error::as_array_struct_setting;
                 for (std::size_t i = 0; i < N; ++i)
                 {
@@ -3969,10 +4017,16 @@ namespace yyjson
                         result.error = field_key_error::transparent_field_setting;
                     else if (policies)
                         result.error = field_key_error::transparent_policy;
+                    else if (result.closed)
+                        result.error = field_key_error::transparent_closed;
                     else if (conditions)
                         result.error = field_key_error::transparent_conditions;
                 }
                 if (result.error == field_key_error::none) result.error = array_error(result);
+                if (result.error == field_key_error::none && additional_values)
+                    result.error = field_key_error::struct_additional_properties;
+                if (result.error == field_key_error::none && object_constraint)
+                    result.error = field_key_error::struct_constraint;
                 if (result.error != field_key_error::none || std::ranges::find(renamed, true) == renamed.end())
                     return result;
                 if (!distinct_names(result.keys, [&](std::size_t i) { return !result.skipped[i]; }))
@@ -4004,7 +4058,9 @@ namespace yyjson
             for (const auto a : std::meta::annotations_of(field_reflection::detail::member_at<T, I>))
             {
                 const auto type = std::meta::remove_cvref(std::meta::type_of(a));
-                if (!std::meta::has_template_arguments(type) || type == ^^yyjson::items<bool>) continue;
+                if (!std::meta::has_template_arguments(type) || type == ^^yyjson::items<bool> ||
+                    type == ^^yyjson::additional_properties<bool>)
+                    continue;
                 const auto t = std::meta::template_of(type);
                 if (t == ^^yyjson::enum_ || t == ^^yyjson::items || t == ^^yyjson::additional_properties ||
                     t == ^^yyjson::contains || t == ^^yyjson::property_names || t == ^^yyjson::prefix_items_t ||
@@ -4217,6 +4273,22 @@ namespace yyjson
                 );
         }();
 
+        // Whether the struct T is annotated with `yyjson::additional_properties(false)`, by `annotations<T>` or, under
+        // C++26, on the type.  It is not a read policy, so the entries of a map that a merge adds are not read whole.
+        template <typename T>
+        inline constexpr bool struct_closed = [] {
+            if constexpr (!std::is_class_v<T>)
+                return false;
+            else
+                return []<typename... As>(std::type_identity<std::tuple<As...>>) {
+                    return count_true<std::same_as<As, additional_properties<bool>>...> != 0;
+                }(std::type_identity<annotation_values_of<T>>{})
+#if FIELD_RFL_ANNOTATIONS
+                       || !field_reflection::type_annotations<T, additional_properties<bool>>.empty()
+#endif
+                           ;
+        }();
+
         // Whether the class T is annotated with `yyjson::transparent`, by `annotations<T>` or, under C++26, on the
         // type.
         template <typename T>
@@ -4262,6 +4334,7 @@ namespace yyjson
             else if constexpr (transparent_annotated<T> || !field_reflection::type_annotations<T, default_t>.empty() ||
                                !field_reflection::type_annotations<T, as_array_t>.empty() ||
                                !field_reflection::type_annotations<T, items<bool>>.empty() ||
+                               !field_reflection::type_annotations<T, additional_properties<bool>>.empty() ||
                                type_array_keywords_annotated<T>)
                 return true;
             else if constexpr (!visitable<T>)
@@ -4309,6 +4382,9 @@ namespace yyjson
                     builder.make_array();
                 for (std::size_t k = 0; k < field_reflection::type_annotations<T, items<bool>>.size(); ++k)
                     builder.deny_items();
+                for (std::size_t k = 0; k < field_reflection::type_annotations<T, additional_properties<bool>>.size();
+                     ++k)
+                    builder.close();
                 if (type_annotated_policies<T> != 0) builder.policies = true;
                 if (!type_conditions<T>.empty()) builder.conditions = true;
                 if (type_array_keywords_annotated<T>) builder.array_keywords = true;
@@ -4403,6 +4479,18 @@ namespace yyjson
             static_assert(table.error != field_key_error::extra_items_denied,
                           "yyjson::items(false) denies the elements that yyjson::extra_items receives: give one of "
                           "them");
+            static_assert(table.error != field_key_error::closed_twice,
+                          "a struct is annotated with yyjson::additional_properties(false) twice");
+            static_assert(table.error != field_key_error::transparent_closed,
+                          "a struct annotated with yyjson::transparent has no keys of its own: it takes no "
+                          "yyjson::additional_properties(false), which the struct of its field can take");
+            static_assert(table.error != field_key_error::as_array_object_keyword,
+                          "a struct annotated with yyjson::as_array has no keys: it takes no "
+                          "yyjson::additional_properties(false), min_properties, max_properties or property_names; "
+                          "yyjson::items(false) denies the elements after its fields");
+            static_assert(table.error != field_key_error::struct_additional_properties,
+                          "yyjson::additional_properties takes only false for a struct: with the keywords of the "
+                          "values, it constrains a field of a map in yyjson::field");
             static constexpr auto value = table.keys;
             using source = Source;
         };
@@ -9117,6 +9205,13 @@ namespace yyjson
         {
             throw_bad_cast_at(at, "{} has no field of the key \"{}\"", type, key);
         }
+        // A template, so that only a struct annotated with `yyjson::additional_properties(false)` has it.
+        template <typename = void>
+        [[noreturn]] CPPYYJSON_COLD void throw_closed_key(cast_target at, std::string_view key, std::string_view type)
+        {
+            throw_bad_cast_at(at, "{} has the key \"{}\", which yyjson::additional_properties(false) rejects", type,
+                              key);
+        }
         [[noreturn]] CPPYYJSON_COLD inline void throw_repeated_key(cast_target at, std::string_view key,
                                                                    std::string_view type)
         {
@@ -9213,9 +9308,10 @@ namespace yyjson
                   static_cast<const yyjson_mut_val*>(yyjson_mut_obj_iter_get_val(key)));
         }
 
-        // Checks the members of the object `obj` read into a struct against `rules` under `policies`.  A merge
-        // patch may leave out any key, but not give null to a field that may not be absent.
-        template <typename Val>
+        // Checks the members of the object `obj` read into a struct against `rules` under `policies`, and against
+        // its keys if `Closed`.  A merge patch may leave out any key, but not give null to a field that may not be
+        // absent, and an unknown key of null removes nothing.
+        template <bool Closed, typename Val>
         CPPYYJSON_NOINLINE CPPYYJSON_COLD void check_struct_keys(const Val* obj, const struct_key_rules& rules,
                                                                  bool merge)
         {
@@ -9247,8 +9343,15 @@ namespace yyjson
                         tags.push_back(key);
                     }
                 }
-                else if ((policies & unknown_keys_policy) != 0)
-                    throw_unknown_key(target_of(value), key, rules.type);
+                else
+                {
+                    if constexpr (Closed)
+                    {
+                        if (!merge || !unsafe_yyjson_is_null(const_cast<Val*>(value)))
+                            throw_closed_key(target_of(value), key, rules.type);
+                    }
+                    if ((policies & unknown_keys_policy) != 0) throw_unknown_key(target_of(value), key, rules.type);
+                }
             });
             if (merge) return;
             const bool missing = (policies & missing_keys_policy) != 0;
@@ -9361,9 +9464,9 @@ namespace yyjson
         template <typename T, typename Json>
         CPPYYJSON_ALWAYS_INLINE inline void check_struct_object(const Json& obj, bool merge)
         {
-            if (has_required_fields<T> || (read_policies | struct_policies<T>) != 0) [[unlikely]]
-                check_struct_keys(dependent_t<writer::detail::json_value_access, Json>::get(obj), struct_rules<T>,
-                                  merge);
+            if (struct_closed<T> || has_required_fields<T> || (read_policies | struct_policies<T>) != 0) [[unlikely]]
+                check_struct_keys<struct_closed<T>>(dependent_t<writer::detail::json_value_access, Json>::get(obj),
+                                                    struct_rules<T>, merge);
         }
 
         template <typename T, typename Json>
@@ -29259,6 +29362,7 @@ namespace yyjson
             // Checks the keys of the object at `open` read into the struct of `rules` under the key policies
             // `policies`, as `check_struct_keys` checks those of a document.  `merge` leaves out any key, but fails at
             // null for a field that may not be absent.
+            template <bool Closed>
             CPPYYJSON_NOINLINE CPPYYJSON_COLD void check_object_keys(const char* open,
                                                                      const yyjson::detail::struct_key_rules& rules,
                                                                      std::uint8_t policies, bool merge)
@@ -29290,7 +29394,8 @@ namespace yyjson
                             tags.emplace_back(key);
                         }
                     }
-                    else if ((policies & yyjson::detail::unknown_keys_policy) != 0)
+                    else if ((policies & yyjson::detail::unknown_keys_policy) != 0 ||
+                             (Closed && (!merge || *cur_ != 'n')))
                         fail();
                     skip_value();
                     skip_ws();
@@ -29322,25 +29427,27 @@ namespace yyjson
 
             // Checks the object at `open` read into the struct of `rules`, whose keys are not those of its fields in
             // their order, under the key policies.
+            template <bool Closed>
             CPPYYJSON_NOINLINE void check_irregular_fields(const char* open,
                                                            const yyjson::detail::struct_key_rules& rules)
             {
                 const auto p = static_cast<std::uint8_t>((policies_ | rules.policies) & yyjson::detail::key_policies);
-                if (p != 0 || rules.required != nullptr) [[unlikely]]
-                    check_object_keys(open, rules, p, false);
+                if (Closed || p != 0 || rules.required != nullptr) [[unlikely]]
+                    check_object_keys<Closed>(open, rules, p, false);
             }
 
             // Checks the object at `open` read into the struct of `rules` under the key policies, with `hint` the
             // field after the last key, or -1 if a key was out of the order of the fields.
+            template <bool Closed>
             CPPYYJSON_NOINLINE CPPYYJSON_COLD void check_fields_after(const char* open, std::size_t hint,
                                                                       const yyjson::detail::struct_key_rules& rules,
                                                                       bool merge)
             {
                 if (hint == std::size_t(-1))
-                    check_object_keys(open, rules,
-                                      static_cast<std::uint8_t>((policies_ | rules.policies) &
-                                                                yyjson::detail::key_policies),
-                                      merge);
+                    check_object_keys<Closed>(open, rules,
+                                              static_cast<std::uint8_t>((policies_ | rules.policies) &
+                                                                        yyjson::detail::key_policies),
+                                              merge);
                 else if (!merge)
                     check_fields_from(rules, hint);
             }
@@ -29468,9 +29575,11 @@ namespace yyjson
                     else
                         skip_value();
                 });
-                if (key_policies_of<T>() != 0 || (!Merge && yyjson::detail::has_required_fields<T>)) [[unlikely]]
-                    check_fields_after(open, irregular || Merge ? std::size_t(-1) : hint,
-                                       yyjson::detail::struct_rules<T>, Merge);
+                constexpr bool closed = yyjson::detail::struct_closed<T>;
+                if (closed || key_policies_of<T>() != 0 || (!Merge && yyjson::detail::has_required_fields<T>))
+                    [[unlikely]]
+                    check_fields_after<closed>(open, irregular || Merge ? std::size_t(-1) : hint,
+                                               yyjson::detail::struct_rules<T>, Merge);
             }
 
             // Reads the members of the object at `cur_` whose keys `Matcher` finds, from `cur_` at a key, with
@@ -29513,7 +29622,8 @@ namespace yyjson
                     if (*cur_ != '}') [[unlikely]]
                         fail();
                     close(open);
-                    return check_irregular_fields(open, yyjson::detail::struct_rules<T>);
+                    return check_irregular_fields<yyjson::detail::struct_closed<T>>(open,
+                                                                                    yyjson::detail::struct_rules<T>);
                 }
             }
 

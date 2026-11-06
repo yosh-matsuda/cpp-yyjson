@@ -243,6 +243,76 @@ struct [[= yyjson::reject_unknown_keys]] PolAnnotatedClosed
 };
 #endif
 
+// closed types, which `yyjson::additional_properties(false)` makes reject the keys of no field or tag
+struct ClosedPt
+{
+    int x = 0;
+    std::optional<int> y;
+    bool operator==(const ClosedPt&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<ClosedPt> = yyjson::annotate(yyjson::additional_properties(false));
+struct ClosedPtV
+{
+    int x = 0;
+    std::optional<int> y;
+    bool operator==(const ClosedPtV&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<ClosedPtV> = yyjson::annotate(yyjson::additional_properties(false));
+VISITABLE_STRUCT(ClosedPtV, x, y);
+struct ClosedWide
+{
+    int a = 0, b = 0, c = 0, d = 0, e = 0, f = 0, g = 0, h = 0, i = 0;
+    std::optional<int> j;
+    bool operator==(const ClosedWide&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<ClosedWide> = yyjson::annotate(yyjson::additional_properties(false));
+struct ClosedRenamed
+{
+    int a = 0;
+    int s = 0;
+    bool operator==(const ClosedRenamed&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<ClosedRenamed> = yyjson::annotate(
+    yyjson::field("a", yyjson::rename("A")), yyjson::field("s", yyjson::skip), yyjson::additional_properties(false));
+struct ClosedHolder
+{
+    ClosedPt p;
+    std::vector<ClosedPt> v;
+    bool operator==(const ClosedHolder&) const = default;
+};
+struct ClosedCircle
+{
+    int r = 0;
+    bool operator==(const ClosedCircle&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<ClosedCircle> = yyjson::annotate(yyjson::additional_properties(false));
+struct ClosedRect
+{
+    int w = 0;
+    int h = 0;
+    bool operator==(const ClosedRect&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<ClosedRect> = yyjson::annotate(yyjson::additional_properties(false));
+using ClosedShape = std::variant<ClosedCircle, ClosedRect>;
+template <>
+inline constexpr auto yyjson::annotations<ClosedShape> =
+    yyjson::annotate(yyjson::internal_tag("type", {"circle", "rect"}));
+struct ClosedEnvelope
+{
+    int id = 0;
+    std::variant<ClosedCircle, ClosedRect> data;
+    bool operator==(const ClosedEnvelope&) const = default;
+};
+template <>
+inline constexpr auto yyjson::annotations<ClosedEnvelope> = yyjson::annotate(
+    yyjson::field("data", yyjson::adjacent_tag("kind", {"circle", "rect"})), yyjson::additional_properties(false));
+
 using OptionalMap = std::map<std::string, std::optional<int>>;
 using IntMap = std::map<std::string, int>;
 using IntHashMap = std::unordered_map<std::string, int>;
@@ -384,6 +454,11 @@ namespace
     std::string missing(std::string_view type, std::string_view key)
     {
         return error(std::format("{} is not constructible from JSON without the key \"{}\"", type, key));
+    }
+    std::string closed(std::string_view type, std::string_view key)
+    {
+        return error(
+            std::format("{} has the key \"{}\", which yyjson::additional_properties(false) rejects", type, key));
     }
     std::string null_as_missing(std::string_view type)
     {
@@ -762,6 +837,95 @@ TEST(ReadPolicies, MergeInto)
               R"({"type":"rect","w":1,"h":3})");
     EXPECT_EQ(merge_with(env, R"({"kind":"rect","kind":"rect"})", yyjson::strict),
               repeated("PolEnvelope", "kind") + " at /kind");
+}
+
+TEST(ClosedTypes, Read)
+{
+    // the keys of the fields in any order, and an unknown key before, among and after them
+    const auto expect = []<typename T>(std::type_identity<T>, std::string_view name) {
+        EXPECT_EQ(read_with<T>(R"({"x":1,"y":2})"), R"({"x":1,"y":2})");
+        EXPECT_TRUE(direct_read);
+        EXPECT_EQ(read_with<T>(R"({"y":2,"x":1})"), R"({"x":1,"y":2})");
+        EXPECT_EQ(read_with<T>(R"({})"), R"({"x":0})");
+        for (const auto json : {R"({"z":0,"x":1,"y":2})", R"({"x":1,"z":0,"y":2})", R"({"x":1,"y":2,"z":0})",
+                                R"({"x":1,"z":null})", R"({"z":{}})"})
+        {
+            EXPECT_EQ(read_with<T>(json), closed(name, "z") + " at /z") << json;
+            EXPECT_EQ(error_path<T>(json), "/z") << json;
+            // the closed type reports the key also under the policy that rejects it
+            EXPECT_EQ(read_with<T>(json, yyjson::reject_unknown_keys), closed(name, "z") + " at /z") << json;
+            EXPECT_EQ(read_with<T>(json, yyjson::strict), closed(name, "z") + " at /z") << json;
+        }
+        EXPECT_EQ(read_with<T>(R"({"y":1})", yyjson::reject_missing_keys), missing(name, "x"));
+    };
+    expect(std::type_identity<ClosedPt>(), "ClosedPt");
+    expect(std::type_identity<ClosedPtV>(), "ClosedPtV");
+    EXPECT_EQ(read_with<ClosedWide>(R"({"j":1,"a":1})"),
+              R"({"a":1,"b":0,"c":0,"d":0,"e":0,"f":0,"g":0,"h":0,"i":0,"j":1})");
+    EXPECT_EQ(read_with<ClosedWide>(R"({"j":1,"a":1,"k":1})"), closed("ClosedWide", "k") + " at /k");
+    // the key of a renamed field is its new key, and a skipped field has no key
+    EXPECT_EQ(read_with<ClosedRenamed>(R"({"A":1})"), R"({"A":1})");
+    EXPECT_EQ(read_with<ClosedRenamed>(R"({"a":1})"), closed("ClosedRenamed", "a") + " at /a");
+    EXPECT_EQ(read_with<ClosedRenamed>(R"({"A":1,"s":2})"), closed("ClosedRenamed", "s") + " at /s");
+    // the struct that holds a closed type is not closed
+    EXPECT_EQ(read_with<ClosedHolder>(R"({"p":{"x":1},"q":1})"), R"({"p":{"x":1},"v":[]})");
+    EXPECT_EQ(read_with<ClosedHolder>(R"({"p":{"x":1,"q":1}})"), closed("ClosedPt", "q") + " at /p/q");
+    EXPECT_EQ(read_with<ClosedHolder>(R"({"v":[{},{"q":1}]})"), closed("ClosedPt", "q") + " at /v/1/q");
+}
+
+TEST(ClosedTypes, Tags)
+{
+    // the key of an internal tag is a key of the alternative
+    EXPECT_EQ(read_with<ClosedShape>(R"({"type":"rect","w":1,"h":2})"), R"({"type":"rect","w":1,"h":2})");
+    EXPECT_TRUE(direct_read);
+    EXPECT_EQ(read_with<ClosedShape>(R"({"w":1,"type":"rect","h":2})"), R"({"type":"rect","w":1,"h":2})");
+    EXPECT_EQ(read_with<ClosedShape>(R"({"type":"rect","w":1,"h":2,"r":1})"), closed("ClosedRect", "r") + " at /r");
+    EXPECT_EQ(read_with<ClosedCircle>(R"({"type":"circle","r":1})"), closed("ClosedCircle", "type") + " at /type");
+    // the keys of an adjacent tag are keys of the struct that holds the variant
+    EXPECT_EQ(read_with<ClosedEnvelope>(R"({"id":1,"kind":"rect","data":{"w":1,"h":2}})"),
+              R"({"id":1,"kind":"rect","data":{"w":1,"h":2}})");
+    EXPECT_EQ(read_with<ClosedEnvelope>(R"({"data":{"r":3},"kind":"circle","id":1})"),
+              R"({"id":1,"kind":"circle","data":{"r":3}})");
+    EXPECT_EQ(read_with<ClosedEnvelope>(R"({"id":1,"kind":"rect","data":{"w":1,"h":2},"z":1})"),
+              closed("ClosedEnvelope", "z") + " at /z");
+    EXPECT_EQ(read_with<ClosedEnvelope>(R"({"id":1,"kind":"rect","data":{"w":1,"h":2,"z":1}})"),
+              closed("ClosedRect", "z") + " at /data/z");
+}
+
+TEST(ClosedTypes, MergeInto)
+{
+    // the keys of the patch are checked, but an unknown key of null removes nothing
+    const auto t = ClosedPt{1, 2};
+    EXPECT_EQ(merge_with(t, R"({"y":3})"), R"({"x":1,"y":3})");
+    EXPECT_TRUE(direct_read);
+    EXPECT_EQ(merge_with(t, R"({"z":1})"), closed("ClosedPt", "z") + " at /z");
+    EXPECT_EQ(merge_with(t, R"({"y":3,"z":{}})", yyjson::reject_unknown_keys), closed("ClosedPt", "z") + " at /z");
+    EXPECT_EQ(merge_with(t, R"({"z":null})"), R"({"x":1,"y":2})");
+    EXPECT_EQ(merge_with(t, R"({"y":null,"z":null})"), R"({"x":1})");
+    EXPECT_EQ(merge_with(ClosedWide(), R"({"j":1,"k":null,"a":1})"),
+              R"({"a":1,"b":0,"c":0,"d":0,"e":0,"f":0,"g":0,"h":0,"i":0,"j":1})");
+    EXPECT_EQ(merge_with(ClosedWide(), R"({"j":1,"k":1})"), closed("ClosedWide", "k") + " at /k");
+    EXPECT_EQ(merge_with(ClosedHolder(), R"({"p":{"q":1}})"), closed("ClosedPt", "q") + " at /p/q");
+    EXPECT_EQ(merge_with(ClosedHolder(), R"({"p":{"q":null}})"), R"({"p":{"x":0},"v":[]})");
+    // the alternatives of a variant in the patch
+    EXPECT_EQ(merge_with(ClosedShape(ClosedRect{1, 2}), R"({"type":"rect","h":3})"), R"({"type":"rect","w":1,"h":3})");
+    EXPECT_EQ(merge_with(ClosedShape(ClosedRect{1, 2}), R"({"type":"rect","r":3})"),
+              closed("ClosedRect", "r") + " at /r");
+    EXPECT_EQ(merge_with(ClosedShape(ClosedRect{1, 2}), R"({"type":"circle","w":3})"),
+              closed("ClosedCircle", "w") + " at /w");
+    EXPECT_EQ(merge_with(ClosedEnvelope{1, ClosedRect{1, 2}}, R"({"kind":"rect","data":{"h":3}})"),
+              R"({"id":1,"kind":"rect","data":{"w":1,"h":3}})");
+    EXPECT_EQ(merge_with(ClosedEnvelope{1, ClosedRect{1, 2}}, R"({"kind":"rect","z":1})"),
+              closed("ClosedEnvelope", "z") + " at /z");
+}
+
+TEST(ClosedTypes, Write)
+{
+    // a closed type writes its fields and tags as before
+    EXPECT_EQ(std::string(yyjson::write(ClosedEnvelope{1, ClosedCircle{3}})),
+              R"({"id":1,"kind":"circle","data":{"r":3}})");
+    EXPECT_EQ(std::string(yyjson::write(ClosedShape(ClosedRect{1, 2}))), R"({"type":"rect","w":1,"h":2})");
+    EXPECT_EQ(std::string(yyjson::write(ClosedRenamed{1, 2})), R"({"A":1})");
 }
 
 // NOLINTEND

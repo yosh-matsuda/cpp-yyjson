@@ -926,6 +926,15 @@ namespace constraint_rules
     static_assert(table_error(field("v", minimum(0)), field("v", yyjson::skip)) == skipped_with_setting);
     static_assert(table_error(field("w", minimum(0), yyjson::adjacent_tag("t", {"x"}))) == tagged_constraint);
     static_assert(table_error(field("v", minimum(0)), field("w", yyjson::adjacent_tag("t", {"x"}))) == none);
+    // `yyjson::additional_properties(false)` is the only keyword of an object that a struct takes
+    using yyjson::additional_properties;
+    static_assert(table_error(additional_properties(false)) == none);
+    static_assert(table_error(additional_properties(false), additional_properties(false)) == closed_twice);
+    static_assert(table_error(additional_properties(minimum(0))) == struct_additional_properties);
+    static_assert(table_error(yyjson::min_properties(1)) == struct_constraint);
+    static_assert(table_error(yyjson::property_names(yyjson::min_length(1))) == struct_constraint);
+    static_assert(table_error(yyjson::transparent, field("w", yyjson::skip), additional_properties(false)) ==
+                  transparent_closed);
 }  // namespace constraint_rules
 
 // the tree of the keywords of the field `v` of a struct, by its error
